@@ -422,7 +422,14 @@ export class RecallSearchPipelineCoordinator {
       ? await this.deps.searchScopedMemoryCandidates(
           queryAwarePrefilter.candidatePaths,
           prompt,
-          qmdFetchLimit,
+          // Overfetch the FULL scoped candidate set BEFORE the generic-recall
+          // exclusion `filterRecallCandidates` applies below (L464). Capping to
+          // `qmdFetchLimit` here lets excluded paths (artifacts, activity digests,
+          // meeting records) consume the caller's budget and drop legitimate hits
+          // with no refill — the hot-path mirror of the archive-fallback fix. The
+          // candidate set is an already-bounded prefilter, so its size is the
+          // natural ceiling; the post-exclusion cap is applied by filterRecallCandidates.
+          queryAwarePrefilter.candidatePaths.size,
           { allowArchived: options.collection !== undefined },
         )
       : [];

@@ -158,3 +158,38 @@ test("finding 1 — overfetches scoped seeds before exclusion so a capped fetch 
     "an excluded-first seed must not starve the result of a recallable hit at the cap",
   );
 });
+
+function hotSeedCoordinator(seed: QmdSearchResult[]): RecallSearchPipelineCoordinator {
+  const deps = {
+    config: { memoryDir: "/mem", qmdSearchStrategy: "lex", searchBackend: "qmd" },
+    qmd: {},
+    searchScopedMemoryCandidates: scopedCandidatesStub(seed),
+    searchAcrossNamespaces: async () => [],
+    namespaceFromPath: () => "default",
+  } as unknown as RecallSearchPipelineDeps;
+  return new RecallSearchPipelineCoordinator(deps);
+}
+
+test("finding 1 (round-4) — hot QMD seed path overfetches scoped seeds before exclusion", async () => {
+  // The query-aware candidate order puts the NON-recallable meeting record FIRST.
+  // The hot seed fetch previously capped the scoped fetch to qmdFetchLimit (1)
+  // BEFORE the generic-recall exclusion, so the sole fetched seed was the meeting
+  // record — filtered out, dropping facts/a.md with no refill. Overfetching the
+  // full candidate set and excluding afterward must still surface the recallable
+  // hit at the cap.
+  const coordinator = hotSeedCoordinator([
+    result("default", MEETING_RECORD),
+    result("default", "facts/a.md"),
+  ]);
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp("quarterly", 1, 1, {
+    namespacesEnabled: false,
+    recallNamespaces: ["default"],
+    resolveNamespace: () => "default",
+    queryAwarePrefilter: prefilter([MEETING_RECORD, "facts/a.md"]),
+  });
+  assert.deepEqual(
+    out.map((r) => r.path),
+    ["facts/a.md"],
+    "an excluded-first candidate must not starve the hot seed of a recallable hit at the cap",
+  );
+});

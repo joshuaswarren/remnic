@@ -422,6 +422,36 @@ test("seam — the memory generator receives built records + removed ids and its
   assert.deepEqual(summary.facts, { llmInvoked: true, active: 2, review: 0, dropped: 0, skipped: 0, summariesWritten: 1 });
 });
 
+test("finding 2 (round-4) — non-fatal generator warnings surface in the day-build summary", async () => {
+  const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
+  const data: MeetingDayData = {
+    detection: { date: DATE, appSpans: [appSpan("Zoom", START, END)], audioWindows: [audioWin("desktop", START, END)] },
+    conversations: [conv("desktop", "d1", [seg("hello", "2026-03-10T14:05:00.000Z")])],
+  };
+  const gen = new FakeMemoryGenerator({
+    episodes: { written: 1, skipped: 0 },
+    reindexNeeded: false,
+    warnings: ["summary dep degraded: skipped fact synthesis", "1 transcript segment dropped"],
+  });
+  const summary = await new MeetingsBuilder({
+    source: fixedSource(data),
+    store,
+    config: config(),
+    memoryGenerator: gen,
+  }).buildDay(DATE);
+  assert.equal(summary.built, 1, "the build still succeeds when the generator returns warnings");
+  assert.match(
+    summary.memoryWarning ?? "",
+    /summary dep degraded/,
+    "a successful build must not drop the generator's non-fatal warnings",
+  );
+  assert.match(
+    summary.memoryWarning ?? "",
+    /transcript segment dropped/,
+    "every generator warning surfaces in the summary",
+  );
+});
+
 test("seam — removed record ids are forwarded to the generator on a reconciling rebuild", async () => {
   const store = new MeetingRecordStore(MEMORY_DIR, new InMemoryIo());
   const cfg = config();

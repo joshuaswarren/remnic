@@ -118,9 +118,11 @@ export interface MeetingsDayBuildSummary {
   reindexWarning?: string;
   /**
    * Set when the injected `memoryGenerator` rejected AFTER records were already
-   * persisted. Like `reindexWarning`, the record writes still succeeded, so the
-   * build is reported successful with this generic warning; the next build (or
-   * scheduled maintenance) regenerates the missing memories. No raw error text.
+   * persisted, OR when a successful generation returned non-fatal warnings. Like
+   * `reindexWarning`, the record writes still succeeded, so the build is reported
+   * successful with this warning; on rejection the next build (or scheduled
+   * maintenance) regenerates the missing memories. Carries no raw exception text —
+   * only the generic rejection message or the generator's own warning strings.
    */
   memoryWarning?: string;
   /**
@@ -266,6 +268,15 @@ export class MeetingsBuilder {
     }
     if (outcome?.episodes !== undefined) summary.episodes = outcome.episodes;
     if (outcome?.facts !== undefined) summary.facts = outcome.facts;
+    // A SUCCESSFUL generation can still raise non-fatal warnings (e.g. a summary
+    // dep degraded). The fatal catch above leaves `outcome` undefined, so these
+    // paths are mutually exclusive: fold the generator's own warning strings into
+    // the same `memoryWarning` the CLI/JSON already surfaces so a green build does
+    // not silently hide them. These are generator-authored strings, not raw error
+    // text, so surfacing them is safe.
+    if (outcome?.warnings !== undefined && outcome.warnings.length > 0) {
+      summary.memoryWarning = outcome.warnings.join("; ");
+    }
     // Meeting records AND their episode/summary memories live inside the QMD
     // collection root. Fire the isolated reindex whenever anything discoverable
     // changed — records written/removed (engine) OR newly written episodes/facts
