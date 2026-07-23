@@ -212,6 +212,9 @@ test("published dry-run validation forwards MemoryAgentBench trial limit", async
 
   assert.equal(captured?.id, "memoryagentbench");
   assert.equal(captured?.options.datasetDir, "/tmp/memoryagentbench");
+  assert.equal(captured?.options.limit, 10);
+  assert.equal(captured?.options.seed, 123);
+  assert.deepEqual(captured?.options.benchmarkOptions, { trialLimit: 1 });
 });
 
 test("paired baseline-locomo failure path clears the shared replay cache", () => {
