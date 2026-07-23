@@ -695,3 +695,59 @@ test("maybeRegister: passive registration does not poison a later active one", (
     else process.env.REMNIC_BRIDGE_MODE = priorEnv;
   }
 });
+
+test("delegate observe drops sub-10-char noise turns (embedded parity)", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: 0 }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    await invoke(
+      api,
+      "agent_end",
+      { success: true, messages: [{ role: "user", content: "ok" }, { role: "assistant", content: "yes" }] },
+      { sessionKey: "noise" },
+    );
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/observe").length,
+      0,
+      "all-noise turn is not observed",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("maybeRegister: an embedded-mode registration blocks a later delegate flip on the same api", () => {
+  const priorEnv = process.env.REMNIC_BRIDGE_MODE;
+  Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+  try {
+    const api = recordingApi();
+    const opts = {
+      serviceId: "openclaw-remnic",
+      configBridgeMode: "embedded",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir: "/tmp/remnic-delegate-test-memory",
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (t: string) => t,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+    };
+    const healthDeps = { checkHealth: () => true };
+    assert.equal(maybeRegisterDelegateRuntime(api, opts, healthDeps), false, "embedded mode");
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    assert.equal(
+      maybeRegisterDelegateRuntime(api, opts, healthDeps),
+      false,
+      "a reload flipping to delegate on the same api stays embedded (no stacking)",
+    );
+    assert.equal(api.handlers.size, 0, "no delegate hooks bound");
+  } finally {
+    if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorEnv;
+  }
+});

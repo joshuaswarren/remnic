@@ -322,7 +322,9 @@ export function registerDelegateRuntime(
           (message.role === "user" || message.role === "assistant") &&
           message.content.trim().length > 0,
       );
-    if (turn.length === 0) return;
+    // Embedded parity: agent_end skips sub-10-char texts (noise gate).
+    const gated = turn.filter((message) => String(message.content).length >= 10);
+    if (gated.length === 0) return;
     try {
       const cwd = cwdFrom(event, ctx, options.cwd);
       await postJson(
@@ -330,7 +332,7 @@ export function registerDelegateRuntime(
         "/engram/v1/observe",
         withNamespace(namespace, {
           sessionKey,
-          messages: turn,
+          messages: gated,
           ...(cwd ? { cwd } : {}),
           ...(options.projectTag ? { projectTag: options.projectTag } : {}),
         }),
@@ -437,6 +439,7 @@ export function maybeRegisterDelegateRuntime(
     // deployment keeps its memory loop (AGENTS.md §4: side effects must not
     // crash the main flow).
     log.error(`${String(err)} — falling back to the embedded runtime`);
+    delegateEmbeddedFallbackApis.add(api);
     return false;
   }
   if (delegateEmbeddedFallbackApis.has(api)) {
@@ -445,7 +448,13 @@ export function maybeRegisterDelegateRuntime(
     );
     return false;
   }
-  if (bridge.mode !== "delegate") return false;
+  if (bridge.mode !== "delegate") {
+    // The caller will bind embedded hooks on this api. Record it so a later
+    // reload that flips to delegate on the SAME api stays embedded instead of
+    // stacking both memory paths (same invariant as the daemon-down fallback).
+    delegateEmbeddedFallbackApis.add(api);
+    return false;
+  }
   const boundServices = delegateHookApiServices.get(api);
   if (boundServices?.has(options.serviceId)) {
     log.debug(
