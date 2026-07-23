@@ -13,8 +13,6 @@
  * and up to `maxExamples` stored examples (issue: "take the best score").
  */
 
-import { Buffer } from "node:buffer";
-
 import { CaptureConfigError } from "./errors.js";
 
 export type Embedding = readonly number[];
@@ -43,19 +41,6 @@ export function cosineSimilarity(a: Embedding, b: Embedding): number {
   }
   if (normA === 0 || normB === 0) return 0;
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-/** Encode an embedding as a little-endian Float32 BLOB for the spool. */
-export function encodeEmbedding(embedding: Embedding): Buffer {
-  const arr = Float32Array.from(embedding);
-  return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength);
-}
-
-/** Decode a Float32 BLOB back into a number[]; empty/odd buffers -> []. */
-export function decodeEmbedding(blob: Buffer | null | undefined): number[] {
-  if (!blob || blob.byteLength < 4 || blob.byteLength % 4 !== 0) return [];
-  const arr = new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
-  return Array.from(arr);
 }
 
 /**

@@ -89,6 +89,18 @@ const BUILT_IN_CONNECTOR_PACKAGES: Array<{ id: string; suffix: string }> = [
   { id: "desktop", suffix: "capture-audio" },
 ];
 
+/**
+ * npm specifier of the optional package that provides a source's connector.
+ * Built-in sources map to their real package (e.g. `desktop` ->
+ * `@remnic/capture-audio`, not the nonexistent `@remnic/connector-desktop`);
+ * unknown ids fall back to the `connector-<id>` convention. Used by
+ * missing-connector install hints so they name the exact install command.
+ */
+export function builtInConnectorPackageSpecifier(id: string): string {
+  const entry = BUILT_IN_CONNECTOR_PACKAGES.find((e) => e.id === id);
+  return `@remnic/${entry ? entry.suffix : `connector-${id}`}`;
+}
+
 const loadFailuresWarned = new Set<string>();
 
 export async function ensureBuiltInWearableConnectors(): Promise<void> {

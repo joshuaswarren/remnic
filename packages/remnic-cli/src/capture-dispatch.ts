@@ -28,6 +28,7 @@ export interface CaptureAudioModule {
     env?: NodeJS.ProcessEnv;
     stdout?: (line: string) => void;
     stderr?: (line: string) => void;
+    spawnArgvPrefix?: string[];
   }): Promise<number>;
 }
 
@@ -74,5 +75,13 @@ export async function cmdCapture(rest: string[], io: CaptureDispatchIO): Promise
     io.stderr(err instanceof Error ? err.message : String(err));
     return 2;
   }
-  return mod.runCapture({ argv: forwarded, stdout: io.stdout, stderr: io.stderr });
+  // Tell the daemon how to re-launch itself when it backgrounds into
+  // --foreground: as `remnic capture audio ...`, not the bare `remnic` bin
+  // (process.argv[1] here is the remnic CLI entrypoint).
+  return mod.runCapture({
+    argv: forwarded,
+    stdout: io.stdout,
+    stderr: io.stderr,
+    spawnArgvPrefix: [process.argv[1], "capture", "audio"],
+  });
 }

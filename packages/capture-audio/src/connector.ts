@@ -106,20 +106,29 @@ export function daemonConversationToWearable(conv: DaemonConversation): Wearable
 
 interface DesktopClientOptions {
   baseUrl: string;
-  token: string | undefined;
+  /** Resolved per request so env / token-file rotation applies without a rebuild. */
+  getToken: () => string | undefined;
+}
+
+/** Linear trailing-slash trim (avoids a backtracking regex on the base URL). */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47 /* "/" */) end--;
+  return value.slice(0, end);
 }
 
 class DesktopClient {
   #baseUrl: string;
-  #token: string | undefined;
+  #getToken: () => string | undefined;
 
   constructor(options: DesktopClientOptions) {
-    this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
-    this.#token = options.token;
+    this.#baseUrl = trimTrailingSlashes(options.baseUrl);
+    this.#getToken = options.getToken;
   }
 
   #headers(): Record<string, string> {
-    return this.#token ? { authorization: `Bearer ${this.#token}` } : {};
+    const token = this.#getToken();
+    return token ? { authorization: `Bearer ${token}` } : {};
   }
 
   async verifyAuth(signal?: AbortSignal): Promise<WearableAuthCheck> {
@@ -157,7 +166,13 @@ class DesktopClient {
       // A non-2xx is a backend/auth failure, distinct from an empty day.
       throw new DesktopDaemonError(`desktop capture daemon returned HTTP ${res.status}`);
     }
-    const page = (await res.json()) as ConversationPage;
+    let page: ConversationPage;
+    try {
+      page = (await res.json()) as ConversationPage;
+    } catch {
+      // A 200 with an empty/non-JSON body is a backend fault, not an empty day.
+      throw new DesktopDaemonError("desktop capture daemon returned a non-JSON conversations response");
+    }
     if (!page || !Array.isArray(page.conversations)) {
       throw new DesktopDaemonError("desktop capture daemon returned a malformed conversations page");
     }
@@ -170,12 +185,12 @@ class DesktopClient {
 
 export function createDesktopConnector(options: WearableConnectorFactoryOptions): WearableSourceConnector {
   const baseUrl = options.settings.baseUrl?.trim() || DEFAULT_BASE_URL;
-  // Token resolved lazily so `wearables status` works without a token and
-  // env/file changes take effect without a connector rebuild.
+  // One client per connector, but the token is resolved per request (below)
+  // so env / on-disk token rotation takes effect without a rebuild.
   let client: DesktopClient | null = null;
   const getClient = (): DesktopClient => {
     if (!client) {
-      client = new DesktopClient({ baseUrl, token: resolveCaptureAudioToken(options.settings.apiKey, baseUrl) });
+      client = new DesktopClient({ baseUrl, getToken: () => resolveCaptureAudioToken(options.settings.apiKey, baseUrl) });
     }
     return client;
   };

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cosineSimilarity, decodeEmbedding, encodeEmbedding, SpeakerClusterer } from "./diarization.js";
+import { cosineSimilarity, SpeakerClusterer } from "./diarization.js";
 
 /** Deterministic pseudo-embedding near a base vector (same speaker) with jitter. */
 function nearVoice(base: number[], seed: number, jitter = 0.02): number[] {
@@ -12,14 +12,6 @@ test("cosineSimilarity: identical=1, orthogonal=0", () => {
   assert.equal(cosineSimilarity([1, 0, 0], [1, 0, 0]), 1);
   assert.equal(cosineSimilarity([1, 0], [0, 1]), 0);
   assert.equal(cosineSimilarity([], [1]), 0);
-});
-
-test("encode/decode embedding round-trips through a Float32 BLOB", () => {
-  const emb = [0.1, -0.5, 0.9, 0.25];
-  const decoded = decodeEmbedding(encodeEmbedding(emb));
-  assert.equal(decoded.length, 4);
-  for (let i = 0; i < emb.length; i++) assert.ok(Math.abs(decoded[i] - emb[i]) < 1e-6);
-  assert.deepEqual(decodeEmbedding(null), []);
 });
 
 test("fragmentation regression: one synthetic voice across 50 segments stays one cluster", () => {

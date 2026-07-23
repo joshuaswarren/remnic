@@ -170,3 +170,60 @@ test("fetchConversations throws (not empty) on a backend 500 — empty vs failur
     await daemon.close();
   }
 });
+
+test("fetchConversations throws (not empty) when a 200 body is not valid JSON", async () => {
+  const daemon = await startMockDaemon((url, res) => {
+    if (url.pathname !== "/v1/conversations") {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("not json <<<");
+  });
+  try {
+    await assert.rejects(
+      connectorFor(daemon.url).fetchConversations({ date: "2026-07-20", timezone: "UTC" }),
+      DesktopDaemonError,
+    );
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("the bearer token is resolved per request, so env rotation applies without a rebuild", async () => {
+  const daemon = await startMockDaemon((url, res) => {
+    res.writeHead(url.pathname === "/v1/health" ? 200 : 404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, version: "9.14.0" }));
+  });
+  try {
+    // No config apiKey + non-loopback would skip the token file; use a
+    // loopback daemon but resolve the token from env, rotating between calls.
+    const opts: WearableConnectorFactoryOptions = {
+      settings: {
+        enabled: true,
+        baseUrl: daemon.url,
+        memoryMode: "smart",
+        sourceTrust: 0.85,
+        autoApproveTrust: 0.9,
+        reviewTrust: 0.5,
+        minConfidence: 0,
+        minImportance: "low",
+        maxMemoriesPerDay: 0,
+        importNativeMemories: "off",
+        cleanup: {} as never,
+      },
+      timezone: "UTC",
+    };
+    const connector = createDesktopConnector(opts);
+    process.env.REMNIC_CAPTURE_AUDIO_TOKEN = "first";
+    await connector.verifyAuth();
+    process.env.REMNIC_CAPTURE_AUDIO_TOKEN = "second";
+    await connector.verifyAuth();
+    delete process.env.REMNIC_CAPTURE_AUDIO_TOKEN;
+    const auths = daemon.requests.filter((r) => r.path === "/v1/health").map((r) => r.auth);
+    assert.deepEqual(auths, ["Bearer first", "Bearer second"]);
+  } finally {
+    await daemon.close();
+  }
+});

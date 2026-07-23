@@ -83,5 +83,5 @@ export { dedupeCrossChannel, wordJaccard } from "./dedup.js";
 export type { DedupSegment } from "./dedup.js";
 export { assembleConversations } from "./assembly.js";
 export type { AssemblySegment } from "./assembly.js";
-export { cosineSimilarity, decodeEmbedding, encodeEmbedding, SpeakerClusterer } from "./diarization.js";
+export { cosineSimilarity, SpeakerClusterer } from "./diarization.js";
 export type { Embedding, SpeakerCluster } from "./diarization.js";
