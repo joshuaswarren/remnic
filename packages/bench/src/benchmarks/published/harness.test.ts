@@ -1,16 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  runPublishedHarness,
-  type HarnessContext,
-  type HarnessPlan,
-} from "./harness.ts";
-import type {
-  BenchmarkDefinition,
-  BenchmarkResult,
-  ResolvedRunBenchmarkOptions,
-} from "../../types.ts";
+import { runPublishedHarness, type HarnessContext, type HarnessPlan } from "./harness.ts";
+import type { BenchmarkDefinition, BenchmarkResult, ResolvedRunBenchmarkOptions } from "../../types.ts";
 
 /**
  * Fake system under test that records every call into a deterministic
@@ -72,11 +64,7 @@ function makeFakeSystem(opts?: {
       async score() {
         return opts?.judgeScore ?? 1;
       },
-      async scoreWithMetrics(
-        question: string,
-        predicted: string,
-        expected: string,
-      ) {
+      async scoreWithMetrics(question: string, predicted: string, expected: string) {
         calls.push({ kind: "judge", question, predicted, expected });
         return {
           score: opts?.judgeScore ?? 1,
@@ -116,7 +104,7 @@ const smokeDefinition: BenchmarkDefinition = {
 
 function makeOptions(
   system: ReturnType<typeof makeFakeSystem>["system"],
-  overrides?: Partial<ResolvedRunBenchmarkOptions>,
+  overrides?: Partial<ResolvedRunBenchmarkOptions>
 ): ResolvedRunBenchmarkOptions {
   return {
     benchmark: smokeDefinition,
@@ -146,9 +134,7 @@ test("runPublishedHarness resets once per plan and stores every non-empty sessio
       ],
     },
     {
-      ingestSessions: [
-        { sessionId: "c", messages: [{ role: "user", content: "x" }] },
-      ],
+      ingestSessions: [{ sessionId: "c", messages: [{ role: "user", content: "x" }] }],
       trials: [
         {
           taskId: "t2",
@@ -172,11 +158,10 @@ test("runPublishedHarness resets once per plan and stores every non-empty sessio
 
   const stores = calls.filter((call) => call.kind === "store");
   assert.equal(stores.length, 3, "empty session should not be stored");
-  assert.deepEqual(stores.map((store) => (store as any).sessionId), [
-    "a",
-    "b",
-    "c",
-  ]);
+  assert.deepEqual(
+    stores.map((store) => (store as any).sessionId),
+    ["a", "b", "c"]
+  );
 
   assert.equal(result.results.tasks.length, 2);
   assert.equal(result.meta.seeds[0], 42);
@@ -198,9 +183,7 @@ test("runPublishedHarness rejects drain failure before scoring trials", async ()
         metricsSpec: { metrics: ["f1"] },
         plans: [
           {
-            ingestSessions: [
-              { sessionId: "s", messages: [{ role: "user", content: "x" }] },
-            ],
+            ingestSessions: [{ sessionId: "s", messages: [{ role: "user", content: "x" }] }],
             trials: [
               {
                 taskId: "must-not-score",
@@ -212,14 +195,23 @@ test("runPublishedHarness rejects drain failure before scoring trials", async ()
           },
         ],
       }),
-    /drain failed before scoring.*drain timed out/,
+    /drain failed before scoring.*drain timed out/
   );
 
   assert.ok(calls.some((call) => call.kind === "store"));
   assert.ok(calls.some((call) => call.kind === "drain"));
-  assert.equal(calls.some((call) => call.kind === "recall"), false);
-  assert.equal(calls.some((call) => call.kind === "respond"), false);
-  assert.equal(calls.some((call) => call.kind === "judge"), false);
+  assert.equal(
+    calls.some((call) => call.kind === "recall"),
+    false
+  );
+  assert.equal(
+    calls.some((call) => call.kind === "respond"),
+    false
+  );
+  assert.equal(
+    calls.some((call) => call.kind === "judge"),
+    false
+  );
 });
 
 test("runPublishedHarness recalls from ALL recallSessionIds per trial", async () => {
@@ -252,10 +244,7 @@ test("runPublishedHarness recalls from ALL recallSessionIds per trial", async ()
     sessionId: string;
     question: string;
   }>;
-  assert.deepEqual(
-    recalls.map((recall) => recall.sessionId).sort(),
-    ["s1", "s2"],
-  );
+  assert.deepEqual(recalls.map((recall) => recall.sessionId).sort(), ["s1", "s2"]);
   for (const recall of recalls) {
     assert.equal(recall.question, "who");
   }
@@ -288,9 +277,7 @@ test("runPublishedHarness executes independent trials concurrently with stable o
     metricsSpec: { metrics: ["f1"] },
     plans: [
       {
-        ingestSessions: [
-          { sessionId: "s", messages: [{ role: "user", content: "x" }] },
-        ],
+        ingestSessions: [{ sessionId: "s", messages: [{ role: "user", content: "x" }] }],
         trials: [
           {
             taskId: "t1",
@@ -318,7 +305,7 @@ test("runPublishedHarness executes independent trials concurrently with stable o
   assert.equal(maxActiveResponders, 2);
   assert.deepEqual(
     result.results.tasks.map((task) => task.taskId),
-    ["t1", "t2", "t3"],
+    ["t1", "t2", "t3"]
   );
   assert.deepEqual(completedTaskIds, ["t1", "t2", "t3"]);
 });
@@ -334,7 +321,7 @@ test("runPublishedHarness rejects invalid trialConcurrency", async () => {
         metricsSpec: { metrics: ["f1"] },
         plans: [],
       }),
-    /trialConcurrency must be an integer from 1 to 64/,
+    /trialConcurrency must be an integer from 1 to 64/
   );
 });
 
@@ -343,9 +330,7 @@ test("runPublishedHarness postAnswerHook runs between answer and judge", async (
   const order: string[] = [];
   const plans: HarnessPlan[] = [
     {
-      ingestSessions: [
-        { sessionId: "s", messages: [{ role: "user", content: "hi" }] },
-      ],
+      ingestSessions: [{ sessionId: "s", messages: [{ role: "user", content: "hi" }] }],
       trials: [
         {
           taskId: "hooked",
@@ -392,9 +377,7 @@ test("runPublishedHarness forwards per-trial answer format to strict answering",
     metricsSpec: { metrics: ["f1"] },
     plans: [
       {
-        ingestSessions: [
-          { sessionId: "s", messages: [{ role: "user", content: "hi" }] },
-        ],
+        ingestSessions: [{ sessionId: "s", messages: [{ role: "user", content: "hi" }] }],
         trials: [
           {
             taskId: "short-answer",
@@ -408,9 +391,7 @@ test("runPublishedHarness forwards per-trial answer format to strict answering",
     ],
   });
 
-  const respond = calls.find((call) => call.kind === "respond") as
-    | { kind: "respond"; question: string }
-    | undefined;
+  const respond = calls.find((call) => call.kind === "respond") as { kind: "respond"; question: string } | undefined;
   assert.ok(respond);
   assert.match(respond.question, /shortest complete answer/);
   assert.equal(result.results.tasks[0]?.details.answerFormat, "short");
@@ -430,9 +411,7 @@ test("runPublishedHarness llm_judge metric suppressed when judge score negative"
     metricsSpec: { metrics: ["f1", "llm_judge"] },
     plans: [
       {
-        ingestSessions: [
-          { sessionId: "s", messages: [{ role: "user", content: "h" }] },
-        ],
+        ingestSessions: [{ sessionId: "s", messages: [{ role: "user", content: "h" }] }],
         trials: [
           {
             taskId: "no-judge",
@@ -446,10 +425,7 @@ test("runPublishedHarness llm_judge metric suppressed when judge score negative"
   });
   const task = result.results.tasks[0]!;
   assert.ok("f1" in task.scores, "f1 should be present");
-  assert.ok(
-    !("llm_judge" in task.scores),
-    "llm_judge should be omitted when judge returns negative",
-  );
+  assert.ok(!("llm_judge" in task.scores), "llm_judge should be omitted when judge returns negative");
 });
 
 test("runPublishedHarness records failed judge_accuracy when judge score is negative", async () => {
@@ -459,9 +435,7 @@ test("runPublishedHarness records failed judge_accuracy when judge score is nega
     metricsSpec: { metrics: ["llm_judge", "judge_accuracy"] },
     plans: [
       {
-        ingestSessions: [
-          { sessionId: "s", messages: [{ role: "user", content: "h" }] },
-        ],
+        ingestSessions: [{ sessionId: "s", messages: [{ role: "user", content: "h" }] }],
         trials: [
           {
             taskId: "invalid-binary-judge",
@@ -523,7 +497,7 @@ test("runPublishedHarness marks caught provider failures partial without hiding 
 test("run-terminal detection follows wrapped causes and terminates on cyclic cause graphs", () => {
   const blocked = new BenchmarkRunBlockedError(
     BenchmarkRunBlockReason.ManualReconciliationRequired,
-    "credit ledger requires reconciliation",
+    "credit ledger requires reconciliation"
   );
   const wrapped = new Error("provider wrapper", { cause: blocked });
   assert.equal(findBenchmarkRunBlockedError(wrapped), blocked);
@@ -545,7 +519,7 @@ test("runPublishedHarness stops sequential plans on a terminal responder error",
     if (question.includes("blocked")) {
       throw new BenchmarkRunBlockedError(
         BenchmarkRunBlockReason.SpendHeadroomExhausted,
-        "credit headroom is exhausted",
+        "credit headroom is exhausted"
       );
     }
     return {
@@ -557,56 +531,60 @@ test("runPublishedHarness stops sequential plans on a terminal responder error",
   };
 
   await assert.rejects(
-    () => runPublishedHarness({
-      options: makeOptions(system, {
-        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+    () =>
+      runPublishedHarness({
+        options: makeOptions(system, {
+          onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+        }),
+        metricsSpec: { metrics: ["f1"] },
+        plans: [
+          {
+            ingestSessions: [],
+            trials: [
+              {
+                taskId: "before",
+                question: "before",
+                expected: "answer:before",
+                recallSessionIds: [],
+              },
+            ],
+          },
+          {
+            ingestSessions: [],
+            trials: [
+              {
+                taskId: "blocked",
+                question: "blocked",
+                expected: "never",
+                recallSessionIds: [],
+                answerFallback: () => "must not mask a run-terminal error",
+              },
+            ],
+          },
+          {
+            ingestSessions: [],
+            trials: [
+              {
+                taskId: "after",
+                question: "after",
+                expected: "answer:after",
+                recallSessionIds: [],
+              },
+            ],
+          },
+        ],
       }),
-      metricsSpec: { metrics: ["f1"] },
-      plans: [
-        {
-          ingestSessions: [],
-          trials: [{
-            taskId: "before",
-            question: "before",
-            expected: "answer:before",
-            recallSessionIds: [],
-          }],
-        },
-        {
-          ingestSessions: [],
-          trials: [{
-            taskId: "blocked",
-            question: "blocked",
-            expected: "never",
-            recallSessionIds: [],
-            answerFallback: () => "must not mask a run-terminal error",
-          }],
-        },
-        {
-          ingestSessions: [],
-          trials: [{
-            taskId: "after",
-            question: "after",
-            expected: "answer:after",
-            recallSessionIds: [],
-          }],
-        },
-      ],
-    }),
     (error: unknown) =>
-      error instanceof BenchmarkRunBlockedError &&
-      error.reason === BenchmarkRunBlockReason.SpendHeadroomExhausted,
+      error instanceof BenchmarkRunBlockedError && error.reason === BenchmarkRunBlockReason.SpendHeadroomExhausted
   );
 
   assert.deepEqual(completedTaskIds, ["before"]);
   assert.equal(calls.filter((call) => call.kind === "reset").length, 2);
   assert.deepEqual(
     calls
-      .filter((call): call is { kind: "respond"; question: string } =>
-        call.kind === "respond"
-      )
+      .filter((call): call is { kind: "respond"; question: string } => call.kind === "respond")
       .map((call) => call.question.split("\n", 1)[0]),
-    ["before", "blocked"],
+    ["before", "blocked"]
   );
 });
 
@@ -618,30 +596,32 @@ test("runPublishedHarness stops sequential trials on a terminal scoreWithMetrics
     throw new Error("judge wrapper", {
       cause: new BenchmarkRunBlockedError(
         BenchmarkRunBlockReason.ManualReconciliationRequired,
-        "judge credits require reconciliation",
+        "judge credits require reconciliation"
       ),
     });
   };
 
   await assert.rejects(
-    () => runPublishedHarness({
-      options: makeOptions(system, {
-        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+    () =>
+      runPublishedHarness({
+        options: makeOptions(system, {
+          onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+        }),
+        metricsSpec: { metrics: ["llm_judge"] },
+        plans: [
+          {
+            ingestSessions: [],
+            trials: ["Q1", "Q2"].map((question, index) => ({
+              taskId: `t${index + 1}`,
+              question,
+              expected: `answer:${question}`,
+              recallSessionIds: [],
+            })),
+          },
+        ],
       }),
-      metricsSpec: { metrics: ["llm_judge"] },
-      plans: [{
-        ingestSessions: [],
-        trials: ["Q1", "Q2"].map((question, index) => ({
-          taskId: `t${index + 1}`,
-          question,
-          expected: `answer:${question}`,
-          recallSessionIds: [],
-        })),
-      }],
-    }),
     (error: unknown) =>
-      error instanceof BenchmarkRunBlockedError &&
-      error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired,
+      error instanceof BenchmarkRunBlockedError && error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired
   );
 
   assert.deepEqual(completedTaskIds, []);
@@ -667,10 +647,7 @@ test("runPublishedHarness stops concurrent dequeue on a wrapped terminal error",
     await startedTogether;
     if (question.includes("Q2")) {
       throw new Error("provider wrapper", {
-        cause: new BenchmarkRunBlockedError(
-          BenchmarkRunBlockReason.ResourceLocked,
-          "credit ledger is locked",
-        ),
+        cause: new BenchmarkRunBlockedError(BenchmarkRunBlockReason.ResourceLocked, "credit ledger is locked"),
       });
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -683,36 +660,36 @@ test("runPublishedHarness stops concurrent dequeue on a wrapped terminal error",
   };
 
   await assert.rejects(
-    () => runPublishedHarness({
-      options: makeOptions(system, {
-        benchmarkOptions: { trialConcurrency: 3 },
-        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+    () =>
+      runPublishedHarness({
+        options: makeOptions(system, {
+          benchmarkOptions: { trialConcurrency: 3 },
+          onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+        }),
+        metricsSpec: { metrics: ["f1"] },
+        plans: [
+          {
+            ingestSessions: [],
+            trials: ["Q1", "Q2", "Q3", "Q4"].map((question, index) => ({
+              taskId: `t${index + 1}`,
+              question,
+              expected: `answer:${question}`,
+              recallSessionIds: [],
+            })),
+          },
+        ],
       }),
-      metricsSpec: { metrics: ["f1"] },
-      plans: [{
-        ingestSessions: [],
-        trials: ["Q1", "Q2", "Q3", "Q4"].map((question, index) => ({
-          taskId: `t${index + 1}`,
-          question,
-          expected: `answer:${question}`,
-          recallSessionIds: [],
-        })),
-      }],
-    }),
     (error: unknown) =>
-      error instanceof BenchmarkRunBlockedError &&
-      error.reason === BenchmarkRunBlockReason.ResourceLocked,
+      error instanceof BenchmarkRunBlockedError && error.reason === BenchmarkRunBlockReason.ResourceLocked
   );
 
   assert.deepEqual(completedTaskIds, ["t1"]);
   assert.deepEqual(
     calls
-      .filter((call): call is { kind: "respond"; question: string } =>
-        call.kind === "respond"
-      )
+      .filter((call): call is { kind: "respond"; question: string } => call.kind === "respond")
       .map((call) => call.question.split("\n", 1)[0])
       .sort(),
-    ["Q1", "Q2", "Q3"],
+    ["Q1", "Q2", "Q3"]
   );
 });
 
@@ -748,7 +725,7 @@ test("runPublishedHarness does not launch a new wave while an earlier trial can 
     if (taskQuestion === "Q2") {
       throw new BenchmarkRunBlockedError(
         BenchmarkRunBlockReason.ManualReconciliationRequired,
-        "Q2 discovered a terminal accounting state",
+        "Q2 discovered a terminal accounting state"
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -761,36 +738,36 @@ test("runPublishedHarness does not launch a new wave while an earlier trial can 
   };
 
   await assert.rejects(
-    () => runPublishedHarness({
-      options: makeOptions(system, {
-        benchmarkOptions: { trialConcurrency: 3 },
-        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+    () =>
+      runPublishedHarness({
+        options: makeOptions(system, {
+          benchmarkOptions: { trialConcurrency: 3 },
+          onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+        }),
+        metricsSpec: { metrics: ["f1"] },
+        plans: [
+          {
+            ingestSessions: [],
+            trials: ["Q1", "Q2", "Q3", "Q4"].map((question, index) => ({
+              taskId: `t${index + 1}`,
+              question,
+              expected: `answer:${question}`,
+              recallSessionIds: [],
+            })),
+          },
+        ],
       }),
-      metricsSpec: { metrics: ["f1"] },
-      plans: [{
-        ingestSessions: [],
-        trials: ["Q1", "Q2", "Q3", "Q4"].map((question, index) => ({
-          taskId: `t${index + 1}`,
-          question,
-          expected: `answer:${question}`,
-          recallSessionIds: [],
-        })),
-      }],
-    }),
     (error: unknown) =>
-      error instanceof BenchmarkRunBlockedError &&
-      error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired,
+      error instanceof BenchmarkRunBlockedError && error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired
   );
 
   assert.deepEqual(completedTaskIds, ["t1"]);
   assert.deepEqual(
     calls
-      .filter((call): call is { kind: "respond"; question: string } =>
-        call.kind === "respond"
-      )
+      .filter((call): call is { kind: "respond"; question: string } => call.kind === "respond")
       .map((call) => call.question.split("\n", 1)[0])
       .sort(),
-    ["Q1", "Q2", "Q3"],
+    ["Q1", "Q2", "Q3"]
   );
 });
 
@@ -815,17 +792,14 @@ test("runPublishedHarness emits only the prefix before the earliest of two concu
 
     if (taskQuestion === "Q3") {
       terminalOrder.push("t3");
-      throw new BenchmarkRunBlockedError(
-        BenchmarkRunBlockReason.ResourceLocked,
-        "later ordinal failed first",
-      );
+      throw new BenchmarkRunBlockedError(BenchmarkRunBlockReason.ResourceLocked, "later ordinal failed first");
     }
     if (taskQuestion === "Q2") {
       await new Promise((resolve) => setTimeout(resolve, 15));
       terminalOrder.push("t2");
       throw new BenchmarkRunBlockedError(
         BenchmarkRunBlockReason.ManualReconciliationRequired,
-        "earlier ordinal failed later",
+        "earlier ordinal failed later"
       );
     }
 
@@ -839,38 +813,39 @@ test("runPublishedHarness emits only the prefix before the earliest of two concu
   };
 
   await assert.rejects(
-    () => runPublishedHarness({
-      options: makeOptions(system, {
-        benchmarkOptions: { trialConcurrency: 3 },
-        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+    () =>
+      runPublishedHarness({
+        options: makeOptions(system, {
+          benchmarkOptions: { trialConcurrency: 3 },
+          onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+        }),
+        metricsSpec: { metrics: ["f1"] },
+        plans: [
+          {
+            ingestSessions: [],
+            trials: ["Q1", "Q2", "Q3", "Q4"].map((question, index) => ({
+              taskId: `t${index + 1}`,
+              question,
+              expected: `answer:${question}`,
+              recallSessionIds: [],
+            })),
+          },
+        ],
       }),
-      metricsSpec: { metrics: ["f1"] },
-      plans: [{
-        ingestSessions: [],
-        trials: ["Q1", "Q2", "Q3", "Q4"].map((question, index) => ({
-          taskId: `t${index + 1}`,
-          question,
-          expected: `answer:${question}`,
-          recallSessionIds: [],
-        })),
-      }],
-    }),
     (error: unknown) =>
       error instanceof BenchmarkRunBlockedError &&
       error.reason === BenchmarkRunBlockReason.ManualReconciliationRequired &&
-      error.message === "earlier ordinal failed later",
+      error.message === "earlier ordinal failed later"
   );
 
   assert.deepEqual(terminalOrder, ["t3", "t2"]);
   assert.deepEqual(completedTaskIds, ["t1"]);
   assert.deepEqual(
     calls
-      .filter((call): call is { kind: "respond"; question: string } =>
-        call.kind === "respond"
-      )
+      .filter((call): call is { kind: "respond"; question: string } => call.kind === "respond")
       .map((call) => call.question.split("\n", 1)[0])
       .sort(),
-    ["Q1", "Q2", "Q3"],
+    ["Q1", "Q2", "Q3"]
   );
 });
 
@@ -893,7 +868,7 @@ test("runPublishedHarness stops concurrent dequeue on a terminal binary judge er
     if (prompt.includes("Q2")) {
       throw new BenchmarkRunBlockedError(
         BenchmarkRunBlockReason.SpendHeadroomExhausted,
-        "binary judge credit headroom is exhausted",
+        "binary judge credit headroom is exhausted"
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -906,37 +881,37 @@ test("runPublishedHarness stops concurrent dequeue on a terminal binary judge er
   };
 
   await assert.rejects(
-    () => runPublishedHarness({
-      options: makeOptions(system, {
-        benchmarkOptions: { trialConcurrency: 2 },
-        onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+    () =>
+      runPublishedHarness({
+        options: makeOptions(system, {
+          benchmarkOptions: { trialConcurrency: 2 },
+          onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+        }),
+        metricsSpec: { metrics: ["llm_judge", "judge_accuracy"] },
+        plans: [
+          {
+            ingestSessions: [],
+            trials: ["Q1", "Q2", "Q3"].map((question, index) => ({
+              taskId: `t${index + 1}`,
+              question,
+              expected: `answer:${question}`,
+              recallSessionIds: [],
+              binaryJudgePrompt: () => `Official binary prompt for ${question}`,
+            })),
+          },
+        ],
       }),
-      metricsSpec: { metrics: ["llm_judge", "judge_accuracy"] },
-      plans: [{
-        ingestSessions: [],
-        trials: ["Q1", "Q2", "Q3"].map((question, index) => ({
-          taskId: `t${index + 1}`,
-          question,
-          expected: `answer:${question}`,
-          recallSessionIds: [],
-          binaryJudgePrompt: () => `Official binary prompt for ${question}`,
-        })),
-      }],
-    }),
     (error: unknown) =>
-      error instanceof BenchmarkRunBlockedError &&
-      error.reason === BenchmarkRunBlockReason.SpendHeadroomExhausted,
+      error instanceof BenchmarkRunBlockedError && error.reason === BenchmarkRunBlockReason.SpendHeadroomExhausted
   );
 
   assert.deepEqual(completedTaskIds, ["t1"]);
   assert.deepEqual(
     calls
-      .filter((call): call is { kind: "respond"; question: string } =>
-        call.kind === "respond"
-      )
+      .filter((call): call is { kind: "respond"; question: string } => call.kind === "respond")
       .map((call) => call.question.split("\n", 1)[0])
       .sort(),
-    ["Q1", "Q2"],
+    ["Q1", "Q2"]
   );
   assert.equal(calls.filter((call) => call.kind === "binaryJudge").length, 2);
 });
@@ -948,17 +923,14 @@ test("runPublishedHarness supports benchmark-owned binary judge prompts", async 
     metricsSpec: { metrics: ["llm_judge", "judge_accuracy"] },
     plans: [
       {
-        ingestSessions: [
-          { sessionId: "s", messages: [{ role: "user", content: "h" }] },
-        ],
+        ingestSessions: [{ sessionId: "s", messages: [{ role: "user", content: "h" }] }],
         trials: [
           {
             taskId: "binary-judge",
             question: "q",
             expected: "a",
             recallSessionIds: ["s"],
-            binaryJudgePrompt: ({ answeredText }) =>
-              `Official binary prompt\nMODEL_RESPONSE:\n${answeredText}`,
+            binaryJudgePrompt: ({ answeredText }) => `Official binary prompt\nMODEL_RESPONSE:\n${answeredText}`,
           },
         ],
       },
@@ -971,10 +943,7 @@ test("runPublishedHarness supports benchmark-owned binary judge prompts", async 
   const binaryJudgeCall = calls.find((call) => call.kind === "binaryJudge");
   assert.ok(binaryJudgeCall, "binary judge prompt should be used");
   assert.match(binaryJudgeCall.prompt, /^Official binary prompt\nMODEL_RESPONSE:\nanswer:/);
-  assert.ok(
-    !calls.some((call) => call.kind === "judge"),
-    "generic judge rubric should not be used",
-  );
+  assert.ok(!calls.some((call) => call.kind === "judge"), "generic judge rubric should not be used");
 });
 
 test("runPublishedHarness falls back when judge lacks binary prompt support", async () => {
@@ -986,9 +955,7 @@ test("runPublishedHarness falls back when judge lacks binary prompt support", as
     metricsSpec: { metrics: ["llm_judge", "judge_accuracy"] },
     plans: [
       {
-        ingestSessions: [
-          { sessionId: "s", messages: [{ role: "user", content: "h" }] },
-        ],
+        ingestSessions: [{ sessionId: "s", messages: [{ role: "user", content: "h" }] }],
         trials: [
           {
             taskId: "binary-judge-fallback",
@@ -1007,12 +974,9 @@ test("runPublishedHarness falls back when judge lacks binary prompt support", as
   assert.equal(task.scores.judge_accuracy, 0);
   assert.ok(
     calls.some((call) => call.kind === "judge"),
-    "generic judge rubric should be used as the compatibility fallback",
+    "generic judge rubric should be used as the compatibility fallback"
   );
-  assert.ok(
-    !calls.some((call) => call.kind === "binaryJudge"),
-    "binary judge should not be called when unavailable",
-  );
+  assert.ok(!calls.some((call) => call.kind === "binaryJudge"), "binary judge should not be called when unavailable");
 });
 
 test("runPublishedHarness is deterministic across repeated runs with same seed", async () => {
@@ -1070,7 +1034,7 @@ test("runPublishedHarness rejects unknown metric id", async () => {
         metricsSpec: { metrics: ["not-a-metric"] },
         plans: [],
       }),
-    /unknown metric/,
+    /unknown metric/
   );
 });
 
@@ -1083,7 +1047,7 @@ test("runPublishedHarness rejects negative or non-integer seed", async () => {
         metricsSpec: { metrics: ["f1"] },
         plans: [],
       }),
-    /seed must be a non-negative integer/,
+    /seed must be a non-negative integer/
   );
   await assert.rejects(
     () =>
@@ -1092,7 +1056,7 @@ test("runPublishedHarness rejects negative or non-integer seed", async () => {
         metricsSpec: { metrics: ["f1"] },
         plans: [],
       }),
-    /seed must be a non-negative integer/,
+    /seed must be a non-negative integer/
   );
 });
 
@@ -1110,9 +1074,7 @@ test("runPublishedHarness skips LLM judge when llm_judge is not in metrics spec"
     metricsSpec: { metrics: ["f1", "contains_answer"] }, // no llm_judge
     plans: [
       {
-        ingestSessions: [
-          { sessionId: "s", messages: [{ role: "user", content: "hi" }] },
-        ],
+        ingestSessions: [{ sessionId: "s", messages: [{ role: "user", content: "hi" }] }],
         trials: [
           {
             taskId: "no-judge-billing",
@@ -1130,10 +1092,7 @@ test("runPublishedHarness skips LLM judge when llm_judge is not in metrics spec"
   // Judge latency/tokens should NOT be folded into cost totals.
   assert.equal(result.cost.inputTokens, 1); // responder only
   assert.equal(result.cost.outputTokens, 2); // responder only
-  assert.ok(
-    !calls.some((call) => call.kind === "judge"),
-    "no judge call should have been made",
-  );
+  assert.ok(!calls.some((call) => call.kind === "judge"), "no judge call should have been made");
 });
 
 test("runPublishedHarness produces empty result for empty plans", async () => {
@@ -1173,12 +1132,11 @@ test("runPublishedHarness reuses an answer only for an identical paired input", 
   const pairedAnswerReplayCache = new Map();
   const plan: HarnessPlan = {
     ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
-    trials: [{ taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] }],
+    trials: [
+      { taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] },
+    ],
   };
-  const run = (
-    system: typeof baseline.system,
-    runtimeProfile: "baseline" | "real",
-  ) =>
+  const run = (system: typeof baseline.system, runtimeProfile: "baseline" | "real") =>
     runPublishedHarness({
       options: makeOptions(system, {
         pairedAnswerReplayCache,
@@ -1223,12 +1181,11 @@ test("runPublishedHarness never replays a real answer into baseline", async () =
   const pairedAnswerReplayCache = new Map();
   const plan: HarnessPlan = {
     ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
-    trials: [{ taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] }],
+    trials: [
+      { taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] },
+    ],
   };
-  const run = (
-    system: typeof baseline.system,
-    runtimeProfile: "baseline" | "real",
-  ) =>
+  const run = (system: typeof baseline.system, runtimeProfile: "baseline" | "real") =>
     runPublishedHarness({
       options: makeOptions(system, {
         pairedAnswerReplayCache,
@@ -1243,10 +1200,7 @@ test("runPublishedHarness never replays a real answer into baseline", async () =
 
   assert.equal(realResult.results.tasks[0]?.actual, "real answer");
   assert.equal(baselineResult.results.tasks[0]?.actual, "baseline answer");
-  assert.equal(
-    baselineResult.results.tasks[0]?.details?.pairedAnswerReusedFrom,
-    undefined,
-  );
+  assert.equal(baselineResult.results.tasks[0]?.details?.pairedAnswerReusedFrom, undefined);
   assert.equal(realResponds, 1);
   assert.equal(baselineResponds, 1);
 });
@@ -1277,13 +1231,11 @@ test("runPublishedHarness does not replay across different responder models", as
   const pairedAnswerReplayCache = new Map();
   const plan: HarnessPlan = {
     ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
-    trials: [{ taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] }],
+    trials: [
+      { taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] },
+    ],
   };
-  const run = (
-    system: typeof baseline.system,
-    runtimeProfile: "baseline" | "real",
-    model: string,
-  ) =>
+  const run = (system: typeof baseline.system, runtimeProfile: "baseline" | "real", model: string) =>
     runPublishedHarness({
       options: makeOptions(system, {
         pairedAnswerReplayCache,
@@ -1322,18 +1274,17 @@ test("runPublishedHarness does not replay a baseline fallback answer", async () 
   const pairedAnswerReplayCache = new Map();
   const plan: HarnessPlan = {
     ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
-    trials: [{
-      taskId: "paired",
-      question: "What happened?",
-      expected: "fallback answer",
-      recallSessionIds: ["session"],
-      answerFallback: () => "fallback answer",
-    }],
+    trials: [
+      {
+        taskId: "paired",
+        question: "What happened?",
+        expected: "fallback answer",
+        recallSessionIds: ["session"],
+        answerFallback: () => "fallback answer",
+      },
+    ],
   };
-  const run = (
-    system: typeof baseline.system,
-    runtimeProfile: "baseline" | "real",
-  ) =>
+  const run = (system: typeof baseline.system, runtimeProfile: "baseline" | "real") =>
     runPublishedHarness({
       options: makeOptions(system, {
         pairedAnswerReplayCache,
@@ -1388,12 +1339,11 @@ test("runPublishedHarness preserves a baseline replay answer across another prof
   const pairedAnswerReplayCache = new Map();
   const plan: HarnessPlan = {
     ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
-    trials: [{ taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] }],
+    trials: [
+      { taskId: "paired", question: "What happened?", expected: "baseline answer", recallSessionIds: ["session"] },
+    ],
   };
-  const run = (
-    system: typeof baseline.system,
-    runtimeProfile: "baseline" | "local-lab" | "real",
-  ) =>
+  const run = (system: typeof baseline.system, runtimeProfile: "baseline" | "local-lab" | "real") =>
     runPublishedHarness({
       options: makeOptions(system, {
         pairedAnswerReplayCache,
@@ -1458,10 +1408,7 @@ test("runPublishedHarness does not replay a baseline answer after a later trial 
       },
     ],
   };
-  const run = (
-    system: typeof baseline.system,
-    runtimeProfile: "baseline" | "real",
-  ) =>
+  const run = (system: typeof baseline.system, runtimeProfile: "baseline" | "real") =>
     runPublishedHarness({
       options: makeOptions(system, {
         pairedAnswerReplayCache,
