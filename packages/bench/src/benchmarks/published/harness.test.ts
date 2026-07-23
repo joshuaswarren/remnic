@@ -336,6 +336,54 @@ test("runPublishedHarness does not replay across different responder models", as
   assert.equal(realResponds, 1);
 });
 
+test("runPublishedHarness does not replay a baseline fallback answer", async () => {
+  const baseline = makeFakeSystem({ recallPrefix: "shared" });
+  const real = makeFakeSystem({ recallPrefix: "shared" });
+  baseline.system.responder.respond = async () => {
+    throw new Error("baseline responder unavailable");
+  };
+  let realResponds = 0;
+  real.system.responder.respond = async () => {
+    realResponds++;
+    return {
+      text: "real answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "shared-responder",
+    };
+  };
+  const pairedAnswerReplayCache = new Map();
+  const plan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
+    trials: [{
+      taskId: "paired",
+      question: "What happened?",
+      expected: "fallback answer",
+      recallSessionIds: ["session"],
+      answerFallback: () => "fallback answer",
+    }],
+  };
+  const run = (
+    system: typeof baseline.system,
+    runtimeProfile: "baseline" | "real",
+  ) =>
+    runPublishedHarness({
+      options: makeOptions(system, {
+        pairedAnswerReplayCache,
+        runtimeProfile,
+      }),
+      metricsSpec: { metrics: ["f1"] },
+      plans: [plan],
+    });
+
+  const baselineResult = await run(baseline.system, "baseline");
+  const realResult = await run(real.system, "real");
+
+  assert.equal(baselineResult.results.tasks[0]?.actual, "fallback answer");
+  assert.equal(realResult.results.tasks[0]?.actual, "real answer");
+  assert.equal(realResponds, 1);
+});
+
 test("runPublishedHarness rejects drain failure before scoring trials", async () => {
   const { system, calls } = makeFakeSystem();
   system.drain = async () => {
