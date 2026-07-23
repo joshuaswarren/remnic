@@ -392,3 +392,18 @@ test("activity smart mode writes recurring content on a different day (day-scope
   assert.equal(result.created, 1);
   assert.equal(writes.length, 1);
 });
+
+test("activity smart mode keeps the durable duplicate over a higher-confidence reject", async () => {
+  // Same content twice: a high-confidence reject vs a lower-confidence accept.
+  // The durable (accepted) copy must win even though the reject has higher raw trust.
+  const rejectHiConf: ActFact = { ...ownDecision, confidence: 0.99 };
+  const acceptLoConf: ActFact = { ...ownDecision, confidence: 0.72 };
+  const { deps, writes } = depsFor([rejectHiConf, acceptLoConf], { judgeVerdictByIndex: { 0: "reject", 1: "accept" } });
+  const result = await generateActivityMemories(DATE, "## Notable activity", {
+    ...defaultActivityConfig(), enabled: true, extractionMode: "smart", sourceTrust: 1, autoApproveTrust: 0.8,
+  }, deps);
+  assert.equal(result.created, 1);
+  assert.equal(result.rejectedByJudge, 0);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0]?.status, "active");
+});

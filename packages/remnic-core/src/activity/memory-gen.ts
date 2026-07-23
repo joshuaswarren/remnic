@@ -276,9 +276,17 @@ export async function generateActivityMemories(
     if (prev === undefined) {
       strongestByKey.set(key, scored);
     } else {
-      // In-run duplicate: keep whichever copy scores higher trust.
+      // In-run duplicate: keep the copy with the more durable decision (active >
+      // review > drop), breaking ties by trust — so a higher-confidence reject
+      // cannot crowd out a lower-trust accepted copy.
       result.skipped += 1;
-      if (trust > prev.trust) strongestByKey.set(key, scored);
+      const rankOf = (outcome: SmartDecision["outcome"]): number =>
+        outcome === "active" ? 2 : outcome === "review" ? 1 : 0;
+      const curRank = rankOf(scored.decision.outcome);
+      const prevRank = rankOf(prev.decision.outcome);
+      if (curRank > prevRank || (curRank === prevRank && trust > prev.trust)) {
+        strongestByKey.set(key, scored);
+      }
     }
   }
 

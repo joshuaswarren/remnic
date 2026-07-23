@@ -145,3 +145,7 @@ test("activity config rejects inverted trust thresholds", () => {
 test("activity config rejects a null extractionMode instead of silently defaulting to off", () => {
   assert.throws(() => parseActivityConfig({ extractionMode: null }), /extractionMode/);
 });
+
+test("activity config rejects a null maxMemoriesPerDay instead of silently uncapping", () => {
+  assert.throws(() => parseActivityConfig({ maxMemoriesPerDay: null }), /maxMemoriesPerDay/);
+});

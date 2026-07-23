@@ -154,7 +154,10 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
   if (typeof minImportance !== "string" || !IMPORTANCE_LEVELS.includes(minImportance as ImportanceLevel)) {
     throw new RangeError(`activity.minImportance must be one of: ${IMPORTANCE_LEVELS.join(", ")}`);
   }
-  const rawMaxMemoriesPerDay = config.maxMemoriesPerDay ?? defaults.maxMemoriesPerDay;
+  // Default only for a missing key; an explicit null/unparseable value must fail
+  // rather than silently uncapping (parity with the enum/unit-interval fields).
+  const rawMaxMemoriesPerDay =
+    config.maxMemoriesPerDay === undefined ? defaults.maxMemoriesPerDay : config.maxMemoriesPerDay;
   const maxMemoriesPerDay = coerceNumber(rawMaxMemoriesPerDay);
   if (maxMemoriesPerDay === undefined || !Number.isInteger(maxMemoriesPerDay) || maxMemoriesPerDay < 0) {
     throw new RangeError("activity.maxMemoriesPerDay must be a non-negative integer");
