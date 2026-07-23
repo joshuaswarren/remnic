@@ -40,7 +40,6 @@ test("FallbackLlmClient resolves built-in openai-codex provider from models.json
     "openai-codex": {
       baseUrl: "https://chatgpt.com/backend-api",
       api: "openai-codex-responses",
-      auth: "oauth",
       models: [],
     },
   });
@@ -55,7 +54,6 @@ test("FallbackLlmClient resolves anthropic provider from models.json with correc
     anthropic: {
       baseUrl: "https://api.anthropic.com",
       api: "anthropic-messages",
-      auth: "token",
       apiKey: "secretref-managed",
       models: [],
     },
@@ -82,7 +80,6 @@ test("FallbackLlmClient prefers explicit provider config over models.json", () =
     "openai-codex": {
       baseUrl: "https://chatgpt.com/backend-api",
       api: "openai-codex-responses",
-      auth: "oauth",
       models: [],
     },
   });
@@ -113,13 +110,11 @@ test("FallbackLlmClient builds mixed chain with explicit and models.json provide
     "openai-codex": {
       baseUrl: "https://chatgpt.com/backend-api",
       api: "openai-codex-responses",
-      auth: "oauth",
       models: [],
     },
     anthropic: {
       baseUrl: "https://api.anthropic.com",
       api: "anthropic-messages",
-      auth: "token",
       apiKey: "secretref-managed",
       models: [],
     },
@@ -180,7 +175,6 @@ test("FallbackLlmClient resolves models.json provider when config has no provide
     "openai-codex": {
       baseUrl: "https://chatgpt.com/backend-api",
       api: "openai-codex-responses",
-      auth: "oauth",
       models: [],
     },
   });
@@ -205,7 +199,6 @@ test("FallbackLlmClient chatCompletion attempts built-in provider and invokes tr
     "openai-codex": {
       baseUrl: "https://chatgpt.com/backend-api",
       api: "openai-codex-responses",
-      auth: "oauth",
       models: [],
     },
   });
@@ -215,9 +208,9 @@ test("FallbackLlmClient chatCompletion attempts built-in provider and invokes tr
 
   // Stub tryModel to verify it's called with the correct model ref
   // (without actually making HTTP calls)
-  let triedModel: { providerId: string; modelId: string; api?: string } | null = null;
+  const triedModelBox: { value: { providerId: string; modelId: string; api?: string } | null } = { value: null };
   (client as any).tryModel = async (model: any) => {
-    triedModel = {
+    triedModelBox.value = {
       providerId: model.providerId,
       modelId: model.modelId,
       api: model.providerConfig.api,
@@ -231,6 +224,7 @@ test("FallbackLlmClient chatCompletion attempts built-in provider and invokes tr
 
   assert.ok(result, "chatCompletion should return a result");
   assert.equal(result.modelUsed, "openai-codex/gpt-5.4");
+  const triedModel = triedModelBox.value;
   assert.ok(triedModel, "tryModel should have been called");
   assert.equal(triedModel!.providerId, "openai-codex");
   assert.equal(triedModel!.modelId, "gpt-5.4");

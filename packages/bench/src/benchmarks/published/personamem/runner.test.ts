@@ -60,7 +60,7 @@ test("PersonaMem normalizes tea category nouns when recall supports the phrase",
   const task = result.results.tasks[0]!;
   assert.equal(task.actual, "Earl Grey");
   assert.equal(task.scores.f1, 1);
-  assert.equal(task.details.originalAnsweredText, "Earl Grey tea.");
+  assert.equal(task.details?.originalAnsweredText, "Earl Grey tea.");
 });
 
 test("PersonaMem scores MCQ letters against option text for semantic metrics", async () => {
@@ -118,7 +118,7 @@ test("PersonaMem scores MCQ letters against option text for semantic metrics", a
   const task = result.results.tasks[1]!;
   assert.equal(task.expected, "jazz piano");
   assert.match(task.actual, /^[A-D]$/);
-  assert.equal(task.details.scoredAnswer, "jazz piano");
+  assert.equal(task.details?.scoredAnswer, "jazz piano");
   assert.equal(task.scores.mcq_accuracy, 1);
   assert.equal(task.scores.f1, 1);
   assert.equal(task.scores.contains_answer, 1);
@@ -172,7 +172,7 @@ test("PersonaMem scores MCQ option text answers as the matching option", async (
   const task = result.results.tasks[1]!;
   assert.equal(task.expected, "jazz piano");
   assert.equal(task.actual, "Final Answer: jazz piano");
-  assert.equal(task.details.scoredAnswer, "jazz piano");
+  assert.equal(task.details?.scoredAnswer, "jazz piano");
   assert.equal(task.scores.mcq_accuracy, 1);
   assert.equal(task.scores.llm_judge, 1);
 });
@@ -233,7 +233,7 @@ test("PersonaMem records drain failure before scoring calls", async () => {
   });
 
   const task = result.results.tasks[0]!;
-  assert.match(String(task.details.error), /personamem drain failed.*drain unavailable/);
+  assert.match(String(task.details?.error), /personamem drain failed.*drain unavailable/);
   assert.equal(recallCalls, 0);
   assert.equal(responderCalls, 0);
   assert.equal(judgeCalls, 0);

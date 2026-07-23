@@ -15,6 +15,7 @@ import {
   type SearchAgentSource,
 } from "../src/retrieval-agents.js";
 import type { QmdClient } from "../src/qmd.js";
+import type { QmdSearchResult } from "../src/types.js";
 
 // ─── shouldRunAgent ───────────────────────────────────────────────────────────
 
@@ -617,7 +618,7 @@ test("augmentWithDirectAndTemporal: populates snippet from file content for spec
   await writeFile(entityPath, "# Alice Smith\n\nAlice is the lead engineer.");
 
   // Contextual returns nothing — alice.md is only discovered by the direct agent
-  const contextual: Array<{ docid: string; path: string; snippet: string; score: number; transport: string }> = [];
+  const contextual: QmdSearchResult[] = [];
   const results = await augmentWithDirectAndTemporal("Alice project", tmpDir, contextual, DEFAULT_WEIGHTS, 10, 20);
 
   const r = results.find((x) => x.path === entityPath);

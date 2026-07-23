@@ -14,6 +14,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { purgeMemories, type PurgeMemoriesOptions } from "../../packages/remnic-core/src/maintenance/purge.js";
 import type { MemoryFile, MemoryFrontmatter } from "../../packages/remnic-core/src/types.js";
 import type { StorageManager } from "../../packages/remnic-core/src/storage.js";
+import type { SearchBackend } from "../../packages/remnic-core/src/search/port.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -33,9 +34,6 @@ function makeMemory(overrides: Partial<MemoryFrontmatter> & { filePath?: string 
   };
 }
 
-interface StubQmd {
-  updatedCollections: string[];
-}
 
 function makeStorageStub(
   memories: { hot?: MemoryFile[]; cold?: MemoryFile[]; archived?: MemoryFile[] } = {},
@@ -52,9 +50,8 @@ function makeStorageStub(
 }
 
 function makeQmdStub(): {
-  stub: StubQmd & {
-    updateCollection: (c: string) => Promise<void>;
-    updateCollectionStrict: (c: string, execution?: { signal?: AbortSignal }) => Promise<void>;
+  stub: SearchBackend & {
+    updatedCollections: string[];
     signals: Array<AbortSignal | undefined>;
   };
   updatedCollections: string[];
@@ -85,8 +82,6 @@ function makeQmdStub(): {
       embed: async () => {},
       embedCollection: async () => {},
       ensureCollection: async () => "present" as const,
-      updatedCollections,
-      signals,
     },
     updatedCollections,
     signals,

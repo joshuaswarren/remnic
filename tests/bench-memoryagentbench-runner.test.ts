@@ -106,13 +106,13 @@ test("runBenchmark executes memoryagentbench in quick mode through the phase-1 p
   assert.equal(typeof result.results.aggregates.f1?.mean, "number");
   assert.equal(typeof result.results.aggregates.contains_answer?.mean, "number");
   assert.equal(typeof result.results.aggregates.rouge_l?.mean, "number");
-  assert.equal(result.results.tasks[0]?.details.competency, "accurate_retrieval");
-  assert.equal(result.results.tasks[2]?.details.competency, "long_range_understanding");
+  assert.equal(result.results.tasks[0]?.details?.competency, "accurate_retrieval");
+  assert.equal(result.results.tasks[2]?.details?.competency, "long_range_understanding");
   assert.equal(
     result.results.tasks[3]?.actual.includes("The current project codename is Zephyr."),
     true,
   );
-  assert.deepEqual(result.results.tasks[0]?.details.answerVariants, [
+  assert.deepEqual(result.results.tasks[0]?.details?.answerVariants, [
     "the riverside market",
     "riverside market",
   ]);
@@ -164,9 +164,9 @@ test("runBenchmark executes memoryagentbench in full mode from split dataset fil
 
   assert.equal(result.results.tasks.length, 2);
   assert.equal(result.results.tasks[0]?.expected, "the cafe");
-  assert.equal(result.results.tasks[0]?.details.competency, "accurate_retrieval");
+  assert.equal(result.results.tasks[0]?.details?.competency, "accurate_retrieval");
   assert.equal(result.results.tasks[1]?.expected, "Aurora");
-  assert.equal(result.results.tasks[1]?.details.competency, "conflict_resolution");
+  assert.equal(result.results.tasks[1]?.details?.competency, "conflict_resolution");
 });
 
 test("runBenchmark maps current MemoryAgentBench source aliases like ruler_qa1_197K to accurate_retrieval", async () => {
@@ -201,8 +201,8 @@ test("runBenchmark maps current MemoryAgentBench source aliases like ruler_qa1_1
 
   assert.equal(result.results.tasks.length, 1);
   assert.equal(result.results.tasks[0]?.expected, "the cedar box");
-  assert.equal(result.results.tasks[0]?.details.competency, "accurate_retrieval");
-  assert.equal(result.results.tasks[0]?.details.source, "ruler_qa1_197K");
+  assert.equal(result.results.tasks[0]?.details?.competency, "accurate_retrieval");
+  assert.equal(result.results.tasks[0]?.details?.source, "ruler_qa1_197K");
 });
 
 test("runBenchmark maps broad MemoryAgentBench InfBench and Recsys source variants to official protocols", async () => {
@@ -261,9 +261,9 @@ test("runBenchmark maps broad MemoryAgentBench InfBench and Recsys source varian
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.officialProtocol, "infbench_sum");
+  assert.equal(result.results.tasks[0]?.details?.officialProtocol, "infbench_sum");
   assert.equal(result.results.tasks[0]?.actual, "brief summary");
-  assert.equal(result.results.tasks[1]?.details.officialProtocol, "recsys_redial");
+  assert.equal(result.results.tasks[1]?.details?.officialProtocol, "recsys_redial");
   assert.equal(result.results.tasks[1]?.scores.recsys_recall_at_1, 1);
 });
 
@@ -315,7 +315,7 @@ test("runBenchmark uses the best-matching MemoryAgentBench answer variant for ju
       "Notes:\\nThe team met for the quarterly roadmap review and wrote action items.",
     expected: "quarterly roadmap review",
   });
-  assert.equal(result.results.tasks[0]?.details.bestExpectedAnswer, "quarterly roadmap review");
+  assert.equal(result.results.tasks[0]?.details?.bestExpectedAnswer, "quarterly roadmap review");
   assert.equal(result.results.tasks[0]?.expected, "roadmap meeting");
   assert.equal(result.results.tasks[0]?.scores.llm_judge, 0.91);
   assert.equal(result.results.tasks[0]?.scores.f1 > 0, true);
@@ -411,8 +411,8 @@ test("runBenchmark retrieves MemoryAgentBench event/date cues from stored contex
   assert.match(String(task.actual), /riverside market/);
   assert.doesNotMatch(String(task.actual), /MemoryAgentBench visible anchors/);
   assert.doesNotMatch(adapter.recallCalls[0]?.query ?? "", /2099-01-01|hidden keypoint|hidden previous event/);
-  assert.equal(task.details.questionDate, "2099-01-01");
-  assert.deepEqual(task.details.keypoints, ["hidden keypoint"]);
+  assert.equal(task.details?.questionDate, "2099-01-01");
+  assert.deepEqual(task.details?.keypoints, ["hidden keypoint"]);
 });
 
 test("runBenchmark supports latest fact cues for MemoryAgentBench conflict resolution", async () => {
@@ -664,8 +664,8 @@ test("runBenchmark uses official MemoryAgentBench ICL prompts and label scoring"
   });
 
   assert.match(responderQuestions[0] ?? "", /Only output "label: \{label\}"/);
-  assert.equal(result.results.tasks[0]?.details.officialProtocol, "in_context_learning");
-  assert.equal(result.results.tasks[0]?.details.parsedOfficialAnswer, "28");
+  assert.equal(result.results.tasks[0]?.details?.officialProtocol, "in_context_learning");
+  assert.equal(result.results.tasks[0]?.details?.parsedOfficialAnswer, "28");
   assert.equal(result.results.tasks[0]?.scores.official_exact_match, 1);
   assert.equal(result.results.tasks[0]?.scores.official_f1, 1);
 });
@@ -708,7 +708,7 @@ test("runBenchmark parses the final explicit ICL label mention for official scor
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.parsedOfficialAnswer, "28");
+  assert.equal(result.results.tasks[0]?.details?.parsedOfficialAnswer, "28");
   assert.equal(result.results.tasks[0]?.scores.official_exact_match, 1);
 });
 
@@ -751,7 +751,7 @@ test("runBenchmark does not coerce trailing ICL reasoning text into a label", as
   });
 
   assert.equal(
-    result.results.tasks[0]?.details.parsedOfficialAnswer,
+    result.results.tasks[0]?.details?.parsedOfficialAnswer,
     "Earlier example label: 12\nI cannot determine",
   );
   assert.equal(result.results.tasks[0]?.scores.official_exact_match, 0);
@@ -796,7 +796,7 @@ test("runBenchmark preserves multiline official answers for MemoryAgentBench sco
   });
 
   assert.equal(
-    result.results.tasks[0]?.details.parsedOfficialAnswer,
+    result.results.tasks[0]?.details?.parsedOfficialAnswer,
     "red scarf\nblue hat",
   );
   assert.equal(result.results.tasks[0]?.scores.official_exact_match, 1);
@@ -840,7 +840,7 @@ test("runBenchmark parses the last Answer block for MemoryAgentBench official sc
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.parsedOfficialAnswer, "final answer");
+  assert.equal(result.results.tasks[0]?.details?.parsedOfficialAnswer, "final answer");
   assert.equal(result.results.tasks[0]?.scores.official_exact_match, 1);
 });
 
@@ -923,7 +923,7 @@ test("runBenchmark strips EventQA prompt prefix before official text scoring", a
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.parsedOfficialAnswer, "riverside market");
+  assert.equal(result.results.tasks[0]?.details?.parsedOfficialAnswer, "riverside market");
   assert.equal(result.results.tasks[0]?.scores.official_exact_match, 1);
   assert.equal(result.results.tasks[0]?.scores.official_f1, 1);
 });
@@ -1049,7 +1049,7 @@ test("runBenchmark does not load ReDial mappings for non-ReDial MemoryAgentBench
   });
 
   assert.equal(result.results.tasks.length, 1);
-  assert.equal(result.results.tasks[0]?.details.officialProtocol, "eventqa");
+  assert.equal(result.results.tasks[0]?.details?.officialProtocol, "eventqa");
 });
 
 test("runBenchmark scores ReDial recommendations with the official entity mapping when present", async () => {
@@ -1100,9 +1100,9 @@ test("runBenchmark scores ReDial recommendations with the official entity mappin
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.officialProtocol, "recsys_redial");
-  assert.equal(result.results.tasks[0]?.details.recsysScoringReady, true);
-  assert.deepEqual(result.results.tasks[0]?.details.recsysGroundTruthMovies, [
+  assert.equal(result.results.tasks[0]?.details?.officialProtocol, "recsys_redial");
+  assert.equal(result.results.tasks[0]?.details?.recsysScoringReady, true);
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysGroundTruthMovies, [
     "The Big Lebowski (1998)",
   ]);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 1);
@@ -1161,10 +1161,10 @@ test("runBenchmark prefers canonical ReDial mappings over loose entity2id fallba
   });
 
   assert.match(
-    String(result.results.tasks[0]?.details.recsysEntityMappingPath),
+    String(result.results.tasks[0]?.details?.recsysEntityMappingPath),
     /processed_data/,
   );
-  assert.deepEqual(result.results.tasks[0]?.details.recsysGroundTruthMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysGroundTruthMovies, [
     "The Big Lebowski (1998)",
   ]);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 1);
@@ -1215,10 +1215,10 @@ test("runBenchmark marks ReDial tasks not leaderboard-scorable when any answer I
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.recsysScoringReady, false);
+  assert.equal(result.results.tasks[0]?.details?.recsysScoringReady, false);
   assert.equal(result.results.tasks[0]?.scores.official_protocol_ready, 0);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, undefined);
-  assert.equal(result.results.tasks[0]?.details.recsysGroundTruthMovies, undefined);
+  assert.equal(result.results.tasks[0]?.details?.recsysGroundTruthMovies, undefined);
 });
 
 test("runBenchmark uses the raw MemoryAgentBench question for recall and the official prompt for response", async () => {
@@ -1324,7 +1324,7 @@ test("runBenchmark preserves comma-containing ReDial movie titles while parsing 
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, [
     "O Brother, Where Art Thou? (2000)",
   ]);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 1);
@@ -1378,7 +1378,7 @@ test("runBenchmark parses comma-separated ReDial recommendations as separate mov
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, [
     "The Big Lebowski (1998)",
     "Fargo (1996)",
   ]);
@@ -1434,7 +1434,7 @@ test("runBenchmark ignores unmatched ReDial preamble lines instead of nearest-ma
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, [
     "The Big Lebowski (1998)",
   ]);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 1);
@@ -1488,7 +1488,7 @@ test("runBenchmark matches yearless ReDial recommendations to year-bearing entit
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, [
     "The Big Lebowski (1998)",
     "Fargo (1996)",
   ]);
@@ -1541,7 +1541,7 @@ test("runBenchmark decodes URL escapes in ReDial entity movie names", async () =
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, [
     "Ocean's Eleven (2001)",
   ]);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 1);
@@ -1592,7 +1592,7 @@ test("runBenchmark preserves hyphens in ReDial entity movie names", async () => 
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, [
     "Spider-Man (2002)",
   ]);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 1);
@@ -1643,7 +1643,7 @@ test("runBenchmark matches short yearless ReDial movie titles", async () => {
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, [
     "Up (2009)",
   ]);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 1);
@@ -1698,7 +1698,7 @@ test("runBenchmark does not match short ReDial titles inside ordinary words", as
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, [
     "The Big Lebowski (1998)",
     "Fargo (1996)",
   ]);
@@ -1753,7 +1753,7 @@ test("runBenchmark ignores ambiguous yearless ReDial aliases for duplicate movie
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, []);
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, []);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 0);
 });
 
@@ -1805,7 +1805,7 @@ test("runBenchmark prefers the most specific overlapping ReDial movie title", as
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, [
     "The Matrix Revolutions (2003)",
   ]);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 1);
@@ -1859,7 +1859,7 @@ test("runBenchmark parses comma-separated short yearless ReDial titles", async (
     system: adapter,
   });
 
-  assert.deepEqual(result.results.tasks[0]?.details.recsysPredictedMovies, [
+  assert.deepEqual(result.results.tasks[0]?.details?.recsysPredictedMovies, [
     "Up (2009)",
     "Her (2013)",
   ]);
@@ -1974,7 +1974,7 @@ test("runBenchmark marks ReDial tasks not leaderboard-scorable when entity mappi
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.recsysScoringReady, false);
+  assert.equal(result.results.tasks[0]?.details?.recsysScoringReady, false);
   assert.equal(result.results.tasks[0]?.scores.official_protocol_ready, 0);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, undefined);
 });
@@ -2032,7 +2032,7 @@ test("runBenchmark keeps searching ReDial mapping candidates after a malformed f
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.recsysScoringReady, true);
+  assert.equal(result.results.tasks[0]?.details?.recsysScoringReady, true);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 1);
 });
 
@@ -2089,7 +2089,7 @@ test("runBenchmark skips empty ReDial mapping candidates before accepting a fall
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.recsysScoringReady, true);
+  assert.equal(result.results.tasks[0]?.details?.recsysScoringReady, true);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, 1);
 });
 
@@ -2131,7 +2131,7 @@ test("runBenchmark marks ReDial tasks not leaderboard-scorable when entity mappi
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.recsysScoringReady, false);
+  assert.equal(result.results.tasks[0]?.details?.recsysScoringReady, false);
   assert.equal(result.results.tasks[0]?.scores.official_protocol_ready, 0);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, undefined);
 });
@@ -2179,7 +2179,7 @@ test("runBenchmark does not use loose ReDial mapping files outside the dataset b
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.recsysScoringReady, false);
+  assert.equal(result.results.tasks[0]?.details?.recsysScoringReady, false);
   assert.equal(result.results.tasks[0]?.scores.official_protocol_ready, 0);
   assert.equal(result.results.tasks[0]?.scores.recsys_recall_at_1, undefined);
 });

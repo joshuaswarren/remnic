@@ -63,7 +63,7 @@ test("plugin register triggers the first-run Engram migration path", async () =>
     const { default: plugin } = await import("../src/index.js");
     plugin.register(buildApi() as any);
 
-    await (globalThis as Record<string, Promise<unknown>>).__openclawEngramMigrationPromise;
+    await (globalThis as typeof globalThis & Record<string, Promise<unknown>>).__openclawEngramMigrationPromise;
 
     assert.equal(
       existsSync(path.join(homeDir, ".remnic", ".migrated-from-engram")),

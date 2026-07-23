@@ -37,7 +37,7 @@ test("access idempotency store reloads forced refreshes when another writer pres
     await storeA.get("seed-key", "hash-seed");
 
     await storeB.put("shared-key", "hash-a", { accepted: true, memoryId: "fact-1" });
-    (storeA as AccessIdempotencyStore & { loadedMtimeMs: number }).loadedMtimeMs = (await stat(statePath)).mtimeMs;
+    (storeA as unknown as { loadedMtimeMs: number }).loadedMtimeMs = (await stat(statePath)).mtimeMs;
 
     const cachedRead = await storeA.get("shared-key", "hash-a");
     assert.equal(cachedRead.conflict, false);
@@ -74,11 +74,11 @@ test("access idempotency store serializes concurrent flushes so neither key is d
     const storeA = new AccessIdempotencyStore(memoryDir);
     const storeB = new AccessIdempotencyStore(memoryDir);
     const verifier = new AccessIdempotencyStore(memoryDir);
-    let releaseFirstWrite: (() => void) | null = null;
+    let releaseFirstWrite!: (() => void) | null;
     const firstWritePaused = new Promise<void>((resolve) => {
       releaseFirstWrite = resolve;
     });
-    let firstWriteEnteredResolve: (() => void) | null = null;
+    let firstWriteEnteredResolve!: (() => void) | null;
     const firstWriteEntered = new Promise<void>((resolve) => {
       firstWriteEnteredResolve = resolve;
     });
@@ -131,11 +131,11 @@ test("access idempotency store serializes concurrent writes on the same store in
   try {
     const store = new AccessIdempotencyStore(memoryDir);
     const verifier = new AccessIdempotencyStore(memoryDir);
-    let releaseFirstWrite: (() => void) | null = null;
+    let releaseFirstWrite!: (() => void) | null;
     const firstWritePaused = new Promise<void>((resolve) => {
       releaseFirstWrite = resolve;
     });
-    let firstWriteEnteredResolve: (() => void) | null = null;
+    let firstWriteEnteredResolve!: (() => void) | null;
     const firstWriteEntered = new Promise<void>((resolve) => {
       firstWriteEnteredResolve = resolve;
     });
@@ -188,11 +188,11 @@ test("access idempotency key locks stay live while the guarded callback is still
   try {
     const storeA = new AccessIdempotencyStore(memoryDir);
     const storeB = new AccessIdempotencyStore(memoryDir);
-    let releaseFirstCallback: (() => void) | null = null;
+    let releaseFirstCallback!: (() => void) | null;
     const firstCallbackPaused = new Promise<void>((resolve) => {
       releaseFirstCallback = resolve;
     });
-    let firstCallbackEnteredResolve: (() => void) | null = null;
+    let firstCallbackEnteredResolve!: (() => void) | null;
     const firstCallbackEntered = new Promise<void>((resolve) => {
       firstCallbackEnteredResolve = resolve;
     });
@@ -246,21 +246,21 @@ test("access idempotency stale lock cleanup does not delete a fresh contender lo
     const staleTime = new Date(Date.now() - 10_000);
     await utimes(lockPath, staleTime, staleTime);
 
-    let releaseFirstCleanup: (() => void) | null = null;
+    let releaseFirstCleanup!: (() => void) | null;
     const firstCleanupPaused = new Promise<void>((resolve) => {
       releaseFirstCleanup = resolve;
     });
-    let firstCleanupEnteredResolve: (() => void) | null = null;
+    let firstCleanupEnteredResolve!: (() => void) | null;
     const firstCleanupEntered = new Promise<void>((resolve) => {
       firstCleanupEnteredResolve = resolve;
     });
     let staleCleanupCalls = 0;
 
-    let releaseSecondCallback: (() => void) | null = null;
+    let releaseSecondCallback!: (() => void) | null;
     const secondCallbackPaused = new Promise<void>((resolve) => {
       releaseSecondCallback = resolve;
     });
-    let secondCallbackEnteredResolve: (() => void) | null = null;
+    let secondCallbackEnteredResolve!: (() => void) | null;
     const secondCallbackEntered = new Promise<void>((resolve) => {
       secondCallbackEnteredResolve = resolve;
     });
@@ -354,11 +354,11 @@ test("access idempotency store get waits for same-instance writes instead of clo
     const storeA = new AccessIdempotencyStore(memoryDir);
     const storeB = new AccessIdempotencyStore(memoryDir);
     const verifier = new AccessIdempotencyStore(memoryDir);
-    let releaseFirstWrite: (() => void) | null = null;
+    let releaseFirstWrite!: (() => void) | null;
     const firstWritePaused = new Promise<void>((resolve) => {
       releaseFirstWrite = resolve;
     });
-    let firstWriteEnteredResolve: (() => void) | null = null;
+    let firstWriteEnteredResolve!: (() => void) | null;
     const firstWriteEntered = new Promise<void>((resolve) => {
       firstWriteEnteredResolve = resolve;
     });

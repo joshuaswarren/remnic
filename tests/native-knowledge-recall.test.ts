@@ -169,6 +169,7 @@ test("native knowledge collection omits private curated include chunks from shar
     },
   });
 
+  assert.ok(cfg.nativeKnowledge);
   const chunks = await collectNativeKnowledgeChunks({
     workspaceDir,
     memoryDir,

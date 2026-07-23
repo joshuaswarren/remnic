@@ -415,8 +415,8 @@ test("runBenchmark executes membench in quick mode through the phase-1 package A
   assert.equal(typeof result.results.aggregates.contains_answer?.mean, "number");
   assert.equal(result.results.tasks[0]?.expected, "Lisbon");
   assert.equal(result.results.tasks[0]?.actual.includes("Lisbon"), true);
-  assert.equal(result.results.tasks[0]?.details.memoryType, "factual");
-  assert.equal(result.results.tasks[1]?.details.memoryType, "reflective");
+  assert.equal(result.results.tasks[0]?.details?.memoryType, "factual");
+  assert.equal(result.results.tasks[1]?.details?.memoryType, "reflective");
 });
 
 test("runBenchmark executes membench in full mode from an explicit dataset file", async () => {
@@ -438,9 +438,9 @@ test("runBenchmark executes membench in full mode from an explicit dataset file"
 
   assert.equal(result.results.tasks.length, 1);
   assert.equal(result.results.tasks[0]?.expected, "Lisbon");
-  assert.equal(result.results.tasks[0]?.details.scenario, "participant");
-  assert.deepEqual(result.results.tasks[0]?.details.targetStepCoordinates, [[0, 0]]);
-  assert.deepEqual(result.results.tasks[0]?.details.targetStepIds, [0]);
+  assert.equal(result.results.tasks[0]?.details?.scenario, "participant");
+  assert.deepEqual(result.results.tasks[0]?.details?.targetStepCoordinates, [[0, 0]]);
+  assert.deepEqual(result.results.tasks[0]?.details?.targetStepIds, [0]);
 });
 
 test("runBenchmark accepts upstream MemBench export filenames in full mode", async () => {
@@ -462,8 +462,8 @@ test("runBenchmark accepts upstream MemBench export filenames in full mode", asy
 
   assert.equal(result.results.tasks.length, 1);
   assert.equal(result.results.tasks[0]?.expected, "Lisbon");
-  assert.equal(result.results.tasks[0]?.details.memoryType, "factual");
-  assert.equal(result.results.tasks[0]?.details.scenario, "participant");
+  assert.equal(result.results.tasks[0]?.details?.memoryType, "factual");
+  assert.equal(result.results.tasks[0]?.details?.scenario, "participant");
 });
 
 test("runBenchmark rejects partial MemBench datasets when a recognized shard fails", async () => {
@@ -551,8 +551,8 @@ test("runBenchmark normalizes nested published MemBench trajectory and qa struct
   assert.equal(result.results.tasks.length, 1);
   assert.equal(result.results.tasks[0]?.expected, "Porto");
   assert.equal(result.results.tasks[0]?.question, "Which city did Avery move to last year?");
-  assert.equal(result.results.tasks[0]?.details.memoryType, "reflective");
-  assert.equal(result.results.tasks[0]?.details.scenario, "observation");
+  assert.equal(result.results.tasks[0]?.details?.memoryType, "reflective");
+  assert.equal(result.results.tasks[0]?.details?.scenario, "observation");
 });
 
 test("runBenchmark scores official MemBench multiple-choice accuracy and recall", async () => {
@@ -571,7 +571,7 @@ test("runBenchmark scores official MemBench multiple-choice accuracy and recall"
       turnIndex: 0,
       role: "user",
       snippet: "Avery moved to Porto last year to be closer to the river walk.",
-      sessionId,
+      sessionId: sessionId ?? "",
       score: 1,
     },
   ];
@@ -636,7 +636,7 @@ test("runBenchmark retrieves query-visible MemBench step cues without target id 
         turnIndex: 2,
         role: "user",
         snippet: "The later item was the green notebook.",
-        sessionId,
+        sessionId: sessionId ?? "",
         score: 1,
       },
     ];
@@ -749,7 +749,7 @@ test("runBenchmark maps singular and paired MemBench coordinate tuples without c
       turnIndex: 1,
       role: "assistant",
       snippet: "The blue mug choice is saved.",
-      sessionId,
+      sessionId: sessionId ?? "",
       score: 1,
     },
   ];

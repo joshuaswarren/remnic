@@ -73,12 +73,12 @@ test("extractWithDirectClient uses max_completion_tokens for gpt-5 chat completi
     }),
   ) as any;
 
-  let capturedBody: Record<string, unknown> | null = null;
+  const capturedBodyBox: { value: Record<string, unknown> | null } = { value: null };
   engine.client = {
     chat: {
       completions: {
         create: async (body: Record<string, unknown>) => {
-          capturedBody = body;
+          capturedBodyBox.value = body;
           return {
             choices: [
               {
@@ -101,6 +101,7 @@ test("extractWithDirectClient uses max_completion_tokens for gpt-5 chat completi
 
   const result = await engine.extractWithDirectClient("hello world");
   assert.ok(result);
+  const capturedBody = capturedBodyBox.value;
   assert.equal(capturedBody?.model, "gpt-5.5");
   assert.equal("max_completion_tokens" in (capturedBody ?? {}), true);
   assert.equal("max_tokens" in (capturedBody ?? {}), false);
@@ -117,12 +118,12 @@ test("extractWithDirectClient keeps max_tokens for custom chat-compatible base U
     }),
   ) as any;
 
-  let capturedBody: Record<string, unknown> | null = null;
+  const capturedBodyBox: { value: Record<string, unknown> | null } = { value: null };
   engine.client = {
     chat: {
       completions: {
         create: async (body: Record<string, unknown>) => {
-          capturedBody = body;
+          capturedBodyBox.value = body;
           return {
             choices: [
               {
@@ -145,6 +146,7 @@ test("extractWithDirectClient keeps max_tokens for custom chat-compatible base U
 
   const result = await engine.extractWithDirectClient("hello world");
   assert.ok(result);
+  const capturedBody = capturedBodyBox.value;
   assert.equal(capturedBody?.model, "gpt-5.5");
   assert.equal("max_completion_tokens" in (capturedBody ?? {}), false);
   assert.equal("max_tokens" in (capturedBody ?? {}), true);
@@ -173,9 +175,9 @@ test("fallback OpenAI client uses max_completion_tokens for gpt-5 providers", as
 
   const client = new FallbackLlmClient(gatewayConfig);
   const originalFetch = globalThis.fetch;
-  let requestBody: Record<string, unknown> | null = null;
+  const requestBodyBox: { value: Record<string, unknown> | null } = { value: null };
   globalThis.fetch = (async (_input, init) => {
-    requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    requestBodyBox.value = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     return new Response(
       JSON.stringify({
         choices: [{ message: { content: "{\"ok\":true}" } }],
@@ -192,6 +194,7 @@ test("fallback OpenAI client uses max_completion_tokens for gpt-5 providers", as
       maxTokens: 1234,
     });
     assert.ok(response);
+    const requestBody = requestBodyBox.value;
     assert.equal(requestBody?.model, "gpt-5.5");
     assert.equal(requestBody?.max_completion_tokens, 1234);
     assert.equal("max_tokens" in (requestBody ?? {}), false);
@@ -224,9 +227,9 @@ test("fallback OpenAI client uses max_completion_tokens for gpt-4o providers", a
 
   const client = new FallbackLlmClient(gatewayConfig);
   const originalFetch = globalThis.fetch;
-  let requestBody: Record<string, unknown> | null = null;
+  const requestBodyBox: { value: Record<string, unknown> | null } = { value: null };
   globalThis.fetch = (async (_input, init) => {
-    requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    requestBodyBox.value = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     return new Response(
       JSON.stringify({
         choices: [{ message: { content: "{\"ok\":true}" } }],
@@ -243,6 +246,7 @@ test("fallback OpenAI client uses max_completion_tokens for gpt-4o providers", a
       maxTokens: 512,
     });
     assert.ok(response);
+    const requestBody = requestBodyBox.value;
     assert.equal(requestBody?.model, "gpt-4o-mini");
     assert.equal(requestBody?.max_completion_tokens, 512);
     assert.equal("max_tokens" in (requestBody ?? {}), false);
@@ -274,9 +278,9 @@ test("fallback OpenAI client keeps max_tokens for custom base URLs", async () =>
 
   const client = new FallbackLlmClient(gatewayConfig);
   const originalFetch = globalThis.fetch;
-  let requestBody: Record<string, unknown> | null = null;
+  const requestBodyBox: { value: Record<string, unknown> | null } = { value: null };
   globalThis.fetch = (async (_input, init) => {
-    requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    requestBodyBox.value = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     return new Response(
       JSON.stringify({
         choices: [{ message: { content: "{\"ok\":true}" } }],
@@ -293,6 +297,7 @@ test("fallback OpenAI client keeps max_tokens for custom base URLs", async () =>
       maxTokens: 256,
     });
     assert.ok(response);
+    const requestBody = requestBodyBox.value;
     assert.equal(requestBody?.model, "gpt-5.5");
     assert.equal(requestBody?.max_tokens, 256);
     assert.equal("max_completion_tokens" in (requestBody ?? {}), false);

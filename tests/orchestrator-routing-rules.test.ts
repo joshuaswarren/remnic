@@ -131,7 +131,6 @@ test("persistExtraction applies routing rule category+namespace targets", async 
     relationships: [],
     questions: [],
     profileUpdates: [],
-    observations: [],
   };
 
   const { persistedIds: persisted } = await orchestrator.persistExtraction(result, defaultStorage, null);
@@ -179,7 +178,6 @@ test("persistExtraction preserves index bootstrap when no memory IDs are persist
     relationships: [],
     questions: [],
     profileUpdates: ["user prefers terse summaries"],
-    observations: [],
   };
 
   const { persistedIds: persisted } = await orchestrator.persistExtraction(result, storage, null);

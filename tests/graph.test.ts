@@ -94,6 +94,11 @@ describe("GraphIndex.onMemoryWritten", () => {
     maxGraphTraversalSteps: 3,
     graphActivationDecay: 0.7,
     maxEntityGraphEdgesPerMemory: 10,
+    graphLateralInhibitionEnabled: false,
+    graphLateralInhibitionBeta: 0,
+    graphLateralInhibitionTopM: 0,
+    graphTraversalConfidenceFloor: 0.2,
+    graphTraversalPageRankIterations: 0,
   };
 
   it("writes entity edges for entityRef siblings", async () => {
@@ -182,6 +187,11 @@ describe("GraphIndex.spreadingActivation", () => {
     maxGraphTraversalSteps: 3,
     graphActivationDecay: 0.7,
     maxEntityGraphEdgesPerMemory: 10,
+    graphLateralInhibitionEnabled: false,
+    graphLateralInhibitionBeta: 0,
+    graphLateralInhibitionTopM: 0,
+    graphTraversalConfidenceFloor: 0.2,
+    graphTraversalPageRankIterations: 0,
   };
 
   it("returns hop-1 neighbors with decay applied", async () => {
@@ -596,6 +606,11 @@ describe("Integration: multiGraphMemoryEnabled=false baseline", () => {
         maxGraphTraversalSteps: 3,
         graphActivationDecay: 0.7,
         maxEntityGraphEdgesPerMemory: 10,
+        graphLateralInhibitionEnabled: false,
+        graphLateralInhibitionBeta: 0,
+        graphLateralInhibitionTopM: 0,
+        graphTraversalConfidenceFloor: 0.2,
+        graphTraversalPageRankIterations: 0,
       };
       const gi = new GraphIndex(dir, cfg);
       await gi.onMemoryWritten({
@@ -648,6 +663,11 @@ describe("Integration: corrupt JSONL fail-open", () => {
         maxGraphTraversalSteps: 3,
         graphActivationDecay: 0.7,
         maxEntityGraphEdgesPerMemory: 10,
+        graphLateralInhibitionEnabled: false,
+        graphLateralInhibitionBeta: 0,
+        graphLateralInhibitionTopM: 0,
+        graphTraversalConfidenceFloor: 0.2,
+        graphTraversalPageRankIterations: 0,
       };
       await mkdir(path.join(dir, "state", "graphs"), { recursive: true });
       await writeFile(path.join(dir, "state", "graphs", "entity.jsonl"), "NOT JSON\nALSO NOT JSON\n");

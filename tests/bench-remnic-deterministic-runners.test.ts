@@ -218,7 +218,7 @@ test("runBenchmark records adapter-returned page order for full retrieval-tempor
   assert.ok(task);
   assert.equal(task.scores.qrel_at_1, 1);
   assert.deepEqual(
-    task.details?.retrievedPageIds?.slice(0, 2),
+    (task.details?.retrievedPageIds as string[] | undefined)?.slice(0, 2),
     ["morgan-q3-training-plan", "morgan-coffee-preferences"],
   );
 });

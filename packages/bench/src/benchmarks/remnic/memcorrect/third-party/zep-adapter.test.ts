@@ -190,7 +190,8 @@ test("zep: assistant role maps to assistant role_type", async () => {
   const adapter = new ZepMemCorrectAdapter({ apiKey: "k", fetch: ff.fetch });
   await adapter.ingestTurn("s1", "assistant", "Sure thing!", "2026-07-07T00:00:00Z");
   ff.assertRequest("POST", "/memory", (req) => {
-    assert.equal(req.body.messages[0].role_type, "assistant");
+    const body = req.body as { messages: Array<{ role_type: string }> };
+    assert.equal(body.messages[0]?.role_type, "assistant");
   });
 });
 

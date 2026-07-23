@@ -435,9 +435,11 @@ test("operator doctor surfaces native knowledge sync state counts", async () => 
       },
     },
   });
+  const nativeKnowledge = fixture.config.nativeKnowledge;
+  assert(nativeKnowledge, "expected nativeKnowledge config");
 
-  const obsidianStatePath = resolveNativeKnowledgeStatePath(fixture.memoryDir, fixture.config.nativeKnowledge);
-  const curatedStatePath = resolveCuratedIncludeFilesStatePath(fixture.memoryDir, fixture.config.nativeKnowledge);
+  const obsidianStatePath = resolveNativeKnowledgeStatePath(fixture.memoryDir, nativeKnowledge);
+  const curatedStatePath = resolveCuratedIncludeFilesStatePath(fixture.memoryDir, nativeKnowledge);
   await mkdir(path.dirname(curatedStatePath), { recursive: true });
   await writeFile(curatedStatePath, JSON.stringify({
     version: 1,
@@ -463,7 +465,7 @@ test("operator doctor surfaces native knowledge sync state counts", async () => 
     },
   }, null, 2), "utf-8");
 
-  const openclawStatePath = resolveOpenClawWorkspaceStatePath(fixture.memoryDir, fixture.config.nativeKnowledge);
+  const openclawStatePath = resolveOpenClawWorkspaceStatePath(fixture.memoryDir, nativeKnowledge);
   await writeFile(openclawStatePath, JSON.stringify({
     version: 1,
     updatedAt: "2026-03-10T10:05:00.000Z",
@@ -531,9 +533,11 @@ test("operator inventory includes native knowledge sync counts", async () => {
       },
     },
   });
+  const nativeKnowledge = fixture.config.nativeKnowledge;
+  assert(nativeKnowledge, "expected nativeKnowledge config");
 
-  const openclawStatePath = resolveOpenClawWorkspaceStatePath(fixture.memoryDir, fixture.config.nativeKnowledge);
-  const curatedStatePath = resolveCuratedIncludeFilesStatePath(fixture.memoryDir, fixture.config.nativeKnowledge);
+  const openclawStatePath = resolveOpenClawWorkspaceStatePath(fixture.memoryDir, nativeKnowledge);
+  const curatedStatePath = resolveCuratedIncludeFilesStatePath(fixture.memoryDir, nativeKnowledge);
   await mkdir(path.dirname(openclawStatePath), { recursive: true });
   await writeFile(curatedStatePath, JSON.stringify({
     version: 1,

@@ -209,6 +209,7 @@ test("session repair reports remove_checkpoint failures except ENOENT", async ()
   const result = await applySessionRepair({
     plan: {
       generatedAt: new Date().toISOString(),
+      memoryDir,
       dryRun: false,
       allowSessionFileRepair: false,
       actions: [

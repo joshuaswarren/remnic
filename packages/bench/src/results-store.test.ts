@@ -28,7 +28,7 @@ test("loadBenchmarkResult rejects files missing required BenchmarkResult meta fi
 });
 
 test("loadBenchmarkResult rejects files missing required cost fields", async () => {
-  const result = validResult() as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...validResult() };
   result.cost = {
     inputTokens: 0,
     outputTokens: 0,

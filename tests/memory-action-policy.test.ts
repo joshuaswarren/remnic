@@ -272,7 +272,7 @@ test("appendMemoryActionEvent persists rich rejection records for policy-denied 
     const events = await storage.readMemoryActionEvents(1);
     assert.equal(events.length, 1);
 
-    const record = events[0] as Record<string, unknown>;
+    const record = events[0];
     assert.equal(typeof record.actionId, "string");
     assert.notEqual((record.actionId as string).length, 0);
     assert.equal(record.actor, "tool.memory_action_apply");

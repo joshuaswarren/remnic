@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { PluginConfig } from "../src/types.js";
+import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 
 function tmpDir(prefix: string): string {
@@ -12,7 +13,7 @@ function tmpDir(prefix: string): string {
 }
 
 function baseConfig(memoryDir: string): PluginConfig {
-  return {
+  return parseConfig({
     openaiApiKey: undefined,
     model: "gpt-5.5",
     reasoningEffort: "low",
@@ -152,7 +153,7 @@ function baseConfig(memoryDir: string): PluginConfig {
     verbatimArtifactsMinConfidence: 0.8,
     verbatimArtifactCategories: ["decision", "commitment", "correction", "principle"],
     verbatimArtifactsMaxRecall: 5,
-  };
+  });
 }
 
 test("recallInternal short-circuits no_recall before preamble reads", async () => {

@@ -7,7 +7,7 @@ function mockOllamaFetch(responseBody: Record<string, unknown>) {
   const originalFetch = globalThis.fetch;
   const requests: Array<{ url: string; headers: Record<string, string>; body: unknown }> = [];
   globalThis.fetch = async (url, init) => {
-    const headers = new Headers(init?.headers as HeadersInit | undefined);
+    const headers = new Headers(init?.headers);
     requests.push({
       url: String(url),
       headers: Object.fromEntries(headers.entries()),

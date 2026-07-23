@@ -6,6 +6,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { StorageManager } from "../src/storage.js";
 import { TierMigrationExecutor } from "../src/tier-migration.js";
 import type { MemoryFile } from "../src/types.js";
+import type { SearchBackend } from "../src/search/port.js";
 
 type QmdCallLog = {
   updates: string[]; updateDirs?: Array<{ collection: string; memoryDir: string }>;
@@ -67,13 +68,42 @@ async function createHotFactWithParityFields(storage: StorageManager): Promise<M
   return updated!;
 }
 
-function createQmdStub(logs: QmdCallLog) {
+function createQmdStub(logs: QmdCallLog): SearchBackend {
   return {
+    async probe(): Promise<boolean> {
+      return true;
+    },
+    isAvailable(): boolean {
+      return true;
+    },
+    debugStatus(): string {
+      return "tier-migration-qmd-stub";
+    },
+    async search(): Promise<never[]> {
+      return [];
+    },
+    async searchGlobal(): Promise<never[]> {
+      return [];
+    },
+    async bm25Search(): Promise<never[]> {
+      return [];
+    },
+    async vectorSearch(): Promise<never[]> {
+      return [];
+    },
+    async hybridSearch(): Promise<never[]> {
+      return [];
+    },
+    async update(): Promise<void> {},
     async updateCollection(collection: string): Promise<void> {
       logs.updates.push(collection);
     },
+    async embed(): Promise<void> {},
     async embedCollection(collection: string): Promise<void> {
       logs.embeds.push(collection);
+    },
+    async ensureCollection(): Promise<"present"> {
+      return "present";
     },
   };
 }

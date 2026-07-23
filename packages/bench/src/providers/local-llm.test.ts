@@ -152,7 +152,7 @@ test("local-llm provider forwards Authorization header when apiKey is set", asyn
   let seenAuth: string | null = null;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
-    const headers = new Headers(init?.headers as HeadersInit | undefined);
+    const headers = new Headers(init?.headers);
     seenAuth = headers.get("authorization");
     return new Response(
       JSON.stringify({

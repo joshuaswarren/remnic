@@ -59,7 +59,7 @@ function makeMemory(
     frontmatter: {
       id,
       category: (opts.category ?? "fact") as MemoryFile["frontmatter"]["category"],
-      status: opts.status ?? "active",
+      status: (opts.status ?? "active") as MemoryFile["frontmatter"]["status"],
       ...(opts.reinforcementCount !== undefined
         ? { reinforcement_count: opts.reinforcementCount }
         : {}),
@@ -75,9 +75,15 @@ function makeMemory(
       ...(opts.derivedFrom !== undefined
         ? { derived_from: opts.derivedFrom }
         : {}),
-      ...(opts.derivedVia !== undefined ? { derived_via: opts.derivedVia } : {}),
-      created_at: "2026-01-01T00:00:00.000Z",
-      updated_at: "2026-01-01T00:00:00.000Z",
+      ...(opts.derivedVia !== undefined
+        ? { derived_via: opts.derivedVia as MemoryFile["frontmatter"]["derived_via"] }
+        : {}),
+      created: "2026-01-01T00:00:00.000Z",
+      updated: "2026-01-01T00:00:00.000Z",
+      source: "test",
+      confidence: 0.9,
+      confidenceTier: "explicit",
+      tags: [],
     } as MemoryFile["frontmatter"],
     content: opts.content ?? `Content for ${id}`,
   };

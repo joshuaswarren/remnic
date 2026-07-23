@@ -19,7 +19,7 @@ function createFakeService(): EngramAccessService {
       nativeKnowledgeEnabled: false,
       projectionAvailable: true,
     }),
-    recall: async ({ query, sessionKey }) => ({
+    recall: async ({ query, sessionKey }: Parameters<EngramAccessService["recall"]>[0]) => ({
       query,
       sessionKey,
       namespace: "global",
@@ -50,7 +50,7 @@ function createFakeService(): EngramAccessService {
       },
       latencyMs: 12,
     }),
-    recallExplain: async ({ sessionKey }) => ({
+    recallExplain: async ({ sessionKey }: NonNullable<Parameters<EngramAccessService["recallExplain"]>[0]>) => ({
       found: true,
       snapshot: {
         sessionKey: sessionKey ?? "default",
@@ -62,7 +62,7 @@ function createFakeService(): EngramAccessService {
       intent: null,
       graph: null,
     }),
-    memoryGet: async (memoryId) => ({
+    memoryGet: async (memoryId: Parameters<EngramAccessService["memoryGet"]>[0]) => ({
       found: true,
       namespace: "global",
       memory: {
@@ -82,7 +82,7 @@ function createFakeService(): EngramAccessService {
         },
       },
     }),
-    memoryTimeline: async (memoryId, _namespace, limit) => ({
+    memoryTimeline: async (memoryId: Parameters<EngramAccessService["memoryTimeline"]>[0], _namespace: Parameters<EngramAccessService["memoryTimeline"]>[1], limit: Parameters<EngramAccessService["memoryTimeline"]>[2]) => ({
       found: true,
       namespace: "global",
       count: 1,
@@ -134,7 +134,7 @@ function createFakeService(): EngramAccessService {
         },
       ],
     }),
-    entityGet: async (name) => ({
+    entityGet: async (name: Parameters<EngramAccessService["entityGet"]>[0]) => ({
       found: true,
       namespace: "global",
       entity: {
@@ -296,7 +296,7 @@ function createFakeService(): EngramAccessService {
         },
       ],
     }),
-    trustZonePromote: async ({ recordId, targetZone, dryRun }) => ({
+    trustZonePromote: async ({ recordId, targetZone, dryRun }: Parameters<EngramAccessService["trustZonePromote"]>[0]) => ({
       namespace: "global",
       dryRun: dryRun === true,
       plan: {
@@ -340,7 +340,7 @@ function createFakeService(): EngramAccessService {
       filePath:
         dryRun === true ? undefined : "/tmp/engram/state/trust-zones/zones/trusted/2026-03-08/tz-1-trusted.json",
     }),
-    trustZoneDemoSeed: async ({ dryRun }) => ({
+    trustZoneDemoSeed: async ({ dryRun }: Parameters<EngramAccessService["trustZoneDemoSeed"]>[0]) => ({
       namespace: "global",
       scenario: "enterprise-buyer-v1",
       dryRun: dryRun === true,
@@ -361,7 +361,7 @@ function createFakeService(): EngramAccessService {
       ],
       filePaths: dryRun === true ? [] : ["/tmp/engram/state/trust-zones/zones/quarantine/2026-03-08/tz-demo-1.json"],
     }),
-    reviewDisposition: async ({ memoryId, status }) => ({
+    reviewDisposition: async ({ memoryId, status }: Parameters<EngramAccessService["reviewDisposition"]>[0]) => ({
       ok: true,
       namespace: "global",
       memoryId,
@@ -407,7 +407,7 @@ function createFakeService(): EngramAccessService {
         recallMaxProcedures: 2,
       },
     }),
-    capsuleExport: async ({ name }) => ({
+    capsuleExport: async ({ name }: Parameters<EngramAccessService["capsuleExport"]>[0]) => ({
       archivePath: `/tmp/engram/.capsules/${name}.capsule.json.gz`,
       manifestPath: `/tmp/engram/.capsules/${name}.manifest.json`,
       encryptedArchivePath: null,
@@ -437,7 +437,7 @@ function createFakeService(): EngramAccessService {
         },
       },
     }),
-    capsuleImport: async ({ archivePath, mode }) => ({
+    capsuleImport: async ({ archivePath, mode }: Parameters<EngramAccessService["capsuleImport"]>[0]) => ({
       imported: [
         {
           sourcePath: "facts/2026-04-28/fact-a.md",
@@ -2325,6 +2325,7 @@ test("access HTTP MCP calls default to adapter namespace and session key", async
       plannerMode: "full",
       fallbackUsed: false,
       sourcesUsed: [],
+      disclosure: "chunk",
       budgetsApplied: {
         appliedTopK: 0,
         recallBudgetChars: 8000,

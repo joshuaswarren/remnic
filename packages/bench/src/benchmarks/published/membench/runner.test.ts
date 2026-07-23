@@ -147,7 +147,7 @@ test("MemBench adds recommendation cues without exposing them to answer context"
     assert.match(recallQueries[0] ?? "", /exact recommendation/);
     assert.equal(task.scores.membench_accuracy, 1);
     assert.equal(task.scores.f1, 1);
-    assert.equal(task.details.predictedAnswer, "hojicha");
+    assert.equal(task.details?.predictedAnswer, "hojicha");
   } finally {
     await rm(datasetDir, { recursive: true, force: true });
   }
@@ -223,9 +223,9 @@ test("MemBench normalizes upstream JSONL trajectory QA records", async () => {
     const task = result.results.tasks[0]!;
     assert.equal(task.question, "Where did I move?");
     assert.equal(task.expected, "Lisbon");
-    assert.equal(task.details.memoryType, "factual");
-    assert.equal(task.details.scenario, "participant");
-    assert.equal(task.details.level, "low_level");
+    assert.equal(task.details?.memoryType, "factual");
+    assert.equal(task.details?.scenario, "participant");
+    assert.equal(task.details?.level, "low_level");
     assert.match(storedMessages.join("\n"), /I moved to Lisbon/);
     assert.equal(task.scores.membench_accuracy, 1);
   } finally {
@@ -299,8 +299,8 @@ test("MemBench scores direct multiple-choice recall without a responder", async 
 
     const task = result.results.tasks[0]!;
     assert.equal(task.actual, "A");
-    assert.equal(task.details.predictedChoice, "A");
-    assert.equal(task.details.predictedAnswer, "blue folder");
+    assert.equal(task.details?.predictedChoice, "A");
+    assert.equal(task.details?.predictedAnswer, "blue folder");
     assert.equal(task.scores.membench_accuracy, 1);
   } finally {
     await rm(datasetDir, { recursive: true, force: true });
@@ -373,8 +373,8 @@ test("MemBench matches multiple-choice option text without treating prose articl
 
     const task = result.results.tasks[0]!;
     assert.equal(task.actual, "B");
-    assert.equal(task.details.predictedChoice, "B");
-    assert.equal(task.details.predictedAnswer, "blue folder");
+    assert.equal(task.details?.predictedChoice, "B");
+    assert.equal(task.details?.predictedAnswer, "blue folder");
     assert.equal(task.scores.membench_accuracy, 1);
   } finally {
     await rm(datasetDir, { recursive: true, force: true });

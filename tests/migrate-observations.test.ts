@@ -185,12 +185,13 @@ test("backupAndWriteRebuiltObservations keeps active ledger unchanged when repla
           },
         ],
         now,
-        atomicWrite: async (filePath, content) => {
+        atomicWrite: async (filePath, content): Promise<string | undefined> => {
           if (filePath === outputPath) {
             throw new Error("simulated replacement failure");
           }
           await mkdir(path.dirname(filePath), { recursive: true });
           await writeFile(filePath, content, "utf-8");
+          return undefined;
         },
       }),
     /simulated replacement failure/,

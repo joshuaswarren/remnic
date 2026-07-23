@@ -156,7 +156,7 @@ test("fetchQmdMemoryResultsWithArtifactTopUp merges advisory query-aware seeds w
   );
 
   let backendCalls = 0;
-  const byId = new Map(memories.map((memory: any) => [memory.frontmatter.id, memory]));
+  const byId = new Map<string, any>(memories.map((memory: any) => [memory.frontmatter.id, memory]));
   (orchestrator as any).qmd = {
     isAvailable: () => true,
     debugStatus: () => "available",
@@ -190,8 +190,8 @@ test("fetchQmdMemoryResultsWithArtifactTopUp merges advisory query-aware seeds w
 
   assert.equal(backendCalls, 2);
   assert.equal(results.length, 2);
-  assert.ok(results.some((result) => new RegExp(infraId).test(result.path)));
-  assert.ok(results.some((result) => new RegExp(marketingId).test(result.path)));
+  assert.ok(results.some((result: { path: string }) => new RegExp(infraId).test(result.path)));
+  assert.ok(results.some((result: { path: string }) => new RegExp(marketingId).test(result.path)));
 });
 
 test("temporal query-aware seeds survive alongside backend results", async () => {
@@ -224,7 +224,7 @@ test("temporal query-aware seeds survive alongside backend results", async () =>
     })),
   );
 
-  const byId = new Map(memories.map((memory: any) => [memory.frontmatter.id, memory]));
+  const byId = new Map<string, any>(memories.map((memory: any) => [memory.frontmatter.id, memory]));
   let backendCalls = 0;
   (orchestrator as any).qmd = {
     isAvailable: () => true,
@@ -258,8 +258,8 @@ test("temporal query-aware seeds survive alongside backend results", async () =>
   );
 
   assert.equal(backendCalls, 2);
-  assert.ok(results.some((result) => new RegExp(recentId).test(result.path)));
-  assert.ok(results.some((result) => new RegExp(olderId).test(result.path)));
+  assert.ok(results.some((result: { path: string }) => new RegExp(recentId).test(result.path)));
+  assert.ok(results.some((result: { path: string }) => new RegExp(olderId).test(result.path)));
 });
 
 test("recallInternal applies query-aware prefilter parity to embedding fallback results", async () => {
@@ -290,7 +290,7 @@ test("recallInternal applies query-aware prefilter parity to embedding fallback 
     })),
   );
 
-  const byId = new Map(memories.map((memory: any) => [memory.frontmatter.id, memory]));
+  const byId = new Map<string, any>(memories.map((memory: any) => [memory.frontmatter.id, memory]));
   (orchestrator as any).embeddingFallback = {
     isAvailable: async () => true,
     search: async () => [

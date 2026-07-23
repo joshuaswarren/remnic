@@ -13,6 +13,7 @@ import {
   shouldSkipImplicitExtraction,
   stripInlineExplicitCaptureNotes,
   validateExplicitCaptureInput,
+  type ExplicitCaptureInput,
 } from "../src/explicit-capture.js";
 import { ContentHashIndex } from "../src/storage.js";
 import { Orchestrator } from "../src/orchestrator.js";
@@ -121,12 +122,13 @@ test("explicit capture validation rejects credential-like metadata", () => {
   const tagName = ["api", "key"].join("_");
   const tagValue = ["tag", "Secret", "12345"].join("");
   const unsafeTag = [tagName, tagValue].join("=");
-  for (const [field, input] of [
+  const cases: Array<[string, Partial<ExplicitCaptureInput>]> = [
     ["sourceReason", { sourceReason: "token=sourceReasonSecret12345" }],
     ["entityRef", { entityRef: "secret=entitySecret12345" }],
     ["ttl", { ttl: "password=ttlSecret12345" }],
     ["tags", { tags: ["operator-review", unsafeTag] }],
-  ] as const) {
+  ];
+  for (const [field, input] of cases) {
     assert.throws(
       () =>
         validateExplicitCaptureInput({

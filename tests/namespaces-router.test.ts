@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type { PluginConfig } from "../src/types.js";
+import { parseConfig } from "../src/config.js";
 import { NamespaceStorageRouter } from "../src/namespaces/storage.js";
 import { keyring, secureStoreDir } from "../src/secure-store/index.js";
 
@@ -12,7 +13,7 @@ function tmpDir(prefix: string): string {
 }
 
 function baseConfig(memoryDir: string): PluginConfig {
-  return {
+  return parseConfig({
     openaiApiKey: undefined,
     model: "gpt-5.5",
     reasoningEffort: "low",
@@ -144,7 +145,7 @@ function baseConfig(memoryDir: string): PluginConfig {
     compoundingSemanticEnabled: false,
     compoundingSynthesisTimeoutMs: 1000,
     compoundingInjectEnabled: false,
-  };
+  });
 }
 
 test("v3 namespaces router uses legacy memoryDir for default namespace if namespaced dir missing", async () => {

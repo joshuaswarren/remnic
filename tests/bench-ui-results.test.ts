@@ -12,6 +12,8 @@ import {
   getTrendPoints,
   type BenchIntegritySummary,
   type BenchResultSummaryPayload,
+  type TaskDeltaRow,
+  type BenchResultSummary,
 } from "../packages/bench-ui/src/bench-data.js";
 import {
   buildBenchmarkDetailTaskRows,
@@ -469,9 +471,9 @@ test("benchmark detail helpers keep single-run deltas null and sort low scorers 
     filePath: "/tmp/results/latest-run.json",
   });
 
-  assert(taskRows.every((row) => row.delta === null));
+  assert(taskRows.every((row: TaskDeltaRow) => row.delta === null));
   assert.deepEqual(
-    selectLowestScoringTasks(taskRows).map((row) => row.taskId),
+    selectLowestScoringTasks(taskRows).map((row: TaskDeltaRow) => row.taskId),
     ["task-6", "task-2", "task-4", "task-5", "task-3"],
   );
 });
@@ -668,7 +670,7 @@ test("compare helpers constrain candidate options to the selected benchmark", ()
   const otherSummary = payload.summaries[2] ?? null;
 
   assert.deepEqual(
-    filterComparableCandidateRuns(payload, baselineSummary).map((summary) => summary.id),
+    filterComparableCandidateRuns(payload, baselineSummary).map((summary: BenchResultSummary) => summary.id),
     ["candidate-run"],
   );
   assert.equal(canCompareBenchRuns(baselineSummary, candidateSummary), true);

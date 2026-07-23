@@ -232,7 +232,7 @@ tasks:
   assert.equal(result.results.tasks[0]?.scores.llm_judge, 0.9);
   assert.deepEqual(result.results.tasks[0]?.tokens, { input: 11, output: 7 });
   assert.equal((result.results.tasks[0]?.latencyMs ?? 0) >= 20, true);
-  assert.equal(result.results.tasks[0]?.details.judgeModel, "gpt-5.4-mini");
+  assert.equal(result.results.tasks[0]?.details?.judgeModel, "gpt-5.4-mini");
   assert.equal(result.cost.inputTokens, 11);
   assert.equal(result.cost.outputTokens, 7);
   assert.equal(result.cost.totalTokens, 18);

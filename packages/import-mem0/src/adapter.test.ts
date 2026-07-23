@@ -76,7 +76,7 @@ describe("mem0 adapter shape", () => {
       }>;
     };
     const byUrl = new Map(raw.pages.map((p) => [p.request.url, p]));
-    const replayFetch = (async (input: RequestInfo | URL): Promise<Response> => {
+    const replayFetch = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
       const match = byUrl.get(url);
       if (!match) return new Response("not found", { status: 404 });
@@ -133,7 +133,7 @@ describe("mem0 adapter shape", () => {
       }>;
     };
     const byUrl = new Map(raw.pages.map((p) => [p.request.url, p]));
-    const replayFetch = (async (input: RequestInfo | URL): Promise<Response> => {
+    const replayFetch = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
       const match = byUrl.get(url);
       if (!match) return new Response("not found", { status: 404 });

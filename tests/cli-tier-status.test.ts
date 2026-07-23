@@ -11,9 +11,10 @@ import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { StorageManager } from "../src/storage.js";
 import type { SearchBackend } from "../src/search/port.js";
+import type { TierMigrationStatusSnapshot } from "../src/recall-state.js";
 
 test("runTierStatusCliCommand returns coordinator status payload", async () => {
-  const expected = {
+  const expected: TierMigrationStatusSnapshot = {
     updatedAt: "2026-02-28T00:00:00.000Z",
     lastCycle: {
       trigger: "manual",
@@ -46,7 +47,7 @@ test("runTierStatusCliCommand returns coordinator status payload", async () => {
 });
 
 test("runTierStatusCliCommand accepts the legacy getTierMigrationStatus adapter", async () => {
-  const expected = {
+  const expected: TierMigrationStatusSnapshot = {
     updatedAt: "2026-03-01T00:00:00.000Z",
     lastCycle: {
       trigger: "manual",

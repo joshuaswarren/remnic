@@ -17,6 +17,7 @@ function makeMemory(path: string, id: string): MemoryFile {
       id,
       category: "fact",
       confidence: 0.8,
+      confidenceTier: "explicit",
       created: "2026-02-22T10:00:00.000Z",
       updated: "2026-02-22T10:00:00.000Z",
       tags: [],

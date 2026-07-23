@@ -304,8 +304,8 @@ test("entity retrieval ignores generic 'what does' technical questions without a
     storage,
     "What does this error mean?",
     [
-      { role: "user", content: "Jane Example handled the last rollout." },
-      { role: "assistant", content: "I can summarize Jane Example if needed." },
+      { role: "user", content: "Jane Example handled the last rollout.", timestamp: "2026-03-07T12:00:00.000Z", sessionKey: "agent:main", turnId: "turn-1" },
+      { role: "assistant", content: "I can summarize Jane Example if needed.", timestamp: "2026-03-07T12:00:01.000Z", sessionKey: "agent:main", turnId: "turn-2" },
     ],
   );
 

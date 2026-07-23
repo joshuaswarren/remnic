@@ -333,7 +333,7 @@ test("optimizeCompressionGuidelines tags semantic refinement calls as background
     });
     const orchestrator = new Orchestrator(cfg);
     let seenPriority: string | undefined;
-    orchestrator.fastLlm = {
+    (orchestrator as { fastLlm: unknown }).fastLlm = {
       chatCompletion: async (
         _messages: Array<{ role: string; content: string }>,
         options?: { priority?: string },
@@ -344,7 +344,7 @@ test("optimizeCompressionGuidelines tags semantic refinement calls as background
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
         };
       },
-    } as any;
+    };
 
     await orchestrator.storage.appendMemoryActionEvents([
       {

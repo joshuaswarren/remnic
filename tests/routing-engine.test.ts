@@ -56,7 +56,7 @@ test("doesRuleMatch rejects adjacent quantifier regex patterns", () => {
 });
 
 test("doesRuleMatch ignores unsupported pattern types", () => {
-  const invalidTypeRule = { ...rule({ patternType: "keyword", pattern: "incident" }), patternType: "glob" } as RouteRule;
+  const invalidTypeRule = { ...rule({ patternType: "keyword", pattern: "incident" }), patternType: "glob" } as unknown as RouteRule;
   assert.equal(doesRuleMatch(invalidTypeRule, "incident occurred"), false);
 });
 

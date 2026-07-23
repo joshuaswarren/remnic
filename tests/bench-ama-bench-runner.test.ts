@@ -117,9 +117,9 @@ test("runBenchmark executes ama-bench in quick mode through the phase-1 package 
     true,
   );
   assert.equal(result.results.tasks[0]?.expected, "Spanish");
-  assert.equal(result.results.tasks[0]?.details.task, "Web task smoke fixture");
-  assert.equal(result.results.tasks[0]?.details.taskType, "web");
-  assert.equal(result.results.tasks[0]?.details.qaType, "recall");
+  assert.equal(result.results.tasks[0]?.details?.task, "Web task smoke fixture");
+  assert.equal(result.results.tasks[0]?.details?.taskType, "web");
+  assert.equal(result.results.tasks[0]?.details?.qaType, "recall");
 });
 
 test("runBenchmark rejects ama-bench full mode without datasetDir", async () => {

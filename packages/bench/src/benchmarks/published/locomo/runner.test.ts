@@ -107,15 +107,15 @@ test("LoCoMo normalizes numeric answers and adversarial-answer fallbacks from th
     assert.equal(result.results.tasks[0]?.actual, "2022");
     assert.equal(result.results.tasks[1]?.actual, "blue");
     assert.equal(
-      result.results.tasks[0]?.details.answerFormat,
+      result.results.tasks[0]?.details?.answerFormat,
       "short-with-specifics",
     );
     assert.equal(
       result.results.tasks[0]?.scores.locomo_hidden_evidence_id_leak,
       1,
     );
-    assert.equal(result.results.tasks[0]?.details.hiddenEvidenceIdLeakCount, 0);
-    assert.equal(result.results.tasks[1]?.details.hiddenEvidenceIdLeakCount, 0);
+    assert.equal(result.results.tasks[0]?.details?.hiddenEvidenceIdLeakCount, 0);
+    assert.equal(result.results.tasks[1]?.details?.hiddenEvidenceIdLeakCount, 0);
     assert.match(respondentContexts[0] ?? "", /\[D1:1\]/);
     assert.match(
       respondentContexts[0] ?? "",
@@ -211,9 +211,9 @@ test("LoCoMo uses recalled evidence fallback when responder transport fails", as
     assert.equal(task.scores.f1, 1);
     assert.equal(task.scores.contains_answer, 1);
     assert.equal(task.scores.llm_judge, 1);
-    assert.equal(task.details.responderModel, "deterministic-fallback");
+    assert.equal(task.details?.responderModel, "deterministic-fallback");
     assert.match(
-      String(task.details.answerFallbackReason),
+      String(task.details?.answerFallbackReason),
       /codex transport failed/,
     );
   } finally {
@@ -364,7 +364,7 @@ test("LoCoMo uses relative-time fallback for year-based temporal questions", asy
     assert.equal(task.actual, "2022");
     assert.equal(task.scores.f1, 1);
     assert.equal(task.scores.contains_answer, 1);
-    assert.equal(task.details.responderModel, "deterministic-fallback");
+    assert.equal(task.details?.responderModel, "deterministic-fallback");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -453,10 +453,10 @@ test("LoCoMo refines successful responder answers from recalled evidence", async
 
     const task = result.results.tasks[0]!;
     assert.equal(task.actual, "7 May 2023");
-    assert.equal(task.details.responderModel, "codex-cli-test");
-    assert.equal(task.details.originalAnsweredText, "8 May 2023");
+    assert.equal(task.details?.responderModel, "codex-cli-test");
+    assert.equal(task.details?.originalAnsweredText, "8 May 2023");
     assert.equal(
-      task.details.answerRefinementReason,
+      task.details?.answerRefinementReason,
       "benchmark recalled-evidence refinement",
     );
     assert.equal(task.scores.f1, 1);
@@ -557,8 +557,8 @@ test("LoCoMo preserves useful temporal responder answers when recall has unrelat
 
     const task = result.results.tasks[0]!;
     assert.equal(task.actual, "May 7, 2023");
-    assert.equal(task.details.originalAnsweredText, undefined);
-    assert.equal(task.details.answerRefinementReason, undefined);
+    assert.equal(task.details?.originalAnsweredText, undefined);
+    assert.equal(task.details?.answerRefinementReason, undefined);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -647,7 +647,7 @@ test("LoCoMo trims generic tea category nouns from recalled evidence answers", a
     const task = result.results.tasks[0]!;
     assert.equal(task.actual, "jasmine");
     assert.equal(task.scores.f1, 1);
-    assert.equal(task.details.originalAnsweredText, "Jasmine tea");
+    assert.equal(task.details?.originalAnsweredText, "Jasmine tea");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -736,7 +736,7 @@ test("LoCoMo keeps multi-word favorite tea names from recalled evidence", async 
     const task = result.results.tasks[0]!;
     assert.equal(task.actual, "earl grey");
     assert.equal(task.scores.f1, 1);
-    assert.equal(task.details.originalAnsweredText, "Earl Grey tea");
+    assert.equal(task.details?.originalAnsweredText, "Earl Grey tea");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -824,7 +824,7 @@ test("LoCoMo keeps a useful responder answer when recalled tea evidence disagree
 
     const task = result.results.tasks[0]!;
     assert.equal(task.actual, "oolong");
-    assert.equal(task.details.originalAnsweredText, undefined);
+    assert.equal(task.details?.originalAnsweredText, undefined);
     assert.equal(task.scores.f1, 1);
   } finally {
     await rm(tempDir, { recursive: true, force: true });

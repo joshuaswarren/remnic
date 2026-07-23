@@ -11,6 +11,7 @@ import type {
   SearchResult,
 } from "../packages/bench/src/index.js";
 import { runBenchmark } from "../packages/bench/src/index.js";
+import type { AMemGymProfile } from "../packages/bench/src/benchmarks/published/amemgym/fixture.js";
 
 class FakeMemoryAdapter implements BenchMemoryAdapter {
   readonly sessions = new Map<string, Message[]>();
@@ -101,7 +102,7 @@ class FailingRecallAdapter extends FakeMemoryAdapter {
   }
 }
 
-function createDatasetProfile() {
+function createDatasetProfile(): AMemGymProfile[] {
   return [
     {
       id: "dataset-profile-1",

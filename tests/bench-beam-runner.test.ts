@@ -112,8 +112,8 @@ test("runBenchmark executes beam in quick mode with the bundled smoke fixture", 
   assert.equal(result.results.tasks.length, 4);
   assert.equal(result.results.tasks[0]?.expected, "March 29");
   assert.equal(result.results.tasks[0]?.actual.includes("March 29"), true);
-  assert.equal(result.results.tasks[0]?.details.ability, "information_extraction");
-  assert.equal(result.results.tasks[0]?.details.scale, "100K");
+  assert.equal(result.results.tasks[0]?.details?.ability, "information_extraction");
+  assert.equal(result.results.tasks[0]?.details?.scale, "100K");
   assert.equal(typeof result.results.aggregates.rouge_l?.mean, "number");
   assert.equal(typeof result.results.aggregates.search_hits?.mean, "number");
 });
@@ -170,8 +170,8 @@ test("runBenchmark loads beam full-mode datasets and includes 10M plan chats in 
   assert.equal(result.results.tasks.length, 1);
   assert.equal(result.results.tasks[0]?.expected, "Micah");
   assert.equal(result.results.tasks[0]?.actual.includes("Micah"), true);
-  assert.equal(result.results.tasks[0]?.details.scale, "10M");
-  assert.equal(result.results.tasks[0]?.details.sessionCount, 2);
+  assert.equal(result.results.tasks[0]?.details?.scale, "10M");
+  assert.equal(result.results.tasks[0]?.details?.sessionCount, 2);
 });
 
 test("runBenchmark stores query-visible beam plan anchors as memory evidence", async () => {
@@ -229,7 +229,7 @@ test("runBenchmark stores query-visible beam plan anchors as memory evidence", a
 
   const task = result.results.tasks[0]!;
   assert.equal(task.actual.includes("Serena"), true);
-  assert.match(String(task.details.recalledText), /plan_id=plan-needle/);
+  assert.match(String(task.details?.recalledText), /plan_id=plan-needle/);
   assert.equal(
     adapter.recallQueries.every(({ query }) => query.includes("plan-needle")),
     true,
@@ -278,8 +278,8 @@ test("runBenchmark keeps hidden beam source metadata reporting-only", async () =
   });
 
   const task = result.results.tasks[0]!;
-  assert.deepEqual(task.details.sourceChatIds, ["hidden-source-77"]);
-  assert.equal(task.details.planReference, "hidden-plan-reference");
+  assert.deepEqual(task.details?.sourceChatIds, ["hidden-source-77"]);
+  assert.equal(task.details?.planReference, "hidden-plan-reference");
   assert.equal(
     adapter.recallQueries.some(({ query }) => query.includes("hidden-source-77")),
     false,
@@ -288,8 +288,8 @@ test("runBenchmark keeps hidden beam source metadata reporting-only", async () =
     adapter.recallQueries.some(({ query }) => query.includes("hidden-plan-reference")),
     false,
   );
-  assert.equal(String(task.details.recalledText).includes("hidden-source-77"), false);
-  assert.equal(String(task.details.recalledText).includes("hidden-plan-reference"), false);
+  assert.equal(String(task.details?.recalledText).includes("hidden-source-77"), false);
+  assert.equal(String(task.details?.recalledText).includes("hidden-plan-reference"), false);
 });
 
 test("runBenchmark does not create beam sessions for empty turn batches", async () => {
@@ -332,7 +332,7 @@ test("runBenchmark does not create beam sessions for empty turn batches", async 
     system: adapter,
   });
 
-  assert.equal(result.results.tasks[0]?.details.sessionCount, 1);
+  assert.equal(result.results.tasks[0]?.details?.sessionCount, 1);
   assert.equal([...adapter.sessions.keys()].length, 1);
 });
 
@@ -378,7 +378,7 @@ test("runBenchmark indexes later beam chat ids as memory evidence", async () => 
 
   const task = result.results.tasks[0]!;
   assert.equal(task.actual.includes("Marisol"), true);
-  assert.match(String(task.details.recalledText), /chat_id=27/);
+  assert.match(String(task.details?.recalledText), /chat_id=27/);
 });
 
 test("runBenchmark streams beam JSON arrays without misreading braces in strings", async () => {
@@ -516,7 +516,7 @@ test("runBenchmark loads beam 10M plan-map chat shards", async () => {
 
   assert.equal(result.results.tasks.length, 1);
   assert.equal(result.results.tasks[0]?.actual.includes("Nia"), true);
-  assert.equal(result.results.tasks[0]?.details.sessionCount, 2);
+  assert.equal(result.results.tasks[0]?.details?.sessionCount, 2);
   assert.equal(
     [...adapter.sessions.values()]
       .flat()
@@ -572,7 +572,7 @@ test("runBenchmark keeps plan chats when top-level beam chat is empty", async ()
 
   assert.equal(result.results.tasks.length, 1);
   assert.equal(result.results.tasks[0]?.actual.includes("Rowan"), true);
-  assert.equal(result.results.tasks[0]?.details.sessionCount, 1);
+  assert.equal(result.results.tasks[0]?.details?.sessionCount, 1);
 });
 
 test("runBenchmark orders same-number beam plan-map ids by stable secondary key", async () => {
@@ -638,7 +638,7 @@ test("runBenchmark orders same-number beam plan-map ids by stable secondary key"
   });
 
   const sessionIds = [...adapter.sessions.keys()];
-  assert.equal(result.results.tasks[0]?.details.sessionCount, 2);
+  assert.equal(result.results.tasks[0]?.details?.sessionCount, 2);
   assert.equal(sessionIds[0]?.includes("plan-1-a"), true);
   assert.equal(sessionIds[1]?.includes("plan-1-b"), true);
   assert.equal(result.results.tasks[0]?.actual.includes("Avery"), true);
@@ -705,7 +705,7 @@ test("runBenchmark applies beam dataset limits while streaming arrays", async ()
   });
 
   assert.equal(result.results.tasks.length, 1);
-  assert.equal(result.results.tasks[0]?.details.conversationId, "beam-limit-1");
+  assert.equal(result.results.tasks[0]?.details?.conversationId, "beam-limit-1");
   assert.equal(adapter.sessions.size, 1);
 });
 
