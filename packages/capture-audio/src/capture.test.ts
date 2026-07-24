@@ -10,17 +10,17 @@ import type { TranscribedSegment } from "./stt.js";
 class FakeChild implements HelperChild {
   #stdout: Array<(chunk: Buffer | string) => void> = [];
   #stderr: Array<(chunk: Buffer | string) => void> = [];
-  #exit: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+  #close: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
   killed = false;
   readonly stdout = { on: (_e: "data", cb: (c: Buffer | string) => void) => this.#stdout.push(cb) };
   readonly stderr = { on: (_e: "data", cb: (c: Buffer | string) => void) => this.#stderr.push(cb) };
-  once(event: "error" | "exit", listener: (...a: never[]) => void): unknown {
-    if (event === "exit") this.#exit = listener as (c: number | null, s: NodeJS.Signals | null) => void;
+  once(event: "error" | "close", listener: (...a: never[]) => void): unknown {
+    if (event === "close") this.#close = listener as (c: number | null, s: NodeJS.Signals | null) => void;
     return this;
   }
   kill(): boolean {
     this.killed = true;
-    this.#exit?.(0, "SIGTERM"); // real helper exits on SIGTERM
+    this.#close?.(0, "SIGTERM"); // real helper exits on SIGTERM
     return true;
   }
   push(text: string): void {

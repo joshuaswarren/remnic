@@ -18,21 +18,21 @@ class FakeChild implements HelperChild {
   #stdout: Array<(chunk: Buffer | string) => void> = [];
   #stderr: Array<(chunk: Buffer | string) => void> = [];
   #err: ((err: Error) => void) | undefined;
-  #exit: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+  #close: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
   killed = false;
   killSignal: NodeJS.Signals | undefined;
   readonly stdout = { on: (_e: "data", cb: (chunk: Buffer | string) => void) => this.#stdout.push(cb) };
   readonly stderr = { on: (_e: "data", cb: (chunk: Buffer | string) => void) => this.#stderr.push(cb) };
-  once(event: "error" | "exit", listener: (...a: never[]) => void): unknown {
+  once(event: "error" | "close", listener: (...a: never[]) => void): unknown {
     if (event === "error") this.#err = listener as (err: Error) => void;
-    else this.#exit = listener as (code: number | null, signal: NodeJS.Signals | null) => void;
+    else this.#close = listener as (code: number | null, signal: NodeJS.Signals | null) => void;
     return this;
   }
   kill(signal?: NodeJS.Signals): boolean {
     this.killed = true;
     this.killSignal = signal;
-    // A real helper exits on SIGTERM; emit so an awaiting stop() resolves.
-    this.#exit?.(0, signal ?? "SIGTERM");
+    // A real helper exits on SIGTERM; emit close so an awaiting stop() resolves.
+    this.#close?.(0, signal ?? "SIGTERM");
     return true;
   }
   pushStdout(text: string): void {
@@ -41,8 +41,8 @@ class FakeChild implements HelperChild {
   pushStderr(text: string): void {
     for (const cb of this.#stderr) cb(text);
   }
-  emitExit(code: number | null, signal: NodeJS.Signals | null = null): void {
-    this.#exit?.(code, signal);
+  emitClose(code: number | null, signal: NodeJS.Signals | null = null): void {
+    this.#close?.(code, signal);
   }
   emitError(err: Error): void {
     this.#err?.(err);
@@ -214,7 +214,7 @@ test("runner restarts an unexpected exit and stop() suppresses further restarts"
   });
   runner.start();
   assert.equal(spawns, 1);
-  children[0].emitExit(1, null); // unexpected exit -> schedules a restart
+  children[0].emitClose(1, null); // unexpected close -> schedules a restart
   assert.equal(scheduledFns.length, 1);
   scheduledFns[0](); // run the scheduled restart
   assert.equal(spawns, 2);
@@ -222,7 +222,7 @@ test("runner restarts an unexpected exit and stop() suppresses further restarts"
   assert.equal(children[1].killed, true);
   assert.equal(children[1].killSignal, "SIGTERM");
   // A post-stop exit must not schedule another restart.
-  children[1].emitExit(0, null);
+  children[1].emitClose(0, null);
   assert.equal(scheduledFns.length, 1);
 });
 
@@ -233,7 +233,7 @@ test("enumerateDevices parses a JSON device array from the one-shot subcommand",
     return child;
   });
   child.pushStdout(JSON.stringify([{ id: "UID-1", name: "Built-in" }]));
-  child.emitExit(0);
+  child.emitClose(0);
   const devices = await promise;
   assert.equal(devices.length, 1);
 });
@@ -241,6 +241,6 @@ test("enumerateDevices parses a JSON device array from the one-shot subcommand",
 test("enumerateDevices rejects a nonzero exit", async () => {
   const child = new FakeChild();
   const promise = enumerateDevices("/helper", () => child);
-  child.emitExit(3);
+  child.emitClose(3);
   await assert.rejects(promise, CaptureInputError);
 });

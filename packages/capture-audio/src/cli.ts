@@ -495,7 +495,7 @@ async function cmdStart(
   let handle: DaemonHandle;
   try {
     // Bind and report the HTTP service; `capturing` mirrors the live runner.
-    handle = await startDaemon({ spool, config, token, capturing: live !== null });
+    handle = await startDaemon({ spool, config, token, capturing: () => live !== null && live.running });
   } catch (err) {
     // Don't leak the live runner or spool handle if the bind fails.
     if (live) await live.stop().catch(() => undefined);

@@ -29,8 +29,8 @@ export interface DaemonDeps {
   spool: Spool;
   config: DaemonConfig;
   token: string;
-  /** Live capture status for /v1/health; false until the capture layer lands. */
-  capturing?: boolean;
+  /** Live capture status for /v1/health; a getter is re-read per request so it tracks the live runner. */
+  capturing?: boolean | (() => boolean);
 }
 
 export interface DaemonHandle {
@@ -55,7 +55,7 @@ function handleHealth(deps: DaemonDeps, res: http.ServerResponse): void {
     ok: true,
     version: CAPTURE_AUDIO_VERSION,
     platform: process.platform,
-    capturing: deps.capturing ?? false,
+    capturing: typeof deps.capturing === "function" ? deps.capturing() : (deps.capturing ?? false),
     sttModel: deps.config.stt.modelPath,
     pendingChunks: deps.spool.pendingChunkCount(),
     instanceId: deps.spool.meta("instance_id"),

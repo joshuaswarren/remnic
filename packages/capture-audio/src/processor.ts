@@ -144,7 +144,16 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     }
 
     processedThisRun.add(chunkId);
-    await deps.cleanupRawAudio(event);
+    // Only reclaim the raw WAV once its transcript is durably persisted; a
+    // silent (no-segment) chunk is left to the retention janitor. Cleanup is
+    // best-effort — a failure is reported, and the janitor is the backstop.
+    if (segments.length > 0) {
+      try {
+        await deps.cleanupRawAudio(event);
+      } catch (err) {
+        report(err, event);
+      }
+    }
   }
 
   function enqueue(event: ChunkEvent): void {

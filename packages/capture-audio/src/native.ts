@@ -61,7 +61,9 @@ export interface HelperChild {
   stdout: { on(event: "data", listener: (chunk: Buffer | string) => void): unknown };
   stderr: { on(event: "data", listener: (chunk: Buffer | string) => void): unknown };
   once(event: "error", listener: (err: Error) => void): unknown;
-  once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  // `close` (not `exit`) fires after the stdio pipes are fully drained, so the
+  // helper's final buffered chunk is always read before the runner settles.
+  once(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
   kill(signal?: NodeJS.Signals): boolean;
   readonly killed?: boolean;
   readonly pid?: number;
@@ -361,7 +363,7 @@ export function enumerateDevices(
     });
     child.stderr.on("data", () => undefined);
     child.once("error", (err) => fail(err instanceof Error ? err : new Error(String(err))));
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       if (settled) return;
       if (code !== 0) {
         fail(new CaptureInputError(`native helper device-enumerate exited with status ${code ?? "unknown"}`));
@@ -487,7 +489,7 @@ export function createNativeCaptureRunner(options: NativeRunnerOptions): NativeC
       onError(err instanceof Error ? err : new Error(String(err)));
       scheduleUnexpectedRestart();
     });
-    current.once("exit", (code, signal) => {
+    current.once("close", (code, signal) => {
       if (settled) return;
       settle();
       if (stopped) return; // explicit stop — never restart
