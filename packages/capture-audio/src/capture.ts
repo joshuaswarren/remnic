@@ -15,6 +15,7 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 
 import { ConversationAssembler } from "./assembly.js";
+import { SpeakerClusterer, type Embedding } from "./diarization.js";
 import type { DaemonConfig } from "./config.js";
 import { CaptureInputError } from "./errors.js";
 import {
@@ -50,6 +51,10 @@ export interface LiveCaptureOptions {
   scheduleRestart?: (fn: () => void, delayMs: number) => RestartTimer;
   cancelRestart?: (timer: RestartTimer) => void;
   makeConversationId?: () => string;
+  /** VAD speech gate seam; production supplies a sherpa-onnx detector. */
+  detectSpeech?: (event: ChunkEvent) => boolean | Promise<boolean>;
+  /** Speaker-embedding seam for diarization; production supplies sherpa speaker-id. */
+  embed?: (event: ChunkEvent, segment: TranscribedSegment) => Embedding | Promise<Embedding>;
 }
 
 export interface LiveCapture {
@@ -111,23 +116,34 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
     ...(options.makeConversationId ? { makeId: options.makeConversationId } : {}),
   });
 
+  // Diarization is active only when an embedder is wired (production: the
+  // sherpa speaker-id model from the native layer; tests inject a fake). Seed
+  // the clusterer from persisted clusters so speaker ids survive restarts.
+  const diarizer = options.embed
+    ? new SpeakerClusterer(config.diarization.similarityThreshold, spool.readSpeakerClusters())
+    : undefined;
+
   const processor = createChunkProcessor({
     spool,
     assembler,
     resolveModel,
     transcribe,
     cleanupRawAudio,
+    ...(options.detectSpeech ? { detectSpeech: options.detectSpeech } : {}),
+    ...(options.embed ? { embed: options.embed } : {}),
+    ...(diarizer ? { diarizer } : {}),
     ...(options.onError ? { onError: (error: Error) => options.onError?.(error) } : {}),
   });
 
   const runner: NativeCaptureRunner = createNativeCaptureRunner({
     outDir,
     chunkSeconds: config.chunkSeconds,
-    // Capture the wearer's mic only for now. System-channel capture requires
-    // cross-channel dedup (dedupeCrossChannel) to avoid double-persisting speech
-    // heard on both channels; that windowed dedup lands with the diarization
-    // slice, so "both" is deferred rather than shipped un-deduped.
-    channel: "mic",
+    // Channels to record (config.captureChannel, default "both"). With "both",
+    // the processor's finalize-time cross-channel dedup drops mic segments that
+    // duplicate system (loopback) speech, so it is stored once (the cleaner
+    // system copy). Operators without system-audio permission can set "mic" so
+    // microphone capture never depends on the system-audio path being available.
+    channel: config.captureChannel,
     device: config.devices.mic,
     onChunk: (event) => {
       // Reject a helper-supplied path that escapes the raw capture dir BEFORE it

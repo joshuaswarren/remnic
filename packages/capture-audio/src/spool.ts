@@ -473,6 +473,91 @@ export class Spool {
   }
 
   /**
+   * A conversation's segments in the shape cross-channel dedup needs (segment
+   * id + DedupSegment fields), chronological. Used to prune loopback duplicates
+   * at finalization, which is order-independent (all segments are present).
+   */
+  conversationSegmentsForDedup(
+    conversationId: string,
+  ): Array<{ id: string; channel: string; text: string; startUtc: string; endUtc: string }> {
+    return this.#db
+      .prepare(
+        "SELECT id, channel, text, start_utc AS startUtc, end_utc AS endUtc FROM segments " +
+          "WHERE conversation_id = ? ORDER BY start_utc ASC, ordinal ASC, id ASC",
+      )
+      .all(conversationId) as Array<{ id: string; channel: string; text: string; startUtc: string; endUtc: string }>;
+  }
+
+  /**
+   * Delete specific segments (dedup prune), keeping each owning conversation's
+   * segment_count in sync. Returns the number actually removed.
+   */
+  deleteSegments(ids: readonly string[]): number {
+    if (ids.length === 0) return 0;
+    const db = this.#db;
+    let removed = 0;
+    db.exec("BEGIN");
+    try {
+      const findConv = db.prepare("SELECT conversation_id AS conversationId FROM segments WHERE id = ?");
+      const del = db.prepare("DELETE FROM segments WHERE id = ?");
+      const dec = db.prepare("UPDATE conversations SET segment_count = MAX(segment_count - 1, 0) WHERE id = ?");
+      const affected = new Set<string>();
+      for (const id of ids) {
+        const row = findConv.get(id) as { conversationId: string } | undefined;
+        if (!row) continue;
+        if (Number(del.run(id).changes) > 0) {
+          dec.run(row.conversationId);
+          affected.add(row.conversationId);
+          removed++;
+        }
+      }
+      // Recompute time bounds from the surviving segments: pruning the earliest
+      // or latest segment must not leave the conversation under a deleted row's
+      // start/end (which would mis-bucket/mis-order it in queryFinalConversations).
+      const bounds = db.prepare(
+        "SELECT MIN(start_utc) AS minStart, MAX(end_utc) AS maxEnd FROM segments WHERE conversation_id = ?",
+      );
+      const setBounds = db.prepare("UPDATE conversations SET started_at_utc = ?, ended_at_utc = ? WHERE id = ?");
+      for (const convId of affected) {
+        const b = bounds.get(convId) as { minStart: string | null; maxEnd: string | null };
+        if (b.minStart !== null && b.maxEnd !== null) setBounds.run(b.minStart, b.maxEnd, convId);
+      }
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+    return removed;
+  }
+
+  /** Ids of every still-`capturing` conversation (dedup-before-finalize sweep). */
+  capturingConversationIds(): string[] {
+    const rows = this.#db
+      .prepare("SELECT id FROM conversations WHERE state = 'capturing' ORDER BY id ASC")
+      .all() as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
+  /** Whether a chunk with this idempotency key was already durably applied. */
+  isChunkApplied(idempotencyKey: string): boolean {
+    return (
+      this.#db.prepare("SELECT 1 FROM applied_chunks WHERE idempotency_key = ? LIMIT 1").get(idempotencyKey) !==
+      undefined
+    );
+  }
+
+  /**
+   * Record that a whole chunk finished (every group appended) via a `<id>:done`
+   * marker, so a later full replay can skip transcription + diarization. A crash
+   * before this leaves no marker, so the missing groups re-append on replay.
+   */
+  markChunkComplete(chunkId: string, conversationId: string): void {
+    this.#db
+      .prepare("INSERT OR IGNORE INTO applied_chunks(idempotency_key, conversation_id, applied_at_utc) VALUES (?,?,?)")
+      .run(`${chunkId}:done`, conversationId, new Date().toISOString());
+  }
+
+  /**
    * The newest still-`capturing` conversation, so a chunk arriving after a
    * process restart continues it (subject to the assembler's gap rule) instead
    * of splitting off a new one. Null when none is open.
