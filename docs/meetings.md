@@ -1,18 +1,24 @@
 # Meeting intelligence (issue #1900)
 
-`src/meetings/` is a host-agnostic core subsystem for **retrospective meeting
-detection and record-building** over already-ingested signals (wearable /
+`src/meetings/` is a host-agnostic core subsystem that **retrospectively detects,
+fuses, stores, and remembers meetings** from already-ingested signals (wearable /
 desktop audio conversations + screen activity). It is retrospective, not
 realtime: no daemon, no live watcher — a pure derivation over data the audio
-(#1897/#1898) and screen-activity (#1899) phases already store, so late-arriving
-uploads still resolve on the next pass.
+(wearable/cloud connectors, #1897/#1898) and screen-activity (#1899) phases
+store, so late-arriving uploads still resolve on the next build.
 
-The engine landed with #2122 and is importable from `@remnic/core`. The
-user-facing *surfaces* that drive it during a normal sync and let you inspect
-its output (CLI/MCP/HTTP, the day-source adapter, the post-sync build step) land
-with the stacked surface PR #2123. This page marks precisely what ships today
-versus what is still pending, so a reader never assumes an unbuilt surface
-exists.
+The full pipeline shipped across #2122 (engine) and #2123 (surfaces): detection,
+fusion, record store, `MeetingsBuilder`, trust-gated memory generation, the
+`meetings.*` config, the `remnic meetings` CLI, MCP tools, HTTP routes, the
+day-source adapter, the post-sync auto-build tail-step, and caller-namespace
+symmetry. It is disabled by default (`meetings.enabled: false`); base installs
+are unchanged.
+
+Input availability: audio-based detection works today with any wearable or
+cloud meeting source (Limitless/Bee/Omi and the shipped Granola/Fireflies
+connectors). Screen-activity fusion additionally requires the screen capture
+source that feeds the activity store (`@remnic/capture-screen`, still pending
+under #1899); without it, detection runs audio-only.
 
 ## Status at a glance
 
@@ -22,47 +28,43 @@ exists.
 | Fusion — shared-wearables `fuseCluster` reuse (`fuse.ts`) | **shipped** |
 | Record store — content-hash markdown records (`store.ts`) | **shipped** |
 | Orchestration — `MeetingsBuilder` / `buildMeetingRecordsForDay()` (`build.ts`) | **shipped** |
+| Memory generation — deterministic episode + trust-gated `summaryMode` summary/facts (`createMeetingMemoryGenerator`) | **shipped** |
 | `meetings.*` config parsing (`config.ts`, in `config-reference.md`) | **shipped** |
-| Memory-generation contracts (`MeetingMemoryGenerator` seam, `memory-generator.ts`) | **shipped** (interfaces only) |
-| Concrete memory writes — deterministic episode + trust-gated `summaryMode` summary/facts | pending (behind the optional seam; the engine omits all memory writes when no generator is injected) |
-| Production day-source adapter (activity/wearables) | pending (#2123) |
-| Post-sync auto-build tail-step | pending (#2123) |
-| CLI (`remnic meetings list/show/build`) / MCP / HTTP surfaces | pending (#2123) |
-| Namespace symmetry (caller-namespaced records/memories) | pending (#2123) |
-
-What this means today: you can import the engine and drive it with an injected
-day source, and its detection/fusion/store/build/config are fixture-tested. But
-Remnic does **not** yet build meetings automatically during a sync, there is no
-`remnic meetings` command surface, and **no meeting memories are written** — the
-engine omits all memory writes unless a concrete `MeetingMemoryGenerator` is
-injected, and that generator (deterministic episode + trust-gated `summaryMode`
-summary/facts) lands with a later slice (#2123 / trust-pipeline). The
-`meetings.*` config, including `summaryMode`, parses and validates today.
+| Production day-source adapter (activity/wearables) | **shipped** (#2123) |
+| Post-sync auto-build tail-step (auto + manual sync) | **shipped** (#2123) |
+| CLI — `remnic meetings list/show/build` | **shipped** (#2123) |
+| MCP tools — `engram.meetings_list` / `_get` / `_build` (with `remnic.` aliases) | **shipped** (#2123) |
+| HTTP routes — `GET /engram/v1/meetings`, `/:id`, `POST .../build` (+ `/remnic` alias) | **shipped** (#2123) |
+| Caller-namespace symmetry | **shipped** (#2123) |
 
 ## Pipeline
 
-Shipped engine stages plus the pending wiring:
-
 ```text
 inputs (already on disk, per day):
-  wearable day transcripts   <memoryDir>/wearables/<source>/<date>.md
-  screen activity            <memoryDir>/activity/... (activity store)
-      │  (production day-source adapter: pending #2123; injected today)
+  wearable/cloud day transcripts   <ns>/wearables/<source>/<date>.md
+  screen activity                  <memoryDir>/state/activity.sqlite (default namespace only)
+      │  (day-source adapter assembles the day's audio windows + app spans)
       ▼
-  detect.ts     detectMeetings() — app-span ∩ audio-window, audio-only, provider   [shipped]
+  detect.ts     detectMeetings() — app-span ∩ audio-window, audio-only, provider
       ▼
-  fuse.ts       fuseMeeting() — reuse wearables fuseCluster over the window;        [shipped]
+  fuse.ts       fuseMeeting() — reuse wearables fuseCluster over the window;
                 higher-trust text wins overlaps + corroboratedBy; screen-context
                 dwell timeline; attendees from fused speakers
       ▼
-  store.ts      <memoryDir>/meetings/<date>/<meeting-id>.md (idempotent, contentHash) [shipped]
+  store.ts      <ns>/meetings/<date>/<meeting-id>.md (idempotent, contentHash)
       ▼
-  build.ts      MeetingsBuilder — detect → fuse → compose → store, stale-record     [shipped]
-                reconcile (overlap-preserving ids), optional reindex hook
+  build.ts      MeetingsBuilder — detect → fuse → compose → store, stale-record
+                reconcile (overlap-preserving ids), reindex hook
       ▼
-  memory-generator.ts  deterministic episode (always) + trust-gated summary/facts   [seam shipped;
-                       through an injected MeetingMemoryGenerator                     summary gen pending]
+  memory-generator  deterministic episode (always) + trust-gated summary/facts
+                    via createMeetingMemoryGenerator, on the MeetingMemoryGenerator seam
 ```
+
+A wearables/activity sync (auto-sync **and** manual CLI/MCP/HTTP sync) triggers
+a debounced meetings build for the affected days: wearables syncs via the
+`WearablesService` `onDaysSynced` hook, screen-activity syncs via the
+scheduler's `onActivitySynced` hook (`requestBuildForActivitySync`), so meetings
+appear without a separate command.
 
 ## Detection (`detect.ts`)
 
@@ -81,9 +83,9 @@ foreground span **and** an overlapping audio conversation (intersection ≥
 
 Ids are `mtg-<date>-<hash>` anchored on the exact start instant, so a resync
 that grows a meeting never renumbers it. A resync that *shifts* the start is
-reconciled by window overlap in the builder (the existing id is preserved), so
-`show <id>` links stay stable. Thresholds are validated as finite, non-negative
-numbers.
+reconciled by the record store and `MeetingsBuilder` — a re-detected meeting is
+matched to its stored record by window overlap, so `show <id>` links stay
+stable. Thresholds are validated as finite, non-negative numbers.
 
 ## Fusion (`fuse.ts`)
 
@@ -98,7 +100,7 @@ end) plus deduped on-screen text excerpts capped at `maxContextChars`.
 
 ## Record (`store.ts`)
 
-`<memoryDir>/meetings/<YYYY-MM-DD>/<meeting-id>.md` — YAML frontmatter
+`<ns>/meetings/<YYYY-MM-DD>/<meeting-id>.md` — YAML frontmatter
 (`kind: meeting`, id, date, startUtc/endUtc, app, detectionSource, attendees,
 sources, corroboratedBy, snapshotCount, contentHash, formatVersion) + body
 sections `## Attendees`, `## Screen context`, `## Transcript` (reusing the
@@ -113,38 +115,43 @@ day directories are refused before any read/write.
 
 `MeetingsBuilder` (and the lower-level `buildMeetingRecordsForDay()`) runs
 detect → fuse → compose → store for a day, reconciling stale records by window
-overlap so ids survive a shifted start, with an optional reindex hook. It reads
-its day data through an **injected `MeetingsDaySource`** — fixtures supply it
-today; the production adapter that feeds it live activity/wearables data is
-pending (#2123). One deterministic recall-anchor episode is written per built
-record through the injected memory-generator.
+overlap so ids survive a shifted start, with a reindex hook. It reads its day
+data through a `MeetingsDaySource`; the production adapter assembles it from the
+stored activity + wearable days for the caller's namespace. One deterministic
+recall-anchor episode is written per built record, and (per `summaryMode`) the
+trust-gated summary/facts, through the memory generator.
 
 ## Memories (`memory-generator.ts`)
 
-The memory-generation **contracts** ship as a seam (`MeetingMemoryGenerator`,
-`MeetingMemoryWriter`, and the episode/fact result types). The builder writes
-memories **only when a `MeetingMemoryGenerator` is injected**; with the seam
-omitted (the state on `main` today) it runs pure detect + fuse + store and
-writes no memories at all. The concrete generator lands with a later slice
-(#2123 / trust-pipeline). When supplied, it produces:
+`createMeetingMemoryGenerator(createMeetingMemoryWriter(storage), config,
+{ extractor, judge? })` wires the concrete generator onto the
+`MeetingMemoryGenerator` seam and the builder drives it. The third
+`summaryDeps` argument supplies the summary/fact `extractor` (and optional
+durability `judge`); without it only the deterministic episode is written and
+no LLM summary/fact extraction runs:
 
-1. **Deterministic episode**: one recall anchor per meeting — title,
+1. **Deterministic episode** (always): one recall anchor per meeting — title,
    span, attendees, sources — `source: meeting:<id>`, tags `meeting` +
-   `meeting-day:<date>`, `valid_at` = start. No LLM.
+   `meeting-day:<date>`, `valid_at` = start. No LLM. Idempotent per
+   `meeting:<id>`.
 2. **Trust-gated summary + facts** (`summaryMode`): decisions, commitments
    (category `commitment`), and open questions extracted from the fused
-   transcript + screen context are designed to flow through the existing trust
-   pipeline (`computeTrustScore` + `decideSmart`) with provenance
-   `{meetingId, meetingDate, meetingApp, transcriptSources}`. The concrete
-   generator that performs this extraction is **pending** (trust-pipeline
-   slice); `summaryMode` parses and validates today (`off` / `review` /
-   `smart`) but does not yet drive live summary generation.
+   transcript + screen context flow through the existing trust pipeline
+   (`computeTrustScore` + `decideSmart`) with provenance
+   `{meetingId, meetingDate, meetingApp, transcriptSources}`:
+   - `off` → episode only; the LLM extractor is never invoked.
+   - `review` → every candidate queued `pending_review`, except an explicit
+     judge `reject`, which is dropped even in review mode.
+   - `smart` → judge verdict + trust bands (`autoApproveTrust`/`reviewTrust`)
+     route each candidate to active / review / drop; ≥ 2 transcript sources
+     corroborate (trust boost). A throwing/absent judge degrades gracefully
+     (no verdict; routed via the deterministic path).
 
 ## Configuration
 
-Shipped and documented in [config-reference.md](config-reference.md); disabled
-by default. Every knob is bounds-checked, and the master gate defaults off so
-base installs are unchanged.
+Documented in [config-reference.md](config-reference.md); disabled by default.
+Every knob is bounds-checked, and the master gate defaults off so base installs
+are unchanged.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -155,29 +162,31 @@ base installs are unchanged.
 | `meetings.mergeGapMinutes` | `2` | Rejoin-after-drop merge gap. |
 | `meetings.contextDwellSeconds` | `20` | Screen-context dwell threshold. |
 | `meetings.maxContextChars` | `4000` | Screen-context excerpt cap. |
-| `meetings.summaryMode` | `smart` | `off` / `review` / `smart` (generation pending trust-pipeline slice). |
+| `meetings.summaryMode` | `smart` | `off` / `review` / `smart`. |
 | `meetings.sourceTrust` | `0.85` | Provenance trust prior for facts. |
 | `meetings.autoApproveTrust` | `0.7` | Smart-mode auto-approve band. |
 | `meetings.reviewTrust` | `0.45` | Smart-mode review band. |
 
-## Surfaces & wiring — pending (#2123)
+## Surfaces
 
-These are not yet available; they land with the stacked surface PR:
+- **CLI** — `remnic meetings list [--date <YYYY-MM-DD>] [--json]` (stored
+  records, all days or one day), `remnic meetings show <meeting-id>` (one
+  record), and `remnic meetings build --date <YYYY-MM-DD> [--json]` (detect +
+  fuse + store a day; `build` requires `--date`).
+- **MCP tools** — `engram.meetings_list` (all days or one `date`),
+  `engram.meetings_get` (by `id`), `engram.meetings_build` (a `date`); each also
+  registered under the `remnic.` alias. Each accepts optional `namespace` /
+  `sessionKey`.
+- **HTTP** (access server, token-gated) — `GET /engram/v1/meetings` (list),
+  `GET /engram/v1/meetings/:id` (get), `POST /engram/v1/meetings/build`. The
+  `/remnic/v1/...` prefix is an accepted alias of `/engram/v1/...`.
+- **Auto-build** — a wearables sync (auto and manual) rebuilds affected days via
+  the `onDaysSynced` hook, and a screen-activity sync via the `onActivitySynced`
+  hook, both feeding the meetings service's debounced `requestBuild`.
 
-- **Day-source adapter** — the production `MeetingsDaySource` that feeds
-  `MeetingsBuilder` from stored activity + wearable days.
-- **Post-sync build tail-step** — running the builder automatically after a
-  wearables/activity sync, so meetings appear without a manual invocation.
-- **CLI / MCP / HTTP surfaces** — `remnic meetings list/show/build` and the
-  matching MCP/HTTP endpoints. (The `meetings` command is not registered in the
-  `remnic` CLI yet.)
-- **Namespace symmetry** — activity is machine-scoped (default namespace only);
-  wearable sources, meeting records, and meeting memories are caller-namespaced.
+## Namespace + machine-source boundary
 
-## Namespace + machine-source boundary (pending #2123)
-
-The namespace model below lands with the #2123 surface work; it is the
-caller-derived symmetry the wired engine will follow. The caller's resolved
+Meetings follow caller-derived namespace symmetry: the caller's resolved
 namespace determines where meeting inputs are read and outputs are written,
 **except** machine-scoped screen activity, which is global.
 
@@ -204,7 +213,7 @@ namespace determines where meeting inputs are read and outputs are written,
 Operator/CLI callers carry the default principal and resolve to
 `config.defaultNamespace`, preserving pre-#1900 single-tenant behavior.
 
-## Degradation matrix (full engine, once wired)
+## Degradation matrix
 
 | Available data | Behavior |
 |---|---|
@@ -214,6 +223,7 @@ Operator/CLI callers carry the default principal and resolve to
 | provider transcripts only | provider detection from conversation metadata |
 | multiple audio sources | one meeting, fused transcript, corroboration recorded |
 | late-arriving source | re-fuse + re-score on the next build (contentHash changes) |
+| non-default caller namespace | audio-only (no global activity reader) |
 | `meetings.enabled: false` | zero behavior on every surface |
 
 ## Non-goals
