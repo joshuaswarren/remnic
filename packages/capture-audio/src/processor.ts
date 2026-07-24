@@ -108,11 +108,12 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   async function process(event: ChunkEvent): Promise<void> {
     const chunkId = chunkStableId(event);
     if (processedThisRun.has(chunkId)) return; // in-run replay: already handled
-    // Durable (cross-restart) replay: this chunk was already applied in a prior
-    // run, so its segments AND speaker-cluster updates are persisted. Skip it
-    // entirely — re-running transcription/diarization would re-consume the
-    // embedding and corrupt the cluster centroid/count.
-    if (deps.spool.isChunkApplied(chunkId) || deps.spool.isChunkApplied(`${chunkId}:0`)) {
+    // Durable (cross-restart) FULL replay: a completed chunk wrote a per-chunk
+    // ':done' marker, so its segments AND cluster updates are persisted. Skip
+    // transcription + diarization entirely. A PARTIAL replay (crash between
+    // group appends) has no marker, so it falls through and per-group
+    // idempotency re-appends only the missing groups below.
+    if (deps.spool.isChunkApplied(`${chunkId}:done`)) {
       processedThisRun.add(chunkId);
       return;
     }
@@ -152,54 +153,62 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // must remain the wearer signal until voice enrollment lands.
     const selfVoiceEnrolled =
       deps.diarizer !== undefined && deps.diarizer.clusters().some((c) => c.isSelf && c.embeddingCount > 0);
-    const segments: AssemblySegment[] = [];
+    // Build base segments WITHOUT diarization; diarization is applied lazily per
+    // group below, only for groups that will actually be appended, so a partial
+    // replay never re-embeds an already-applied group (which would corrupt its
+    // speaker centroid/count). Each base segment carries its raw segment for the
+    // lazy embedding.
+    const built: Array<{ seg: AssemblySegment; raw: TranscribedSegment }> = [];
     for (const s of raw) {
       const text = s.text.trim();
       if (text === "") continue;
-      // Diarization: embed the segment and assign it to a stable speaker cluster;
-      // isWearer comes from the assigned cluster's self flag. When self is only
-      // label-enrolled (no embedding), keep the mic=wearer heuristic rather than
-      // mis-attribute the wearer's own mic speech to a fresh guest cluster.
-      let speakerCluster: string | null = null;
-      let isWearer = event.channel === "mic";
-      if (deps.embed && deps.diarizer) {
-        const embedding = await deps.embed(event, s);
-        speakerCluster = deps.diarizer.assign(embedding);
-        const assigned = deps.diarizer.clusters().find((c) => c.id === speakerCluster);
-        isWearer = assigned?.isSelf ?? false;
-        if (!isWearer && event.channel === "mic" && !selfVoiceEnrolled) isWearer = true;
-      }
-      segments.push({
-        channel: event.channel,
-        text,
-        startUtc: s.startUtc,
-        endUtc: s.endUtc,
-        isWearer,
-        ...(speakerCluster !== null ? { speakerCluster } : {}),
+      built.push({
+        seg: { channel: event.channel, text, startUtc: s.startUtc, endUtc: s.endUtc, isWearer: event.channel === "mic" },
+        raw: s,
       });
     }
 
-    if (segments.length > 0) {
+    if (built.length > 0) {
       // Segments usually land in one conversation, but a gap >= threshold (or
       // conversationGapMinutes = 0) can split them intra-chunk. Group by the
       // conversation the assembler places each segment in.
-      const groups: Array<{ id: string; startedAtUtc: string; segs: AssemblySegment[] }> = [];
-      for (const seg of segments) {
-        const conv = deps.assembler.add(seg);
+      const groups: Array<{
+        id: string;
+        startedAtUtc: string;
+        items: Array<{ seg: AssemblySegment; raw: TranscribedSegment }>;
+      }> = [];
+      for (const item of built) {
+        const conv = deps.assembler.add(item.seg);
         const last = groups[groups.length - 1];
-        if (last && last.id === conv.id) last.segs.push(seg);
-        else groups.push({ id: conv.id, startedAtUtc: conv.startedAtUtc, segs: [seg] });
+        if (last && last.id === conv.id) last.items.push(item);
+        else groups.push({ id: conv.id, startedAtUtc: conv.startedAtUtc, items: [item] });
       }
       // Append each group, finalizing a conversation only once we move past it
-      // — i.e. AFTER its rows have been appended — so no segment is ever added
-      // to an already-finalized conversation, and a gap-closed conversation
-      // doesn't linger as `capturing`.
+      // (AFTER its rows are appended). A group already applied in a prior run is
+      // skipped so the SAME chunk's later, unpersisted groups still append.
       for (let g = 0; g < groups.length; g++) {
         const grp = groups[g];
+        const key = groups.length === 1 ? chunkId : `${chunkId}:${g}`;
+        if (deps.spool.isChunkApplied(key)) {
+          openConversationId = grp.id;
+          continue;
+        }
         if (openConversationId !== null && openConversationId !== grp.id) {
           finalizeConv(openConversationId);
         }
-        const key = groups.length === 1 ? chunkId : `${chunkId}:${g}`;
+        // Diarize this group now (lazily), only because it will be appended.
+        if (deps.embed && deps.diarizer) {
+          for (const item of grp.items) {
+            const embedding = await deps.embed(event, item.raw);
+            const clusterId = deps.diarizer.assign(embedding);
+            const assigned = deps.diarizer.clusters().find((c) => c.id === clusterId);
+            let isWearer = assigned?.isSelf ?? false;
+            // Label-only self can't match live audio: keep the mic=wearer heuristic.
+            if (!isWearer && event.channel === "mic" && !selfVoiceEnrolled) isWearer = true;
+            item.seg.isWearer = isWearer;
+            item.seg.speakerCluster = clusterId;
+          }
+        }
         deps.spool.appendAssembledSegments({
           idempotencyKey: key,
           chunkId: key,
@@ -208,14 +217,14 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           state: "capturing",
           device: event.device,
           wavPath: event.path,
-          segments: grp.segs,
+          segments: grp.items.map((it) => it.seg),
         });
         // Persist any speaker clusters referenced by the just-appended segments
         // immediately, so a kill-9 after this durable append cannot lose the
         // cluster map and let the next voice reuse an id (mis-attribution).
         if (deps.diarizer) {
           const touched = new Set(
-            grp.segs.map((s) => s.speakerCluster).filter((id): id is string => typeof id === "string"),
+            grp.items.map((it) => it.seg.speakerCluster).filter((id): id is string => typeof id === "string"),
           );
           if (touched.size > 0) {
             const byId = new Map(deps.diarizer.clusters().map((c) => [c.id, c]));
@@ -238,6 +247,10 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       }
     }
 
+    // Mark the whole chunk complete only after every group appended, so a later
+    // full replay skips transcription + diarization; a crash before here leaves
+    // no marker and the missing groups re-append on replay.
+    deps.spool.markChunkComplete(chunkId, openConversationId ?? "-");
     processedThisRun.add(chunkId);
     // A successful transcription (even an empty/silent one) means the chunk is
     // fully handled, so reclaim its raw WAV. A FAILED transcription throws

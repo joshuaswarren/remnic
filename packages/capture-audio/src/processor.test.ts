@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { ConversationAssembler } from "./assembly.js";
 import type { ChunkEvent } from "./native.js";
-import { createChunkProcessor, type ChunkProcessorDeps } from "./processor.js";
+import { chunkStableId, createChunkProcessor, type ChunkProcessorDeps } from "./processor.js";
 import { Spool } from "./spool.js";
 import type { TranscribedSegment } from "./stt.js";
 import { SpeakerClusterer, type Embedding } from "./diarization.js";
@@ -495,19 +495,67 @@ test("a durable replay does not re-consume the embedding or corrupt the cluster"
     const before = spool.readSpeakerClusters();
     assert.equal(before.length, 1);
     const count0 = before[0].embeddingCount;
-    // Restart replays the SAME chunk (same WAV path -> same stable id).
+    // Restart replays the SAME chunk (same WAV path -> same stable id). The
+    // ':done' marker from run 1 must make run 2 skip transcription AND embedding
+    // entirely, not merely avoid mutating the cluster.
+    let transcribeCalls = 0;
+    let embedCalls = 0;
     const run2 = createChunkProcessor(
       deps(spool, {
         diarizer: new SpeakerClusterer(0.7, spool.readSpeakerClusters()),
-        embed: () => guest,
-        transcribe: async () => [{ text: "guest", startUtc: t(1), endUtc: t(2) }],
+        embed: () => {
+          embedCalls++;
+          return guest;
+        },
+        transcribe: async () => {
+          transcribeCalls++;
+          return [{ text: "guest", startUtc: t(1), endUtc: t(2) }];
+        },
       }),
     );
     run2.enqueue(chunk());
     await run2.finalize();
+    assert.equal(transcribeCalls, 0, "a full replay skips transcription");
+    assert.equal(embedCalls, 0, "a full replay skips embedding");
     const after = spool.readSpeakerClusters();
     assert.equal(after.length, 1, "a replay creates no new cluster");
     assert.equal(after[0].embeddingCount, count0, "a replay did not inflate the embedding count");
+  } finally {
+    spool.close();
+  }
+});
+
+test("partial-chunk replay appends the missing tail group instead of skipping the whole chunk", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    const ev = chunk({ path: "/tmp/raw/multi.wav" });
+    const cid = chunkStableId(ev);
+    // Simulate a kill-9 AFTER group 0 appended but BEFORE group 1 / the :done
+    // marker: persist only group 0 under its per-group key.
+    spool.appendAssembledSegments({
+      idempotencyKey: `${cid}:0`,
+      chunkId: `${cid}:0`,
+      conversationId: "conv_grp0",
+      startedAtUtc: t(1),
+      state: "capturing",
+      segments: [{ channel: "mic", text: "first group", startUtc: t(1), endUtc: t(2), isWearer: true }],
+    });
+    assert.equal(spool.stats().segments, 1);
+    assert.equal(spool.isChunkApplied(`${cid}:done`), false);
+    // Replay the whole chunk; gapMinutes 0 splits its two segments into two groups.
+    const proc = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        transcribe: async () => [
+          { text: "first group", startUtc: t(1), endUtc: t(2) },
+          { text: "second group", startUtc: t(30), endUtc: t(31) },
+        ],
+      }),
+    );
+    proc.enqueue(ev);
+    await proc.finalize();
+    assert.equal(spool.stats().segments, 2, "the previously-lost tail group was appended; group 0 not duplicated");
+    assert.equal(spool.isChunkApplied(`${cid}:done`), true, "the chunk is now marked complete");
   } finally {
     spool.close();
   }

@@ -534,6 +534,17 @@ export class Spool {
   }
 
   /**
+   * Record that a whole chunk finished (every group appended) via a `<id>:done`
+   * marker, so a later full replay can skip transcription + diarization. A crash
+   * before this leaves no marker, so the missing groups re-append on replay.
+   */
+  markChunkComplete(chunkId: string, conversationId: string): void {
+    this.#db
+      .prepare("INSERT OR IGNORE INTO applied_chunks(idempotency_key, conversation_id, applied_at_utc) VALUES (?,?,?)")
+      .run(`${chunkId}:done`, conversationId, new Date().toISOString());
+  }
+
+  /**
    * The newest still-`capturing` conversation, so a chunk arriving after a
    * process restart continues it (subject to the assembler's gap rule) instead
    * of splitting off a new one. Null when none is open.
