@@ -284,7 +284,7 @@ export class Spool {
     const rows = this.#db
       .prepare(
         `SELECT ${SELECT_COLUMNS} FROM snapshots ` +
-          "WHERE captured_at_utc >= ? AND captured_at_utc < ? " +
+          "WHERE superseded_by IS NULL AND captured_at_utc >= ? AND captured_at_utc < ? " +
           "AND (captured_at_utc > ? OR (captured_at_utc = ? AND id > ?)) " +
           "ORDER BY captured_at_utc ASC, id ASC LIMIT ?",
       )
@@ -303,7 +303,7 @@ export class Spool {
     const { startUtc, endUtc } = activityDayWindow(date, timezone);
     const rows = this.#db
       .prepare(
-        `SELECT ${SELECT_COLUMNS} FROM snapshots WHERE captured_at_utc >= ? AND captured_at_utc < ? ` +
+        `SELECT ${SELECT_COLUMNS} FROM snapshots WHERE superseded_by IS NULL AND captured_at_utc >= ? AND captured_at_utc < ? ` +
           "ORDER BY captured_at_utc ASC, id ASC",
       )
       .all(startUtc, endUtc) as unknown as SnapshotRow[];

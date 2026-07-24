@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { CaptureInputError } from "./errors.js";
@@ -92,4 +92,10 @@ test("a partial/invalid-JSON helper throws", async () => {
 test("ax-snapshot rejects a payload missing required window fields", async () => {
   const bad = fakeHelper("badax.js", `process.stdout.write(JSON.stringify({ tree: {} }));`);
   await assert.rejects(new NativeHelper(bad).axSnapshot(), CaptureInputError);
+});
+
+test("an env override expands a leading ~ to the home directory", async () => {
+  const res = await resolveHelperBinaryPath({ REMNIC_CAPTURE_HELPER_BIN: "~/remnic/helper" });
+  assert.equal(res.binaryPath, path.join(homedir(), "remnic", "helper"));
+  assert.equal(res.hint, null);
 });

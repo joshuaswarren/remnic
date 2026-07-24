@@ -127,6 +127,17 @@ test("querySnapshots pages by a stable keyset within a half-open local day", () 
   assert.deepEqual(nextDay.snapshots.map((s) => s.text), ["next"]);
 });
 
+test("querySnapshots and daySnapshots exclude superseded rows", () => {
+  const spool = open();
+  const first = spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T10:00:00.000Z", windowTitle: "w", text: "v1" }), GAP);
+  const second = spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T10:00:05.000Z", windowTitle: "w", text: "v2" }), GAP);
+  assert.equal(second.supersededId, first.id);
+  const page = spool.querySnapshots({ date: "2026-07-20", timezone: "UTC", limit: 10 });
+  assert.deepEqual(page.snapshots.map((s) => s.text), ["v2"], "a superseded row must not be served");
+  const day = spool.daySnapshots("2026-07-20", "UTC");
+  assert.deepEqual(day.map((s) => s.text), ["v2"]);
+});
+
 test("latestFingerprints returns the newest non-superseded row per window", () => {
   const spool = open();
   spool.insertSnapshot(snap({ capturedAtUtc: "2026-07-20T10:00:00.000Z", windowTitle: "w", text: "v1" }), GAP);

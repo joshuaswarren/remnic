@@ -21,6 +21,7 @@ import { spawn } from "node:child_process";
 
 import type { AxNode } from "./axtree.js";
 import { CaptureInputError } from "./errors.js";
+import { expandTilde } from "./paths.js";
 
 /** Max helper stdout we will buffer (guards a runaway child). */
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -58,7 +59,7 @@ function isModuleNotFound(err: unknown): boolean {
  */
 export async function resolveHelperBinaryPath(env: NodeJS.ProcessEnv = process.env): Promise<HelperResolution> {
   const override = env.REMNIC_CAPTURE_HELPER_BIN?.trim();
-  if (override) return { binaryPath: override, hint: null };
+  if (override) return { binaryPath: expandTilde(override), hint: null };
 
   const pkg = helperPackageName();
   try {

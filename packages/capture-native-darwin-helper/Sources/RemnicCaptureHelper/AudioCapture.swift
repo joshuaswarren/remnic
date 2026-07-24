@@ -86,7 +86,9 @@ private final class MicrophoneCapture {
 
     /// Bind the AVAudioEngine input to a specific CoreAudio device.
     private static func selectInputDevice(_ deviceID: AudioDeviceID, on engine: AVAudioEngine) throws {
-        guard let audioUnit = engine.inputNode.audioUnit else { return }
+        guard let audioUnit = engine.inputNode.audioUnit else {
+            throw HelperError(message: "cannot bind --device: input node exposes no audio unit", exitCode: 1)
+        }
         var mutableID = deviceID
         let status = AudioUnitSetProperty(
             audioUnit,
