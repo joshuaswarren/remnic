@@ -474,12 +474,12 @@ async function cmdStart(
     const shutdown = () => {
       if (closing) return;
       closing = true;
-      scheduler?.stop();
-      // Cancel any in-flight replay and drain it before closing the spool so no
-      // ingestion write can ever hit a closed database.
+      // Stop the capture loop and cancel replay, then drain BOTH before closing
+      // the spool so no capture/ingestion write can ever hit a closed database.
       replayAbort.abort();
-      void replayTask
+      void Promise.resolve(scheduler?.stop())
         .catch(() => undefined)
+        .then(() => replayTask.catch(() => undefined))
         .then(() => handle.close().catch(() => undefined))
         .finally(() => {
           spool.close();

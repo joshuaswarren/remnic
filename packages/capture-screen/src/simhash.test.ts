@@ -34,3 +34,14 @@ test("hex rendering is fixed 16-char and round-trips", () => {
   assert.equal(simhashFromHex(hex), h);
   assert.equal(simhashToHex(0n), "0000000000000000");
 });
+
+test("non-ASCII text tokenizes so distinct CJK/Cyrillic captures are not false-deduped", () => {
+  const a = simhash("日本語 の テキスト ウィンドウ 会議 メモ 予定");
+  const b = simhash("完全 に 異なる 内容 プログラム 出力 結果");
+  const cyr = simhash("привет мир это окно с текстом сегодня утром");
+  assert.notEqual(a, 0n, "non-ASCII text must not collapse to an empty fingerprint");
+  assert.notEqual(b, 0n);
+  assert.notEqual(cyr, 0n);
+  assert.ok(hammingDistance(a, b) > 0, "different CJK text must differ");
+  assert.ok(hammingDistance(a, cyr) > 0);
+});

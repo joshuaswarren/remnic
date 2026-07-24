@@ -7,16 +7,21 @@ import type { AxSnapshot, NativeHelper } from "./helper.js";
 import { CaptureScheduler, type SchedulerClock } from "./scheduler.js";
 import { Spool } from "./spool.js";
 
-function makeClock(): SchedulerClock & { nowMs: number } {
+function makeClock(): SchedulerClock & { nowMs: number; fire(): void } {
+  let fn: (() => void) | null = null;
   const clock = {
     nowMs: 0,
     now() {
       return clock.nowMs;
     },
-    setInterval() {
-      return 0 as unknown as ReturnType<typeof setInterval>;
+    setInterval(f: () => void) {
+      fn = f;
+      return 1 as unknown as ReturnType<typeof setInterval>;
     },
     clearInterval() {},
+    fire() {
+      fn?.();
+    },
   };
   return clock;
 }
@@ -103,5 +108,79 @@ test("scheduler surfaces helper errors via onError and keeps running", async () 
   assert.equal(errors.length, 1);
   assert.equal(spool.countSnapshots(), 0);
 
+  spool.close();
+});
+
+test("stop() drains an in-flight tick before resolving", async () => {
+  const config = { ...defaultDaemonConfig(), settleMs: 0, idleFallbackSeconds: 1 };
+  const spool = new Spool(":memory:");
+  const processor = new CaptureProcessor(config);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const helper = {
+    axSnapshot: async () => {
+      await gate;
+      return axWindow("Safari", "Docs", "text body here");
+    },
+    ocrWindow: async () => "",
+  } as unknown as NativeHelper;
+  const clock = makeClock();
+  const scheduler = new CaptureScheduler(helper, processor, spool, config, {}, clock);
+  scheduler.start();
+  clock.fire(); // begins a tick that blocks on the gate
+
+  let stopResolved = false;
+  const stopping = scheduler.stop().then(() => {
+    stopResolved = true;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(stopResolved, false, "stop() must await the in-flight tick");
+  release();
+  await stopping;
+  assert.equal(stopResolved, true);
+  spool.close();
+});
+
+test("idle fallback never preempts a change still inside its settle window", async () => {
+  const config = { ...defaultDaemonConfig(), settleMs: 10000, idleFallbackSeconds: 1 };
+  const spool = new Spool(":memory:");
+  const processor = new CaptureProcessor(config);
+  const state = { snap: axWindow("Safari", "Docs", "settle text body"), ocr: "" };
+  const clock = makeClock();
+  const scheduler = new CaptureScheduler(fakeHelper(state), processor, spool, config, {}, clock);
+  clock.nowMs = 0;
+  await scheduler.tick(); // change → pending
+  clock.nowMs = 2000; // idle due (>=1000) but settle not (<10000)
+  await scheduler.tick();
+  assert.equal(spool.countSnapshots(), 0, "must not idle-capture a still-settling change");
+  clock.nowMs = 10001;
+  await scheduler.tick();
+  assert.equal(spool.countSnapshots(), 1);
+  spool.close();
+});
+
+test("a deny-listed window is never OCR'd (deny preflight)", async () => {
+  const config = { ...defaultDaemonConfig(), settleMs: 0, idleFallbackSeconds: 1 };
+  const spool = new Spool(":memory:");
+  const processor = new CaptureProcessor(config);
+  let ocrCalls = 0;
+  const helper = {
+    axSnapshot: async () => ({ app: "1Password 8", windowTitle: "Vault", tree: { role: "AXWindow" } }) as AxSnapshot,
+    ocrWindow: async () => {
+      ocrCalls += 1;
+      return "secret";
+    },
+  } as unknown as NativeHelper;
+  const clock = makeClock();
+  const scheduler = new CaptureScheduler(helper, processor, spool, config, {}, clock);
+  clock.nowMs = 0;
+  await scheduler.tick(); // change
+  clock.nowMs = 10;
+  await scheduler.tick(); // settle(0) → denied, no OCR
+  assert.equal(ocrCalls, 0, "must not OCR a deny-listed window");
+  assert.equal(spool.countSnapshots(), 0);
   spool.close();
 });

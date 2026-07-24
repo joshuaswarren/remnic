@@ -46,6 +46,7 @@ export class CaptureScheduler {
   readonly #clock: SchedulerClock;
   #timer: ReturnType<typeof setInterval> | null = null;
   #inflight = false;
+  #current: Promise<void> | null = null;
   #lastKey: string | null = null;
   #changeAt = 0;
   #pending = false;
@@ -70,14 +71,21 @@ export class CaptureScheduler {
   /** Begin polling. Idempotent; stops automatically when `signal` aborts. */
   start(signal?: AbortSignal): void {
     if (this.#timer !== null) return;
-    this.#timer = this.#clock.setInterval(() => void this.tick(), this.#config.pollIntervalMs);
-    signal?.addEventListener("abort", () => this.stop(), { once: true });
+    this.#timer = this.#clock.setInterval(() => {
+      this.#current = this.tick();
+    }, this.#config.pollIntervalMs);
+    signal?.addEventListener("abort", () => void this.stop(), { once: true });
   }
 
-  stop(): void {
+  /** Stop polling and await any in-flight tick, so a caller can safely close
+   *  shared resources (the spool) once this resolves. */
+  async stop(): Promise<void> {
     if (this.#timer !== null) {
       this.#clock.clearInterval(this.#timer);
       this.#timer = null;
+    }
+    if (this.#current !== null) {
+      await this.#current.catch(() => undefined);
     }
   }
 
@@ -108,7 +116,9 @@ export class CaptureScheduler {
       }
 
       const settled = this.#pending && now - this.#changeAt >= this.#config.settleMs;
-      const idle = now - this.#lastCaptureAt >= this.#config.idleFallbackSeconds * 1000;
+      // Idle is a heartbeat for an UNCHANGED foreground; it must not preempt a
+      // change that is still inside its settle window.
+      const idle = !this.#pending && now - this.#lastCaptureAt >= this.#config.idleFallbackSeconds * 1000;
       if (!settled && !idle) return;
 
       const decision = await captureFromSnapshot(

@@ -12,6 +12,7 @@
 
 import { extractAxText } from "./axtree.js";
 import { isTerminalApp } from "./capture.js";
+import { matchDenyRule } from "./denylist.js";
 import type { CaptureCandidate, CaptureDecision, CaptureProcessor } from "./capture.js";
 import type { DaemonConfig } from "./config.js";
 import type { AxSnapshot, NativeHelper } from "./helper.js";
@@ -45,7 +46,17 @@ export async function captureFromSnapshot(
     windowTitle: snap.windowTitle,
     ...(snap.browserUrl != null ? { browserUrl: snap.browserUrl } : {}),
   };
-  if (isTerminalApp(snap.app, config.terminalApps) || axText.trim() === "") {
+  // Deny preflight: never OCR/screen-capture a deny-listed window. process()
+  // applies deny too, but only AFTER text extraction — so without this an OCR
+  // call would fire against a denied window before the rule is checked.
+  const denied =
+    matchDenyRule(
+      { app: snap.app, windowTitle: snap.windowTitle, browserUrl: snap.browserUrl ?? null },
+      { apps: config.denyApps, titles: config.denyTitles, urls: config.denyUrls },
+    ) !== null;
+  if (denied) {
+    // Leave text-less; processor.process denies it below (no OCR ran).
+  } else if (isTerminalApp(snap.app, config.terminalApps) || axText.trim() === "") {
     try {
       const ocrText = await helper.ocrWindow({ frontmost: true });
       if (ocrText.trim() !== "") {
