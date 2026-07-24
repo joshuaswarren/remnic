@@ -1207,9 +1207,10 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
    */
   dreamsPhases: DreamsPhasesConfig;
   procedural: ProceduralConfig;
-  /** Extraction-pipeline liveness watermark + staleness gate (issue #2151). */
   extractionLiveness: ExtractionLivenessConfig;
-  /** Claim-level provenance spans (issue #1575); see `ProvenanceConfig` for documented defaults. */
+  /** Claim-level provenance spans (#1575); see `ProvenanceConfig` for defaults.
+   * PR 1 parses + persists only; extraction wiring lands in PR 2.
+   */
   provenance: ProvenanceConfig;
   /**
    * Wearable transcript ingestion (Limitless / Bee / Omi connectors).
