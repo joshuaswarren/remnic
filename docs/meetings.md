@@ -61,8 +61,10 @@ inputs (already on disk, per day):
 ```
 
 A wearables/activity sync (auto-sync **and** manual CLI/MCP/HTTP sync) triggers
-a debounced meetings build for the affected days through an `onDaysSynced` hook,
-so meetings appear without a separate command.
+a debounced meetings build for the affected days: wearables syncs via the
+`WearablesService` `onDaysSynced` hook, screen-activity syncs via the
+scheduler's `onActivitySynced` hook (`requestBuildForActivitySync`), so meetings
+appear without a separate command.
 
 ## Detection (`detect.ts`)
 
@@ -135,7 +137,8 @@ drives it:
    (`computeTrustScore` + `decideSmart`) with provenance
    `{meetingId, meetingDate, meetingApp, transcriptSources}`:
    - `off` → episode only; the LLM extractor is never invoked.
-   - `review` → every candidate queued `pending_review`.
+   - `review` → every candidate queued `pending_review`, except an explicit
+     judge `reject`, which is dropped even in review mode.
    - `smart` → judge verdict + trust bands (`autoApproveTrust`/`reviewTrust`)
      route each candidate to active / review / drop; ≥ 2 transcript sources
      corroborate (trust boost). A throwing/absent judge degrades gracefully
@@ -174,9 +177,9 @@ are unchanged.
 - **HTTP** (access server, token-gated) — `GET /engram/v1/meetings` (list),
   `GET /engram/v1/meetings/:id` (get), `POST /engram/v1/meetings/build`. The
   `/remnic/v1/...` prefix is an accepted alias of `/engram/v1/...`.
-- **Auto-build** — a wearables/activity sync (auto and manual) rebuilds affected
-  days via the `onDaysSynced` hook and the meetings service's debounced
-  `requestBuild`.
+- **Auto-build** — a wearables sync (auto and manual) rebuilds affected days via
+  the `onDaysSynced` hook, and a screen-activity sync via the `onActivitySynced`
+  hook, both feeding the meetings service's debounced `requestBuild`.
 
 ## Namespace + machine-source boundary
 
