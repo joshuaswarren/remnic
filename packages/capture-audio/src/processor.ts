@@ -81,6 +81,24 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       chunkStartedAtUtc: event.startedAtUtc,
     });
 
+    // Recover the newest still-open conversation once (any chunk, incl. silent)
+    // so a post-restart chunk continues it; then finalize a stale open
+    // conversation when this chunk arrives a gap past it. Pure-silence runs
+    // never call assembler.add, so closeIfIdle is what closes them.
+    if (!recovered) {
+      recovered = true;
+      const prior = deps.spool.latestCapturingConversation();
+      if (prior) {
+        deps.assembler.resume(prior);
+        openConversationId = prior.id;
+      }
+    }
+    const closed = deps.assembler.closeIfIdle(event.startedAtUtc);
+    if (closed !== null && closed === openConversationId) {
+      deps.spool.finalizeConversation(closed);
+      openConversationId = null;
+    }
+
     const segments: AssemblySegment[] = [];
     for (const s of raw) {
       const text = s.text.trim();
@@ -98,19 +116,6 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     }
 
     if (segments.length > 0) {
-      // After a restart the assembler is empty; recover the newest still-open
-      // conversation from the spool once, so an adjacent chunk continues it
-      // instead of splitting. The assembler's own gap rule then decides
-      // continue-vs-new; a truly stale open conversation is left for stop-time
-      // finalization.
-      if (!recovered) {
-        recovered = true;
-        const prior = deps.spool.latestCapturingConversation();
-        if (prior) {
-          deps.assembler.resume(prior);
-          openConversationId = prior.id;
-        }
-      }
       // Segments usually land in one conversation, but a gap >= threshold (or
       // conversationGapMinutes = 0) can split them intra-chunk. Group by the
       // conversation the assembler places each segment in.

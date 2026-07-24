@@ -166,6 +166,20 @@ export class ConversationAssembler {
     return this.#conversations.map((conv) => ({ ...conv, segments: conv.segments.slice() }));
   }
 
+  /**
+   * Finalize the open conversation when `nowUtc` is at least the gap past its
+   * last segment, so a run of silent chunks (which carry no segments to `add`)
+   * still closes a conversation instead of leaving it `capturing` until stop.
+   * Returns the closed conversation's id, or null when nothing closed.
+   */
+  closeIfIdle(nowUtc: string): string | null {
+    const open = this.#open();
+    if (!open) return null;
+    if (epochMs(nowUtc, "nowUtc") - epochMs(open.endedAtUtc, "endedAtUtc") < this.#gapMs) return null;
+    open.state = "final";
+    return open.id;
+  }
+
   #open(): AssembledConversation | undefined {
     const last = this.#conversations[this.#conversations.length - 1];
     return last && last.state === "capturing" ? last : undefined;

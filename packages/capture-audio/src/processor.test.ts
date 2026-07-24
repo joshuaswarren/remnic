@@ -144,3 +144,28 @@ test("a within-chunk gap (gapMinutes 0) splits one chunk into separate conversat
     spool.close();
   }
 });
+
+test("silent chunks after speech finalize the conversation once the gap elapses", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    let call = 0;
+    const proc = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 5 }),
+        transcribe: async () =>
+          call++ === 0
+            ? [{ text: "hi", startUtc: "2026-07-24T00:00:00.000Z", endUtc: "2026-07-24T00:00:02.000Z" }]
+            : [],
+      }),
+    );
+    proc.enqueue(chunk({ startedAtUtc: "2026-07-24T00:00:00.000Z", endedAtUtc: "2026-07-24T00:00:05.000Z" }));
+    await proc.drain();
+    assert.ok(spool.latestCapturingConversation()); // open after speech
+    // A later silent chunk, a gap past the open conversation, closes it.
+    proc.enqueue(chunk({ path: "/tmp/raw/silent.wav", startedAtUtc: "2026-07-24T00:10:00.000Z", endedAtUtc: "2026-07-24T00:10:05.000Z" }));
+    await proc.drain();
+    assert.equal(spool.latestCapturingConversation(), null); // finalized by silence
+  } finally {
+    spool.close();
+  }
+});

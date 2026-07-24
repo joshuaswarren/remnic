@@ -89,3 +89,12 @@ test("ConversationAssembler rejects a negative gap but allows zero (config agree
   assert.throws(() => new ConversationAssembler({ gapMinutes: -1 }));
   assert.doesNotThrow(() => new ConversationAssembler({ gapMinutes: 0 }));
 });
+
+test("closeIfIdle finalizes the open conversation after a gap of silence", () => {
+  const a = new ConversationAssembler({ gapMinutes: 5, makeId: () => "conv_1" });
+  a.add(seg("2026-07-24T00:00:00.000Z", "2026-07-24T00:00:02.000Z"));
+  assert.equal(a.closeIfIdle("2026-07-24T00:02:00.000Z"), null); // within the gap -> stays open
+  assert.equal(a.closeIfIdle("2026-07-24T00:10:00.000Z"), "conv_1"); // gap elapsed -> closes
+  assert.equal(a.conversations()[0].state, "final");
+  assert.equal(a.closeIfIdle("2026-07-24T00:20:00.000Z"), null); // nothing open
+});

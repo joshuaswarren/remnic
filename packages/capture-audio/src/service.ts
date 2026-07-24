@@ -142,12 +142,15 @@ export function planService(deps: PlanServiceDeps): ServicePlan {
     };
   }
   if (deps.platform === "linux") {
-    const target = path.join(deps.home, ".config", "systemd", "user", SYSTEMD_UNIT_NAME);
+    // Honor a custom --label so distinct installs get distinct units; the
+    // default keeps the clean canonical unit name.
+    const unitName = deps.spec.label ? `${label}.service` : SYSTEMD_UNIT_NAME;
+    const target = path.join(deps.home, ".config", "systemd", "user", unitName);
     return {
       platform: deps.platform,
       path: target,
       contents: renderSystemdUnit(deps.spec),
-      loadHint: `systemctl --user enable --now ${SYSTEMD_UNIT_NAME}`,
+      loadHint: `systemctl --user enable --now ${unitName}`,
     };
   }
   throw new CaptureConfigError(`install-service is unsupported on platform "${deps.platform}"`);

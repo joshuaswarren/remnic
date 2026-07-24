@@ -709,6 +709,9 @@ function cmdInstallService(
     stdout(removed ? `removed ${plan.path}` : `no capture-audio service installed at ${plan.path}`);
     return 0;
   }
+  // The unit's StandardOut/Err path is under baseDir; create it now so launchd/
+  // systemd can write logs even when install-service is the first command run.
+  ensurePrivateDir(paths.baseDir);
   const plan = installService({
     platform,
     home,

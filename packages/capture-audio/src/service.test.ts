@@ -147,3 +147,9 @@ test("service renderers persist the environment (PATH + helper override)", () =>
   assert.match(plist, /<key>EnvironmentVariables<\/key>/);
   assert.match(plist, /<key>PATH<\/key>/);
 });
+
+test("planService honors a custom --label for the Linux unit name", () => {
+  const plan = planService({ platform: "linux", home: "/home/u", spec: { ...SPEC, label: "my-cap" } });
+  assert.equal(plan.path, "/home/u/.config/systemd/user/my-cap.service");
+  assert.match(plan.loadHint, /my-cap\.service/);
+});

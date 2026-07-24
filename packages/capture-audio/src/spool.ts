@@ -404,6 +404,7 @@ export class Spool {
     const state: ConversationState = input.state ?? "capturing";
     const chunkChannel = segments[0]?.channel ?? "mic";
     const lastEnd = segments[segments.length - 1].endUtc;
+    const chunkStart = segments[0].startUtc;
 
     const db = this.#db;
     db.exec("BEGIN");
@@ -417,7 +418,7 @@ export class Spool {
       }
       db.prepare(
         "INSERT OR IGNORE INTO chunks(id, channel, device, started_at_utc, ended_at_utc, status, wav_path) VALUES (?,?,?,?,?,?,?)",
-      ).run(chunkId, chunkChannel, input.device ?? null, startedAtUtc, lastEnd, "transcribed", input.wavPath ?? null);
+      ).run(chunkId, chunkChannel, input.device ?? null, chunkStart, lastEnd, "transcribed", input.wavPath ?? null);
       const existing = db.prepare("SELECT id FROM conversations WHERE id = ?").get(convId) as { id: string } | undefined;
       if (!existing) {
         db.prepare(
