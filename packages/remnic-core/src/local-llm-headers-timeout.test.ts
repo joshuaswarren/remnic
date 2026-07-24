@@ -3,7 +3,13 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 
-import { Agent, fetch as undiciFetch } from "undici";
+import {
+  Agent,
+  ProxyAgent,
+  fetch as undiciFetch,
+  getGlobalDispatcher,
+  setGlobalDispatcher,
+} from "undici";
 
 import { LocalLlmClient } from "./local-llm.js";
 import { ChatTransport } from "./local-llm-transport.js";
@@ -68,7 +74,9 @@ function dispatcherOf(client: LocalLlmClient): Agent {
     chatTransport: ChatTransport;
     config: PluginConfig;
   };
-  return seam.chatTransport.dispatcherFor(seam.config.localLlmTimeoutMs);
+  const agent = seam.chatTransport.dispatcherFor(seam.config.localLlmTimeoutMs);
+  assert.ok(agent, "expected a widened pool under the default global dispatcher");
+  return agent;
 }
 
 function undiciErrorCode(err: unknown): string | undefined {
@@ -226,4 +234,28 @@ test("a completion whose headers lag the request still succeeds", async () => {
   } finally {
     await server.close();
   }
+});
+
+test("a process-wide custom dispatcher is left in place", async () => {
+  // A deployment may reach the local endpoint only through a ProxyAgent (or
+  // another custom connect/TLS/DNS transport) installed with
+  // setGlobalDispatcher. Swapping in our own pool would bypass it and break
+  // the request outright, so the widened pool must stand down.
+  const original = getGlobalDispatcher();
+  const proxy = new ProxyAgent("http://127.0.0.1:9");
+  try {
+    setGlobalDispatcher(proxy);
+    const transport = new ChatTransport();
+    assert.equal(
+      transport.dispatcherFor(900_000),
+      undefined,
+      "must not displace a non-Agent global dispatcher",
+    );
+  } finally {
+    setGlobalDispatcher(original);
+    await proxy.close();
+  }
+
+  // ...and the widened pool returns once the default transport is back.
+  assert.ok(new ChatTransport().dispatcherFor(900_000));
 });
