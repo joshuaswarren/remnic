@@ -107,6 +107,7 @@ const DOCUMENTED_COMMANDS = [
   "import-lossless-claw",
   "xray",
   "wearables",
+  "meetings",
   "capsule",
   "offline",
   "oauth",

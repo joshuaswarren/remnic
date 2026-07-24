@@ -31,7 +31,15 @@ import {
 } from "./service.js";
 import { sealedWriteToLegacyArgs } from "../write-envelope.js";
 import { defaultWearablesConfig, defaultWearableSourceSettings } from "./config.js";
-import type { WearableConversation, WearablesConfig } from "./types.js";
+import {
+  clearWearableConnectors,
+  registerWearableConnector,
+} from "./registry.js";
+import type {
+  WearableConversation,
+  WearableSourceConnector,
+  WearablesConfig,
+} from "./types.js";
 
 function makeStorage(memoryDir: string): WearableStorageIo & {
   files: Map<string, string>;
@@ -1618,6 +1626,59 @@ test("searchTranscripts scan decodes segment text so snippets show the original 
       "snippet has no escaped-newline leak",
     );
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function syncOnlyConnector(): WearableSourceConnector {
+  return {
+    id: "testsource",
+    displayName: "Test Source",
+    async verifyAuth() {
+      return { ok: true };
+    },
+    async fetchConversations() {
+      return { conversations: [], nextCursor: null };
+    },
+  };
+}
+
+test("sync fires onDaysSynced with the synced days so a MANUAL wearables sync triggers the meeting tail-step (issue #1900)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "wearables-on-days-synced-"));
+  try {
+    clearWearableConnectors();
+    registerWearableConnector({
+      id: "testsource",
+      displayName: "Test Source",
+      factory: () => syncOnlyConnector(),
+    });
+    const storage = makeStorage(dir);
+    const synced: string[][] = [];
+    const service = new WearablesService({
+      config: {
+        ...defaultWearablesConfig(),
+        enabled: true,
+        timezone: "UTC",
+        sources: { testsource: { ...defaultWearableSourceSettings(), enabled: true } },
+      },
+      getStorage: async () => storage,
+      extract: null,
+      searchBackend: null,
+      // Stands in for the workspace-ops wiring that calls the meetings service's
+      // debounced requestBuild — the manual HTTP/MCP/CLI sync path reaches this
+      // same shared service, so the tail-step must fire here, not only in the
+      // auto-sync adapter.
+      onDaysSynced: (days) => {
+        synced.push([...days]);
+      },
+    });
+    const summaries = await service.sync({ source: "testsource", days: 1 });
+    const expected = [...new Set(summaries.flatMap((summary) => summary.days))].sort();
+    assert.ok(expected.length > 0, "the sync touched at least one day");
+    assert.equal(synced.length, 1, "the shared sync path fires the meeting tail-step exactly once");
+    assert.deepEqual([...synced[0]!].sort(), expected, "the hook receives the union of synced days");
+  } finally {
+    clearWearableConnectors();
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -171,6 +171,7 @@ import {
   OPERATION_NAMES,
   validateCapabilitiesForMint,
 } from "@remnic/core";
+import { runMeetingsBinaryCommand } from "./commands/meetings.js";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
@@ -404,6 +405,7 @@ type CommandName =
   | "action-confidence"
   | "xray"
   | "wearables"
+  | "meetings"
   | "capsule"
   | "offline"
   | "capture"
@@ -13295,6 +13297,11 @@ Other:
           stdout: process.stdout,
           stderr: process.stderr,
         });
+        // Standalone one-shot: drain the debounced meeting build the sync scheduled
+        // before this short-lived process exits (mirrors cli.ts forwardWearables; NOT the auto-sync path). #2123.
+        if (wearablesArgs[0] === "sync" && code === 0 && wearablesOrchestrator.config.meetings.enabled) {
+          await (await wearablesOrchestrator.getMeetingsService()).flushBuilds();
+        }
         if (code !== 0) process.exitCode = code;
       } catch (err) {
         // Runner errors are our own constructed messages (connector API
@@ -13315,6 +13322,11 @@ Other:
           }
         }
       }
+      break;
+    }
+
+    case "meetings": {
+      await runMeetingsBinaryCommand(rest);
       break;
     }
 
@@ -13565,6 +13577,10 @@ Usage:
     store day transcripts, trust-gated memory creation, speaker labels,
     and per-user corrections. Run "remnic wearables help" for details.
     Connectors install à la carte: npm install @remnic/connector-limitless
+  remnic meetings <list|show|build>
+    Retrospective meetings: list stored records, show one by id, or build
+    (detect + fuse + store) a day's meetings from ingested audio + screen
+    activity. Run "remnic meetings help" for details.
 
   remnic doctor                Run diagnostics
   remnic config                Show current config

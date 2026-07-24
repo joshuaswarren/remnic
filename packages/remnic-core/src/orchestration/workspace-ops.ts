@@ -31,12 +31,23 @@ import type { NamespaceMaintenanceSummary } from "../maintenance/namespace-plann
 import { type PatternReinforcementResult, runPatternReinforcement } from "../maintenance/pattern-reinforcement.js";
 import { evaluateMemoryActionPolicy } from "../memory-action-policy.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
+import { namespaceCollectionName } from "../namespaces/search.js";
 import { parseMemoryActionEligibilityContext } from "../schemas.js";
 import type { SearchBackend } from "../search/port.js";
 import { type AccessTrackingEntry, type MemoryActionEvent, type MemoryFile, type PluginConfig, confidenceTier } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { WearablesService } from "../wearables/service.js";
+import { ActivityStore } from "../activity/store.js";
+import { MeetingsBuilder } from "../meetings/build.js";
+import { createMeetingMemoryGenerator, createMeetingMemoryWriter } from "../meetings/memory-gen.js";
+import { createMeetingSummaryDeps } from "../meetings/summary-extractor.js";
+import {
+  ActivityWearablesMeetingsDaySource,
+  storageWearableDayReader,
+  type MeetingsActivityReader,
+} from "../meetings/day-source.js";
+import { MeetingsService } from "../meetings/service.js";
 import { qmdCollectionPathParts, qmdResultPathCandidates } from "./qmd-result-resolver.js";
 import {
   Orchestrator,
@@ -47,6 +58,13 @@ import {
   utcDateKeysForLocalDay,
   type DaySummaryGatherOptions,
 } from "../orchestrator.js";
+
+/**
+ * Trailing-edge coalescing window for post-sync meeting rebuilds (issue #1900).
+ * An activity tick and a wearable window sync often land within seconds; this
+ * folds the burst into one build per day.
+ */
+const MEETINGS_BUILD_DEBOUNCE_MS = 5_000;
 
 export interface WorkspaceOpsDeps {
   readonly accessTrackingBuffer: Map<
@@ -95,7 +113,8 @@ export interface WorkspaceOpsDeps {
   }>;
   readonly storage: StorageManager;
   readonly storageRouter: NamespaceStorageRouter;
-  wearablesServiceInstance: WearablesService | null;
+  readonly wearablesServiceByNamespace: Map<string, WearablesService>;
+  readonly meetingsServiceByNamespace: Map<string, MeetingsService>;
 }
 
 function matchesMemoryPath(candidatePath: string, requestedPath: string, memoryDir: string): boolean {
@@ -635,12 +654,12 @@ export class WorkspaceOpsCoordinator {
    * memory writes stay consistent. Writes are pinned to the same
    * deterministic namespace bulk-import uses.
    */
-  getWearablesService(): WearablesService {
-    if (!this.deps.wearablesServiceInstance) {
-      this.deps.wearablesServiceInstance = new WearablesService({
+  getWearablesService(namespace: string): WearablesService {
+    let service = this.deps.wearablesServiceByNamespace.get(namespace);
+    if (!service) {
+      service = new WearablesService({
         config: this.deps.config.wearables,
-        getStorage: async () =>
-          await this.deps.getStorageForNamespace(this.deps.bulkImportWriteNamespace()),
+        getStorage: async () => await this.deps.getStorageForNamespace(namespace),
         extract: (turns) => this.deps.extraction.extract(turns),
         // Smart memoryMode runs candidates through the SAME extraction
         // judge (cache + defer counters included) the live extraction
@@ -662,7 +681,23 @@ export class WorkspaceOpsCoordinator {
           search: async (query, maxResults) => {
             if (!this.deps.qmd.isAvailable()) return null;
             try {
-              const results = await this.deps.qmd.search(query, undefined, maxResults);
+              // Scope the indexed search to the CALLER namespace's collection so a
+              // non-default caller's transcript_search never returns root or
+              // other-namespace transcripts (#2123). Namespaces off, or the
+              // default/machine-owner namespace rooted at memoryDir, resolve to the
+              // base collection (unchanged); every other namespace to its own.
+              let collection: string | undefined;
+              if (resolveNamespaceCapabilities(this.deps.config).namespaces === true) {
+                const storage = await this.deps.getStorageForNamespace(namespace);
+                const useLegacy =
+                  namespace === this.deps.config.defaultNamespace &&
+                  storage.dir === this.deps.config.memoryDir;
+                collection = namespaceCollectionName(this.deps.config.qmdCollection, namespace, {
+                  defaultNamespace: this.deps.config.defaultNamespace,
+                  useLegacyDefaultCollection: useLegacy,
+                });
+              }
+              const results = await this.deps.qmd.search(query, collection, maxResults);
               return results.map((result) => ({
                 path: result.path,
                 score: result.score,
@@ -683,9 +718,138 @@ export class WorkspaceOpsCoordinator {
           // (#1904, Codex).
           await this.deps.qmd.update();
         },
+        // Meeting tail-step (issue #1900): schedule a debounced meeting rebuild
+        // for every day a wearable sync touched. Wired on the shared service so
+        // BOTH the auto-sync adapter and the manual HTTP/MCP/CLI sync path
+        // (EngramAccessService.wearablesSync -> getWearablesService().sync)
+        // rebuild affected meetings. Gated on meetings.enabled so a sync of
+        // other signals never spins up meeting building; a failure never fails
+        // the sync.
+        onDaysSynced: async (days) => {
+          if (!this.deps.config.meetings.enabled) return;
+          try {
+            const meetings = await this.getMeetingsService(namespace);
+            for (const day of days) meetings.requestBuild(day);
+          } catch (err) {
+            log.warn(
+              `meetings: failed to schedule post-wearable-sync build: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        },
       });
+      this.deps.wearablesServiceByNamespace.set(namespace, service);
     }
-    return this.deps.wearablesServiceInstance;
+    return service;
+  }
+
+  /**
+   * Lazily-constructed meetings service (issue #1900). Owns the record store,
+   * the store-backed builder (fed by the concrete activity + wearable day
+   * source), and the debounced post-sync build scheduler. Every meeting surface
+   * — CLI, MCP tools, HTTP routes — shares this one instance. Writes are pinned
+   * to the same deterministic namespace bulk-import uses, so meeting records and
+   * episode memories land beside wearable/activity artifacts. Constructing it
+   * touches no disk while `meetings.enabled` is off — every entrypoint gates.
+   */
+  async getMeetingsService(namespace: string): Promise<MeetingsService> {
+    let service = this.deps.meetingsServiceByNamespace.get(namespace);
+    if (!service) {
+      const config = this.deps.config.meetings;
+      const memoryDir = this.deps.config.memoryDir;
+      const storage = await this.deps.getStorageForNamespace(namespace);
+      const store = storage.meetingRecordStore();
+      // Activity is machine-scoped (<memoryDir>/state/activity.sqlite) and is
+      // consumed ONLY by the machine-owner (default) namespace; every other
+      // caller namespace runs audio-only with no activity reader (issue #2123).
+      // A missing/unavailable store degrades to no screen context, never a fail.
+      const activity: MeetingsActivityReader | undefined =
+        namespace !== this.deps.config.defaultNamespace
+          ? undefined
+          : {
+        listSnapshotsForDay: (machine, startUtc, endUtc) => {
+          let activityStore: ActivityStore | undefined;
+          try {
+            activityStore = ActivityStore.open(memoryDir);
+            return activityStore.listSnapshotsForDay(machine, startUtc, endUtc);
+          } catch (err) {
+            log.warn(
+              `meetings: activity snapshots unavailable (${
+                err instanceof Error ? err.message : String(err)
+              }); building without screen context`,
+            );
+            return [];
+          } finally {
+            activityStore?.close();
+          }
+        },
+          };
+      const source = new ActivityWearablesMeetingsDaySource({
+        activity,
+        wearables: storageWearableDayReader(storage),
+        config,
+        timezone: this.deps.config.activity.timezone,
+      });
+      // Production trust-gated summary/fact deps (issue #1900). Built from the
+      // shared LLM clients + the SAME durability-judge closure the wearables
+      // service passes (verdict cache + defer counters included), so meeting
+      // facts inherit identical judge gating — no forked trust/judge/LLM path.
+      // Pure construction (no disk/network); the builder gates on summaryMode.
+      const fallbackLlm = new FallbackLlmClient(
+        this.deps.config.gatewayConfig,
+        fallbackLlmRuntimeContextFromConfig(this.deps.config),
+      );
+      const summary = createMeetingSummaryDeps({
+        localLlm: this.deps.localLlm,
+        fallbackLlm,
+        judgeFacts: (candidates) =>
+          judgeFactDurability(
+            candidates,
+            this.deps.config,
+            this.deps.localLlm,
+            fallbackLlm,
+            this.deps.judgeVerdictCache,
+            this.deps.judgeDeferCounts,
+          ),
+      });
+      const builder = new MeetingsBuilder({
+        source,
+        store,
+        config,
+        hooks: {
+          reindex: async () => {
+            // Meeting records live in the QMD collection root; reindex on change
+            // so `show`/search find them immediately (qmd.update clears its own
+            // result caches). Fired only when records changed; a failure is
+            // surfaced as a build warning, not a hard failure.
+            await this.deps.qmd.update();
+          },
+        },
+        // Memory generation behind the builder seam (issue #1900 decouple): the
+        // deterministic engine depends only on MeetingMemoryGenerator, never on
+        // memory-gen. The generator wraps the same sealed write path the wearables
+        // generator uses — createMeetingMemoryWriter adds the source-scoped
+        // dedup/retire the raw StorageManager lacks — plus the trust-gated
+        // summary/facts layer (extractor + shared durability judge). It gates on
+        // summaryMode internally, so `off` never invokes the extractor.
+        memoryGenerator: createMeetingMemoryGenerator(createMeetingMemoryWriter(storage), config, summary),
+      });
+      service = new MeetingsService({
+        config,
+        store,
+        builder,
+        buildDebounceMs: MEETINGS_BUILD_DEBOUNCE_MS,
+        onBuildError: (date, err) =>
+          log.warn(
+            `meetings: tail-step build for ${date} failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+      });
+      this.deps.meetingsServiceByNamespace.set(namespace, service);
+    }
+    return service;
   }
 
   async autoConsolidateIdentity(): Promise<void> {

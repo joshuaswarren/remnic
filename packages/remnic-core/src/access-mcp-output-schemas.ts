@@ -56,6 +56,16 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   transcript_day: T_ARRAY,
   transcript_search: T_ARRAY,
   transcript_memories: T_ARRAY,
+  meetings_list: objectSchema({ enabled: T_BOOLEAN, days: T_ARRAY }),
+  meetings_get: objectSchema({ enabled: T_BOOLEAN, found: T_BOOLEAN, id: T_STRING, record: T_NULLABLE_STRING }),
+  meetings_build: objectSchema({
+    date: T_STRING,
+    enabled: T_BOOLEAN,
+    meetings: T_ARRAY,
+    built: T_NUMBER,
+    skipped: T_NUMBER,
+    removed: T_ARRAY,
+  }),
   action_confidence: objectSchema({
     schemaVersion: T_NUMBER,
     decision: T_STRING,

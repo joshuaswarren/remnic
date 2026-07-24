@@ -404,6 +404,7 @@ import {
 import { normalizeReplaySessionKey, type ReplayTurn } from "./replay/types.js";
 import type { ImportTurn } from "./bulk-import/types.js";
 import { WearablesService } from "./wearables/service.js";
+import { MeetingsService } from "./meetings/service.js";
 import {
   type AgentPersonaModelConfig,
   confidenceTier,
@@ -875,7 +876,8 @@ export class Orchestrator {
   private readonly consolidationObservers = new Set<
     (observation: ConsolidationObservation) => Promise<void> | void
   >();
-  private wearablesServiceInstance: WearablesService | null = null;
+  private readonly wearablesServiceByNamespace = new Map<string, WearablesService>();
+  private readonly meetingsServiceByNamespace = new Map<string, MeetingsService>();
   private wearablesAutoSyncHandle: { stop(): Promise<void> } | null = null;
   private lastQmdReprobeAtMs = 0;
   private lastFileHygieneRunAtMs = 0;
@@ -955,6 +957,7 @@ export class Orchestrator {
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
     }
+    for (const svc of this.meetingsServiceByNamespace.values()) svc.dispose();
     await this.maintenanceScheduler.dispose();
     await drainRecallWrites(this);
     // PR #2016 finding 3: drain any deferred lock-timeout hash-index retries so a
@@ -1486,6 +1489,7 @@ export class Orchestrator {
       namespaceSearchRouter: this.namespaceSearchRouter,
       namespaceCatalog: this.namespaceCatalog,
       getStorage: () => this.storage, storageForNamespace: (namespace) => this.storageRouter.storageFor(namespace),
+      onActivitySynced: (summary) => { if (!this.config.meetings.enabled) return; void this.getMeetingsService().then((s) => s.requestBuildForActivitySync(summary.ranAt, this.config.activity.timezone, summary.touchedDates)).catch((err) => log.warn(`meetings: activity tail-step build failed to schedule: ${err instanceof Error ? err.message : String(err)}`)); },
     });
     // Issue #1526: background extraction queue lives on its own coordinator.
     this.extractionQueueCoordinator = new ExtractionQueueCoordinator();
@@ -2091,8 +2095,7 @@ export class Orchestrator {
   }
 
   async maybeRunFileHygiene(): Promise<void> {
-    return this.workspaceOpsCoordinator.maybeRunFileHygiene(
-    );
+    return this.workspaceOpsCoordinator.maybeRunFileHygiene();
   }
 
   async runBootstrap(options: BootstrapOptions): Promise<BootstrapResult> {
@@ -2270,8 +2273,7 @@ export class Orchestrator {
   }
 
   private async validateLocalLlmModel(): Promise<void> {
-    return this.workspaceOpsCoordinator.validateLocalLlmModel(
-    );
+    return this.workspaceOpsCoordinator.validateLocalLlmModel();
   }
 
   private invokeRecall(
@@ -2996,10 +2998,9 @@ export class Orchestrator {
     return this.config.defaultNamespace;
   }
 
-  getWearablesService(): WearablesService {
-    return this.workspaceOpsCoordinator.getWearablesService(
-    );
-  }
+  getWearablesService(namespace: string = this.config.defaultNamespace): WearablesService { return this.workspaceOpsCoordinator.getWearablesService(namespace); }
+
+  getMeetingsService(namespace: string = this.config.defaultNamespace): Promise<MeetingsService> { return this.workspaceOpsCoordinator.getMeetingsService(namespace); }
 
   async ingestBulkImportBatch(
     turns: ImportTurn[],
@@ -3303,8 +3304,7 @@ export class Orchestrator {
   static readonly IDENTITY_CONSOLIDATE_THRESHOLD = 8_000;
 
   private async autoConsolidateIdentity(): Promise<void> {
-    return this.workspaceOpsCoordinator.autoConsolidateIdentity(
-    );
+    return this.workspaceOpsCoordinator.autoConsolidateIdentity();
   }
 
   // Issue #1526: recall result formatting moved to RecallResultFormatter. Thin
@@ -3683,8 +3683,7 @@ export class Orchestrator {
   }
 
   async flushAccessTracking(): Promise<void> {
-    return this.workspaceOpsCoordinator.flushAccessTracking(
-    );
+    return this.workspaceOpsCoordinator.flushAccessTracking();
   }
 
   private async loadSearchResultMemoryMap(

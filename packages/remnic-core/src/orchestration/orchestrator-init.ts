@@ -45,6 +45,7 @@ import { TranscriptManager } from "../transcript.js";
 import type { PluginConfig } from "../types.js";
 import { type UtilityRuntimeValues, loadUtilityRuntimeValues } from "../utility-runtime.js";
 import { WearablesService } from "../wearables/service.js";
+import type { MeetingsService } from "../meetings/service.js";
 import {
   COMPACTION_SIGNAL_MAX_AGE_MS,
   defaultWorkspaceDir,
@@ -64,7 +65,8 @@ export interface OrchestratorInitDeps {
   deferredSyncSucceeded: boolean;
   disposeSearchBackendIfNeeded(): Promise<void>;
   readonly embeddingFallback: EmbeddingFallback;
-  getWearablesService(): WearablesService;
+  getWearablesService(namespace?: string): WearablesService;
+  getMeetingsService(namespace?: string): Promise<MeetingsService>;
   readonly handleHistory: RecallHandleHistoryStore;
   readonly lastRecall: LastRecallStore;
   maintenanceNamespaces(
@@ -562,6 +564,9 @@ export class OrchestratorInitCoordinator {
               : {}),
           },
           {
+            // The shared wearables service fires its own meeting tail-step hook
+            // (wired in workspace-ops), so both this auto-sync path and the
+            // manual sync path rebuild affected meetings — no per-adapter fan-out.
             sync: (options) => this.deps.getWearablesService().sync(options),
             log: {
               info: (message) => log.info(message),

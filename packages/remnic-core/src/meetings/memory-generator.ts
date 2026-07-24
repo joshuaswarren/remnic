@@ -69,6 +69,11 @@ export interface MeetingsDayFactGenResult {
   skipped: number;
   /** Count of records whose summary memory was written. */
   summariesWritten: number;
+  /** Facts the #1579 tombstone chokepoint downgraded to pending_review (no
+   *  active copy). Surfaced distinctly from `active`/`review` so callers never
+   *  count a blocked write as a successfully written active/review fact (#1645).
+   *  Optional so the seam's canned outcomes stay valid when unset. */
+  tombstoneBlocked?: number;
 }
 
 /**

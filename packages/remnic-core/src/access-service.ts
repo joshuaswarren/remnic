@@ -107,6 +107,20 @@ import { displayErrorDetail } from "./runtime/better-sqlite.js";
 import type { PatternReinforcementResult } from "./maintenance/pattern-reinforcement.js";
 import type { LiveConnectorsRunSummary } from "./live-connectors-runner.js";
 import type { WearablesService } from "./wearables/service.js";
+import type { MeetingsGetResult, MeetingsListResult } from "./meetings/service.js";
+import type { MeetingsDayBuildSummary } from "./meetings/build.js";
+
+/**
+ * Caller scope threaded into the wearables + meetings access ops so reads and
+ * writes resolve to the CALLER namespace (caller-derived namespace symmetry,
+ * issue #2123), not a machine-wide default. Every field is optional; omitting
+ * all three preserves the operator/CLI default-namespace behavior.
+ */
+export type WearablesMeetingsScope = {
+  sessionKey?: string;
+  authenticatedPrincipal?: string;
+  namespace?: string;
+};
 import {
   computeProcedureStats,
   type ProcedureStatsReport,
@@ -5745,60 +5759,64 @@ export class EngramAccessService {
   // behavior and validation (renderer-sharing rule).
   // ---------------------------------------------------------------------------
 
-  async wearablesStatus(): Promise<
-    Awaited<ReturnType<WearablesService["status"]>>
-  > {
-    return this.orchestrator.getWearablesService().status();
+  /**
+   * Caller scope for the wearables + meetings ops (issue #2123). Reads resolve
+   * via resolveReadableNamespace; sync writes via writableNamespaceFor; build
+   * needs BOTH — it reads transcripts/records to derive, then writes episodes.
+   * Non-default callers are strictly isolated: no default-ns wearable fallback,
+   * no machine-global activity (machine-scoped, consumed only by the default ns).
+   */
+  private wearablesReadService(scope?: WearablesMeetingsScope): WearablesService {
+    return this.orchestrator.getWearablesService(
+      this.resolveReadableNamespace(scope?.namespace, this.resolveRequestPrincipal(scope?.sessionKey, scope?.authenticatedPrincipal)),
+    );
   }
 
-  async wearablesSync(request: {
-    source?: string;
-    date?: string;
-    days?: number;
-    forceMemories?: boolean;
-  }): Promise<Awaited<ReturnType<WearablesService["sync"]>>> {
-    return this.orchestrator.getWearablesService().sync({
-      source: request.source,
-      date: request.date,
-      days: request.days,
-      forceMemories: request.forceMemories,
-    });
+  async wearablesStatus(scope?: WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["status"]>>> {
+    return this.wearablesReadService(scope).status();
   }
 
-  async wearablesTranscriptDay(request: {
-    date: string;
-    source?: string;
-  }): Promise<Awaited<ReturnType<WearablesService["dayTranscript"]>>> {
-    return this.orchestrator
-      .getWearablesService()
-      .dayTranscript(request.date, request.source);
+  async wearablesSync(request: { source?: string; date?: string; days?: number; forceMemories?: boolean } & WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["sync"]>>> {
+    const namespace = this.writableNamespaceFor(request.namespace, request.sessionKey, request.authenticatedPrincipal);
+    const summaries = await this.orchestrator
+      .getWearablesService(namespace)
+      .sync({ source: request.source, date: request.date, days: request.days, forceMemories: request.forceMemories });
+    // Manual one-shot sync (HTTP/MCP/CLI): the meeting tail-step arms a
+    // debounced, unref'd timer a short-lived caller exits before firing. Drain
+    // it now so a manual sync's meeting build actually runs before we return.
+    // The long-lived auto-sync daemon does NOT flush — it keeps coalescing.
+    if (this.orchestrator.config.meetings.enabled) {
+      await (await this.orchestrator.getMeetingsService(namespace)).flushBuilds();
+    }
+    return summaries;
   }
 
-  async wearablesTranscriptSearch(request: {
-    query: string;
-    source?: string;
-    from?: string;
-    to?: string;
-    limit?: number;
-  }): Promise<Awaited<ReturnType<WearablesService["searchTranscripts"]>>> {
-    return this.orchestrator.getWearablesService().searchTranscripts(request.query, {
-      source: request.source,
-      from: request.from,
-      to: request.to,
-      limit: request.limit,
-    });
+  async wearablesTranscriptDay(request: { date: string; source?: string } & WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["dayTranscript"]>>> {
+    return this.wearablesReadService(request).dayTranscript(request.date, request.source);
   }
 
-  async wearablesTranscriptMemories(request: {
-    source?: string;
-    date?: string;
-    limit?: number;
-  }): Promise<Awaited<ReturnType<WearablesService["transcriptMemories"]>>> {
-    return this.orchestrator.getWearablesService().transcriptMemories({
-      source: request.source,
-      date: request.date,
-      limit: request.limit,
-    });
+  async wearablesTranscriptSearch(request: { query: string; source?: string; from?: string; to?: string; limit?: number } & WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["searchTranscripts"]>>> {
+    return this.wearablesReadService(request).searchTranscripts(request.query, { source: request.source, from: request.from, to: request.to, limit: request.limit });
+  }
+
+  async wearablesTranscriptMemories(request: { source?: string; date?: string; limit?: number } & WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["transcriptMemories"]>>> {
+    return this.wearablesReadService(request).transcriptMemories({ source: request.source, date: request.date, limit: request.limit });
+  }
+
+  // Meetings (issue #1900): thin delegations to the caller-ns MeetingsService.
+  async meetingsList(date?: string, scope?: WearablesMeetingsScope): Promise<MeetingsListResult> {
+    return (await this.orchestrator.getMeetingsService(this.resolveReadableNamespace(scope?.namespace, this.resolveRequestPrincipal(scope?.sessionKey, scope?.authenticatedPrincipal)))).meetingsList(date);
+  }
+
+  async meetingsGet(id: string, scope?: WearablesMeetingsScope): Promise<MeetingsGetResult> {
+    return (await this.orchestrator.getMeetingsService(this.resolveReadableNamespace(scope?.namespace, this.resolveRequestPrincipal(scope?.sessionKey, scope?.authenticatedPrincipal)))).meetingsGet(id);
+  }
+
+  async meetingsBuild(date: string, scope?: WearablesMeetingsScope): Promise<MeetingsDayBuildSummary> {
+    const principal = this.resolveRequestPrincipal(scope?.sessionKey, scope?.authenticatedPrincipal);
+    const namespace = this.writableNamespaceFor(scope?.namespace, scope?.sessionKey, scope?.authenticatedPrincipal);
+    this.resolveReadableNamespace(namespace, principal);
+    return (await this.orchestrator.getMeetingsService(namespace)).meetingsBuild(date);
   }
 
   // ── Admin console surfaces (issue #1502) ────────────────────────────────

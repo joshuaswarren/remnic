@@ -13,6 +13,7 @@ import { ThreadingManager } from "./threading.js";
 import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
 import { utcDayRange } from "./transcript.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
+import { registerMeetingsCommands } from "./cli/meetings-commands.js";
 import { registerResearchStatusCommands } from "./cli/research-status-commands.js";
 import { registerCreationLedgerCommands } from "./cli/creation-ledger-commands.js";
 import type {
@@ -5197,11 +5198,11 @@ export function registerCli(
             "Wearable transcript sources (Limitless / Bee / Omi): sync, transcripts, search, speakers, corrections",
           );
         const forwardWearables = async (argv: string[]): Promise<void> => {
-          const code = await runWearablesCliCommand(
-            orchestrator.getWearablesService(),
-            argv,
-            { stdout: process.stdout, stderr: process.stderr },
-          );
+          const io = { stdout: process.stdout, stderr: process.stderr };
+          const code = await runWearablesCliCommand(orchestrator.getWearablesService(), argv, io);
+          if (argv[0] === "sync" && code === 0 && orchestrator.config.meetings.enabled) { // drain debounced build
+            await (await orchestrator.getMeetingsService()).flushBuilds();
+          }
           if (code !== 0) process.exitCode = code;
         };
         const stringOpt = (options: Record<string, unknown>, key: string, flag: string): string[] =>
@@ -6230,7 +6231,7 @@ export function registerCli(
 
       registerResearchStatusCommands(cmd, orchestrator);
 
-      registerCreationLedgerCommands(cmd, orchestrator);
+      registerCreationLedgerCommands(cmd, orchestrator); registerMeetingsCommands(cmd, orchestrator);
 
       cmd
         .command("trust-zone-promote")
