@@ -429,3 +429,86 @@ test("kill-9 durability: a diarized append persists its speaker cluster before f
     spool.close();
   }
 });
+
+test("finalize dedups a crash-left capturing conversation even when this run processes no chunk", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    // Run 1 leaves a capturing conversation holding a system segment + its mic
+    // loopback duplicate, then is killed (-9) before finalize.
+    const run1 = createChunkProcessor(
+      deps(spool, {
+        transcribe: async () => [{ text: "hello there world", startUtc: t(1), endUtc: t(3) }],
+      }),
+    );
+    run1.enqueue(chunk({ path: "/tmp/raw/sys.wav", channel: "system", startedAtUtc: t(0), endedAtUtc: t(4) }));
+    run1.enqueue(chunk({ path: "/tmp/raw/mic.wav", channel: "mic", startedAtUtc: t(0), endedAtUtc: t(4) }));
+    await run1.drain(); // no finalize -> capturing, dup still present
+    assert.equal(spool.stats().segments, 2);
+    // Run 2 processes NO chunk (so it has no in-memory open id); finalize must
+    // still prune the crash-left duplicate.
+    const run2 = createChunkProcessor(deps(spool));
+    assert.ok((await run2.finalize()) >= 1);
+    const segs = finalSegments(spool);
+    assert.equal(segs.length, 1, "the loopback dup was pruned at finalize despite no chunk this run");
+    assert.equal(segs[0].channel, "system");
+  } finally {
+    spool.close();
+  }
+});
+
+test("diarization: a label-only self keeps the mic=wearer heuristic (no voice embedding to match)", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    // Label-only enrollment: a self cluster with no embedding to match against.
+    spool.upsertSpeaker({ id: "self", isSelf: true, label: "me", embeddingCount: 0, centroid: [], examples: [] });
+    const diarizer = new SpeakerClusterer(0.7, spool.readSpeakerClusters());
+    const guest: Embedding = [0, 1, 0, 0];
+    const proc = createChunkProcessor(
+      deps(spool, {
+        diarizer,
+        embed: () => guest,
+        transcribe: async () => [{ text: "wearer on mic", startUtc: t(1), endUtc: t(2) }],
+      }),
+    );
+    proc.enqueue(chunk()); // mic channel
+    await proc.finalize();
+    const segs = finalSegments(spool);
+    assert.equal(segs[0].isWearer, true, "mic wearer heuristic retained until self is voice-enrolled");
+  } finally {
+    spool.close();
+  }
+});
+
+test("a durable replay does not re-consume the embedding or corrupt the cluster", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    const guest: Embedding = [0, 1, 0, 0];
+    const run1 = createChunkProcessor(
+      deps(spool, {
+        diarizer: new SpeakerClusterer(0.7, spool.readSpeakerClusters()),
+        embed: () => guest,
+        transcribe: async () => [{ text: "guest", startUtc: t(1), endUtc: t(2) }],
+      }),
+    );
+    run1.enqueue(chunk());
+    await run1.finalize();
+    const before = spool.readSpeakerClusters();
+    assert.equal(before.length, 1);
+    const count0 = before[0].embeddingCount;
+    // Restart replays the SAME chunk (same WAV path -> same stable id).
+    const run2 = createChunkProcessor(
+      deps(spool, {
+        diarizer: new SpeakerClusterer(0.7, spool.readSpeakerClusters()),
+        embed: () => guest,
+        transcribe: async () => [{ text: "guest", startUtc: t(1), endUtc: t(2) }],
+      }),
+    );
+    run2.enqueue(chunk());
+    await run2.finalize();
+    const after = spool.readSpeakerClusters();
+    assert.equal(after.length, 1, "a replay creates no new cluster");
+    assert.equal(after[0].embeddingCount, count0, "a replay did not inflate the embedding count");
+  } finally {
+    spool.close();
+  }
+});

@@ -108,6 +108,14 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   async function process(event: ChunkEvent): Promise<void> {
     const chunkId = chunkStableId(event);
     if (processedThisRun.has(chunkId)) return; // in-run replay: already handled
+    // Durable (cross-restart) replay: this chunk was already applied in a prior
+    // run, so its segments AND speaker-cluster updates are persisted. Skip it
+    // entirely — re-running transcription/diarization would re-consume the
+    // embedding and corrupt the cluster centroid/count.
+    if (deps.spool.isChunkApplied(chunkId) || deps.spool.isChunkApplied(`${chunkId}:0`)) {
+      processedThisRun.add(chunkId);
+      return;
+    }
 
     // VAD gate: a non-speech chunk skips STT (and model resolution) entirely,
     // flowing through as a zero-segment chunk so idle-close + WAV reclaim still
@@ -139,19 +147,27 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       openConversationId = null;
     }
 
+    // Whether self is VOICE-enrolled (has an embedding to match), computed once:
+    // a label-only enroll-self can never match live audio, so the mic heuristic
+    // must remain the wearer signal until voice enrollment lands.
+    const selfVoiceEnrolled =
+      deps.diarizer !== undefined && deps.diarizer.clusters().some((c) => c.isSelf && c.embeddingCount > 0);
     const segments: AssemblySegment[] = [];
     for (const s of raw) {
       const text = s.text.trim();
       if (text === "") continue;
-      // Diarization: with an embedder + clusterer, embed the segment and assign
-      // it to a stable speaker cluster (self -> the enrolled wearer). Without
-      // them, fall back to the interim mic=wearer heuristic and no cluster.
+      // Diarization: embed the segment and assign it to a stable speaker cluster;
+      // isWearer comes from the assigned cluster's self flag. When self is only
+      // label-enrolled (no embedding), keep the mic=wearer heuristic rather than
+      // mis-attribute the wearer's own mic speech to a fresh guest cluster.
       let speakerCluster: string | null = null;
       let isWearer = event.channel === "mic";
       if (deps.embed && deps.diarizer) {
         const embedding = await deps.embed(event, s);
         speakerCluster = deps.diarizer.assign(embedding);
-        isWearer = deps.diarizer.clusters().find((c) => c.id === speakerCluster)?.isSelf ?? false;
+        const assigned = deps.diarizer.clusters().find((c) => c.id === speakerCluster);
+        isWearer = assigned?.isSelf ?? false;
+        if (!isWearer && event.channel === "mic" && !selfVoiceEnrolled) isWearer = true;
       }
       segments.push({
         channel: event.channel,
@@ -245,9 +261,11 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   async function finalize(): Promise<number> {
     await drain();
     deps.assembler.finalize();
-    // Dedup the still-open conversation before it flips to final so the served
-    // (final-only) output never contains a loopback duplicate.
-    if (openConversationId !== null) dedupeConversation(openConversationId);
+    // Dedup EVERY still-capturing conversation before the bulk flip to final —
+    // including one left by a crashed prior run that this process never touched
+    // (so it has no in-memory openConversationId) — so the served (final-only)
+    // output never contains a loopback duplicate.
+    for (const id of deps.spool.capturingConversationIds()) dedupeConversation(id);
     return deps.spool.finalizeOpenConversations();
   }
 

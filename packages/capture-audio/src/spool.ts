@@ -517,6 +517,22 @@ export class Spool {
     return removed;
   }
 
+  /** Ids of every still-`capturing` conversation (dedup-before-finalize sweep). */
+  capturingConversationIds(): string[] {
+    const rows = this.#db
+      .prepare("SELECT id FROM conversations WHERE state = 'capturing' ORDER BY id ASC")
+      .all() as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
+  /** Whether a chunk with this idempotency key was already durably applied. */
+  isChunkApplied(idempotencyKey: string): boolean {
+    return (
+      this.#db.prepare("SELECT 1 FROM applied_chunks WHERE idempotency_key = ? LIMIT 1").get(idempotencyKey) !==
+      undefined
+    );
+  }
+
   /**
    * The newest still-`capturing` conversation, so a chunk arriving after a
    * process restart continues it (subject to the assembler's gap rule) instead
