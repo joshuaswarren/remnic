@@ -115,6 +115,14 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // idempotency re-appends only the missing groups below.
     if (deps.spool.isChunkApplied(`${chunkId}:done`)) {
       processedThisRun.add(chunkId);
+      // Retry raw-WAV reclaim: the marker is written before cleanup, so if the
+      // first run's cleanup failed (or it died between marking and deleting), a
+      // replay is our chance to remove the file instead of waiting for the janitor.
+      try {
+        await deps.cleanupRawAudio(event);
+      } catch (err) {
+        report(err, event);
+      }
       return;
     }
 
@@ -247,10 +255,16 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       }
     }
 
-    // Mark the whole chunk complete only after every group appended, so a later
-    // full replay skips transcription + diarization; a crash before here leaves
-    // no marker and the missing groups re-append on replay.
-    deps.spool.markChunkComplete(chunkId, openConversationId ?? "-");
+    // Mark the whole chunk complete only when it is safe: either we processed
+    // real segments this run (so every group of this chunk is now applied), or
+    // it is a genuinely fresh silent chunk with no prior partial application. A
+    // zero-segment run over a chunk whose earlier groups were already applied
+    // (a partial crash) must NOT be marked done, or the missing tail groups
+    // would be stranded forever.
+    const chunkFullyProcessed = built.length > 0 || !deps.spool.isChunkApplied(`${chunkId}:0`);
+    if (chunkFullyProcessed) {
+      deps.spool.markChunkComplete(chunkId, openConversationId ?? "-");
+    }
     processedThisRun.add(chunkId);
     // A successful transcription (even an empty/silent one) means the chunk is
     // fully handled, so reclaim its raw WAV. A FAILED transcription throws

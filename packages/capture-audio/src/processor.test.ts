@@ -560,3 +560,61 @@ test("partial-chunk replay appends the missing tail group instead of skipping th
     spool.close();
   }
 });
+
+test("a zero-segment replay of a partially-applied chunk does NOT mark it done (tail stays recoverable)", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    const ev = chunk({ path: "/tmp/raw/multi.wav" });
+    const cid = chunkStableId(ev);
+    spool.appendAssembledSegments({
+      idempotencyKey: `${cid}:0`,
+      chunkId: `${cid}:0`,
+      conversationId: "conv_grp0",
+      startedAtUtc: t(1),
+      state: "capturing",
+      segments: [{ channel: "mic", text: "first group", startUtc: t(1), endUtc: t(2), isWearer: true }],
+    });
+    // A replay that yields ZERO segments (VAD off / empty STT / WAV already gone).
+    const empty = createChunkProcessor(
+      deps(spool, { assembler: new ConversationAssembler({ gapMinutes: 0 }), transcribe: async () => [] }),
+    );
+    empty.enqueue(ev);
+    await empty.finalize();
+    assert.equal(spool.isChunkApplied(`${cid}:done`), false, "not marked done while the tail is still missing");
+    // A later correct replay still recovers the missing tail group.
+    const fixed = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        transcribe: async () => [
+          { text: "first group", startUtc: t(1), endUtc: t(2) },
+          { text: "second group", startUtc: t(30), endUtc: t(31) },
+        ],
+      }),
+    );
+    fixed.enqueue(ev);
+    await fixed.finalize();
+    assert.equal(spool.stats().segments, 2, "the tail group was recovered on a correct replay");
+    assert.equal(spool.isChunkApplied(`${cid}:done`), true);
+  } finally {
+    spool.close();
+  }
+});
+
+test("a done-marked replay retries raw-WAV cleanup", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    let cleanupCalls = 0;
+    const mk = () => createChunkProcessor(deps(spool, { cleanupRawAudio: async () => { cleanupCalls++; } }));
+    const run1 = mk();
+    run1.enqueue(chunk());
+    await run1.finalize();
+    assert.equal(cleanupCalls, 1);
+    // Replay: the :done marker short-circuits transcription, but WAV cleanup is retried.
+    const run2 = mk();
+    run2.enqueue(chunk());
+    await run2.drain();
+    assert.equal(cleanupCalls, 2, "the done-replay retried WAV cleanup");
+  } finally {
+    spool.close();
+  }
+});
