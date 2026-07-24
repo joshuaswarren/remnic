@@ -163,9 +163,10 @@ are unchanged.
 
 ## Surfaces
 
-- **CLI** — `remnic meetings list` (stored records, all days or one `--date`),
-  `remnic meetings show <id>` (one record), `remnic meetings build <date>`
-  (detect + fuse + store a day), and `remnic meetings help`.
+- **CLI** — `remnic meetings list [--date <YYYY-MM-DD>] [--json]` (stored
+  records, all days or one day), `remnic meetings show <meeting-id>` (one
+  record), and `remnic meetings build --date <YYYY-MM-DD> [--json]` (detect +
+  fuse + store a day; `build` requires `--date`).
 - **MCP tools** — `meetings_list` (all days or one `date`), `meetings_get` (by
   `id`), `meetings_build` (a `date`). Each accepts optional `namespace` /
   `sessionKey`.
