@@ -13,10 +13,12 @@ name: Check Unsticker
 #    when ANY check suite on the head carries a terminally `cancelled` (or a
 #    stale `failure`) run, and those dead suites never re-evaluate on their
 #    own. The AI gate's supersession path now concludes `neutral` rather than
-#    letting concurrency mint `cancelled`, but pre-existing cancelled suites
-#    still pin the context red. The sweeper reruns EVERY such stale gate suite
-#    on the head in one pass; re-evaluation is idempotent (passes iff reviewers
-#    are positive on the current head).
+#    letting concurrency mint `cancelled`, so NEW cancelled suites stop being
+#    produced at the source; the sweeper only drains the pre-existing backlog.
+#    It reruns ONE such stale gate suite per sweep - a bulk enqueue would evict
+#    its own pending attempts on the gate's per-PR concurrency group and clear
+#    fewer suites, not more (#2154). Re-evaluation is idempotent (passes iff
+#    reviewers are positive on the current head).
 #
 # Loop safety: the guard is only rerun when threads are verifiably resolved
 # (a rerun then passes), and the gate is only rerun from `cancelled` (a rerun
@@ -278,13 +280,16 @@ jobs:
               // Cancelled suites are always retryable (cancellation is not a
               // verdict). The ruleset evaluates the required context against the
               // LATEST run of EVERY suite on the head, so ONE cancelled suite
-              // keeps the context red even when the newest run is green and the
-              // dead suites never re-evaluate on their own (#2147). Sweep ALL
-              // cancelled suites in one pass — mirroring the failed-guard case
-              // above — so a head carrying many cancelled suites clears in a
-              // single sweep instead of one per cron cadence. Reruns serialize
-              // on the gate's per-PR concurrency group (cancel-in-progress
-              // false), so none is force-cancelled.
+              // keeps the context red until it re-evaluates. The gate's
+              // supersession path now concludes `neutral` instead of leaving
+              // `cancelled` (ai-review-gate.yml), so NEW cancelled suites stop
+              // being produced at the source — the sweeper only drains the
+              // pre-existing backlog. Rerun ONE cancelled suite per sweep, NOT
+              // all of them: the gate's per-PR concurrency group
+              // (cancel-in-progress: false) admits only one queued rerun at a
+              // time, so a bulk enqueue would evict its own pending attempts and
+              // clear FEWER suites, not more (#2154). Draining one per cron tick
+              // converges correctly and never starves.
               //
               // Failed suites are retried while run_attempt <= 2 — up to two
               // verdict-gated retries, because a premature retry of a CANCELLED
@@ -302,18 +307,16 @@ jobs:
               const staleFailedGate = gateRuns.filter(
                 (run) => run.status === 'completed' && run.conclusion === 'failure' && run.run_attempt <= 2,
               );
-              if (cancelledGate.length > 0) {
-                for (const run of cancelledGate) {
-                  await rerun(run, `${label} ai-review gate`);
-                }
-              } else if (staleFailedGate.length > 0) {
+              let target = cancelledGate[0] ?? null;
+              if (!target && staleFailedGate.length > 0) {
                 const greenSuiteExists = gateRuns.some(
                   (run) => run.status === 'completed' && run.conclusion === 'success',
                 );
                 if (greenSuiteExists || (await hasPositiveCursorCheck(headSha))) {
-                  for (const run of staleFailedGate) {
-                    await rerun(run, `${label} ai-review gate`);
-                  }
+                  target = staleFailedGate[0];
                 }
+              }
+              if (target) {
+                await rerun(target, `${label} ai-review gate`);
               }
             }

@@ -23,16 +23,20 @@ test("check-unsticker still reruns failed review-thread-guard suites", () => {
   assert.match(unsticker, /conclusion === 'failure'/);
 });
 
-test("check-unsticker sweeps ALL cancelled ai-review-gate suites in one pass (#2147)", () => {
+test("check-unsticker reruns at most one cancelled ai-review-gate suite per sweep (#2154)", () => {
   const unsticker = read(".github/workflows/check-unsticker.yml");
-  // The ruleset evaluates the required context against the latest run of every
-  // suite on the head, so ONE cancelled suite pins it red. Every cancelled gate
-  // suite must be rerun in one sweep (a loop, mirroring the failed-guard case),
-  // not just the oldest via a single-index access. Fails if the shortcut returns.
+  // The gate's supersession path now concludes `neutral` instead of `cancelled`,
+  // so new cancelled suites stop at the source and the sweeper only drains the
+  // pre-existing backlog. It must rerun ONE cancelled suite per sweep, not all:
+  // the gate's per-PR concurrency group (cancel-in-progress: false) admits only
+  // one queued rerun, so a bulk enqueue would evict its own pending attempts and
+  // clear fewer suites, not more. Fails if a sweep-all loop returns.
   assert.match(unsticker, /const cancelledGate = gateRuns\.filter\(/);
-  assert.match(unsticker, /for \(const run of cancelledGate\)/);
-  assert.doesNotMatch(unsticker, /cancelledGate\[0\]/);
-  assert.doesNotMatch(unsticker, /let target = cancelledGate/);
+  assert.match(unsticker, /let target = cancelledGate\[0\]/);
+  assert.doesNotMatch(unsticker, /for \(const run of cancelledGate\)/);
+  assert.doesNotMatch(unsticker, /for \(const run of staleFailedGate\)/);
+  // The concurrency-eviction rationale must be documented in the workflow.
+  assert.match(unsticker, /evict its own pending attempts/);
 });
 
 test("check-unsticker preserves the in-flight gate guard (#2147)", () => {
