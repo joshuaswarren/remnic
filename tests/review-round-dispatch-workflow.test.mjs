@@ -23,6 +23,25 @@ test("check-unsticker still reruns failed review-thread-guard suites", () => {
   assert.match(unsticker, /conclusion === 'failure'/);
 });
 
+test("check-unsticker sweeps ALL cancelled ai-review-gate suites in one pass (#2147)", () => {
+  const unsticker = read(".github/workflows/check-unsticker.yml");
+  // The ruleset evaluates the required context against the latest run of every
+  // suite on the head, so ONE cancelled suite pins it red. Every cancelled gate
+  // suite must be rerun in one sweep (a loop, mirroring the failed-guard case),
+  // not just the oldest via a single-index access. Fails if the shortcut returns.
+  assert.match(unsticker, /const cancelledGate = gateRuns\.filter\(/);
+  assert.match(unsticker, /for \(const run of cancelledGate\)/);
+  assert.doesNotMatch(unsticker, /cancelledGate\[0\]/);
+  assert.doesNotMatch(unsticker, /let target = cancelledGate/);
+});
+
+test("check-unsticker preserves the in-flight gate guard (#2147)", () => {
+  const unsticker = read(".github/workflows/check-unsticker.yml");
+  // A live gate evaluation must never be disturbed by the sweep.
+  assert.match(unsticker, /const gateActive = gateRuns\.some\(\(run\) => run\.status !== 'completed'\)/);
+  assert.match(unsticker, /if \(gateActive\)/);
+});
+
 test("the round-dispatch workflow uses its own concurrency namespace and never force-cancels", () => {
   const dispatch = read(".github/workflows/review-round-dispatch.yml");
   // Its own per-PR group (separate from the guard's namespace) coalesces and

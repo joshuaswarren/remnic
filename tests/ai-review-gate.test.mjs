@@ -29,6 +29,30 @@ test("AI review gate workflow requires the active current-head reviewer group", 
   assert.doesNotMatch(workflow, /chatgpt-codex-connector.*REQUIRED_AI_REVIEWER_GROUPS/s);
 });
 
+test("AI review gate workflow grants Checks write for the neutral supersession conclusion", () => {
+  const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
+  assert.match(workflow, /^\s*checks:\s*write/m);
+  assert.doesNotMatch(workflow, /^\s*checks:\s*read/m);
+});
+
+test("AI review gate self-supersession concludes the required context neutral (#2147)", () => {
+  const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
+  // A bare return let the job conclude success or let concurrency mark it
+  // cancelled — a cancelled suite pins the ruleset context red forever. The
+  // supersession path must post an explicit neutral check-run on the SHA it was
+  // triggered for so it satisfies the required `ai-reviewers` context.
+  assert.match(workflow, /github\.rest\.checks\.create\(/);
+  assert.match(workflow, /name:\s*'ai-reviewers'/);
+  assert.match(workflow, /head_sha:\s*triggerHeadSha/);
+  assert.match(workflow, /conclusion:\s*'neutral'/);
+});
+
+test("AI review gate never force-cancels a running evaluation (cancel-in-progress false)", () => {
+  const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
+  assert.match(workflow, /cancel-in-progress:\s*false/);
+  assert.doesNotMatch(workflow, /cancel-in-progress:\s*true/);
+});
+
 test("AI review gate workflow limits the Dependabot exception to manifest-only missing Cursor activity", () => {
   const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
 

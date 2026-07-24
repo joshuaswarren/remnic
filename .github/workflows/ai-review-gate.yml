@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: read
-  checks: read
+  checks: write
   issues: write
   pull-requests: read
 
@@ -627,6 +627,26 @@ jobs:
                   core.notice(
                     `AI review gate superseded: head advanced ${triggerHeadSha.slice(0, 7)} -> ${currentHeadSha.slice(0, 7)}. A newer run gates the current head; exiting without blocking.`,
                   );
+                  // Conclude the required `ai-reviewers` context neutral on the
+                  // SHA this run was triggered for. A bare return would let the
+                  // job conclude success — or let concurrency mark it cancelled —
+                  // and a `cancelled` suite keeps the ruleset context red forever
+                  // because branch rulesets evaluate the context against EVERY
+                  // suite on the head and dead suites never re-evaluate (#2147).
+                  // `neutral` satisfies the ruleset and matches the documented
+                  // "exits neutral by design, never blocks merge" contract.
+                  await github.rest.checks.create({
+                    owner,
+                    repo,
+                    name: 'ai-reviewers',
+                    head_sha: triggerHeadSha,
+                    status: 'completed',
+                    conclusion: 'neutral',
+                    output: {
+                      title: 'Superseded',
+                      summary: `Head advanced ${triggerHeadSha.slice(0, 7)} -> ${currentHeadSha.slice(0, 7)}; a newer AI review gate run owns the current head. This run exits neutral by design and never blocks merge.`,
+                    },
+                  });
                   return;
                 }
               }

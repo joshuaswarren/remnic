@@ -1,0 +1,5 @@
+---
+"@remnic/core": patch
+---
+
+Stop superseded AI Review Gate runs from permanently blocking ruleset merges (issue #2147). Branch rulesets evaluate a required status-check name against every check suite on the head SHA, so a suite whose latest `ai-reviewers` run concluded `cancelled` pins the required context red forever — dead suites never re-evaluate. The gate's self-supersession path now posts an explicit `neutral` check-run for the required context on the SHA it was triggered for (via `checks: write`) instead of letting a bare return conclude `success` or letting concurrency mark the run `cancelled`, matching the documented "exits neutral by design, never blocks merge" contract. `check-unsticker` now reruns every stale gate suite for the context in one sweep — mirroring the failed-guard case — rather than only the oldest, while preserving the in-flight `gateActive` guard and the review-thread guard's missing concurrency group. Evaluator logic in `scripts/ai-review-gate.mjs` is unchanged (imported at base SHA as a security invariant).
