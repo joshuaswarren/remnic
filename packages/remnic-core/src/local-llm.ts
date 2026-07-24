@@ -1050,7 +1050,6 @@ export class LocalLlmClient {
             body: requestBodyJson,
             signal: attemptAbort.signal,
             budgetMs: this.config.localLlmTimeoutMs,
-            debug: this.config.debug,
           });
         } catch (err) {
           if (!this.isAbortError(err)) throw err;

@@ -180,29 +180,36 @@ test("runtime honors a per-request dispatcher (regression canary for #2148)", as
 test("client dispatcher carries the configured budget, not undici's default", async () => {
   // One server, two budgets: the only variable is localLlmTimeoutMs.
   const server = await startSlowHeaderServer(2_500);
+  const pools: Agent[] = [];
   try {
     const impatient = new LocalLlmClient(createConfig({ localLlmTimeoutMs: 200 }));
+    const impatientPool = dispatcherOf(impatient);
+    pools.push(impatientPool);
     await assert.rejects(
       () =>
         undiciFetch(`${server.url}/chat/completions`, {
-          dispatcher: dispatcherOf(impatient),
+          dispatcher: impatientPool,
         }),
       (err: unknown) => undiciErrorCode(err) === "UND_ERR_HEADERS_TIMEOUT",
       "a 200ms budget must cap the header wait well before the 2.5s response",
     );
 
     const patient = new LocalLlmClient(createConfig({ localLlmTimeoutMs: 30_000 }));
+    const patientPool = dispatcherOf(patient);
+    pools.push(patientPool);
     const res = await undiciFetch(`${server.url}/chat/completions`, {
-      dispatcher: dispatcherOf(patient),
+      dispatcher: patientPool,
     });
     assert.equal(res.status, 200);
     await res.body?.cancel();
   } finally {
+    // Client-owned pools keep keep-alive sockets open past the request.
+    for (const pool of pools) await pool.close();
     await server.close();
   }
 });
 
-test("dispatcher is cached per client and rebuilt when the budget changes", () => {
+test("dispatcher is cached per client and rebuilt when the budget changes", async () => {
   const client = new LocalLlmClient(createConfig({ localLlmTimeoutMs: 5_000 }));
 
   const first = dispatcherOf(client);
@@ -210,11 +217,11 @@ test("dispatcher is cached per client and rebuilt when the budget changes", () =
 
   const mutable = client as unknown as { config: PluginConfig };
   mutable.config = createConfig({ localLlmTimeoutMs: 9_000 });
-  assert.notEqual(
-    dispatcherOf(client),
-    first,
-    "a changed budget must rebuild the pool",
-  );
+  const rebuilt = dispatcherOf(client);
+  assert.notEqual(rebuilt, first, "a changed budget must rebuild the pool");
+
+  await first.close();
+  await rebuilt.close();
 });
 
 test("a completion whose headers lag the request still succeeds", async () => {
@@ -222,16 +229,17 @@ test("a completion whose headers lag the request still succeeds", async () => {
   // the response head) outlasts undici's default cap. Survivable only
   // because the pool now tracks the configured budget.
   const server = await startSlowHeaderServer(700);
+  const client = new LocalLlmClient(
+    createConfig({ localLlmUrl: server.url, localLlmTimeoutMs: 30_000 }),
+  );
   try {
-    const client = new LocalLlmClient(
-      createConfig({ localLlmUrl: server.url, localLlmTimeoutMs: 30_000 }),
-    );
     primeClient(client);
     const result = await client.chatCompletion([
       { role: "user", content: "extract facts" },
     ]);
     assert.equal(result?.content, "slow but complete");
   } finally {
+    await dispatcherOf(client).close();
     await server.close();
   }
 });
@@ -257,5 +265,7 @@ test("a process-wide custom dispatcher is left in place", async () => {
   }
 
   // ...and the widened pool returns once the default transport is back.
-  assert.ok(new ChatTransport().dispatcherFor(900_000));
+  const restored = new ChatTransport().dispatcherFor(900_000);
+  assert.ok(restored);
+  await restored.close();
 });

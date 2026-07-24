@@ -1,7 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-
 import { Agent, getGlobalDispatcher } from "undici";
 
 import { log } from "./logger.js";
@@ -24,7 +20,6 @@ export interface ChatCompletionRequest {
    * stay enforced by `signal`.
    */
   budgetMs: number;
-  debug?: boolean;
 }
 
 /**
@@ -101,7 +96,6 @@ export class ChatTransport {
   }
 
   async post(request: ChatCompletionRequest): Promise<Response> {
-    if (request.debug) writeDebugRequestBody(request.body);
     const init: RequestInit & { dispatcher?: Agent } = {
       method: "POST",
       headers: request.headers,
@@ -111,18 +105,5 @@ export class ChatTransport {
     const dispatcher = this.dispatcherFor(request.budgetMs);
     if (dispatcher) init.dispatcher = dispatcher;
     return await fetch(request.url, init);
-  }
-}
-
-/** Debug-only: dump the last request body for offline inspection. */
-function writeDebugRequestBody(body: string): void {
-  try {
-    fs.writeFileSync(
-      path.join(os.tmpdir(), "remnic-last-request.json"),
-      body,
-      { mode: 0o600 },
-    );
-  } catch (err) {
-    log.debug(`local LLM: failed to write debug request body: ${err}`);
   }
 }
