@@ -78,6 +78,7 @@ const serviceStub = {
     },
     nativeKnowledgeEnabled: false,
     projectionAvailable: false,
+    corpus: [],
   }),
 } satisfies Pick<EngramAccessService, "health">;
 
@@ -105,7 +106,7 @@ async function startHarness(overrides?: Partial<Record<string, unknown>>): Promi
     ...overrides,
   });
   const server = new EngramAccessHttpServer({
-    service: serviceStub as EngramAccessService,
+    service: serviceStub as unknown as EngramAccessService,
     host: "127.0.0.1",
     port,
     authToken: OPERATOR_TOKEN,
@@ -615,7 +616,7 @@ test("disabled OAuth serves no facade endpoints and keeps the bare Bearer challe
   const tokensPath = path.join(dir, "tokens.json");
   const config = parseOAuthConfig({ enabled: false });
   const server = new EngramAccessHttpServer({
-    service: serviceStub as EngramAccessService,
+    service: serviceStub as unknown as EngramAccessService,
     host: "127.0.0.1",
     port: 0,
     authToken: OPERATOR_TOKEN,
@@ -815,7 +816,7 @@ test("token exchange: persist failure returns 500 and preserves the code; retry 
     redirectUris: [REDIRECT_URI],
   });
   const server = new EngramAccessHttpServer({
-    service: serviceStub as EngramAccessService,
+    service: serviceStub as unknown as EngramAccessService,
     host: "127.0.0.1",
     port,
     authToken: OPERATOR_TOKEN,

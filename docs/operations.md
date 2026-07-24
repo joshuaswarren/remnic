@@ -157,6 +157,35 @@ Access layer notes:
 - `openclaw engram access mcp-serve` exposes the same recall/read/write service layer over stdio for MCP clients such as Codex and Claude Code.
 - Use `GET /engram/v1/health`, `GET /engram/v1/quality`, or `GET /engram/v1/maintenance` as startup probes when local scripts need projection/governance readiness signals before issuing recall or review requests.
 
+## Corpus Watermark (HA Divergence Detection)
+
+Each daemon exposes a cheap **corpus watermark** — a comparable fingerprint of its
+active-memory corpus — so two daemons behind an active/backup VIP can be checked for
+silent divergence (issue #2149). It is served to authenticated callers on
+`GET /engram/v1/health` as `corpus: CorpusWatermark[]` (one entry per namespace; a single
+default-namespace entry when namespaces are disabled) and summarized in `remnic doctor` as
+the `corpus_watermark` check.
+
+Each entry has:
+
+- `namespace` — the namespace the watermark covers.
+- `activeMemoryCount` — total active memory files, from a cheap directory scan that does not
+  parse frontmatter.
+- `newestPartition` — the newest `YYYY-MM-DD` day-partition seen, or `null` when nothing is
+  dated.
+- `newestWriteAt` — the maximum file mtime **within the newest partition only** (bounded to
+  one day's files so the probe stays cheap on a 100k+ corpus), or `null` when that partition
+  has no files.
+- `digest` — a sha256 over the per-`<category>/<day>` file-count census. This is a **census
+  fingerprint, not a content hash**: two daemons that agree on how many active memories live
+  in each day-partition share a digest, so a differing digest is a cheap divergence signal
+  without reading file bodies.
+- `computedAt` — when the watermark was computed.
+
+This ships detection only. Fetching configured replica peers' watermarks and
+health-flagging count or watermark-age divergence beyond a threshold is a follow-up; today
+the `corpus_watermark` doctor check always reports `ok`.
+
 ## Compression Guideline Optimizer Tool
 
 Agent tool names:

@@ -1642,9 +1642,10 @@ test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls th
       },
       nativeKnowledgeEnabled: false,
       projectionAvailable: false,
+      corpus: [],
     }),
   } satisfies Pick<EngramAccessService, "health">;
-  const service = healthStub as EngramAccessService;
+  const service = healthStub as unknown as EngramAccessService;
   const seen: Array<{ path: string; method: string; authorized: boolean }> = [];
   const server = new EngramAccessHttpServer({
     service,
@@ -1757,6 +1758,7 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
       },
       nativeKnowledgeEnabled: false,
       projectionAvailable: false,
+      corpus: [],
     }),
   } satisfies Pick<EngramAccessService, "health">;
   const entries = [
@@ -1765,7 +1767,7 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
     { token: "remnic_xx_anon" }, // no connector — must fail closed under a policy
   ];
   const server = new EngramAccessHttpServer({
-    service: healthStub as EngramAccessService,
+    service: healthStub as unknown as EngramAccessService,
     port: 0,
     authToken: "operator-token",
     // Dangerous shape on purpose: BOTH getters configured, and the string

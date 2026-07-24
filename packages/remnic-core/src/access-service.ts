@@ -18,6 +18,7 @@ import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
   resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
+import { computeServiceCorpusWatermarks, type CorpusWatermark } from "./corpus-watermark.js";
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
@@ -351,6 +352,7 @@ export interface EngramAccessHealthResponse {
   qmd: EngramAccessQmdHealthResponse;
   nativeKnowledgeEnabled: boolean;
   projectionAvailable: boolean;
+  corpus: CorpusWatermark[];
 }
 
 export type EngramAccessQmdCollectionState =
@@ -2478,6 +2480,7 @@ export class EngramAccessService {
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
+      corpus: await computeServiceCorpusWatermarks(this.orchestrator),
     };
   }
 

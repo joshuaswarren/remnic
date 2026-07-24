@@ -4643,7 +4643,12 @@ export class StorageManager {
     return Math.max(1, Math.floor(batchSize));
   }
 
-  private async collectActiveMemoryPaths(): Promise<string[]> {
+  /**
+   * Public cheap active-memory path scan (issue #2149 corpus watermark). Lists
+   * active memory file paths without parsing frontmatter — safe on a 100k+
+   * corpus, unlike readAllMemories().
+   */
+  async collectActiveMemoryPaths(): Promise<string[]> {
     return this.memoryReadStore.collectActiveMemoryPaths();
   }
 
