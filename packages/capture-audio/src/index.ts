@@ -85,3 +85,39 @@ export { assembleConversations } from "./assembly.js";
 export type { AssemblySegment } from "./assembly.js";
 export { cosineSimilarity, SpeakerClusterer } from "./diarization.js";
 export type { Embedding, SpeakerCluster } from "./diarization.js";
+export { ConversationAssembler, DEFAULT_CONVERSATION_GAP_MINUTES } from "./assembly.js";
+export type { AssembledConversation, AssemblerOptions } from "./assembly.js";
+export type { AssemblyAppendInput, AssemblyAppendResult } from "./spool.js";
+export {
+  buildHelperArgs,
+  createNativeCaptureRunner,
+  enumerateDevices,
+  HELPER_BIN_ENV,
+  helperPackageSpecifier,
+  parseChunkEvent,
+  resolveHelperBinary,
+} from "./native.js";
+export type {
+  ChannelSelection,
+  ChunkEvent,
+  HelperResolution,
+  HelperSpawn,
+  NativeCaptureRunner,
+  NativeRunnerOptions,
+  ResolveHelperDeps,
+} from "./native.js";
+export { chunkStableId, createChunkProcessor } from "./processor.js";
+export type { ChunkProcessor, ChunkProcessorDeps, ChunkTranscribeInput } from "./processor.js";
+export { createLiveCapture } from "./capture.js";
+export type { LiveCapture, LiveCaptureOptions } from "./capture.js";
+export {
+  DEFAULT_SERVICE_LABEL,
+  installService,
+  planService,
+  renderLaunchAgent,
+  renderSystemdUnit,
+  uninstallService,
+} from "./service.js";
+export type { ServicePlan, ServiceSpec } from "./service.js";
+export { enrollSelf, SELF_SPEAKER_ID } from "./enroll.js";
+export type { EnrollSelfInput, EnrollSelfResult } from "./enroll.js";

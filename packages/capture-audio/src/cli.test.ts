@@ -810,3 +810,90 @@ test("logs honors a valued --lines flag", async () => {
   assert.equal(code, 0);
   assert.deepEqual(output, ["third\n"]);
 });
+
+async function runCapAudioCli(
+  argv: string[],
+  env: NodeJS.ProcessEnv = {},
+): Promise<{ code: number; out: string[]; err: string[] }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const code = await runCapture({
+    argv,
+    env: { ...process.env, ...env },
+    stdout: (l) => out.push(l),
+    stderr: (l) => err.push(l),
+  });
+  return { code, out, err };
+}
+
+test("enroll-self registers the self speaker in the spool", async () => {
+  await withBaseDir(async (baseDir) => {
+    const { code, out } = await runCapAudioCli(["enroll-self", "--label", "Jane", "--base-dir", baseDir]);
+    assert.equal(code, 0);
+    assert.ok(out.some((l) => l.includes("enrolled self speaker")));
+    const spool = new Spool(capturePaths(baseDir).spoolPath);
+    try {
+      const self = spool.listSpeakers().find((s) => s.id === "self");
+      assert.equal(self?.label, "Jane");
+      assert.equal(self?.isSelf, true);
+    } finally {
+      spool.close();
+    }
+  });
+});
+
+test("devices prints the helper's device-enumerate output via REMNIC_CAPTURE_HELPER_BIN", async () => {
+  await withBaseDir(async (baseDir) => {
+    const helper = path.join(baseDir, "fake-helper");
+    writeFileSync(
+      helper,
+      "#!/usr/bin/env node\n" +
+        "if(process.argv[2]==='device-enumerate'){process.stdout.write(JSON.stringify([{id:'UID-1',name:'Built-in'}]));process.exit(0)}\n" +
+        "process.exit(1)\n",
+      { mode: 0o755 },
+    );
+    const { code, out } = await runCapAudioCli(["devices", "--base-dir", baseDir], {
+      REMNIC_CAPTURE_HELPER_BIN: helper,
+    });
+    assert.equal(code, 0);
+    const parsed: unknown = JSON.parse(out.join("\n"));
+    assert.ok(parsed && typeof parsed === "object" && "devices" in parsed);
+    assert.match(out.join("\n"), /UID-1/);
+  });
+});
+
+test("devices reports an actionable error when the helper is absent", async () => {
+  await withBaseDir(async (baseDir) => {
+    const { code, err } = await runCapAudioCli(["devices", "--base-dir", baseDir], {
+      REMNIC_CAPTURE_HELPER_BIN: "",
+    });
+    assert.equal(code, 1);
+    assert.match(err.join("\n"), /native helper|not installed|unsupported/);
+  });
+});
+
+test("install-service writes then removes a per-user unit", async () => {
+  if (process.platform === "win32") return; // install-service is POSIX-only
+  await withBaseDir(async (baseDir) => {
+    const home = path.join(baseDir, "home");
+    mkdirSync(home, { recursive: true });
+    const prevHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const inst = await runCapAudioCli(["install-service", "--base-dir", baseDir]);
+      assert.equal(inst.code, 0);
+      assert.ok(inst.out.some((l) => l.startsWith("installed")));
+      const unit =
+        process.platform === "darwin"
+          ? path.join(home, "Library/LaunchAgents/com.remnic.capture-audio.plist")
+          : path.join(home, ".config/systemd/user/remnic-capture-audio.service");
+      assert.equal(existsSync(unit), true);
+      const un = await runCapAudioCli(["install-service", "--uninstall", "--base-dir", baseDir]);
+      assert.equal(un.code, 0);
+      assert.equal(existsSync(unit), false);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+    }
+  });
+});

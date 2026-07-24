@@ -40,10 +40,18 @@
   },
   "peerDependencies": {
     "@remnic/core": "^9.22.2",
-    "sherpa-onnx-node": "*"
+    "sherpa-onnx-node": "*",
+    "@remnic/capture-native-darwin-arm64": "*",
+    "@remnic/capture-native-darwin-x64": "*"
   },
   "peerDependenciesMeta": {
     "sherpa-onnx-node": {
+      "optional": true
+    },
+    "@remnic/capture-native-darwin-arm64": {
+      "optional": true
+    },
+    "@remnic/capture-native-darwin-x64": {
       "optional": true
     }
   },

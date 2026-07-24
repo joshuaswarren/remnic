@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { assembleConversations } from "./assembly.js";
+import { assembleConversations, ConversationAssembler } from "./assembly.js";
 import type { SegmentInput } from "./spool.js";
 
 function seg(startUtc: string, endUtc: string, text = "hi"): SegmentInput {
@@ -54,4 +54,38 @@ test("state defaults to final and is applied to every conversation", () => {
 
 test("empty input yields no conversations", () => {
   assert.deepEqual(assembleConversations([], 10), []);
+});
+
+function counterIds(): () => string {
+  let n = 0;
+  return () => `conv_${++n}`;
+}
+
+test("ConversationAssembler joins within-gap segments and splits past the gap", () => {
+  const a = new ConversationAssembler({ gapMinutes: 5, makeId: counterIds() });
+  const first = a.add(seg("2026-07-24T00:00:00.000Z", "2026-07-24T00:00:02.000Z"));
+  const same = a.add(seg("2026-07-24T00:00:10.000Z", "2026-07-24T00:00:12.000Z"));
+  assert.equal(same.id, first.id);
+  const next = a.add(seg("2026-07-24T00:10:00.000Z", "2026-07-24T00:10:02.000Z"));
+  assert.notEqual(next.id, first.id);
+  assert.equal(a.conversations().length, 2);
+});
+
+test("resume continues a recovered open conversation instead of splitting", () => {
+  const a = new ConversationAssembler({ gapMinutes: 10, makeId: () => "conv_new" });
+  a.resume({ id: "conv_prior", startedAtUtc: "2026-07-24T00:00:00.000Z", endedAtUtc: "2026-07-24T00:00:05.000Z" });
+  const c = a.add(seg("2026-07-24T00:00:10.000Z", "2026-07-24T00:00:12.000Z"));
+  assert.equal(c.id, "conv_prior");
+});
+
+test("finalize flips open conversations to final", () => {
+  const a = new ConversationAssembler({ gapMinutes: 10 });
+  a.add(seg("2026-07-24T00:00:00.000Z", "2026-07-24T00:00:02.000Z"));
+  assert.equal(a.finalize(), 1);
+  assert.equal(a.conversations()[0].state, "final");
+});
+
+test("ConversationAssembler rejects a negative gap but allows zero (config agreement)", () => {
+  assert.throws(() => new ConversationAssembler({ gapMinutes: -1 }));
+  assert.doesNotThrow(() => new ConversationAssembler({ gapMinutes: 0 }));
 });

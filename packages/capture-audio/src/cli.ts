@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -36,6 +36,12 @@ import { pruneExpiredRawAudio } from "./janitor.js";
 import { Spool } from "./spool.js";
 import { loadOrCreateToken } from "./token.js";
 import { formatHostForUrl, isLoopbackHost, stripIpv6Brackets } from "./util.js";
+import { homedir } from "node:os";
+
+import { createLiveCapture, type LiveCapture } from "./capture.js";
+import { enrollSelf } from "./enroll.js";
+import { enumerateDevices, resolveHelperBinary } from "./native.js";
+import { installService, uninstallService } from "./service.js";
 
 export interface CliIo {
   argv: string[];
@@ -69,6 +75,7 @@ const VALUE_FLAGS: Record<string, true> = {
   "base-dir": true,
   model: true,
   lines: true,
+  label: true,
 };
 
 /** Standalone boolean flags. Any other `--flag` is rejected loudly. */
@@ -76,18 +83,22 @@ const BOOLEAN_FLAGS: Record<string, true> = {
   foreground: true,
   force: true,
   help: true,
+  capture: true,
+  uninstall: true,
 };
 
 /** Non-global flags each subcommand accepts; anything else is rejected. */
 const COMMAND_FLAGS: Record<string, Record<string, true>> = {
   init: { force: true },
-  start: { foreground: true, replay: true, host: true, port: true, listen: true },
+  start: { foreground: true, replay: true, host: true, port: true, listen: true, capture: true },
   stop: { force: true },
   status: {},
   devices: {},
   logs: { lines: true },
   "download-model": { model: true },
   janitor: {},
+  "install-service": { force: true, uninstall: true, label: true },
+  "enroll-self": { label: true },
   help: {},
 };
 
@@ -406,6 +417,7 @@ async function cmdStart(
     if (typeof flags.host === "string") forwarded.push("--host", flags.host);
     if (typeof flags.port === "string") forwarded.push("--port", flags.port);
     if (typeof flags.listen === "string") forwarded.push("--listen", flags.listen);
+    if (flags.capture === true) forwarded.push("--capture");
     ensurePrivateDir(paths.baseDir);
     const logFd = openSync(paths.logPath, "a");
     const child = spawn(process.execPath, [...relaunch, ...forwarded], {
@@ -460,7 +472,7 @@ async function cmdStart(
   try {
     // Bind and report the HTTP service FIRST so daemon readiness is independent
     // of replay volume.
-    handle = await startDaemon({ spool, config, token, capturing: false });
+    handle = await startDaemon({ spool, config, token, capturing: flags.capture === true });
   } catch (err) {
     // Don't leak the spool handle if the bind fails.
     spool.close();
@@ -480,6 +492,29 @@ async function cmdStart(
     throw err;
   }
   stdout(`listening on ${handle.url}`);
+  // Live native capture: spawn the shared macOS helper and process its WAV
+  // chunks into conversations. Opt-in via --capture; the daemon still serves
+  // the spool without it, and a missing/unavailable helper degrades honestly.
+  let live: LiveCapture | null = null;
+  if (flags.capture === true) {
+    const rawDir = path.join(paths.baseDir, "raw");
+    mkdirSync(rawDir, { recursive: true });
+    try {
+      live = createLiveCapture({
+        spool,
+        config,
+        outDir: rawDir,
+        defaultModelPath: path.join(paths.baseDir, "models", "ggml-base.bin"),
+        onError: (e) => stderr(`capture: ${describeError(e)}`),
+        onStderr: (l) => stderr(`helper: ${l}`),
+      });
+      live.start();
+      stdout("live capture started");
+    } catch (err) {
+      stderr(`live capture unavailable: ${describeError(err)}; serving without capture`);
+      live = null;
+    }
+  }
   // Supervised AFTER readiness: replay volume/failure never delays or fails
   // readiness, and never kills the daemon. The task is tracked so shutdown can
   // cancel and drain it before the spool closes.
@@ -498,6 +533,8 @@ async function cmdStart(
       // ingestion write can ever hit a closed database.
       replayAbort.abort();
       void replayTask
+        .catch(() => undefined)
+        .then(() => (live ? live.stop().then(() => undefined) : undefined))
         .catch(() => undefined)
         .then(() => {
           spool.finalizeOpenConversations();
@@ -619,18 +656,80 @@ async function cmdStatus(
   return 0;
 }
 
-function cmdDevices(stdout: (l: string) => void): number {
-  stdout(
-    JSON.stringify(
-      {
-        devices: [],
-        note: "device enumeration requires the native capture helper (@remnic/capture-native-*), added in a later phase",
-      },
-      null,
-      2,
-    ),
-  );
+async function cmdDevices(env: NodeJS.ProcessEnv, stdout: (l: string) => void): Promise<number> {
+  // A missing/unsupported helper throws a CaptureConfigError with an actionable
+  // message; the runCapture handler surfaces it verbatim and exits nonzero.
+  const { binaryPath } = resolveHelperBinary({ env });
+  const devices = await enumerateDevices(binaryPath);
+  stdout(JSON.stringify({ devices }, null, 2));
   return 0;
+}
+
+function cmdInstallService(
+  paths: CapturePaths,
+  flags: Record<string, string | boolean>,
+  stdout: (l: string) => void,
+  spawnArgvPrefix: readonly string[],
+): number {
+  const platform = process.platform;
+  const home = homedir();
+  const label = typeof flags.label === "string" ? flags.label : undefined;
+  const spec = {
+    programArguments: [
+      process.execPath,
+      ...(spawnArgvPrefix.length > 0 ? [...spawnArgvPrefix] : [process.argv[1]]),
+      "start",
+      "--foreground",
+      "--capture",
+      "--base-dir",
+      paths.baseDir,
+    ],
+    logPath: paths.logPath,
+    ...(label ? { label } : {}),
+  };
+  if (flags.uninstall === true) {
+    const { plan, removed } = uninstallService({
+      platform,
+      home,
+      spec,
+      exists: existsSync,
+      remove: (f) => rmSync(f, { force: true }),
+    });
+    stdout(removed ? `removed ${plan.path}` : `no capture-audio service installed at ${plan.path}`);
+    return 0;
+  }
+  const plan = installService({
+    platform,
+    home,
+    spec,
+    force: flags.force === true,
+    exists: existsSync,
+    mkdir: (dir) => mkdirSync(dir, { recursive: true }),
+    writeFile: (file, contents) => writeFileSync(file, contents, { mode: 0o644 }),
+  });
+  stdout(`installed ${plan.platform} service at ${plan.path}`);
+  stdout(`enable it with: ${plan.loadHint}`);
+  return 0;
+}
+
+function cmdEnrollSelf(
+  paths: CapturePaths,
+  flags: Record<string, string | boolean>,
+  stdout: (l: string) => void,
+): number {
+  ensurePrivateDir(paths.baseDir);
+  const spool = new Spool(paths.spoolPath);
+  try {
+    const label = typeof flags.label === "string" ? flags.label : undefined;
+    const result = enrollSelf({ spool, label });
+    stdout(`enrolled self speaker '${result.speakerId}' (${result.label})`);
+    if (!result.hasEmbedding) {
+      stdout("no voice embedding stored yet; voice-based diarization refinement lands with the diarization slice");
+    }
+    return 0;
+  } finally {
+    spool.close();
+  }
 }
 
 function cmdLogs(paths: CapturePaths, flags: Record<string, string | boolean>, stdout: (l: string) => void): number {
@@ -649,9 +748,10 @@ function usage(stdout: (l: string) => void): number {
     [
       `remnic-capture-audio v${CAPTURE_AUDIO_VERSION}`,
       "usage: remnic-capture-audio <command> [flags]",
-      "commands: init | start | stop | status | devices | logs | download-model | janitor",
-      "start flags: --foreground --replay <dir> --host <h> --port <n> --listen <host:port> --base-dir <dir>",
+      "commands: init | start | stop | status | devices | logs | download-model | janitor | install-service | enroll-self",
+      "start flags: --foreground --capture --replay <dir> --host <h> --port <n> --listen <host:port> --base-dir <dir>",
       "download-model flags: --model <base|small|large-v3-turbo-q5_0> --base-dir <dir>",
+      "install-service flags: --force --uninstall --label <id>; enroll-self flags: --label <name>",
       "janitor uses rawRetentionHours from audio.json to remove expired files under raw/",
     ].join("\n"),
   );
@@ -693,13 +793,17 @@ export async function runCapture(io: CliIo): Promise<number> {
       case "status":
         return await cmdStatus(paths, stdout, stderr);
       case "devices":
-        return cmdDevices(stdout);
+        return await cmdDevices(env, stdout);
       case "logs":
         return cmdLogs(paths, parsed.flags, stdout);
       case "download-model":
         return await cmdDownloadModel(paths, parsed.flags, stdout, io.downloadModel ?? downloadWhisperModel);
       case "janitor":
         return await cmdJanitor(paths, stdout, stderr);
+      case "install-service":
+        return cmdInstallService(paths, parsed.flags, stdout, io.spawnArgvPrefix ?? [process.argv[1]]);
+      case "enroll-self":
+        return cmdEnrollSelf(paths, parsed.flags, stdout);
       case "help":
       case "--help":
       case "-h":

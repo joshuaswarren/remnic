@@ -355,3 +355,77 @@ test("upsertSpeaker preserves an existing centroid when the field is omitted", (
     spool.close();
   }
 });
+
+const aseg = (text: string, startUtc: string, endUtc: string): SegmentInput => ({
+  channel: "mic",
+  text,
+  startUtc,
+  endUtc,
+});
+
+test("appendAssembledSegments creates then extends a capturing conversation, idempotent on key", () => {
+  const spool = new Spool(":memory:");
+  try {
+    const r1 = spool.appendAssembledSegments({
+      idempotencyKey: "chk_a",
+      conversationId: "conv_1",
+      startedAtUtc: "2026-07-24T00:00:00.000Z",
+      segments: [aseg("one", "2026-07-24T00:00:00.000Z", "2026-07-24T00:00:02.000Z")],
+    });
+    assert.equal(r1.applied, true);
+    assert.equal(r1.segmentCount, 1);
+    const r2 = spool.appendAssembledSegments({
+      idempotencyKey: "chk_b",
+      conversationId: "conv_1",
+      startedAtUtc: "2026-07-24T00:00:00.000Z",
+      segments: [aseg("two", "2026-07-24T00:00:03.000Z", "2026-07-24T00:00:04.000Z")],
+    });
+    assert.equal(r2.segmentCount, 2);
+    // Replaying the first chunk's key is a no-op — no duplicate segments.
+    const replay = spool.appendAssembledSegments({
+      idempotencyKey: "chk_a",
+      conversationId: "conv_1",
+      startedAtUtc: "2026-07-24T00:00:00.000Z",
+      segments: [aseg("one", "2026-07-24T00:00:00.000Z", "2026-07-24T00:00:02.000Z")],
+    });
+    assert.equal(replay.applied, false);
+    assert.equal(spool.stats().segments, 2);
+  } finally {
+    spool.close();
+  }
+});
+
+test("latestCapturingConversation tracks the open conversation until finalized", () => {
+  const spool = new Spool(":memory:");
+  try {
+    spool.appendAssembledSegments({
+      idempotencyKey: "k",
+      conversationId: "conv_x",
+      startedAtUtc: "2026-07-24T00:00:00.000Z",
+      segments: [aseg("hi", "2026-07-24T00:00:00.000Z", "2026-07-24T00:00:01.000Z")],
+    });
+    assert.equal(spool.latestCapturingConversation()?.id, "conv_x");
+    assert.equal(spool.finalizeConversation("conv_x"), true);
+    assert.equal(spool.latestCapturingConversation(), null);
+  } finally {
+    spool.close();
+  }
+});
+
+test("appendAssembledSegments rejects an empty segment array", () => {
+  const spool = new Spool(":memory:");
+  try {
+    assert.throws(
+      () =>
+        spool.appendAssembledSegments({
+          idempotencyKey: "k",
+          conversationId: "c",
+          startedAtUtc: "2026-07-24T00:00:00.000Z",
+          segments: [],
+        }),
+      CaptureConfigError,
+    );
+  } finally {
+    spool.close();
+  }
+});
