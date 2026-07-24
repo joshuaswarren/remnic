@@ -114,13 +114,16 @@ export interface NativeRunnerOptions {
 /** A running native-capture supervisor. */
 export interface NativeCaptureRunner {
   start(): void;
-  stop(): void;
+  /** Stop the helper (SIGTERM) and resolve once it exits and its final chunk is read. */
+  stop(): Promise<void>;
   /** True between a `start()` and its matching `stop()`. */
   readonly running: boolean;
 }
 
 /** The env var that overrides package resolution with an explicit binary path. */
 export const HELPER_BIN_ENV = "REMNIC_CAPTURE_HELPER_BIN";
+/** How long stop() waits for the helper to flush its final chunk and exit. */
+const STOP_DRAIN_TIMEOUT_MS = 5000;
 /** The `bin` key the #2138 platform package declares (same file as helperBinaryPath). */
 const HELPER_BIN_NAME = "remnic-capture-helper";
 
@@ -164,9 +167,12 @@ export function resolveHelperBinary(deps: ResolveHelperDeps = {}): HelperResolut
 
   const specifier = helperPackageSpecifier(platform, arch);
 
-  let pkgJsonPath: string;
+  let entry: string;
   try {
-    pkgJsonPath = resolve(`${specifier}/package.json`);
+    // Resolve the package's main entry. Its `exports` map need not expose
+    // `package.json`, so never resolve that subpath directly. The helper binary
+    // lives at the same path the package's `helperBinaryPath` export resolves to.
+    entry = resolve(specifier);
   } catch {
     throw new CaptureConfigError(
       `Desktop audio capture requires optional native helper ${specifier}, which is not installed. ` +
@@ -174,7 +180,7 @@ export function resolveHelperBinary(deps: ResolveHelperDeps = {}): HelperResolut
         `or set ${HELPER_BIN_ENV} to a locally built remnic-capture-helper binary`,
     );
   }
-
+  const pkgJsonPath = path.join(path.dirname(entry), "package.json");
   return { specifier, binaryPath: helperBinaryFromPackage(pkgJsonPath, readFile, specifier) };
 }
 
@@ -405,6 +411,7 @@ export function createNativeCaptureRunner(options: NativeRunnerOptions): NativeC
   let child: HelperChild | undefined;
   let restartTimer: RestartTimer | undefined;
   let restarts = 0;
+  let stopResolve: (() => void) | null = null;
 
   function scheduleUnexpectedRestart(): void {
     if (stopped) return;
@@ -451,6 +458,11 @@ export function createNativeCaptureRunner(options: NativeRunnerOptions): NativeC
       stdoutReader.flush();
       stderrReader.flush();
       if (child === current) child = undefined;
+      if (stopResolve) {
+        const done = stopResolve;
+        stopResolve = null;
+        done();
+      }
     };
 
     current.once("error", (err) => {
@@ -480,16 +492,32 @@ export function createNativeCaptureRunner(options: NativeRunnerOptions): NativeC
       restarts = 0;
       spawnChild();
     },
-    stop(): void {
-      if (stopped) return;
+    stop(): Promise<void> {
+      if (stopped) return Promise.resolve();
       stopped = true;
       if (restartTimer !== undefined) {
         cancelRestart(restartTimer);
         restartTimer = undefined;
       }
       const current = child;
-      child = undefined;
-      if (current && current.killed !== true) current.kill("SIGTERM");
+      if (!current || current.killed === true) {
+        child = undefined;
+        return Promise.resolve();
+      }
+      // Resolve once the child exits (settle() flushes its final chunk first),
+      // with a bounded fallback so a wedged helper never hangs shutdown.
+      return new Promise<void>((resolve) => {
+        let done = false;
+        const finish = (): void => {
+          if (done) return;
+          done = true;
+          resolve();
+        };
+        stopResolve = finish;
+        const timer = setTimeout(finish, STOP_DRAIN_TIMEOUT_MS);
+        timer.unref();
+        current.kill("SIGTERM");
+      });
     },
   };
 }

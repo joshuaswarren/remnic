@@ -122,7 +122,9 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
       runner.start();
     },
     async stop(): Promise<number> {
-      runner.stop();
+      // Await the helper's exit so its final flushed chunk is enqueued before
+      // we drain and finalize.
+      await runner.stop();
       return processor.finalize();
     },
   };

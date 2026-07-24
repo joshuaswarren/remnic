@@ -73,5 +73,9 @@ export function enrollSelf(input: EnrollSelfInput): EnrollSelfResult {
   }
 
   input.spool.upsertSpeaker({ id: SELF_SPEAKER_ID, isSelf: true, label });
-  return { speakerId: SELF_SPEAKER_ID, label, hasEmbedding: false, dimensions: 0 };
+  // upsertSpeaker preserves any prior centroid; report what is actually stored
+  // so a relabel doesn't falsely claim no embedding exists.
+  const stored = input.spool.readSpeakerClusters().find((c) => c.id === SELF_SPEAKER_ID);
+  const dimensions = stored?.centroid.length ?? 0;
+  return { speakerId: SELF_SPEAKER_ID, label, hasEmbedding: dimensions > 0, dimensions };
 }

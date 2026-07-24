@@ -497,9 +497,9 @@ async function cmdStart(
   // the spool without it, and a missing/unavailable helper degrades honestly.
   let live: LiveCapture | null = null;
   if (flags.capture === true) {
-    const rawDir = path.join(paths.baseDir, "raw");
-    mkdirSync(rawDir, { recursive: true });
     try {
+      const rawDir = path.join(paths.baseDir, "raw");
+      mkdirSync(rawDir, { recursive: true });
       live = createLiveCapture({
         spool,
         config,

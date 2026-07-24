@@ -99,3 +99,26 @@ test("a chunk that transcribes to nothing persists no conversation", async () =>
     spool.close();
   }
 });
+
+test("a gap beyond the threshold finalizes the prior conversation in the spool", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    const proc = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 5 }),
+        transcribe: async (input) => [
+          { text: input.wavPath, startUtc: input.chunkStartedAtUtc, endUtc: input.chunkStartedAtUtc },
+        ],
+      }),
+    );
+    proc.enqueue(chunk({ path: "/tmp/raw/a.wav", startedAtUtc: "2026-07-24T00:00:00.000Z", endedAtUtc: "2026-07-24T00:00:05.000Z" }));
+    proc.enqueue(chunk({ path: "/tmp/raw/b.wav", startedAtUtc: "2026-07-24T00:20:00.000Z", endedAtUtc: "2026-07-24T00:20:05.000Z" }));
+    await proc.drain();
+    // The first conversation was gap-closed and already finalized; only the
+    // second remains capturing, so finalizeOpenConversations flips exactly one.
+    assert.ok(spool.latestCapturingConversation());
+    assert.equal(spool.finalizeOpenConversations(), 1);
+  } finally {
+    spool.close();
+  }
+});

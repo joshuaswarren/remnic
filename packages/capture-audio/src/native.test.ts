@@ -31,6 +31,8 @@ class FakeChild implements HelperChild {
   kill(signal?: NodeJS.Signals): boolean {
     this.killed = true;
     this.killSignal = signal;
+    // A real helper exits on SIGTERM; emit so an awaiting stop() resolves.
+    this.#exit?.(0, signal ?? "SIGTERM");
     return true;
   }
   pushStdout(text: string): void {
@@ -127,16 +129,21 @@ test("resolveHelperBinary reports an actionable install hint when the package is
   );
 });
 
-test("resolveHelperBinary resolves the package bin (same file as helperBinaryPath)", () => {
+test("resolveHelperBinary resolves the bin relative to the package entry (exports-safe)", () => {
   const res = resolveHelperBinary({
     env: {},
     platform: "darwin",
     arch: "arm64",
+    // The package's exports map need not expose ./package.json, so the resolver
+    // resolves the entry and reads package.json from its directory.
     resolve: (spec) => {
-      assert.equal(spec, "@remnic/capture-native-darwin-arm64/package.json");
-      return "/pkgs/native/package.json";
+      assert.equal(spec, "@remnic/capture-native-darwin-arm64");
+      return "/pkgs/native/index.js";
     },
-    readFile: () => JSON.stringify({ bin: { "remnic-capture-helper": "bin/remnic-capture-helper" } }),
+    readFile: (file) => {
+      assert.equal(file, "/pkgs/native/package.json");
+      return JSON.stringify({ bin: { "remnic-capture-helper": "bin/remnic-capture-helper" } });
+    },
   });
   assert.equal(res.binaryPath, "/pkgs/native/bin/remnic-capture-helper");
 });

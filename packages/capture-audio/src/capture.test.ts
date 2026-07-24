@@ -20,6 +20,7 @@ class FakeChild implements HelperChild {
   }
   kill(): boolean {
     this.killed = true;
+    this.#exit?.(0, "SIGTERM"); // real helper exits on SIGTERM
     return true;
   }
   push(text: string): void {

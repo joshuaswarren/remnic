@@ -63,6 +63,7 @@ export function chunkStableId(event: ChunkEvent): string {
 export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   let tail: Promise<void> = Promise.resolve();
   let recovered = false;
+  let openConversationId: string | null = null;
   const processedThisRun = new Set<string>();
 
   const report = (error: unknown, event: ChunkEvent): void => {
@@ -105,13 +106,21 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       if (!recovered) {
         recovered = true;
         const prior = deps.spool.latestCapturingConversation();
-        if (prior) deps.assembler.resume(prior);
+        if (prior) {
+          deps.assembler.resume(prior);
+          openConversationId = prior.id;
+        }
       }
       // A chunk is far shorter than the conversation gap, so all of its
       // segments land in one conversation; persisting a single append per
       // chunk keeps the idempotency key chunk-stable (replay-safe).
       let conversation = deps.assembler.add(segments[0]);
       for (let i = 1; i < segments.length; i++) conversation = deps.assembler.add(segments[i]);
+      // A gap past the threshold closed the prior conversation in the assembler;
+      // mirror that in the spool so it doesn't linger as `capturing`.
+      if (openConversationId !== null && openConversationId !== conversation.id) {
+        deps.spool.finalizeConversation(openConversationId);
+      }
       deps.spool.appendAssembledSegments({
         idempotencyKey: chunkId,
         chunkId,
@@ -122,6 +131,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         wavPath: event.path,
         segments,
       });
+      openConversationId = conversation.id;
     }
 
     processedThisRun.add(chunkId);

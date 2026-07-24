@@ -44,3 +44,16 @@ test("enrollSelf rejects an empty or non-finite embedding", () => {
     spool.close();
   }
 });
+
+test("relabeling after an embedding enrollment still reports the stored embedding", () => {
+  const spool = new Spool(":memory:");
+  try {
+    enrollSelf({ spool, embedding: [0.1, 0.2] });
+    const relabel = enrollSelf({ spool, label: "Renamed" });
+    assert.equal(relabel.hasEmbedding, true);
+    assert.equal(relabel.dimensions, 2);
+    assert.equal(spool.listSpeakers().find((s) => s.id === "self")?.label, "Renamed");
+  } finally {
+    spool.close();
+  }
+});
