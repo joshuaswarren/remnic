@@ -1642,6 +1642,14 @@ test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls th
       },
       nativeKnowledgeEnabled: false,
       projectionAvailable: false,
+      extraction: {
+        lastExtractionAt: null,
+        bufferedSessionCount: 0,
+        pendingTurnCount: 0,
+        oldestBufferedTurnAgeMs: null,
+        degraded: false,
+        degradedReason: null,
+      },
     }),
   } satisfies Pick<EngramAccessService, "health">;
   const service = healthStub as EngramAccessService;
@@ -1757,6 +1765,14 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
       },
       nativeKnowledgeEnabled: false,
       projectionAvailable: false,
+      extraction: {
+        lastExtractionAt: null,
+        bufferedSessionCount: 0,
+        pendingTurnCount: 0,
+        oldestBufferedTurnAgeMs: null,
+        degraded: false,
+        degradedReason: null,
+      },
     }),
   } satisfies Pick<EngramAccessService, "health">;
   const entries = [

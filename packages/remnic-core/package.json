@@ -930,6 +930,16 @@
       "remnic-source": "./src/extraction-judge.ts",
       "import": "./dist/extraction-judge.js"
     },
+    "./extraction-liveness": {
+      "types": "./dist/extraction-liveness.d.ts",
+      "remnic-source": "./src/extraction-liveness.ts",
+      "import": "./dist/extraction-liveness.js"
+    },
+    "./extraction-liveness.js": {
+      "types": "./dist/extraction-liveness.d.ts",
+      "remnic-source": "./src/extraction-liveness.ts",
+      "import": "./dist/extraction-liveness.js"
+    },
     "./extraction.js": {
       "types": "./dist/extraction.d.ts",
       "remnic-source": "./src/extraction.ts",

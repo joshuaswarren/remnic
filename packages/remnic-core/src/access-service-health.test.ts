@@ -449,3 +449,77 @@ test("health keeps namespace QMD failures scoped to the namespace", async () => 
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("health surfaces extraction liveness as degraded when the buffer is non-empty and the watermark is stale", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-liveness-"));
+  try {
+    const oldTs = new Date(Date.now() - 10_000).toISOString();
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 1000 } });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      buffer: {
+        getBufferSnapshot: async () => ({ bufferedSessionCount: 3, pendingTurnCount: 12, oldestTurnTimestamp: oldTs }),
+      },
+      async getStorage() {
+        return {
+          dir: memoryDir,
+          loadMeta: async () => ({
+            lastExtractionAt: oldTs,
+            extractionCount: 4,
+            lastConsolidationAt: null,
+            totalMemories: 0,
+            totalEntities: 0,
+          }),
+        };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, true);
+    assert.equal(health.extraction.bufferedSessionCount, 3);
+    assert.equal(health.extraction.pendingTurnCount, 12);
+    assert.equal(health.extraction.lastExtractionAt, oldTs);
+    assert.ok((health.extraction.oldestBufferedTurnAgeMs ?? -1) >= 0, "oldest buffered turn age is computed");
+    assert.ok(
+      health.extraction.degradedReason !== null && health.extraction.degradedReason.length > 0,
+      "degraded reason is populated",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health reports extraction liveness ok when the buffer is empty (nothing to extract)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-liveness-ok-"));
+  try {
+    const oldTs = new Date(Date.now() - 10_000).toISOString();
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 1000 } });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      buffer: {
+        getBufferSnapshot: async () => ({ bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null }),
+      },
+      async getStorage() {
+        return {
+          dir: memoryDir,
+          loadMeta: async () => ({
+            lastExtractionAt: oldTs,
+            extractionCount: 4,
+            lastConsolidationAt: null,
+            totalMemories: 0,
+            totalEntities: 0,
+          }),
+        };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, false);
+    assert.equal(health.extraction.bufferedSessionCount, 0);
+    assert.equal(health.extraction.lastExtractionAt, oldTs);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

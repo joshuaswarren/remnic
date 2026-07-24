@@ -1150,6 +1150,15 @@ Stored as `category: procedure` markdown under `memoryDir/procedures/`. Narrativ
 | `procedural.proceduralMiningCronAutoRegister` | `false` | When `true`, installer may register the nightly procedural mining cron entry. |
 | `procedural.recallMaxProcedures` | `2` | Max procedure previews injected on task-initiation recall (`1`–`10`). Lowered from `3` in issue #567 PR 3/5 so procedural injection does not crowd other recall sections. |
 
+## Extraction pipeline liveness (issue #2151)
+
+Surfaces a checkable liveness watermark for the implicit extraction pipeline so a daemon that has not persisted an extraction in a long time is distinguishable from one that simply has nothing to extract (the §22 error-vs-empty principle at the pipeline level). Exposed on the authenticated `/health` payload (the `extraction` object), the `remnic doctor` `extraction_liveness` check, and `remnic stats`. When the pipeline is degraded, a single aggregated WARN is logged per staleness window rather than one line per failed extraction attempt.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `extractionLiveness.enabled` | `true` | Master gate. Set to `false` (or `"0"`/`"no"`/`"off"`) to stop reporting the pipeline degraded on `/health`, in `remnic doctor`, and in `remnic stats`. |
+| `extractionLiveness.staleWindowMs` | `86400000` | How stale the last-successful-extraction watermark may get (ms) before a **non-empty** buffer flags the pipeline degraded. Default `86400000` (24h). An empty buffer is never degraded. |
+
 ## Pattern reinforcement (issue #687)
 
 Cross-session pattern detection: clusters memories by normalized content, reinforces recurring primitives with `reinforcement_count` + `last_reinforced_at`, and optionally boosts their recall score. Narrative overview: [pattern-reinforcement.md](pattern-reinforcement.md).

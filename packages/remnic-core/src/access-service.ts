@@ -6,6 +6,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import { computeExtractionLivenessStatus, ExtractionLivenessWarnThrottle, type ExtractionLivenessStatus } from "./extraction-liveness.js";
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   recordCitationUsage as recordCitationUsageForAccess,
@@ -351,6 +352,7 @@ export interface EngramAccessHealthResponse {
   qmd: EngramAccessQmdHealthResponse;
   nativeKnowledgeEnabled: boolean;
   projectionAvailable: boolean;
+  extraction: ExtractionLivenessStatus;
 }
 
 export type EngramAccessQmdCollectionState =
@@ -1362,6 +1364,7 @@ export class EngramAccessService {
     }
     return this._accessIdentityContinuitySurface;
   }
+  private readonly extractionLivenessWarn = new ExtractionLivenessWarnThrottle();
 
   constructor(private readonly orchestrator: Orchestrator) {
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
@@ -2455,6 +2458,7 @@ export class EngramAccessService {
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const searchBackend = this.orchestrator.config.searchBackend ?? "qmd";
     const qmdEnabled = resolveQmdCapabilities(this.orchestrator.config).qmd === true;
+    const extraction = await computeExtractionLivenessStatus(this.orchestrator, storage, this.extractionLivenessWarn);
     let projectionAvailable = false;
     try {
       await stat(getMemoryProjectionPath(storage.dir));
@@ -2478,6 +2482,7 @@ export class EngramAccessService {
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
+      extraction,
     };
   }
 

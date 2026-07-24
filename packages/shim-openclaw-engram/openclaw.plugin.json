@@ -3933,6 +3933,24 @@
           }
         }
       },
+      "extractionLiveness": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Master gate for extraction-pipeline liveness reporting (issue #2151). When false, /health, doctor, and stats never report the pipeline degraded. Default on."
+          },
+          "staleWindowMs": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 86400000,
+            "description": "How stale the last-successful-extraction watermark may get (ms) before a non-empty buffer flags the pipeline degraded. Default 86400000 (24h)."
+          }
+        }
+      },
       "profilingEnabled": {
         "type": "boolean",
         "default": false,

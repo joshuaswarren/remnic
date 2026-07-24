@@ -78,6 +78,14 @@ const serviceStub = {
     },
     nativeKnowledgeEnabled: false,
     projectionAvailable: false,
+    extraction: {
+      lastExtractionAt: null,
+      bufferedSessionCount: 0,
+      pendingTurnCount: 0,
+      oldestBufferedTurnAgeMs: null,
+      degraded: false,
+      degradedReason: null,
+    },
   }),
 } satisfies Pick<EngramAccessService, "health">;
 

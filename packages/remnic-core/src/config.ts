@@ -37,6 +37,7 @@ import { expandTildePath } from "./utils/path.js";
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
+import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
   parseQmdChunkStrategy,
@@ -2326,15 +2327,14 @@ export function parseConfig(
       typeof cfg.activeRecallEntityGraphDepth === "number"
         ? Math.min(3, Math.max(0, Math.floor(cfg.activeRecallEntityGraphDepth)))
         : 1,
-    activeRecallIncludeCausalTrajectories:
-      cfg.activeRecallIncludeCausalTrajectories === true,
+    activeRecallIncludeCausalTrajectories: cfg.activeRecallIncludeCausalTrajectories === true,
     activeRecallIncludeDaySummary: cfg.activeRecallIncludeDaySummary === true,
     activeRecallAttachRecallExplain: cfg.activeRecallAttachRecallExplain === true,
-    activeRecallAllowChainedActiveMemory:
-      cfg.activeRecallAllowChainedActiveMemory === true,
+    activeRecallAllowChainedActiveMemory: cfg.activeRecallAllowChainedActiveMemory === true,
     dreaming,
     dreamsPhases,
     procedural,
+    extractionLiveness: parseExtractionLivenessConfig(cfg),
     wearables,
     meetings,
     activity,

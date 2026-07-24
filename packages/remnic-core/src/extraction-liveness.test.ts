@@ -1,0 +1,235 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { SmartBuffer } from "./buffer.js";
+import { parseConfig } from "./config.js";
+import {
+  ExtractionLivenessWarnThrottle,
+  evaluateExtractionLiveness,
+  parseExtractionLivenessConfig,
+  renderExtractionLivenessStats,
+  type ExtractionBufferSnapshot,
+  type ExtractionLivenessStatus,
+} from "./extraction-liveness.js";
+import type { BufferState, BufferTurn } from "./types.js";
+
+const NOW = 1_700_000_000_000;
+const WINDOW = 1000;
+
+function turn(timestamp: string, content = "hi"): BufferTurn {
+  return { role: "user", content, timestamp };
+}
+
+function snapshot(over: Partial<ExtractionBufferSnapshot> = {}): ExtractionBufferSnapshot {
+  return { bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null, ...over };
+}
+
+class FakeBufferStorage {
+  constructor(private readonly initial: BufferState) {}
+  async loadBuffer(): Promise<BufferState> {
+    return structuredClone(this.initial);
+  }
+  async saveBuffer(): Promise<void> {}
+}
+
+function bufferFor(state: BufferState): SmartBuffer {
+  return new SmartBuffer(
+    parseConfig({}),
+    new FakeBufferStorage(state) as unknown as ConstructorParameters<typeof SmartBuffer>[1],
+  );
+}
+
+// ── parseExtractionLivenessConfig ────────────────────────────────────────────
+
+test("parseExtractionLivenessConfig: defaults enabled=true, staleWindowMs=24h", () => {
+  assert.deepEqual(parseExtractionLivenessConfig({}), {
+    enabled: true,
+    staleWindowMs: 86_400_000,
+  });
+});
+
+test("parseExtractionLivenessConfig: coerces string/boolean falsy opt-outs (§24)", () => {
+  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { enabled: "false" } }).enabled, false);
+  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { enabled: "0" } }).enabled, false);
+  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { enabled: false } }).enabled, false);
+  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { enabled: "true" } }).enabled, true);
+});
+
+test("parseExtractionLivenessConfig: honors a positive staleWindowMs and defaults invalid ones", () => {
+  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: 5000 } }).staleWindowMs, 5000);
+  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: "7000" } }).staleWindowMs, 7000);
+  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: 0 } }).staleWindowMs, 86_400_000);
+  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: -5 } }).staleWindowMs, 86_400_000);
+  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: "nope" } }).staleWindowMs, 86_400_000);
+});
+
+test("parseExtractionLivenessConfig: rejects a non-object block", () => {
+  assert.throws(() => parseExtractionLivenessConfig({ extractionLiveness: 5 }), /must be a plain object/);
+  assert.throws(() => parseExtractionLivenessConfig({ extractionLiveness: [] }), /must be a plain object/);
+});
+
+// ── evaluateExtractionLiveness: degraded matrix ──────────────────────────────
+
+const ENABLED = { enabled: true, staleWindowMs: WINDOW };
+const ancient = new Date(NOW - 10 * WINDOW).toISOString();
+const nonEmpty = snapshot({ bufferedSessionCount: 2, pendingTurnCount: 5, oldestTurnTimestamp: ancient });
+
+test("evaluate: disabled is never degraded even with a stale watermark and backlog", () => {
+  const status = evaluateExtractionLiveness({
+    config: { enabled: false, staleWindowMs: WINDOW },
+    lastExtractionAt: ancient,
+    snapshot: nonEmpty,
+    nowMs: NOW,
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.degradedReason, null);
+  assert.equal(status.bufferedSessionCount, 2);
+});
+
+test("evaluate: empty buffer with an ancient watermark is NOT degraded (nothing to extract, §22)", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: ancient,
+    snapshot: snapshot(),
+    nowMs: NOW,
+  });
+  assert.equal(status.degraded, false);
+});
+
+test("evaluate: non-empty buffer with an ancient watermark is degraded", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: ancient,
+    snapshot: nonEmpty,
+    nowMs: NOW,
+  });
+  assert.equal(status.degraded, true);
+  assert.match(status.degradedReason ?? "", /buffered session/);
+  assert.equal(status.oldestBufferedTurnAgeMs, 10 * WINDOW);
+});
+
+test("evaluate: non-empty buffer with a null watermark (never succeeded) is degraded", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: null,
+    snapshot: nonEmpty,
+    nowMs: NOW,
+  });
+  assert.equal(status.degraded, true);
+  assert.match(status.degradedReason ?? "", /no successful extraction on record/);
+});
+
+test("evaluate: staleness boundary is half-open — exactly staleWindowMs is stale, just under is fresh (§23)", () => {
+  const atBoundary = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: new Date(NOW - WINDOW).toISOString(),
+    snapshot: nonEmpty,
+    nowMs: NOW,
+  });
+  assert.equal(atBoundary.degraded, true, "age === staleWindowMs is stale");
+
+  const justUnder = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: new Date(NOW - (WINDOW - 1)).toISOString(),
+    snapshot: nonEmpty,
+    nowMs: NOW,
+  });
+  assert.equal(justUnder.degraded, false, "age === staleWindowMs - 1 is fresh");
+});
+
+// ── SmartBuffer.getBufferSnapshot ────────────────────────────────────────────
+
+test("getBufferSnapshot: empty buffer reports zeros and a null oldest", async () => {
+  const snap = await bufferFor({ turns: [], lastExtractionAt: null, extractionCount: 0 }).getBufferSnapshot();
+  assert.deepEqual(snap, { bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null });
+});
+
+test("getBufferSnapshot: counts sessions/turns across the entries map and picks the oldest turn", async () => {
+  const older = "2026-02-01T00:00:00.000Z";
+  const newer = "2026-03-01T00:00:00.000Z";
+  const snap = await bufferFor({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+    entries: {
+      recent: { turns: [turn(newer)], lastExtractionAt: null, extractionCount: 0 },
+      stale: { turns: [turn(older), turn("2026-03-15T00:00:00.000Z")], lastExtractionAt: null, extractionCount: 0 },
+    },
+  }).getBufferSnapshot();
+  assert.equal(snap.bufferedSessionCount, 2);
+  assert.equal(snap.pendingTurnCount, 3);
+  assert.equal(snap.oldestTurnTimestamp, older);
+});
+
+test("getBufferSnapshot: covers the legacy top-level turns array (single session)", async () => {
+  const first = "2026-01-10T00:00:00.000Z";
+  const snap = await bufferFor({
+    turns: [turn(first), turn("2026-01-11T00:00:00.000Z")],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  }).getBufferSnapshot();
+  assert.equal(snap.bufferedSessionCount, 1);
+  assert.equal(snap.pendingTurnCount, 2);
+  assert.equal(snap.oldestTurnTimestamp, first);
+});
+
+test("getBufferSnapshot: empty entries are not counted as sessions", async () => {
+  const snap = await bufferFor({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+    entries: {
+      empty: { turns: [], lastExtractionAt: null, extractionCount: 0 },
+      live: { turns: [turn("2026-04-01T00:00:00.000Z")], lastExtractionAt: null, extractionCount: 0 },
+    },
+  }).getBufferSnapshot();
+  assert.equal(snap.bufferedSessionCount, 1);
+  assert.equal(snap.pendingTurnCount, 1);
+});
+
+// ── ExtractionLivenessWarnThrottle ───────────────────────────────────────────
+
+test("throttle: warns once per staleness window and again after it elapses; resets on recovery", () => {
+  const degraded: ExtractionLivenessStatus = {
+    lastExtractionAt: null,
+    bufferedSessionCount: 1,
+    pendingTurnCount: 1,
+    oldestBufferedTurnAgeMs: null,
+    degraded: true,
+    degradedReason: "stalled",
+  };
+  const healthy: ExtractionLivenessStatus = { ...degraded, degraded: false, degradedReason: null };
+  const t = new ExtractionLivenessWarnThrottle();
+
+  assert.equal(t.maybeWarn(degraded, WINDOW, NOW), true, "first degraded evaluation warns");
+  assert.equal(t.maybeWarn(degraded, WINDOW, NOW + WINDOW - 1), false, "same window is throttled");
+  assert.equal(t.maybeWarn(degraded, WINDOW, NOW + WINDOW), true, "next window warns again");
+  assert.equal(t.maybeWarn(healthy, WINDOW, NOW + WINDOW + 1), false, "healthy never warns");
+  assert.equal(t.maybeWarn(degraded, WINDOW, NOW + WINDOW + 2), true, "recovery reset lets a fresh episode warn at once");
+});
+
+// ── renderExtractionLivenessStats ────────────────────────────────────────────
+
+test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded verdict", async () => {
+  const orchestrator = {
+    config: { extractionLiveness: { enabled: true, staleWindowMs: WINDOW } },
+    buffer: {
+      getBufferSnapshot: async (): Promise<ExtractionBufferSnapshot> => ({
+        bufferedSessionCount: 2,
+        pendingTurnCount: 5,
+        oldestTurnTimestamp: ancient,
+      }),
+    },
+  };
+  const lines = await renderExtractionLivenessStats(
+    orchestrator,
+    { extractionCount: 7, lastExtractionAt: ancient, lastConsolidationAt: null },
+    NOW,
+  );
+  assert.ok(lines.includes("Extractions: 7"), "reports extraction count");
+  assert.ok(lines.includes("Buffered sessions: 2 (5 turns pending)"), "reports backlog");
+  assert.ok(
+    lines.some((l) => l.startsWith("Extraction liveness: DEGRADED")),
+    "reports a degraded verdict when the watermark is stale",
+  );
+});

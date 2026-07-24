@@ -10,6 +10,7 @@ import type {
   SignalLevel,
 } from "./types.js";
 import { resolvePresentationCapabilities } from "./capabilities.js";
+import type { ExtractionBufferSnapshot } from "./extraction-liveness.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
 
@@ -304,6 +305,34 @@ export class SmartBuffer {
 
   async load(): Promise<void> {
     await this.enqueueMutation(async () => this.loadUnlocked());
+  }
+
+  /** Snapshot of buffered, not-yet-extracted work across sessions (#2151): session count,
+   * pending-turn total, oldest buffered turn. Covers entries map + legacy top-level turns. */
+  async getBufferSnapshot(): Promise<ExtractionBufferSnapshot> {
+    await this.load();
+    let bufferedSessionCount = 0;
+    let pendingTurnCount = 0;
+    let oldestMs = Number.POSITIVE_INFINITY;
+    let oldestTurnTimestamp: string | null = null;
+    const consider = (turns: BufferTurn[] | undefined): void => {
+      if (!Array.isArray(turns) || turns.length === 0) return;
+      bufferedSessionCount += 1;
+      pendingTurnCount += turns.length;
+      const first = turns[0]?.timestamp;
+      const parsed = typeof first === "string" ? Date.parse(first) : Number.NaN;
+      if (Number.isFinite(parsed) && parsed < oldestMs) {
+        oldestMs = parsed;
+        oldestTurnTimestamp = first ?? null;
+      }
+    };
+    const entries = this.state.entries;
+    if (entries) {
+      for (const entry of Object.values(entries)) consider(entry?.turns);
+    } else {
+      consider(this.state.turns);
+    }
+    return { bufferedSessionCount, pendingTurnCount, oldestTurnTimestamp };
   }
 
   /**
