@@ -247,8 +247,13 @@ test("parser -> scheduler -> durable sync: a tick performs a real durable sync",
     // i.e. AFTER invoke() (runActivitySyncOnce) has fully resolved — every fs
     // write and setCursor durable. Awaiting this signal is deterministic; a bare
     // setImmediate flush races the runner's real fs I/O on the libuv threadpool.
-    const { promise: syncCompleted, resolve: signalSyncCompleted } =
-      Promise.withResolvers<ActivitySyncRunSummary>();
+    // onError rejects the same deferred so a runner failure (SQLite/digest write
+    // regression, temp-dir fault) surfaces promptly instead of hanging to timeout.
+    const {
+      promise: syncCompleted,
+      resolve: signalSyncCompleted,
+      reject: failSyncCompleted,
+    } = Promise.withResolvers<ActivitySyncRunSummary>();
     const timer = fakeTimer();
     const scheduler = new ActivitySyncScheduler({
       config: enabledConfig(),
@@ -265,6 +270,7 @@ test("parser -> scheduler -> durable sync: a tick performs a real durable sync",
           createSourceClient: () => client,
         }),
       onRun: signalSyncCompleted,
+      onError: failSyncCompleted,
       setTimer: timer.setTimer,
       clearTimer: timer.clearTimer,
     });
