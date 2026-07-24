@@ -668,7 +668,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmHeaders` | `(unset)` | Extra HTTP headers |
 | `localLlmAuthHeader` | `true` | Send `Authorization: Bearer` header when key set |
 | `localLlmFallback` | `true` | Fall back to gateway model chain on failure |
-| `localLlmTimeoutMs` | `180000` | Timeout for a single attempt at a primary local extraction/consolidation call. 5xx retries and their backoff can push one logical completion past this value. Also sizes the HTTP connection's header/body inactivity budget, so values above 300s take effect instead of being capped by undici's default (issue #2148). |
+| `localLlmTimeoutMs` | `180000` | Timeout for a single attempt at a primary local extraction/consolidation call. 5xx retries and their backoff can push one logical completion past this value. Also sizes the HTTP connection's header/body inactivity budget, so values above 300s take effect instead of being capped by undici's default (issue #2148). Exception: when the host process installs its own global dispatcher (a `ProxyAgent`, `MockAgent`, or other custom transport), Remnic leaves it in place rather than displacing it, and that dispatcher's own budget — undici's 300s default unless it was built with a wider one — governs instead. Raising this value past 300s on such a setup requires widening the host dispatcher too. |
 | `localLlmRetry5xxCount` | `1` | Retry count for transient 5xx responses from the local endpoint |
 | `localLlmRetryBackoffMs` | `400` | Base backoff in milliseconds for local endpoint retries |
 | `localLlm400TripThreshold` | `5` | Consecutive 4xx responses before the local endpoint is temporarily tripped |
