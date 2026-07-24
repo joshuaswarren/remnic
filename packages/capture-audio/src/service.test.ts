@@ -131,3 +131,9 @@ test("renderSystemdUnit escapes percent specifiers", () => {
   assert.match(unit, /100%%done/);
   assert.equal(/[^%]%[^%]/.test(unit.split("\n").find((l) => l.startsWith("ExecStart")) ?? ""), false);
 });
+
+test("renderSystemdUnit routes stdout/stderr to the log file", () => {
+  const unit = renderSystemdUnit(SPEC);
+  assert.match(unit, /StandardOutput=append:\/home\/user\/\.remnic\/audio\.log/);
+  assert.match(unit, /StandardError=append:\/home\/user\/\.remnic\/audio\.log/);
+});

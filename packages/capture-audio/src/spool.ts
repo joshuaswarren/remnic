@@ -628,7 +628,9 @@ export class Spool {
     const segs = this.#db
       .prepare(
         "SELECT text, speaker_cluster AS speakerKey, is_wearer AS isWearer, channel, start_utc AS startUtc, end_utc AS endUtc " +
-          "FROM segments WHERE conversation_id = ? ORDER BY ordinal ASC, id ASC",
+          // Order by timestamp first: with channel "both", mic and system chunks
+          // arrive independently, so ordinal (arrival order) isn't chronological.
+          "FROM segments WHERE conversation_id = ? ORDER BY start_utc ASC, ordinal ASC, id ASC",
       )
       .all(row.id) as Array<{
       text: string;

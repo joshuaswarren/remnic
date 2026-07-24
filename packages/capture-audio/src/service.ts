@@ -95,6 +95,7 @@ function systemdArg(value: string): string {
 /** Render a systemd user unit that restarts the daemon on failure. */
 export function renderSystemdUnit(spec: ServiceSpec): string {
   const execStart = spec.programArguments.map(systemdArg).join(" ");
+  const logPath = spec.logPath.replace(/%/g, "%%");
   return `[Unit]
 Description=Remnic desktop audio capture daemon
 After=default.target
@@ -102,6 +103,8 @@ After=default.target
 [Service]
 Type=simple
 ExecStart=${execStart}
+StandardOutput=append:${logPath}
+StandardError=append:${logPath}
 Restart=on-failure
 RestartSec=5
 

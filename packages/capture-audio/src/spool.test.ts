@@ -429,3 +429,30 @@ test("appendAssembledSegments rejects an empty segment array", () => {
     spool.close();
   }
 });
+
+test("hydrated segments are ordered by timestamp, not append/arrival order", () => {
+  const spool = new Spool(":memory:");
+  try {
+    // A later-appended system segment whose timestamp precedes the mic one must
+    // still read first (channel "both" interleaves chunk arrival).
+    spool.appendAssembledSegments({
+      idempotencyKey: "mic",
+      conversationId: "c",
+      startedAtUtc: "2026-07-24T00:00:05.000Z",
+      segments: [aseg("second", "2026-07-24T00:00:05.000Z", "2026-07-24T00:00:06.000Z")],
+    });
+    spool.appendAssembledSegments({
+      idempotencyKey: "sys",
+      conversationId: "c",
+      startedAtUtc: "2026-07-24T00:00:05.000Z",
+      segments: [{ channel: "system", text: "first", startUtc: "2026-07-24T00:00:00.000Z", endUtc: "2026-07-24T00:00:01.000Z" }],
+    });
+    const conv = spool.getConversation("c");
+    assert.deepEqual(
+      conv?.segments.map((s) => s.textRaw),
+      ["first", "second"],
+    );
+  } finally {
+    spool.close();
+  }
+});

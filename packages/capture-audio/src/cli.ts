@@ -487,7 +487,8 @@ async function cmdStart(
       });
       live.start();
     } catch (err) {
-      stderr(`live capture unavailable: ${describeError(err)}; serving without capture`);
+      const detail = err instanceof CaptureConfigError || err instanceof CaptureInputError ? err.message : describeError(err);
+      stderr(`live capture unavailable: ${detail}; serving without capture`);
       live = null;
     }
   }
