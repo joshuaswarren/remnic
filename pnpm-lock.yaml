@@ -181,6 +181,25 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/capture-native-darwin-arm64: {}
+
+  packages/capture-native-darwin-x64: {}
+
+  packages/capture-screen:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.0
+      tsup:
+        specifier: ^8.0.0
+        version: 8.5.1(postcss@8.5.16)(tsx@4.23.0)(typescript@5.9.3)(yaml@2.9.0)
+      tsx:
+        specifier: ^4.0.0
+        version: 4.23.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/coding-graph:
     dependencies:
       better-sqlite3:

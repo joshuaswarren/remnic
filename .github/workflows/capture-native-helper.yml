@@ -1,0 +1,141 @@
+name: capture-native-helper
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'packages/capture-native-darwin-helper/**'
+      - 'packages/capture-native-darwin-arm64/**'
+      - 'packages/capture-native-darwin-x64/**'
+      - 'packages/capture-screen/**'
+      - '.github/workflows/capture-native-helper.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/capture-native-darwin-helper/**'
+      - 'packages/capture-native-darwin-arm64/**'
+      - 'packages/capture-native-darwin-x64/**'
+      - 'packages/capture-screen/**'
+      - '.github/workflows/capture-native-helper.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: capture-native-helper-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Compile + unit-test the unified Swift helper on real macOS runners, one per
+  # target arch, then stage the built binary into its platform package and run
+  # that package's Node test. Swift cannot be built or run on Linux, so this
+  # job is the only place the native helper is actually proven.
+  swift:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+            platformPackage: packages/capture-native-darwin-arm64
+          - runner: macos-15-intel
+            arch: x64
+            platformPackage: packages/capture-native-darwin-x64
+    name: swift (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Pin a toolchain that provides Swift 5.10 (swift-tools-version in
+      # Package.swift). latest-stable satisfies this on both runner images.
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build helper (release)
+        working-directory: packages/capture-native-darwin-helper
+        run: swift build -c release
+
+      - name: Test helper
+        working-directory: packages/capture-native-darwin-helper
+        run: swift test
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+
+      - name: Stage built binary into platform package
+        run: |
+          set -euo pipefail
+          bin_dir="$(cd packages/capture-native-darwin-helper && swift build -c release --show-bin-path)"
+          mkdir -p "${{ matrix.platformPackage }}/bin"
+          cp "${bin_dir}/remnic-capture-helper" "${{ matrix.platformPackage }}/bin/remnic-capture-helper"
+          chmod +x "${{ matrix.platformPackage }}/bin/remnic-capture-helper"
+
+      - name: Platform package test
+        working-directory: ${{ matrix.platformPackage }}
+        run: node test.mjs
+
+      - name: Smoke-test helper CLI surface
+        working-directory: ${{ matrix.platformPackage }}
+        run: |
+          set -euo pipefail
+          ./bin/remnic-capture-helper --help
+          # device-enumerate needs no TCC grant and must emit one JSON line.
+          ./bin/remnic-capture-helper device-enumerate | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s);if(!Array.isArray(o.devices))throw new Error("device-enumerate did not emit a devices array");console.log("device-enumerate ok:",o.devices.length,"entries")})'
+
+      - name: Upload helper binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: remnic-capture-helper-${{ matrix.arch }}
+          path: ${{ matrix.platformPackage }}/bin/remnic-capture-helper
+          if-no-files-found: error
+
+  # The screen-activity daemon (@remnic/capture-screen) is TypeScript and is
+  # proven on Linux like the rest of the workspace.
+  screen-linux:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    name: screen (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # capture-screen's check-types resolves @remnic/core types.
+      - name: Build core
+        run: pnpm --filter @remnic/core build
+
+      - name: Typecheck capture-screen
+        run: pnpm --filter @remnic/capture-screen run check-types
+
+      - name: Test capture-screen
+        run: pnpm --filter @remnic/capture-screen run test
