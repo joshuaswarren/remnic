@@ -668,7 +668,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmHeaders` | `(unset)` | Extra HTTP headers |
 | `localLlmAuthHeader` | `true` | Send `Authorization: Bearer` header when key set |
 | `localLlmFallback` | `true` | Fall back to gateway model chain on failure |
-| `localLlmTimeoutMs` | `180000` | Total timeout for primary local extraction/consolidation calls |
+| `localLlmTimeoutMs` | `180000` | Total timeout for primary local extraction/consolidation calls. Applied to the HTTP connection's header/body inactivity budget as well, so values above 300s are honored instead of being capped by undici's default (issue #2148). |
 | `localLlmRetry5xxCount` | `1` | Retry count for transient 5xx responses from the local endpoint |
 | `localLlmRetryBackoffMs` | `400` | Base backoff in milliseconds for local endpoint retries |
 | `localLlm400TripThreshold` | `5` | Consecutive 4xx responses before the local endpoint is temporarily tripped |

@@ -3024,6 +3024,7 @@
     "meilisearch": "^0.46.0",
     "node-gyp": "^12.3.0",
     "openai": "^6.0.0",
+    "undici": "^6.27.0",
     "zod": "^3.24.0"
   },
   "optionalDependencies": {

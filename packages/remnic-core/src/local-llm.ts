@@ -7,6 +7,7 @@ import { launchProcessSync } from "./runtime/child-process.js";
 import { mergeEnv, readEnvVar } from "./runtime/env.js";
 import { resolveLocalLlmCapabilities } from "./capabilities.js";
 import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
+import { ChatTransport } from "./local-llm-transport.js";
 
 /** Trim trailing slash characters without backtracking regex. */
 function trimTrailingSlashes(s: string): string {
@@ -263,6 +264,7 @@ export class LocalLlmClient {
   private queueDrainScheduled: boolean = false;
   private static readonly HEALTH_CHECK_INTERVAL_MS = 60000; // 1 minute
   private static readonly LMS_CACHE_INTERVAL_MS = 30000; // 30 seconds
+  private readonly chatTransport = new ChatTransport();
 
   constructor(config: PluginConfig, modelRegistry?: ModelRegistry) {
     this.config = config;
@@ -1029,16 +1031,6 @@ export class LocalLlmClient {
       // Avoid logging request bodies by default (can contain sensitive user content).
       log.debug(`local LLM: request body length=${requestBodyJson.length}`);
 
-      // Write request body to file for debugging
-      if (this.config.debug) {
-        try {
-          const { writeFileSync } = await import("node:fs");
-          writeFileSync("/tmp/engram-last-request.json", requestBodyJson);
-        } catch {
-          /* ignore */
-        }
-      }
-
       const effectiveTimeoutMs =
         typeof options.timeoutMs === "number"
           ? Math.min(this.config.localLlmTimeoutMs, options.timeoutMs)
@@ -1050,13 +1042,15 @@ export class LocalLlmClient {
         const attemptAbort = new AbortController();
         const attemptTimeout = setTimeout(() => attemptAbort.abort(), effectiveTimeoutMs);
         try {
-          response = await fetch(chatUrl, {
-            method: "POST",
+          response = await this.chatTransport.post({
+            url: chatUrl,
             headers: this.buildRequestHeaders({
               "Content-Type": "application/json",
             }),
-            body: JSON.stringify(requestBody),
+            body: requestBodyJson,
             signal: attemptAbort.signal,
+            budgetMs: this.config.localLlmTimeoutMs,
+            debug: this.config.debug,
           });
         } catch (err) {
           if (!this.isAbortError(err)) throw err;
