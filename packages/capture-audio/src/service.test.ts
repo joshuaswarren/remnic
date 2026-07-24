@@ -137,3 +137,13 @@ test("renderSystemdUnit routes stdout/stderr to the log file", () => {
   assert.match(unit, /StandardOutput=append:\/home\/user\/\.remnic\/audio\.log/);
   assert.match(unit, /StandardError=append:\/home\/user\/\.remnic\/audio\.log/);
 });
+
+test("service renderers persist the environment (PATH + helper override)", () => {
+  const spec = { ...SPEC, environment: { PATH: "/usr/bin", REMNIC_CAPTURE_HELPER_BIN: "/opt/helper" } };
+  const unit = renderSystemdUnit(spec);
+  assert.match(unit, /Environment=/);
+  assert.match(unit, /REMNIC_CAPTURE_HELPER_BIN=\/opt\/helper/);
+  const plist = renderLaunchAgent(spec);
+  assert.match(plist, /<key>EnvironmentVariables<\/key>/);
+  assert.match(plist, /<key>PATH<\/key>/);
+});

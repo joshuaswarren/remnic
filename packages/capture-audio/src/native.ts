@@ -508,7 +508,13 @@ export function createNativeCaptureRunner(options: NativeRunnerOptions): NativeC
       if (!stopped) return;
       stopped = false;
       restarts = 0;
-      spawnChild();
+      try {
+        spawnChild();
+      } catch (err) {
+        // Resolution/spawn failed synchronously — the runner is not running.
+        stopped = true;
+        throw err;
+      }
     },
     stop(): Promise<void> {
       if (stopped) return Promise.resolve();

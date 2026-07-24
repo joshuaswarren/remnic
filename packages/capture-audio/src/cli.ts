@@ -671,12 +671,19 @@ async function cmdDevices(env: NodeJS.ProcessEnv, stdout: (l: string) => void): 
 function cmdInstallService(
   paths: CapturePaths,
   flags: Record<string, string | boolean>,
+  env: NodeJS.ProcessEnv,
   stdout: (l: string) => void,
   spawnArgvPrefix: readonly string[],
 ): number {
   const platform = process.platform;
   const home = homedir();
   const label = typeof flags.label === "string" ? flags.label : undefined;
+  // Persist the env the daemon needs under launchd/systemd: PATH (to find
+  // whisper-cli) and any REMNIC_CAPTURE_HELPER_BIN override the operator set.
+  const environment: Record<string, string> = {};
+  if (typeof env.PATH === "string" && env.PATH !== "") environment.PATH = env.PATH;
+  const helperBin = env.REMNIC_CAPTURE_HELPER_BIN;
+  if (typeof helperBin === "string" && helperBin !== "") environment.REMNIC_CAPTURE_HELPER_BIN = helperBin;
   const spec = {
     programArguments: [
       process.execPath,
@@ -689,6 +696,7 @@ function cmdInstallService(
     ],
     logPath: paths.logPath,
     ...(label ? { label } : {}),
+    ...(Object.keys(environment).length > 0 ? { environment } : {}),
   };
   if (flags.uninstall === true) {
     const { plan, removed } = uninstallService({
@@ -804,7 +812,7 @@ export async function runCapture(io: CliIo): Promise<number> {
       case "janitor":
         return await cmdJanitor(paths, stdout, stderr);
       case "install-service":
-        return cmdInstallService(paths, parsed.flags, stdout, io.spawnArgvPrefix ?? [process.argv[1]]);
+        return cmdInstallService(paths, parsed.flags, env, stdout, io.spawnArgvPrefix ?? [process.argv[1]]);
       case "enroll-self":
         return cmdEnrollSelf(paths, parsed.flags, stdout);
       case "help":

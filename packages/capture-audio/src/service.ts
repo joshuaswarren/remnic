@@ -21,6 +21,8 @@ export interface ServiceSpec {
   programArguments: string[];
   logPath: string;
   label?: string;
+  /** Env vars the launched daemon needs (e.g. PATH, REMNIC_CAPTURE_HELPER_BIN). */
+  environment?: Record<string, string>;
 }
 
 export interface ServicePlan {
@@ -57,6 +59,10 @@ function validateLabel(label: string): string {
 export function renderLaunchAgent(spec: ServiceSpec): string {
   const label = spec.label ?? DEFAULT_SERVICE_LABEL;
   const args = spec.programArguments.map((a) => `    <string>${xmlEscape(a)}</string>`).join("\n");
+  const envEntries = Object.entries(spec.environment ?? {})
+    .map(([k, v]) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(v)}</string>`)
+    .join("\n");
+  const envBlock = envEntries === "" ? "" : `  <key>EnvironmentVariables</key>\n  <dict>\n${envEntries}\n  </dict>\n`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -67,7 +73,7 @@ export function renderLaunchAgent(spec: ServiceSpec): string {
   <array>
 ${args}
   </array>
-  <key>RunAtLoad</key>
+${envBlock}  <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
@@ -96,6 +102,10 @@ function systemdArg(value: string): string {
 export function renderSystemdUnit(spec: ServiceSpec): string {
   const execStart = spec.programArguments.map(systemdArg).join(" ");
   const logPath = spec.logPath.replace(/%/g, "%%");
+  const envLines = Object.entries(spec.environment ?? {})
+    .map(([k, v]) => `Environment=${systemdArg(`${k}=${v}`)}`)
+    .join("\n");
+  const envBlock = envLines === "" ? "" : `${envLines}\n`;
   return `[Unit]
 Description=Remnic desktop audio capture daemon
 After=default.target
@@ -105,7 +115,7 @@ Type=simple
 ExecStart=${execStart}
 StandardOutput=append:${logPath}
 StandardError=append:${logPath}
-Restart=on-failure
+${envBlock}Restart=on-failure
 RestartSec=5
 
 [Install]

@@ -15,6 +15,7 @@ import path from "node:path";
 
 import { ConversationAssembler } from "./assembly.js";
 import type { DaemonConfig } from "./config.js";
+import { CaptureInputError } from "./errors.js";
 import {
   createNativeCaptureRunner,
   type ChunkEvent,
@@ -114,7 +115,16 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
     // slice, so "both" is deferred rather than shipped un-deduped.
     channel: "mic",
     device: config.devices.mic,
-    onChunk: (event) => processor.enqueue(event),
+    onChunk: (event) => {
+      // Reject a helper-supplied path that escapes the raw capture dir BEFORE it
+      // is read for transcription (defense against a malformed/hostile helper).
+      const resolved = path.resolve(event.path);
+      if (resolved !== rawBase && !resolved.startsWith(rawBase + path.sep)) {
+        options.onError?.(new CaptureInputError(`native helper chunk path escapes the capture directory: ${event.path}`));
+        return;
+      }
+      processor.enqueue({ ...event, path: resolved });
+    },
     ...(options.onError ? { onError: options.onError } : {}),
     ...(options.onStderr ? { onStderr: options.onStderr } : {}),
     ...(options.resolution ? { resolution: options.resolution } : {}),
