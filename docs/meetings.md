@@ -33,7 +33,7 @@ under #1899); without it, detection runs audio-only.
 | Production day-source adapter (activity/wearables) | **shipped** (#2123) |
 | Post-sync auto-build tail-step (auto + manual sync) | **shipped** (#2123) |
 | CLI — `remnic meetings list/show/build` | **shipped** (#2123) |
-| MCP tools — `meetings_list` / `meetings_get` / `meetings_build` | **shipped** (#2123) |
+| MCP tools — `engram.meetings_list` / `_get` / `_build` (with `remnic.` aliases) | **shipped** (#2123) |
 | HTTP routes — `/engram|remnic/v1/meetings[/:id\|/build]` | **shipped** (#2123) |
 | Caller-namespace symmetry | **shipped** (#2123) |
 
@@ -167,8 +167,9 @@ are unchanged.
   records, all days or one day), `remnic meetings show <meeting-id>` (one
   record), and `remnic meetings build --date <YYYY-MM-DD> [--json]` (detect +
   fuse + store a day; `build` requires `--date`).
-- **MCP tools** — `meetings_list` (all days or one `date`), `meetings_get` (by
-  `id`), `meetings_build` (a `date`). Each accepts optional `namespace` /
+- **MCP tools** — `engram.meetings_list` (all days or one `date`),
+  `engram.meetings_get` (by `id`), `engram.meetings_build` (a `date`); each also
+  registered under the `remnic.` alias. Each accepts optional `namespace` /
   `sessionKey`.
 - **HTTP** (access server, token-gated) — `GET /engram/v1/meetings` (list),
   `GET /engram/v1/meetings/:id` (get), `POST /engram/v1/meetings/build`. The

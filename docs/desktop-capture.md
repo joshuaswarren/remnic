@@ -372,11 +372,13 @@ Native helper binaries (planned) install as platform-specific optional packages
 ├── audio.sqlite / screen.sqlite   # local spool (text; not QMD-indexed, never memories)
 └── models/                        # STT models (explicit download only)
 
-<memoryDir>/                       # Remnic host
+<memoryDir>/                       # Remnic host — machine-global (default namespace only)
 ├── state/
 │   └── activity.sqlite            # ActivityStore (snapshots, FTS, sync cursors) — shipped
-├── activity/
-│   └── <date>.md                  # rendered day digest (QMD-searchable) — shipped
+└── activity/
+    └── <date>.md                  # rendered day digest (QMD-searchable) — shipped
+
+<ns>/                              # per caller namespace (default ns = machine owner)
 ├── wearables/
 │   └── desktop/<date>.md          # desktop audio day transcript (planned)
 └── meetings/
