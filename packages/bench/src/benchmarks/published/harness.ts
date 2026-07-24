@@ -24,22 +24,16 @@
  * permissible values rather than silently defaulting.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
-import type {
-  BenchRecallSupportAssessment,
-  BenchRecallSupportStatus,
-  Message,
-} from "../../adapters/types.js";
+import type { BenchRecallSupportAssessment, BenchRecallSupportStatus, BenchResponder, Message } from "../../adapters/types.js";
 import {
   answerBenchmarkQuestion,
+  buildStrictBenchmarkQuestion,
   type BenchmarkAnswerResult,
   type BenchmarkAnswerFormat,
 } from "../../answering.js";
-import {
-  findBenchmarkRunBlockedError,
-  isBenchmarkRunBlockedError,
-} from "../../benchmark-run-blocked-error.js";
+import { findBenchmarkRunBlockedError, isBenchmarkRunBlockedError } from "../../benchmark-run-blocked-error.js";
 import { benchmarkRecallBudgetForSessionCount } from "../../recall-budget.js";
 import {
   captureBenchmarkExecutionProvenance,
@@ -59,6 +53,7 @@ import { computeCategoryAggregates } from "./category-aggregates.js";
 import type {
   BenchmarkMode,
   BenchmarkResult,
+  PairedAnswerReplayEntry,
   ResolvedRunBenchmarkOptions,
   TaskResult,
 } from "../../types.js";
@@ -173,12 +168,7 @@ export interface HarnessPlan {
  * Metrics the harness computes for every trial. Dataset-specific extra
  * metrics are merged on top via `HarnessTrial.extraScores`.
  */
-export type HarnessMetricId =
-  | "f1"
-  | "contains_answer"
-  | "rouge_l"
-  | "llm_judge"
-  | "judge_accuracy";
+export type HarnessMetricId = "f1" | "contains_answer" | "rouge_l" | "llm_judge" | "judge_accuracy";
 
 export interface HarnessMetricsSpec {
   /**
@@ -204,10 +194,13 @@ export interface HarnessContext {
   totalCount?: number;
 }
 
+interface PendingPairedAnswerReplay {
+  key: string;
+  entry: PairedAnswerReplayEntry;
+}
+
 /** Convenience: guard an arbitrary iterable shape into an async iterator. */
-async function* toAsyncIterable<T>(
-  iter: Iterable<T> | AsyncIterable<T>,
-): AsyncIterable<T> {
+async function* toAsyncIterable<T>(iter: Iterable<T> | AsyncIterable<T>): AsyncIterable<T> {
   for await (const value of iter as AsyncIterable<T>) {
     yield value;
   }
@@ -230,44 +223,53 @@ async function* toAsyncIterable<T>(
  *   - Every trial recalls from ALL `recallSessionIds` before calling
  *     the responder.
  */
-export async function runPublishedHarness(
-  ctx: HarnessContext,
-): Promise<BenchmarkResult> {
+export async function runPublishedHarness(ctx: HarnessContext): Promise<BenchmarkResult> {
   validateContext(ctx);
   const executionProvenance = captureBenchmarkExecutionProvenance();
   const answerSupportGate = resolveAnswerSupportGate(ctx.options);
-  const trialConcurrency = resolveTrialConcurrency(
-    ctx.options.benchmarkOptions?.trialConcurrency,
-  );
+  const trialConcurrency = resolveTrialConcurrency(ctx.options.benchmarkOptions?.trialConcurrency);
   const tasks: TaskResult[] = [];
+  const pendingPairedAnswerReplays = new Map<TaskResult, PendingPairedAnswerReplay>();
 
-  for await (const plan of toAsyncIterable(ctx.plans)) {
-    await ctx.options.system.reset();
-    for (const session of plan.ingestSessions) {
-      if (session.messages.length > 0) {
-        await ctx.options.system.store(session.sessionId, session.messages);
+  try {
+    for await (const plan of toAsyncIterable(ctx.plans)) {
+      await ctx.options.system.reset();
+      for (const session of plan.ingestSessions) {
+        if (session.messages.length > 0) {
+          await ctx.options.system.store(session.sessionId, session.messages);
+        }
       }
+      try {
+        await ctx.options.system.drain?.();
+      } catch (drainErr) {
+        throw new Error(
+          `PublishedBenchmarkHarness: drain failed before scoring; public benchmark evidence would be incomplete: ${
+            drainErr instanceof Error ? drainErr.message : String(drainErr)
+          }`,
+          { cause: drainErr }
+        );
+      }
+      const planIndex = tasks.length;
+      await executePlanTrials(ctx, plan.trials, {
+        planIndex,
+        tasks,
+        trialConcurrency,
+        answerSupportGate,
+        pendingPairedAnswerReplays,
+      });
     }
-    try {
-      await ctx.options.system.drain?.();
-    } catch (drainErr) {
-      throw new Error(
-        `PublishedBenchmarkHarness: drain failed before scoring; public benchmark evidence would be incomplete: ${
-          drainErr instanceof Error ? drainErr.message : String(drainErr)
-        }`,
-        { cause: drainErr },
-      );
+  } catch (error) {
+    if (ctx.options.runtimeProfile === "baseline") {
+      ctx.options.pairedAnswerReplayCache?.clear();
     }
-    const planIndex = tasks.length;
-    await executePlanTrials(ctx, plan.trials, {
-      planIndex,
-      tasks,
-      trialConcurrency,
-      answerSupportGate,
-    });
+    throw error;
   }
 
-  return buildBenchmarkResult(ctx, tasks, executionProvenance);
+  const result = await buildBenchmarkResult(ctx, tasks, executionProvenance);
+  if (ctx.options.runtimeProfile === "baseline" && result.meta.status === "partial") {
+    ctx.options.pairedAnswerReplayCache?.clear();
+  }
+  return result;
 }
 
 async function executePlanTrials(
@@ -278,33 +280,29 @@ async function executePlanTrials(
     tasks: TaskResult[];
     trialConcurrency: number;
     answerSupportGate: boolean;
-  },
+    pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>;
+  }
 ): Promise<void> {
   if (options.trialConcurrency === 1 || trials.length <= 1) {
     for (const trial of trials) {
       appendCompletedTask(
         ctx,
         options.tasks,
+        options.pendingPairedAnswerReplays,
         await executeTrialWithFailure(
           ctx,
           trial,
           options.planIndex,
           options.answerSupportGate,
-        ),
+          options.pendingPairedAnswerReplays
+        )
       );
     }
     return;
   }
 
-  for (
-    let batchStart = 0;
-    batchStart < trials.length;
-    batchStart += options.trialConcurrency
-  ) {
-    const batch = trials.slice(
-      batchStart,
-      batchStart + options.trialConcurrency,
-    );
+  for (let batchStart = 0; batchStart < trials.length; batchStart += options.trialConcurrency) {
+    const batch = trials.slice(batchStart, batchStart + options.trialConcurrency);
     const settled = await Promise.allSettled(
       batch.map((trial) =>
         executeTrialWithFailure(
@@ -312,43 +310,40 @@ async function executePlanTrials(
           trial,
           options.planIndex,
           options.answerSupportGate,
-        ),
-      ),
+          options.pendingPairedAnswerReplays
+        )
+      )
     );
 
     const unexpectedRejection = settled.find(
       (result): result is PromiseRejectedResult =>
-        result.status === "rejected" &&
-        findBenchmarkRunBlockedError(result.reason) === undefined,
+        result.status === "rejected" && findBenchmarkRunBlockedError(result.reason) === undefined
     );
     if (unexpectedRejection) {
       throw unexpectedRejection.reason;
     }
 
     const terminalOffset = settled.findIndex(
-      (result) =>
-        result.status === "rejected" &&
-        findBenchmarkRunBlockedError(result.reason) !== undefined,
+      (result) => result.status === "rejected" && findBenchmarkRunBlockedError(result.reason) !== undefined
     );
     const emitLimit = terminalOffset < 0 ? settled.length : terminalOffset;
     for (let offset = 0; offset < emitLimit; offset += 1) {
       const result = settled[offset];
       if (result?.status !== "fulfilled") {
         throw new Error(
-          `PublishedBenchmarkHarness: concurrent trial ${batchStart + offset} did not settle before canonical emission.`,
+          `PublishedBenchmarkHarness: concurrent trial ${batchStart + offset} did not settle before canonical emission.`
         );
       }
-      appendCompletedTask(ctx, options.tasks, result.value);
+      appendCompletedTask(ctx, options.tasks, options.pendingPairedAnswerReplays, result.value);
     }
 
     if (terminalOffset >= 0) {
       const terminalResult = settled[terminalOffset];
-      const terminalError = terminalResult?.status === "rejected"
-        ? findBenchmarkRunBlockedError(terminalResult.reason)
-        : undefined;
+      const terminalError =
+        terminalResult?.status === "rejected" ? findBenchmarkRunBlockedError(terminalResult.reason) : undefined;
       if (!terminalError) {
         throw new Error(
-          `PublishedBenchmarkHarness: concurrent trial ${batchStart + terminalOffset} lost its terminal error before canonical emission.`,
+          `PublishedBenchmarkHarness: concurrent trial ${batchStart + terminalOffset} lost its terminal error before canonical emission.`
         );
       }
       throw terminalError;
@@ -359,8 +354,13 @@ async function executePlanTrials(
 function appendCompletedTask(
   ctx: HarnessContext,
   tasks: TaskResult[],
-  task: TaskResult,
+  pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>,
+  task: TaskResult
 ): void {
+  const pendingReplay = pendingPairedAnswerReplays.get(task);
+  if (pendingReplay) {
+    ctx.options.pairedAnswerReplayCache?.set(pendingReplay.key, pendingReplay.entry);
+  }
   tasks.push(task);
   // Pass the GLOBAL total (ctx.totalCount), not a per-plan total —
   // `tasks.length` is cumulative across every plan in ctx.plans, so a
@@ -373,10 +373,11 @@ async function executeTrialWithFailure(
   trial: HarnessTrial,
   planIndex: number,
   answerSupportGate: boolean,
+  pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>
 ): Promise<TaskResult> {
   const trialId = trial.taskId ?? trial.question.slice(0, 60);
   try {
-    return await executeTrial(ctx, trial, answerSupportGate);
+    return await executeTrial(ctx, trial, answerSupportGate, pendingPairedAnswerReplays);
   } catch (err) {
     const blocked = findBenchmarkRunBlockedError(err);
     if (blocked) {
@@ -419,42 +420,33 @@ function validateContext(ctx: HarnessContext): void {
     throw new Error(
       "PublishedBenchmarkHarness requires a resolved options.system. " +
         "Valid shapes are created by the `benchmark-runner` CLI and the " +
-        "bench test doubles in packages/bench/src/adapters/.",
+        "bench test doubles in packages/bench/src/adapters/."
     );
   }
   if (!ctx.metricsSpec || !Array.isArray(ctx.metricsSpec.metrics)) {
     throw new Error(
       "PublishedBenchmarkHarness requires metricsSpec.metrics: one of " +
-        'f1, contains_answer, rouge_l, llm_judge, judge_accuracy.',
+        "f1, contains_answer, rouge_l, llm_judge, judge_accuracy."
     );
   }
-  const allowed: readonly HarnessMetricId[] = [
-    "f1",
-    "contains_answer",
-    "rouge_l",
-    "llm_judge",
-    "judge_accuracy",
-  ];
+  const allowed: readonly HarnessMetricId[] = ["f1", "contains_answer", "rouge_l", "llm_judge", "judge_accuracy"];
   for (const metric of ctx.metricsSpec.metrics) {
     if (!allowed.includes(metric)) {
       throw new Error(
-        `PublishedBenchmarkHarness: unknown metric "${String(metric)}". ` +
-          `Valid metrics: ${allowed.join(", ")}.`,
+        `PublishedBenchmarkHarness: unknown metric "${String(metric)}". ` + `Valid metrics: ${allowed.join(", ")}.`
       );
     }
   }
   if (ctx.options.seed !== undefined) {
     if (!Number.isInteger(ctx.options.seed) || ctx.options.seed < 0) {
       throw new Error(
-        `PublishedBenchmarkHarness: seed must be a non-negative integer; got ${String(ctx.options.seed)}.`,
+        `PublishedBenchmarkHarness: seed must be a non-negative integer; got ${String(ctx.options.seed)}.`
       );
     }
   }
 }
 
-function buildFailureScores(
-  metrics: readonly HarnessMetricId[],
-): Record<string, number> {
+function buildFailureScores(metrics: readonly HarnessMetricId[]): Record<string, number> {
   const scores: Record<string, number> = {};
   for (const metric of metrics) {
     scores[metric] = -1;
@@ -468,18 +460,13 @@ function resolveTrialConcurrency(raw: unknown): number {
   }
   const parsed = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 64) {
-    throw new Error(
-      "PublishedBenchmarkHarness: benchmarkOptions.trialConcurrency must be an integer from 1 to 64.",
-    );
+    throw new Error("PublishedBenchmarkHarness: benchmarkOptions.trialConcurrency must be an integer from 1 to 64.");
   }
   return parsed;
 }
 
-function resolveAnswerSupportGate(
-  options: ResolvedRunBenchmarkOptions,
-): boolean {
-  const raw = options.benchmarkOptions?.answerSupportGate
-    ?? options.remnicConfig?.answerSupportGate;
+function resolveAnswerSupportGate(options: ResolvedRunBenchmarkOptions): boolean {
+  const raw = options.benchmarkOptions?.answerSupportGate ?? options.remnicConfig?.answerSupportGate;
   if (raw === undefined) {
     return false;
   }
@@ -496,23 +483,111 @@ function resolveAnswerSupportGate(
     }
   }
   throw new Error(
-    "PublishedBenchmarkHarness: answerSupportGate must be a boolean or one of true/false, 1/0, yes/no, on/off.",
+    "PublishedBenchmarkHarness: answerSupportGate must be a boolean or one of true/false, 1/0, yes/no, on/off."
   );
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`)
+    .join(",")}}`;
+}
+
+function pairedAnswerReplayKey(
+  trial: HarnessTrial,
+  recalledText: string,
+  recallSupport: BenchRecallSupportAssessment | undefined,
+  systemProvider: ResolvedRunBenchmarkOptions["systemProvider"],
+  responderIdentity: string | null
+): string {
+  return createHash("sha256")
+    .update(
+      stableStringify({
+        responder: {
+          baseUrl: systemProvider?.baseUrl ?? null,
+          disableThinking: systemProvider?.disableThinking ?? null,
+          model: systemProvider?.model ?? null,
+          provider: systemProvider?.provider ?? null,
+          providerRequestTimeoutMs: systemProvider?.providerRequestTimeoutMs ?? null,
+          reasoningEffort: systemProvider?.reasoningEffort ?? null,
+          responderContextBudgetChars: systemProvider?.responderContextBudgetChars ?? null,
+          responderPromptBudgetChars: systemProvider?.responderPromptBudgetChars ?? null,
+          retryOptions: systemProvider?.retryOptions ?? null,
+          seed: systemProvider?.seed ?? null,
+          temperature: systemProvider?.temperature ?? null,
+        },
+        responderIdentity,
+        responderPrompt: buildStrictBenchmarkQuestion(
+          trial.question,
+          trial.answerFormat ?? "auto"
+        ),
+        answerMode: "strict",
+        question: trial.question,
+        recalledText,
+        recallSupport: recallSupport
+          ? {
+              evidenceCount: recallSupport.evidenceCount ?? null,
+              maxScore: recallSupport.maxScore ?? null,
+              reason: recallSupport.reason ?? null,
+              status: recallSupport.status,
+              supportThreshold: recallSupport.supportThreshold ?? null,
+            }
+          : null,
+        taskId: trial.taskId,
+      })
+    )
+    .digest("hex");
+}
+
+function pairedAnswerReplayEntry(
+  sourceRuntimeProfile: PairedAnswerReplayEntry["sourceRuntimeProfile"],
+  answer: HarnessAnswerResult
+): PairedAnswerReplayEntry {
+  return {
+    sourceRuntimeProfile,
+    finalAnswer: answer.finalAnswer,
+    answeredText: answer.answeredText,
+    ...(answer.model === undefined ? {} : { model: answer.model }),
+  };
+}
+
+/**
+ * Resolve a non-secret responder fingerprint. Returns `null` when the
+ * responder does not declare an identity, signalling that the replay cache
+ * must be disabled for this trial (paired runs will invoke the responder
+ * directly every time instead of risking a cross-profile replay).
+ */
+function resolveResponderIdentity(responder: BenchResponder | undefined): string | null {
+  if (!responder || typeof responder.identity !== "function") {
+    return null;
+  }
+  let raw: string;
+  try {
+    raw = responder.identity();
+  } catch {
+    return null;
+  }
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 async function executeTrial(
   ctx: HarnessContext,
   trial: HarnessTrial,
   answerSupportGate: boolean,
+  pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>
 ): Promise<TaskResult> {
   const { result: recallResult, durationMs } = await timed(async () => {
-    const recallBudget = benchmarkRecallBudgetForSessionCount(
-      trial.recallSessionIds.length,
-    );
+    const recallBudget = benchmarkRecallBudgetForSessionCount(trial.recallSessionIds.length);
     const recalledSessions = await Promise.all(
-      trial.recallSessionIds.map((sessionId) =>
-        ctx.options.system.recall(sessionId, trial.question, recallBudget),
-      ),
+      trial.recallSessionIds.map((sessionId) => ctx.options.system.recall(sessionId, trial.question, recallBudget))
     );
     const rawRecalledText = recalledSessions.filter(Boolean).join("\n\n");
     const recalledText = trial.recallTextTransform
@@ -521,24 +596,47 @@ async function executeTrial(
           recalledText: rawRecalledText,
         })
       : rawRecalledText;
-    const recallSupport = answerSupportGate
-      ? await assessRecallSupport(ctx, trial, recalledText)
-      : undefined;
+    const recallSupport = answerSupportGate ? await assessRecallSupport(ctx, trial, recalledText) : undefined;
     return { recalledText, recallSupport };
   });
   const { recalledText, recallSupport } = recallResult;
-  let answered: HarnessAnswerResult =
-    await answerBenchmarkQuestion({
+  const responderIdentity = resolveResponderIdentity(ctx.options.system.responder);
+  const answerReplayKey =
+    ctx.options.pairedAnswerReplayCache && responderIdentity !== null
+      ? pairedAnswerReplayKey(
+          trial,
+          recalledText,
+          recallSupport,
+          ctx.options.systemProvider,
+          responderIdentity,
+        )
+      : undefined;
+  const cachedAnswer = answerReplayKey ? ctx.options.pairedAnswerReplayCache?.get(answerReplayKey) : undefined;
+  const currentProfile = ctx.options.runtimeProfile ?? null;
+  const pairedAnswerReusedFrom =
+    cachedAnswer?.sourceRuntimeProfile === "baseline" && currentProfile === "real" ? "baseline" : undefined;
+  let answered: HarnessAnswerResult;
+  if (pairedAnswerReusedFrom) {
+    const reusedAnswer = cachedAnswer!;
+    answered = {
+      finalAnswer: reusedAnswer.finalAnswer,
+      recalledText,
+      answeredText: reusedAnswer.answeredText,
+      latencyMs: 0,
+      tokens: { input: 0, output: 0 },
+      model: reusedAnswer.model,
+    };
+  } else {
+    answered = await answerBenchmarkQuestion({
       question: trial.question,
       recalledText,
       responder: ctx.options.system.responder,
       answerMode: "strict",
       answerFormat: trial.answerFormat,
       recallSupport,
-    }).catch((error: unknown) =>
-      answerWithTrialFallback(trial, recalledText, error),
-    );
-  answered = refineTrialAnswer(trial, recalledText, answered);
+    }).catch((error: unknown) => answerWithTrialFallback(trial, recalledText, error));
+    answered = refineTrialAnswer(trial, recalledText, answered);
+  }
 
   // Post-answer hook runs before the judge so dataset-specific signals
   // (e.g. LongMemEval `search_hits`) are observed from the same
@@ -558,8 +656,7 @@ async function executeTrial(
   // below keeps the downstream arithmetic unchanged for runs that
   // don't opt into the judge.
   const judgeRequested =
-    ctx.metricsSpec.metrics.includes("llm_judge") ||
-    ctx.metricsSpec.metrics.includes("judge_accuracy");
+    ctx.metricsSpec.metrics.includes("llm_judge") || ctx.metricsSpec.metrics.includes("judge_accuracy");
   const judgeResult = judgeRequested
     ? await scoreTrialJudge(ctx, trial, answered.finalAnswer)
     : {
@@ -576,10 +673,7 @@ async function executeTrial(
         scores.f1 = f1Score(answered.finalAnswer, trial.expected);
         break;
       case "contains_answer":
-        scores.contains_answer = containsAnswer(
-          answered.finalAnswer,
-          trial.expected,
-        );
+        scores.contains_answer = containsAnswer(answered.finalAnswer, trial.expected);
         break;
       case "rouge_l":
         scores.rouge_l = rougeL(answered.finalAnswer, trial.expected);
@@ -600,9 +694,7 @@ async function executeTrial(
         // Unreachable — validated in validateContext. Keep as a sanity
         // guard; CLAUDE.md rule 53 (enumerate all non-active states).
         const exhaustive: never = metric;
-        throw new Error(
-          `PublishedBenchmarkHarness: metric ${String(exhaustive)} not handled.`,
-        );
+        throw new Error(`PublishedBenchmarkHarness: metric ${String(exhaustive)} not handled.`);
       }
     }
   }
@@ -623,14 +715,11 @@ async function executeTrial(
     recalledText,
     answeredText: answered.finalAnswer,
     ...(trial.answerFormat ? { answerFormat: trial.answerFormat } : {}),
-    ...(answerSupportGate
-      ? { answerSupportGate: true, recallSupport }
-      : {}),
+    ...(answerSupportGate ? { answerSupportGate: true, recallSupport } : {}),
+    ...(pairedAnswerReusedFrom ? { pairedAnswerReusedFrom } : {}),
     responderModel: answered.model,
     judgeModel: judgeResult.model,
-    ...(answered.fallbackReason
-      ? { answerFallbackReason: answered.fallbackReason }
-      : {}),
+    ...(answered.fallbackReason ? { answerFallbackReason: answered.fallbackReason } : {}),
     ...(answered.refinementReason
       ? {
           answerRefinementReason: answered.refinementReason,
@@ -646,7 +735,7 @@ async function executeTrial(
     Object.assign(details, hookResult.extraDetails);
   }
 
-  return {
+  const task: TaskResult = {
     taskId: trial.taskId,
     question: trial.question,
     expected: trial.expected,
@@ -659,12 +748,19 @@ async function executeTrial(
     },
     details,
   };
+  if (answerReplayKey && currentProfile === "baseline" && answered.fallbackReason === undefined) {
+    pendingPairedAnswerReplays.set(task, {
+      key: answerReplayKey,
+      entry: pairedAnswerReplayEntry(currentProfile, answered),
+    });
+  }
+  return task;
 }
 
 async function assessRecallSupport(
   ctx: HarnessContext,
   trial: HarnessTrial,
-  recalledText: string,
+  recalledText: string
 ): Promise<BenchRecallSupportAssessment> {
   if (recalledText.trim().length === 0) {
     return {
@@ -702,16 +798,8 @@ async function assessRecallSupport(
   }
 }
 
-function validateRecallSupportAssessment(
-  assessment: BenchRecallSupportAssessment,
-): void {
-  const allowed: readonly BenchRecallSupportStatus[] = [
-    "supported",
-    "weak",
-    "empty",
-    "unavailable",
-    "backend_failure",
-  ];
+function validateRecallSupportAssessment(assessment: BenchRecallSupportAssessment): void {
+  const allowed: readonly BenchRecallSupportStatus[] = ["supported", "weak", "empty", "unavailable", "backend_failure"];
   if (!assessment || !allowed.includes(assessment.status)) {
     throw new Error("adapter returned an invalid recall support status");
   }
@@ -723,37 +811,22 @@ function validateRecallSupportAssessment(
     (assessment.evidenceCount ?? 0) <= 0 ||
     !Number.isFinite(assessment.maxScore) ||
     !Number.isFinite(assessment.supportThreshold) ||
-    (assessment.maxScore ?? Number.POSITIVE_INFINITY) >=
-      (assessment.supportThreshold ?? Number.NEGATIVE_INFINITY)
+    (assessment.maxScore ?? Number.POSITIVE_INFINITY) >= (assessment.supportThreshold ?? Number.NEGATIVE_INFINITY)
   ) {
     throw new Error(
-      "adapter weak recall support requires a positive evidenceCount and a finite maxScore below supportThreshold",
+      "adapter weak recall support requires a positive evidenceCount and a finite maxScore below supportThreshold"
     );
   }
 }
 
-async function scoreTrialJudge(
-  ctx: HarnessContext,
-  trial: HarnessTrial,
-  answeredText: string,
-) {
+async function scoreTrialJudge(ctx: HarnessContext, trial: HarnessTrial, answeredText: string) {
   if (!trial.binaryJudgePrompt) {
-    return llmJudgeScoreDetailed(
-      ctx.options.system.judge,
-      trial.question,
-      answeredText,
-      trial.expected,
-    );
+    return llmJudgeScoreDetailed(ctx.options.system.judge, trial.question, answeredText, trial.expected);
   }
 
   const judge = ctx.options.system.judge;
   if (!judge?.scoreBinaryPrompt) {
-    return llmJudgeScoreDetailed(
-      judge,
-      trial.question,
-      answeredText,
-      trial.expected,
-    );
+    return llmJudgeScoreDetailed(judge, trial.question, answeredText, trial.expected);
   }
 
   const prompt = trial.binaryJudgePrompt({
@@ -762,22 +835,16 @@ async function scoreTrialJudge(
     answeredText,
   });
   if (typeof prompt !== "string" || prompt.trim().length === 0) {
-    throw new Error(
-      "PublishedBenchmarkHarness: binaryJudgePrompt returned an empty prompt.",
-    );
+    throw new Error("PublishedBenchmarkHarness: binaryJudgePrompt returned an empty prompt.");
   }
 
   const binaryJudge = {
     scoreBinaryPrompt: judge.scoreBinaryPrompt.bind(judge),
   };
-  return llmBinaryJudgeScoreDetailed(
-    binaryJudge,
-    prompt,
-    {
-      predicted: answeredText,
-      expected: trial.expected,
-    },
-  );
+  return llmBinaryJudgeScoreDetailed(binaryJudge, prompt, {
+    predicted: answeredText,
+    expected: trial.expected,
+  });
 }
 
 type HarnessAnswerResult = BenchmarkAnswerResult & {
@@ -786,11 +853,7 @@ type HarnessAnswerResult = BenchmarkAnswerResult & {
   originalAnswer?: string;
 };
 
-function answerWithTrialFallback(
-  trial: HarnessTrial,
-  recalledText: string,
-  error: unknown,
-): HarnessAnswerResult {
+function answerWithTrialFallback(trial: HarnessTrial, recalledText: string, error: unknown): HarnessAnswerResult {
   if (isBenchmarkRunBlockedError(error)) {
     throw error;
   }
@@ -816,7 +879,7 @@ function answerWithTrialFallback(
 function refineTrialAnswer(
   trial: HarnessTrial,
   recalledText: string,
-  answered: HarnessAnswerResult,
+  answered: HarnessAnswerResult
 ): HarnessAnswerResult {
   const refined = trial.answerRefinement?.({
     question: trial.question,
@@ -840,18 +903,12 @@ function refineTrialAnswer(
 async function buildBenchmarkResult(
   ctx: HarnessContext,
   tasks: TaskResult[],
-  executionProvenance: BenchmarkExecutionProvenance,
+  executionProvenance: BenchmarkExecutionProvenance
 ): Promise<BenchmarkResult> {
   const remnicVersion = await getRemnicVersion();
   const totalLatencyMs = tasks.reduce((sum, task) => sum + task.latencyMs, 0);
-  const totalInputTokens = tasks.reduce(
-    (sum, task) => sum + task.tokens.input,
-    0,
-  );
-  const totalOutputTokens = tasks.reduce(
-    (sum, task) => sum + task.tokens.output,
-    0,
-  );
+  const totalInputTokens = tasks.reduce((sum, task) => sum + task.tokens.input, 0);
+  const totalOutputTokens = tasks.reduce((sum, task) => sum + task.tokens.output, 0);
   const mode: BenchmarkMode = ctx.options.mode;
   const failedTasks = tasks.flatMap((task) => {
     const marker = task.details?.benchmarkFailure;
@@ -863,17 +920,20 @@ async function buildBenchmarkResult(
       return [];
     }
     const message = (marker as { message?: unknown }).message;
-    return [{
-      taskId: task.taskId,
-      message: typeof message === "string" ? message : "unknown trial failure",
-    }];
+    return [
+      {
+        taskId: task.taskId,
+        message: typeof message === "string" ? message : "unknown trial failure",
+      },
+    ];
   });
-  const failureReason = failedTasks.length > 0
-    ? `trial_execution_failure: ${failedTasks.length}/${tasks.length} scored trial(s) failed (${failedTasks
-        .slice(0, 3)
-        .map((failure) => `${failure.taskId}: ${failure.message.slice(0, 240)}`)
-        .join("; ")}${failedTasks.length > 3 ? `; and ${failedTasks.length - 3} more` : ""})`
-    : undefined;
+  const failureReason =
+    failedTasks.length > 0
+      ? `trial_execution_failure: ${failedTasks.length}/${tasks.length} scored trial(s) failed (${failedTasks
+          .slice(0, 3)
+          .map((failure) => `${failure.taskId}: ${failure.message.slice(0, 240)}`)
+          .join("; ")}${failedTasks.length > 3 ? `; and ${failedTasks.length - 3} more` : ""})`
+      : undefined;
   const categoryAggregates = computeCategoryAggregates(tasks);
 
   return {
@@ -888,18 +948,14 @@ async function buildBenchmarkResult(
       mode,
       runCount: 1,
       seeds: [ctx.options.seed ?? 0],
-      ...(failureReason
-        ? { status: "partial" as const, failureReason }
-        : {}),
+      ...(failureReason ? { status: "partial" as const, failureReason } : {}),
     },
     config: {
       systemProvider: ctx.options.systemProvider ?? null,
       judgeProvider: ctx.options.judgeProvider ?? null,
       adapterMode: ctx.options.adapterMode ?? "direct",
       remnicConfig: ctx.options.remnicConfig ?? {},
-      ...(ctx.options.benchmarkOptions
-        ? { benchmarkOptions: ctx.options.benchmarkOptions }
-        : {}),
+      ...(ctx.options.benchmarkOptions ? { benchmarkOptions: ctx.options.benchmarkOptions } : {}),
     },
     cost: {
       totalTokens: totalInputTokens + totalOutputTokens,
@@ -907,8 +963,7 @@ async function buildBenchmarkResult(
       outputTokens: totalOutputTokens,
       estimatedCostUsd: 0,
       totalLatencyMs,
-      meanQueryLatencyMs:
-        tasks.length > 0 ? totalLatencyMs / tasks.length : 0,
+      meanQueryLatencyMs: tasks.length > 0 ? totalLatencyMs / tasks.length : 0,
     },
     results: {
       tasks,
@@ -916,9 +971,7 @@ async function buildBenchmarkResult(
       // Per-category breakdown for benchmarks that stamp a `categoryName`
       // detail (LoCoMo). Omitted when empty so other benchmarks' output shape
       // is unchanged (issue #1878).
-      ...(Object.keys(categoryAggregates).length > 0
-        ? { categoryAggregates }
-        : {}),
+      ...(Object.keys(categoryAggregates).length > 0 ? { categoryAggregates } : {}),
     },
     environment: {
       os: process.platform,

@@ -251,6 +251,15 @@ export interface BenchmarkDefinition {
   meta: BenchmarkMeta;
 }
 
+export interface PairedAnswerReplayEntry {
+  sourceRuntimeProfile: BenchRuntimeProfile | null;
+  finalAnswer: string;
+  answeredText: string;
+  model?: string;
+}
+
+export type PairedAnswerReplayCache = Map<string, PairedAnswerReplayEntry>;
+
 export interface RunBenchmarkOptions {
   mode?: BenchmarkMode;
   datasetDir?: string;
@@ -286,6 +295,12 @@ export interface RunBenchmarkOptions {
    * `noJudgeCache` is true. The directory is created on demand.
    */
   judgeCacheDir?: string;
+  /**
+   * Ephemeral cross-profile answer cache for a paired benchmark matrix. A
+   * cached answer may only be reused when the responder-facing input is
+   * identical and it originated from a different runtime profile.
+   */
+  pairedAnswerReplayCache?: PairedAnswerReplayCache;
   /** Called after each task completes for progress logging and partial result tracking. */
   onTaskComplete?: (task: TaskResult, completedCount: number, totalCount?: number) => void;
 }

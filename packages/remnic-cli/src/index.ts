@@ -227,6 +227,7 @@ import type {
   BenchmarkResult,
   ComparisonResult,
   McpMemoryToolMapping,
+  PairedAnswerReplayCache,
   ResolvedLocalLabProfile,
 } from "@remnic/bench";
 import { firstSuccessfulCandidate, firstSuccessfulResult } from "./service-candidates.js";
@@ -302,6 +303,7 @@ export {
   parseBenchArgs,
 } from "./bench-args.js";
 
+export type { PairedAnswerReplayCache };
 type PiPublisherModule = {
   PiMemoryExtensionPublisher: new () => MemoryExtensionPublisher;
   OmpMemoryExtensionPublisher: new () => MemoryExtensionPublisher;
@@ -534,6 +536,7 @@ type PackageBenchModule = {
     drainTimeoutMs?: number;
     noJudgeCache?: boolean;
     judgeCacheDir?: string;
+    pairedAnswerReplayCache?: import("@remnic/bench").PairedAnswerReplayCache;
     system: {
       destroy(): Promise<void>;
     };
@@ -1963,6 +1966,8 @@ export const __benchDatasetTestHooks = {
   isDatasetDownloaded,
   resolveBenchDatasetDir,
   resolveDownloadedBenchDatasetDir,
+  pairedAnswerReplayCacheForBenchmark,
+  orderPairedLoCoMoWorkItemsForTest: orderPairedLoCoMoWorkItems,
   buildPublishedBenchmarkOptionsForTest(
     benchmarkId: string,
     args: {
@@ -2016,101 +2021,15 @@ export const __benchDatasetTestHooks = {
     );
   },
   printBenchStatusLineForTest: printBenchStatusLine,
+  clearPairedAnswerReplayCacheOnFailureForTest: clearPairedAnswerReplayCacheOnFailure,
 };
-
-function printBenchPackageSummary(
-  result: BenchSummaryResult,
-  outputPath: string,
-  outputLabel = "Results saved",
-): void {
-  console.log(`Benchmark: ${result.meta.benchmark}`);
-  console.log(`Mode: ${result.meta.mode}`);
-  if (result.config.runtimeProfile) {
-    console.log(`Runtime profile: ${result.config.runtimeProfile}`);
-  }
-  console.log(`Tasks: ${result.results.tasks.length}`);
-  console.log(`Mean query latency: ${result.cost.meanQueryLatencyMs.toFixed(1)}ms`);
-  for (const [metric, aggregate] of Object.entries(result.results.aggregates).sort()) {
-    console.log(`  ${metric.padEnd(20)} ${aggregate.mean.toFixed(4)}`);
-  }
-  console.log(`${outputLabel}: ${outputPath}`);
-}
-
-function printBenchStatusLine(jsonMode: boolean, message: string): void {
-  if (jsonMode) {
-    console.error(message);
-  } else {
-    console.log(message);
-  }
-}
-
-function printStoredBenchResultSummary(
-  result: BenchmarkResult,
-  summary: { id: string; path: string },
-): void {
-  printBenchPackageSummary(result, summary.path, "Stored result");
-  console.log(`Run id: ${summary.id}`);
-}
-
-function printStoredBenchResultDetails(
-  result: BenchmarkResult,
-  summary: { id: string; path: string },
-): void {
-  printStoredBenchResultSummary(result, summary);
-  if (result.results.tasks.length === 0) {
-    console.log("Tasks: none");
-    return;
-  }
-
-  console.log("Task breakdown:");
-  for (const task of result.results.tasks) {
-    const scores = Object.entries(task.scores)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([metric, value]) => `${metric}=${value.toFixed(4)}`)
-      .join(", ");
-    console.log(
-      `  ${task.taskId}: ${task.latencyMs.toFixed(1)}ms` +
-      `${scores.length > 0 ? ` [${scores}]` : ""}`,
-    );
-  }
-}
-
-function printBenchComparisonSummary(
-  comparison: ComparisonResult,
-  baseline: { id: string; path: string },
-  candidate: { id: string; path: string },
-): void {
-  console.log(`Benchmark: ${comparison.benchmark}`);
-  console.log(`Baseline: ${baseline.id} (${baseline.path})`);
-  console.log(`Candidate: ${candidate.id} (${candidate.path})`);
-  console.log(`Verdict: ${comparison.verdict}`);
-
-  const metrics = Object.entries(comparison.metricDeltas).sort(([left], [right]) =>
-    left.localeCompare(right),
-  );
-  if (metrics.length === 0) {
-    console.log("No overlapping metrics were found between the two results.");
-    return;
-  }
-
-  console.log("Metrics:");
-  for (const [metric, delta] of metrics) {
-    const percent = Number.isFinite(delta.percentChange)
-      ? `${(delta.percentChange * 100).toFixed(2)}%`
-      : delta.percentChange > 0
-        ? "+Infinity%"
-        : "-Infinity%";
-    const direction = delta.delta >= 0 ? "+" : "";
-    console.log(
-      `  ${metric.padEnd(18)} ${delta.baseline.toFixed(4)} -> ${delta.candidate.toFixed(4)} (${direction}${delta.delta.toFixed(4)}, ${percent}, d=${delta.effectSize.cohensD.toFixed(3)} ${delta.effectSize.interpretation})`,
-    );
-    if (delta.ciOnDelta) {
-      console.log(
-        `    CI95 delta: [${delta.ciOnDelta.lower.toFixed(4)}, ${delta.ciOnDelta.upper.toFixed(4)}]`,
-      );
-    }
-  }
-}
+import {
+  printBenchComparisonSummary,
+  printBenchPackageSummary,
+  printBenchStatusLine,
+  printStoredBenchResultDetails,
+  printStoredBenchResultSummary,
+} from "./bench-output-printer.js";
 
 async function compareBenchPackageResults(parsed: ParsedBenchArgs): Promise<void> {
   const refs = parsed.benchmarks;
@@ -3070,8 +2989,13 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
     return;
   }
 
-  const runtimeProfiles = resolveBenchRunProfiles(parsed);
   const benchmarkId = parsed.publishedName;
+  const runtimeProfiles = orderPairedLoCoMoWorkItems(
+    resolveBenchRunProfiles(parsed).map((runtimeProfile) => ({
+      benchmarkId,
+      runtimeProfile,
+    })),
+  ).map((item) => item.runtimeProfile);
   // Collect artifact paths written by each runtime profile so the
   // --out promotion step copies the exact file just produced rather
   // than scanning the whole results directory (Cursor Medium + Codex
@@ -3079,6 +3003,12 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
   // publish unrelated or older artifacts under the new canonical
   // filename).
   const writtenPaths: string[] = [];
+  const pairedAnswerReplayCache =
+    benchmarkId === "locomo"
+      && runtimeProfiles.includes("baseline")
+      && runtimeProfiles.includes("real")
+      ? new Map<string, import("@remnic/bench").PairedAnswerReplayEntry>()
+      : undefined;
   for (const runtimeProfile of runtimeProfiles) {
     // Forward `--limit` + `--seed` through the existing package
     // runner. `--out` is handled below in the artifact write step.
@@ -3088,6 +3018,7 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
       runtimeProfile,
       undefined,
       taskSelector,
+      pairedAnswerReplayCache,
     );
     if (!result.ok) {
       console.error(
@@ -3484,12 +3415,47 @@ async function preflightLocalLabEndpointsIfNeeded(
   }
 }
 
+function pairedAnswerReplayCacheForBenchmark(
+  benchmarkId: string,
+  pairedAnswerReplayCache?: import("@remnic/bench").PairedAnswerReplayCache,
+): import("@remnic/bench").PairedAnswerReplayCache | undefined {
+  return benchmarkId === "locomo" ? pairedAnswerReplayCache : undefined;
+}
+
+function clearPairedAnswerReplayCacheOnFailure(
+  runtimeProfile: BenchRuntimeProfile,
+  benchmarkId: string,
+  pairedAnswerReplayCache?: import("@remnic/bench").PairedAnswerReplayCache,
+): void {
+  if (runtimeProfile !== "baseline" || benchmarkId !== "locomo") return;
+  pairedAnswerReplayCache?.clear();
+}
+
+function orderPairedLoCoMoWorkItems<
+  T extends { benchmarkId: string; runtimeProfile: BenchRuntimeProfile },
+>(workItems: readonly T[]): T[] {
+  const baselineIndex = workItems.findIndex(
+    (item) => item.benchmarkId === "locomo" && item.runtimeProfile === "baseline",
+  );
+  const realIndex = workItems.findIndex(
+    (item) => item.benchmarkId === "locomo" && item.runtimeProfile === "real",
+  );
+  if (baselineIndex < 0 || realIndex < 0 || baselineIndex < realIndex) {
+    return [...workItems];
+  }
+  const ordered = [...workItems];
+  const [baseline] = ordered.splice(baselineIndex, 1);
+  ordered.splice(realIndex, 0, baseline!);
+  return ordered;
+}
+
 async function runBenchViaPackage(
   parsed: ParsedBenchArgs,
   benchmarkId: string,
   runtimeProfile: BenchRuntimeProfile,
   benchStatusPath?: string,
   taskSelector?: PackageBenchTaskSelector,
+  pairedAnswerReplayCache?: import("@remnic/bench").PairedAnswerReplayCache,
 ): Promise<{ ok: boolean; writtenPath?: string }> {
   const loaded = await tryLoadBenchModule();
   if (!loaded) return { ok: false };
@@ -3586,6 +3552,10 @@ async function runBenchViaPackage(
     if (benchmarkId === "memcorrect-v1" && parsed.adapter === "mcp") {
       benchmarkOptions = { ...(benchmarkOptions ?? {}), adapter: system };
     }
+    const locomoPairedAnswerReplayCache = pairedAnswerReplayCacheForBenchmark(
+      benchmarkId,
+      pairedAnswerReplayCache,
+    );
     const result = await benchModule.runBenchmark(benchmarkId, {
       mode: parsed.quick ? "quick" : "full",
       datasetDir,
@@ -3602,6 +3572,7 @@ async function runBenchViaPackage(
       // Issue #1573 PR1: judge-result cache controls from the CLI flags.
       ...(parsed.noJudgeCache ? { noJudgeCache: true } : {}),
       ...(parsed.judgeCacheDir ? { judgeCacheDir: parsed.judgeCacheDir } : {}),
+      ...(locomoPairedAnswerReplayCache ? { pairedAnswerReplayCache: locomoPairedAnswerReplayCache } : {}),
       ...(benchmarkOptions ? { benchmarkOptions } : {}),
       ...(amaBenchProtocol.judgeProtocol
         ? { amaBenchJudgeProtocol: amaBenchProtocol.judgeProtocol }
@@ -3647,10 +3618,15 @@ async function runBenchViaPackage(
     if (parsed.json) {
       console.log(JSON.stringify(redactBenchResultForStdout(benchModule, result), null, 2));
     } else {
-      printBenchPackageSummary(result, writtenPath);
+      printBenchPackageSummary(result as never, writtenPath);
     }
     return { ok: true, writtenPath };
   } catch (err) {
+    clearPairedAnswerReplayCacheOnFailure(
+      runtimeProfile,
+      benchmarkId,
+      pairedAnswerReplayCache,
+    );
     if (partialTasks.length > 0) {
       const remnicVersion = await benchModule.getRemnicVersion?.() ?? "unknown";
       const partialResult = buildPartialBenchmarkResult(
@@ -4091,7 +4067,7 @@ async function runCustomBenchViaPackage(parsed: ParsedBenchArgs): Promise<boolea
       if (parsed.json) {
         console.log(JSON.stringify(redactBenchResultForStdout(benchModule, result), null, 2));
       } else {
-        printBenchPackageSummary(result, writtenPath);
+        printBenchPackageSummary(result as never, writtenPath);
       }
     } finally {
       await system.destroy();
@@ -10963,8 +10939,17 @@ async function cmdBench(rest: string[]): Promise<void> {
   )];
   try { await initBenchStatus(benchStatusPath, statusEntryIds, process.pid); } catch { /* non-fatal */ }
   const writtenPaths: string[] = [];
+  const pairedAnswerReplayCache =
+    selectedWorkItems.some(
+      (item) => item.benchmarkId === "locomo" && item.runtimeProfile === "baseline",
+    )
+    && selectedWorkItems.some(
+      (item) => item.benchmarkId === "locomo" && item.runtimeProfile === "real",
+    )
+      ? new Map<string, import("@remnic/bench").PairedAnswerReplayEntry>()
+      : undefined;
   try {
-    for (const { benchmarkId, runtimeProfile } of selectedWorkItems) {
+    for (const { benchmarkId, runtimeProfile } of orderPairedLoCoMoWorkItems(selectedWorkItems)) {
       const statusId = runtimeProfiles.length > 1
         ? `${benchmarkId} [${runtimeProfile}]`
         : benchmarkId;
@@ -10976,6 +10961,7 @@ async function cmdBench(rest: string[]): Promise<void> {
             runtimeProfile,
             benchStatusPath,
             taskSelector,
+            pairedAnswerReplayCache,
           );
           if (handledByPackage.ok) {
             if (handledByPackage.writtenPath) {

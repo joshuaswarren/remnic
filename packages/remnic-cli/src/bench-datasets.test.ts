@@ -4,9 +4,45 @@ import path from "node:path";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import test from "node:test";
 
-import { __benchDatasetTestHooks } from "./index.js";
+import {
+  __benchDatasetTestHooks,
+  type PairedAnswerReplayCache,
+} from "./index.js";
+
+test("paired answer replay cache is exclusive to LoCoMo", () => {
+  const cache = new Map();
+
+  assert.equal(
+    __benchDatasetTestHooks.pairedAnswerReplayCacheForBenchmark("locomo", cache),
+    cache,
+  );
+  assert.equal(
+    __benchDatasetTestHooks.pairedAnswerReplayCacheForBenchmark("longmemeval", cache),
+    undefined,
+  );
+});
+
+test("paired LoCoMo work executes baseline before real", () => {
+  const workItems = [
+    { benchmarkId: "longmemeval", runtimeProfile: "real" },
+    { benchmarkId: "locomo", runtimeProfile: "real" },
+    { benchmarkId: "memoryagentbench", runtimeProfile: "baseline" },
+    { benchmarkId: "locomo", runtimeProfile: "baseline" },
+  ] as const;
+
+  assert.deepEqual(
+    __benchDatasetTestHooks.orderPairedLoCoMoWorkItemsForTest(workItems),
+    [
+      { benchmarkId: "longmemeval", runtimeProfile: "real" },
+      { benchmarkId: "locomo", runtimeProfile: "baseline" },
+      { benchmarkId: "locomo", runtimeProfile: "real" },
+      { benchmarkId: "memoryagentbench", runtimeProfile: "baseline" },
+    ],
+  );
+});
 
 test("resolveDownloadedBenchDatasetDir rejects explicit dataset paths without benchmark markers", async () => {
+
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-datasets-"));
   const invalidDataset = path.join(root, "not-downloaded");
 
@@ -179,4 +215,47 @@ test("published dry-run validation forwards MemoryAgentBench trial limit", async
   assert.equal(captured?.options.limit, 10);
   assert.equal(captured?.options.seed, 123);
   assert.deepEqual(captured?.options.benchmarkOptions, { trialLimit: 1 });
+});
+
+test("paired baseline-locomo failure path clears the shared replay cache", () => {
+  type CacheEntry = { sourceRuntimeProfile: "baseline"; finalAnswer: string; answeredText: string };
+  const cache = new Map<string, CacheEntry>();
+  cache.set("seed", { sourceRuntimeProfile: "baseline", finalAnswer: "x", answeredText: "x" });
+  let cleared = 0;
+  const wrappedCache: PairedAnswerReplayCache = {
+    size: cache.size,
+    has: cache.has.bind(cache),
+    get: cache.get.bind(cache),
+    set: cache.set.bind(cache),
+    delete: cache.delete.bind(cache),
+    clear: () => {
+      cleared++;
+      cache.clear();
+    },
+    entries: cache.entries.bind(cache),
+    keys: cache.keys.bind(cache),
+    values: cache.values.bind(cache),
+    forEach: cache.forEach.bind(cache),
+    [Symbol.iterator]: cache[Symbol.iterator].bind(cache),
+    [Symbol.toStringTag]: "Map",
+  } as PairedAnswerReplayCache;
+  __benchDatasetTestHooks.clearPairedAnswerReplayCacheOnFailureForTest(
+    "baseline",
+    "locomo",
+    wrappedCache,
+  );
+  assert.equal(cleared, 1);
+  assert.equal(cache.size, 0);
+
+  __benchDatasetTestHooks.clearPairedAnswerReplayCacheOnFailureForTest(
+    "real",
+    "locomo",
+    wrappedCache,
+  );
+  __benchDatasetTestHooks.clearPairedAnswerReplayCacheOnFailureForTest(
+    "baseline",
+    "longmemeval",
+    wrappedCache,
+  );
+  assert.equal(cleared, 1);
 });
