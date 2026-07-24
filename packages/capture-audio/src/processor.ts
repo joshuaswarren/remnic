@@ -217,19 +217,11 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
             item.seg.speakerCluster = clusterId;
           }
         }
-        deps.spool.appendAssembledSegments({
-          idempotencyKey: key,
-          chunkId: key,
-          conversationId: grp.id,
-          startedAtUtc: grp.startedAtUtc,
-          state: "capturing",
-          device: event.device,
-          wavPath: event.path,
-          segments: grp.items.map((it) => it.seg),
-        });
-        // Persist any speaker clusters referenced by the just-appended segments
-        // immediately, so a kill-9 after this durable append cannot lose the
-        // cluster map and let the next voice reuse an id (mis-attribution).
+        // Persist any speaker clusters this group references BEFORE appending its
+        // segments, so a durable append always implies its clusters are already
+        // persisted: a transient upsert failure aborts before the append commits
+        // (nothing applied, replay retries), leaving no window where applied
+        // segments reference an unpersisted cluster.
         if (deps.diarizer) {
           const touched = new Set(
             grp.items.map((it) => it.seg.speakerCluster).filter((id): id is string => typeof id === "string"),
@@ -251,6 +243,16 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
             }
           }
         }
+        deps.spool.appendAssembledSegments({
+          idempotencyKey: key,
+          chunkId: key,
+          conversationId: grp.id,
+          startedAtUtc: grp.startedAtUtc,
+          state: "capturing",
+          device: event.device,
+          wavPath: event.path,
+          segments: grp.items.map((it) => it.seg),
+        });
         openConversationId = grp.id;
       }
     }
@@ -262,18 +264,18 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // (a partial crash) must NOT be marked done, or the missing tail groups
     // would be stranded forever.
     const chunkFullyProcessed = built.length > 0 || !deps.spool.isChunkApplied(`${chunkId}:0`);
-    if (chunkFullyProcessed) {
-      deps.spool.markChunkComplete(chunkId, openConversationId ?? "-");
-    }
     processedThisRun.add(chunkId);
-    // A successful transcription (even an empty/silent one) means the chunk is
-    // fully handled, so reclaim its raw WAV. A FAILED transcription throws
-    // above and never reaches here, so its WAV is retained. Best-effort — a
-    // cleanup failure is reported and the retention janitor is the backstop.
-    try {
-      await deps.cleanupRawAudio(event);
-    } catch (err) {
-      report(err, event);
+    if (chunkFullyProcessed) {
+      // The chunk is fully durably transcribed: record completion and reclaim
+      // the raw WAV. A partial chunk (earlier groups applied, this run added
+      // nothing) must RETAIN its WAV so a later full replay can still transcribe
+      // the missing tail groups. Cleanup is best-effort; the janitor is the backstop.
+      deps.spool.markChunkComplete(chunkId, openConversationId ?? "-");
+      try {
+        await deps.cleanupRawAudio(event);
+      } catch (err) {
+        report(err, event);
+      }
     }
   }
 
