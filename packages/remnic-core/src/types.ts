@@ -1218,8 +1218,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
    */
   wearables: WearablesConfig;
   activity: ActivityConfig;
-  /**
-   * Retrospective meeting intelligence (issue #1900): detect + fuse meetings
+  /** Retrospective meeting intelligence (issue #1900): detect + fuse meetings
    * from already-ingested audio + screen activity. Disabled by default.
    */
   meetings: MeetingsConfig;

@@ -352,7 +352,8 @@ test("bench results, baseline, and export route through the stored package resul
   assert.match(source, /loadBenchmarkReportCardProvenance\(path\.dirname\(summary\.path\), result\.meta\.id\)/);
   assert.match(source, /const rendered = renderBenchmarkResultExport\(result, parsed\.format, \{/);
   assert.match(source, /ERROR: export requires --format json, csv, or html\./);
-  assert.match(source, /printBenchPackageSummary\(result, summary\.path, "Stored result"\);/);
+  assert.match(source, /printStoredBenchResultDetails\(result, summary\);/);
+  assert.match(source, /printStoredBenchResultSummary\(result, summary\);/);
   assert.match(parserSource, /export type BenchBaselineAction = "save" \| "list";/);
   assert.match(parserSource, /export type BenchExportFormat = "json" \| "csv" \| "html";/);
   assert.match(parserSource, /const baselinesDir = readBenchOptionValue\(args, "--baselines-dir"\);/);
