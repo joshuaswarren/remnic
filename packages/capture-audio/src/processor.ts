@@ -113,22 +113,23 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       }
       // Segments usually land in one conversation, but a gap >= threshold (or
       // conversationGapMinutes = 0) can split them intra-chunk. Group by the
-      // conversation the assembler places each segment in, finalizing a prior
-      // conversation the moment it closes, and append each group under its own
-      // id with a per-group idempotency key (replay-safe).
+      // conversation the assembler places each segment in.
       const groups: Array<{ id: string; startedAtUtc: string; segs: AssemblySegment[] }> = [];
       for (const seg of segments) {
         const conv = deps.assembler.add(seg);
-        if (openConversationId !== null && openConversationId !== conv.id) {
-          deps.spool.finalizeConversation(openConversationId);
-        }
-        openConversationId = conv.id;
         const last = groups[groups.length - 1];
         if (last && last.id === conv.id) last.segs.push(seg);
         else groups.push({ id: conv.id, startedAtUtc: conv.startedAtUtc, segs: [seg] });
       }
+      // Append each group, finalizing a conversation only once we move past it
+      // — i.e. AFTER its rows have been appended — so no segment is ever added
+      // to an already-finalized conversation, and a gap-closed conversation
+      // doesn't linger as `capturing`.
       for (let g = 0; g < groups.length; g++) {
         const grp = groups[g];
+        if (openConversationId !== null && openConversationId !== grp.id) {
+          deps.spool.finalizeConversation(openConversationId);
+        }
         const key = groups.length === 1 ? chunkId : `${chunkId}:${g}`;
         deps.spool.appendAssembledSegments({
           idempotencyKey: key,
@@ -140,19 +141,19 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           wavPath: event.path,
           segments: grp.segs,
         });
+        openConversationId = grp.id;
       }
     }
 
     processedThisRun.add(chunkId);
-    // Only reclaim the raw WAV once its transcript is durably persisted; a
-    // silent (no-segment) chunk is left to the retention janitor. Cleanup is
-    // best-effort — a failure is reported, and the janitor is the backstop.
-    if (segments.length > 0) {
-      try {
-        await deps.cleanupRawAudio(event);
-      } catch (err) {
-        report(err, event);
-      }
+    // A successful transcription (even an empty/silent one) means the chunk is
+    // fully handled, so reclaim its raw WAV. A FAILED transcription throws
+    // above and never reaches here, so its WAV is retained. Best-effort — a
+    // cleanup failure is reported and the retention janitor is the backstop.
+    try {
+      await deps.cleanupRawAudio(event);
+    } catch (err) {
+      report(err, event);
     }
   }
 
