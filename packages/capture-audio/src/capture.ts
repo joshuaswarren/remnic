@@ -10,6 +10,7 @@
  * helper binary and a fake transcriber without any macOS runtime.
  */
 
+import { realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 
@@ -79,17 +80,30 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
       }));
 
   const rawBase = path.resolve(outDir);
+  // Resolve symlinks so a symlinked chunk path can't escape the raw dir; fall
+  // back to the lexical path when the target doesn't exist yet (tests, or a
+  // chunk whose WAV was already removed).
+  const realOrResolved = (p: string): string => {
+    try {
+      return realpathSync(path.resolve(p));
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const rawBaseReal = realOrResolved(rawBase);
+  const withinRawDir = (p: string): boolean => {
+    const real = realOrResolved(p);
+    return real === rawBaseReal || real.startsWith(rawBaseReal + path.sep);
+  };
   const cleanupRawAudio =
     options.cleanupRawAudio ??
     (async (event: ChunkEvent): Promise<void> => {
       // Retention 0 = keep no raw audio: delete the WAV once its chunk is
       // durably persisted. A positive retention leaves it for the janitor.
       if (config.rawRetentionHours > 0) return;
-      // event.path is helper-supplied; never delete anything outside the raw
-      // capture directory even if a malformed/hostile event points elsewhere.
-      const resolved = path.resolve(event.path);
-      if (resolved !== rawBase && !resolved.startsWith(rawBase + path.sep)) return;
-      await rm(resolved, { force: true });
+      // event.path is helper-supplied; never delete anything outside the raw dir.
+      if (!withinRawDir(event.path)) return;
+      await rm(path.resolve(event.path), { force: true });
     });
 
   const assembler = new ConversationAssembler({
@@ -117,13 +131,13 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
     device: config.devices.mic,
     onChunk: (event) => {
       // Reject a helper-supplied path that escapes the raw capture dir BEFORE it
-      // is read for transcription (defense against a malformed/hostile helper).
-      const resolved = path.resolve(event.path);
-      if (resolved !== rawBase && !resolved.startsWith(rawBase + path.sep)) {
+      // is read for transcription — resolving symlinks, so a symlink under the
+      // dir can't point the transcriber at an arbitrary file.
+      if (!withinRawDir(event.path)) {
         options.onError?.(new CaptureInputError(`native helper chunk path escapes the capture directory: ${event.path}`));
         return;
       }
-      processor.enqueue({ ...event, path: resolved });
+      processor.enqueue({ ...event, path: path.resolve(event.path) });
     },
     ...(options.onError ? { onError: options.onError } : {}),
     ...(options.onStderr ? { onStderr: options.onStderr } : {}),

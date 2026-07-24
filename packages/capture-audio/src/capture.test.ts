@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { createLiveCapture } from "./capture.js";
 import { defaultDaemonConfig } from "./config.js";
@@ -67,5 +70,42 @@ test("live capture turns helper chunk events into persisted conversations", asyn
     assert.equal(child.killed, true);
   } finally {
     spool.close();
+  }
+});
+
+test("live capture rejects a symlinked chunk path that escapes the raw dir", async () => {
+  const base = mkdtempSync(path.join(tmpdir(), "cap-sym-"));
+  const rawDir = path.join(base, "raw");
+  mkdirSync(rawDir);
+  const outside = path.join(base, "secret.wav");
+  writeFileSync(outside, "x");
+  const link = path.join(rawDir, "evil.wav");
+  symlinkSync(outside, link);
+  const spool = new Spool(":memory:");
+  const child = new FakeChild();
+  const errors: string[] = [];
+  try {
+    const live = createLiveCapture({
+      spool,
+      config: defaultDaemonConfig(),
+      outDir: rawDir,
+      defaultModelPath: "/m",
+      resolution: { specifier: "t", binaryPath: "/h" },
+      resolveModel: () => "/m",
+      spawn: () => child,
+      transcribe: async (): Promise<TranscribedSegment[]> => [
+        { text: "leak", startUtc: "2026-07-24T00:00:00.000Z", endUtc: "2026-07-24T00:00:01.000Z" },
+      ],
+      cleanupRawAudio: async () => undefined,
+      onError: (e) => errors.push(e.message),
+    });
+    live.start();
+    child.push(chunkLine(link, "2026-07-24T00:00:00.000Z", "2026-07-24T00:00:30.000Z"));
+    await live.stop();
+    assert.equal(spool.stats().segments, 0); // escaping symlink is never transcribed/persisted
+    assert.ok(errors.some((m) => m.includes("escapes the capture directory")));
+  } finally {
+    spool.close();
+    rmSync(base, { recursive: true, force: true });
   }
 });
