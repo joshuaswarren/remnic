@@ -32,7 +32,7 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
@@ -146,7 +146,13 @@ export function helperPackageSpecifier(platform: NodeJS.Platform | string, arch:
   );
 }
 
-const defaultRequire = createRequire(import.meta.url);
+/**
+ * Import-aware resolution: the platform packages expose `.` only under the
+ * `import` condition, so a CJS `require.resolve` cannot see them.
+ */
+function defaultResolve(specifier: string): string {
+  return fileURLToPath(import.meta.resolve(specifier));
+}
 
 /**
  * Resolve the native helper binary. Order: explicit `REMNIC_CAPTURE_HELPER_BIN`
@@ -162,7 +168,7 @@ export function resolveHelperBinary(deps: ResolveHelperDeps = {}): HelperResolut
 
   const platform = deps.platform ?? process.platform;
   const arch = deps.arch ?? process.arch;
-  const resolve = deps.resolve ?? ((specifier: string) => defaultRequire.resolve(specifier));
+  const resolve = deps.resolve ?? defaultResolve;
   const readFile = deps.readFile ?? ((file: string) => readFileSync(file, "utf8"));
 
   const specifier = helperPackageSpecifier(platform, arch);

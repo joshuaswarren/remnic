@@ -11,6 +11,7 @@
  */
 
 import { rm } from "node:fs/promises";
+import path from "node:path";
 
 import { ConversationAssembler } from "./assembly.js";
 import type { DaemonConfig } from "./config.js";
@@ -76,12 +77,18 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
         run: runWhisperCli,
       }));
 
+  const rawBase = path.resolve(outDir);
   const cleanupRawAudio =
     options.cleanupRawAudio ??
     (async (event: ChunkEvent): Promise<void> => {
       // Retention 0 = keep no raw audio: delete the WAV once its chunk is
       // durably persisted. A positive retention leaves it for the janitor.
-      if (config.rawRetentionHours <= 0) await rm(event.path, { force: true });
+      if (config.rawRetentionHours > 0) return;
+      // event.path is helper-supplied; never delete anything outside the raw
+      // capture directory even if a malformed/hostile event points elsewhere.
+      const resolved = path.resolve(event.path);
+      if (resolved !== rawBase && !resolved.startsWith(rawBase + path.sep)) return;
+      await rm(resolved, { force: true });
     });
 
   const assembler = new ConversationAssembler({
@@ -119,6 +126,9 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
     },
     processor,
     start(): void {
+      // Pre-flight the STT model once so a missing/unreadable model fails fast
+      // (actionable) here instead of throwing on every captured chunk.
+      resolveModel();
       runner.start();
     },
     async stop(): Promise<number> {
