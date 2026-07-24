@@ -108,7 +108,11 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
   const runner: NativeCaptureRunner = createNativeCaptureRunner({
     outDir,
     chunkSeconds: config.chunkSeconds,
-    channel: "both",
+    // Capture the wearer's mic only for now. System-channel capture requires
+    // cross-channel dedup (dedupeCrossChannel) to avoid double-persisting speech
+    // heard on both channels; that windowed dedup lands with the diarization
+    // slice, so "both" is deferred rather than shipped un-deduped.
+    channel: "mic",
     device: config.devices.mic,
     onChunk: (event) => processor.enqueue(event),
     ...(options.onError ? { onError: options.onError } : {}),

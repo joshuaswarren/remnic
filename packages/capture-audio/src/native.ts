@@ -529,11 +529,22 @@ export function createNativeCaptureRunner(options: NativeRunnerOptions): NativeC
         const finish = (): void => {
           if (done) return;
           done = true;
+          clearTimeout(killTimer);
+          clearTimeout(hardTimer);
           resolve();
         };
+        // Normal path: 'close' fires after stdout is flushed -> settle() ->
+        // stopResolve(finish), so the helper's final chunk is read first.
         stopResolve = finish;
-        const timer = setTimeout(finish, STOP_DRAIN_TIMEOUT_MS);
-        timer.unref();
+        // If SIGTERM hasn't drained + closed the child in time, escalate to
+        // SIGKILL (whose 'close' still flushes buffered stdout). A hard cap
+        // beyond that guarantees shutdown never hangs on a truly wedged helper.
+        const killTimer = setTimeout(() => {
+          if (!done && current.killed !== true) current.kill("SIGKILL");
+        }, STOP_DRAIN_TIMEOUT_MS);
+        killTimer.unref();
+        const hardTimer = setTimeout(finish, STOP_DRAIN_TIMEOUT_MS + 2000);
+        hardTimer.unref();
         current.kill("SIGTERM");
       });
     },
