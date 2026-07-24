@@ -18,6 +18,8 @@
 import { createHash } from "node:crypto";
 
 import type { AssemblySegment, ConversationAssembler } from "./assembly.js";
+import { dedupeCrossChannel } from "./dedup.js";
+import type { Embedding, SpeakerClusterer } from "./diarization.js";
 import type { ChunkEvent } from "./native.js";
 import type { Spool } from "./spool.js";
 import type { TranscribedSegment } from "./stt.js";
@@ -32,12 +34,28 @@ export interface ChunkProcessorDeps {
   spool: Spool;
   /** Stateful assembler that groups consecutive segments into conversations. */
   assembler: ConversationAssembler;
-  /** Resolve the STT model path; called per chunk and may throw when absent. */
+  /** Resolve the STT model path; called per speech chunk and may throw when absent. */
   resolveModel: () => string;
   /** Transcribe one WAV chunk into raw segments. */
   transcribe: (input: ChunkTranscribeInput) => Promise<TranscribedSegment[]>;
   /** Delete the raw WAV under retention once the chunk is durably persisted. */
   cleanupRawAudio: (event: ChunkEvent) => Promise<void>;
+  /**
+   * VAD speech gate. When provided and it resolves false, the chunk is treated
+   * as non-speech: STT is skipped (the CPU-budget guard) and no segments
+   * persist. Absent -> every chunk is transcribed.
+   */
+  detectSpeech?: (event: ChunkEvent) => boolean | Promise<boolean>;
+  /**
+   * Speaker-embedding extractor for diarization. With `diarizer`, each segment
+   * is embedded and assigned to a speaker cluster; absent -> the interim
+   * mic=wearer heuristic and no speaker cluster.
+   */
+  embed?: (event: ChunkEvent, segment: TranscribedSegment) => Embedding | Promise<Embedding>;
+  /** Speaker clusterer (seeded from the spool); its clusters are persisted on finalize. */
+  diarizer?: SpeakerClusterer;
+  /** Cross-channel dedup window in ms; defaults to the dedup module's tolerance. */
+  dedupWindowMs?: number;
   /** Reports a per-chunk failure; the chain keeps running afterwards. */
   onError?: (error: Error, event: ChunkEvent) => void;
 }
@@ -65,6 +83,9 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   let recovered = false;
   let openConversationId: string | null = null;
   const processedThisRun = new Set<string>();
+  // Rolling window of recent SYSTEM-channel segments for cross-channel dedup:
+  // a mic segment duplicating a recent system (loopback) segment is dropped.
+  let recentSystem: AssemblySegment[] = [];
 
   const report = (error: unknown, event: ChunkEvent): void => {
     deps.onError?.(error instanceof Error ? error : new Error(String(error)), event);
@@ -74,12 +95,17 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     const chunkId = chunkStableId(event);
     if (processedThisRun.has(chunkId)) return; // in-run replay: already handled
 
-    const modelPath = deps.resolveModel();
-    const raw = await deps.transcribe({
-      wavPath: event.path,
-      modelPath,
-      chunkStartedAtUtc: event.startedAtUtc,
-    });
+    // VAD gate: a non-speech chunk skips STT (and model resolution) entirely,
+    // flowing through as a zero-segment chunk so idle-close + WAV reclaim still
+    // run. Absent detectSpeech -> transcribe every chunk.
+    const isSpeech = deps.detectSpeech ? await deps.detectSpeech(event) : true;
+    const raw = isSpeech
+      ? await deps.transcribe({
+          wavPath: event.path,
+          modelPath: deps.resolveModel(),
+          chunkStartedAtUtc: event.startedAtUtc,
+        })
+      : [];
 
     // Recover the newest still-open conversation once (any chunk, incl. silent)
     // so a post-restart chunk continues it; then finalize a stale open
@@ -99,20 +125,50 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       openConversationId = null;
     }
 
-    const segments: AssemblySegment[] = [];
+    const built: AssemblySegment[] = [];
     for (const s of raw) {
       const text = s.text.trim();
       if (text === "") continue;
-      segments.push({
+      // Diarization: with an embedder + clusterer, embed the segment and assign
+      // it to a stable speaker cluster (self -> the enrolled wearer). Without
+      // them, fall back to the interim mic=wearer heuristic and no cluster.
+      let speakerCluster: string | null = null;
+      let isWearer = event.channel === "mic";
+      if (deps.embed && deps.diarizer) {
+        const embedding = await deps.embed(event, s);
+        speakerCluster = deps.diarizer.assign(embedding);
+        isWearer = deps.diarizer.clusters().find((c) => c.id === speakerCluster)?.isSelf ?? false;
+      }
+      built.push({
         channel: event.channel,
         text,
         startUtc: s.startUtc,
         endUtc: s.endUtc,
-        // Interim wearer heuristic: the mic channel is the wearer's own audio.
-        // This is NOT diarization/speaker attribution — that lands in a later
-        // checklist item and will refine `isWearer` and `speakerCluster`.
-        isWearer: event.channel === "mic",
+        isWearer,
+        ...(speakerCluster !== null ? { speakerCluster } : {}),
       });
+    }
+
+    // Cross-channel dedup (keep system, drop mic). A mic chunk's segments are
+    // filtered against the recent system window; a system chunk's segments are
+    // always kept and buffered so a later mic loopback is deduped. Forward-only:
+    // an already-appended mic segment is not retro-removed by a later system
+    // dup, which suits the streaming loopback case (system leads or is concurrent).
+    let segments = built;
+    if (event.channel === "mic" && recentSystem.length > 0) {
+      const options = deps.dedupWindowMs !== undefined ? { toleranceMs: deps.dedupWindowMs } : {};
+      const survivors = new Set(dedupeCrossChannel([...recentSystem, ...built], options));
+      segments = built.filter((seg) => survivors.has(seg));
+    } else if (event.channel === "system" && built.length > 0) {
+      recentSystem.push(...built);
+      const windowMs = deps.dedupWindowMs ?? 5_000;
+      const cutoff = Date.parse(event.endedAtUtc) - windowMs;
+      if (Number.isFinite(cutoff)) {
+        recentSystem = recentSystem.filter((seg) => {
+          const end = Date.parse(seg.endUtc);
+          return Number.isFinite(end) ? end >= cutoff : true;
+        });
+      }
     }
 
     if (segments.length > 0) {
@@ -173,6 +229,20 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   async function finalize(): Promise<number> {
     await drain();
     deps.assembler.finalize();
+    // Persist diarization clusters so their ids survive a daemon restart
+    // (the next run seeds SpeakerClusterer from readSpeakerClusters()).
+    if (deps.diarizer) {
+      for (const cluster of deps.diarizer.clusters()) {
+        deps.spool.upsertSpeaker({
+          id: cluster.id,
+          label: cluster.label,
+          isSelf: cluster.isSelf,
+          embeddingCount: cluster.embeddingCount,
+          centroid: cluster.centroid,
+          examples: cluster.examples,
+        });
+      }
+    }
     return deps.spool.finalizeOpenConversations();
   }
 
