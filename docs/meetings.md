@@ -34,7 +34,7 @@ under #1899); without it, detection runs audio-only.
 | Post-sync auto-build tail-step (auto + manual sync) | **shipped** (#2123) |
 | CLI — `remnic meetings list/show/build` | **shipped** (#2123) |
 | MCP tools — `engram.meetings_list` / `_get` / `_build` (with `remnic.` aliases) | **shipped** (#2123) |
-| HTTP routes — `/engram|remnic/v1/meetings[/:id\|/build]` | **shipped** (#2123) |
+| HTTP routes — `GET /engram/v1/meetings`, `/:id`, `POST .../build` (+ `/remnic` alias) | **shipped** (#2123) |
 | Caller-namespace symmetry | **shipped** (#2123) |
 
 ## Pipeline

@@ -285,9 +285,10 @@ Both the `activity.*` and `meetings.*` config blocks are **parsed and documented
 in `config-reference.md` today** (activity gate + sources landed with #1899's
 core slice; the meetings engine + config landed in #2122). The meetings
 subsystem is fully wired (#2123): its post-sync auto-build tail-step, CLI, MCP,
-and HTTP surfaces all ship. What is still pending is the machinery that produces
-*capture* input — the capture daemons (`@remnic/capture-audio`,
-`@remnic/capture-screen`) that generate audio/screen data. The
+and HTTP surfaces all ship. `@remnic/capture-audio` is published (its daemon,
+spool, STT/diarization, and desktop connector are in the package); the screen
+capture daemon `@remnic/capture-screen` is not yet published, and the native
+per-arch capture helpers are the remaining hardware-gated work. The
 `wearables.sources` map is likewise parsed today — see the warning on the
 desktop example below before enabling it. Values shown are synthetic examples.
 
