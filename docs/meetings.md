@@ -123,9 +123,12 @@ trust-gated summary/facts, through the memory generator.
 
 ## Memories (`memory-generator.ts`)
 
-`createMeetingMemoryGenerator(createMeetingMemoryWriter(storage), config)` wires
-the concrete generator onto the `MeetingMemoryGenerator` seam and the builder
-drives it:
+`createMeetingMemoryGenerator(createMeetingMemoryWriter(storage), config,
+{ extractor, judge? })` wires the concrete generator onto the
+`MeetingMemoryGenerator` seam and the builder drives it. The third
+`summaryDeps` argument supplies the summary/fact `extractor` (and optional
+durability `judge`); without it only the deterministic episode is written and
+no LLM summary/fact extraction runs:
 
 1. **Deterministic episode** (always): one recall anchor per meeting — title,
    span, attendees, sources — `source: meeting:<id>`, tags `meeting` +

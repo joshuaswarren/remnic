@@ -217,12 +217,15 @@ table).
   comma or YAML-significant character survives the round trip.
 - Digests are written to `<memoryDir>/activity/<date>.md`.
 
-## Shipped — meeting detector (`src/meetings/`, #1900)
+## Shipped — meeting intelligence (`src/meetings/`, #1900)
 
-`detectMeetings(input, config?)` is a **pure function** over a day's
-already-ingested signals — audio conversation windows (from wearable day
-transcripts, any source) plus meeting-app foreground spans (from screen
-activity). No store, fusion, or surfaces yet; those are later #1900 slices.
+The full meeting subsystem is shipped (engine #2122 + surfaces #2123): detection,
+fusion, record store, `MeetingsBuilder`, trust-gated memory generation, config,
+and the CLI/MCP/HTTP surfaces — see [meetings.md](meetings.md) for the complete
+contract. At its core, `detectMeetings(input, config?)` is a **pure function**
+over a day's already-ingested signals — audio conversation windows (from wearable
+day transcripts, any source) plus meeting-app foreground spans (from screen
+activity):
 
 - A meeting is either an audio conversation overlapping a meeting-app span
   (`app+audio`), a provider-boundaried meeting (`provider`), or a long
