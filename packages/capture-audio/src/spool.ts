@@ -501,13 +501,26 @@ export class Spool {
       const findConv = db.prepare("SELECT conversation_id AS conversationId FROM segments WHERE id = ?");
       const del = db.prepare("DELETE FROM segments WHERE id = ?");
       const dec = db.prepare("UPDATE conversations SET segment_count = MAX(segment_count - 1, 0) WHERE id = ?");
+      const affected = new Set<string>();
       for (const id of ids) {
         const row = findConv.get(id) as { conversationId: string } | undefined;
         if (!row) continue;
         if (Number(del.run(id).changes) > 0) {
           dec.run(row.conversationId);
+          affected.add(row.conversationId);
           removed++;
         }
+      }
+      // Recompute time bounds from the surviving segments: pruning the earliest
+      // or latest segment must not leave the conversation under a deleted row's
+      // start/end (which would mis-bucket/mis-order it in queryFinalConversations).
+      const bounds = db.prepare(
+        "SELECT MIN(start_utc) AS minStart, MAX(end_utc) AS maxEnd FROM segments WHERE conversation_id = ?",
+      );
+      const setBounds = db.prepare("UPDATE conversations SET started_at_utc = ?, ended_at_utc = ? WHERE id = ?");
+      for (const convId of affected) {
+        const b = bounds.get(convId) as { minStart: string | null; maxEnd: string | null };
+        if (b.minStart !== null && b.maxEnd !== null) setBounds.run(b.minStart, b.maxEnd, convId);
       }
       db.exec("COMMIT");
     } catch (err) {

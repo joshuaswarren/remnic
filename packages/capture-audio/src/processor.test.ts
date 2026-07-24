@@ -618,3 +618,28 @@ test("a done-marked replay retries raw-WAV cleanup", async () => {
     spool.close();
   }
 });
+
+test("pruning the earliest duplicate recomputes the conversation's time bounds", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    const proc = createChunkProcessor(
+      deps(spool, {
+        transcribe: async (input) =>
+          input.wavPath.includes("sys")
+            ? [{ text: "shared line", startUtc: t(5), endUtc: t(6) }]
+            : [{ text: "shared line", startUtc: t(1), endUtc: t(2) }], // earlier mic dup -> pruned
+      }),
+    );
+    proc.enqueue(chunk({ path: "/tmp/raw/mic.wav", channel: "mic", startedAtUtc: t(0), endedAtUtc: t(3) }));
+    proc.enqueue(chunk({ path: "/tmp/raw/sys.wav", channel: "system", startedAtUtc: t(4), endedAtUtc: t(7) }));
+    await proc.finalize();
+    const page = spool.queryFinalConversations({ date: "2026-07-24", timezone: "UTC", limit: 100 });
+    assert.equal(page.conversations.length, 1);
+    const conv = page.conversations[0];
+    assert.equal(conv.segments.length, 1, "only the system copy survives");
+    assert.equal(conv.startedAtUtc, t(5), "started_at_utc recomputed to the surviving earliest segment");
+    assert.equal(conv.endedAtUtc, t(6), "ended_at_utc recomputed to the surviving latest segment");
+  } finally {
+    spool.close();
+  }
+});
