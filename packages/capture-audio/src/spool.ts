@@ -473,6 +473,51 @@ export class Spool {
   }
 
   /**
+   * A conversation's segments in the shape cross-channel dedup needs (segment
+   * id + DedupSegment fields), chronological. Used to prune loopback duplicates
+   * at finalization, which is order-independent (all segments are present).
+   */
+  conversationSegmentsForDedup(
+    conversationId: string,
+  ): Array<{ id: string; channel: string; text: string; startUtc: string; endUtc: string }> {
+    return this.#db
+      .prepare(
+        "SELECT id, channel, text, start_utc AS startUtc, end_utc AS endUtc FROM segments " +
+          "WHERE conversation_id = ? ORDER BY start_utc ASC, ordinal ASC, id ASC",
+      )
+      .all(conversationId) as Array<{ id: string; channel: string; text: string; startUtc: string; endUtc: string }>;
+  }
+
+  /**
+   * Delete specific segments (dedup prune), keeping each owning conversation's
+   * segment_count in sync. Returns the number actually removed.
+   */
+  deleteSegments(ids: readonly string[]): number {
+    if (ids.length === 0) return 0;
+    const db = this.#db;
+    let removed = 0;
+    db.exec("BEGIN");
+    try {
+      const findConv = db.prepare("SELECT conversation_id AS conversationId FROM segments WHERE id = ?");
+      const del = db.prepare("DELETE FROM segments WHERE id = ?");
+      const dec = db.prepare("UPDATE conversations SET segment_count = MAX(segment_count - 1, 0) WHERE id = ?");
+      for (const id of ids) {
+        const row = findConv.get(id) as { conversationId: string } | undefined;
+        if (!row) continue;
+        if (Number(del.run(id).changes) > 0) {
+          dec.run(row.conversationId);
+          removed++;
+        }
+      }
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+    return removed;
+  }
+
+  /**
    * The newest still-`capturing` conversation, so a chunk arriving after a
    * process restart continues it (subject to the assembler's gap rule) instead
    * of splitting off a new one. Null when none is open.

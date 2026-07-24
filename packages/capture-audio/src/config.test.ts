@@ -117,3 +117,11 @@ test("null is accepted as absent for optional nullable fields", () => {
   assert.equal(cfg.devices.mic, null);
   assert.equal(cfg.devices.system, null);
 });
+
+test("captureChannel defaults to both and rejects anything but mic|system|both", () => {
+  assert.equal(parseDaemonConfig({}).captureChannel, "both");
+  assert.equal(parseDaemonConfig({ captureChannel: "mic" }).captureChannel, "mic");
+  assert.equal(parseDaemonConfig({ captureChannel: "system" }).captureChannel, "system");
+  assert.throws(() => parseDaemonConfig({ captureChannel: "speaker" }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ captureChannel: 1 }), CaptureConfigError);
+});

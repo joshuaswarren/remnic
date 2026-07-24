@@ -247,10 +247,12 @@ test("diarization: same-voice segments share one non-self cluster and are not th
     assert.equal(segs[0].speakerKey, segs[1].speakerKey, "one synthetic voice -> one cluster (no fragmentation)");
     assert.notEqual(segs[0].speakerKey, "self");
     assert.equal(segs[0].isWearer, false, "a guest voice on the mic is NOT the wearer");
+    // Only the guest cluster is captured here, so per-append persistence stores
+    // it; `self` durability is enrollment's job (it seeds the clusterer + spool).
     const clusters = spool.readSpeakerClusters();
     assert.ok(
-      clusters.some((c) => c.isSelf) && clusters.some((c) => !c.isSelf),
-      "self + guest clusters both persisted on finalize",
+      clusters.some((c) => !c.isSelf),
+      "the assigned guest cluster is persisted",
     );
   } finally {
     spool.close();
@@ -371,6 +373,58 @@ test("kill-9 recovery: a restart resumes the open conversation and stays idempot
     assert.equal(spool.stats().segments, 4, "replay added nothing; chunk B appended its 2 segments");
     assert.equal(spool.stats().conversations, 1, "the open conversation was resumed, not split");
     assert.equal(spool.latestCapturingConversation()?.id, openId, "same conversation id resumed across restart");
+  } finally {
+    spool.close();
+  }
+});
+
+test("cross-channel dedup is order-independent: a mic chunk processed BEFORE its system copy still dedups", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    const proc = createChunkProcessor(
+      deps(spool, {
+        transcribe: async (input) =>
+          input.wavPath.includes("sys")
+            ? [{ text: "hello there world", startUtc: t(1), endUtc: t(3) }]
+            : [
+                { text: "hello there world", startUtc: t(1), endUtc: t(3) }, // loopback dup
+                { text: "unique mic line", startUtc: t(10), endUtc: t(11) },
+              ],
+      }),
+    );
+    // Mic chunk arrives FIRST (native helper stops mic before system on shutdown);
+    // the streaming approach would leak the dup here, finalize-time dedup does not.
+    proc.enqueue(chunk({ path: "/tmp/raw/mic.wav", channel: "mic", startedAtUtc: t(0), endedAtUtc: t(12) }));
+    proc.enqueue(chunk({ path: "/tmp/raw/sys.wav", channel: "system", startedAtUtc: t(0), endedAtUtc: t(4) }));
+    await proc.finalize();
+    const segs = finalSegments(spool);
+    assert.deepEqual(
+      segs.map((s) => s.textRaw).sort(),
+      ["hello there world", "unique mic line"],
+      "the duplicate mic copy is dropped regardless of arrival order",
+    );
+    assert.equal(segs.find((s) => s.textRaw === "hello there world")?.channel, "system");
+  } finally {
+    spool.close();
+  }
+});
+
+test("kill-9 durability: a diarized append persists its speaker cluster before finalize", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    const guest: Embedding = [0, 1, 0, 0];
+    const proc = createChunkProcessor(
+      deps(spool, {
+        diarizer: new SpeakerClusterer(0.7),
+        embed: () => guest,
+        transcribe: async () => [{ text: "guest speaking", startUtc: t(1), endUtc: t(2) }],
+      }),
+    );
+    proc.enqueue(chunk());
+    await proc.drain(); // process is killed (-9) here: no finalize() runs
+    const clusters = spool.readSpeakerClusters();
+    assert.equal(clusters.length, 1, "the new cluster is durable as soon as its segment is appended");
+    assert.equal(clusters[0].isSelf, false);
   } finally {
     spool.close();
   }

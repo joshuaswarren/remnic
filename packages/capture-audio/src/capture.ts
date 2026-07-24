@@ -138,11 +138,12 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
   const runner: NativeCaptureRunner = createNativeCaptureRunner({
     outDir,
     chunkSeconds: config.chunkSeconds,
-    // Capture both the wearer mic and the system (loopback) channel; the
-    // processor's windowed cross-channel dedup (dedupeCrossChannel) drops mic
-    // segments that duplicate system speech, so speech heard on both channels
-    // is persisted once (keeping the cleaner system copy).
-    channel: "both",
+    // Channels to record (config.captureChannel, default "both"). With "both",
+    // the processor's finalize-time cross-channel dedup drops mic segments that
+    // duplicate system (loopback) speech, so it is stored once (the cleaner
+    // system copy). Operators without system-audio permission can set "mic" so
+    // microphone capture never depends on the system-audio path being available.
+    channel: config.captureChannel,
     device: config.devices.mic,
     onChunk: (event) => {
       // Reject a helper-supplied path that escapes the raw capture dir BEFORE it

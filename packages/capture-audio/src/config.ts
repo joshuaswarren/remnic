@@ -40,6 +40,7 @@ export interface DaemonConfig {
   host: string;
   port: number;
   chunkSeconds: number;
+  captureChannel: "mic" | "system" | "both";
   conversationGapMinutes: number;
   rawRetentionHours: number;
   spoolRetentionDays: number;
@@ -55,6 +56,7 @@ export function defaultDaemonConfig(): DaemonConfig {
     host: DEFAULT_HOST,
     port: DEFAULT_PORT,
     chunkSeconds: 30,
+    captureChannel: "both",
     conversationGapMinutes: 10,
     rawRetentionHours: 0,
     spoolRetentionDays: 30,
@@ -77,6 +79,7 @@ const KNOWN_TOP_KEYS: Record<string, true> = {
   host: true,
   port: true,
   chunkSeconds: true,
+  captureChannel: true,
   conversationGapMinutes: true,
   rawRetentionHours: true,
   spoolRetentionDays: true,
@@ -120,6 +123,14 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
   }
   if (obj.chunkSeconds !== undefined) {
     cfg.chunkSeconds = coerceNumber(obj.chunkSeconds, "chunkSeconds", { integer: true, min: 1, max: 3600 });
+  }
+  if (obj.captureChannel !== undefined) {
+    if (obj.captureChannel !== "mic" && obj.captureChannel !== "system" && obj.captureChannel !== "both") {
+      throw new CaptureConfigError(
+        `captureChannel: expected 'mic' | 'system' | 'both', got ${describeValue(obj.captureChannel)}`,
+      );
+    }
+    cfg.captureChannel = obj.captureChannel;
   }
   if (obj.conversationGapMinutes !== undefined) {
     cfg.conversationGapMinutes = coerceNumber(obj.conversationGapMinutes, "conversationGapMinutes", { min: 0 });

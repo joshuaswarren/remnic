@@ -83,9 +83,23 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   let recovered = false;
   let openConversationId: string | null = null;
   const processedThisRun = new Set<string>();
-  // Rolling window of recent SYSTEM-channel segments for cross-channel dedup:
-  // a mic segment duplicating a recent system (loopback) segment is dropped.
-  let recentSystem: AssemblySegment[] = [];
+  // Order-independent cross-channel dedup, applied at finalization: a mic
+  // segment duplicating a system (loopback) segment in the same conversation is
+  // pruned, keeping the cleaner system copy. Running at finalize — when every
+  // segment is present — means arrival order (mic-before-system or the reverse)
+  // never matters, so the native helper's shutdown ordering can't leak a dup.
+  const dedupeConversation = (id: string): void => {
+    const segs = deps.spool.conversationSegmentsForDedup(id);
+    if (segs.length === 0) return;
+    const options = deps.dedupWindowMs !== undefined ? { toleranceMs: deps.dedupWindowMs } : {};
+    const keep = new Set(dedupeCrossChannel(segs, options).map((s) => s.id));
+    const drop = segs.filter((s) => !keep.has(s.id)).map((s) => s.id);
+    if (drop.length > 0) deps.spool.deleteSegments(drop);
+  };
+  const finalizeConv = (id: string): void => {
+    dedupeConversation(id);
+    deps.spool.finalizeConversation(id);
+  };
 
   const report = (error: unknown, event: ChunkEvent): void => {
     deps.onError?.(error instanceof Error ? error : new Error(String(error)), event);
@@ -121,11 +135,11 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     }
     const closed = deps.assembler.closeIfIdle(event.startedAtUtc);
     if (closed !== null && closed === openConversationId) {
-      deps.spool.finalizeConversation(closed);
+      finalizeConv(closed);
       openConversationId = null;
     }
 
-    const built: AssemblySegment[] = [];
+    const segments: AssemblySegment[] = [];
     for (const s of raw) {
       const text = s.text.trim();
       if (text === "") continue;
@@ -139,7 +153,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         speakerCluster = deps.diarizer.assign(embedding);
         isWearer = deps.diarizer.clusters().find((c) => c.id === speakerCluster)?.isSelf ?? false;
       }
-      built.push({
+      segments.push({
         channel: event.channel,
         text,
         startUtc: s.startUtc,
@@ -147,28 +161,6 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         isWearer,
         ...(speakerCluster !== null ? { speakerCluster } : {}),
       });
-    }
-
-    // Cross-channel dedup (keep system, drop mic). A mic chunk's segments are
-    // filtered against the recent system window; a system chunk's segments are
-    // always kept and buffered so a later mic loopback is deduped. Forward-only:
-    // an already-appended mic segment is not retro-removed by a later system
-    // dup, which suits the streaming loopback case (system leads or is concurrent).
-    let segments = built;
-    if (event.channel === "mic" && recentSystem.length > 0) {
-      const options = deps.dedupWindowMs !== undefined ? { toleranceMs: deps.dedupWindowMs } : {};
-      const survivors = new Set(dedupeCrossChannel([...recentSystem, ...built], options));
-      segments = built.filter((seg) => survivors.has(seg));
-    } else if (event.channel === "system" && built.length > 0) {
-      recentSystem.push(...built);
-      const windowMs = deps.dedupWindowMs ?? 5_000;
-      const cutoff = Date.parse(event.endedAtUtc) - windowMs;
-      if (Number.isFinite(cutoff)) {
-        recentSystem = recentSystem.filter((seg) => {
-          const end = Date.parse(seg.endUtc);
-          return Number.isFinite(end) ? end >= cutoff : true;
-        });
-      }
     }
 
     if (segments.length > 0) {
@@ -189,7 +181,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       for (let g = 0; g < groups.length; g++) {
         const grp = groups[g];
         if (openConversationId !== null && openConversationId !== grp.id) {
-          deps.spool.finalizeConversation(openConversationId);
+          finalizeConv(openConversationId);
         }
         const key = groups.length === 1 ? chunkId : `${chunkId}:${g}`;
         deps.spool.appendAssembledSegments({
@@ -202,6 +194,30 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           wavPath: event.path,
           segments: grp.segs,
         });
+        // Persist any speaker clusters referenced by the just-appended segments
+        // immediately, so a kill-9 after this durable append cannot lose the
+        // cluster map and let the next voice reuse an id (mis-attribution).
+        if (deps.diarizer) {
+          const touched = new Set(
+            grp.segs.map((s) => s.speakerCluster).filter((id): id is string => typeof id === "string"),
+          );
+          if (touched.size > 0) {
+            const byId = new Map(deps.diarizer.clusters().map((c) => [c.id, c]));
+            for (const cid of touched) {
+              const c = byId.get(cid);
+              if (c) {
+                deps.spool.upsertSpeaker({
+                  id: c.id,
+                  label: c.label,
+                  isSelf: c.isSelf,
+                  embeddingCount: c.embeddingCount,
+                  centroid: c.centroid,
+                  examples: c.examples,
+                });
+              }
+            }
+          }
+        }
         openConversationId = grp.id;
       }
     }
@@ -229,20 +245,9 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   async function finalize(): Promise<number> {
     await drain();
     deps.assembler.finalize();
-    // Persist diarization clusters so their ids survive a daemon restart
-    // (the next run seeds SpeakerClusterer from readSpeakerClusters()).
-    if (deps.diarizer) {
-      for (const cluster of deps.diarizer.clusters()) {
-        deps.spool.upsertSpeaker({
-          id: cluster.id,
-          label: cluster.label,
-          isSelf: cluster.isSelf,
-          embeddingCount: cluster.embeddingCount,
-          centroid: cluster.centroid,
-          examples: cluster.examples,
-        });
-      }
-    }
+    // Dedup the still-open conversation before it flips to final so the served
+    // (final-only) output never contains a loopback duplicate.
+    if (openConversationId !== null) dedupeConversation(openConversationId);
     return deps.spool.finalizeOpenConversations();
   }
 
