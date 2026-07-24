@@ -8,6 +8,7 @@
 
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { CAPTURE_AUDIO_VERSION } from "./constants.js";
@@ -30,6 +31,8 @@ import { startDaemon, type DaemonHandle } from "./daemon.js";
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
 import { capturePaths, captureBaseDir, expandTilde, type CapturePaths } from "./paths.js";
 import { ingestReplayDirResponsive } from "./replay.js";
+import { downloadWhisperModel, type ModelDownloadInput, type ModelDownloadResult } from "./model.js";
+import { pruneExpiredRawAudio } from "./janitor.js";
 import { Spool } from "./spool.js";
 import { loadOrCreateToken } from "./token.js";
 import { formatHostForUrl, isLoopbackHost, stripIpv6Brackets } from "./util.js";
@@ -38,7 +41,17 @@ export interface CliIo {
   argv: string[];
   env?: NodeJS.ProcessEnv;
   stdout?: (line: string) => void;
+  downloadModel?: (input: ModelDownloadInput) => Promise<ModelDownloadResult>;
   stderr?: (line: string) => void;
+  /**
+   * argv tokens (after the node executable) that re-launch THIS CLI, used
+   * when the daemon backgrounds itself into `--foreground`. Defaults to
+   * [process.argv[1]] (direct `remnic-capture-audio` invocation). The
+   * `remnic capture audio` passthrough supplies [remnicBin, "capture",
+   * "audio"] so the detached child is `remnic capture audio start
+   * --foreground`, not `remnic start --foreground`.
+   */
+  spawnArgvPrefix?: string[];
 }
 
 interface ParsedArgs {
@@ -54,6 +67,7 @@ const VALUE_FLAGS: Record<string, true> = {
   port: true,
   listen: true,
   "base-dir": true,
+  model: true,
   lines: true,
 };
 
@@ -72,6 +86,8 @@ const COMMAND_FLAGS: Record<string, Record<string, true>> = {
   status: {},
   devices: {},
   logs: { lines: true },
+  "download-model": { model: true },
+  janitor: {},
   help: {},
 };
 
@@ -328,12 +344,36 @@ function cmdInit(paths: CapturePaths, flags: Record<string, string | boolean>, s
   return 0;
 }
 
+async function cmdDownloadModel(
+  paths: CapturePaths,
+  flags: Record<string, string | boolean>,
+  stdout: (line: string) => void,
+  downloadModel: (input: ModelDownloadInput) => Promise<ModelDownloadResult>,
+): Promise<number> {
+  if (typeof flags.model !== "string") throw new CaptureInputError("flag --model requires a value");
+  const result = await downloadModel({ model: flags.model, directory: path.join(paths.baseDir, "models") });
+  stdout(`${result.downloaded ? "downloaded" : "model already present"} ${flags.model} to ${result.path}`);
+  return 0;
+}
+
+async function cmdJanitor(
+  paths: CapturePaths,
+  stdout: (line: string) => void,
+  stderr: (line: string) => void,
+): Promise<number> {
+  const config = loadConfigOrDefault(paths, stderr);
+  const removed = await pruneExpiredRawAudio(path.join(paths.baseDir, "raw"), config.rawRetentionHours * 60 * 60 * 1000);
+  stdout(`janitor: removed ${removed.length} expired raw audio file(s)`);
+  return 0;
+}
+
 async function cmdStart(
   paths: CapturePaths,
   flags: Record<string, string | boolean>,
   env: NodeJS.ProcessEnv,
   stdout: (l: string) => void,
   stderr: (l: string) => void,
+  spawnArgvPrefix: readonly string[],
 ): Promise<number> {
   const config = applyBindingOverrides(loadConfigOrDefault(paths, stderr), flags);
   if (!isLoopbackHost(config.host)) {
@@ -359,7 +399,7 @@ async function cmdStart(
   }
 
   if (flags.foreground !== true) {
-    const entry = process.argv[1];
+    const relaunch = spawnArgvPrefix.length > 0 ? [...spawnArgvPrefix] : [process.argv[1]];
     const forwarded = ["start", "--foreground"];
     if (replayDir) forwarded.push("--replay", replayDir);
     if (typeof flags["base-dir"] === "string") forwarded.push("--base-dir", flags["base-dir"]);
@@ -368,7 +408,7 @@ async function cmdStart(
     if (typeof flags.listen === "string") forwarded.push("--listen", flags.listen);
     ensurePrivateDir(paths.baseDir);
     const logFd = openSync(paths.logPath, "a");
-    const child = spawn(process.execPath, [entry, ...forwarded], {
+    const child = spawn(process.execPath, [...relaunch, ...forwarded], {
       detached: true,
       stdio: ["ignore", logFd, logFd],
       env: { ...process.env, ...env },
@@ -609,8 +649,10 @@ function usage(stdout: (l: string) => void): number {
     [
       `remnic-capture-audio v${CAPTURE_AUDIO_VERSION}`,
       "usage: remnic-capture-audio <command> [flags]",
-      "commands: init | start | stop | status | devices | logs",
+      "commands: init | start | stop | status | devices | logs | download-model | janitor",
       "start flags: --foreground --replay <dir> --host <h> --port <n> --listen <host:port> --base-dir <dir>",
+      "download-model flags: --model <base|small|large-v3-turbo-q5_0> --base-dir <dir>",
+      "janitor uses rawRetentionHours from audio.json to remove expired files under raw/",
     ].join("\n"),
   );
   return 0;
@@ -645,7 +687,7 @@ export async function runCapture(io: CliIo): Promise<number> {
       case "init":
         return cmdInit(paths, parsed.flags, stdout);
       case "start":
-        return await cmdStart(paths, parsed.flags, env, stdout, stderr);
+        return await cmdStart(paths, parsed.flags, env, stdout, stderr, io.spawnArgvPrefix ?? [process.argv[1]]);
       case "stop":
         return await cmdStop(paths, parsed.flags, stdout, stderr);
       case "status":
@@ -654,6 +696,10 @@ export async function runCapture(io: CliIo): Promise<number> {
         return cmdDevices(stdout);
       case "logs":
         return cmdLogs(paths, parsed.flags, stdout);
+      case "download-model":
+        return await cmdDownloadModel(paths, parsed.flags, stdout, io.downloadModel ?? downloadWhisperModel);
+      case "janitor":
+        return await cmdJanitor(paths, stdout, stderr);
       case "help":
       case "--help":
       case "-h":

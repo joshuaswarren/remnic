@@ -41,6 +41,7 @@ import {
   type WearableSyncOptions,
 } from "./pipeline.js";
 import {
+  builtInConnectorPackageSpecifier,
   ensureBuiltInWearableConnectors,
   getWearableConnector,
   listWearableConnectors,
@@ -326,7 +327,7 @@ export class WearablesService {
       if (!registration) {
         throw new WearablesInputError(
           `wearable source '${sourceId}' is enabled but its connector package is not installed.\n` +
-            `Install it alongside Remnic:\n  npm install @remnic/connector-${sourceId}`,
+            `Install it alongside Remnic:\n  npm install ${builtInConnectorPackageSpecifier(sourceId)}`,
         );
       }
       const connector = registration.factory({
@@ -414,7 +415,7 @@ export class WearablesService {
     if (!registration) {
       return {
         ok: false,
-        detail: `connector package @remnic/connector-${sourceId} is not installed`,
+        detail: `connector package ${builtInConnectorPackageSpecifier(sourceId)} is not installed`,
       };
     }
     const connector = registration.factory({

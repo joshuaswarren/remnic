@@ -5,9 +5,8 @@
  * CaptureConfigError (rule 39 — no silent defaulting). Ports are integers
  * in [1, 65535] (rule 17); booleans coerce boolean-like strings (rule 24).
  *
- * Only the STT engine `whisper-cpp` is accepted; capture/VAD/STT/
- * diarization are not implemented in this checklist item, but the config
- * surface is validated now so later stages read a trustworthy shape.
+ * Only `whisper-cpp` is currently accepted for STT. VAD configuration maps
+ * directly to the optional Sherpa Silero runtime adapter.
  */
 
 import { readFileSync } from "node:fs";
@@ -23,7 +22,12 @@ export interface SttConfig {
   threads: number | null;
 }
 export interface VadConfig {
+  modelPath: string | null;
   minSpeechMs: number;
+  minSilenceMs: number;
+  maxSpeechMs: number;
+  threshold: number;
+  threads: number;
 }
 export interface DiarizationConfig {
   similarityThreshold: number;
@@ -54,7 +58,14 @@ export function defaultDaemonConfig(): DaemonConfig {
     conversationGapMinutes: 10,
     rawRetentionHours: 0,
     spoolRetentionDays: 30,
-    vad: { minSpeechMs: 500 },
+    vad: {
+      modelPath: null,
+      minSpeechMs: 500,
+      minSilenceMs: 500,
+      maxSpeechMs: 30_000,
+      threshold: 0.5,
+      threads: 1,
+    },
     diarization: { similarityThreshold: 0.4 },
     stt: { engine: "whisper-cpp", modelPath: null, threads: null },
     denyApps: [],
@@ -122,9 +133,42 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
 
   if (obj.vad !== undefined) {
     const vad = asObject(obj.vad, "vad");
-    warnUnknownKeys(vad, { minSpeechMs: true }, "vad");
+    warnUnknownKeys(
+      vad,
+      {
+        modelPath: true,
+        minSpeechMs: true,
+        minSilenceMs: true,
+        maxSpeechMs: true,
+        threshold: true,
+        threads: true,
+      },
+      "vad",
+    );
+    if (vad.modelPath !== undefined) {
+      cfg.vad.modelPath = vad.modelPath === null ? null : requireString(vad.modelPath, "vad.modelPath");
+    }
     if (vad.minSpeechMs !== undefined) {
-      cfg.vad.minSpeechMs = coerceNumber(vad.minSpeechMs, "vad.minSpeechMs", { integer: true, min: 0 });
+      cfg.vad.minSpeechMs = coerceNumber(vad.minSpeechMs, "vad.minSpeechMs", { integer: true, min: 1 });
+    }
+    if (vad.minSilenceMs !== undefined) {
+      cfg.vad.minSilenceMs = coerceNumber(vad.minSilenceMs, "vad.minSilenceMs", { integer: true, min: 0 });
+    }
+    if (vad.maxSpeechMs !== undefined) {
+      cfg.vad.maxSpeechMs = coerceNumber(vad.maxSpeechMs, "vad.maxSpeechMs", { integer: true, min: 1 });
+    }
+    if (vad.threshold !== undefined) {
+      const threshold = coerceNumber(vad.threshold, "vad.threshold", { max: 1 });
+      if (threshold <= 0 || threshold >= 1) {
+        throw new CaptureConfigError("vad.threshold must be between 0 and 1");
+      }
+      cfg.vad.threshold = threshold;
+    }
+    if (vad.threads !== undefined) {
+      cfg.vad.threads = coerceNumber(vad.threads, "vad.threads", { integer: true, min: 1, max: 256 });
+    }
+    if (cfg.vad.minSpeechMs > cfg.vad.maxSpeechMs) {
+      throw new CaptureConfigError("vad.maxSpeechMs must be greater than or equal to vad.minSpeechMs");
     }
   }
 
@@ -132,10 +176,11 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
     const dia = asObject(obj.diarization, "diarization");
     warnUnknownKeys(dia, { similarityThreshold: true }, "diarization");
     if (dia.similarityThreshold !== undefined) {
-      cfg.diarization.similarityThreshold = coerceNumber(dia.similarityThreshold, "diarization.similarityThreshold", {
-        min: 0,
-        max: 1,
-      });
+      const threshold = coerceNumber(dia.similarityThreshold, "diarization.similarityThreshold", { max: 1 });
+      if (threshold <= 0 || threshold >= 1) {
+        throw new CaptureConfigError("diarization.similarityThreshold must be between 0 and 1");
+      }
+      cfg.diarization.similarityThreshold = threshold;
     }
   }
 
@@ -149,7 +194,7 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
       if (typeof stt.modelPath !== "string") {
         throw new CaptureConfigError(`stt.modelPath: expected a string, got ${describeValue(stt.modelPath)}`);
       }
-      cfg.stt.modelPath = stt.modelPath;
+      cfg.stt.modelPath = stt.modelPath.trim() || null;
     }
     if (stt.threads !== undefined && stt.threads !== null) {
       cfg.stt.threads = coerceNumber(stt.threads, "stt.threads", { integer: true, min: 1, max: 256 });

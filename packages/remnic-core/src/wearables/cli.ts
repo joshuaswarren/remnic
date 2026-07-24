@@ -9,6 +9,7 @@
  */
 
 import { WearablesInputError } from "./errors.js";
+import { builtInConnectorPackageSpecifier } from "./registry.js";
 import type { WearablesService } from "./service.js";
 import type { WearableSyncSummary } from "./types.js";
 
@@ -182,7 +183,7 @@ export async function runWearablesCliCommand(
         for (const source of status.sources) {
           io.stdout.write(
             `  ${source.source} (${source.displayName}): ${source.enabled ? "enabled" : "disabled"}, ` +
-              `connector ${source.connectorInstalled ? "installed" : `MISSING — npm install @remnic/connector-${source.source}`}, ` +
+              `connector ${source.connectorInstalled ? "installed" : `MISSING — npm install ${builtInConnectorPackageSpecifier(source.source)}`}, ` +
               `memoryMode ${source.memoryMode}, ` +
               `${source.transcriptDays} transcript day${source.transcriptDays === 1 ? "" : "s"}, ` +
               `last sync ${source.lastSyncAt ?? "never"}\n`,

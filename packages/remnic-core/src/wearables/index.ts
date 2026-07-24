@@ -16,6 +16,7 @@ export {
   parseWearablesConfig,
 } from "./config.js";
 export {
+  builtInConnectorPackageSpecifier,
   registerWearableConnector,
   getWearableConnector,
   listWearableConnectors,

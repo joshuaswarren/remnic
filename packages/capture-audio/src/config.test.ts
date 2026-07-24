@@ -28,6 +28,36 @@ test("valid overrides parse and boolean-like coercion applies to numbers", () =>
   assert.deepEqual(cfg.denyApps, ["Zoom", "Slack"]);
 });
 
+test("an empty STT model path uses the default model", () => {
+  assert.equal(parseDaemonConfig({ stt: { modelPath: "" } }).stt.modelPath, null);
+});
+
+test("VAD options use the same valid ranges as the runtime adapter", () => {
+  const cfg = parseDaemonConfig({
+    vad: {
+      modelPath: "/models/silero_vad.onnx",
+      minSpeechMs: 500,
+      minSilenceMs: 400,
+      maxSpeechMs: 20_000,
+      threshold: 0.7,
+      threads: 2,
+    },
+  });
+  assert.deepEqual(cfg.vad, {
+    modelPath: "/models/silero_vad.onnx",
+    minSpeechMs: 500,
+    minSilenceMs: 400,
+    maxSpeechMs: 20_000,
+    threshold: 0.7,
+    threads: 2,
+  });
+  assert.throws(() => parseDaemonConfig({ vad: { minSpeechMs: 0 } }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ vad: { threshold: 1 } }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ vad: { threshold: 0 } }), CaptureConfigError);
+  assert.equal(parseDaemonConfig({ vad: { modelPath: null } }).vad.modelPath, null);
+  assert.throws(() => parseDaemonConfig({ vad: { minSpeechMs: 40_000, maxSpeechMs: 30_000 } }), CaptureConfigError);
+});
+
 test("non-integer / out-of-range port is rejected loudly", () => {
   assert.throws(() => parseDaemonConfig({ port: 70000 }), CaptureConfigError);
   assert.throws(() => parseDaemonConfig({ port: 4340.5 }), CaptureConfigError);
@@ -46,8 +76,11 @@ test("unknown stt engine is rejected", () => {
   );
 });
 
-test("similarityThreshold out of [0,1] is rejected", () => {
+test("similarityThreshold outside exclusive (0,1) is rejected, matching the clusterer", () => {
   assert.throws(() => parseDaemonConfig({ diarization: { similarityThreshold: 1.5 } }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ diarization: { similarityThreshold: 0 } }), CaptureConfigError);
+  assert.throws(() => parseDaemonConfig({ diarization: { similarityThreshold: 1 } }), CaptureConfigError);
+  assert.equal(parseDaemonConfig({ diarization: { similarityThreshold: 0.6 } }).diarization.similarityThreshold, 0.6);
 });
 
 test("wrong types for structured fields are rejected", () => {

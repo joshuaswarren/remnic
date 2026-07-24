@@ -312,3 +312,46 @@ test("insertConversation normalizes offset instants to UTC Z so the keyset order
   );
   spool.close();
 });
+
+test("upsertSpeaker persists centroid + examples and readSpeakerClusters round-trips them", () => {
+  const spool = new Spool(":memory:");
+  try {
+    spool.upsertSpeaker({
+      id: "spk_1",
+      label: "Jane",
+      isSelf: false,
+      embeddingCount: 3,
+      centroid: [0.1, 0.2, 0.3],
+      examples: [
+        [0.1, 0.2, 0.3],
+        [0.11, 0.19, 0.31],
+      ],
+    });
+    spool.upsertSpeaker({ id: "self", isSelf: true, embeddingCount: 1, centroid: [0.5, 0.5], examples: [[0.5, 0.5]] });
+    const clusters = spool.readSpeakerClusters();
+    assert.equal(clusters.length, 2);
+    const jane = clusters.find((c) => c.id === "spk_1");
+    assert.equal(jane?.label, "Jane");
+    assert.equal(jane?.embeddingCount, 3);
+    assert.deepEqual(jane?.centroid, [0.1, 0.2, 0.3]);
+    assert.equal(jane?.examples.length, 2);
+    const self = clusters.find((c) => c.id === "self");
+    assert.equal(self?.isSelf, true);
+    assert.deepEqual(self?.centroid, [0.5, 0.5]);
+  } finally {
+    spool.close();
+  }
+});
+
+test("upsertSpeaker preserves an existing centroid when the field is omitted", () => {
+  const spool = new Spool(":memory:");
+  try {
+    spool.upsertSpeaker({ id: "spk_1", centroid: [1, 2, 3], examples: [[1, 2, 3]] });
+    spool.upsertSpeaker({ id: "spk_1", label: "renamed" }); // no centroid field
+    const c = spool.readSpeakerClusters()[0];
+    assert.equal(c.label, "renamed");
+    assert.deepEqual(c.centroid, [1, 2, 3]);
+  } finally {
+    spool.close();
+  }
+});

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
@@ -733,4 +733,80 @@ test("stop waits (bounded) for the daemon to exit before returning", async () =>
       child.kill("SIGKILL");
     }
   });
+});
+
+test("download-model downloads a named model beneath the capture directory", async () => {
+  const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
+  const output: string[] = [];
+
+  const code = await runCapture({
+    argv: ["download-model", "--model", "small", "--base-dir", baseDir],
+    stdout: (line) => output.push(line),
+    downloadModel: async (input) => {
+      assert.equal(input.model, "small");
+      assert.equal(input.directory, path.join(baseDir, "models"));
+      return { path: path.join(input.directory, "ggml-small.bin"), downloaded: true };
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(output, [`downloaded small to ${path.join(baseDir, "models", "ggml-small.bin")}`]);
+});
+
+test("janitor applies configured raw-audio retention", async () => {
+  const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
+  const rawDirectory = path.join(baseDir, "raw");
+  await mkdir(rawDirectory);
+  const expired = path.join(rawDirectory, "expired.wav");
+  await writeFile(expired, "audio");
+  // Pin the mtime firmly in the past so zero-hour retention deletes it
+  // deterministically, without racing the janitor's wall-clock cutoff.
+  await utimes(expired, new Date(0), new Date(0));
+  const output: string[] = [];
+
+  const code = await runCapture({ argv: ["janitor", "--base-dir", baseDir], stdout: (line) => output.push(line) });
+
+  assert.equal(code, 0);
+  assert.deepEqual(output, ["janitor: removed 1 expired raw audio file(s)"]);
+  assert.equal(existsSync(expired), false);
+});
+
+test("janitor rejects a flag it does not accept instead of silently ignoring it", async () => {
+  const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
+  const errs: string[] = [];
+  const code = await runCapture({
+    argv: ["janitor", "--port", "5555", "--base-dir", baseDir],
+    stdout: () => undefined,
+    stderr: (l) => errs.push(l),
+  });
+  assert.equal(code, 2);
+  assert.match(errs.join("\n"), /flag --port is not valid for command 'janitor'/);
+});
+
+test("download-model rejects a flag it does not accept", async () => {
+  const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
+  const errs: string[] = [];
+  const code = await runCapture({
+    argv: ["download-model", "--model", "small", "--replay", "fixtures", "--base-dir", baseDir],
+    stdout: () => undefined,
+    stderr: (l) => errs.push(l),
+  });
+  assert.equal(code, 2);
+  assert.match(errs.join("\n"), /flag --replay is not valid for command 'download-model'/);
+});
+
+test("logs honors a valued --lines flag", async () => {
+  const baseDir = await mkdtemp(path.join(tmpdir(), "cap-cli-"));
+  const paths = capturePaths(baseDir);
+  await writeFile(paths.logPath, "first\nsecond\nthird\n", "utf8");
+  const output: string[] = [];
+
+  const code = await runCapture({
+    argv: ["logs", "--base-dir", baseDir, "--lines", "2"],
+    stdout: (line) => output.push(line),
+    stderr: () => undefined,
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(output, ["third\n"]);
 });

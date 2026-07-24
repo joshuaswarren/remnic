@@ -44,10 +44,18 @@ export type {
   DaemonSegment,
   QueryFinalOptions,
   SegmentInput,
+  SpeakerClusterRow,
   SpeakerInput,
   SpeakerRow,
 } from "./spool.js";
 export { ingestReplayDir, ingestReplayDirResponsive, REPLAY_COMMIT_BATCH } from "./replay.js";
+export { buildWhisperArgs, parseWhisperJson, resolveModelPath, runWhisperCli, transcribeWithWhisper } from "./stt.js";
+export { downloadWhisperModel, whisperModelUrl } from "./model.js";
+export type { ModelDownloadInput, ModelDownloadResult } from "./model.js";
+export { pruneExpiredRawAudio } from "./janitor.js";
+export { createSileroVad, loadSherpaOnnx, sileroVadConfig } from "./vad.js";
+export type { SherpaOnnxModule, SileroVadInput } from "./vad.js";
+export type { TranscribedSegment, WhisperRunResult, WhisperTranscriptionInput } from "./stt.js";
 export type { ReplayResult } from "./replay.js";
 export { createRequestHandler, startDaemon } from "./daemon.js";
 export type { DaemonDeps, DaemonHandle } from "./daemon.js";
@@ -62,3 +70,18 @@ export {
 export type { PidRecord } from "./control.js";
 export { runCapture, superviseReplay } from "./cli.js";
 export type { CliIo } from "./cli.js";
+export {
+  createDesktopConnector,
+  daemonConversationToWearable,
+  DesktopDaemonError,
+  DESKTOP_SOURCE_ID,
+  ensureDesktopConnectorRegistered,
+  resolveCaptureAudioToken,
+  wearableConnectorRegistration,
+} from "./connector.js";
+export { dedupeCrossChannel, wordJaccard } from "./dedup.js";
+export type { DedupSegment } from "./dedup.js";
+export { assembleConversations } from "./assembly.js";
+export type { AssemblySegment } from "./assembly.js";
+export { cosineSimilarity, SpeakerClusterer } from "./diarization.js";
+export type { Embedding, SpeakerCluster } from "./diarization.js";

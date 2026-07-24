@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
 import {
+  builtInConnectorPackageSpecifier,
   clearWearableConnectors,
   ensureBuiltInWearableConnectors,
   getWearableConnector,
@@ -59,4 +60,14 @@ test("ensureBuiltInWearableConnectors tolerates absent optional packages", async
   await ensureBuiltInWearableConnectors();
   await ensureBuiltInWearableConnectors();
   assert.ok(Array.isArray(listWearableConnectors()));
+});
+
+test("builtInConnectorPackageSpecifier maps a source to its real optional package (AC9 install hint)", () => {
+  // desktop ships in @remnic/capture-audio, NOT the nonexistent
+  // @remnic/connector-desktop — the missing-package hint must be installable.
+  assert.equal(builtInConnectorPackageSpecifier("desktop"), "@remnic/capture-audio");
+  assert.equal(builtInConnectorPackageSpecifier("limitless"), "@remnic/connector-limitless");
+  assert.equal(builtInConnectorPackageSpecifier("bee"), "@remnic/connector-bee");
+  // An unknown id keeps the connector-<id> convention.
+  assert.equal(builtInConnectorPackageSpecifier("acme"), "@remnic/connector-acme");
 });
