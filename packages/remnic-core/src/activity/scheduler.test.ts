@@ -243,6 +243,17 @@ test("parser -> scheduler -> durable sync: a tick performs a real durable sync",
       },
     };
 
+    // Event-driven completion: the scheduler calls onRun(summary) in its .then,
+    // i.e. AFTER invoke() (runActivitySyncOnce) has fully resolved — every fs
+    // write and setCursor durable. Awaiting this signal is deterministic; a bare
+    // setImmediate flush races the runner's real fs I/O on the libuv threadpool.
+    // onError rejects the same deferred so a runner failure (SQLite/digest write
+    // regression, temp-dir fault) surfaces promptly instead of hanging to timeout.
+    const {
+      promise: syncCompleted,
+      resolve: signalSyncCompleted,
+      reject: failSyncCompleted,
+    } = Promise.withResolvers<ActivitySyncRunSummary>();
     const timer = fakeTimer();
     const scheduler = new ActivitySyncScheduler({
       config: enabledConfig(),
@@ -258,13 +269,15 @@ test("parser -> scheduler -> durable sync: a tick performs a real durable sync",
           signal,
           createSourceClient: () => client,
         }),
+      onRun: signalSyncCompleted,
+      onError: failSyncCompleted,
       setTimer: timer.setTimer,
       clearTimer: timer.clearTimer,
     });
 
     scheduler.start();
     timer.armed[0].fn();
-    await flush();
+    await syncCompleted;
 
     assert.equal(store.getCursor(activityCursorKey("workstation-a", "2026-07-22")), null, "cursor advanced by the durable sync");
     const rows = store.listSnapshotsForDay(null, "2026-07-22T00:00:00.000Z", "2026-07-23T00:00:00.000Z");
