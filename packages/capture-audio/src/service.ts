@@ -41,6 +41,18 @@ function xmlEscape(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+const SAFE_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Reject a label that could escape the unit filename or inject unit content. */
+function validateLabel(label: string): string {
+  if (!SAFE_LABEL.test(label)) {
+    throw new CaptureConfigError(
+      `install-service label must match ${SAFE_LABEL.source} (got: ${JSON.stringify(label)})`,
+    );
+  }
+  return label;
+}
+
 /** Render a launchd LaunchAgent plist that keeps the daemon alive at login. */
 export function renderLaunchAgent(spec: ServiceSpec): string {
   const label = spec.label ?? DEFAULT_SERVICE_LABEL;
@@ -72,10 +84,12 @@ ${args}
 
 /** systemd quotes args that contain whitespace or its quote/backslash chars. */
 function systemdArg(value: string): string {
-  if (value === "" || /[\s"'\\]/.test(value)) {
-    return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  // systemd treats % as a specifier introducer; escape it regardless of quoting.
+  const escaped = value.replace(/%/g, "%%");
+  if (escaped === "" || /[\s"'\\]/.test(escaped)) {
+    return `"${escaped.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   }
-  return value;
+  return escaped;
 }
 
 /** Render a systemd user unit that restarts the daemon on failure. */
@@ -104,7 +118,7 @@ export interface PlanServiceDeps {
 
 /** Decide the unit file path + contents for the current platform. */
 export function planService(deps: PlanServiceDeps): ServicePlan {
-  const label = deps.spec.label ?? DEFAULT_SERVICE_LABEL;
+  const label = validateLabel(deps.spec.label ?? DEFAULT_SERVICE_LABEL);
   if (deps.platform === "darwin") {
     const target = path.join(deps.home, "Library", "LaunchAgents", `${label}.plist`);
     return {

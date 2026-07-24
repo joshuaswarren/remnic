@@ -122,3 +122,25 @@ test("a gap beyond the threshold finalizes the prior conversation in the spool",
     spool.close();
   }
 });
+
+test("a within-chunk gap (gapMinutes 0) splits one chunk into separate conversations", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    const proc = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        transcribe: async () => [
+          { text: "a", startUtc: "2026-07-24T00:00:00.000Z", endUtc: "2026-07-24T00:00:01.000Z" },
+          { text: "b", startUtc: "2026-07-24T00:00:05.000Z", endUtc: "2026-07-24T00:00:06.000Z" },
+        ],
+      }),
+    );
+    proc.enqueue(chunk());
+    await proc.drain();
+    // gap 0 puts each segment in its own conversation, even within one chunk.
+    assert.equal(spool.stats().conversations, 2);
+    assert.equal(spool.stats().segments, 2);
+  } finally {
+    spool.close();
+  }
+});

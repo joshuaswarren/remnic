@@ -114,3 +114,20 @@ test("uninstallService removes an existing unit and reports absence", () => {
   });
   assert.equal(absent.removed, false);
 });
+
+test("planService rejects an unsafe label (path/injection guard)", () => {
+  assert.throws(
+    () => planService({ platform: "darwin", home: "/Users/j", spec: { ...SPEC, label: "../evil" } }),
+    CaptureConfigError,
+  );
+  assert.throws(
+    () => planService({ platform: "linux", home: "/home/u", spec: { ...SPEC, label: "a/b c" } }),
+    CaptureConfigError,
+  );
+});
+
+test("renderSystemdUnit escapes percent specifiers", () => {
+  const unit = renderSystemdUnit({ ...SPEC, programArguments: ["/bin/node", "--flag=100%done"] });
+  assert.match(unit, /100%%done/);
+  assert.equal(/[^%]%[^%]/.test(unit.split("\n").find((l) => l.startsWith("ExecStart")) ?? ""), false);
+});

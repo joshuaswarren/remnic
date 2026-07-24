@@ -175,9 +175,9 @@ export function resolveHelperBinary(deps: ResolveHelperDeps = {}): HelperResolut
     entry = resolve(specifier);
   } catch {
     throw new CaptureConfigError(
-      `Desktop audio capture requires optional native helper ${specifier}, which is not installed. ` +
-        `Install it with: npm install ${specifier} (or: pnpm add ${specifier}), ` +
-        `or set ${HELPER_BIN_ENV} to a locally built remnic-capture-helper binary`,
+      `Desktop audio capture requires the optional native helper ${specifier}, which is not available. ` +
+        `Build the Swift helper from source (packages/capture-native-darwin-helper) and set ` +
+        `${HELPER_BIN_ENV} to the built remnic-capture-helper binary.`,
     );
   }
   const pkgJsonPath = path.join(path.dirname(entry), "package.json");
@@ -312,6 +312,8 @@ const defaultSpawn: HelperSpawn = (binaryPath, args) =>
 
 /** Max device-enumerate stdout we will buffer (guards a runaway child). */
 const MAX_ENUMERATE_BYTES = 1024 * 1024;
+/** Bounded wait for the one-shot device-enumerate helper. */
+const ENUMERATE_TIMEOUT_MS = 15_000;
 
 /**
  * Run the helper's one-shot `device-enumerate` subcommand and return the parsed
@@ -321,6 +323,7 @@ const MAX_ENUMERATE_BYTES = 1024 * 1024;
 export function enumerateDevices(
   binaryPath: string,
   spawn: HelperSpawn = defaultSpawn,
+  timeoutMs: number = ENUMERATE_TIMEOUT_MS,
 ): Promise<unknown[]> {
   // `new Promise` (not Promise.withResolvers) matches the sibling capture
   // packages; this package's tsconfig lib predates withResolvers.
@@ -329,9 +332,15 @@ export function enumerateDevices(
     let out = "";
     let size = 0;
     let settled = false;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      fail(new CaptureInputError("native helper device-enumerate timed out"));
+    }, timeoutMs);
+    timer.unref();
     const fail = (err: Error): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       reject(err);
     };
     child.stdout.on("data", (chunk) => {
@@ -375,6 +384,7 @@ export function enumerateDevices(
         return;
       }
       settled = true;
+      clearTimeout(timer);
       resolve(list);
     });
   });

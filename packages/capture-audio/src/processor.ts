@@ -111,27 +111,36 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           openConversationId = prior.id;
         }
       }
-      // A chunk is far shorter than the conversation gap, so all of its
-      // segments land in one conversation; persisting a single append per
-      // chunk keeps the idempotency key chunk-stable (replay-safe).
-      let conversation = deps.assembler.add(segments[0]);
-      for (let i = 1; i < segments.length; i++) conversation = deps.assembler.add(segments[i]);
-      // A gap past the threshold closed the prior conversation in the assembler;
-      // mirror that in the spool so it doesn't linger as `capturing`.
-      if (openConversationId !== null && openConversationId !== conversation.id) {
-        deps.spool.finalizeConversation(openConversationId);
+      // Segments usually land in one conversation, but a gap >= threshold (or
+      // conversationGapMinutes = 0) can split them intra-chunk. Group by the
+      // conversation the assembler places each segment in, finalizing a prior
+      // conversation the moment it closes, and append each group under its own
+      // id with a per-group idempotency key (replay-safe).
+      const groups: Array<{ id: string; startedAtUtc: string; segs: AssemblySegment[] }> = [];
+      for (const seg of segments) {
+        const conv = deps.assembler.add(seg);
+        if (openConversationId !== null && openConversationId !== conv.id) {
+          deps.spool.finalizeConversation(openConversationId);
+        }
+        openConversationId = conv.id;
+        const last = groups[groups.length - 1];
+        if (last && last.id === conv.id) last.segs.push(seg);
+        else groups.push({ id: conv.id, startedAtUtc: conv.startedAtUtc, segs: [seg] });
       }
-      deps.spool.appendAssembledSegments({
-        idempotencyKey: chunkId,
-        chunkId,
-        conversationId: conversation.id,
-        startedAtUtc: conversation.startedAtUtc,
-        state: "capturing",
-        device: event.device,
-        wavPath: event.path,
-        segments,
-      });
-      openConversationId = conversation.id;
+      for (let g = 0; g < groups.length; g++) {
+        const grp = groups[g];
+        const key = groups.length === 1 ? chunkId : `${chunkId}:${g}`;
+        deps.spool.appendAssembledSegments({
+          idempotencyKey: key,
+          chunkId: key,
+          conversationId: grp.id,
+          startedAtUtc: grp.startedAtUtc,
+          state: "capturing",
+          device: event.device,
+          wavPath: event.path,
+          segments: grp.segs,
+        });
+      }
     }
 
     processedThisRun.add(chunkId);

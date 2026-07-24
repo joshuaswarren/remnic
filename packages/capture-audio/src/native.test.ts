@@ -125,7 +125,10 @@ test("resolveHelperBinary reports an actionable install hint when the package is
           throw new Error("Cannot find module");
         },
       }),
-    (err: Error) => err instanceof CaptureConfigError && /npm install @remnic\/capture-native-darwin-arm64/.test(err.message),
+    (err: Error) =>
+      err instanceof CaptureConfigError &&
+      /Build the Swift helper from source/.test(err.message) &&
+      /REMNIC_CAPTURE_HELPER_BIN/.test(err.message),
   );
 });
 

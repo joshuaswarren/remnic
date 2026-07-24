@@ -468,33 +468,10 @@ async function cmdStart(
   ensurePrivateDir(paths.baseDir);
   const token = loadOrCreateToken(paths.tokenPath);
   const spool = new Spool(paths.spoolPath);
-  let handle: DaemonHandle;
-  try {
-    // Bind and report the HTTP service FIRST so daemon readiness is independent
-    // of replay volume.
-    handle = await startDaemon({ spool, config, token, capturing: flags.capture === true });
-  } catch (err) {
-    // Don't leak the spool handle if the bind fails.
-    spool.close();
-    throw err;
-  }
-  try {
-    writePidFile(paths.pidPath, process.pid, {
-      instanceId: spool.meta("instance_id"),
-      host: handle.host,
-      port: handle.port,
-    });
-  } catch (err) {
-    // Bound but couldn't persist the record: release the socket and spool
-    // before surfacing the error so nothing is left half-started.
-    await handle.close();
-    spool.close();
-    throw err;
-  }
-  stdout(`listening on ${handle.url}`);
-  // Live native capture: spawn the shared macOS helper and process its WAV
-  // chunks into conversations. Opt-in via --capture; the daemon still serves
-  // the spool without it, and a missing/unavailable helper degrades honestly.
+
+  // Start live native capture (opt-in) BEFORE binding so the daemon's reported
+  // `capturing` reflects whether the helper actually started. A missing or
+  // unavailable helper degrades honestly — the daemon still serves the spool.
   let live: LiveCapture | null = null;
   if (flags.capture === true) {
     try {
@@ -509,12 +486,37 @@ async function cmdStart(
         onStderr: (l) => stderr(`helper: ${l}`),
       });
       live.start();
-      stdout("live capture started");
     } catch (err) {
       stderr(`live capture unavailable: ${describeError(err)}; serving without capture`);
       live = null;
     }
   }
+
+  let handle: DaemonHandle;
+  try {
+    // Bind and report the HTTP service; `capturing` mirrors the live runner.
+    handle = await startDaemon({ spool, config, token, capturing: live !== null });
+  } catch (err) {
+    // Don't leak the live runner or spool handle if the bind fails.
+    if (live) await live.stop().catch(() => undefined);
+    spool.close();
+    throw err;
+  }
+  try {
+    writePidFile(paths.pidPath, process.pid, {
+      instanceId: spool.meta("instance_id"),
+      host: handle.host,
+      port: handle.port,
+    });
+  } catch (err) {
+    // Bound but couldn't persist the record: release everything half-started.
+    if (live) await live.stop().catch(() => undefined);
+    await handle.close();
+    spool.close();
+    throw err;
+  }
+  stdout(`listening on ${handle.url}`);
+  if (live) stdout("live capture started");
   // Supervised AFTER readiness: replay volume/failure never delays or fails
   // readiness, and never kills the daemon. The task is tracked so shutdown can
   // cancel and drain it before the spool closes.
