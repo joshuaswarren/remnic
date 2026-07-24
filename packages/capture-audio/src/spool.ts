@@ -98,6 +98,29 @@ export interface QueryFinalOptions {
   cursor?: string | null;
   limit: number;
 }
+export interface AssemblyAppendInput {
+  /** Durable dedup marker for one application (e.g. a transcribed chunk id). */
+  idempotencyKey: string;
+  /** Stable `conv_<ulid>` id from the assembler. */
+  conversationId: string;
+  /** Conversation start; used only when the conversation is first created. */
+  startedAtUtc: string;
+  /** Defaults to `capturing`; the conversation is finalized by a later call. */
+  state?: ConversationState;
+  device?: string | null;
+  /** Backing chunk row id; defaults to `idempotencyKey`. */
+  chunkId?: string;
+  /** Backing WAV path recorded on the chunk row; retained for the janitor/audit. */
+  wavPath?: string | null;
+  segments: SegmentInput[];
+}
+export interface AssemblyAppendResult {
+  /** False when `idempotencyKey` was already applied (a replay no-op). */
+  applied: boolean;
+  conversationId: string;
+  /** Total segments in the conversation after this call. */
+  segmentCount: number;
+}
 
 interface ConversationRow {
   id: string;
@@ -147,6 +170,11 @@ CREATE TABLE IF NOT EXISTS speaker_clusters (
   example_embeddings BLOB,
   embedding_count INTEGER NOT NULL DEFAULT 0,
   is_self INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS applied_chunks (
+  idempotency_key TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  applied_at_utc TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_conv_keyset ON conversations(started_at_utc, id);
 CREATE INDEX IF NOT EXISTS idx_seg_conv ON segments(conversation_id, ordinal);
@@ -337,6 +365,136 @@ export class Spool {
     return Number(result.changes);
   }
 
+  /**
+   * Durably append one transcribed chunk's segments to a conversation,
+   * idempotent on `idempotencyKey` (a replay/restart of the same chunk is a
+   * no-op). Creates the conversation as `capturing` on first append; a later
+   * `finalizeConversation`/`finalizeOpenConversations` flips it to `final`.
+   */
+  appendAssembledSegments(input: AssemblyAppendInput): AssemblyAppendResult {
+    if (typeof input.idempotencyKey !== "string" || input.idempotencyKey.trim() === "") {
+      throw new CaptureConfigError("appendAssembledSegments.idempotencyKey: expected a non-empty string");
+    }
+    if (typeof input.conversationId !== "string" || input.conversationId.trim() === "") {
+      throw new CaptureConfigError("appendAssembledSegments.conversationId: expected a non-empty string");
+    }
+    if (typeof input.startedAtUtc !== "string" || input.startedAtUtc.trim() === "") {
+      throw new CaptureConfigError("appendAssembledSegments.startedAtUtc: expected a non-empty ISO timestamp");
+    }
+    if (!Array.isArray(input.segments) || input.segments.length === 0) {
+      throw new CaptureConfigError("appendAssembledSegments.segments: expected a non-empty array");
+    }
+    if (input.state !== undefined && !Object.hasOwn(CONVERSATION_STATES, input.state)) {
+      throw new CaptureConfigError(`appendAssembledSegments.state: unknown value '${input.state}'`);
+    }
+    const startedAtUtc = canonicalInstant(input.startedAtUtc, "appendAssembledSegments.startedAtUtc");
+    const segments = input.segments.map((seg, i) => {
+      const startUtc = canonicalInstant(seg.startUtc, `appendAssembledSegments.segments[${i}].startUtc`);
+      const endUtc = canonicalInstant(seg.endUtc, `appendAssembledSegments.segments[${i}].endUtc`);
+      if (Date.parse(endUtc) < Date.parse(startUtc)) {
+        throw new CaptureConfigError(`appendAssembledSegments.segments[${i}]: endUtc must not precede startUtc`);
+      }
+      if (typeof seg.text !== "string" || seg.text === "") {
+        throw new CaptureConfigError(`appendAssembledSegments.segments[${i}].text: expected a non-empty string`);
+      }
+      return { ...seg, startUtc, endUtc };
+    });
+    const convId = input.conversationId;
+    const chunkId = input.chunkId ?? input.idempotencyKey;
+    const state: ConversationState = input.state ?? "capturing";
+    const chunkChannel = segments[0]?.channel ?? "mic";
+    const lastEnd = segments[segments.length - 1].endUtc;
+    const chunkStart = segments[0].startUtc;
+
+    const db = this.#db;
+    db.exec("BEGIN");
+    try {
+      const seen = db
+        .prepare("SELECT conversation_id AS conversationId FROM applied_chunks WHERE idempotency_key = ?")
+        .get(input.idempotencyKey) as { conversationId: string } | undefined;
+      if (seen) {
+        db.exec("COMMIT");
+        return { applied: false, conversationId: seen.conversationId, segmentCount: this.#segmentCount(seen.conversationId) };
+      }
+      db.prepare(
+        "INSERT OR IGNORE INTO chunks(id, channel, device, started_at_utc, ended_at_utc, status, wav_path) VALUES (?,?,?,?,?,?,?)",
+      ).run(chunkId, chunkChannel, input.device ?? null, chunkStart, lastEnd, "transcribed", input.wavPath ?? null);
+      const existing = db.prepare("SELECT id FROM conversations WHERE id = ?").get(convId) as { id: string } | undefined;
+      if (!existing) {
+        db.prepare(
+          "INSERT INTO conversations(id, started_at_utc, ended_at_utc, state, segment_count) VALUES (?,?,?,?,0)",
+        ).run(convId, startedAtUtc, lastEnd, state);
+      }
+      const ordinalRow = db
+        .prepare("SELECT COALESCE(MAX(ordinal), -1) + 1 AS n FROM segments WHERE conversation_id = ?")
+        .get(convId) as { n: number };
+      const nextOrdinal = Number(ordinalRow.n);
+      const segStmt = db.prepare(
+        "INSERT INTO segments(id, chunk_id, conversation_id, speaker_cluster, is_wearer, channel, text, start_utc, end_utc, ordinal) VALUES (?,?,?,?,?,?,?,?,?,?)",
+      );
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        segStmt.run(
+          `seg_${ulid()}`,
+          chunkId,
+          convId,
+          seg.speakerCluster ?? null,
+          seg.isWearer ? 1 : 0,
+          seg.channel,
+          seg.text,
+          seg.startUtc,
+          seg.endUtc,
+          nextOrdinal + i,
+        );
+      }
+      db.prepare(
+        "UPDATE conversations SET segment_count = segment_count + ?, " +
+          "ended_at_utc = CASE WHEN ended_at_utc IS NULL OR ? > ended_at_utc THEN ? ELSE ended_at_utc END WHERE id = ?",
+      ).run(segments.length, lastEnd, lastEnd, convId);
+      db.prepare("INSERT INTO applied_chunks(idempotency_key, conversation_id, applied_at_utc) VALUES (?,?,?)").run(
+        input.idempotencyKey,
+        convId,
+        new Date().toISOString(),
+      );
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+    return { applied: true, conversationId: convId, segmentCount: this.#segmentCount(convId) };
+  }
+
+  /** Flip one conversation to `final`; returns true when it was capturing. */
+  finalizeConversation(id: string): boolean {
+    const result = this.#db
+      .prepare("UPDATE conversations SET state = 'final' WHERE id = ? AND state = 'capturing'")
+      .run(id);
+    return Number(result.changes) > 0;
+  }
+
+  /**
+   * The newest still-`capturing` conversation, so a chunk arriving after a
+   * process restart continues it (subject to the assembler's gap rule) instead
+   * of splitting off a new one. Null when none is open.
+   */
+  latestCapturingConversation(): { id: string; startedAtUtc: string; endedAtUtc: string } | null {
+    const row = this.#db
+      .prepare(
+        "SELECT id, started_at_utc AS startedAtUtc, ended_at_utc AS endedAtUtc FROM conversations " +
+          "WHERE state = 'capturing' ORDER BY ended_at_utc DESC, id DESC LIMIT 1",
+      )
+      .get() as { id: string; startedAtUtc: string; endedAtUtc: string | null } | undefined;
+    if (!row) return null;
+    return { id: row.id, startedAtUtc: row.startedAtUtc, endedAtUtc: row.endedAtUtc ?? row.startedAtUtc };
+  }
+
+  #segmentCount(conversationId: string): number {
+    const row = this.#db
+      .prepare("SELECT segment_count AS n FROM conversations WHERE id = ?")
+      .get(conversationId) as { n: number } | undefined;
+    return row ? Number(row.n) : 0;
+  }
+
   upsertSpeaker(input: SpeakerInput): void {
     const current = this.#db
       .prepare(
@@ -471,7 +629,9 @@ export class Spool {
     const segs = this.#db
       .prepare(
         "SELECT text, speaker_cluster AS speakerKey, is_wearer AS isWearer, channel, start_utc AS startUtc, end_utc AS endUtc " +
-          "FROM segments WHERE conversation_id = ? ORDER BY ordinal ASC, id ASC",
+          // Order by timestamp first: with channel "both", mic and system chunks
+          // arrive independently, so ordinal (arrival order) isn't chronological.
+          "FROM segments WHERE conversation_id = ? ORDER BY start_utc ASC, ordinal ASC, id ASC",
       )
       .all(row.id) as Array<{
       text: string;
