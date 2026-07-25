@@ -729,10 +729,17 @@ function createDelegateNamespaceBindingStore(
   const legacy = createFileSessionNamespaceBindingStore(
     bindingPath(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID),
   );
+  const readLegacyNamespaces = async (sessionKey: string): Promise<string[]> => {
+    try {
+      return await legacy.namespacesFor(sessionKey);
+    } catch {
+      return [];
+    }
+  };
   return {
     async namespacesFor(sessionKey: string): Promise<string[]> {
       const current = await primary.namespacesFor(sessionKey);
-      const previous = await legacy.namespacesFor(sessionKey);
+      const previous = await readLegacyNamespaces(sessionKey);
       if (previous.length === 0) return current;
       const merged = [...current];
       for (const remembered of previous) {
@@ -748,7 +755,7 @@ function createDelegateNamespaceBindingStore(
     },
     async remember(sessionKey: string, namespace: string): Promise<void> {
       const current = await primary.namespacesFor(sessionKey);
-      const previous = await legacy.namespacesFor(sessionKey);
+      const previous = await readLegacyNamespaces(sessionKey);
       for (const remembered of previous) {
         if (!current.includes(remembered)) await primary.remember(sessionKey, remembered);
       }

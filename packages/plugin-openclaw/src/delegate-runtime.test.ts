@@ -795,7 +795,7 @@ test("delegate falls back to singular flushes when batch capability is unavailab
 
     const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
     assert.deepEqual(
-      flushes.map((call) => call.body.namespace),
+      flushes.map((call) => call.body.namespace).sort(),
       ["team-first", "team-second"],
     );
     assert.equal(flushes.every((call) => !("namespaces" in call.body)), true);
@@ -865,6 +865,87 @@ test("delegate reloads a persisted namespace binding after its daemon host confi
     const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
     assert.ok(flush);
     assert.equal(flush.body.namespace, "team-persisted");
+  } finally {
+    if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) Reflect.deleteProperty(process.env, "REMNIC_HOST");
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) Reflect.deleteProperty(process.env, "REMNIC_PORT");
+    else process.env.REMNIC_PORT = priorPort;
+    await rm(memoryDir, { recursive: true, force: true });
+    await stub.close();
+  }
+});
+
+test("delegate ignores a corrupt legacy binding file when canonical scope is available", async () => {
+  const stub = await startDaemonStub(() => ({ flushed: true }));
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-bindings-"));
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  const sessionKey = "corrupt-legacy-session";
+  try {
+    const primaryPath = path.join(
+      memoryDir,
+      "state",
+      "plugins",
+      "openclaw-remnic",
+      "session-namespace-bindings.json",
+    );
+    const legacyPath = path.join(
+      memoryDir,
+      "state",
+      "plugins",
+      "openclaw-engram",
+      "session-namespace-bindings.json",
+    );
+    fs.mkdirSync(path.dirname(primaryPath), { recursive: true });
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+    fs.writeFileSync(
+      primaryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [encodeURIComponent(sessionKey)]: {
+            namespaces: ["team-canonical"],
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(legacyPath, "{ malformed legacy binding");
+
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    process.env.REMNIC_PORT = String(stub.port);
+    const api = recordingApi();
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        api,
+        {
+          serviceId: "openclaw-remnic",
+          configBridgeMode: "delegate",
+          passive: false,
+          allowPromptInjection: true,
+          gateHeartbeatTurns: false,
+          recallBudgetChars: 8_000,
+          memoryDir,
+          sessionTogglesEnabled: false,
+          respectBundledActiveMemoryToggle: false,
+          cleanUserMessage: (text: string) => text,
+          hookTimeoutMs: 5_000,
+          shouldSkipRecall: () => false,
+          flushOnResetEnabled: true,
+        },
+        { checkHealth: () => true },
+      ),
+      true,
+    );
+
+    await invoke(api, "session_end", { sessionKey });
+    const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush);
+    assert.equal(flush.body.namespace, "team-canonical");
   } finally {
     if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorMode;
