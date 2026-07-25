@@ -392,13 +392,10 @@ async function readCurrentPersistedEntityIndex(
   namespaceStorage?: (namespace: string) => Promise<StorageManager>,
 ): Promise<EntityMentionIndex | null> {
   if (
-    config.nativeKnowledge?.enabled ||
-    (
-      resolveNamespaceCapabilities(config).namespaces &&
-      namespaceStorage &&
-      recallNamespaces &&
-      recallNamespaces.length > 0
-    )
+    resolveNamespaceCapabilities(config).namespaces &&
+    namespaceStorage &&
+    recallNamespaces &&
+    recallNamespaces.length > 0
   ) {
     return null;
   }
@@ -464,11 +461,29 @@ function mergeNativeChunk(entry: EntityMentionIndexEntry, chunk: NativeKnowledge
   entry.aliases = uniqueStrings([...entry.aliases, ...(chunk.aliases ?? [])]);
 }
 
+function hasFreshNativeExplicitMention(
+  index: EntityMentionIndex,
+  nativeChunks: NativeKnowledgeChunk[],
+  query: string,
+): boolean {
+  if (nativeChunks.length === 0) return false;
+  const nativeCanonicalIds = new Set(nativeChunks.map(nativePseudoCanonicalId));
+  const freshNativeIndex: EntityMentionIndex = {
+    ...index,
+    entities: [
+      ...index.entities.filter((entry) => !nativeCanonicalIds.has(entry.canonicalId)),
+      ...nativeChunks.map(createPseudoNativeEntry),
+    ],
+  };
+  return resolveLanguageIndependentExplicitCandidates(freshNativeIndex, query).length > 0;
+}
+
 async function buildEntityMentionIndex(
   storage: StorageManager,
   config: PluginConfig,
   recallNamespaces?: string[],
   namespaceStorage?: (namespace: string) => Promise<StorageManager>,
+  nativeChunksOverride?: NativeKnowledgeChunk[],
 ): Promise<EntityMentionIndex> {
   const storages = await resolveEntityIndexStorages(
     storage,
@@ -478,11 +493,12 @@ async function buildEntityMentionIndex(
   );
   const shouldPersistIndex =
     storages.length === 1 && path.resolve(storages[0]!.dir) === path.resolve(storage.dir);
+  const entityStatusVersionBefore = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
   const [previousIndex, entityFileSets, memorySets, nativeChunks] = await Promise.all([
     shouldPersistIndex ? readEntityIndexState(storage) : Promise.resolve(null),
     Promise.all(storages.map((scopedStorage) => scopedStorage.readAllEntityFiles())),
     Promise.all(storages.map((scopedStorage) => scopedStorage.readAllMemories())),
-    readNativeChunks(config, recallNamespaces),
+    nativeChunksOverride ? Promise.resolve(nativeChunksOverride) : readNativeChunks(config, recallNamespaces),
   ]);
   // Pair each entity with the alias table of the store it came from (#1534):
   // canonical ids must reflect the owning store's aliases, never another
@@ -565,16 +581,18 @@ async function buildEntityMentionIndex(
   const sortedEntities = [...entities.values()].sort((left, right) => left.name.localeCompare(right.name));
   const previousEntities = previousIndex ? JSON.stringify(previousIndex.entities) : "";
   const nextEntities = JSON.stringify(sortedEntities);
+  const entityStatusVersionAfter = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
+  const canPersistIndex = shouldPersistIndex && entityStatusVersionBefore === entityStatusVersionAfter;
   const index: EntityMentionIndex = {
     version: ENTITY_INDEX_VERSION,
     updatedAt:
       previousIndex && previousEntities === nextEntities
         ? previousIndex.updatedAt
         : new Date().toISOString(),
-    entityStatusVersion: shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined,
+    entityStatusVersion: canPersistIndex ? entityStatusVersionAfter : undefined,
     entities: sortedEntities,
   };
-  if (shouldPersistIndex) {
+  if (canPersistIndex) {
     await writeEntityIndexState(storage, index);
   }
   return index;
@@ -606,11 +624,8 @@ const EXPLICIT_ENTITY_MENTION_SCORE = 9;
 
 function resolveLanguageIndependentExplicitCandidates(
   index: EntityMentionIndex,
-  candidates: EntityCandidate[],
+  query: string,
 ): EntityCandidate[] {
-  const exactCandidates = candidates.filter((candidate) => (
-    candidate.score >= EXPLICIT_ENTITY_MENTION_SCORE
-  ));
   const canonicalIdsByAlias = new Map<string, Set<string>>();
   for (const entry of index.entities) {
     for (const alias of uniqueStrings([entry.name, ...entry.aliases])) {
@@ -621,10 +636,33 @@ function resolveLanguageIndependentExplicitCandidates(
       canonicalIdsByAlias.set(normalizedAlias, canonicalIds);
     }
   }
-  return exactCandidates.filter((candidate) => {
-    const alias = normalizeEntityText(candidate.alias);
-    return alias.length > 0 && canonicalIdsByAlias.get(alias)?.size === 1;
-  });
+
+  const candidates: EntityCandidate[] = [];
+  for (const entry of index.entities) {
+    let bestAlias = "";
+    let bestScore = 0;
+    for (const alias of uniqueStrings([entry.name, ...entry.aliases])) {
+      const normalizedAlias = normalizeEntityText(alias);
+      const score = scoreAliasMatch(query, alias);
+      if (
+        !normalizedAlias ||
+        canonicalIdsByAlias.get(normalizedAlias)?.size !== 1 ||
+        score < EXPLICIT_ENTITY_MENTION_SCORE ||
+        score <= bestScore
+      ) {
+        continue;
+      }
+      bestAlias = alias;
+      bestScore = score;
+    }
+    if (bestAlias) {
+      candidates.push({ entry, alias: bestAlias, score: bestScore, source: "query" });
+    }
+  }
+
+  return candidates.sort(
+    (left, right) => right.score - left.score || left.entry.name.localeCompare(right.entry.name),
+  );
 }
 
 function resolveRecentTurnCandidates(
@@ -886,26 +924,28 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
       options.recallNamespaces,
       options.namespaceStorage,
     );
+  let nativeChunks: NativeKnowledgeChunk[] | undefined;
   if (
     !prefixedMode &&
     persistedIndex &&
-    resolveLanguageIndependentExplicitCandidates(
-      persistedIndex,
-      resolveExplicitCandidates(persistedIndex, options.query),
-    ).length === 0
+    resolveLanguageIndependentExplicitCandidates(persistedIndex, options.query).length === 0
   ) {
-    return null;
+    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces);
+    if (!hasFreshNativeExplicitMention(persistedIndex, nativeChunks, options.query)) {
+      return null;
+    }
   }
   const index = await buildEntityMentionIndex(
     options.storage,
     options.config,
     options.recallNamespaces,
     options.namespaceStorage,
+    nativeChunks,
   );
   const explicitCandidates = resolveExplicitCandidates(index, options.query);
   const queryCandidates = prefixedMode
     ? explicitCandidates
-    : resolveLanguageIndependentExplicitCandidates(index, explicitCandidates);
+    : resolveLanguageIndependentExplicitCandidates(index, options.query);
   const mode = prefixedMode ?? (queryCandidates.length > 0 ? "direct" : null);
   if (!mode) return null;
 

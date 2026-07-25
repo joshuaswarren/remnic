@@ -263,6 +263,49 @@ test("entity retrieval excludes an ambiguous alias beside a canonical Japanese m
   assert.doesNotMatch(section!, /target: Aurora \(project\)|Borealis-811/);
 });
 
+test("entity retrieval preserves a canonical mention beside a longer ambiguous alias", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-canonical-ambiguous");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const moonlight = await writeEntity(
+    storage,
+    "Moonlight",
+    "project",
+    ["Moonlight is synthetic."],
+    "Moonlight is synthetic.",
+    ["Lunar Beacon"],
+  );
+  const aurora = await writeEntity(
+    storage,
+    "Aurora",
+    "project",
+    ["Aurora is synthetic."],
+    "Aurora is synthetic.",
+    ["Lunar Beacon"],
+  );
+  await Promise.all([
+    storage.writeMemory("fact", "Moonlightの検証コードは Nebula-472 です。", {
+      entityRef: moonlight,
+      confidence: 1,
+    }),
+    storage.writeMemory("fact", "Auroraの検証コードは Borealis-811 です。", {
+      entityRef: aurora,
+      confidence: 1,
+    }),
+  ]);
+
+  const section = await buildSection(config, storage, "MoonlightとLunar Beaconの検証コードは何ですか？");
+
+  assert.ok(section);
+  assert.match(section!, /target: Moonlight \(project\)/);
+  assert.match(section!, /Nebula-472/);
+  assert.doesNotMatch(section!, /target: Aurora \(project\)|Borealis-811/);
+});
+
 test("entity retrieval skips corpus assembly for unrelated Japanese queries with a fresh persisted index", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-unrelated");
   t.after(async () => {
@@ -354,6 +397,49 @@ test("entity retrieval refreshes a persisted index after an Entity gains an alia
   );
   await buildSection(config, storage, "What do we know about Moonlight?");
   await storage.addEntityAlias(canonical, "Lunar Beacon");
+
+  const section = await buildSection(config, storage, "Lunar Beaconの検証コードは何ですか？");
+
+  assert.ok(section);
+  assert.match(section!, /Nebula-472/);
+});
+
+test("entity retrieval does not stamp a stale index with a newer Entity status", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-index-race");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const canonical = await writeEntity(
+    storage,
+    "Moonlight",
+    "project",
+    ["Moonlight is synthetic."],
+    "Moonlight is synthetic.",
+  );
+  await storage.writeMemory(
+    "fact",
+    "Moonlightの検証コードは Nebula-472 です。",
+    { entityRef: canonical, confidence: 1 },
+  );
+  await buildSection(config, storage, "What do we know about Moonlight?");
+
+  const originalReadAllEntityFiles = storage.readAllEntityFiles.bind(storage);
+  let mutateDuringRead = true;
+  storage.readAllEntityFiles = async () => {
+    const entities = await originalReadAllEntityFiles();
+    if (mutateDuringRead) {
+      mutateDuringRead = false;
+      await storage.addEntityAlias(canonical, "Lunar Beacon");
+    }
+    return entities;
+  };
+  t.after(() => {
+    storage.readAllEntityFiles = originalReadAllEntityFiles;
+  });
+  await buildSection(config, storage, "What do we know about Moonlight?");
 
   const section = await buildSection(config, storage, "Lunar Beaconの検証コードは何ですか？");
 
@@ -1184,6 +1270,63 @@ test("entity retrieval can answer from native knowledge titles and aliases witho
   assert.ok(section);
   assert.match(section!, /target: Launch Runbook \(identity\)/);
   assert.match(section!, /rollback owners/);
+});
+
+test("entity retrieval refreshes native mention aliases without rebuilding unrelated entity corpora", async (t) => {
+  const { workspaceDir, config, storage } = await buildHarness("engram-entity-native-freshness", {
+    nativeKnowledge: {
+      enabled: true,
+      includeFiles: ["IDENTITY.md", "MEMORY.md"],
+      maxChunkChars: 400,
+      maxResults: 5,
+      maxChars: 1600,
+      stateDir: "state/native-knowledge",
+      obsidianVaults: [],
+    },
+  });
+  await mkdir(workspaceDir, { recursive: true });
+  await writeFile(
+    path.join(workspaceDir, "IDENTITY.md"),
+    "# Launch Runbook\n\nThe launch runbook tracks release freeze steps and rollback owners.\n",
+    "utf-8",
+  );
+  await buildSection(config, storage, "Tell me about Launch Runbook");
+  await writeFile(
+    path.join(workspaceDir, "MEMORY.md"),
+    "# Release Ledger\n\nThe release ledger records staged deployment owners and rollback approval.\n",
+    "utf-8",
+  );
+
+  const originalReadAllEntityFiles = storage.readAllEntityFiles.bind(storage);
+  const originalReadAllMemories = storage.readAllMemories.bind(storage);
+  let entityReadCalls = 0;
+  let memoryReadCalls = 0;
+  storage.readAllEntityFiles = async () => {
+    entityReadCalls += 1;
+    return originalReadAllEntityFiles();
+  };
+  storage.readAllMemories = async () => {
+    memoryReadCalls += 1;
+    return originalReadAllMemories();
+  };
+  t.after(() => {
+    storage.readAllEntityFiles = originalReadAllEntityFiles;
+    storage.readAllMemories = originalReadAllMemories;
+  });
+
+  const refreshed = await buildSection(config, storage, "Release Ledgerについて教えて");
+  assert.ok(refreshed);
+  assert.match(refreshed!, /target: Release Ledger \(memory\)/);
+  assert.equal(entityReadCalls > 0, true);
+  assert.equal(memoryReadCalls > 0, true);
+  entityReadCalls = 0;
+  memoryReadCalls = 0;
+
+  const unrelated = await buildSection(config, storage, "関係のない質問ですか？");
+
+  assert.equal(unrelated, null);
+  assert.equal(entityReadCalls, 0);
+  assert.equal(memoryReadCalls, 0);
 });
 
 test("entity retrieval keeps multi-chunk native-only pseudo entries together", async () => {
