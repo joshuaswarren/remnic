@@ -1,0 +1,161 @@
+name: AI Review Gate Neutralizer
+
+# Clear `cancelled` AI Review Gate suites that pin the required `ai-reviewers`
+# ruleset context red, WITHOUT ever letting a PR merge without a real AI verdict.
+#
+# The problem (issue #2147, codex #2154): when 3+ PR-head events enter the
+# gate's concurrency group, GitHub cancels the queued PENDING run to admit the
+# newest one even with cancel-in-progress: false. A pending run never executes
+# the poll loop, so it never reaches the in-job neutral self-supersession
+# (ai-review-gate.yml). It settles as a `cancelled` ai-reviewers suite that pins
+# the required context red on that head forever (dead suites never re-evaluate).
+#
+# The safe fix is to clear a dead cancelled suite ONLY once the same head has a
+# real, FINAL, positive AI verdict that is at least as new as it. So this handler
+# is event-inverted: it runs when a gate run COMPLETES with `success`, then posts
+# a `neutral` ai-reviewers check-run for that head to clear the OLDER `cancelled`
+# suites the fresh verdict superseded. Anchoring on a completed positive verdict
+# (never a still-running or cancelled run) is what makes it correct:
+#   * No race. The covering verdict is already final, so the neutral we post can
+#     never mask a `failure` that concludes moments later (codex P1, rounds 4-6).
+#   * No free pass. We only clear a cancelled suite that a NEWER positive
+#     evaluation of the SAME head+PR has superseded. A lone manual or infra
+#     cancellation with no newer positive verdict keeps blocking, and a cancelled
+#     suite NEWER than the latest positive verdict (it may reflect an event the
+#     verdict never saw) is left alone (codex P1, rounds 3-5).
+#   * Fork PRs work. workflow_run runs in the BASE-repo context with a WRITABLE
+#     token, unlike a fork PR's read-only in-job token (cursor #2154).
+# Scoping `workflows:` to ONLY "AI Review Gate" makes anti-recursion structural:
+# this workflow never names itself, so its own completions never trigger it.
+on:
+  workflow_run:
+    workflows: ["AI Review Gate"]
+    types: [completed]
+
+# Least privilege: checks.create writes the neutral suite; listing sibling runs
+# needs actions:read, and resolving the head's PR needs pull-requests:read.
+# Every other scope is none.
+permissions:
+  actions: read
+  checks: write
+  pull-requests: read
+
+jobs:
+  neutralize-superseded:
+    # Act ONLY on a completed positive gate verdict. A cancelled, failed, or
+    # skipped completion is never a basis to clear anything - especially not a
+    # `failure`, which must keep blocking.
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Clear cancelled ai-reviewers suites superseded by this verdict
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const headSha = run && run.head_sha;
+            if (!headSha) {
+              core.notice('Completed workflow_run has no head SHA; nothing to do.');
+              return;
+            }
+            // Recency = the CURRENT attempt's start time (run_started_at), not
+            // created_at: a check-unsticker rerun keeps the original created_at
+            // and only bumps run_attempt/run_started_at, so created_at would
+            // mis-order a rerun's fresh verdict before cancellations it actually
+            // ran after (codex P2, round 7).
+            const verdictRanAt = Date.parse(run.run_started_at || run.created_at || '');
+            if (!Number.isFinite(verdictRanAt)) {
+              core.notice(`Positive gate run ${run.id} has no parseable timestamp; not neutralizing.`);
+              return;
+            }
+            // Resolve the PR this head belongs to. A head SHA normally maps to
+            // exactly one PR, so every gate run on it is that same PR and cross-PR
+            // neutralization is impossible. If the SHA maps to zero or several PRs
+            // (unattributed, or the rare case of sibling PRs sharing a head commit
+            // - see check-unsticker), attribution is ambiguous: decline, so a
+            // positive verdict for one PR never clears another PR's cancelled gate
+            // (codex P1, round 8).
+            let associatedPrNumbers;
+            try {
+              const associated = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: headSha,
+                per_page: 100,
+              });
+              associatedPrNumbers = associated
+                .map((pr) => pr && pr.number)
+                .filter((n) => Number.isInteger(n));
+            } catch (error) {
+              core.notice(`Could not resolve the PR for head ${headSha.slice(0, 7)} (${error && error.message ? error.message : error}); not neutralizing.`);
+              return;
+            }
+            if (associatedPrNumbers.length !== 1) {
+              core.notice(`Head ${headSha.slice(0, 7)} maps to ${associatedPrNumbers.length} PR(s); attribution is ambiguous, not neutralizing.`);
+              return;
+            }
+            // Every gate run on this exact head (same commit => same PR head).
+            let siblingRuns;
+            try {
+              siblingRuns = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'ai-review-gate.yml',
+                head_sha: headSha,
+                per_page: 100,
+              });
+            } catch (error) {
+              core.notice(`Could not list sibling gate runs for head ${headSha.slice(0, 7)} (${error && error.message ? error.message : error}); not neutralizing.`);
+              return;
+            }
+            // R must be the NEWEST gate run on this head. If any sibling ran (or
+            // was triggered) later than this verdict's current attempt, R is
+            // stale: a newer run reflects an event R may not have evaluated and
+            // is the authority for the head, so decline and let that newer run's
+            // own completion drive clearing. This also removes any window where a
+            // newer run's `failure` could be masked by a neutral posted after it
+            // (codex P1, round 9).
+            const newerRunExists = siblingRuns.some((candidate) => {
+              if (candidate.id === run.id) return false;
+              const candidateRanAt = Date.parse(candidate.run_started_at || candidate.created_at || '');
+              return Number.isFinite(candidateRanAt) && candidateRanAt > verdictRanAt;
+            });
+            if (newerRunExists) {
+              core.notice(`A newer AI Review Gate run exists on head ${headSha.slice(0, 7)}; it owns the gate, not this verdict - not neutralizing.`);
+              return;
+            }
+            // Every completed `cancelled` gate run on this head is older than this
+            // newest positive verdict, so each is a dead suite the verdict
+            // superseded.
+            const supersededCancellations = siblingRuns.filter((candidate) =>
+              candidate.id !== run.id &&
+              candidate.status === 'completed' &&
+              candidate.conclusion === 'cancelled',
+            );
+            if (supersededCancellations.length === 0) {
+              core.notice(`No older cancelled ai-reviewers suites to clear on head ${headSha.slice(0, 7)}.`);
+              return;
+            }
+            // Post ONE neutral ai-reviewers check-run for the head. A newer,
+            // FINAL positive verdict (run ${run.id}) already evaluated this head,
+            // so this only clears dead cancelled suites - it never substitutes for
+            // a reviewer verdict and cannot mask a failure. Best-effort: never
+            // turn neutralization into a failure of this handler.
+            try {
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'ai-reviewers',
+                head_sha: headSha,
+                status: 'completed',
+                conclusion: 'neutral',
+                output: {
+                  title: 'Superseded cancellations cleared',
+                  summary: `${supersededCancellations.length} cancelled ai-reviewers run(s) on head ${headSha.slice(0, 7)} were superseded by completed positive gate run ${run.id}. Concluding the context neutral so dead suites do not pin it red. A real positive AI verdict for this head already exists; this never substitutes for a reviewer verdict or masks a failure.`,
+                },
+              });
+              core.notice(`Cleared ${supersededCancellations.length} cancelled ai-reviewers suite(s) for ${headSha.slice(0, 7)} (superseded by run ${run.id}).`);
+            } catch (error) {
+              core.notice(`Could not clear cancelled ai-reviewers suites for ${headSha.slice(0, 7)}: ${error && error.message ? error.message : error}`);
+            }

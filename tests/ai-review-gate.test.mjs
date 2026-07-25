@@ -53,6 +53,102 @@ test("AI review gate never force-cancels a running evaluation (cancel-in-progres
   assert.doesNotMatch(workflow, /cancel-in-progress:\s*true/);
 });
 
+test("AI review gate self-supersession neutralization is best-effort for fork PRs (#2154)", () => {
+  const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
+  // Fork PRs get a read-only GITHUB_TOKEN, so checks.create returns 403. The
+  // supersession must catch that and fall through to the bare return — never
+  // turn a supersession into a job failure (cursor, round 2). The guarded shape
+  // is try { ... checks.create ... } catch that only core.notice()s.
+  assert.match(
+    workflow,
+    /try\s*\{[\s\S]*?await github\.rest\.checks\.create\([\s\S]*?\}\s*catch\s*\(\s*\w+\s*\)\s*\{[\s\S]*?core\.notice\([\s\S]*?\}/,
+  );
+  // Scope to the supersession block: its catch handler must never fail the job.
+  const supersession = workflow.slice(
+    workflow.indexOf("if (triggerHeadSha)"),
+    workflow.indexOf("const { failures, evaluatedCount, hasBlockers }"),
+  );
+  assert.match(supersession, /catch\s*\(\s*\w+\s*\)\s*\{[\s\S]*?core\.notice\(/);
+  assert.doesNotMatch(supersession, /core\.setFailed\(/);
+});
+
+test("AI review gate neutralizer clears cancelled suites on a positive verdict only (#2154)", () => {
+  const neutralizer = readFileSync(
+    ".github/workflows/ai-review-gate-neutralizer.yml",
+    "utf8",
+  );
+  // A pending gate run cancelled by concurrency never reaches the in-job neutral
+  // path. This workflow_run(completed) handler clears such dead suites from the
+  // base-repo context (writable token, incl. fork PRs), but ONLY when a gate run
+  // completes with a positive verdict - never off a cancelled/failed completion
+  // (codex #2154, rounds 2-6).
+  assert.match(neutralizer, /^\s*workflow_run:/m);
+  assert.match(neutralizer, /workflows:\s*\[\s*["']AI Review Gate["']\s*\]/);
+  assert.match(neutralizer, /types:\s*\[\s*completed\s*\]/);
+  // Trigger gates on a POSITIVE completion, never on a cancelled or failed one.
+  assert.match(neutralizer, /github\.event\.workflow_run\.conclusion == 'success'/);
+  assert.doesNotMatch(neutralizer, /workflow_run\.conclusion == 'cancelled'/);
+  assert.doesNotMatch(neutralizer, /conclusion == 'failure'/);
+  // Posts a neutral ai-reviewers check-run on the verdict's head SHA.
+  assert.match(neutralizer, /github\.rest\.checks\.create\(/);
+  assert.match(neutralizer, /name:\s*'ai-reviewers'/);
+  assert.match(neutralizer, /conclusion:\s*'neutral'/);
+  assert.match(neutralizer, /head_sha:\s*headSha/);
+  // Anti-recursion is structural: the trigger lists only the gate, never itself.
+  assert.doesNotMatch(neutralizer, /workflows:\s*\[[^\]]*Neutralizer/);
+  // Least privilege: actions:read + pull-requests:read + checks:write; no writes
+  // beyond checks.
+  assert.match(neutralizer, /^\s*actions:\s*read/m);
+  assert.match(neutralizer, /^\s*pull-requests:\s*read/m);
+  assert.match(neutralizer, /^\s*checks:\s*write/m);
+  assert.doesNotMatch(neutralizer, /^\s*actions:\s*write/m);
+  assert.doesNotMatch(neutralizer, /^\s*contents:\s*write/m);
+  assert.doesNotMatch(neutralizer, /^\s*pull-requests:\s*write/m);
+  assert.doesNotMatch(neutralizer, /^\s*issues:\s*write/m);
+});
+
+test("AI review gate neutralizer clears only OLDER same-PR cancellations, never masks a verdict (#2154)", () => {
+  const neutralizer = readFileSync(
+    ".github/workflows/ai-review-gate-neutralizer.yml",
+    "utf8",
+  );
+  // The neutral is posted only when a completed positive verdict supersedes the
+  // cancelled suites. Because the verdict is FINAL, the neutral can never mask a
+  // failure that concludes moments later (the race codex flagged, rounds 4-6).
+  // Only cancelled runs that are same-PR and created no later than the verdict
+  // are cleared; a newer cancellation (a fresh, un-evaluated event) is left
+  // blocking, and a lone cancel with no positive verdict is never cleared.
+  assert.match(neutralizer, /listWorkflowRuns/);
+  assert.match(neutralizer, /workflow_id:\s*'ai-review-gate\.yml'/);
+  assert.match(neutralizer, /supersededCancellations/);
+  assert.ok(
+    neutralizer.indexOf("listWorkflowRuns") <
+      neutralizer.indexOf("github.rest.checks.create("),
+    "sibling lookup must precede the neutral checks.create",
+  );
+  const guard = neutralizer.slice(
+    neutralizer.indexOf("listWorkflowRuns"),
+    neutralizer.indexOf("github.rest.checks.create("),
+  );
+  // Only completed `cancelled` siblings are cleared.
+  assert.match(guard, /candidate\.status === 'completed'/);
+  assert.match(guard, /candidate\.conclusion === 'cancelled'/);
+  // Same-PR is proven by resolving the head to exactly one PR (fork-safe); an
+  // ambiguous SHA (shared or unattributed) declines rather than cross-neutralize.
+  assert.match(neutralizer, /listPullRequestsAssociatedWithCommit/);
+  assert.match(neutralizer, /associatedPrNumbers\.length !== 1/);
+  // The verdict must be the NEWEST gate run: if any sibling ran later (by the
+  // current attempt's run_started_at, not the rerun-stale created_at), decline
+  // so a newer run's failure can never be masked (rounds 6, 9).
+  assert.match(neutralizer, /run\.run_started_at \|\| run\.created_at/);
+  assert.match(guard, /candidate\.run_started_at \|\| candidate\.created_at/);
+  assert.match(guard, /newerRunExists/);
+  assert.match(guard, /candidateRanAt > verdictRanAt/);
+  // Nothing to clear -> return before posting.
+  assert.match(guard, /supersededCancellations\.length === 0/);
+  assert.match(guard, /return;/);
+});
+
 test("AI review gate workflow limits the Dependabot exception to manifest-only missing Cursor activity", () => {
   const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
 

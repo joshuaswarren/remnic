@@ -635,18 +635,31 @@ jobs:
                   // suite on the head and dead suites never re-evaluate (#2147).
                   // `neutral` satisfies the ruleset and matches the documented
                   // "exits neutral by design, never blocks merge" contract.
-                  await github.rest.checks.create({
-                    owner,
-                    repo,
-                    name: 'ai-reviewers',
-                    head_sha: triggerHeadSha,
-                    status: 'completed',
-                    conclusion: 'neutral',
-                    output: {
-                      title: 'Superseded',
-                      summary: `Head advanced ${triggerHeadSha.slice(0, 7)} -> ${currentHeadSha.slice(0, 7)}; a newer AI review gate run owns the current head. This run exits neutral by design and never blocks merge.`,
-                    },
-                  });
+                  // Best-effort: fork PRs get a read-only GITHUB_TOKEN, so
+                  // checks.create returns 403. Never turn a supersession into a
+                  // job failure — on any error, note it and fall through to the
+                  // same bare return as before (cursor, #2154). The workflow_run
+                  // neutralizer (ai-review-gate-neutralizer.yml) runs in the
+                  // base-repo context with a writable token and covers the fork
+                  // case, plus runs cancelled before the poll loop ever started.
+                  try {
+                    await github.rest.checks.create({
+                      owner,
+                      repo,
+                      name: 'ai-reviewers',
+                      head_sha: triggerHeadSha,
+                      status: 'completed',
+                      conclusion: 'neutral',
+                      output: {
+                        title: 'Superseded',
+                        summary: `Head advanced ${triggerHeadSha.slice(0, 7)} -> ${currentHeadSha.slice(0, 7)}; a newer AI review gate run owns the current head. This run exits neutral by design and never blocks merge.`,
+                      },
+                    });
+                  } catch (error) {
+                    core.notice(
+                      `AI review gate supersession could not post a neutral check-run (${error?.message ?? error}); exiting without blocking. The workflow_run neutralizer covers this head from the base-repo context.`,
+                    );
+                  }
                   return;
                 }
               }
