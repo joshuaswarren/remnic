@@ -99,6 +99,109 @@ test("entity retrieval builds answer hints and persists a mention index", async 
   assert.ok(index.entities.some((entry: { canonicalId: string }) => entry.canonicalId === canonical));
 });
 
+test("entity retrieval resolves explicit canonical and alias mentions in Japanese direct questions", async () => {
+  const { config, storage } = await buildHarness("engram-entity-japanese-direct");
+  const canonical = await writeEntity(
+    storage,
+    "Moonlight",
+    "project",
+    ["Moonlight is a synthetic deployment project."],
+    "Moonlight is a synthetic deployment project.",
+    ["Lunar Beacon"],
+  );
+  await storage.writeMemory(
+    "fact",
+    "配備ビーコンの識別色は cobalt で、検証コードは Nebula-472 です。",
+    { entityRef: canonical, confidence: 1 },
+  );
+
+  for (const query of [
+    "What do we know about Moonlight?",
+    "Moonlightの配備ビーコンの識別色と検証コードは何ですか？",
+    "Moonlight の配備ビーコンの識別色と検証コードは何ですか？",
+    "Lunar Beaconの配備ビーコンの識別色と検証コードは何ですか？",
+  ]) {
+    const section = await buildSection(config, storage, query);
+    assert.ok(section, `expected an entity hint section for ${query}`);
+    assert.match(section!, /target: Moonlight \(project\)/);
+    assert.match(section!, /Nebula-472/);
+  }
+});
+
+test("entity retrieval keeps multiple explicit entities in Japanese direct questions separate", async () => {
+  const { config, storage } = await buildHarness("engram-entity-japanese-multiple");
+  const moonlight = await writeEntity(
+    storage,
+    "Moonlight",
+    "project",
+    ["Moonlight is synthetic."],
+    "Moonlight is synthetic.",
+  );
+  const aurora = await writeEntity(
+    storage,
+    "Aurora",
+    "project",
+    ["Aurora is synthetic."],
+    "Aurora is synthetic.",
+  );
+  await Promise.all([
+    storage.writeMemory("fact", "Moonlightの検証コードは Nebula-472 です。", {
+      entityRef: moonlight,
+      confidence: 1,
+    }),
+    storage.writeMemory("fact", "Auroraの検証コードは Borealis-811 です。", {
+      entityRef: aurora,
+      confidence: 1,
+    }),
+  ]);
+
+  const section = await buildSection(
+    config,
+    storage,
+    "MoonlightとAuroraの検証コードは何ですか？",
+  );
+
+  assert.ok(section);
+  assert.match(section!, /target: Moonlight \(project\)/);
+  assert.match(section!, /Nebula-472/);
+  assert.match(section!, /target: Aurora \(project\)/);
+  assert.match(section!, /Borealis-811/);
+});
+
+test("entity retrieval does not resolve an ambiguous alias in Japanese direct questions", async () => {
+  const { config, storage } = await buildHarness("engram-entity-japanese-ambiguous");
+  const moonlight = await writeEntity(
+    storage,
+    "Moonlight",
+    "project",
+    ["Moonlight is synthetic."],
+    "Moonlight is synthetic.",
+    ["Beacon"],
+  );
+  const aurora = await writeEntity(
+    storage,
+    "Aurora",
+    "project",
+    ["Aurora is synthetic."],
+    "Aurora is synthetic.",
+    ["Beacon"],
+  );
+  await Promise.all([
+    storage.writeMemory("fact", "Moonlightの検証コードは Nebula-472 です。", {
+      entityRef: moonlight,
+      confidence: 1,
+    }),
+    storage.writeMemory("fact", "Auroraの検証コードは Borealis-811 です。", {
+      entityRef: aurora,
+      confidence: 1,
+    }),
+  ]);
+
+  const section = await buildSection(config, storage, "Beaconの検証コードは何ですか？");
+
+  assert.equal(section, null);
+});
+
 test("entity retrieval reads entity hints from allowed secondary namespaces only", async () => {
   const { memoryDir, config } = await buildHarness("engram-entity-namespace-recall", {
     namespacesEnabled: true,

@@ -575,6 +575,28 @@ function resolveExplicitCandidates(
   return candidates.sort((left, right) => right.score - left.score);
 }
 
+const EXPLICIT_ENTITY_MENTION_SCORE = 9;
+
+function resolveLanguageIndependentExplicitCandidates(
+  candidates: EntityCandidate[],
+): EntityCandidate[] {
+  const exactCandidates = candidates.filter((candidate) => (
+    candidate.score >= EXPLICIT_ENTITY_MENTION_SCORE
+  ));
+  const canonicalIdsByAlias = new Map<string, Set<string>>();
+  for (const candidate of exactCandidates) {
+    const alias = normalizeEntityText(candidate.alias);
+    if (!alias) continue;
+    const canonicalIds = canonicalIdsByAlias.get(alias) ?? new Set<string>();
+    canonicalIds.add(candidate.entry.canonicalId);
+    canonicalIdsByAlias.set(alias, canonicalIds);
+  }
+  return exactCandidates.filter((candidate) => {
+    const alias = normalizeEntityText(candidate.alias);
+    return alias.length > 0 && canonicalIdsByAlias.get(alias)?.size === 1;
+  });
+}
+
 function resolveRecentTurnCandidates(
   index: EntityMentionIndex,
   transcriptEntries: TranscriptEntry[],
@@ -825,8 +847,7 @@ function formatEntityHintSection(
 }
 
 export async function buildEntityRecallSection(options: BuildEntityRecallSectionOptions): Promise<string | null> {
-  const mode = detectEntityQueryMode(options.query);
-  if (!mode) return null;
+  const prefixedMode = detectEntityQueryMode(options.query);
 
   const index = await buildEntityMentionIndex(
     options.storage,
@@ -837,14 +858,20 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   if (index.entities.length === 0) return null;
 
   const explicitCandidates = resolveExplicitCandidates(index, options.query);
-  const candidates = explicitCandidates.length > 0
+  const queryCandidates = prefixedMode
     ? explicitCandidates
+    : resolveLanguageIndependentExplicitCandidates(explicitCandidates);
+  const mode = prefixedMode ?? (queryCandidates.length > 0 ? "direct" : null);
+  if (!mode) return null;
+
+  const candidates = queryCandidates.length > 0
+    ? queryCandidates
     : resolveRecentTurnCandidates(index, options.transcriptEntries, options.recentTurns);
 
   if (candidates.length === 0) return null;
 
   const queryTokens = tokenize(options.query);
-  const candidateLimit = explicitCandidates.length === 0 && mode === "follow_up"
+  const candidateLimit = queryCandidates.length === 0 && mode === "follow_up"
     ? 1
     : options.maxHints;
   const rankedCandidates = candidates.slice(0, candidateLimit);
