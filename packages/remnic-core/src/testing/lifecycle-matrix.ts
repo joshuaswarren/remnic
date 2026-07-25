@@ -220,7 +220,11 @@ type NodeTestRegistrar = {
   (name: string, options: { skip: string }, fn: () => void): void;
 };
 
-const nodeTest = createRequire(import.meta.url)("node:test") as NodeTestRegistrar;
+const requiredNodeTest = createRequire(import.meta.url)("node:test") as
+  | NodeTestRegistrar
+  | { test: NodeTestRegistrar };
+const nodeTest: NodeTestRegistrar =
+  typeof requiredNodeTest === "function" ? requiredNodeTest : requiredNodeTest.test;
 
 const defaultRegister: MatrixTestRegistrar = (name, fn) => {
   nodeTest(name, fn);
