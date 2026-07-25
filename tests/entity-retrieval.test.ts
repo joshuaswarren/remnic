@@ -206,6 +206,25 @@ test("entity retrieval resolves Korean grammatical particles after Unicode menti
   assert.equal(await buildSection(config, storage, "서울로봇의 상태는 무엇인가요?"), null);
 });
 
+test("entity retrieval treats combining marks as Unicode word continuations", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-combining-mark-boundary");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  await writeEntity(storage, "क", "project", ["Base entity fact."], "Base entity summary.");
+  const marked = await writeEntity(storage, "कि", "project", ["Marked entity fact."], "Marked entity summary.");
+
+  const section = await buildSection(config, storage, "कि");
+  assert.ok(section);
+  assert.match(section!, new RegExp(`target: कि \\(project\\)`));
+  assert.match(section!, /Marked entity summary/);
+  assert.doesNotMatch(section!, /Base entity fact|target: क \(project\)/);
+  assert.equal(marked, "project-कि");
+});
+
 test("entity retrieval treats canonically equivalent Unicode mentions as equal", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-unicode-normalization");
   t.after(async () => {

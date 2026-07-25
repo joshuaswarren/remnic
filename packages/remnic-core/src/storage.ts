@@ -3607,6 +3607,7 @@ export class StorageManager {
 
   private async migrateLegacyEntityCanonicalIds(): Promise<void> {
     if (this.entityCanonicalIdMigrationComplete) return;
+    if (this._secureStoreRequired && !this.isSecureStoreUnlocked()) return;
     await migrateLegacyEntityCanonicalIds({
       stateDir: this.stateDir,
       entitiesDir: this.entitiesDir,

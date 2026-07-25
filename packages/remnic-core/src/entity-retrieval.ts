@@ -90,7 +90,7 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 }
 
-const UNICODE_WORD_OR_NUMBER_RE = /[\p{L}\p{N}]/u;
+const UNICODE_WORD_OR_NUMBER_RE = /[\p{L}\p{M}\p{N}]/u;
 const JAPANESE_PARTICLE_RE = /^[のはがをにへともやかでだ]$/u;
 const JAPANESE_MULTI_CHARACTER_PARTICLES = ["って"] as const;
 const KOREAN_PARTICLES = [

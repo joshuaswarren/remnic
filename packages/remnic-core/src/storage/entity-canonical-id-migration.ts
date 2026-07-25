@@ -107,6 +107,7 @@ async function fileExists(filePath: string): Promise<boolean> {
 
 async function discoverMappings(deps: EntityCanonicalIdMigrationDependencies): Promise<Record<string, string>> {
   const mappings: Record<string, string> = {};
+  const canonicalOwners = new Map<string, string>();
   const entityEntries = await readdir(deps.entitiesDir);
   for (const entry of entityEntries) {
     if (!entry.endsWith(".md")) continue;
@@ -122,6 +123,13 @@ async function discoverMappings(deps: EntityCanonicalIdMigrationDependencies): P
     if (await fileExists(canonicalPath)) {
       throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
     }
+    const previousOwner = canonicalOwners.get(canonicalId);
+    if (previousOwner !== undefined && previousOwner !== legacyId) {
+      throw new Error(
+        `Cannot migrate legacy entity ids ${previousOwner} and ${legacyId}: both normalize to ${canonicalId}.`,
+      );
+    }
+    canonicalOwners.set(canonicalId, legacyId);
     mappings[legacyId] = canonicalId;
   }
   return mappings;

@@ -12,6 +12,7 @@ import {
   serializeEntityFile,
 } from "../packages/remnic-core/src/storage.js";
 import { parseConfig } from "../packages/remnic-core/src/config.js";
+import { normalizeLegacyEntityName } from "../packages/remnic-core/src/entity-id-normalization.js";
 import { normalizeEntityText } from "../packages/remnic-core/src/entity-schema.js";
 import {
   isEncryptedFile,
@@ -339,6 +340,8 @@ test("ensureDirectories re-encrypts legacy Entity ids at their canonical path", 
     await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
 
     const upgraded = new StorageManager(dir);
+    upgraded.setSecureStoreRequired(true);
+    await upgraded.ensureDirectories();
     upgraded.setSecureStoreKey(key, false);
     await upgraded.ensureDirectories();
     assert.equal(isEncryptedFile(await readFile(path.join(dir, "entities", `${canonical}.md`))), true);
@@ -388,6 +391,48 @@ test("ensureDirectories resumes a secure Entity migration after its canonical wr
 
     assert.match(await upgraded.readEntity(canonical), /# 月光/);
     assert.equal(await upgraded.readEntity(legacyCanonical), "");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories rejects duplicate canonical targets before migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-duplicate-canonical-target-"));
+  try {
+    const composedName = "Café";
+    const decomposedName = "Cafe\u0301";
+    const type = "project";
+    const canonical = normalizeEntityName(composedName, type);
+    const firstLegacy = normalizeLegacyEntityName(composedName, type);
+    const secondLegacy = normalizeLegacyEntityName(decomposedName, type);
+    assert.equal(canonical, normalizeEntityName(decomposedName, type));
+    assert.notEqual(firstLegacy, secondLegacy);
+
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(composedName, type, ["Composed entity fact."]);
+    const entityContent = await seed.readEntity(canonical);
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${firstLegacy}.md`),
+    );
+    await writeFile(
+      path.join(dir, "entities", `${secondLegacy}.md`),
+      entityContent.replace(`# ${composedName}`, `# ${decomposedName}`),
+      "utf-8",
+    );
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
+    const migrating = new StorageManager(dir);
+    await assert.rejects(
+      () => migrating.ensureDirectories(),
+      /both normalize to project-café/,
+    );
+    assert.match(await readFile(path.join(dir, "entities", `${firstLegacy}.md`), "utf-8"), /# Café/);
+    assert.match(
+      await readFile(path.join(dir, "entities", `${secondLegacy}.md`), "utf-8"),
+      /# Cafe\u0301/,
+    );
+    await assert.rejects(() => readFile(path.join(dir, "entities", `${canonical}.md`), "utf-8"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
