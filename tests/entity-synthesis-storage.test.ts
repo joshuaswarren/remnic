@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import {
   StorageManager,
   compareEntityTimestamps,
@@ -68,6 +68,137 @@ test("readEntity rejects names that escape the entities directory", async () => 
 
     assert.equal(await storage.readEntity("../profile"), "");
     assert.equal(await storage.readEntity("person-jane-doe"), "inside entities");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories migrates legacy Unicode entity ids and memory references", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-legacy-unicode-id-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const canonical = normalizeEntityName(name, type);
+    const legacyCanonical = "project-";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+    );
+    const day = new Date().toISOString().slice(0, 10);
+    const legacyMemoryDocument = (id: string) => [
+      "---",
+      `id: ${id}`,
+      "category: fact",
+      "created: 2026-07-25T00:00:00.000Z",
+      `entityRef: ${legacyCanonical}`,
+      "---",
+      "",
+      "Legacy entity reference.",
+      "",
+    ].join("\n");
+    const coldDir = path.join(dir, "cold", "facts", day);
+    const archiveDir = path.join(dir, "archive", day);
+    await Promise.all([
+      mkdir(path.join(dir, "facts", day), { recursive: true }),
+      mkdir(coldDir, { recursive: true }),
+      mkdir(archiveDir, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(dir, "facts", day, "legacy-unicode-entity.md"),
+        legacyMemoryDocument("legacy-unicode-entity"),
+        "utf-8",
+      ),
+      writeFile(
+        path.join(coldDir, "legacy-unicode-entity-cold.md"),
+        legacyMemoryDocument("legacy-unicode-entity-cold"),
+        "utf-8",
+      ),
+      writeFile(
+        path.join(archiveDir, "legacy-unicode-entity-archive.md"),
+        legacyMemoryDocument("legacy-unicode-entity-archive"),
+        "utf-8",
+      ),
+    ]);
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+
+    const upgraded = new StorageManager(dir);
+    await upgraded.ensureDirectories();
+
+    assert.match(await upgraded.readEntity(canonical), /# 月光/);
+    assert.equal(await upgraded.readEntity(legacyCanonical), "");
+    assert.deepEqual(
+      (await upgraded.readAllMemories()).map((memory) => memory.frontmatter.entityRef),
+      [canonical],
+    );
+    assert.deepEqual(
+      (await upgraded.readAllColdMemories()).map((memory) => memory.frontmatter.entityRef),
+      [canonical],
+    );
+    assert.deepEqual(
+      (await upgraded.readArchivedMemories()).map((memory) => memory.frontmatter.entityRef),
+      [canonical],
+    );
+    assert.equal(await upgraded.writeEntity(name, type, ["New entity fact."]), canonical);
+    assert.deepEqual(await upgraded.readEntities(), [canonical]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories resumes a journaled legacy entity migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-legacy-unicode-recovery-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const canonical = normalizeEntityName(name, type);
+    const legacyCanonical = "project-";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+    );
+    const day = new Date().toISOString().slice(0, 10);
+    await mkdir(path.join(dir, "facts", day), { recursive: true });
+    await writeFile(
+      path.join(dir, "facts", day, "legacy-unicode-recovery.md"),
+      [
+        "---",
+        "id: legacy-unicode-recovery",
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        `entityRef: ${legacyCanonical}`,
+        "---",
+        "",
+        "Legacy entity reference.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({
+        version: 1,
+        complete: false,
+        mappings: { [legacyCanonical]: canonical },
+      }),
+      "utf-8",
+    );
+    await rename(
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+      path.join(dir, "entities", `${canonical}.md`),
+    );
+
+    const recovered = new StorageManager(dir);
+    await recovered.ensureDirectories();
+
+    assert.match(await recovered.readEntity(canonical), /# 月光/);
+    assert.equal((await recovered.readAllMemories())[0]?.frontmatter.entityRef, canonical);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

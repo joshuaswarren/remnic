@@ -1369,7 +1369,7 @@ test("entity retrieval can answer from native knowledge titles and aliases witho
 });
 
 test("entity retrieval refreshes native mention aliases without rebuilding unrelated entity corpora", async (t) => {
-  const { workspaceDir, config, storage } = await buildHarness("engram-entity-native-freshness", {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-native-freshness", {
     nativeKnowledge: {
       enabled: true,
       includeFiles: ["IDENTITY.md", "MEMORY.md"],
@@ -1405,9 +1405,13 @@ test("entity retrieval refreshes native mention aliases without rebuilding unrel
     memoryReadCalls += 1;
     return originalReadAllMemories();
   };
-  t.after(() => {
+  t.after(async () => {
     storage.readAllEntityFiles = originalReadAllEntityFiles;
     storage.readAllMemories = originalReadAllMemories;
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
   });
 
   const refreshed = await buildSection(config, storage, "Release Ledgerについて教えて");
