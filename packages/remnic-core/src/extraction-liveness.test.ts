@@ -72,6 +72,19 @@ test("parseExtractionLivenessConfig: rejects fractional/non-positive/non-numeric
   }
 });
 
+test("parseExtractionLivenessConfig: rejects an explicit null staleWindowMs; only an absent key defaults (round 9 finding 1 parity)", () => {
+  // An explicit `null` is invalid input, not "use the default" — mirrors
+  // config.ts parseIntegerInClosedRange. Only an absent key (undefined) defaults.
+  assert.throws(
+    () => parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: null } }),
+    /staleWindowMs must be an integer greater than or equal to 1/,
+  );
+  assert.equal(
+    parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: undefined } }).staleWindowMs,
+    86_400_000,
+  );
+});
+
 test("parseExtractionLivenessConfig: rejects a non-object block", () => {
   assert.throws(() => parseExtractionLivenessConfig({ extractionLiveness: 5 }), /must be a plain object/);
   assert.throws(() => parseExtractionLivenessConfig({ extractionLiveness: [] }), /must be a plain object/);
@@ -144,6 +157,17 @@ test("evaluate: staleness boundary is half-open — exactly staleWindowMs is sta
     nowMs: NOW,
   });
   assert.equal(justUnder.degraded, false, "age === staleWindowMs - 1 is fresh");
+});
+
+test("evaluate: a future (clock-skewed/corrupt) watermark is stale, not fresh — a real backlog stall is not hidden", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: new Date(NOW + 10 * WINDOW).toISOString(),
+    snapshot: nonEmpty,
+    nowMs: NOW,
+  });
+  assert.equal(status.degraded, true, "a future watermark must not read as a fresh extraction");
+  assert.match(status.degradedReason ?? "", /buffered session/);
 });
 
 test("evaluate: an unreadable buffer degrades with a distinct reason, even with a fresh watermark (§22)", () => {

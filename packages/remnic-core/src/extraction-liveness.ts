@@ -116,17 +116,22 @@ export function parseExtractionLivenessConfig(
 }
 
 /**
- * Parse `extractionLiveness.staleWindowMs`. Absent → the 24h default; present →
- * must coerce to a positive INTEGER of milliseconds, else THROW. A fractional or
- * non-positive value ("0.5" would floor to 0, making every backlog instantly
- * stale; 1.9 would floor to 1) is rejected, never floored/reinterpreted
- * (§1/§17/§39). Mirrors config.ts's `parseIntegerAtLeast`; inlined rather than
- * imported because config.ts already imports this module (importing back would
- * be circular), the same reason `recall-concurrency-config.ts` inlines its
- * numeric validation.
+ * Parse `extractionLiveness.staleWindowMs`. Absent (`undefined`) → the 24h
+ * default; any PRESENT value (including an explicit `null`) must coerce to a
+ * positive INTEGER of milliseconds, else THROW. A fractional or non-positive
+ * value ("0.5" would floor to 0, making every backlog instantly stale; 1.9 would
+ * floor to 1) is rejected, never floored/reinterpreted (§1/§17/§39). Mirrors
+ * config.ts's `parseIntegerInClosedRange` (round 9 finding 1): only an absent key
+ * falls back; an explicit `null` is invalid input, not "use the default".
+ * Inlined rather than imported because config.ts already imports this module
+ * (importing back would be circular), the same reason `recall-concurrency-config.ts`
+ * inlines its numeric validation.
  */
 function parseStaleWindowMs(value: unknown): number {
-  if (value === undefined || value === null) return DEFAULT_STALE_WINDOW_MS;
+  // Only an absent key (undefined) falls back to the default; an explicit `null`
+  // is invalid input and proceeds to validation → throw (mirrors
+  // parseIntegerInClosedRange, round 9 finding 1).
+  if (value === undefined) return DEFAULT_STALE_WINDOW_MS;
   const coerced = coerceNumber(value);
   if (coerced === undefined || !Number.isFinite(coerced) || !Number.isInteger(coerced) || coerced < 1) {
     throw new Error(
@@ -163,8 +168,10 @@ export function formatAgeMs(ms: number): string {
  *
  * Staleness uses a half-open freshness window (§23): an extraction is fresh
  * while its age is in `[0, staleWindowMs)`, so an age of EXACTLY `staleWindowMs`
- * is stale (the upper bound on "fresh" is exclusive). A null/unparsable
- * watermark means "never succeeded" and is treated as stale.
+ * is stale (the upper bound on "fresh" is exclusive). A null/unparsable watermark
+ * means "never succeeded" and is treated as stale — as is a FUTURE watermark (a
+ * clock-skewed or corrupt timestamp ahead of now must not read as a fresh
+ * extraction and hide a real backlog stall).
  */
 export function evaluateExtractionLiveness(input: {
   config: ExtractionLivenessConfig;
@@ -177,7 +184,10 @@ export function evaluateExtractionLiveness(input: {
   const { config, lastExtractionAt, snapshot, nowMs } = input;
   const lastMs = lastExtractionAt !== null ? Date.parse(lastExtractionAt) : Number.NaN;
   const hasWatermark = Number.isFinite(lastMs);
-  const stale = !hasWatermark || nowMs - lastMs >= config.staleWindowMs;
+  const ageMs = nowMs - lastMs;
+  // A future watermark (negative age) is clock-skewed or corrupt data, not a
+  // fresh extraction: treat it as stale so a real backlog stall is not hidden.
+  const stale = !hasWatermark || ageMs < 0 || ageMs >= config.staleWindowMs;
   const hasBacklog = snapshot.bufferedSessionCount > 0;
   // A watermark or buffer that cannot be READ is a fault, not an empty queue
   // (§22): a storage/pipeline outage must not read as healthy, and must stay
