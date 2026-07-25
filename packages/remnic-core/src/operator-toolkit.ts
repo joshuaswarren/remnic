@@ -3,6 +3,8 @@ import { constants as fsConstants } from "node:fs";
 import { access, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { lintWorkspaceFiles } from "./hygiene.js";
 import { parseConfig } from "./config.js";
+import { summarizeExtractionLiveness, type ExtractionBufferSource } from "./extraction-liveness.js";
+import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import { resolvePluginEntry } from "./plugin-entry-resolver.js";
 import {
@@ -157,6 +159,7 @@ export interface OperatorToolkitOrchestrator extends ConversationIndexLike {
   config: PluginConfig;
   storage: StorageManager;
   qmd: QmdRuntimeLike;
+  buffer?: ExtractionBufferSource;
 }
 
 export interface OperatorConfigLoadResult {
@@ -225,13 +228,11 @@ export interface OperatorSetupReport {
   verificationCommands: string[];
 }
 
-export interface OperatorDoctorCheck {
-  key: string;
-  status: "ok" | "warn" | "error";
-  summary: string;
-  remediation?: string;
-  details?: unknown;
-}
+// `OperatorDoctorCheck` moved to `./operator-doctor-types.js` so summarizers avoid
+// pulling the operator-toolkit DTS graph (PR 2155); re-exported to keep the surface stable.
+export type { OperatorDoctorCheck };
+export { summarizeExtractionLiveness };
+export type { ExtractionBufferSource };
 
 export interface OperatorConfigReviewFinding {
   key: string;
@@ -1496,10 +1497,8 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   // Informational only — never errors, never blocks doctor from returning ok.
   checks.push(await summarizeTierDistribution(options.orchestrator.storage));
 
-  // Dreams phases thresholds and last-run timestamps (issue #678 PR 2/4).
-  // Surfaces per-phase: enabled status, cadence, threshold values, and the
-  // best-available last-run timestamp for each of the three pipeline phases.
   checks.push(await summarizeDreamsPhases(config, storage));
+  checks.push(await summarizeExtractionLiveness(config, storage, options.orchestrator.buffer));
   checks.push(await summarizeCorpusWatermark(config, (dir) => new StorageManager(dir))); // corpus watermark #2149
 
   // Security mitigation status (issue #565).

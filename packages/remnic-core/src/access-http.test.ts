@@ -1642,6 +1642,15 @@ test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls th
       },
       nativeKnowledgeEnabled: false,
       projectionAvailable: false,
+      extraction: {
+        lastExtractionAt: null,
+        bufferedSessionCount: 0,
+        pendingTurnCount: 0,
+        oldestBufferedTurnAgeMs: null,
+        degraded: false,
+        degradedReason: null,
+        watermarkScope: "root-store",
+      },
       corpus: [],
     }),
   } satisfies Pick<EngramAccessService, "health">;
@@ -1758,6 +1767,15 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
       },
       nativeKnowledgeEnabled: false,
       projectionAvailable: false,
+      extraction: {
+        lastExtractionAt: null,
+        bufferedSessionCount: 0,
+        pendingTurnCount: 0,
+        oldestBufferedTurnAgeMs: null,
+        degraded: false,
+        degradedReason: null,
+        watermarkScope: "root-store",
+      },
       corpus: [],
     }),
   } satisfies Pick<EngramAccessService, "health">;

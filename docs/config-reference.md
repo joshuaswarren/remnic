@@ -1150,6 +1150,17 @@ Stored as `category: procedure` markdown under `memoryDir/procedures/`. Narrativ
 | `procedural.proceduralMiningCronAutoRegister` | `false` | When `true`, installer may register the nightly procedural mining cron entry. |
 | `procedural.recallMaxProcedures` | `2` | Max procedure previews injected on task-initiation recall (`1`–`10`). Lowered from `3` in issue #567 PR 3/5 so procedural injection does not crowd other recall sections. |
 
+## Extraction pipeline liveness (issue #2151)
+
+Surfaces a checkable liveness watermark for the implicit extraction pipeline so a daemon that has not persisted an extraction in a long time is distinguishable from one that simply has nothing to extract (the §22 error-vs-empty principle at the pipeline level). Exposed on the authenticated `/health` payload (the `extraction` object), the `remnic doctor` `extraction_liveness` check, and `remnic stats`. When the pipeline is degraded, a single aggregated WARN is logged per staleness window rather than one line per failed extraction attempt. The `extraction` block reflects the daemon's single extraction pipeline, so `/health` returns the same block for every namespace argument; the last-successful-extraction watermark is read from the daemon's default/root store. **Known limitation (issue #2159):** the watermark reflects only extraction that stamps the default/root store, because extraction records `lastExtractionAt` per namespace (`storageFor(selfNamespace)`). On a single-namespace deployment (the common case) the verdict is exact; on a multi-namespace deployment it is not guaranteed correct for work isolated to a non-default namespace — it can over-report `degraded` (the default namespace idle while another extracts) or miss a stall confined to a non-default namespace. Aggregating the watermark across namespace stores is tracked in #2159. A buffer that cannot be read is itself reported degraded with a distinct reason — an unreadable buffer is a pipeline fault, not an empty queue.
+
+The `extraction` block includes a `watermarkScope` field (`root-store` today, `aggregate` after #2159), surfaced on `/health`, in the `remnic doctor` check summary, and in `remnic stats`. A monitor can alert on `watermarkScope != "aggregate"` while namespaces are enabled instead of trusting a verdict that may be wrong in either direction under multiple namespaces.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `extractionLiveness.enabled` | `true` | Master gate. Set to `false` (or `"0"`/`"no"`/`"off"`) to stop reporting the pipeline degraded on `/health`, in `remnic doctor`, and in `remnic stats`. |
+| `extractionLiveness.staleWindowMs` | `86400000` | How stale the last-successful-extraction watermark may get (ms) before a **non-empty** buffer flags the pipeline degraded. Default `86400000` (24h). An empty buffer is never degraded. Must be a positive integer of milliseconds; a fractional or non-positive value is rejected rather than floored. |
+
 ## Pattern reinforcement (issue #687)
 
 Cross-session pattern detection: clusters memories by normalized content, reinforces recurring primitives with `reinforcement_count` + `last_reinforced_at`, and optionally boosts their recall score. Narrative overview: [pattern-reinforcement.md](pattern-reinforcement.md).

@@ -449,3 +449,215 @@ test("health keeps namespace QMD failures scoped to the namespace", async () => 
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("health surfaces extraction liveness as degraded when the buffer is non-empty and the watermark is stale", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-liveness-"));
+  try {
+    const oldTs = new Date(Date.now() - 10_000).toISOString();
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 1000 } });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      buffer: {
+        getBufferSnapshot: async () => ({ bufferedSessionCount: 3, pendingTurnCount: 12, oldestTurnTimestamp: oldTs }),
+      },
+      // The extraction watermark is read from the daemon-global root store,
+      // not the per-namespace store (issue #2151).
+      storage: {
+        loadMeta: async () => ({
+          lastExtractionAt: oldTs,
+          extractionCount: 4,
+          lastConsolidationAt: null,
+          totalMemories: 0,
+          totalEntities: 0,
+        }),
+      },
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, true);
+    assert.equal(health.extraction.bufferedSessionCount, 3);
+    assert.equal(health.extraction.pendingTurnCount, 12);
+    assert.equal(health.extraction.lastExtractionAt, oldTs);
+    const oldestAge = health.extraction.oldestBufferedTurnAgeMs ?? -1;
+    assert.ok(
+      oldestAge >= 10_000 && oldestAge < 60_000,
+      `oldest buffered turn age reflects the ~10s offset, not merely non-negative (got ${oldestAge}ms)`,
+    );
+    assert.ok(
+      health.extraction.degradedReason !== null && health.extraction.degradedReason.length > 0,
+      "degraded reason is populated",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health reports extraction liveness ok when the buffer is empty (nothing to extract)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-liveness-ok-"));
+  try {
+    const oldTs = new Date(Date.now() - 10_000).toISOString();
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 1000 } });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      buffer: {
+        getBufferSnapshot: async () => ({ bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null }),
+      },
+      storage: {
+        loadMeta: async () => ({
+          lastExtractionAt: oldTs,
+          extractionCount: 4,
+          lastConsolidationAt: null,
+          totalMemories: 0,
+          totalEntities: 0,
+        }),
+      },
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, false);
+    assert.equal(health.extraction.bufferedSessionCount, 0);
+    assert.equal(health.extraction.lastExtractionAt, oldTs);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health returns the same daemon-global extraction verdict for every namespace (issue #2151)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-liveness-ns-"));
+  try {
+    const rootTs = new Date().toISOString(); // fresh daemon-global watermark
+    const staleTs = new Date(Date.now() - 7_200_000).toISOString(); // 2h old
+    const config = parseConfig({
+      memoryDir,
+      qmdEnabled: false,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      extractionLiveness: { staleWindowMs: 3_600_000 },
+    });
+    // Per-namespace stores return DIVERGING watermarks (fresh vs 2h stale vs
+    // never), but the global buffer is shared and the watermark must be sourced
+    // from the root store. Pre-fix, the extraction verdict tracked the
+    // namespace argument; post-fix it is identical for every namespace.
+    const perNamespaceMeta: Record<string, string | null> = { fresh: rootTs, stale: staleTs };
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      buffer: {
+        getBufferSnapshot: async () => ({ bufferedSessionCount: 3, pendingTurnCount: 12, oldestTurnTimestamp: staleTs }),
+      },
+      storage: {
+        loadMeta: async () => ({
+          lastExtractionAt: rootTs,
+          extractionCount: 4,
+          lastConsolidationAt: null,
+          totalMemories: 0,
+          totalEntities: 0,
+        }),
+      },
+      async getStorage(namespace?: string) {
+        return {
+          dir: memoryDir,
+          loadMeta: async () => ({
+            lastExtractionAt: namespace ? perNamespaceMeta[namespace] ?? null : staleTs,
+            extractionCount: 4,
+            lastConsolidationAt: null,
+            totalMemories: 0,
+            totalEntities: 0,
+          }),
+        };
+      },
+    } as unknown as Orchestrator);
+
+    const fresh = (await service.health("fresh")).extraction;
+    const stale = (await service.health("stale")).extraction;
+    const def = (await service.health()).extraction;
+    // The namespace-governed fields must not vary with the namespace argument
+    // (oldestBufferedTurnAgeMs is time-derived and intentionally excluded).
+    assert.equal(stale.degraded, fresh.degraded, "degraded must not vary by namespace");
+    assert.equal(def.degraded, fresh.degraded, "default health matches namespaced health");
+    assert.equal(stale.lastExtractionAt, fresh.lastExtractionAt, "watermark must not vary by namespace");
+    assert.equal(def.lastExtractionAt, fresh.lastExtractionAt);
+    assert.equal(stale.degradedReason, fresh.degradedReason);
+    // Sourced from the fresh root watermark → healthy despite stale per-namespace stores.
+    assert.equal(fresh.degraded, false);
+    assert.equal(fresh.lastExtractionAt, rootTs);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health reports extraction liveness degraded when the buffer read fails (§22)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-liveness-readfail-"));
+  try {
+    const freshTs = new Date().toISOString();
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 3_600_000 } });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      buffer: {
+        getBufferSnapshot: async () => {
+          throw new Error("buffer file corrupt");
+        },
+      },
+      // Fresh watermark → the ONLY fault is the unreadable buffer, proving the
+      // read failure (not staleness) drives the degradation.
+      storage: {
+        loadMeta: async () => ({
+          lastExtractionAt: freshTs,
+          extractionCount: 4,
+          lastConsolidationAt: null,
+          totalMemories: 0,
+          totalEntities: 0,
+        }),
+      },
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, true, "an unreadable buffer must not report a healthy pipeline");
+    assert.match(health.extraction.degradedReason ?? "", /unreadable/);
+    assert.match(health.extraction.degradedReason ?? "", /buffer file corrupt/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health reports extraction liveness degraded when the watermark (meta) read fails (§22)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-liveness-metafail-"));
+  try {
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 3_600_000 } });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      // Empty buffer: proves the meta-read failure alone drives the degradation.
+      buffer: {
+        getBufferSnapshot: async () => ({ bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null }),
+      },
+      storage: {
+        loadMeta: async () => {
+          throw new Error("meta.json unreadable");
+        },
+      },
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, true, "an unreadable watermark must not report a healthy pipeline");
+    assert.match(health.extraction.degradedReason ?? "", /watermark unreadable/);
+    assert.match(health.extraction.degradedReason ?? "", /meta\.json unreadable/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

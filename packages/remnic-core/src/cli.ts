@@ -30,6 +30,7 @@ import { isRecallDisclosure, RECALL_DISCLOSURE_LEVELS } from "./types.js";
 import { chunkContent } from "./chunking.js";
 import { rescoreMemoryImportance } from "./importance.js";
 import { renderQmdBacklogStatus } from "./qmd-status.js";
+import { renderExtractionLivenessStats } from "./extraction-liveness.js";
 import { exportJsonBundle } from "./transfer/export-json.js";
 import { exportMarkdownBundle } from "./transfer/export-md.js";
 import { backupMemoryDir } from "./transfer/backup.js";
@@ -3653,7 +3654,6 @@ export function registerCli(
           // Ensure QMD is probed before checking availability
           await orchestrator.qmd.probe();
 
-          const meta = await orchestrator.storage.loadMeta();
           const memories = await orchestrator.storage.readAllMemories();
           const entities = await orchestrator.storage.readEntities();
           const profile = await orchestrator.storage.readProfile();
@@ -3662,9 +3662,7 @@ export function registerCli(
           console.log(`Total memories: ${memories.length}`);
           console.log(`Total entities: ${entities.length}`);
           console.log(`Profile size: ${profile.length} chars`);
-          console.log(`Extractions: ${meta.extractionCount}`);
-          console.log(`Last extraction: ${meta.lastExtractionAt ?? "never"}`);
-          console.log(`Last consolidation: ${meta.lastConsolidationAt ?? "never"}`);
+          for (const line of await renderExtractionLivenessStats(orchestrator)) console.log(line);
           console.log(`QMD: ${orchestrator.qmd.isAvailable() ? "available" : "not available"}`);
           for (const line of await renderQmdBacklogStatus(orchestrator.qmd, orchestrator.config.qmdEmbeddingBacklogThreshold)) console.log(line);
 

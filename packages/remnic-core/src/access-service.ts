@@ -6,6 +6,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import { computeExtractionLivenessStatus, ExtractionLivenessWarnThrottle } from "./extraction-liveness.js";
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   recordCitationUsage as recordCitationUsageForAccess,
@@ -18,7 +19,13 @@ import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
   resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
-import { CorpusWatermarkCache, computeServiceCorpusWatermarks, type CorpusWatermark } from "./corpus-watermark.js";
+import { CorpusWatermarkCache, computeServiceCorpusWatermarks } from "./corpus-watermark.js";
+import type {
+  EngramAccessHealthResponse,
+  EngramAccessQmdCollectionState,
+  EngramAccessQmdHealthResponse,
+} from "./access-health-types.js";
+export type { EngramAccessHealthResponse, EngramAccessQmdCollectionState, EngramAccessQmdHealthResponse };
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
@@ -341,44 +348,6 @@ function normalizeTrustZoneInputError(error: unknown): EngramAccessInputError | 
 }
 
 export const ENGRAM_ACCESS_WRITE_SCHEMA_VERSION = 1;
-
-export interface EngramAccessHealthResponse {
-  ok: true;
-  memoryDir: string;
-  namespacesEnabled: boolean;
-  defaultNamespace: string;
-  searchBackend: string;
-  qmdEnabled: boolean;
-  qmd: EngramAccessQmdHealthResponse;
-  nativeKnowledgeEnabled: boolean;
-  projectionAvailable: boolean;
-  corpus: CorpusWatermark[];
-}
-
-export type EngramAccessQmdCollectionState =
-  | "present"
-  | "missing"
-  | "unknown"
-  | "skipped";
-
-export interface EngramAccessQmdHealthResponse {
-  enabled: boolean;
-  active: boolean;
-  degraded: boolean;
-  mode: "cli" | "daemon" | "fallback" | "disabled" | "not-selected";
-  collection: string;
-  collectionState: EngramAccessQmdCollectionState;
-  installedVersion: string | null;
-  supportedVersion: string | null;
-  supported: boolean | null;
-  upgradeAvailable: boolean | null;
-  doctorAvailable: boolean | null;
-  debugStatus: string;
-  pendingEmbeddings: number | null;
-  oldestPendingAgeMs: number | null;
-  embeddingBacklogThreshold: number;
-  degradedReason?: string;
-}
 
 export interface EngramAccessRecallRequest {
   query: string;
@@ -1365,6 +1334,7 @@ export class EngramAccessService {
     }
     return this._accessIdentityContinuitySurface;
   }
+  private readonly extractionLivenessWarn = new ExtractionLivenessWarnThrottle();
 
   constructor(private readonly orchestrator: Orchestrator) {
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
@@ -2458,6 +2428,7 @@ export class EngramAccessService {
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const searchBackend = this.orchestrator.config.searchBackend ?? "qmd";
     const qmdEnabled = resolveQmdCapabilities(this.orchestrator.config).qmd === true;
+    const extraction = await computeExtractionLivenessStatus(this.orchestrator, this.extractionLivenessWarn);
     let projectionAvailable = false;
     try {
       await stat(getMemoryProjectionPath(storage.dir));
@@ -2481,6 +2452,7 @@ export class EngramAccessService {
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
+      extraction,
       corpus: await computeServiceCorpusWatermarks(this.orchestrator, {
         cache: this.corpusWatermarkCache, caps: tokenCapabilityStore.getStore() }),
     };
