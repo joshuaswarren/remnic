@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -145,14 +145,34 @@ test("session namespace bindings refresh a sparse active binding", async () => {
 test("session namespace bindings return known scope when timestamp refresh fails", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
   const filePath = path.join(directory, "session-namespace-bindings.json");
+  const updatedAt = new Date(Date.now() - 60 * 60 * 1_000).toISOString();
   try {
-    const store = createFileSessionNamespaceBindingStore(filePath);
-    await store.remember("refresh-failure-session", "team-known");
-    await chmod(directory, 0o555);
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          "refresh-failure-session": { namespaces: ["team-known"], updatedAt },
+        },
+      }),
+      "utf8",
+    );
+    let writeAttempts = 0;
+    const store = createFileSessionNamespaceBindingStore(filePath, {
+      writeBindingFile: async () => {
+        writeAttempts += 1;
+        throw new Error("forced refresh write failure");
+      },
+    });
 
     assert.deepEqual(await store.namespacesFor("refresh-failure-session"), ["team-known"]);
+    assert.equal(writeAttempts, 1);
+
+    const persisted = JSON.parse(await readFile(filePath, "utf8")) as {
+      entries: Record<string, { updatedAt: string }>;
+    };
+    assert.equal(persisted.entries["refresh-failure-session"].updatedAt, updatedAt);
   } finally {
-    await chmod(directory, 0o700);
     await rm(directory, { recursive: true, force: true });
   }
 });

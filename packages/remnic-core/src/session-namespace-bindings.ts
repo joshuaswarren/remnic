@@ -20,6 +20,7 @@ interface NamespaceBindingFile {
   version: 1;
   entries: Record<string, NamespaceBindingEntry>;
 }
+type BindingFileWriter = (filePath: string, bindings: NamespaceBindingFile) => Promise<void>;
 
 const fileWriteChains = new Map<string, Promise<void>>();
 
@@ -147,7 +148,11 @@ export function createInMemorySessionNamespaceBindingStore(): SessionNamespaceBi
   };
 }
 
-export function createFileSessionNamespaceBindingStore(filePath: string): SessionNamespaceBindingStore {
+export function createFileSessionNamespaceBindingStore(
+  filePath: string,
+  options: { writeBindingFile?: BindingFileWriter } = {},
+): SessionNamespaceBindingStore {
+  const write = options.writeBindingFile ?? writeBindingFile;
   return {
     async namespacesFor(sessionKey: string): Promise<string[]> {
       const key = encodeSessionKey(sessionKey);
@@ -159,7 +164,7 @@ export function createFileSessionNamespaceBindingStore(filePath: string): Sessio
         entry.updatedAt = new Date().toISOString();
         bindings.entries = pruneBindingEntries(bindings.entries, key);
         try {
-          await writeBindingFile(filePath, bindings);
+          await write(filePath, bindings);
         } catch {
           return namespaces;
         }
@@ -176,7 +181,7 @@ export function createFileSessionNamespaceBindingStore(filePath: string): Sessio
           updatedAt: new Date().toISOString(),
         };
         bindings.entries = pruneBindingEntries(bindings.entries, key);
-        await writeBindingFile(filePath, bindings);
+        await write(filePath, bindings);
       });
     },
   };
