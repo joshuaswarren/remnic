@@ -4295,6 +4295,9 @@ export class RecallInternalCoordinator {
           }
         }
       }
+      memoryResults = memoryResults.filter(
+        (result) => !isGenericRecallExcludedPath(result.path, this.deps.config, "qmd"),
+      );
 
       // Apply mandatory recall safety filters before deadline-bound scoring
       // enrichment. If scoring times out, we must fall back to this filtered

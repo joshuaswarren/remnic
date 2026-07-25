@@ -968,6 +968,9 @@ export class RecallSearchPipelineCoordinator {
       });
       results = merged;
     }
+    results = results.filter(
+      (result) => !isGenericRecallExcludedPath(result.path, this.deps.config, "qmd"),
+    );
 
     const boostInput = await this.deps.filterSearchResultsForRecall(
       results,

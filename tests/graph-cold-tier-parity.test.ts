@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { StorageManager } from "../src/storage.js";
@@ -50,6 +50,25 @@ test("cold fallback applies graph expansion parity when enabled", async () => {
     const orchestrator = new Orchestrator(config) as any;
 
     const coldStorage = new StorageManager(path.join(memoryDir, "cold"));
+    const archivedPath = path.join(memoryDir, "archive", "2026-07-25", "graph-archive.md");
+    await mkdir(path.dirname(archivedPath), { recursive: true });
+    await writeFile(
+      archivedPath,
+      [
+        "---",
+        "id: graph-archive",
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        "updated: 2026-07-25T00:00:00.000Z",
+        "source: test",
+        "confidence: 0.9",
+        "confidenceTier: explicit",
+        "status: archived",
+        "---",
+        "",
+        "cold graph archived memory",
+      ].join("\n"),
+    );
     const { id: seedId } = await coldStorage.writeMemory("fact", "cold graph seed memory", { source: "test" });
     const { id: expandedId } = await coldStorage.writeMemory("fact", "cold graph expanded memory", { source: "test" });
     const seed = await coldStorage.getMemoryById(seedId);
@@ -85,6 +104,12 @@ test("cold fallback applies graph expansion parity when enabled", async () => {
     orchestrator.expandResultsViaGraph = async ({ memoryResults }: { memoryResults: QmdSearchResult[] }) => ({
       merged: [
         {
+          docid: "graph-archive",
+          path: archivedPath,
+          score: 1,
+          snippet: "cold graph archived memory",
+        },
+        {
           docid: expanded!.frontmatter.id,
           path: expanded!.path,
           score: 0.99,
@@ -114,6 +139,7 @@ test("cold fallback applies graph expansion parity when enabled", async () => {
     assert.match(output, /Long-Term Memories \(Fallback\)/);
     assert.match(output, /cold graph seed memory/);
     assert.match(output, /cold graph expanded memory/);
+    assert.doesNotMatch(output, /cold graph archived memory/);
   } finally {
     await rmWithRetries(memoryDir);
     await rmWithRetries(workspaceDir);

@@ -40,16 +40,16 @@ function stripQmdCollectionPrefix(
   policy: GenericRecallPathPolicy,
   source: GenericRecallPathSource,
 ): string {
-  const normalized = relativePath.replace(/\\/g, "/");
+  const normalized = path.posix.normalize(relativePath.replace(/\\/g, "/"));
   const slashIndex = normalized.indexOf("/");
-  if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return relativePath;
+  if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return normalized;
 
   const prefix = normalized.slice(0, slashIndex);
   const matchesHotCollection = isQmdCollectionPrefix(prefix, policy.qmdCollection, source);
   const matchesColdCollection = isQmdCollectionPrefix(prefix, policy.qmdColdCollection, source);
   return matchesHotCollection || matchesColdCollection
     ? normalized.slice(slashIndex + 1)
-    : relativePath;
+    : normalized;
 }
 
 export function isTopLevelArchivePath(

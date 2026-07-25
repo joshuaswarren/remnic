@@ -77,6 +77,25 @@ test("recallInternal writes graph recall snapshot in graph_mode", async (t) => {
   const { id: expandedId } = await orchestrator.storage.writeMemory("fact", "expanded memory");
   const expandedMemory = await orchestrator.storage.getMemoryById(expandedId);
   assert.ok(expandedMemory);
+  const archivedPath = path.join(memoryDir, "archive", "2026-07-25", "graph-archive.md");
+  await mkdir(path.dirname(archivedPath), { recursive: true });
+  await writeFile(
+    archivedPath,
+    [
+      "---",
+      "id: graph-archive",
+      "category: fact",
+      "created: 2026-07-25T00:00:00.000Z",
+      "updated: 2026-07-25T00:00:00.000Z",
+      "source: test",
+      "confidence: 0.9",
+      "confidenceTier: explicit",
+      "status: archived",
+      "---",
+      "",
+      "hot graph archived memory",
+    ].join("\n"),
+  );
 
   (orchestrator as any).qmd = {
     isAvailable: () => true,
@@ -92,6 +111,12 @@ test("recallInternal writes graph recall snapshot in graph_mode", async (t) => {
   };
   (orchestrator as any).expandResultsViaGraph = async ({ memoryResults }: any) => ({
     merged: [
+      {
+        docid: "graph-archive",
+        path: archivedPath,
+        snippet: "hot graph archived memory",
+        score: 1,
+      },
       ...memoryResults,
       {
         docid: expandedMemory!.frontmatter.id,
@@ -110,6 +135,7 @@ test("recallInternal writes graph recall snapshot in graph_mode", async (t) => {
   );
   assert.match(out, /Relevant Memories/);
 
+  assert.doesNotMatch(out, /hot graph archived memory/);
   let raw: string;
   try {
     raw = await readFile(path.join(memoryDir, "state", "last_graph_recall.json"), "utf-8");

@@ -142,6 +142,26 @@ test("QMD source tags disambiguate reserved collection prefixes", () => {
   );
 });
 
+test("archive path policy canonicalizes dot segments before classification", () => {
+  assert.equal(isGenericRecallExcludedPath("./archive/2026-07-22/a.md"), true);
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "facts/../archive/2026-07-22/a.md",
+      { qmdCollection: "facts" },
+      "qmd",
+    ),
+    true,
+  );
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "archive/../namespaces/team/archive/2026-07-22/a.md",
+      { qmdCollection: "archive" },
+      "qmd",
+    ),
+    true,
+  );
+});
+
 test("filterRecallCandidates marks collection-qualified paths as QMD results", () => {
   const ordinary = {
     docid: "archive/facts/a.md",

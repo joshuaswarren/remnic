@@ -111,7 +111,7 @@ Tier routing reuses lifecycle value inputs so demotion/promotion decisions stay 
 |--------|-------------|
 | `active` | Normal, searchable, in hot index |
 | `superseded` | Replaced by a newer memory; still on disk |
-| `archived` | Moved to `archive/`; excluded from generic recall and available through explicit read or search surfaces |
+| `archived` | Moved to a top-level `archive/` store; excluded from generic recall and available through explicit read or search surfaces |
 
 ## Lifecycle Policy States (v8.3)
 
@@ -137,7 +137,7 @@ With lifecycle policy enabled:
 Optional hard filtering:
 
 - If `lifecycleFilterStaleEnabled=true`, `stale` and `archived` lifecycle candidates are filtered before final top-K cap.
-- Archive paths are excluded from generic recall regardless of lifecycle-filter settings.
+- Top-level `<memoryDir>/archive/...` and `<memoryDir>/namespaces/<name>/archive/...` paths are excluded from generic recall; nested category paths named `archive` remain recallable.
 
 Memories in `superseded` or `archived` status remain on disk. However, **speculative TTL expiry** and **commitment decay** physically delete files via `unlink` — these entries are not retained.
 
