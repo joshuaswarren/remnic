@@ -12,6 +12,11 @@ const SOURCE_TURN: BufferTurn = {
   timestamp: "2026-07-25T12:00:00.000Z",
 };
 
+const TAG_SOURCE_TURN: BufferTurn = {
+  ...SOURCE_TURN,
+  content: "The page uses <main> as the primary landmark.",
+};
+
 const SOURCE_GROUNDED_EXTRACTION = {
   facts: [{
     category: "fact",
@@ -22,6 +27,81 @@ const SOURCE_GROUNDED_EXTRACTION = {
   profileUpdates: [],
   entities: [],
   questions: [],
+};
+const STRUCTURAL_PLACEHOLDER_EXTRACTION = {
+  facts: [{
+    category: "<category>",
+    content: "<source-grounded statement>",
+    confidence: 0,
+    tags: ["<tag>"],
+    entityRef: "<optional normalized-name>",
+    promptedByQuestion: "<optional source-grounded question>",
+    quote: "<optional exact contiguous source span>",
+  },
+  {
+    category: "<category>",
+    content: SOURCE_TURN.content,
+    confidence: 0.95,
+    tags: ["theme"],
+  },
+  {
+    category: "procedure",
+    content: SOURCE_TURN.content,
+    confidence: 0.95,
+    tags: ["theme"],
+    procedureSteps: [
+      { order: 1, intent: "<step>" },
+      { order: 2, intent: "<step>" },
+    ],
+  },
+  {
+    category: "reasoning_trace",
+    content: SOURCE_TURN.content,
+    confidence: 0.95,
+    tags: ["theme"],
+    reasoningTrace: {
+      steps: [
+        { order: 1, description: "<step>" },
+        { order: 2, description: "<step>" },
+      ],
+      finalAnswer: "<answer>",
+    },
+  }],
+  profileUpdates: ["<source-grounded profile update>"],
+  entities: [{
+    name: "<normalized-name>",
+    type: "<entity-type>",
+    facts: ["<source-grounded statement>"],
+    promptedByQuestion: "<optional source-grounded question>",
+  },
+  {
+    name: "Moonlight",
+    type: "<entity-type>",
+    facts: [SOURCE_TURN.content],
+  }],
+  questions: [{
+    question: "<source-grounded unresolved question>",
+    context: "<source-grounded context>",
+    priority: 0,
+  }],
+  identityReflection: "<conversation-grounded agent reflection>",
+  relationships: [{
+    source: "<normalized-name>",
+    target: "<normalized-name>",
+    label: "<source-grounded relationship>",
+  }],
+};
+
+const GATEWAY_PLACEHOLDER_EXTRACTION = {
+  ...STRUCTURAL_PLACEHOLDER_EXTRACTION,
+  facts: [{
+    ...STRUCTURAL_PLACEHOLDER_EXTRACTION.facts[0],
+    category: "fact",
+  }],
+  entities: [{
+    ...STRUCTURAL_PLACEHOLDER_EXTRACTION.entities[0],
+    type: "other",
+  }],
 };
 
 type ChatMessage = { role: string; content: string };
@@ -98,6 +178,105 @@ test("local extraction prompt uses placeholders and accepts an empty question li
   assertSafeExtractionPrompt(prompt);
   assertStructuralResponseShape(prompt);
   assert.doesNotMatch(prompt, /^- rule:/m);
+});
+
+test("local extraction discards literal structural placeholders", async () => {
+  const engine = new ExtractionEngine(parseConfig({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+  }));
+  const localLlm: LocalLlmFixture = {
+    async chatCompletion() {
+      return { content: JSON.stringify(STRUCTURAL_PLACEHOLDER_EXTRACTION) };
+    },
+  };
+  const modelRegistry = {
+    calculateContextSizes: () => ({ maxInputChars: 8_000, maxOutputTokens: 1_000, description: "fixture" }),
+  };
+  assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
+  assert.equal(Reflect.set(engine, "modelRegistry", modelRegistry), true);
+
+  const result = await engine.extract([SOURCE_TURN]);
+
+  assert.deepEqual(result.facts, []);
+  assert.deepEqual(result.profileUpdates, []);
+  assert.deepEqual(result.entities, []);
+  assert.deepEqual(result.questions, []);
+  assert.deepEqual(result.relationships, []);
+  assert.equal(result.identityReflection, undefined);
+});
+
+test("local extraction preserves source text that looks like a tag", async () => {
+  const engine = new ExtractionEngine(parseConfig({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+  }));
+  const localLlm: LocalLlmFixture = {
+    async chatCompletion() {
+      return {
+        content: JSON.stringify({
+          facts: [{ category: "fact", content: "<main>", confidence: 0.95, tags: [] }],
+          profileUpdates: [],
+          entities: [],
+          questions: [],
+        }),
+      };
+    },
+  };
+  const modelRegistry = {
+    calculateContextSizes: () => ({ maxInputChars: 8_000, maxOutputTokens: 1_000, description: "fixture" }),
+  };
+  assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
+  assert.equal(Reflect.set(engine, "modelRegistry", modelRegistry), true);
+
+  const result = await engine.extract([TAG_SOURCE_TURN]);
+
+  assert.equal(result.facts[0]?.content, "<main>");
+});
+
+test("local truncated recovery discards literal structural placeholders", async () => {
+  const engine = new ExtractionEngine(parseConfig({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+  }));
+  const localLlm: LocalLlmFixture = {
+    async chatCompletion() {
+      return {
+        content: "{\"facts\":[{\"category\":\"<category>\",\"content\":\"<source-grounded statement>\",\"confidence\":0.7}",
+      };
+    },
+  };
+  const modelRegistry = {
+    calculateContextSizes: () => ({ maxInputChars: 8_000, maxOutputTokens: 1_000, description: "fixture" }),
+  };
+  assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
+  assert.equal(Reflect.set(engine, "modelRegistry", modelRegistry), true);
+
+  const result = await engine.extract([SOURCE_TURN]);
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("gateway extraction discards literal structural placeholders", async () => {
+  const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
+  const fallbackLlm: GatewayFixture = {
+    async parseWithSchemaDetailed() {
+      return { modelUsed: "fixture-gateway", result: GATEWAY_PLACEHOLDER_EXTRACTION };
+    },
+  };
+  assert.equal(Reflect.set(engine, "fallbackLlm", fallbackLlm), true);
+
+  const result = await engine.extract([SOURCE_TURN]);
+
+  assert.deepEqual(result.facts, []);
+  assert.deepEqual(result.profileUpdates, []);
+  assert.deepEqual(result.entities, []);
+  assert.deepEqual(result.questions, []);
+  assert.deepEqual(result.relationships, []);
+  assert.equal(result.identityReflection, undefined);
 });
 
 test("gateway extraction prompt uses placeholders and accepts an empty question list", async () => {

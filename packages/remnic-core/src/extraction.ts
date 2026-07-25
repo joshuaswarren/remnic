@@ -40,6 +40,7 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
+import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
@@ -83,6 +84,10 @@ const EXTRACTION_RESPONSE_SHAPE = `{
   "identityReflection": "<conversation-grounded agent reflection>",
   "relationships": [{"source": "<normalized-name>", "target": "<normalized-name>", "label": "<source-grounded relationship>"}]
 }`;
+const EXTRACTION_RESPONSE_PLACEHOLDERS: Record<string, true> = {};
+for (const placeholder of EXTRACTION_RESPONSE_SHAPE.match(/<[^<>\r\n]+>/g) ?? []) {
+  EXTRACTION_RESPONSE_PLACEHOLDERS[placeholder] = true;
+}
 const CONSOLIDATION_RESPONSE_SCHEMA = `{
   "items": [
     {
@@ -99,6 +104,46 @@ const CONSOLIDATION_RESPONSE_SCHEMA = `{
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function containsExtractionPlaceholder(value: unknown): boolean {
+  if (typeof value === "string") return EXTRACTION_RESPONSE_PLACEHOLDERS[value.trim()] === true;
+  if (Array.isArray(value)) return value.some(containsExtractionPlaceholder);
+  return isPlainRecord(value) && Object.values(value).some(containsExtractionPlaceholder);
+}
+
+function extractionText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text.length > 0 && !containsExtractionPlaceholder(text) ? text : undefined;
+}
+
+function extractionAttributes(value: unknown): Record<string, string> | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const attributes: Record<string, string> = {};
+  for (const [key, candidate] of Object.entries(value)) {
+    const normalizedKey = extractionText(key);
+    const normalizedValue = extractionText(candidate);
+    if (normalizedKey !== undefined && normalizedValue !== undefined) {
+      attributes[normalizedKey] = normalizedValue;
+    }
+  }
+  return Object.keys(attributes).length > 0 ? attributes : undefined;
+}
+
+function extractionEntityType(value: unknown): ExtractedEntityResult["type"] | undefined {
+  const type = extractionText(value);
+  if (
+    type === "person" ||
+    type === "project" ||
+    type === "tool" ||
+    type === "company" ||
+    type === "place" ||
+    type === "other"
+  ) {
+    return type;
+  }
+  return undefined;
 }
 
 function normalizeQuestion(question: ExtractionQuestion): ExtractionQuestion {
@@ -276,182 +321,168 @@ export class ExtractionEngine {
   }
 
   private normalizeExtractionResultPayload(parsed: any): ExtractionResult {
-    const entities = Array.isArray(parsed?.entities)
+    const entities: ExtractedEntityResult[] = Array.isArray(parsed?.entities)
       ? parsed.entities
-          .map((e: any) => this.normalizeEntityUpdate(e))
-          .filter((e: any) => e.name.length > 0)
+          .map((candidate: unknown): ExtractedEntityResult | undefined => this.normalizeEntityUpdate(candidate))
+          .filter((entity: ExtractedEntityResult | undefined): entity is ExtractedEntityResult => (
+            entity !== undefined && entity.name.length > 0
+          ))
       : [];
 
     const facts = Array.isArray(parsed?.facts)
       ? parsed.facts
-          .map((f: any) => ({
-            category: typeof f?.category === "string" ? f.category : "fact",
-            content: typeof f?.content === "string" ? f.content : typeof f?.text === "string" ? f.text : "",
-            confidence: typeof f?.confidence === "number" ? f.confidence : 0.7,
-            tags: Array.isArray(f?.tags) ? f.tags.filter((t: any) => typeof t === "string") : [],
-            entityRef: typeof f?.entityRef === "string" ? f.entityRef : undefined,
-            promptedByQuestion:
-              typeof f?.promptedByQuestion === "string" ? f.promptedByQuestion : undefined,
-            scope:
-              f?.scope === "global" || f?.scope === "project" ? f.scope : undefined,
-            structuredAttributes:
-              f?.structuredAttributes && typeof f.structuredAttributes === "object" && !Array.isArray(f.structuredAttributes)
-                ? Object.fromEntries(
-                    Object.entries(f.structuredAttributes)
-                      .filter(([k, v]) => typeof k === "string" && typeof v === "string")
-                  ) as Record<string, string>
-                : undefined,
-            procedureSteps: Array.isArray(f?.procedureSteps)
+          .map((candidate: unknown) => {
+            const f = isPlainRecord(candidate) ? candidate : {};
+            const category = typeof f.category === "string" ? f.category.trim() : "fact";
+            const reasoningTraceInput = isPlainRecord(f.reasoningTrace)
+              ? f.reasoningTrace
+              : isPlainRecord(f?.reasoning_trace)
+                ? f.reasoning_trace
+                : undefined;
+            if (!isMemoryCategory(category)) return undefined;
+            const procedureSteps = Array.isArray(f.procedureSteps)
               ? normalizeProcedureSteps(f.procedureSteps)
-              : undefined,
-            reasoningTrace: (() => {
-              // Accept both camelCase and snake_case payload keys. The
-              // category itself is snake_case and we already tolerate
-              // snake_case nested fields in normalizeReasoningTrace, so a
-              // loose local/direct LLM that outputs `reasoning_trace` on the
-              // fact should not silently drop the structured chain.
-              const candidate =
-                f?.reasoningTrace && typeof f.reasoningTrace === "object" && !Array.isArray(f.reasoningTrace)
-                  ? f.reasoningTrace
-                  : f?.reasoning_trace && typeof f.reasoning_trace === "object" && !Array.isArray(f.reasoning_trace)
-                    ? f.reasoning_trace
-                    : null;
-              return candidate ? normalizeReasoningTrace(candidate) ?? undefined : undefined;
-            })(),
-            // Issue #1575 PR 2: the LLM provides a verbatim supporting quote
-            // per fact. Optional/nullable per repo gotcha 6 (OpenAI Responses
-            // API emits null for absent optional fields). The post-parse
-            // validator (buildFactProvenance) locates this quote in the
-            // buffered turns and builds verified ProvenanceSource[] entries.
-            quote:
-              typeof f?.quote === "string" && f.quote.trim().length > 0
-                ? f.quote
-                : undefined,
-            eventTime:
-              typeof f?.eventTime === "string" && f.eventTime.trim().length > 0
-                ? f.eventTime.trim()
-                : typeof f?.event_time === "string" && f.event_time.trim().length > 0
-                  ? f.event_time.trim()
-                  : undefined,
-          }))
-          .filter((f: any) => f.content.length > 0)
-      : [];
-
-    const questions = Array.isArray(parsed?.questions)
-      ? parsed.questions
-          .map((q: any) => {
-            if (typeof q === "string") return { question: q, context: "", priority: 0.5 };
+              : undefined;
+            const reasoningTrace = reasoningTraceInput
+              ? normalizeReasoningTrace(reasoningTraceInput) ?? undefined
+              : undefined;
+            if (
+              containsExtractionPlaceholder(procedureSteps) ||
+              containsExtractionPlaceholder(reasoningTrace)
+            ) {
+              return undefined;
+            }
             return {
-              question: typeof q?.question === "string" ? q.question : typeof q?.text === "string" ? q.text : "",
-              context: typeof q?.context === "string" ? q.context : "",
-              priority: typeof q?.priority === "number" ? q.priority : 0.5,
+              category,
+              content: extractionText(f.content) ?? extractionText(f.text) ?? "",
+              confidence: typeof f.confidence === "number" ? f.confidence : 0.7,
+              tags: Array.isArray(f.tags)
+                ? f.tags.flatMap((tag: unknown) => {
+                    const text = extractionText(tag);
+                    return text === undefined ? [] : [text];
+                  })
+                : [],
+              entityRef: extractionText(f.entityRef),
+              promptedByQuestion: extractionText(f.promptedByQuestion),
+              scope:
+                f.scope === "global" || f.scope === "project" ? f.scope : undefined,
+              structuredAttributes: extractionAttributes(f.structuredAttributes),
+              procedureSteps,
+              reasoningTrace,
+              quote: extractionText(f.quote),
+              eventTime: extractionText(f.eventTime) ?? extractionText(f.event_time),
             };
           })
-          .filter((q: any) => q.question.length > 0)
+          .filter((fact: ExtractedFactResult | undefined): fact is ExtractedFactResult => (
+            fact !== undefined && fact.content.length > 0
+          ))
       : [];
+
+    const questions: ExtractionQuestion[] = Array.isArray(parsed?.questions)
+      ? parsed.questions.flatMap((candidate: unknown) => {
+          const record = isPlainRecord(candidate) ? candidate : undefined;
+          const question =
+            extractionText(record?.question) ??
+            extractionText(record?.text) ??
+            extractionText(candidate);
+          if (question === undefined) return [];
+          return [{
+            question,
+            context: extractionText(record?.context) ?? "",
+            priority: typeof record?.priority === "number" ? record.priority : 0.5,
+          }];
+        })
+      : [];
+
+    const profileUpdates = Array.isArray(parsed?.profileUpdates)
+      ? parsed.profileUpdates.flatMap((candidate: unknown) => {
+          const update = extractionText(candidate);
+          return update === undefined ? [] : [update];
+        })
+      : [];
+
+    const relationships: ExtractedRelationshipResult[] | undefined = Array.isArray(parsed?.relationships)
+      ? parsed.relationships.flatMap((candidate: unknown) => {
+          const relationship = isPlainRecord(candidate) ? candidate : undefined;
+          const source = extractionText(relationship?.source);
+          const target = extractionText(relationship?.target);
+          const label = extractionText(relationship?.label);
+          if (source === undefined || target === undefined || label === undefined) return [];
+          return [{
+            source,
+            target,
+            label,
+            promptedByQuestion: extractionText(relationship?.promptedByQuestion),
+          }];
+        })
+      : undefined;
 
     return {
       facts,
       entities,
-      profileUpdates: Array.isArray(parsed?.profileUpdates)
-        ? parsed.profileUpdates.filter((u: any) => typeof u === "string" && u.trim().length > 0)
-        : [],
+      profileUpdates,
       questions,
-      identityReflection: parsed?.identityReflection ?? undefined,
-      relationships: Array.isArray(parsed?.relationships)
-        ? parsed.relationships.filter(
-            (r: any) =>
-              typeof r?.source === "string" &&
-              typeof r?.target === "string" &&
-              typeof r?.label === "string",
-          )
-            .map((r: any) => ({
-              source: r.source,
-              target: r.target,
-              label: r.label,
-              promptedByQuestion:
-                typeof r?.promptedByQuestion === "string" ? r.promptedByQuestion : undefined,
-            }))
-        : undefined,
+      identityReflection: extractionText(parsed?.identityReflection),
+      relationships,
     };
   }
 
-  private normalizeEntityUpdate(entity: any): ExtractedEntityResult {
-    const rawUpdates = isPlainRecord(entity?.updates) ? entity.updates : null;
-    const directFacts = Array.isArray(entity?.facts)
-      ? entity.facts
-          .filter((fact: any) => typeof fact === "string")
-          .map((fact: string) => fact.trim())
-          .filter((fact: string) => fact.length > 0)
-      : [];
-    const updateFacts = rawUpdates && Array.isArray(rawUpdates.facts)
-      ? rawUpdates.facts
-          .filter((fact: unknown) => typeof fact === "string")
-          .map((fact: string) => fact.trim())
-          .filter((fact: string) => fact.length > 0)
-      : [];
+  private normalizeEntityUpdate(entity: unknown): ExtractedEntityResult | undefined {
+    const record = isPlainRecord(entity) ? entity : {};
+    const rawUpdates = isPlainRecord(record.updates) ? record.updates : undefined;
+    const normalizedTexts = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? value.flatMap((candidate: unknown) => {
+            const text = extractionText(candidate);
+            return text === undefined ? [] : [text];
+          })
+        : [];
+    const directFacts = normalizedTexts(record.facts);
+    const updateFacts = normalizedTexts(rawUpdates?.facts);
     const scalarUpdateFacts = rawUpdates
-      ? Object.keys(rawUpdates)
-          .sort((a, b) => a.localeCompare(b))
-          .filter((key) => !["facts", "name", "promptedByQuestion", "structuredSections", "type"].includes(key))
-          .flatMap((key) => {
-            const value = rawUpdates[key];
-            if (typeof value === "string" && value.trim().length > 0) {
-              return [`${key}: ${value.trim()}`];
+      ? Object.entries(rawUpdates)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .flatMap(([key, value]) => {
+            if (["facts", "name", "promptedByQuestion", "structuredSections", "type"].includes(key)) {
+              return [];
             }
+            const normalizedKey = extractionText(key);
+            if (normalizedKey === undefined) return [];
+            const normalizedValue = extractionText(value);
+            if (normalizedValue !== undefined) return [`${normalizedKey}: ${normalizedValue}`];
             if (typeof value === "number" || typeof value === "boolean") {
-              return [`${key}: ${String(value)}`];
+              return [`${normalizedKey}: ${String(value)}`];
             }
             return [];
           })
       : [];
-    const structuredSectionsSource = Array.isArray(entity?.structuredSections)
-      ? entity.structuredSections
+    const structuredSectionsSource = Array.isArray(record.structuredSections)
+      ? record.structuredSections
       : Array.isArray(rawUpdates?.structuredSections)
         ? rawUpdates.structuredSections
         : [];
-    const name =
-      typeof entity?.name === "string"
-        ? entity.name.trim()
-        : typeof entity?.entityId === "string"
-          ? entity.entityId.trim()
-          : typeof rawUpdates?.name === "string"
-            ? rawUpdates.name.trim()
-            : "";
-    const type =
-      typeof entity?.type === "string" && entity.type.trim().length > 0
-        ? entity.type.trim()
-        : typeof rawUpdates?.type === "string" && rawUpdates.type.trim().length > 0
-          ? rawUpdates.type.trim()
-          : "other";
+    const structuredSections = structuredSectionsSource.flatMap((candidate: unknown) => {
+      const section = isPlainRecord(candidate) ? candidate : {};
+      const key = extractionText(section.key);
+      const title = extractionText(section.title);
+      const facts = normalizedTexts(section.facts);
+      if (key === undefined || title === undefined || facts.length === 0) return [];
+      return [{ key, title, facts }];
+    });
 
+    const rawType = record.type ?? rawUpdates?.type;
+    const type = rawType === undefined ? "other" : extractionEntityType(rawType);
+    if (type === undefined) return undefined;
     return {
-      name,
+      name:
+        extractionText(record.name) ??
+        extractionText(record.entityId) ??
+        extractionText(rawUpdates?.name) ??
+        "",
       type,
       facts: [...directFacts, ...updateFacts, ...scalarUpdateFacts],
-      structuredSections: structuredSectionsSource.length > 0
-        ? structuredSectionsSource
-            .map((section: any) => ({
-              key: typeof section?.key === "string" ? section.key.trim() : "",
-              title: typeof section?.title === "string" ? section.title.trim() : "",
-              facts: Array.isArray(section?.facts)
-                ? section.facts.filter((fact: any) => typeof fact === "string")
-                    .map((fact: string) => fact.trim())
-                    .filter((fact: string) => fact.length > 0)
-                : [],
-            }))
-            .filter((section: any) => (
-              section.key.length > 0 &&
-              section.title.length > 0 &&
-              section.facts.length > 0
-            ))
-        : undefined,
-      promptedByQuestion:
-        typeof entity?.promptedByQuestion === "string"
-          ? entity.promptedByQuestion
-          : typeof rawUpdates?.promptedByQuestion === "string"
-            ? rawUpdates.promptedByQuestion
-            : undefined,
+      structuredSections: structuredSections.length > 0 ? structuredSections : undefined,
+      promptedByQuestion: extractionText(record.promptedByQuestion) ?? extractionText(rawUpdates?.promptedByQuestion),
     };
   }
 
@@ -615,8 +646,10 @@ export class ExtractionEngine {
       )
       .filter((update) => update.length > 0);
     const entityUpdates = (Array.isArray(result.entityUpdates) ? result.entityUpdates : [])
-      .map((entity: any) => this.normalizeEntityUpdate(entity))
-      .filter((entity: ExtractedEntityResult) => entity.name.length > 0);
+      .map((entity: unknown): ExtractedEntityResult | undefined => this.normalizeEntityUpdate(entity))
+      .filter((entity: ExtractedEntityResult | undefined): entity is ExtractedEntityResult => (
+        entity !== undefined && entity.name.length > 0
+      ));
     return { items, profileUpdates, entityUpdates };
   }
 
@@ -1310,37 +1343,8 @@ export class ExtractionEngine {
         log.debug(
           `extracted ${result.facts.length} facts, ${result.entities.length} entities, ${(result.questions ?? []).length} questions via fallback (${detailed.modelUsed})`,
         );
-        // Zod schema accepts snake_case aliases (final_answer / observed_outcome)
-        // alongside camelCase for gateway-tolerance, but the downstream
-        // ExtractedFact contract only exposes camelCase. Collapse each fact's
-        // reasoningTrace through normalizeReasoningTrace before passing it on so
-        // gateway output matches the shape local/direct-client paths produce.
-        const normalizedFacts = result.facts.map((f: any) => {
-          if (!f) return f;
-          // Gateway tolerance: collapse snake_case event_time → camelCase
-          // eventTime so the gateway path matches the local/direct/proactive
-          // normalization (#1578 r3 — cursor bugbot).
-          const eventTime =
-            typeof f.eventTime === "string" && f.eventTime.trim().length > 0
-              ? f.eventTime.trim()
-              : typeof f.event_time === "string" && f.event_time.trim().length > 0
-                ? f.event_time.trim()
-                : undefined;
-          if (!f.reasoningTrace && eventTime === undefined) return f;
-          return {
-            ...f,
-            ...(f.reasoningTrace
-              ? { reasoningTrace: normalizeReasoningTrace(f.reasoningTrace) ?? undefined }
-              : {}),
-            ...(eventTime !== undefined ? { eventTime } : {}),
-          };
-        });
-        const sanitized = this.sanitizeExtractionResult({
-          ...result,
-          facts: normalizedFacts,
-          questions: result.questions ?? [],
-          identityReflection: result.identityReflection ?? undefined,
-        } as ExtractionResult, messageTimestamp);
+        const normalized = this.normalizeExtractionResultPayload(result);
+        const sanitized = this.sanitizeExtractionResult(normalized, messageTimestamp);
         const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized);
         return this.attachProvenanceToResult(finalResult, boundedTurns);
       }
@@ -1567,29 +1571,6 @@ ${truncatedConversation}`;
    * Local LLMs sometimes hit token limits mid-JSON. This tries to salvage valid facts.
    */
   private extractPartialFacts(jsonStr: string): ExtractionResult {
-    const allowedCategories = new Set([
-      "fact",
-      "preference",
-      "correction",
-      "entity",
-      "decision",
-      "relationship",
-      "principle",
-      "commitment",
-      "moment",
-      "skill",
-      "rule",
-      "procedure",
-      "reasoning_trace",
-    ]);
-    const allowedEntityTypes = new Set([
-      "person",
-      "project",
-      "tool",
-      "company",
-      "place",
-      "other",
-    ]);
 
     const facts: ExtractionResult["facts"] = [];
     const entities: ExtractionResult["entities"] = [];
@@ -1599,8 +1580,8 @@ ${truncatedConversation}`;
       const factRegex = /\{\s*"category"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"([^"]+)"\s*,\s*"confidence"\s*:\s*([0-9.]+)/g;
       let match;
       while ((match = factRegex.exec(jsonStr)) !== null) {
-        const rawCat = match[1];
-        const category = allowedCategories.has(rawCat) ? (rawCat as ExtractionResult["facts"][number]["category"]) : "fact";
+        const category = match[1]?.trim() ?? "";
+        if (!isMemoryCategory(category)) continue;
         facts.push({
           category,
           content: match[2].replace(/\\n/g, '\n').replace(/\\"/g, '"'),
@@ -1612,8 +1593,8 @@ ${truncatedConversation}`;
       // Find all complete entity objects
       const entityRegex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"type"\s*:\s*"([^"]+)"/g;
       while ((match = entityRegex.exec(jsonStr)) !== null) {
-        const rawType = match[2];
-        const type = allowedEntityTypes.has(rawType) ? (rawType as ExtractionResult["entities"][number]["type"]) : "other";
+        const type = extractionEntityType(match[2]);
+        if (type === undefined) continue;
         entities.push({
           name: match[1],
           type,
@@ -1624,7 +1605,7 @@ ${truncatedConversation}`;
       // Ignore regex errors
     }
 
-    return { facts, entities, profileUpdates: [], questions: [] };
+    return this.normalizeExtractionResultPayload({ facts, entities, profileUpdates: [], questions: [] });
   }
 
   /**
