@@ -3085,6 +3085,7 @@ export class Orchestrator {
       namespace: string;
       bufferKey: string;
       isLiveSession: boolean;
+      abortSignal?: AbortSignal;
     },
   ): Promise<void> {
     return this.turnIngestionCoordinator.maybeCapturePassiveCorrections(

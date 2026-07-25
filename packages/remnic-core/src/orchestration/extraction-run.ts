@@ -92,6 +92,7 @@ export interface ExtractionRunCoordinatorDeps {
       namespace: string;
       bufferKey: string;
       isLiveSession: boolean;
+      abortSignal?: AbortSignal;
     }
   ) => Promise<void>;
 
@@ -556,6 +557,62 @@ export class ExtractionRunCoordinator {
     const throwIfAborted = (stage: string): void => {
       throwIfRecallAborted(options.abortSignal, `extraction aborted (${stage})`);
     };
+    const runPassiveCapture = async (
+      captureTurns: readonly BufferTurn[],
+      captureOptions: {
+        sessionKey: string;
+        principal?: string;
+        namespace: string;
+        bufferKey: string;
+        isLiveSession: boolean;
+      },
+    ): Promise<void> => {
+      const deadlineController =
+        typeof deadlineMs === "number" && Number.isFinite(deadlineMs) ? new AbortController() : undefined;
+      const captureSignal = deadlineController
+        ? options.abortSignal
+          ? AbortSignal.any([options.abortSignal, deadlineController.signal])
+          : deadlineController.signal
+        : options.abortSignal;
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      if (deadlineController && typeof deadlineMs === "number") {
+        const scheduleDeadlineAbort = (): void => {
+          const remainingMs = deadlineMs - Date.now();
+          if (remainingMs <= 0) {
+            deadlineController.abort();
+            return;
+          }
+          deadlineTimer = setTimeout(
+            () => {
+              if (Date.now() >= deadlineMs) {
+                deadlineController.abort();
+              } else {
+                scheduleDeadlineAbort();
+              }
+            },
+            Math.min(remainingMs, 2_147_483_647),
+          );
+        };
+        scheduleDeadlineAbort();
+      }
+      try {
+        await raceRecallAbort(
+          this.deps.maybeCapturePassiveCorrections(captureTurns, {
+            ...captureOptions,
+            ...(captureSignal ? { abortSignal: captureSignal } : {}),
+          }),
+          captureSignal,
+          "extraction aborted (during_passive_capture)",
+        );
+      } catch (error) {
+        if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+          throw new ExtractionDeadlineError("during_passive_capture");
+        }
+        throw error;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+      }
+    };
     const clearBuffer = async (options?: { ignoreAbort?: boolean }) => {
       if (options?.ignoreAbort !== true) {
         throwIfDeadlineExceeded("before_clear_buffer");
@@ -603,7 +660,7 @@ export class ExtractionRunCoordinator {
           typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
             ? options.writeNamespaceOverride
             : this.deps.resolveSelfNamespace(sessionKey);
-        await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+        await runPassiveCapture(normalizedTurns as BufferTurn[], {
           sessionKey,
           principal: capturePrincipal,
           namespace: captureNamespace,
@@ -658,7 +715,7 @@ export class ExtractionRunCoordinator {
         });
         const captureNamespace =
           captureWO ?? captureScopePlan?.writeNamespace ?? this.deps.resolveSelfNamespace(sessionKey);
-        await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+        await runPassiveCapture(normalizedTurns as BufferTurn[], {
           sessionKey,
           principal: capturePrincipal,
           namespace: captureNamespace,
@@ -777,7 +834,7 @@ export class ExtractionRunCoordinator {
           // cooldown — "stop calling me X" style turns should register during
           // a 30-minute breaker window too (codex review). Fail-open.
           try {
-            await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+            await runPassiveCapture(normalizedTurns as BufferTurn[], {
               sessionKey,
               principal,
               namespace: selfNamespace,
@@ -965,7 +1022,7 @@ export class ExtractionRunCoordinator {
       // Correction-only turns that meet char/user-turn thresholds but yield
       // zero facts still need passive capture (review: "empty extraction skips
       // capture"). selfNamespace/principal already resolved above.
-      await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+      await runPassiveCapture(normalizedTurns as BufferTurn[], {
         sessionKey,
         principal,
         namespace: selfNamespace,
@@ -1086,7 +1143,7 @@ export class ExtractionRunCoordinator {
     // Runs AFTER persistence + buffer clear so a capture failure never blocks
     // the extraction return. `clearBufferAfterExtraction` gates live-session
     // auto-apply (replay/import → queue-only).
-    await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+    await runPassiveCapture(normalizedTurns as BufferTurn[], {
       sessionKey,
       principal,
       namespace: selfNamespace,

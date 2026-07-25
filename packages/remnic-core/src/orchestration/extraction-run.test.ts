@@ -229,49 +229,37 @@ test("context-only extraction honors scoped principal and namespace overrides", 
   }
 });
 
-test("context-only extraction honors its deadline during passive capture", async () => {
+test("context-only extraction bounds passive capture by its deadline", async () => {
   const harness = await makeHarness();
-  const originalDateNow = Date.now;
-  let now = 1_000;
-  let releaseCapture!: () => void;
-  let captureStartedResolve!: () => void;
-  const captureStarted = new Promise<void>((resolve) => {
-    captureStartedResolve = resolve;
-  });
-  const passiveCaptureDone = new Promise<void>((resolve) => {
-    releaseCapture = resolve;
-  });
-  Date.now = () => now;
   try {
-    harness.setPassiveCapture(async () => {
-      captureStartedResolve();
-      now = 1_001;
-      await passiveCaptureDone;
-    });
+    harness.setPassiveCapture(() => new Promise<void>(() => {}));
     const coordinator = harness.newCoordinator();
-    const extraction = coordinator.runExtraction(
-      [{
-        role: "user",
-        content: "The correction capture must not clear this buffer after its deadline.",
-        timestamp: "2026-07-15T00:00:00Z",
-        sessionKey: "context-only-deadline",
-        extractionContextOnly: true,
-      }],
-      {
-        bufferKey: "context-only-deadline",
-        clearBufferAfterExtraction: false,
-        deadlineMs: 1_001,
+    const startedAt = Date.now();
+    await assert.rejects(
+      coordinator.runExtraction(
+        [
+          {
+            role: "user",
+            content: "The correction capture must not clear this buffer after its deadline.",
+            timestamp: "2026-07-15T00:00:00Z",
+            sessionKey: "context-only-deadline",
+            extractionContextOnly: true,
+          },
+        ],
+        {
+          bufferKey: "context-only-deadline",
+          clearBufferAfterExtraction: false,
+          deadlineMs: startedAt + 25,
+        },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof ExtractionDeadlineError);
+        assert.equal(error.stage, "during_passive_capture");
+        return true;
       },
     );
-
-    await captureStarted;
-    releaseCapture();
-    await assert.rejects(
-      extraction,
-      /replay extraction deadline exceeded \(before_context_only_clear\)/,
-    );
+    assert.ok(Date.now() - startedAt < 1_000, "passive capture must not outlive its deadline");
   } finally {
-    Date.now = originalDateNow;
     await harness.cleanup();
   }
 });

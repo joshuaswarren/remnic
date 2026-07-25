@@ -64,6 +64,8 @@ export interface PassiveCaptureContext {
   principal?: string;
   /** Authorized namespace the extraction wrote to. */
   namespace: string;
+  /** Shared extraction deadline/cancellation signal. */
+  abortSignal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +209,7 @@ export async function capturePassiveCorrections(
   telemetry.detected = corrections.length;
 
   for (const correction of corrections) {
+    if (ctx.abortSignal?.aborted) return { telemetry, plans };
     // 1. Dedup — checked before planning, but the fingerprint is only
     //    recorded AFTER a successful plan so a transient planning failure
     //    can be retried on a later flush (review: "dedup blocks retry
@@ -250,6 +253,7 @@ export async function capturePassiveCorrections(
       );
       continue;
     }
+    if (ctx.abortSignal?.aborted) return { telemetry, plans };
     plans.push(plan);
     // Record the fingerprint only after a successful plan.
     dedupState.add(fp);

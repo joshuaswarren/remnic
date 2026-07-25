@@ -427,13 +427,15 @@ export class LocalLlmClient {
     url: string,
     timeoutMs: number = 2000,
     headers?: Record<string, string>,
+    signal?: AbortSignal,
   ): Promise<{ ok: boolean; data: unknown; status: number | null }> {
     const controller = new AbortController();
+    const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, {
-        signal: controller.signal,
+        signal: requestSignal,
         headers: this.buildRequestHeaders({ Accept: "application/json", ...(headers ?? {}) }),
       });
       clearTimeout(timeout);
@@ -456,10 +458,13 @@ export class LocalLlmClient {
 
   private async probeLmStudioNativeModels(
     probeBaseUrl: string,
+    signal?: AbortSignal,
   ): Promise<{ matched: boolean; unauthorized: boolean }> {
     let unauthorized = false;
     for (const endpoint of ["/api/v1/models", "/api/v0/models"]) {
-      const probe = await this.fetchWithTimeout(`${probeBaseUrl}${endpoint}`);
+      if (signal?.aborted) return { matched: false, unauthorized };
+      const probe = await this.fetchWithTimeout(`${probeBaseUrl}${endpoint}`, 2000, undefined, signal);
+      if (signal?.aborted) return { matched: false, unauthorized };
       if (probe.ok && isLmStudioNativeModelsResponse(probe.data)) {
         return { matched: true, unauthorized };
       }
@@ -474,7 +479,8 @@ export class LocalLlmClient {
    * Check if local LLM is available
    * Uses 127.0.0.1 instead of localhost to avoid DNS issues (consistent with tactician)
    */
-  async checkAvailability(): Promise<boolean> {
+  async checkAvailability(signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return false;
     // Cache health check results for 1 minute
     const now = Date.now();
     const trippedState = this.getTrippedBackendState(now);
@@ -500,14 +506,17 @@ export class LocalLlmClient {
     let sawUnauthorizedProbe = false;
 
     // Try to detect which server type is running
+    if (signal?.aborted) return false;
     for (const serverConfig of orderedLocalServers(configuredBaseUrl)) {
       const healthUrl = `${probeBaseUrl}${serverConfig.healthEndpoint}`;
       log.debug(`checking ${serverConfig.type} at ${healthUrl}`);
 
-      const result = await this.fetchWithTimeout(healthUrl);
+      const result = await this.fetchWithTimeout(healthUrl, 2000, undefined, signal);
+      if (signal?.aborted) return false;
       if (result.ok && serverConfig.detectFn(result.data)) {
         if (serverConfig.type === "mlx") {
-          const lmStudioProbe = await this.probeLmStudioNativeModels(probeBaseUrl);
+          const lmStudioProbe = await this.probeLmStudioNativeModels(probeBaseUrl, signal);
+          if (signal?.aborted) return false;
           if (lmStudioProbe.unauthorized) {
             sawUnauthorizedProbe = true;
           }
@@ -521,7 +530,8 @@ export class LocalLlmClient {
         }
         if (serverConfig.type === "llamacpp") {
           let sawLlamaCppSignal = false;
-          const propsProbe = await this.fetchWithTimeout(`${probeBaseUrl}/props`);
+          const propsProbe = await this.fetchWithTimeout(`${probeBaseUrl}/props`, 2000, undefined, signal);
+          if (signal?.aborted) return false;
           if (propsProbe.ok && isLlamaCppPropsResponse(propsProbe.data)) {
             sawLlamaCppSignal = true;
           }
@@ -530,7 +540,8 @@ export class LocalLlmClient {
           }
 
           const modelsUrl = `${probeBaseUrl}${serverConfig.modelsEndpoint}`;
-          const modelsProbe = await this.fetchWithTimeout(modelsUrl);
+          const modelsProbe = await this.fetchWithTimeout(modelsUrl, 2000, undefined, signal);
+          if (signal?.aborted) return false;
           if (modelsProbe.ok && isLlamaCppModelsResponse(modelsProbe.data)) {
             sawLlamaCppSignal = true;
           }
@@ -556,11 +567,13 @@ export class LocalLlmClient {
         sawUnauthorizedProbe = true;
       }
     }
+    if (signal?.aborted) return false;
 
     // Generic check if specific detection failed
     try {
       const modelsUrl = `${probeBaseUrl}/v1/models`;
-      const result = await this.fetchWithTimeout(modelsUrl);
+      const result = await this.fetchWithTimeout(modelsUrl, 2000, undefined, signal);
+      if (signal?.aborted) return false;
       if (result.ok) {
         this.isAvailable = true;
         this.detectedType = "generic";
@@ -980,7 +993,7 @@ export class LocalLlmClient {
 
     try {
       if (options.signal?.aborted) return null;
-      const isAvailable = await this.checkAvailability();
+      const isAvailable = await this.checkAvailability(options.signal);
       if (!isAvailable) {
         log.debug(
           `local LLM: checkAvailability returned false for ${this.config.localLlmUrl}`,

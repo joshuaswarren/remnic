@@ -758,6 +758,7 @@ export class TurnIngestionCoordinator {
       namespace: string;
       bufferKey: string;
       isLiveSession: boolean;
+      abortSignal?: AbortSignal;
     },
   ): Promise<void> {
     const mode = this.deps.config.correctionCaptureMode;
@@ -788,6 +789,7 @@ export class TurnIngestionCoordinator {
           sessionKey: opts.sessionKey,
           principal: opts.principal,
           namespace: opts.namespace,
+          abortSignal: opts.abortSignal,
         },
         captureConfig,
         {
