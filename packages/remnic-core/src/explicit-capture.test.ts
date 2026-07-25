@@ -185,6 +185,37 @@ test("inline capture processor hashes the effective authorized input for replay 
   assert.equal(probe.envelopes.length, 1);
 });
 
+test("inline capture processor normalizes omitted namespaces to the effective default", async () => {
+  const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
+  const request = {
+    captureMode: "hybrid" as const,
+    dedupeKeys: ["default-namespace-delivery"],
+  };
+  const first = await probe.processor.process({
+    ...request,
+    content: [
+      "<memory_note>",
+      "content: Default namespace replay identity must be stable.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+  });
+  const replay = await probe.processor.process({
+    ...request,
+    content: [
+      "<memory_note>",
+      "content: Default namespace replay identity must be stable.",
+      "category: fact",
+      "namespace: default",
+      "</memory_note>",
+    ].join("\n"),
+  });
+
+  assert.equal(first.queued, 1);
+  assert.equal(replay.processed, 0);
+  assert.equal(probe.envelopes.length, 1);
+});
+
 test("inline capture processor routes tombstone-blocked captures to review", async () => {
   const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
   const result = await probe.processor.process({

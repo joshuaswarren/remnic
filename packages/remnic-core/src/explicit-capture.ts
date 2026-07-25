@@ -658,7 +658,10 @@ export interface InlineExplicitCaptureProcessorOptions {
 
 const DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT = 1024;
 
-function canonicalInlineCaptureDedupeInput(input: ExplicitCaptureInput) {
+function canonicalInlineCaptureDedupeInput(
+  input: ExplicitCaptureInput,
+  namespace: string,
+) {
   const tags = Array.from(
     new Set(
       (input.tags ?? [])
@@ -670,7 +673,7 @@ function canonicalInlineCaptureDedupeInput(input: ExplicitCaptureInput) {
     content: asTrimmed(input.content) ?? "",
     category: asTrimmed(input.category) ?? "fact",
     confidence: input.confidence ?? 0.95,
-    namespace: asTrimmed(input.namespace) ?? "",
+    namespace,
     tags,
     entityRef: asTrimmed(input.entityRef) ?? "",
     sourceConnector: asTrimmed(input.sourceConnector) ?? "",
@@ -700,8 +703,23 @@ export class InlineExplicitCaptureProcessor {
   private buildDedupeKeys(
     dedupeKeys: readonly string[] | undefined,
     input: ExplicitCaptureInput,
+    namespacePreResolved: boolean,
   ): string[] {
-    const canonicalInput = canonicalInlineCaptureDedupeInput(input);
+    let effectiveNamespace = asTrimmed(input.namespace);
+    if (!namespacePreResolved) {
+      try {
+        effectiveNamespace = resolveExplicitCaptureNamespace(
+          this.orchestrator,
+          effectiveNamespace,
+        );
+      } catch {
+        effectiveNamespace = asTrimmed(input.namespace);
+      }
+    }
+    const canonicalInput = canonicalInlineCaptureDedupeInput(
+      input,
+      effectiveNamespace ?? this.orchestrator.config.defaultNamespace,
+    );
     const noteHash = createHash("sha256").update(JSON.stringify(canonicalInput)).digest("hex");
     return (dedupeKeys ?? [])
       .map((key) => asTrimmed(key))
@@ -748,7 +766,11 @@ export class InlineExplicitCaptureProcessor {
         ...(request.namespace !== undefined ? { namespace: request.namespace } : {}),
         ...(sourceConnector ? { sourceConnector } : {}),
       };
-      const dedupeKeys = this.buildDedupeKeys(request.dedupeKeys, input);
+      const dedupeKeys = this.buildDedupeKeys(
+        request.dedupeKeys,
+        input,
+        request.namespacePreResolved === true,
+      );
       if (dedupeKeys.some((key) => this.observedKeys.has(key))) continue;
 
       try {
