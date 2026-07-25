@@ -164,6 +164,7 @@ test("delegate recall injects daemon context under the memory header", async () 
     assert.ok(recall, "daemon recall route was called");
     assert.equal(recall.body.sessionKey, "session-a");
     assert.equal(recall.body.query, "what did we decide about the rollout?");
+    assert.equal("namespace" in recall.body, false, "default sessions preserve daemon default scope");
   } finally {
     await stub.close();
   }
@@ -271,6 +272,78 @@ test("delegate flush fires on compaction, reset, and session end", async () => {
       ["s1", "s2", "s3"],
       "each lifecycle boundary flushes its own session",
     );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate forwards the hook session namespace to recall, observe, and flush", async () => {
+  const stub = await startDaemonStub((pathname) =>
+    pathname === "/engram/v1/recall" ? { context: "scoped daemon context" } : { accepted: true },
+  );
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const ctx = {
+      sessionKey: "scoped-session",
+      runtime: { agent: { session: { namespace: "team-alpha" } } },
+    };
+
+    await invoke(api, "before_prompt_build", { prompt: "recall scoped memory" }, ctx);
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture scoped memory" },
+          { role: "assistant", content: "scoped answer" },
+        ],
+      },
+      ctx,
+    );
+    await invoke(api, "before_compaction", {}, ctx);
+
+    const calls = stub.calls.filter((call) =>
+      [
+        "/engram/v1/recall",
+        "/engram/v1/observe",
+        "/engram/v1/lcm/compaction/flush",
+      ].includes(call.pathname),
+    );
+    assert.equal(calls.length, 3);
+    assert.deepEqual(
+      calls.map((call) => call.body.namespace),
+      ["team-alpha", "team-alpha", "team-alpha"],
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate flush uses the ended session namespace after a session rebinding", async () => {
+  const stub = await startDaemonStub(() => ({ flushed: true }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+
+    await invoke(
+      api,
+      "before_reset",
+      {
+        sessionKey: "ended-session",
+        runtime: { agent: { session: { namespace: "team-ended" } } },
+      },
+      {
+        sessionKey: "successor-session",
+        runtime: { agent: { session: { namespace: "team-successor" } } },
+      },
+    );
+
+    const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush);
+    assert.equal(flush.body.sessionKey, "ended-session");
+    assert.equal(flush.body.namespace, "team-ended");
   } finally {
     await stub.close();
   }

@@ -237,10 +237,41 @@ function cwdFrom(
 }
 
 function withNamespace(
-  namespace: string,
+  namespace: string | undefined,
   body: Record<string, unknown>,
 ): Record<string, unknown> {
-  return namespace.length > 0 ? { ...body, namespace } : body;
+  return namespace ? { ...body, namespace } : body;
+}
+
+function sessionNamespaceFrom(
+  sessionKey: string,
+  event: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+  fallback: string,
+): string | undefined {
+  const eventSessionKey = typeof event.sessionKey === "string" ? event.sessionKey : undefined;
+  const ctxSessionKey = typeof ctx.sessionKey === "string" ? ctx.sessionKey : undefined;
+  const sources =
+    eventSessionKey === sessionKey
+      ? [event, ctx]
+      : ctxSessionKey === sessionKey
+        ? [ctx, event]
+        : [ctx, event];
+  for (const source of sources) {
+    const sourceSessionKey = typeof source.sessionKey === "string" ? source.sessionKey : undefined;
+    if (sourceSessionKey && sourceSessionKey !== sessionKey) continue;
+    const runtime = source.runtime;
+    if (typeof runtime !== "object" || runtime === null) continue;
+    const agent = (runtime as Record<string, unknown>).agent;
+    if (typeof agent !== "object" || agent === null) continue;
+    const session = (agent as Record<string, unknown>).session;
+    if (typeof session !== "object" || session === null) continue;
+    const namespace = (session as Record<string, unknown>).namespace;
+    if (typeof namespace === "string" && namespace.trim().length > 0) {
+      return namespace.trim();
+    }
+  }
+  return fallback.trim() || undefined;
 }
 
 function readContextComposition(
@@ -319,7 +350,7 @@ export function registerDelegateRuntime(
           target,
           options.serviceId,
           "/engram/v1/recall",
-          withNamespace(namespace, {
+          withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace), {
             query,
             sessionKey,
             mode: "auto",
@@ -423,7 +454,7 @@ export function registerDelegateRuntime(
         target,
         options.serviceId,
         "/engram/v1/observe",
-        withNamespace(namespace, {
+        withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace), {
           sessionKey,
           messages: turn,
           ...(cwd ? { cwd } : {}),
@@ -452,7 +483,7 @@ export function registerDelegateRuntime(
         target,
         options.serviceId,
         "/engram/v1/lcm/compaction/flush",
-        withNamespace(namespace, { sessionKey }),
+        withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace), { sessionKey }),
         options.flushTimeoutMs,
       );
     } catch (err) {
