@@ -70,6 +70,16 @@ test("a PR touching a mapped lifecycle path passes (orchestration/turn-ingestion
   assert.equal(covered[0].subject, "extraction-lifecycle");
 });
 
+test("generic-recall-paths.ts maps to its archive-filtering subject", () => {
+  const manifest = loadReal();
+  const { covered, violations } = evaluateCoverage(
+    ["packages/remnic-core/src/orchestration/generic-recall-paths.ts"],
+    manifest,
+  );
+  assert.equal(violations.length, 0);
+  assert.equal(covered[0]?.subject, "generic-recall-paths");
+});
+
 test("session-toggles.ts maps to the serialized-write-chain subject", () => {
   const manifest = loadReal();
   const { covered, violations } = evaluateCoverage(

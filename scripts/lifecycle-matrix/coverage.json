@@ -136,7 +136,7 @@
     "packages/remnic-core/src/orchestration/turn-ingestion.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/session-context.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/persistence-index.ts": "extraction-lifecycle",
-    "packages/remnic-core/src/orchestration/generic-recall-paths.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/generic-recall-paths.ts": "generic-recall-paths",
     "packages/remnic-core/src/storage/memory-lifecycle-ledger-access.ts": "lifecycle-ledger",
     "packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger.ts": "lifecycle-ledger",
     "packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger-cli.ts": "lifecycle-ledger",
