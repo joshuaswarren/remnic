@@ -606,6 +606,19 @@ test("grounding does not treat questions or hypotheticals as factual evidence", 
     { question: "Does Alice work at Globex?", context: "", priority: 0.5 },
   ]);
 
+
+  const nonAnswerResult = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{ question: "What is the Acme deployment deadline?", context: "", priority: 0.5 }],
+    },
+    "Acme deployment is delayed.",
+  );
+  assert.deepEqual(nonAnswerResult.questions, [
+    { question: "What is the Acme deployment deadline?", context: "", priority: 0.5 },
+  ]);
   const unknownAnswerResult = filterExtractionResultBySource(
     {
       facts: [],
