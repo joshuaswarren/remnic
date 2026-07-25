@@ -94,6 +94,7 @@ export const OPERATION_NAMES = [
   "observe",
   "lcm_search",
   "lcm_compaction_flush",
+  "extraction_force_flush",
   "lcm_compaction_record",
   "continuity_audit_generate",
   "continuity_incident_open",

@@ -44,6 +44,14 @@ export function formatZodError(error: z.ZodError): SchemaValidationError {
 const namespaceSchema = z.string().trim().max(256).optional();
 const sessionKeySchema = z.string().trim().min(1).max(512).optional();
 const idempotencyKeySchema = z.string().trim().min(1).max(256).optional();
+const cwdSchema = z.string().trim().min(1, "cwd must be non-empty when provided").max(2048).optional();
+const projectTagSchema = z
+  .string()
+  .trim()
+  .min(1, "projectTag must be non-empty when provided")
+  .max(256)
+  .optional();
+const deadlineMsSchema = z.number().finite().min(0).max(Number.MAX_SAFE_INTEGER).optional();
 const dryRunSchema = z.boolean().optional();
 const schemaVersionSchema = z.number().int().optional();
 const timeZoneSchema = z
@@ -108,12 +116,12 @@ export const recallRequestSchema = z.object({
   disclosure: recallDisclosureSchema.optional(),
   codingContext: codingContextSchema.optional(),
   /** Working directory for auto git-context resolution (issue #569). */
-  cwd: z.string().trim().min(1, "cwd must be non-empty when provided").max(2048).optional(),
+  cwd: cwdSchema,
   /**
    * Arbitrary project tag for non-git-based project scoping (issue #569).
    * Creates a coding context with `projectId: "tag:<projectTag>"`.
    */
-  projectTag: z.string().trim().min(1, "projectTag must be non-empty when provided").max(256).optional(),
+  projectTag: projectTagSchema,
   /**
    * Historical recall pin (issue #680).  ISO 8601 timestamp.  The
    * schema only enforces the basic shape; the access service runs
@@ -225,12 +233,12 @@ export const observeRequestSchema = z.object({
    */
   idempotencyKey: idempotencyKeySchema,
   /** Working directory for auto git-context resolution (issue #569). */
-  cwd: z.string().trim().min(1, "cwd must be non-empty when provided").max(2048).optional(),
+  cwd: cwdSchema,
   /**
    * Arbitrary project tag for non-git-based project scoping (issue #569).
    * Creates a coding context with `projectId: "tag:<projectTag>"`.
    */
-  projectTag: z.string().trim().min(1, "projectTag must be non-empty when provided").max(256).optional(),
+  projectTag: projectTagSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -268,13 +276,8 @@ export const memoryStoreRequestSchema = z.object({
   // `namespace` is given, these route the write to the same project namespace
   // recall/observe resolve from `cwd`/`projectTag` (issue #569, rule 42). Also
   // lets MCP clients that auto-inject `cwd` (e.g. Pi MCPorter) call write tools.
-  cwd: z.string().trim().min(1, "cwd must be non-empty when provided").max(2048).optional(),
-  projectTag: z
-    .string()
-    .trim()
-    .min(1, "projectTag must be non-empty when provided")
-    .max(256)
-    .optional(),
+  cwd: cwdSchema,
+  projectTag: projectTagSchema,
 });
 
 export const suggestionSubmitRequestSchema = memoryStoreRequestSchema;
@@ -335,6 +338,8 @@ export const lcmCompactionFlushRequestSchema = z
   .object({
     sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
     namespace: namespaceSchema,
+    cwd: cwdSchema,
+    projectTag: projectTagSchema,
     /**
      * Optional multi-namespace flush used by delegate lifecycle replay. The
      * server handles the whole list as one quota-counted write.
@@ -360,6 +365,14 @@ export const lcmCompactionFlushRequestSchema = z
       });
     }
   });
+
+export const extractionForceFlushRequestSchema = z.object({
+  sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
+  namespace: namespaceSchema,
+  cwd: cwdSchema,
+  projectTag: projectTagSchema,
+  deadlineMs: deadlineMsSchema,
+});
 
 export const lcmCompactionRecordRequestSchema = z.object({
   sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
@@ -583,6 +596,7 @@ export type TrustZonePromoteRequest = z.infer<typeof trustZonePromoteRequestSche
 export type TrustZoneDemoSeedRequest = z.infer<typeof trustZoneDemoSeedRequestSchema>;
 export type LcmSearchRequest = z.infer<typeof lcmSearchRequestSchema>;
 export type LcmCompactionFlushRequest = z.infer<typeof lcmCompactionFlushRequestSchema>;
+export type ExtractionForceFlushRequest = z.infer<typeof extractionForceFlushRequestSchema>;
 export type LcmCompactionRecordRequest = z.infer<typeof lcmCompactionRecordRequestSchema>;
 export type DaySummaryRequest = z.infer<typeof daySummaryRequestSchema>;
 export type CapsuleExportRequest = z.infer<typeof capsuleExportRequestSchema>;
@@ -610,6 +624,7 @@ export type SchemaName =
   | "trustZoneDemoSeed"
   | "lcmSearch"
   | "lcmCompactionFlush"
+  | "extractionForceFlush"
   | "lcmCompactionRecord"
   | "daySummary"
   | "capsuleExport"
@@ -633,6 +648,7 @@ export type SchemaTypeFor<N extends SchemaName> =
   : N extends "trustZoneDemoSeed" ? TrustZoneDemoSeedRequest
   : N extends "lcmSearch" ? LcmSearchRequest
   : N extends "lcmCompactionFlush" ? LcmCompactionFlushRequest
+  : N extends "extractionForceFlush" ? ExtractionForceFlushRequest
   : N extends "lcmCompactionRecord" ? LcmCompactionRecordRequest
   : N extends "daySummary" ? DaySummaryRequest
   : N extends "capsuleExport" ? CapsuleExportRequest
@@ -657,6 +673,7 @@ const schemas: Record<SchemaName, z.ZodTypeAny> = {
   trustZoneDemoSeed: trustZoneDemoSeedRequestSchema,
   lcmSearch: lcmSearchRequestSchema,
   lcmCompactionFlush: lcmCompactionFlushRequestSchema,
+  extractionForceFlush: extractionForceFlushRequestSchema,
   lcmCompactionRecord: lcmCompactionRecordRequestSchema,
   daySummary: daySummaryRequestSchema,
   capsuleExport: capsuleExportRequestSchema,

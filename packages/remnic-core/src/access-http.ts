@@ -1687,6 +1687,27 @@ export class EngramAccessHttpServer {
 
     if (
       req.method === "POST" &&
+      (pathname === "/engram/v1/extraction/flush" || pathname === "/remnic/v1/extraction/flush")
+    ) {
+      this.enforceTokenOp("extraction_force_flush");
+      const body = await this.readValidatedBody(req, "extractionForceFlush");
+      this.ensureWriteRateLimitAvailable(req);
+      const response = await this.service.extractionForceFlush({
+        sessionKey: body.sessionKey,
+        namespace: this.resolveNamespace(req, body.namespace),
+        cwd: body.cwd,
+        projectTag: body.projectTag,
+        deadlineMs: body.deadlineMs,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        abortSignal,
+      });
+      this.recordWriteRateLimitHit(req);
+      this.respondJson(res, 200, response);
+      return;
+    }
+
+    if (
+      req.method === "POST" &&
       (pathname === "/engram/v1/lcm/compaction/record" || pathname === "/remnic/v1/lcm/compaction/record")
     ) {
       this.enforceTokenOp("lcm_compaction_record"); // boundary dispatch (issue #1525)
