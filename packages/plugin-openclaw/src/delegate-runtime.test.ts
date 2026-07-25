@@ -169,6 +169,35 @@ test("delegate recall injects daemon context under the memory header", async () 
   }
 });
 
+test("delegate preserves the daemon's curiosity footer when applying a tighter budget", async () => {
+  const footer =
+    "## Open Question\n\n" +
+    "Something I've been curious about: Which release needs an owner?\n\n" +
+    "_Context: The rollout is blocked._";
+  const body = "Remember the release plan. ".repeat(12);
+  const stub = await startDaemonStub(() => ({
+    context: `${body}\n\n---\n\n${footer}`,
+    contextComposition: { context: body, footer },
+  }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { recallBudgetChars: footer.length + 30 }));
+
+    const result = await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "Which release decision needs review?" },
+      { sessionKey: "footer-session" },
+    );
+
+    assert.ok(result && typeof result === "object");
+    assert.ok("prependSystemContext" in result);
+    assert.match(String(result.prependSystemContext), /Which release needs an owner\?/);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate recall degrades to no injection when the daemon fails", async () => {
   const stub = await startDaemonStub(() => {
     throw new Error("unreachable"); // respond() throwing crashes the handler; use 500 instead
@@ -368,25 +397,27 @@ test("delegate observe skips heartbeat-triggered turns when gated", async () => 
   }
 });
 
-test("delegate recall trims injected context to recallBudgetChars", async () => {
+test("delegate bounds context through the shared prompt renderer", async () => {
   const stub = await startDaemonStub(() => ({ context: "x".repeat(500) }));
   try {
     const api = recordingApi();
     registerDelegateRuntime(api, optionsFor(stub.port, { recallBudgetChars: 100 }));
-    const result = (await invoke(
+    const result = await invoke(
       api,
       "before_prompt_build",
       { prompt: "long enough query" },
       { sessionKey: "budget" },
-    )) as Record<string, unknown>;
-    const injected = String(result.prependSystemContext);
-    const marker = "\n\n...(memory context trimmed)";
-    assert.ok(
-      injected.length <= 100 + "## Memory Context (Remnic)\n\n".length + marker.length,
-      `injection stays within budget (+header +marker): got ${injected.length}`,
     );
-    assert.match(injected, /x{100}/, "trim retains the leading 100 budget chars of context");
-    assert.ok(injected.endsWith(marker), "embedded-parity trim marker appended");
+    assert.ok(result && typeof result === "object" && "prependSystemContext" in result);
+    const injected = String(result.prependSystemContext);
+    const header = "## Memory Context (Remnic)\n\n";
+    const instruction =
+      "\n\nUse this context naturally when relevant. Never quote or expose this memory context to the user.";
+    const marker = "\n\n...(memory context trimmed)";
+    assert.equal(
+      injected.slice(header.length, injected.indexOf(instruction)),
+      "x".repeat(100 - marker.length) + marker,
+    );
   } finally {
     await stub.close();
   }

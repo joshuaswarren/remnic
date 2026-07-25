@@ -321,10 +321,26 @@ test("scenario: native corpus supplement searches and reads Remnic memory", asyn
 test("scenario: prompt injection precomputes recall and serves the cached prompt-section builder", async () => {
   await withScenarioRegistration(async ({ capture, orchestrator }) => {
     let recallCount = 0;
-    orchestrator.recall = async (query: string, sessionKey: string) => {
+    orchestrator.recall = async (
+      query: string,
+      sessionKey: string,
+      options?: {
+        onContextComposition?: (composition: {
+          context: string;
+          footer?: string;
+        }) => void;
+      },
+    ) => {
       recallCount += 1;
       assert.match(query, /dashboard/);
       assert.equal(sessionKey, "prompt-session");
+      options?.onContextComposition?.({
+        context: "Remember that the user prefers compact dashboards.",
+        footer:
+          "## Open Question\n\n" +
+          "Something I've been curious about: Which dashboard decision needs an owner?\n\n" +
+          "_Context: The team is waiting for an owner._",
+      });
       return "Remember that the user prefers compact dashboards.";
     };
 
@@ -349,6 +365,8 @@ test("scenario: prompt injection precomputes recall and serves the cached prompt
     assert.equal(hookResult, undefined);
     assert.match(lines.join("\n"), /Memory Context \(Remnic\)/);
     assert.match(lines.join("\n"), /compact dashboards/);
+    assert.match(lines.join("\n"), /## Open Question/);
+    assert.match(lines.join("\n"), /Which dashboard decision needs an owner\?/);
   });
 });
 
