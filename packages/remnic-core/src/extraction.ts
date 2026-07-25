@@ -1137,7 +1137,7 @@ export class ExtractionEngine {
   }
 
   private applySourceGrounding(result: ExtractionResult, sourceText: string): ExtractionResult {
-    if (!this.config.extractionSourceGroundingEnabled) return result;
+    if (!resolvePipelineProcessingCapabilities(this.config).sourceGrounding) return result;
     return filterExtractionResultBySource(result, sourceText);
   }
 

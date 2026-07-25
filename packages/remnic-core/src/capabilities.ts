@@ -1132,13 +1132,10 @@ export function resolveRecallEnhancementCapabilities(config: RecallEnhancementCo
 }
 
 // ---------------------------------------------------------------------------
-// PipelineProcessing capability set (issue #1523 batch 9).
-//
-// These 22 flags gate the extraction/chunking/summarization pipeline and LLM
-// infrastructure. Read sites span orchestrator, extraction, summarizer,
-// embedding-fallback, local-llm, search, day-summary, and semantic-consolidation.
-// All flags are non-optional booleans on PluginConfig (defaults resolved at
-// the parse boundary), so the projection is a pure pass-through.
+// PipelineProcessing capability set (issue #1523 batch 9). These 23 flags gate
+// extraction/chunking/summarization and LLM infrastructure across orchestrator,
+// extraction, summarizer, embedding-fallback, local-llm, search, day-summary, and
+// semantic-consolidation. Defaults resolve at parse boundary, so pure pass-through.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1161,6 +1158,7 @@ export interface PipelineProcessingCapabilitySet {
   readonly lcm: boolean;
   readonly localLlmFast: boolean;
   readonly proactiveExtraction: boolean;
+  readonly sourceGrounding: boolean;
   readonly delinearize: boolean;
   readonly slowLog: boolean;
   readonly hostEmbeddingProvider: boolean;
@@ -1189,6 +1187,7 @@ export type PipelineProcessingConfigProjection = Pick<
   | "lcmEnabled"
   | "localLlmFastEnabled"
   | "proactiveExtractionEnabled"
+  | "extractionSourceGroundingEnabled"
   | "delinearizeEnabled"
   | "slowLogEnabled"
   | "hostEmbeddingProviderEnabled"
@@ -1217,6 +1216,7 @@ export function resolvePipelineProcessingCapabilities(config: PipelineProcessing
     lcm: config.lcmEnabled,
     localLlmFast: config.localLlmFastEnabled,
     proactiveExtraction: config.proactiveExtractionEnabled,
+    sourceGrounding: config.extractionSourceGroundingEnabled,
     delinearize: config.delinearizeEnabled,
     slowLog: config.slowLogEnabled,
     hostEmbeddingProvider: config.hostEmbeddingProviderEnabled,

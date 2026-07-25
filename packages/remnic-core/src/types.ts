@@ -1556,13 +1556,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   profilingStorageDir: string;
   /** Maximum number of trace files to keep (rolling window). */
   profilingMaxTraces: number;
-  // Extraction stability guards (P0/P1)
-  extractionDedupeEnabled: boolean;
-  /**
-   * When true, retain only facts, profile updates, and questions supported by
-   * observed source turns. Default true; disable only to preserve legacy behavior.
-   */
-  extractionSourceGroundingEnabled: boolean;
+  // Extraction stability guards (P0/P1).
+  extractionDedupeEnabled: boolean; extractionSourceGroundingEnabled: boolean;
   extractionDedupeWindowMs: number;
   extractionMinChars: number;
   extractionMinUserTurns: number;

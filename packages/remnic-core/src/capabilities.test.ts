@@ -1246,6 +1246,7 @@ const PIPELINE_FIELD_TO_FLAG: Record<keyof PipelineProcessingCapabilitySet, stri
   lcm: "lcmEnabled",
   localLlmFast: "localLlmFastEnabled",
   proactiveExtraction: "proactiveExtractionEnabled",
+  sourceGrounding: "extractionSourceGroundingEnabled",
   delinearize: "delinearizeEnabled",
   slowLog: "slowLogEnabled",
   hostEmbeddingProvider: "hostEmbeddingProviderEnabled",

@@ -2734,8 +2734,7 @@ export function parseConfig(
         : 100,
     // Extraction stability guards (P0/P1)
     extractionDedupeEnabled: cfg.extractionDedupeEnabled !== false,
-    extractionSourceGroundingEnabled:
-      coerceBool(cfg.extractionSourceGroundingEnabled) !== false,
+    extractionSourceGroundingEnabled: coerceBool(cfg.extractionSourceGroundingEnabled) !== false,
     extractionDedupeWindowMs:
       typeof cfg.extractionDedupeWindowMs === "number" ? cfg.extractionDedupeWindowMs : 5 * 60_000,
     extractionMinChars:
