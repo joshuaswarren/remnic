@@ -276,6 +276,34 @@ test("writeProfile closes an active HTML block before skipping indented code", a
 });
 
 
+test("writeProfile preserves timestamp-shaped generic HTML blocks", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<custom-widget>",
+        "*Last updated: literal example*",
+        "</custom-widget>",
+        "",
+        "- Keeps custom HTML.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\n<custom-widget>", `\n\n${FRESH_HEADER}\n\n<custom-widget>`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile removes duplicate stale headers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

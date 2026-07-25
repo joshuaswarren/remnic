@@ -128,6 +128,54 @@ function findHtmlBlockTag(line: string, tags: readonly string[]): string | null 
   return null;
 }
 
+type HtmlTag = {
+  name: string;
+  isClosing: boolean;
+};
+
+function isAsciiLetter(character: string): boolean {
+  return (
+    (character >= "a" && character <= "z") ||
+    (character >= "A" && character <= "Z")
+  );
+}
+
+function isHtmlTagNameCharacter(character: string): boolean {
+  return (
+    isAsciiLetter(character) ||
+    (character >= "0" && character <= "9") ||
+    character === "-" ||
+    character === ":"
+  );
+}
+
+function findCompleteHtmlTag(line: string): HtmlTag | null {
+  let index = 1;
+  const isClosing = line[index] === "/";
+  if (isClosing) index += 1;
+  const nameStart = index;
+  if (!isAsciiLetter(line[index] ?? "")) return null;
+  while (isHtmlTagNameCharacter(line[index] ?? "")) index += 1;
+  const name = line.slice(nameStart, index).toLowerCase();
+  let quote: string | null = null;
+  for (; index < line.length; index += 1) {
+    const character = line[index]!;
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "<") return null;
+    if (character === ">" && line.slice(index + 1).trim() === "") {
+      return { name, isClosing };
+    }
+  }
+  return null;
+}
+
 function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBlock | null {
   const rawTag = findHtmlBlockTag(normalizedLine, RAW_HTML_BLOCK_TAGS);
   if (rawTag) return { endMarker: `</${rawTag}>`, endsAtBlankLine: false };
@@ -135,11 +183,20 @@ function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBl
   if (normalizedLine.startsWith("<?")) return { endMarker: "?>", endsAtBlankLine: false };
   if (normalizedLine.startsWith("<![cdata[")) return { endMarker: "]]>", endsAtBlankLine: false };
   const declarationFirst = trimmedLine[2];
-  if (trimmedLine.startsWith("<!") && declarationFirst && declarationFirst >= "A" && declarationFirst <= "Z") {
+  if (
+    trimmedLine.startsWith("<!") &&
+    declarationFirst &&
+    declarationFirst >= "A" &&
+    declarationFirst <= "Z"
+  ) {
     return { endMarker: null, endsAtBlankLine: true };
   }
   const blockTag = findHtmlBlockTag(normalizedLine, HTML_BLOCK_TAGS);
-  return blockTag ? { endMarker: `</${blockTag}>`, endsAtBlankLine: true } : null;
+  if (blockTag) return { endMarker: `</${blockTag}>`, endsAtBlankLine: true };
+  const genericTag = findCompleteHtmlTag(trimmedLine);
+  return genericTag
+    ? { endMarker: genericTag.isClosing ? null : `</${genericTag.name}>`, endsAtBlankLine: true }
+    : null;
 }
 
 type ProfileLine = {
