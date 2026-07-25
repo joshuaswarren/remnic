@@ -1,4 +1,4 @@
-import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
@@ -94,22 +94,38 @@ export class TombstoneBlockedCaptureIndex {
     return path.join(this.options.stateDir, "tombstone-blocked-capture", "rebuild-required");
   }
 
-  private async getRebuildMarkers(): Promise<string[]> {
+  private async getRebuildMarkers(): Promise<{ path: string; committed: boolean }[]> {
     try {
       const entries = await readdir(this.rebuildMarkerPath());
-      return entries.map((entry) => path.join(this.rebuildMarkerPath(), entry));
+      return await Promise.all(
+        entries.map(async (entry) => {
+          const markerPath = path.join(this.rebuildMarkerPath(), entry);
+          let committed = false;
+          try {
+            committed = (await readFile(markerPath, "utf8")).trim() === "committed";
+          } catch (err) {
+            if (!isErrnoCode(err, "ENOENT")) throw err;
+          }
+          return { path: markerPath, committed };
+        }),
+      );
     } catch (err) {
       if (isErrnoCode(err, "ENOENT")) return [];
       throw err;
     }
   }
 
-  private async markRebuildRequired(): Promise<string> {
+  // A pending marker protects the pre-commit gap; only committed markers are safe for another writer to clear.
+  private async markRebuildRequired(committed = false): Promise<string> {
     const markerDir = this.rebuildMarkerPath();
     await mkdir(markerDir, { recursive: true });
     const markerPath = path.join(markerDir, randomUUID());
-    await writeFile(markerPath, "rebuild\n", "utf8");
+    await writeFile(markerPath, `${committed ? "committed" : "pending"}\n`, "utf8");
     return markerPath;
+  }
+
+  private async markRebuildCommitted(markerPath: string): Promise<void> {
+    await writeFile(markerPath, "committed\n", "utf8");
   }
 
   private async clearRebuildRequired(markerPaths: readonly string[]): Promise<void> {
@@ -159,6 +175,9 @@ export class TombstoneBlockedCaptureIndex {
       this.loadPromise = (async () => {
         await index.load();
         const rebuildMarkers = await this.getRebuildMarkers();
+        const committedRebuildMarkers = rebuildMarkers
+          .filter((marker) => marker.committed)
+          .map((marker) => marker.path);
         let persisted = true;
         try {
           await stat(this.indexPath());
@@ -181,7 +200,7 @@ export class TombstoneBlockedCaptureIndex {
           if (!rebuilt) {
             throw new Error("tombstone-blocked capture index rebuild lock unavailable");
           }
-          await this.clearRebuildRequired(rebuildMarkers);
+          await this.clearRebuildRequired(committedRebuildMarkers);
         }
         this.authoritative = true;
         this.index = index;
@@ -246,6 +265,11 @@ export class TombstoneBlockedCaptureIndex {
     return this.markRebuildRequired();
   }
 
+  /** Mark a prepared write committed once its memory file is durable. */
+  async commitWrite(rebuildMarker: string): Promise<void> {
+    await this.markRebuildCommitted(rebuildMarker);
+  }
+
   /** Add a newly persisted blocked row to the durable targeted index. */
   async add(memory: MemoryFile, rebuildMarker?: string): Promise<void> {
     if (!this.isBlocked(memory)) return;
@@ -263,7 +287,8 @@ export class TombstoneBlockedCaptureIndex {
         memory.frontmatter.sourceConnector,
       ),
     );
-    const marker = rebuildMarker ?? await this.markRebuildRequired();
+    const marker = rebuildMarker ?? await this.markRebuildRequired(true);
+    if (rebuildMarker) await this.markRebuildCommitted(rebuildMarker);
     await index.saveMergingWithDisk();
     await index.flushReconcileRetry();
     if (index.hasPendingChanges) {
@@ -278,14 +303,19 @@ export class TombstoneBlockedCaptureIndex {
   async rebuildIfLoaded(): Promise<void> {
     if (!this.index) return;
     const rebuildMarkers = await this.getRebuildMarkers();
-    const rebuildMarker = await this.markRebuildRequired();
+    const rebuildMarker = await this.markRebuildRequired(true);
     const rebuilt = await this.rebuild(this.index);
-    if (rebuilt) await this.clearRebuildRequired([...rebuildMarkers, rebuildMarker]);
+    if (rebuilt) {
+      await this.clearRebuildRequired([
+        ...rebuildMarkers.filter((marker) => marker.committed).map((marker) => marker.path),
+        rebuildMarker,
+      ]);
+    }
     this.authoritative = rebuilt;
   }
 
   /** Rebuild when either side of a write is blocked and its identity changed. */
-  async sync(before: MemoryFile, after: MemoryFile): Promise<void> {
+  async sync(before: MemoryFile, after: MemoryFile, rebuildMarker?: string): Promise<void> {
     const beforeBlocked = this.isBlocked(before);
     const afterBlocked = this.isBlocked(after);
     if (!beforeBlocked && !afterBlocked) return;
@@ -299,13 +329,26 @@ export class TombstoneBlockedCaptureIndex {
       after.frontmatter.category,
       after.frontmatter.sourceConnector,
     );
-    if (beforeBlocked && afterBlocked && beforeKey === afterKey) return;
-    const rebuildMarkers = await this.getRebuildMarkers();
-    const rebuildMarker = await this.markRebuildRequired();
+    if (beforeBlocked && afterBlocked && beforeKey === afterKey) {
+      if (rebuildMarker) {
+        await this.markRebuildCommitted(rebuildMarker);
+        await this.clearRebuildRequired([rebuildMarker]);
+      }
+      return;
+    }
+    const existingMarkers = await this.getRebuildMarkers();
+    const marker = rebuildMarker ?? await this.markRebuildRequired(true);
+    if (rebuildMarker) await this.markRebuildCommitted(rebuildMarker);
     const rebuilt = await this.rebuild(await this.getIndex());
-    if (rebuilt) await this.clearRebuildRequired([...rebuildMarkers, rebuildMarker]);
+    if (rebuilt) {
+      await this.clearRebuildRequired([
+        ...existingMarkers.filter((entry) => entry.committed).map((entry) => entry.path),
+        marker,
+      ]);
+    }
     this.authoritative = rebuilt;
   }
+
 
   markUntrusted(): void {
     this.authoritative = false;
@@ -339,12 +382,21 @@ export class TombstoneBlockedCaptureIndex {
     before: MemoryFile,
     frontmatter: MemoryFrontmatter,
     content: string,
+    rebuildMarker?: string,
   ): Promise<void> {
-    await this.failOpen("updateMemory", () => this.sync(before, { ...before, frontmatter, content }));
+    await this.failOpen("updateMemory", () =>
+      this.sync(before, { ...before, frontmatter, content }, rebuildMarker),
+    );
   }
 
-  async syncUpdatedFrontmatter(before: MemoryFile, frontmatter: MemoryFrontmatter): Promise<void> {
-    await this.failOpen("writeMemoryFrontmatter", () => this.sync(before, { ...before, frontmatter }));
+  async syncUpdatedFrontmatter(
+    before: MemoryFile,
+    frontmatter: MemoryFrontmatter,
+    rebuildMarker?: string,
+  ): Promise<void> {
+    await this.failOpen("writeMemoryFrontmatter", () =>
+      this.sync(before, { ...before, frontmatter }, rebuildMarker),
+    );
   }
 }
 

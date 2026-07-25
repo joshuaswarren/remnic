@@ -3881,6 +3881,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     await this.snapshotBeforeWrite(filePath, "write");
     await this.writeStorageSecureFile(filePath, fileContent);
+    if (tombstoneRebuildMarker) {
+      await this.getTombstoneBlockedCaptureIndex().commitWrite(tombstoneRebuildMarker);
+    }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
@@ -5151,12 +5154,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         ? { sourceConnector: options.sourceConnector }
         : {}),
     };
+    const tombstoneRebuildMarker =
+      memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy)
+        ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
+        : undefined;
     const sanitized = sanitizeMemoryContent(newContent);
     if (!sanitized.clean) {
       log.warn(`updated memory content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
     }
     const fileContent = `${serializeFrontmatter(updated)}\n\n${sanitized.text}\n`;
     await this.writeStorageSecureFile(memory.path, fileContent);
+    if (tombstoneRebuildMarker) {
+      await this.getTombstoneBlockedCaptureIndex().commitWrite(tombstoneRebuildMarker);
+    }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
       memoryId: id,
@@ -5169,7 +5179,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         ...(updated.supersedes ? [updated.supersedes] : []),
         ...(updated.lineage ?? []).filter(Boolean),
       ],
-    }); await this.getTombstoneBlockedCaptureIndex().syncUpdatedMemory(memory, updated, sanitized.text);
+    });
+    await this.getTombstoneBlockedCaptureIndex().syncUpdatedMemory(
+      memory,
+      updated,
+      sanitized.text,
+      tombstoneRebuildMarker,
+    );
     log.debug(`updated memory ${id}`);
     return true;
   }
@@ -5189,9 +5205,17 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       ...patch,
     };
     const afterStatus = updated.status ?? "active";
+    const tombstoneRebuildMarker =
+      (beforeStatus === "pending_review" && Boolean(memory.frontmatter.blockedBy))
+      || (afterStatus === "pending_review" && Boolean(updated.blockedBy))
+        ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
+        : undefined;
 
     const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
     await this.writeStorageSecureFile(memory.path, fileContent);
+    if (tombstoneRebuildMarker) {
+      await this.getTombstoneBlockedCaptureIndex().commitWrite(tombstoneRebuildMarker);
+    }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     // If the target file lives in cold/, bump the cold-version sentinel so
     // other processes detect the change on their next readAllColdMemories()
@@ -5206,7 +5230,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       });
     } catch (err) {
       log.warn(`storage.writeMemoryFrontmatter completed but failed to update fact hash index: ${err}`);
-    } await this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(memory, updated);
+    }
+    await this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(
+      memory,
+      updated,
+      tombstoneRebuildMarker,
+    );
     await this.appendGeneratedMemoryLifecycleEventFailOpen(
       "storage.writeMemoryFrontmatter",
       {

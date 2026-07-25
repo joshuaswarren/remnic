@@ -1285,23 +1285,23 @@ test("token-specific blocked index markers survive peer interleaving and restart
     const peer = new TombstoneBlockedCaptureIndex(options);
     const peerInternals = peer as unknown as {
       markRebuildRequired: () => Promise<string>;
+      markRebuildCommitted: (markerPath: string) => Promise<void>;
     };
     const originalSave = ContentHashIndex.prototype.saveMergingWithDisk;
-    let peerMarkerWritten = false;
+    let peerMarker: string | undefined;
     const saveSpy = mock.method(
       ContentHashIndex.prototype,
       "saveMergingWithDisk",
       async function (this: ContentHashIndex) {
-        if (!peerMarkerWritten) {
-          peerMarkerWritten = true;
-          await peerInternals.markRebuildRequired();
+        if (!peerMarker) {
+          peerMarker = await peerInternals.markRebuildRequired();
         }
         return originalSave.call(this);
       },
     );
     try {
       await writer.add(blocked);
-      assert.equal(peerMarkerWritten, true);
+      assert.ok(peerMarker);
       assert.equal(
         (await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required"))).length,
         1,
@@ -1310,6 +1310,9 @@ test("token-specific blocked index markers survive peer interleaving and restart
     } finally {
       saveSpy.mock.restore();
     }
+
+    if (!peerMarker) throw new Error("peer marker was not created");
+    await peerInternals.markRebuildCommitted(peerMarker);
 
     const restarted = new TombstoneBlockedCaptureIndex(options);
     assert.equal(await restarted.has(blocked.content, "fact"), true);
@@ -1436,6 +1439,69 @@ test("tombstone-blocked writes reserve rebuild intent before post-write index wo
       "restart must rebuild the blocked identity from the durable memory",
     );
     assert.deepEqual(await readdir(markerDir), [], "successful restart rebuild clears the marker");
+  });
+});
+
+test("blocked rewrites reserve markers before durable mutation index hooks", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked rewrite must remain deduplicable across an index hook failure.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-rewrite",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
+    const syncMemorySpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "syncUpdatedMemory",
+      async () => {},
+    );
+    try {
+      assert.equal(await storage.updateMemory(result.id, `${content} changed`), true);
+      assert.equal((await readdir(markerDir)).length, 1, "blocked update must leave a committed marker for its hook");
+    } finally {
+      syncMemorySpy.mock.restore();
+    }
+
+    const restarted = new StorageManager(dir);
+    restarted.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    assert.equal(await restarted.hasTombstoneBlockedExplicitCapture(`${content} changed`, "fact", "provider-a"), true);
+    const memory = await restarted.getMemoryById(result.id);
+    assert.ok(memory, "updated blocked memory must be readable");
+    const syncFrontmatterSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "syncUpdatedFrontmatter",
+      async () => {},
+    );
+    try {
+      assert.equal(
+        await restarted.writeMemoryFrontmatter(memory, { sourceConnector: "provider-b" }),
+        true,
+      );
+      assert.equal((await readdir(markerDir)).length, 1, "blocked frontmatter rewrite must reserve a marker");
+    } finally {
+      syncFrontmatterSpy.mock.restore();
+    }
   });
 });
 
