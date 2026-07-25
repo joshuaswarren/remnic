@@ -3627,8 +3627,7 @@ export class EngramAccessHttpServer {
     return {
       service: this.service,
       enforceTokenOp: (op) => this.enforceTokenOp(op),
-      readLcmCompactionFlush: () => this.readValidatedBody(req, "lcmCompactionFlush"),
-      readExtractionForceFlush: () => this.readValidatedBody(req, "extractionForceFlush"),
+      readValidatedBody: (schemaName) => this.readValidatedBody(req, schemaName),
       ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
       resolveNamespace: (namespace) => this.resolveNamespace(req, namespace),
       resolveRequestPrincipal: () => this.resolveRequestPrincipal(req),

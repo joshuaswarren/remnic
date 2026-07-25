@@ -8,8 +8,9 @@ import type { OperationName } from "./access-boundary.js";
 export interface LifecycleFlushHttpDeps {
   service: Pick<EngramAccessService, "extractionForceFlush" | "lcmCompactionFlush">;
   enforceTokenOp(op: OperationName): void;
-  readLcmCompactionFlush(): Promise<EngramAccessLcmCompactionFlushRequest>;
-  readExtractionForceFlush(): Promise<EngramAccessExtractionForceFlushRequest>;
+  readValidatedBody(
+    schemaName: "lcmCompactionFlush" | "extractionForceFlush",
+  ): Promise<EngramAccessLcmCompactionFlushRequest | EngramAccessExtractionForceFlushRequest>;
   ensureWriteRateLimitAvailable(): void;
   resolveNamespace(namespace: string | undefined): string | undefined;
   resolveRequestPrincipal(): string | undefined;
@@ -29,7 +30,7 @@ export async function maybeHandleLifecycleFlush(
     pathname === "/remnic/v1/lcm/compaction/flush"
   ) {
     deps.enforceTokenOp("lcm_compaction_flush");
-    const body = await deps.readLcmCompactionFlush();
+    const body = await deps.readValidatedBody("lcmCompactionFlush");
     deps.ensureWriteRateLimitAvailable();
     const response = await deps.service.lcmCompactionFlush({
       ...body,
@@ -46,7 +47,7 @@ export async function maybeHandleLifecycleFlush(
     pathname === "/remnic/v1/extraction/flush"
   ) {
     deps.enforceTokenOp("extraction_force_flush");
-    const body = await deps.readExtractionForceFlush();
+    const body = await deps.readValidatedBody("extractionForceFlush");
     deps.ensureWriteRateLimitAvailable();
     const response = await deps.service.extractionForceFlush({
       ...body,
