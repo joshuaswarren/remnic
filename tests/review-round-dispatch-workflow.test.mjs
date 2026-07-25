@@ -109,7 +109,10 @@ test("the round-dispatch workflow keeps least-privilege token scopes", () => {
   assert.doesNotMatch(dispatch, /^\s*pull-requests:\s*write/m);
 });
 
-test("the round-dispatch workflow shadows dispatch by default (enforcement flip is PR3)", () => {
+test("the round-dispatch workflow enforces one bot round per settled head", () => {
   const dispatch = read(".github/workflows/review-round-dispatch.yml");
-  assert.match(dispatch, /REVIEW_ROUND_ENFORCE:\s*'false'/);
+  // Enforcement is what stops a re-review on every intermediate push (umbrella
+  // #1988 decision D). Shadow mode writes the ledger but never dispatches, so a
+  // regression to 'false' silently restores per-push reviewer cost.
+  assert.match(dispatch, /REVIEW_ROUND_ENFORCE:\s*'true'/);
 });

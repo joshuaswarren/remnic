@@ -131,7 +131,7 @@ cancel those reruns. Work with this, not against it:
    audit-then-hold — commit incrementally so a killed worker leaves recoverable
    state on the branch.
 
-### Transactional review rounds (shadow — issue #1992)
+### Transactional review rounds (enforced — issue #1992)
 
 The `Review Round Dispatch` workflow (`review-round-dispatch.yml`) makes the
 "batch fixes, push once per round" rule mechanical instead of prose. It keeps a
@@ -149,12 +149,17 @@ decision core in `scripts/review-rounds.mjs` + `scripts/review-round-gate.mjs`):
   maintainer applies the `review-round:force-dispatch` label.
 - The ledger comment tracks `pushes this round: N` and warns at N>3.
 
-This is **shadow-only in v1** (`REVIEW_ROUND_ENFORCE: 'false'`): it never fails a
-check, never blocks merge, and never hides an unresolved thread — the
-`unresolved-review-threads` guard stays the thread merge gate untouched, and its
-missing concurrency group (that `check-unsticker` depends on) is preserved. The
-enforcement flip and the guard's round-scoped pending state are a later step,
-gated on shadow data (umbrella #1988 decision D).
+Dispatch is **enforced** (`REVIEW_ROUND_ENFORCE: 'true'`, umbrella #1988
+decision D): reviewers are asked to look again once per settled head, not once
+per push. The workflow still never fails a check, never blocks merge, and never
+hides an unresolved thread — the `unresolved-review-threads` guard stays the
+thread merge gate untouched, and its missing concurrency group (that
+`check-unsticker` depends on) is preserved.
+
+Practical consequence for agents: a bot round arrives only after you have
+addressed the round's threads and let the head settle for the debounce window.
+Micro-pushes no longer buy you an earlier review — they only inflate
+`pushes this round: N`. Batch the fixes.
 
 ## Why Stateful PRs Churn (Read Before Touching Lifecycle Logic)
 

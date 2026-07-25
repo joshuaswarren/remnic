@@ -2,11 +2,11 @@ name: Review Round Dispatch
 
 # Transactional review rounds (issue #1992, umbrella #1988 decision E).
 #
-# Maintains a per-PR round ledger and decides when the next bot review round may
-# be dispatched. v1 is visibility-first (umbrella decision C): the ledger comment
-# is always written, but reviewer dispatch stays a no-op unless
-# REVIEW_ROUND_ENFORCE=true. This workflow NEVER fails a check and NEVER hides an
-# unresolved thread — the review-thread-guard remains the merge gate on threads.
+# Maintains a per-PR round ledger and dispatches the next bot review round only
+# when the round's threads are addressed and the head has settled
+# (REVIEW_ROUND_ENFORCE=true). This workflow NEVER fails a check and NEVER hides
+# an unresolved thread — the review-thread-guard remains the merge gate on
+# threads; this one only controls WHEN reviewers are asked to look again.
 #
 # This is a SEPARATE workflow so it never adds concurrency to review-thread-guard
 # (whose missing concurrency group check-unsticker relies on — non-goal in #1992)
@@ -80,9 +80,10 @@ jobs:
       - name: Evaluate transactional review round
         uses: actions/github-script@v7
         env:
-          # Shadow by default (decision D): enforcement flip is PR3, after
-          # shadow data lands. Set to 'true' only after the sandbox check.
-          REVIEW_ROUND_ENFORCE: 'false'
+          # Enforced (umbrella #1988 decision D): one bot round per settled
+          # head instead of a re-review on every push. Set to 'false' to fall
+          # back to ledger-only shadow mode.
+          REVIEW_ROUND_ENFORCE: 'true'
           # Detection aliases MUST cover every bot the round dispatches
           # (@coderabbitai + @codex) plus Cursor's check-run, or their responses
           # would not be recognized as round activity (issue #1992).

@@ -14,12 +14,12 @@
  *      applies the force-dispatch label, or when the round exceeds its max age.
  *   4. Tracks micro-push telemetry ("pushes this round: N", warning at N>3).
  *
- * v1 is visibility-first (umbrella decision C): the ledger comment is always
- * written, but reviewer dispatch is a no-op unless REVIEW_ROUND_ENFORCE is
- * explicitly enabled. The enforcement flip and the review-thread-guard
- * pending-state change are deferred to PR3 (shadow data must land first,
- * decision D), so this driver never blocks a merge and never hides an
- * unresolved thread — it surfaces the open thread set in its summary.
+ * The ledger comment is always written. Reviewer dispatch fires only when
+ * REVIEW_ROUND_ENFORCE is enabled (the shipped default, umbrella decision D);
+ * with it off the driver degrades to ledger-only shadow mode. Either way it
+ * never blocks a merge and never hides an unresolved thread — the
+ * review-thread-guard owns that gate, and this driver surfaces the open thread
+ * set in its summary.
  *
  * The decision core (computeRoundGateDecision) is pure so fixture replay can
  * validate it without GitHub. runRoundGate is the thin actions/github-script
