@@ -842,6 +842,32 @@ test("writeProfile preserves timestamp-shaped raw HTML blocks", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile keeps self-closing raw HTML blocks opaque", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<pre/>",
+        "*Last updated: literal example*",
+        "",
+        "- Keeps self-closing raw HTML opaque.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\n<pre/>", `\n\n${FRESH_HEADER}\n\n<pre/>`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile preserves timestamp-shaped generic HTML blocks", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
