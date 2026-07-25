@@ -169,69 +169,79 @@ test("OffThreadArchiveScoring produces identical results to SyncArchiveScoring",
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3+4. Concurrency semantics — measured deterministically via max in-flight.
+// 3+4. Concurrency semantics — measured deterministically, never by wall clock.
 //
-// Instead of timing one call and K concurrent calls and asserting on the
-// wall-clock ratio (which flakes: a loaded CI runner inflates the single-call
-// baseline, deflating the ratio below threshold), we observe the property
-// directly. Each score() call brackets its work with an in-flight counter; a
-// self-re-arming setImmediate sampler records the maximum count it ever sees.
+// The original tests timed one call and K concurrent calls and asserted on the
+// wall-clock ratio, which flakes: a loaded CI runner inflates the single-call
+// baseline, deflating the ratio below threshold even when behavior is correct.
 //
-//   - Sync scoring runs its CPU work synchronously inside score(), so the event
-//     loop is blocked for the whole pass and every wrapper's decrement drains
-//     before any sampler tick fires: the sampler never catches two passes
-//     overlapping (max stays <= 1).
-//   - Off-thread scoring yields the event loop while workers compute, so all K
-//     passes sit in flight together and the sampler observes K.
+// Both replacements sample a counter from a self-re-arming setImmediate loop
+// and assert on the maximum observed. What they count differs, and that
+// difference is the whole point:
 //
-// This is an ordering fact (micro/macrotask + worker round-trip), independent
-// of how long the work takes, so it is immune to runner load.
+//   - SYNC: count CALLS in flight. Sync scoring burns its CPU inside score()
+//     with no await, so the event loop is blocked for the whole pass and no
+//     sampler tick can ever catch two passes overlapping (max stays <= 1).
+//     This is the behavior that caused issue #1674.
+//   - OFF-THREAD: count BUSY WORKERS, not callers. A caller parked in the
+//     pool's acquire() is queued, not running — counting callers would report
+//     K even for a size-1 pool, so the assertion would pass while every task
+//     ran serially and would miss the exact regression it guards (codex P2 /
+//     CodeRabbit on PR #2158).
+//
+// Both are ordering facts, independent of how long the work takes, so neither
+// is sensitive to runner load.
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function measureMaxInFlight(strategy: ArchiveScoringStrategy, k: number): Promise<number> {
-  let inFlight = 0;
-  let maxInFlight = 0;
+/** Sample `read()` on every macrotask tick while `body()` runs; return the max. */
+async function maxWhile(read: () => number, body: () => Promise<unknown>): Promise<number> {
+  let max = 0;
   let sampling = true;
-
   const sample = () => {
-    if (inFlight > maxInFlight) maxInFlight = inFlight;
+    const v = read();
+    if (v > max) max = v;
     if (sampling) setImmediate(sample);
   };
   setImmediate(sample);
-
-  const scoreOnce = async () => {
-    inFlight += 1;
-    try {
-      await strategy.score(HEAVY_ITEMS, QUERY_TOKENS);
-    } finally {
-      inFlight -= 1;
-    }
-  };
-
-  await Promise.all(Array.from({ length: k }, () => scoreOnce()));
-  sampling = false;
-  return maxInFlight;
+  try {
+    await body();
+  } finally {
+    sampling = false;
+  }
+  return max;
 }
 
 test("SyncArchiveScoring serializes K concurrent calls (max in-flight <= 1)", async () => {
   const K = 4;
   const sync = new SyncArchiveScoring();
+  let inFlight = 0;
 
-  const maxInFlight = await measureMaxInFlight(sync, K);
+  const maxInFlight = await maxWhile(
+    () => inFlight,
+    () =>
+      Promise.all(
+        Array.from({ length: K }, async () => {
+          inFlight += 1;
+          try {
+            await sync.score(HEAVY_ITEMS, QUERY_TOKENS);
+          } finally {
+            inFlight -= 1;
+          }
+        }),
+      ),
+  );
 
-  // Sync scoring blocks the event loop for each pass, so the K calls can never
-  // overlap. This is the behavior that caused issue #1674.
   assert.ok(
     maxInFlight <= 1,
-    `Sync scoring must serialize K=${K} concurrent calls (expected max in-flight <= 1, got ${maxInFlight})`
+    `Sync scoring must serialize K=${K} concurrent calls (expected max in-flight <= 1, got ${maxInFlight})`,
   );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. PASS: OffThreadArchiveScoring parallelizes K concurrent calls
+// 4. PASS: OffThreadArchiveScoring runs K tasks on K workers simultaneously
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("OffThreadArchiveScoring parallelizes K concurrent calls (max in-flight > 1)", async (t) => {
+test("OffThreadArchiveScoring parallelizes K concurrent calls (busy workers > 1)", async (t) => {
   const K = 4;
   // Size the pool explicitly to K so the assertion is robust to the runner's
   // core count: K workers with no queuing all run at once (#1674 review thread).
@@ -240,13 +250,40 @@ test("OffThreadArchiveScoring parallelizes K concurrent calls (max in-flight > 1
     await offThread.terminate();
   });
 
-  const maxInFlight = await measureMaxInFlight(offThread, K);
+  const maxBusyWorkers = await maxWhile(
+    () => offThread.busyWorkers,
+    () => Promise.all(Array.from({ length: K }, () => offThread.score(HEAVY_ITEMS, QUERY_TOKENS))),
+  );
 
-  // Off-thread scoring dispatches to separate workers, so the K calls are all
-  // in flight simultaneously — the fix for issue #1674.
   assert.ok(
-    maxInFlight > 1,
-    `Off-thread scoring must parallelize K=${K} concurrent calls (expected max in-flight > 1, got ${maxInFlight})`
+    maxBusyWorkers > 1,
+    `Off-thread scoring must run K=${K} calls on multiple workers at once (expected max busy workers > 1, got ${maxBusyWorkers})`,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4b. GUARD: the off-thread assertion must FAIL if the pool regresses to one
+//     worker. This is what makes test 4 meaningful rather than vacuous — a
+//     caller-side counter would report K here and pass.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("a single-worker pool is observably serial (guards the parallelism assertion)", async (t) => {
+  const K = 4;
+  const singleWorker = new OffThreadArchiveScoring(1);
+  t.after(async () => {
+    await singleWorker.terminate();
+  });
+
+  const maxBusyWorkers = await maxWhile(
+    () => singleWorker.busyWorkers,
+    () => Promise.all(Array.from({ length: K }, () => singleWorker.score(HEAVY_ITEMS, QUERY_TOKENS))),
+  );
+
+  assert.equal(
+    maxBusyWorkers,
+    1,
+    `A size-1 pool must never run two tasks at once (got ${maxBusyWorkers}); ` +
+      "if this reports K the counter is measuring queued callers, not busy workers",
   );
 });
 
