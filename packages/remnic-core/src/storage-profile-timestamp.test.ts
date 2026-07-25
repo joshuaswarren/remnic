@@ -238,6 +238,68 @@ test("writeProfile recognizes thematic breaks as metadata boundaries", async (t)
     t.mock.timers.reset();
   }
 });
+test("writeProfile recognizes a compact header before prose", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        STALE_HEADER,
+        "Plain prose follows the compact header.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile does not use nested list headings as the profile title", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "- List item",
+        "  # Nested heading",
+        "  Nested body text.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), `${FRESH_HEADER}\n\n${profile}`);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile rejects malformed HTML attributes before the profile title", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "<custom / nope>",
+        "# Behavioral Profile",
+        STALE_HEADER,
+        "",
+        "- Keeps malformed tag-shaped text as prose.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile keeps an inserted header standalone", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

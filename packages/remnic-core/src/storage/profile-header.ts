@@ -153,6 +153,17 @@ function isHtmlTagNameCharacter(character: string): boolean {
     character === "-"
   );
 }
+const HTML_ATTRIBUTES =
+  /^(?:[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*$/;
+
+function hasValidHtmlTagAttributes(attributeText: string, isClosing: boolean): boolean {
+  const trimmed = attributeText.trim();
+  if (isClosing || trimmed === "") return trimmed === "";
+  const withoutSelfClosingSlash = trimmed.endsWith("/")
+    ? trimmed.slice(0, -1).trimEnd()
+    : trimmed;
+  return withoutSelfClosingSlash === "" || HTML_ATTRIBUTES.test(withoutSelfClosingSlash);
+}
 
 function findCompleteHtmlTag(line: string): HtmlTag | null {
   let index = 1;
@@ -184,6 +195,7 @@ function findCompleteHtmlTag(line: string): HtmlTag | null {
     }
     if (character === ">" && line.slice(index + 1).trim() === "") {
       const tagBody = line.slice(nameStart, index).trimEnd();
+      if (!hasValidHtmlTagAttributes(tagBody.slice(name.length), isClosing)) return null;
       return {
         name,
         isClosing,
@@ -417,12 +429,20 @@ function visitProfileMetadataLines(
   }
 }
 
+function isProfileTitleLine(lines: ProfileLine[], index: number, line: string): boolean {
+  const titleLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
+  if (!PROFILE_TITLE.test(titleLine)) return false;
+  const indentation = titleLine.length - titleLine.trimStart().length;
+  if (indentation === 0 || index === 0) return true;
+  const previousLine = lines[index - 1]?.content.trim() ?? "";
+  return previousLine === "" || previousLine === "---" || previousLine === "...";
+}
+
 function findProfileTitleIndex(lines: ProfileLine[]): number {
   let titleIndex = -1;
   visitProfileMetadataLines(lines, (line, index) => {
     if (titleIndex >= 0) return;
-    const titleLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
-    if (PROFILE_TITLE.test(titleLine)) titleIndex = index;
+    if (isProfileTitleLine(lines, index, line)) titleIndex = index;
   });
   return titleIndex;
 }
@@ -455,7 +475,8 @@ function isStandaloneMetadataLine(
   const startsBlock =
     index === 0 || index === frontmatterEnd + 1 || previousMetadataBoundary;
   const endsBlock = index === lines.length - 1 || nextMetadataBoundary;
-  return startsBlock && endsBlock;
+  const compactHeaderAfterTitle = isProfileTitleLine(lines, index - 1, previousWithoutBom);
+  return startsBlock && (endsBlock || compactHeaderAfterTitle);
 }
 
 function findProfileHeaderIndexes(lines: ProfileLine[]): number[] {
