@@ -61,6 +61,17 @@ test("isGenericRecallExcludedPath covers artifacts, activity digests, and top-le
   );
 });
 
+test("isGenericRecallExcludedPath normalizes QMD archive URIs", () => {
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "qmd://openclaw-engram/archive/2026-07-22/a.md",
+      { memoryDir: "/mem", qmdCollection: "openclaw-engram" },
+      "qmd",
+    ),
+    true,
+  );
+});
+
 test("isActivityDigestPath is root-aware: only the top-level digest is excluded", () => {
   const root = "/mem";
   // Top-level digest (absolute + relative) is excluded.

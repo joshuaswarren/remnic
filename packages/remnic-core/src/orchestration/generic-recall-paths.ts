@@ -35,12 +35,24 @@ function isQmdCollectionPrefix(
   );
 }
 
+function normalizeQmdUriPath(relativePath: string, source: GenericRecallPathSource): string {
+  if (source !== "qmd" || !relativePath.startsWith("qmd://")) return relativePath;
+  try {
+    const parsed = new URL(relativePath);
+    if (parsed.protocol !== "qmd:" || !parsed.hostname) return relativePath;
+    const pathname = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+    return pathname ? `${parsed.hostname}/${pathname}` : parsed.hostname;
+  } catch {
+    return relativePath;
+  }
+}
+
 function stripQmdCollectionPrefix(
   relativePath: string,
   policy: GenericRecallPathPolicy,
   source: GenericRecallPathSource,
 ): string {
-  const normalized = path.posix.normalize(relativePath.replace(/\\/g, "/"));
+  const normalized = path.posix.normalize(normalizeQmdUriPath(relativePath, source).replace(/\\/g, "/"));
   const slashIndex = normalized.indexOf("/");
   if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return normalized;
 
