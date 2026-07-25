@@ -13,8 +13,17 @@ function isLastUpdatedHeader(line: string): boolean {
   return trimmed.startsWith(LAST_UPDATED_PREFIX) && trimmed.endsWith("*");
 }
 
+function isIndentedCodeLine(line: string): boolean {
+  let indentation = 0;
+  while (line[indentation] === " ") indentation += 1;
+  return indentation >= 4 || line[indentation] === "\t";
+}
+
 function getFenceMarker(line: string): FenceMarker | null {
-  const trimmed = line.trimStart();
+  let indentation = 0;
+  while (line[indentation] === " ") indentation += 1;
+  if (indentation > 3 || line[indentation] === "\t") return null;
+  const trimmed = line.slice(indentation);
   const character = trimmed[0];
   if (character !== "`" && character !== "~") return null;
   let length = 0;
@@ -31,13 +40,25 @@ function isClosingFence(fence: FenceMarker, openFence: FenceMarker): boolean {
   );
 }
 
+function findFrontmatterEnd(lines: string[]): number {
+  const firstLine = lines[0]?.startsWith(UTF8_BOM) ? lines[0].slice(1) : lines[0];
+  if (firstLine !== "---") return -1;
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index]?.trim();
+    if (line === "---" || line === "...") return index;
+  }
+  return -1;
+}
+
 function visitOutsideFencedBlocks(
   lines: string[],
   visit: (line: string, index: number) => void,
 ): void {
+  const frontmatterEnd = findFrontmatterEnd(lines);
   let openFence: FenceMarker | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
+    if (index <= frontmatterEnd || isIndentedCodeLine(line)) continue;
     const fence = getFenceMarker(line);
     if (openFence) {
       if (fence && isClosingFence(fence, openFence)) openFence = null;
@@ -69,7 +90,21 @@ function findProfileHeaderIndexes(lines: string[]): number[] {
   return indexes;
 }
 
+function insertHeaderAfter(lines: string[], index: number, header: string): void {
+  const insertAt = index + 1;
+  if (lines[insertAt]?.trim() === "") {
+    lines.splice(insertAt + 1, 0, header, "");
+  } else {
+    lines.splice(insertAt, 0, "", header, "");
+  }
+}
+
 function prependHeader(lines: string[], header: string, lineEnding: string): string {
+  const frontmatterEnd = findFrontmatterEnd(lines);
+  if (frontmatterEnd >= 0) {
+    insertHeaderAfter(lines, frontmatterEnd, header);
+    return lines.join(lineEnding);
+  }
   if (lines[0]?.startsWith(UTF8_BOM)) {
     lines[0] = lines[0].slice(1);
     return [`${UTF8_BOM}${header}`, "", ...lines].join(lineEnding);
@@ -94,11 +129,6 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
 
   if (titleIndex < 0) return prependHeader(lines, header, lineEnding);
 
-  const insertAt = titleIndex + 1;
-  if (lines[insertAt]?.trim() === "") {
-    lines.splice(insertAt + 1, 0, header, "");
-  } else {
-    lines.splice(insertAt, 0, "", header, "");
-  }
+  insertHeaderAfter(lines, titleIndex, header);
   return lines.join(lineEnding);
 }
