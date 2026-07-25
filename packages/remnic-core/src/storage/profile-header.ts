@@ -48,7 +48,7 @@ type ProfileLine = {
 };
 
 function parseProfileLines(content: string): ProfileLine[] {
-  const segments = content.split(/(\r\n|\n)/);
+  const segments = content.split(/(\r\n|\n|\r)/);
   const lines: ProfileLine[] = [];
   for (let index = 0; index < segments.length; index += 2) {
     lines.push({
@@ -88,9 +88,22 @@ function visitProfileMetadataLines(
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]?.content ?? "";
     if (index <= frontmatterEnd || isIndentedCodeLine(line)) continue;
+    const fence = getFenceMarker(line);
+    if (openFence) {
+      if (fence && isClosingFence(fence, openFence)) openFence = null;
+      continue;
+    }
     const normalizedLine = line.trimStart().toLowerCase();
     if (openHtmlBlock) {
       if (normalizedLine.includes(`</${openHtmlBlock}>`)) openHtmlBlock = null;
+      continue;
+    }
+    if (openHtmlComment) {
+      if (normalizedLine.includes("-->")) openHtmlComment = false;
+      continue;
+    }
+    if (fence) {
+      openFence = fence;
       continue;
     }
     let rawHtmlBlock: string | null = null;
@@ -110,21 +123,8 @@ function visitProfileMetadataLines(
     }
     const startsHtmlComment = normalizedLine.startsWith("<!--");
     const closesHtmlComment = normalizedLine.includes("-->");
-    if (openHtmlComment) {
-      if (closesHtmlComment) openHtmlComment = false;
-      continue;
-    }
     if (startsHtmlComment) {
       openHtmlComment = !closesHtmlComment;
-      continue;
-    }
-    const fence = getFenceMarker(line);
-    if (openFence) {
-      if (fence && isClosingFence(fence, openFence)) openFence = null;
-      continue;
-    }
-    if (fence) {
-      openFence = fence;
       continue;
     }
     visit(line, index);
