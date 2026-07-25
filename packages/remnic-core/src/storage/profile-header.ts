@@ -339,7 +339,12 @@ function findFrontmatterEnd(lines: ProfileLine[]): number {
 
 function hasHtmlBlockEndMarker(line: string, endMarker: string): boolean {
   const markerIndex = line.indexOf(endMarker);
-  return markerIndex >= 0 && line.slice(markerIndex + endMarker.length).trim() === "";
+  if (markerIndex < 0) return false;
+  const trailingContent = line.slice(markerIndex + endMarker.length).trim();
+  return (
+    trailingContent === "" ||
+    (trailingContent.startsWith("<") && findHtmlTags(trailingContent).length > 0)
+  );
 }
 
 function visitProfileMetadataLines(

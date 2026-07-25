@@ -963,6 +963,32 @@ test("writeProfile closes raw HTML blocks after inline content", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile closes raw HTML blocks before sibling markup", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<pre>",
+        "code</pre><div>",
+        "# Notes",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after sibling markup.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile keeps self-closing raw HTML blocks opaque", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
