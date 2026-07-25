@@ -55,12 +55,21 @@ test("parseExtractionLivenessConfig: coerces string/boolean falsy opt-outs (§24
   assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { enabled: "true" } }).enabled, true);
 });
 
-test("parseExtractionLivenessConfig: honors a positive staleWindowMs and defaults invalid ones", () => {
+test("parseExtractionLivenessConfig: honors a valid integer staleWindowMs (number or string)", () => {
   assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: 5000 } }).staleWindowMs, 5000);
   assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: "7000" } }).staleWindowMs, 7000);
-  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: 0 } }).staleWindowMs, 86_400_000);
-  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: -5 } }).staleWindowMs, 86_400_000);
-  assert.equal(parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: "nope" } }).staleWindowMs, 86_400_000);
+});
+
+test("parseExtractionLivenessConfig: rejects fractional/non-positive/non-numeric staleWindowMs (§1/§17/§39)", () => {
+  // Fractional values must be REJECTED, not floored: "0.5"→0 would make every
+  // backlog instantly stale and 1.9→1 is a silent reinterpretation.
+  for (const bad of ["0.5", 1.9, 0, -5, "abc"]) {
+    assert.throws(
+      () => parseExtractionLivenessConfig({ extractionLiveness: { staleWindowMs: bad } }),
+      /staleWindowMs must be an integer greater than or equal to 1/,
+      `expected ${JSON.stringify(bad)} to be rejected`,
+    );
+  }
 });
 
 test("parseExtractionLivenessConfig: rejects a non-object block", () => {
@@ -135,6 +144,28 @@ test("evaluate: staleness boundary is half-open — exactly staleWindowMs is sta
     nowMs: NOW,
   });
   assert.equal(justUnder.degraded, false, "age === staleWindowMs - 1 is fresh");
+});
+
+test("evaluate: an unreadable buffer degrades with a distinct reason, even with a fresh watermark (§22)", () => {
+  const fresh = new Date(NOW).toISOString();
+  const readFailedSnap = snapshot({ readFailed: true, readError: "ENOENT: buffer.json missing" });
+  const status = evaluateExtractionLiveness({ config: ENABLED, lastExtractionAt: fresh, snapshot: readFailedSnap, nowMs: NOW });
+  assert.equal(status.degraded, true, "an unreadable buffer is a pipeline fault, not empty");
+  assert.match(status.degradedReason ?? "", /unreadable/);
+  assert.match(status.degradedReason ?? "", /ENOENT: buffer\.json missing/);
+
+  // Distinct from a genuinely empty buffer: same fresh watermark, no read failure → healthy.
+  const empty = evaluateExtractionLiveness({ config: ENABLED, lastExtractionAt: fresh, snapshot: snapshot(), nowMs: NOW });
+  assert.equal(empty.degraded, false, "an empty buffer with a fresh watermark stays healthy");
+
+  // The master gate still suppresses degradation when the feature is disabled.
+  const disabled = evaluateExtractionLiveness({
+    config: { enabled: false, staleWindowMs: WINDOW },
+    lastExtractionAt: fresh,
+    snapshot: readFailedSnap,
+    nowMs: NOW,
+  });
+  assert.equal(disabled.degraded, false, "disabled gate suppresses even a read-failure degradation");
 });
 
 // ── SmartBuffer.getBufferSnapshot ────────────────────────────────────────────
@@ -232,4 +263,25 @@ test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded ve
     lines.some((l) => l.startsWith("Extraction liveness: DEGRADED")),
     "reports a degraded verdict when the watermark is stale",
   );
+});
+
+test("renderExtractionLivenessStats: reports DEGRADED when the buffer read fails (§22)", async () => {
+  const orchestrator = {
+    config: { extractionLiveness: { enabled: true, staleWindowMs: WINDOW } },
+    buffer: {
+      getBufferSnapshot: async (): Promise<ExtractionBufferSnapshot> => {
+        throw new Error("buffer file corrupt");
+      },
+    },
+  };
+  const lines = await renderExtractionLivenessStats(
+    orchestrator,
+    { extractionCount: 7, lastExtractionAt: new Date(NOW).toISOString(), lastConsolidationAt: null },
+    NOW,
+  );
+  const verdict = lines.find((l) => l.startsWith("Extraction liveness:"));
+  assert.ok(verdict, "emits a liveness verdict line");
+  assert.match(verdict, /DEGRADED/);
+  assert.match(verdict, /unreadable/);
+  assert.match(verdict, /buffer file corrupt/);
 });

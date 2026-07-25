@@ -144,6 +144,36 @@ test("summarizeExtractionLiveness: disabled gate never warns", async () => {
   assert.equal(check.status, "ok");
 });
 
+test("summarizeExtractionLiveness: warns naming the read failure when the buffer snapshot throws (§22)", async () => {
+  // Fresh watermark → the ONLY fault is the unreadable buffer, not staleness.
+  const fixture = await makeFixture({ overrides: { extractionLiveness: { staleWindowMs: 3_600_000 } } });
+  const stateDir = path.join(fixture.memoryDir, "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(
+    path.join(stateDir, "meta.json"),
+    JSON.stringify({
+      extractionCount: 1,
+      lastExtractionAt: new Date().toISOString(),
+      lastConsolidationAt: null,
+      totalMemories: 0,
+      totalEntities: 0,
+    }),
+    "utf-8",
+  );
+  const throwingBuffer: ExtractionBufferSource = {
+    async getBufferSnapshot() {
+      throw new Error("buffer file corrupt");
+    },
+  };
+  const check = await summarizeExtractionLiveness(fixture.config, fixture.storage, throwingBuffer);
+  assert.notEqual(check.status, "ok", "an unreadable buffer is not a healthy pipeline");
+  assert.equal(check.status, "warn");
+  assert.match(check.summary, /unreadable/);
+  assert.match(check.summary, /buffer file corrupt/);
+  const details = check.details as { degraded: boolean; degradedReason: string | null };
+  assert.equal(details.degraded, true);
+});
+
 // ── Integration: runOperatorDoctor includes extraction_liveness ──────────────
 
 test("runOperatorDoctor: includes an extraction_liveness check reflecting the buffer", async () => {

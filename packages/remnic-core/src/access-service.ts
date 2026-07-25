@@ -2458,7 +2458,7 @@ export class EngramAccessService {
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const searchBackend = this.orchestrator.config.searchBackend ?? "qmd";
     const qmdEnabled = resolveQmdCapabilities(this.orchestrator.config).qmd === true;
-    const extraction = await computeExtractionLivenessStatus(this.orchestrator, storage, this.extractionLivenessWarn);
+    const extraction = await computeExtractionLivenessStatus(this.orchestrator, this.extractionLivenessWarn);
     let projectionAvailable = false;
     try {
       await stat(getMemoryProjectionPath(storage.dir));

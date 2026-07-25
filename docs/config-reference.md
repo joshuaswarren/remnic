@@ -1152,12 +1152,12 @@ Stored as `category: procedure` markdown under `memoryDir/procedures/`. Narrativ
 
 ## Extraction pipeline liveness (issue #2151)
 
-Surfaces a checkable liveness watermark for the implicit extraction pipeline so a daemon that has not persisted an extraction in a long time is distinguishable from one that simply has nothing to extract (the §22 error-vs-empty principle at the pipeline level). Exposed on the authenticated `/health` payload (the `extraction` object), the `remnic doctor` `extraction_liveness` check, and `remnic stats`. When the pipeline is degraded, a single aggregated WARN is logged per staleness window rather than one line per failed extraction attempt.
+Surfaces a checkable liveness watermark for the implicit extraction pipeline so a daemon that has not persisted an extraction in a long time is distinguishable from one that simply has nothing to extract (the §22 error-vs-empty principle at the pipeline level). Exposed on the authenticated `/health` payload (the `extraction` object), the `remnic doctor` `extraction_liveness` check, and `remnic stats`. When the pipeline is degraded, a single aggregated WARN is logged per staleness window rather than one line per failed extraction attempt. The `extraction` block is **daemon-global**, not namespace-scoped: it reflects the daemon's single extraction pipeline (one global buffer plus one last-extraction watermark), so `/health` returns the same block for every namespace argument. A buffer that cannot be read is itself reported degraded with a distinct reason — an unreadable buffer is a pipeline fault, not an empty queue.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `extractionLiveness.enabled` | `true` | Master gate. Set to `false` (or `"0"`/`"no"`/`"off"`) to stop reporting the pipeline degraded on `/health`, in `remnic doctor`, and in `remnic stats`. |
-| `extractionLiveness.staleWindowMs` | `86400000` | How stale the last-successful-extraction watermark may get (ms) before a **non-empty** buffer flags the pipeline degraded. Default `86400000` (24h). An empty buffer is never degraded. |
+| `extractionLiveness.staleWindowMs` | `86400000` | How stale the last-successful-extraction watermark may get (ms) before a **non-empty** buffer flags the pipeline degraded. Default `86400000` (24h). An empty buffer is never degraded. Must be a positive integer of milliseconds; a fractional or non-positive value is rejected rather than floored. |
 
 ## Pattern reinforcement (issue #687)
 

@@ -45,13 +45,32 @@ export interface ExtractionBufferSnapshot {
   bufferedSessionCount: number;
   pendingTurnCount: number;
   oldestTurnTimestamp: string | null;
+  /**
+   * Set by the liveness reader (never by `SmartBuffer`) when the buffer exists
+   * but its snapshot read threw. An unreadable buffer is a pipeline fault, not
+   * an empty queue (§22): it degrades the pipeline with a distinct reason
+   * instead of masquerading as a zero-backlog (healthy) snapshot.
+   */
+  readFailed?: boolean;
+  /** Read-failure detail, surfaced in the degraded reason when `readFailed`. */
+  readError?: string;
 }
 
 export interface ExtractionBufferSource {
   getBufferSnapshot(): Promise<ExtractionBufferSnapshot>;
 }
 
-/** The liveness payload surfaced on `/health.extraction` and in the doctor/stats details. */
+/**
+ * The liveness payload surfaced on `/health.extraction` and in the doctor/stats
+ * details.
+ *
+ * DAEMON-GLOBAL, NOT NAMESPACE-SCOPED: a daemon has a single implicit extraction
+ * pipeline, fed by one global buffer and one last-extraction watermark (both
+ * bound to the root/default store). `/health` returns the SAME `extraction`
+ * block for every namespace argument — pairing a namespace-scoped watermark with
+ * the global buffer would let recent activity in one namespace mask a stalled
+ * backlog in another (issue #2151 review).
+ */
 export interface ExtractionLivenessStatus {
   lastExtractionAt: string | null;
   bufferedSessionCount: number;
@@ -83,16 +102,33 @@ export function parseExtractionLivenessConfig(
     throw new Error(`extractionLiveness must be a plain object (got ${JSON.stringify(raw)})`);
   }
   const block = (raw ?? {}) as Record<string, unknown>;
-  const staleRaw = coerceNumber(block.staleWindowMs);
   return {
     // `?? true` keeps the default on when the key is absent while honoring
     // explicit "false"/"0"/false opt-outs (coerceBool handles the string forms).
     enabled: coerceBool(block.enabled) ?? true,
-    staleWindowMs:
-      staleRaw !== undefined && Number.isFinite(staleRaw) && staleRaw > 0
-        ? Math.floor(staleRaw)
-        : DEFAULT_STALE_WINDOW_MS,
+    staleWindowMs: parseStaleWindowMs(block.staleWindowMs),
   };
+}
+
+/**
+ * Parse `extractionLiveness.staleWindowMs`. Absent → the 24h default; present →
+ * must coerce to a positive INTEGER of milliseconds, else THROW. A fractional or
+ * non-positive value ("0.5" would floor to 0, making every backlog instantly
+ * stale; 1.9 would floor to 1) is rejected, never floored/reinterpreted
+ * (§1/§17/§39). Mirrors config.ts's `parseIntegerAtLeast`; inlined rather than
+ * imported because config.ts already imports this module (importing back would
+ * be circular), the same reason `recall-concurrency-config.ts` inlines its
+ * numeric validation.
+ */
+function parseStaleWindowMs(value: unknown): number {
+  if (value === undefined || value === null) return DEFAULT_STALE_WINDOW_MS;
+  const coerced = coerceNumber(value);
+  if (coerced === undefined || !Number.isFinite(coerced) || !Number.isInteger(coerced) || coerced < 1) {
+    throw new Error(
+      `extractionLiveness.staleWindowMs must be an integer greater than or equal to 1; got ${JSON.stringify(value)}`,
+    );
+  }
+  return coerced;
 }
 
 /** Milliseconds between `timestamp` and `nowMs`, clamped at 0; null when unparsable/absent. */
@@ -113,8 +149,9 @@ export function formatAgeMs(ms: number): string {
 }
 
 /**
- * Pure liveness verdict. Degraded ONLY when the feature is enabled, the buffer
- * is non-empty, and the last-successful-extraction watermark is absent or stale.
+ * Pure liveness verdict. Degraded when the feature is enabled AND either the
+ * buffer read failed (a pipeline fault, §22) OR the buffer is non-empty and the
+ * last-successful-extraction watermark is absent or stale.
  *
  * Staleness uses a half-open freshness window (§23): an extraction is fresh
  * while its age is in `[0, staleWindowMs)`, so an age of EXACTLY `staleWindowMs`
@@ -132,16 +169,24 @@ export function evaluateExtractionLiveness(input: {
   const hasWatermark = Number.isFinite(lastMs);
   const stale = !hasWatermark || nowMs - lastMs >= config.staleWindowMs;
   const hasBacklog = snapshot.bufferedSessionCount > 0;
-  const degraded = config.enabled && hasBacklog && stale;
+  // An unreadable buffer is a pipeline fault, not an empty queue (§22): a
+  // storage/pipeline outage must not read as healthy just because the failed
+  // read produced a zero-backlog snapshot.
+  const readFailed = snapshot.readFailed === true;
+  const degraded = config.enabled && (readFailed || (hasBacklog && stale));
 
   let degradedReason: string | null = null;
   if (degraded) {
-    const watermark = hasWatermark
-      ? `last succeeded ${formatAgeMs(nowMs - lastMs)} ago`
-      : "no successful extraction on record";
-    degradedReason =
-      `${watermark}; ${snapshot.bufferedSessionCount} buffered session(s), ` +
-      `${snapshot.pendingTurnCount} turn(s) pending extraction`;
+    if (readFailed) {
+      degradedReason = `extraction buffer unreadable: ${snapshot.readError ?? "buffer snapshot read failed"}`;
+    } else {
+      const watermark = hasWatermark
+        ? `last succeeded ${formatAgeMs(nowMs - lastMs)} ago`
+        : "no successful extraction on record";
+      degradedReason =
+        `${watermark}; ${snapshot.bufferedSessionCount} buffered session(s), ` +
+        `${snapshot.pendingTurnCount} turn(s) pending extraction`;
+    }
   }
 
   return {
@@ -161,8 +206,10 @@ const EMPTY_SNAPSHOT: ExtractionBufferSnapshot = {
 };
 
 /**
- * Read a buffer snapshot, degrading to an empty snapshot (not throwing) when
- * the buffer is absent — some service constructions have no orchestrator buffer.
+ * Read a buffer snapshot without throwing. An ABSENT buffer degrades to an empty
+ * (healthy) snapshot — some service constructions have no orchestrator buffer. A
+ * buffer that EXISTS but whose read throws yields a `readFailed` snapshot so the
+ * verdict can distinguish a pipeline fault from an empty queue (§22).
  */
 async function readBufferSnapshot(
   buffer: ExtractionBufferSource | undefined,
@@ -170,8 +217,12 @@ async function readBufferSnapshot(
   if (!buffer || typeof buffer.getBufferSnapshot !== "function") return EMPTY_SNAPSHOT;
   try {
     return await buffer.getBufferSnapshot();
-  } catch {
-    return EMPTY_SNAPSHOT;
+  } catch (err) {
+    return {
+      ...EMPTY_SNAPSHOT,
+      readFailed: true,
+      readError: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -224,19 +275,24 @@ export class ExtractionLivenessWarnThrottle {
 
 /**
  * Compute the liveness status for the authenticated `/health` payload and emit
- * the throttled aggregated WARN. Reads config + buffer from the orchestrator and
- * the last-extraction watermark from the resolved namespace storage.
+ * the throttled aggregated WARN.
+ *
+ * The watermark is read from the DAEMON-GLOBAL root store (`orchestrator.storage`),
+ * NOT a per-call namespace store: it must share the scope of the global buffer
+ * (`orchestrator.buffer`). Pairing a namespace-scoped watermark with the global
+ * buffer let recent activity in one namespace hide a stalled backlog in another
+ * (issue #2151 review), so `/health` returns the same `extraction` block for any
+ * namespace argument.
  */
 export async function computeExtractionLivenessStatus(
-  orchestrator: ExtractionLivenessOrchestratorLike,
-  storage: ExtractionLivenessStorageLike,
+  orchestrator: ExtractionLivenessOrchestratorLike & { storage: ExtractionLivenessStorageLike },
   throttle?: ExtractionLivenessWarnThrottle,
   nowMs: number = Date.now(),
 ): Promise<ExtractionLivenessStatus> {
   const config = orchestrator.config.extractionLiveness;
   const status = await gatherExtractionLivenessStatus({
     config,
-    storage,
+    storage: orchestrator.storage,
     buffer: orchestrator.buffer,
     nowMs,
   });
@@ -261,11 +317,13 @@ export async function summarizeExtractionLiveness(
     buffer,
     nowMs,
   });
-  const summary = status.degraded
-    ? `Extraction pipeline degraded: ${status.degradedReason}.`
-    : `Extraction pipeline healthy: last extraction ${status.lastExtractionAt ?? "never"}, ` +
-      `${status.bufferedSessionCount} buffered session(s), ${status.pendingTurnCount} turn(s) pending` +
-      `${livenessConfig.enabled ? "" : " (liveness check disabled)"}.`;
+  const scopeNote = " Daemon-global (not namespace-scoped).";
+  const summary =
+    (status.degraded
+      ? `Extraction pipeline degraded: ${status.degradedReason}.`
+      : `Extraction pipeline healthy: last extraction ${status.lastExtractionAt ?? "never"}, ` +
+        `${status.bufferedSessionCount} buffered session(s), ${status.pendingTurnCount} turn(s) pending` +
+        `${livenessConfig.enabled ? "" : " (liveness check disabled)"}.`) + scopeNote;
   return {
     key: "extraction_liveness",
     status: status.degraded ? "warn" : "ok",
