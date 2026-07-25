@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   type ArchiveScoreItem,
-  type ArchiveScoringStrategy,
+  type ArchiveScoreResult,
   OffThreadArchiveScoring,
   SyncArchiveScoring,
   disposeDefaultArchiveScoring,
@@ -193,11 +193,23 @@ test("OffThreadArchiveScoring produces identical results to SyncArchiveScoring",
 // is sensitive to runner load.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Sample `read()` on every macrotask tick while `body()` runs; return the max. */
-async function maxWhile(read: () => number, body: () => Promise<unknown>): Promise<number> {
+/**
+ * Run `body()` while a self-re-arming `setImmediate` loop samples.
+ *
+ * Reports both the maximum value `read()` ever showed AND how many sampler
+ * ticks fired while `body()` was in flight. The tick count is what proves
+ * whether the event loop was free: a strategy that blocks it starves the
+ * sampler entirely (0 ticks), one that yields to workers does not (> 0).
+ */
+async function observe(
+  read: () => number,
+  body: () => Promise<unknown>,
+): Promise<{ max: number; ticks: number }> {
   let max = 0;
+  let ticks = 0;
   let sampling = true;
   const sample = () => {
+    ticks += 1;
     const v = read();
     if (v > max) max = v;
     if (sampling) setImmediate(sample);
@@ -208,33 +220,41 @@ async function maxWhile(read: () => number, body: () => Promise<unknown>): Promi
   } finally {
     sampling = false;
   }
-  return max;
+  return { max, ticks };
 }
 
-test("SyncArchiveScoring serializes K concurrent calls (max in-flight <= 1)", async () => {
+test("SyncArchiveScoring blocks the event loop for the whole batch", async () => {
   const K = 4;
   const sync = new SyncArchiveScoring();
-  let inFlight = 0;
+  let results: ArchiveScoreResult[][] = [];
 
-  const maxInFlight = await maxWhile(
-    () => inFlight,
-    () =>
-      Promise.all(
-        Array.from({ length: K }, async () => {
-          inFlight += 1;
-          try {
-            await sync.score(HEAVY_ITEMS, QUERY_TOKENS);
-          } finally {
-            inFlight -= 1;
-          }
-        }),
-      ),
+  // Sampling starts, then the batch is launched in the SAME tick. Sync scoring
+  // burns all its CPU before returning, so the entire K-call batch completes
+  // inside one synchronous block and the sampler never gets to run.
+  const { ticks } = await observe(
+    () => 0,
+    async () => {
+      results = await Promise.all(
+        Array.from({ length: K }, () => sync.score(HEAVY_ITEMS, QUERY_TOKENS)),
+      );
+    },
   );
 
-  assert.ok(
-    maxInFlight <= 1,
-    `Sync scoring must serialize K=${K} concurrent calls (expected max in-flight <= 1, got ${maxInFlight})`,
+  // Asserting an upper bound on an in-flight counter would be vacuous here:
+  // every call resolves before the first sampler tick, so the counter reads 0
+  // and the assertion would also pass if scoring became a no-op (codex P2 on
+  // PR #2158). Assert the positive fact instead — the loop was starved — and
+  // pin that real work happened, which is what makes the starvation meaningful.
+  assert.equal(
+    ticks,
+    0,
+    `Sync scoring must block the event loop for the whole batch (expected 0 sampler ticks, got ${ticks}); ` +
+      "this main-thread monopolization is the defect behind issue #1674",
   );
+  assert.equal(results.length, K, "every call must return results");
+  for (const r of results) {
+    assert.ok(r.length > 0, "sync scoring must return matches, not a no-op");
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,7 +270,7 @@ test("OffThreadArchiveScoring parallelizes K concurrent calls (busy workers > 1)
     await offThread.terminate();
   });
 
-  const maxBusyWorkers = await maxWhile(
+  const { max: maxBusyWorkers, ticks } = await observe(
     () => offThread.busyWorkers,
     () => Promise.all(Array.from({ length: K }, () => offThread.score(HEAVY_ITEMS, QUERY_TOKENS))),
   );
@@ -259,6 +279,9 @@ test("OffThreadArchiveScoring parallelizes K concurrent calls (busy workers > 1)
     maxBusyWorkers > 1,
     `Off-thread scoring must run K=${K} calls on multiple workers at once (expected max busy workers > 1, got ${maxBusyWorkers})`,
   );
+  // The mirror image of the sync test: dispatching to workers leaves the event
+  // loop free, so the sampler runs. Together the two pin the actual fix.
+  assert.ok(ticks > 0, "off-thread scoring must leave the event loop free while workers compute");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -274,7 +297,7 @@ test("a single-worker pool is observably serial (guards the parallelism assertio
     await singleWorker.terminate();
   });
 
-  const maxBusyWorkers = await maxWhile(
+  const { max: maxBusyWorkers } = await observe(
     () => singleWorker.busyWorkers,
     () => Promise.all(Array.from({ length: K }, () => singleWorker.score(HEAVY_ITEMS, QUERY_TOKENS))),
   );
