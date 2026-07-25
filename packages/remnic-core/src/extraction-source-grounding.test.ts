@@ -582,6 +582,31 @@ test("grounding does not treat questions or hypotheticals as factual evidence", 
     { question: "Is Alice the CEO at Acme?", context: "", priority: 0.5 },
   ]);
 
+  const affirmativeFactResult = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "Alice works at Acme.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Does Alice work at Acme?\nYes.",
+  );
+  assert.deepEqual(affirmativeFactResult.facts, [
+    {
+      category: "fact",
+      content: "Alice works at Acme.",
+      confidence: 0.9,
+      tags: [],
+    },
+  ]);
+
   const answeredResult = filterExtractionResultBySource(
     {
       facts: [],

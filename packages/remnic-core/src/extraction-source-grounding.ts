@@ -261,7 +261,22 @@ function isSourceGroundedClause(
 ): boolean {
   let bestSupportedScore = 0;
   let bestContradictedScore = 0;
-  for (const sentence of sourceSentences(source)) {
+  const sentences = sourceSentences(source);
+  for (let index = 0; index < sentences.length; index += 1) {
+    const sentence = sentences[index];
+    if (isBareYesNoAnswer(sentence)) {
+      const precedingSentence = sentences[index - 1];
+      if (
+        tokenSequence(sentence)[0] === "yes"
+        && precedingSentence !== undefined
+        && isInterrogativeSourceSentence(precedingSentence)
+        && groundedTokenScore(candidate, precedingSentence) === 1
+        && !hasContradictoryPolarity(candidate, precedingSentence)
+      ) {
+        return true;
+      }
+      continue;
+    }
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence)) continue;
     const sentenceText = normalizeForExactMatch(sentence);
     if (sentenceText.includes(candidate)) {
