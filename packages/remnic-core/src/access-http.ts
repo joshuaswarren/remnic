@@ -38,6 +38,7 @@ import {
 import { expandTildePath } from "./utils/path.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation, type OperationName } from "./access-boundary.js";
+import { probeOperationAuthorization } from "./access-authorization-probe.js";
 import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
 import {
   assertOperationAllowed,
@@ -886,6 +887,16 @@ export class EngramAccessHttpServer {
 
     if (req.method === "GET" && pathname === "/engram/v1/health") {
       this.respondJson(res, 200, await this.service.health());
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/engram/v1/authorization") {
+      res.setHeader("cache-control", "no-store");
+      this.respondJson(
+        res,
+        200,
+        probeOperationAuthorization(tokenCapabilityStore.getStore(), parsed.searchParams.getAll("op")),
+      );
       return;
     }
 

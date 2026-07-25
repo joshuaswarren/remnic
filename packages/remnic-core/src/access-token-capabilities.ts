@@ -250,6 +250,37 @@ export function capabilityAllowsOp(caps: TokenCapabilities | undefined | null, o
 }
 
 /**
+ * The operation policy that all access surfaces use to decide whether a token
+ * can invoke an operation.
+ */
+export interface OperationAuthorizationPolicy {
+  readonly name: string;
+  readonly allowedByOps?: readonly string[];
+  readonly fleetWide?: boolean;
+}
+
+/**
+ * Apply an operation's alternate grant and fleet-wide restrictions without
+ * invoking its handler.
+ */
+export function assertOperationAuthorizationAllowed(
+  caps: TokenCapabilities | undefined | null,
+  operation: OperationAuthorizationPolicy,
+): void {
+  if (operation.allowedByOps && operation.allowedByOps.length > 0) {
+    if (!operation.allowedByOps.some((allowedOperation) => capabilityAllowsOp(caps, allowedOperation))) {
+      throw new EngramAccessForbiddenError(`token is not permitted to call operation: ${operation.name}`);
+    }
+  } else {
+    assertOperationAllowed(caps, operation.name);
+  }
+
+  if (operation.fleetWide) {
+    assertFleetWideOperationAllowed(caps);
+  }
+}
+
+/**
  * True when `caps` permits `namespace`.
  *   - record ABSENT / namespaces axis ABSENT ⇒ unrestricted (true).
  *   - namespaces axis PRESENT ⇒ `namespace` must be listed; undefined
