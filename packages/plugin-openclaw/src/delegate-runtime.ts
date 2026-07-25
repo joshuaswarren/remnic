@@ -9,8 +9,8 @@
  *   - memory injection    → POST /engram/v1/recall (before_prompt_build or
  *                           legacy before_agent_start)
  *   - turn capture        → POST /engram/v1/observe (agent_end, last turn)
- *   - compaction/reset    → POST /engram/v1/lcm/compaction/flush
- *
+ *   - lifecycle drains    → POST /engram/v1/lcm/compaction/flush and
+ *                           /engram/v1/extraction/force-flush
  * Deliberately out of scope for delegate v1 (still embedded-only): tool and
  * CLI registration, heartbeat/dreams surfaces, hourly summary crons, public
  * artifacts, and the memory-capability object. The daemon already exposes the
@@ -352,20 +352,42 @@ export function registerDelegateRuntime(
     // Embedded parity: lifecycle events name the ENDED/RESET session on the
     // event; the ambient ctx may already point at the successor session.
     const fromEvent = event?.sessionKey;
-    const sessionKey =
+    const fromContext = ctx?.sessionKey;
+    const extractionSessionKey =
       typeof fromEvent === "string" && fromEvent.length > 0
         ? fromEvent
-        : sessionKeyFrom(event, ctx);
-    try {
-      await postJson(
-        target,
-        "/engram/v1/lcm/compaction/flush",
-        withNamespace(namespace, { sessionKey }),
-        options.flushTimeoutMs,
-      );
-    } catch (err) {
-      log.warn(`delegate flush failed: ${String(err)}`);
-    }
+        : typeof fromContext === "string" && fromContext.length > 0
+          ? fromContext
+          : undefined;
+    // Preserve the existing LCM default-session behavior, but extraction must
+    // never invent a "default" buffer key when the lifecycle hook lacks scope.
+    const sessionKey = extractionSessionKey ?? sessionKeyFrom(event, ctx);
+    const cwd = cwdFrom(event, ctx, options.cwd);
+    const scope = {
+      ...(cwd ? { cwd } : {}),
+      ...(options.projectTag ? { projectTag: options.projectTag } : {}),
+    };
+    const deadlineMs = Date.now() + options.flushTimeoutMs;
+    const lcmFlush = postJson(
+      target,
+      "/engram/v1/lcm/compaction/flush",
+      withNamespace(namespace, { sessionKey, ...scope }),
+      options.flushTimeoutMs,
+    ).catch((err) => {
+      log.warn(`delegate LCM flush failed: ${String(err)}`);
+    });
+    const extractionFlush =
+      extractionSessionKey === undefined
+        ? Promise.resolve()
+        : postJson(
+          target,
+          "/engram/v1/extraction/force-flush",
+          withNamespace(namespace, { sessionKey: extractionSessionKey, ...scope, deadlineMs }),
+          options.flushTimeoutMs,
+        ).catch((err) => {
+          log.warn(`delegate extraction flush failed: ${String(err)}`);
+        });
+    await Promise.all([lcmFlush, extractionFlush]);
   };
   api.on("before_compaction", flushHandler);
   if (options.flushOnResetEnabled) {

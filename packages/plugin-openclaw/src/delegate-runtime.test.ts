@@ -211,23 +211,108 @@ test("delegate agent_end observes exactly the last turn's textual messages", asy
   }
 });
 
-test("delegate flush fires on compaction, reset, and session end", async () => {
+test("delegate lifecycle drains scoped extraction even when LCM is disabled", async () => {
+  const stub = await startDaemonStub((pathname) =>
+    pathname === "/engram/v1/lcm/compaction/flush"
+      ? { enabled: false, flushed: false }
+      : { flushed: true },
+  );
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        namespace: "work",
+        cwd: "/registration/base",
+        projectTag: "Acme/Webshop",
+      }),
+    );
+
+    const deadlineFloor = Date.now();
+    await invoke(
+      api,
+      "before_compaction",
+      { sessionKey: "s1", workspaceDir: "/event/compaction" },
+      {},
+    );
+    await invoke(
+      api,
+      "before_reset",
+      { sessionKey: "s2" },
+      { workspaceDir: "/ctx/reset" },
+    );
+    await invoke(api, "session_end", {}, { sessionKey: "s3" });
+
+    const lcmFlushes = stub.calls.filter(
+      (call) => call.pathname === "/engram/v1/lcm/compaction/flush",
+    );
+    assert.deepEqual(
+      lcmFlushes.map((call) => call.body.sessionKey),
+      ["s1", "s2", "s3"],
+      "each lifecycle boundary flushes its own LCM session",
+    );
+
+    const extractionFlushes = stub.calls.filter(
+      (call) => call.pathname === "/engram/v1/extraction/force-flush",
+    );
+    const extractionScopes = extractionFlushes.map((call) => {
+      const { deadlineMs, ...scope } = call.body;
+      assert.ok(
+        typeof deadlineMs === "number",
+        "extraction drain forwards an absolute deadline",
+      );
+      assert.ok(
+        deadlineMs > deadlineFloor,
+        "extraction deadline starts from the lifecycle hook's shared timeout window",
+      );
+      return scope;
+    });
+    assert.deepEqual(
+      extractionScopes,
+      [
+        {
+          sessionKey: "s1",
+          namespace: "work",
+          cwd: "/event/compaction",
+          projectTag: "Acme/Webshop",
+        },
+        {
+          sessionKey: "s2",
+          namespace: "work",
+          cwd: "/ctx/reset",
+          projectTag: "Acme/Webshop",
+        },
+        {
+          sessionKey: "s3",
+          namespace: "work",
+          cwd: "/registration/base",
+          projectTag: "Acme/Webshop",
+        },
+      ],
+      "each lifecycle boundary drains the matching scoped extraction buffer once",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate lifecycle never falls back to the default extraction buffer", async () => {
   const stub = await startDaemonStub(() => ({ flushed: true }));
   try {
     const api = recordingApi();
     registerDelegateRuntime(api, optionsFor(stub.port));
 
-    await invoke(api, "before_compaction", {}, { sessionKey: "s1" });
-    await invoke(api, "before_reset", { sessionKey: "s2" }, {});
-    await invoke(api, "session_end", {}, { sessionKey: "s3" });
+    await invoke(api, "before_compaction", {}, {});
 
-    const flushes = stub.calls.filter(
-      (call) => call.pathname === "/engram/v1/lcm/compaction/flush",
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush").length,
+      1,
+      "legacy LCM flush behavior stays intact",
     );
-    assert.deepEqual(
-      flushes.map((call) => call.body.sessionKey),
-      ["s1", "s2", "s3"],
-      "each lifecycle boundary flushes its own session",
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/extraction/force-flush").length,
+      0,
+      "extraction drain requires an explicit lifecycle session",
     );
   } finally {
     await stub.close();
@@ -529,12 +614,30 @@ test("delegate recall honors the cron-skip policy", async () => {
   }
 });
 
-test("delegate flushOnResetEnabled=false skips reset and session_end flush", () => {
-  const api = recordingApi();
-  registerDelegateRuntime(api, optionsFor(1, { flushOnResetEnabled: false }));
-  assert.ok(api.handlers.has("before_compaction"), "compaction flush always registers");
-  assert.equal(api.handlers.has("before_reset"), false, "reset flush gated off");
-  assert.equal(api.handlers.has("session_end"), false, "session_end flush gated off");
+test("delegate flushOnResetEnabled=false keeps the compaction drains only", async () => {
+  const stub = await startDaemonStub(() => ({ flushed: true }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushOnResetEnabled: false }));
+    assert.ok(api.handlers.has("before_compaction"), "compaction drain always registers");
+    assert.equal(api.handlers.has("before_reset"), false, "reset drain gated off");
+    assert.equal(api.handlers.has("session_end"), false, "session-end drain gated off");
+
+    await invoke(api, "before_compaction", {}, { sessionKey: "compaction-only" });
+
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush").length,
+      1,
+      "compaction still drains LCM once",
+    );
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/extraction/force-flush").length,
+      1,
+      "compaction still drains extraction once",
+    );
+  } finally {
+    await stub.close();
+  }
 });
 
 test("maybeRegister stays embedded after a daemon-down fallback (no stacking)", async () => {
