@@ -1,9 +1,21 @@
-import { getOperation, type OperationName, OPERATION_NAMES } from "./access-boundary.js";
+import {
+  getOperation,
+  operationRequiresAuthorizedNamespace,
+  OPERATION_NAMES,
+  type OperationName,
+} from "./access-boundary.js";
 import { EngramAccessInputError } from "./access-errors.js";
 import {
   assertOperationAuthorizationAllowed,
   type TokenCapabilities,
 } from "./access-token-capabilities.js";
+
+const UNRESOLVABLE_RESOURCE_OPERATIONS = new Set<OperationName>([
+  "review_resolve",
+  "contradiction_detail",
+  "chat_message",
+  "chat_events",
+]);
 
 export interface AuthorizationProbeResponse {
   readonly authorized: true;
@@ -40,4 +52,21 @@ export function probeOperationAuthorization(
   }
 
   return { authorized: true, operations };
+}
+
+/**
+ * Resolve every namespace an authorization probe can verify from the request.
+ * Resource-scoped routes resolve their stored target only after a resource id
+ * is supplied, so probes validate only request-resolvable namespaces.
+ */
+export function authorizationProbeNamespaces(
+  operations: readonly OperationName[],
+  requestedNamespace: string | undefined,
+): readonly (string | undefined)[] {
+  const namespaceOperations = operations.filter(
+    (operation) =>
+      operationRequiresAuthorizedNamespace(operation) &&
+      !UNRESOLVABLE_RESOURCE_OPERATIONS.has(operation),
+  );
+  return namespaceOperations.length > 0 ? [requestedNamespace] : [];
 }
