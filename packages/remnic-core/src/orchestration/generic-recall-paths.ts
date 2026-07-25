@@ -40,8 +40,9 @@ function normalizeQmdUriPath(relativePath: string, source: GenericRecallPathSour
   try {
     const parsed = new URL(relativePath);
     if (parsed.protocol !== "qmd:" || !parsed.hostname) return relativePath;
+    const collection = decodeURIComponent(parsed.hostname);
     const pathname = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
-    return pathname ? `${parsed.hostname}/${pathname}` : parsed.hostname;
+    return pathname ? `${collection}/${pathname}` : collection;
   } catch {
     return relativePath;
   }

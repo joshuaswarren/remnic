@@ -72,6 +72,17 @@ test("isGenericRecallExcludedPath normalizes QMD archive URIs", () => {
   );
 });
 
+test("isGenericRecallExcludedPath decodes percent-encoded QMD collections", () => {
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "qmd://team%20memory/archive/2026-07-22/a.md",
+      { memoryDir: "/mem", qmdCollection: "team memory" },
+      "qmd",
+    ),
+    true,
+  );
+});
+
 test("isActivityDigestPath is root-aware: only the top-level digest is excluded", () => {
   const root = "/mem";
   // Top-level digest (absolute + relative) is excluded.
