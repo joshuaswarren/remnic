@@ -484,6 +484,27 @@ test("delegate ignores unkeyed runtime metadata when resolving an ended session 
   }
 });
 
+test("delegate rejects malformed lifecycle session keys without ambient fallback", async () => {
+  const stub = await startDaemonStub(() => ({ flushed: true }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const ctx = {
+      sessionKey: "successor-session",
+      runtime: { agent: { session: { namespace: "team-successor" } } },
+    };
+
+    for (const hook of ["before_reset", "session_end"]) {
+      for (const sessionKey of [42, null, {}, ""]) {
+        await invoke(api, hook, { sessionKey }, ctx);
+      }
+    }
+    assert.equal(stub.calls.length, 0);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate rejects malformed namespace metadata without defaulting", async () => {
   const stub = await startDaemonStub(() => ({ accepted: true }));
   try {

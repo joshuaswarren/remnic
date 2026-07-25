@@ -210,11 +210,12 @@ function sessionKeyFrom(
 function lifecycleSessionKeyFrom(
   event: Record<string, unknown>,
   ctx: Record<string, unknown>,
-): string {
+): string | undefined {
   const fromEvent = event?.sessionKey;
-  return typeof fromEvent === "string" && fromEvent.length > 0
-    ? fromEvent
-    : sessionKeyFrom(event, ctx);
+  if (fromEvent !== undefined) {
+    return typeof fromEvent === "string" && fromEvent.length > 0 ? fromEvent : undefined;
+  }
+  return sessionKeyFrom(event, ctx);
 }
 
 function recallQueryFrom(event: Record<string, unknown>): string {
@@ -570,6 +571,10 @@ export function registerDelegateRuntime(
   ): Promise<boolean> => {
     try {
       const sessionKey = lifecycleSessionKeyFrom(event, ctx);
+      if (sessionKey === undefined) {
+        log.warn("delegate flush skipped: lifecycle event has malformed session key");
+        return false;
+      }
       const namespaces = await lifecycleSessionNamespacesFrom(
         sessionKey,
         event,
