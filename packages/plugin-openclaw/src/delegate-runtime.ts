@@ -112,6 +112,22 @@ function daemonUrl(target: DelegateDaemonTarget, pathname: string): string {
   return `http://${host}:${target.port}${pathname}`;
 }
 
+const daemonAuthFailureLogKeys = new Set<string>();
+
+function reportDaemonAuthorizationFailure(
+  serviceId: string,
+  pathname: string,
+  status: 401 | 403,
+  tokenSource: DaemonAuthToken["source"],
+): void {
+  const key = `${serviceId}:${pathname}:${status}:${tokenSource}`;
+  if (daemonAuthFailureLogKeys.has(key)) return;
+  daemonAuthFailureLogKeys.add(key);
+  log.error(
+    `delegate ${pathname} authorization failed (${status}; token source: ${tokenSource})`,
+  );
+}
+
 export async function probeDelegateAuthorization(
   target: DelegateDaemonTarget,
   namespace = "",
@@ -142,6 +158,7 @@ export async function probeDelegateAuthorization(
 
 async function postJson(
   target: DelegateDaemonTarget,
+  serviceId: string,
   pathname: string,
   body: Record<string, unknown>,
   timeoutMs: number,
@@ -156,6 +173,12 @@ async function postJson(
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      const status = res.status === 401 ? 401 : 403;
+      await res.body?.cancel();
+      reportDaemonAuthorizationFailure(serviceId, pathname, status, auth.source);
+      return null;
+    }
     throw new Error(`daemon ${pathname} responded ${res.status}`);
   }
   const parsed: unknown = await res.json().catch(() => null);
@@ -272,6 +295,7 @@ export function registerDelegateRuntime(
         const cwd = cwdFrom(event, ctx, options.cwd);
         const response = await postJson(
           target,
+          options.serviceId,
           "/engram/v1/recall",
           withNamespace(namespace, {
             query,
@@ -377,6 +401,7 @@ export function registerDelegateRuntime(
       const cwd = cwdFrom(event, ctx, options.cwd);
       await postJson(
         target,
+        options.serviceId,
         "/engram/v1/observe",
         withNamespace(namespace, {
           sessionKey,
@@ -405,6 +430,7 @@ export function registerDelegateRuntime(
     try {
       await postJson(
         target,
+        options.serviceId,
         "/engram/v1/lcm/compaction/flush",
         withNamespace(namespace, { sessionKey }),
         options.flushTimeoutMs,
