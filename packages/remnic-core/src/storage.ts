@@ -34,6 +34,7 @@ import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import { migrateLegacyEntityCanonicalIds } from "./storage/entity-canonical-id-migration.js";
+import { EntityCanonicalIdMigrationRunner } from "./storage/entity-canonical-id-migration-runner.js";
 export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
@@ -2110,8 +2111,8 @@ export class StorageManager {
     // Same rationale for the behavior-signals dedup key cache (issue #1909):
     // drop it on a key change so a re-encrypted/re-decrypted ledger is reloaded.
     this.behaviorSignalsKeyCache = null;
-    if (key !== null && this.directoriesInitialized) {
-      void this.migrateLegacyEntityCanonicalIds().catch((error: unknown) => {
+    if (key !== null) {
+      this.entityCanonicalIdMigration.triggerAfterUnlock((error: unknown) => {
         log.warn(
           `entity canonical-id migration after secure-store unlock failed: ${
             error instanceof Error ? error.message : String(error)
@@ -3564,9 +3565,10 @@ export class StorageManager {
    * store loaded last rewrite every other store's canonical entity ids.
    */
   private userAliases: Record<string, string> = {};
-  private entityCanonicalIdMigrationComplete = false;
-  private entityCanonicalIdMigrationInFlight: Promise<void> | null = null;
-  private directoriesInitialized = false;
+  private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
+    () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
+    () => this.runLegacyEntityCanonicalIdMigration(),
+  );
 
   normalizeEntityName(raw: string, type: string): string {
     return this.entityStore.normalizeEntityName(raw, type);
@@ -3618,33 +3620,9 @@ export class StorageManager {
 
   }
 
-  private migrateLegacyEntityCanonicalIds(): Promise<void> {
-    if (this.entityCanonicalIdMigrationComplete) return Promise.resolve();
-    if (this._secureStoreRequired && !this.isSecureStoreUnlocked()) return Promise.resolve();
-    if (this.entityCanonicalIdMigrationInFlight) return this.entityCanonicalIdMigrationInFlight;
-    const migration = this.runLegacyEntityCanonicalIdMigration();
-    this.entityCanonicalIdMigrationInFlight = migration;
-    void migration.then(
-      () => {
-        if (this.entityCanonicalIdMigrationInFlight === migration) {
-          this.entityCanonicalIdMigrationInFlight = null;
-        }
-      },
-      () => {
-        if (this.entityCanonicalIdMigrationInFlight === migration) {
-          this.entityCanonicalIdMigrationInFlight = null;
-        }
-      },
-    );
-    return migration;
-  }
-
   private async runLegacyEntityCanonicalIdMigration(): Promise<void> {
-    if (this.entityCanonicalIdMigrationComplete) return;
-    if (this._secureStoreRequired && !this.isSecureStoreUnlocked()) return;
     await migrateLegacyEntityCanonicalIds({
-      stateDir: this.stateDir,
-      entitiesDir: this.entitiesDir,
+      stateDir: this.stateDir, entitiesDir: this.entitiesDir,
       normalizeEntityName: this.normalizeEntityName.bind(this),
       resolveEntityFilePath: this.resolveEntityFilePath.bind(this),
       readStorageSecureFile: this.readStorageSecureFile.bind(this),
@@ -3655,25 +3633,18 @@ export class StorageManager {
       serializeEntityFile: (entity) => serializeEntityFile(entity, this.entitySchemas),
       serializeMemoryWithEntityRef: (memory, entityRef) =>
         `${serializeFrontmatter({ ...memory.frontmatter, entityRef })}\n\n${memory.content}\n`,
-      readMemoryByPath: this.readMemoryByPath.bind(this),
-      readAllMemories: this.readAllMemories.bind(this),
+      readMemoryByPath: this.readMemoryByPath.bind(this), readAllMemories: this.readAllMemories.bind(this),
       readAllColdMemories: this.readAllColdMemories.bind(this),
       readArchivedMemories: this.readArchivedMemories.bind(this),
-      rewriteProjectedEntityReferences: (mappings) =>
-        rewriteProjectedEntityReferences(this.baseDir, mappings),
+      rewriteProjectedEntityReferences: (mappings) => rewriteProjectedEntityReferences(this.baseDir, mappings),
       rewriteProjectedMemoryEntityReference: (memoryId, previousEntityRef, nextEntityRef) =>
-        rewriteProjectedMemoryEntityReference(
-          this.baseDir,
-          memoryId,
-          previousEntityRef,
-          nextEntityRef,
-        ),
+        rewriteProjectedMemoryEntityReference(this.baseDir, memoryId, previousEntityRef, nextEntityRef),
       invalidateKnowledgeIndexCache: this.invalidateKnowledgeIndexCache.bind(this),
       invalidateAllMemoriesCache: this.invalidateAllMemoriesCache.bind(this),
       invalidateColdMemoriesCache: this.invalidateColdMemoriesCache.bind(this),
       bumpMemoryStatusVersion: this.bumpMemoryStatusVersion.bind(this),
     });
-    this.entityCanonicalIdMigrationComplete = true;
+    this.entityCanonicalIdMigration.markComplete();
   }
 
   async ensureDirectories(): Promise<void> {
@@ -3691,7 +3662,7 @@ export class StorageManager {
     await mkdir(this.identityAuditsWeeklyDir, { recursive: true });
     await mkdir(this.identityAuditsMonthlyDir, { recursive: true });
     await mkdir(path.join(this.baseDir, "config"), { recursive: true });
-    await this.migrateLegacyEntityCanonicalIds();
+    await this.entityCanonicalIdMigration.ensure();
     // Activate the corpus sentinel at setup (issue #1902, Cursor Medium): an
     // existing corpus predating this feature has a size-0/absent sentinel, which
     // getCachedMemories treats as a miss — so a read-heavy workload would never
@@ -3705,7 +3676,7 @@ export class StorageManager {
     if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === 0) {
       this.bumpMemoryCorpusVersion();
     }
-    this.directoriesInitialized = true;
+    this.entityCanonicalIdMigration.markDirectoriesInitialized();
   }
 
   /**
