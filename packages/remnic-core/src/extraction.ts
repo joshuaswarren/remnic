@@ -332,16 +332,16 @@ export class ExtractionEngine {
     const facts = Array.isArray(parsed?.facts)
       ? parsed.facts
           .map((candidate: unknown) => {
-            const fact = isPlainRecord(candidate) ? candidate : {};
-            const category = typeof fact.category === "string" ? fact.category.trim() : "fact";
-            const reasoningTraceInput = isPlainRecord(fact.reasoningTrace)
-              ? fact.reasoningTrace
-              : isPlainRecord(fact.reasoning_trace)
-                ? fact.reasoning_trace
+            const f = isPlainRecord(candidate) ? candidate : {};
+            const category = typeof f.category === "string" ? f.category.trim() : "fact";
+            const reasoningTraceInput = isPlainRecord(f.reasoningTrace)
+              ? f.reasoningTrace
+              : isPlainRecord(f?.reasoning_trace)
+                ? f.reasoning_trace
                 : undefined;
             if (!isMemoryCategory(category)) return undefined;
-            const procedureSteps = Array.isArray(fact.procedureSteps)
-              ? normalizeProcedureSteps(fact.procedureSteps)
+            const procedureSteps = Array.isArray(f.procedureSteps)
+              ? normalizeProcedureSteps(f.procedureSteps)
               : undefined;
             const reasoningTrace = reasoningTraceInput
               ? normalizeReasoningTrace(reasoningTraceInput) ?? undefined
@@ -354,23 +354,23 @@ export class ExtractionEngine {
             }
             return {
               category,
-              content: extractionText(fact.content) ?? extractionText(fact.text) ?? "",
-              confidence: typeof fact.confidence === "number" ? fact.confidence : 0.7,
-              tags: Array.isArray(fact.tags)
-                ? fact.tags.flatMap((tag: unknown) => {
+              content: extractionText(f.content) ?? extractionText(f.text) ?? "",
+              confidence: typeof f.confidence === "number" ? f.confidence : 0.7,
+              tags: Array.isArray(f.tags)
+                ? f.tags.flatMap((tag: unknown) => {
                     const text = extractionText(tag);
                     return text === undefined ? [] : [text];
                   })
                 : [],
-              entityRef: extractionText(fact.entityRef),
-              promptedByQuestion: extractionText(fact.promptedByQuestion),
+              entityRef: extractionText(f.entityRef),
+              promptedByQuestion: extractionText(f.promptedByQuestion),
               scope:
-                fact.scope === "global" || fact.scope === "project" ? fact.scope : undefined,
-              structuredAttributes: extractionAttributes(fact.structuredAttributes),
+                f.scope === "global" || f.scope === "project" ? f.scope : undefined,
+              structuredAttributes: extractionAttributes(f.structuredAttributes),
               procedureSteps,
               reasoningTrace,
-              quote: extractionText(fact.quote),
-              eventTime: extractionText(fact.eventTime) ?? extractionText(fact.event_time),
+              quote: extractionText(f.quote),
+              eventTime: extractionText(f.eventTime) ?? extractionText(f.event_time),
             };
           })
           .filter((fact: ExtractedFactResult | undefined): fact is ExtractedFactResult => (
