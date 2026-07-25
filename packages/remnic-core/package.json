@@ -2420,6 +2420,16 @@
       "remnic-source": "./src/session-integrity.ts",
       "import": "./dist/session-integrity.js"
     },
+    "./session-namespace-bindings": {
+      "types": "./dist/session-namespace-bindings.d.ts",
+      "remnic-source": "./src/session-namespace-bindings.ts",
+      "import": "./dist/session-namespace-bindings.js"
+    },
+    "./session-namespace-bindings.js": {
+      "types": "./dist/session-namespace-bindings.d.ts",
+      "remnic-source": "./src/session-namespace-bindings.ts",
+      "import": "./dist/session-namespace-bindings.js"
+    },
     "./session-observer-bands": {
       "types": "./dist/session-observer-bands.d.ts",
       "remnic-source": "./src/session-observer-bands.ts",

@@ -26,6 +26,10 @@ import {
   renderMemoryContextPrompt,
 } from "@remnic/core";
 import { log } from "@remnic/core/logger";
+import {
+  type SessionNamespaceBindingStore,
+  createFileSessionNamespaceBindingStore,
+} from "@remnic/core/session-namespace-bindings";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
   checkDaemonHealthSync,
@@ -49,6 +53,8 @@ export interface DelegateRuntimeOptions {
   target: DelegateDaemonTarget;
   /** Session namespace forwarded on every daemon call ("" = daemon default). */
   namespace: string;
+  /** Durable, per-session routing history for sparse lifecycle hooks. */
+  namespaceBindings: SessionNamespaceBindingStore;
   /** Mirrors the embedded `hooks.allowPromptInjection` policy. */
   allowPromptInjection: boolean;
   /** Passive slot mode: register nothing, exactly like embedded passive mode
@@ -253,29 +259,10 @@ function withNamespace(
   return namespace ? { ...body, namespace } : body;
 }
 
-const namespaceBindingsByDaemonScope = new Map<string, Map<string, string>>();
-
-function namespaceBindingsFor(
-  serviceId: string,
-  target: DelegateDaemonTarget,
-  fallbackNamespace: string,
-): Map<string, string> {
-  const scope = JSON.stringify([serviceId, target.host, target.port, fallbackNamespace.trim()]);
-  let bindings = namespaceBindingsByDaemonScope.get(scope);
-  if (!bindings) {
-    bindings = new Map<string, string>();
-    namespaceBindingsByDaemonScope.set(scope, bindings);
-  }
-  return bindings;
-}
-
-
-function sessionNamespaceFrom(
+function explicitSessionNamespaceFrom(
   sessionKey: string,
   event: Record<string, unknown>,
   ctx: Record<string, unknown>,
-  fallback: string,
-  boundNamespaces: Map<string, string>,
 ): string | undefined {
   const eventSessionKey = typeof event.sessionKey === "string" ? event.sessionKey : undefined;
   const ctxSessionKey = typeof ctx.sessionKey === "string" ? ctx.sessionKey : undefined;
@@ -295,16 +282,63 @@ function sessionNamespaceFrom(
     const session = (agent as Record<string, unknown>).session;
     if (typeof session !== "object" || session === null) continue;
     const namespace = (session as Record<string, unknown>).namespace;
-    if (typeof namespace !== "string") continue;
-    const resolved = namespace.trim();
-    if (resolved) {
-      boundNamespaces.set(sessionKey, resolved);
-      return resolved;
-    }
-    boundNamespaces.delete(sessionKey);
-    return fallback.trim() || undefined;
+    if (typeof namespace === "string") return namespace.trim();
   }
-  return boundNamespaces.get(sessionKey) ?? (fallback.trim() || undefined);
+  return undefined;
+}
+
+async function rememberedNamespacesFor(
+  sessionKey: string,
+  namespaceBindings: SessionNamespaceBindingStore,
+): Promise<string[]> {
+  try {
+    return await namespaceBindings.namespacesFor(sessionKey);
+  } catch (err) {
+    log.warn(`delegate namespace binding lookup failed: ${String(err)}`);
+    return [];
+  }
+}
+
+async function rememberNamespace(
+  sessionKey: string,
+  namespace: string,
+  namespaceBindings: SessionNamespaceBindingStore,
+): Promise<void> {
+  try {
+    await namespaceBindings.remember(sessionKey, namespace);
+  } catch (err) {
+    log.warn(`delegate namespace binding persistence failed: ${String(err)}`);
+  }
+}
+
+async function sessionNamespaceFrom(
+  sessionKey: string,
+  event: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+  fallback: string,
+  namespaceBindings: SessionNamespaceBindingStore,
+): Promise<string | undefined> {
+  const explicit = explicitSessionNamespaceFrom(sessionKey, event, ctx);
+  if (explicit !== undefined) {
+    await rememberNamespace(sessionKey, explicit, namespaceBindings);
+    return explicit || undefined;
+  }
+  const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
+  return remembered.at(-1) || fallback.trim() || undefined;
+}
+
+async function lifecycleSessionNamespacesFrom(
+  sessionKey: string,
+  event: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+  fallback: string,
+  namespaceBindings: SessionNamespaceBindingStore,
+): Promise<Array<string | undefined>> {
+  const explicit = explicitSessionNamespaceFrom(sessionKey, event, ctx);
+  if (explicit !== undefined) await rememberNamespace(sessionKey, explicit, namespaceBindings);
+  const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
+  if (remembered.length > 0) return remembered.map((namespace) => namespace || undefined);
+  return [fallback.trim() || undefined];
 }
 
 function readContextComposition(
@@ -338,14 +372,13 @@ export function registerDelegateRuntime(
   api: DelegateHookApi,
   options: DelegateRuntimeOptions,
 ): void {
-  const { target, namespace } = options;
+  const { target, namespace, namespaceBindings } = options;
   if (options.passive) {
     log.info(
       `[${options.serviceId}] bridge mode delegate: memory slot not owned — passive, no hooks registered`,
     );
     return;
   }
-  const boundNamespaces = namespaceBindingsFor(options.serviceId, target, namespace);
 
   // Embedded zero-limit contract: recallBudgetChars === 0 disables injection.
   if (options.allowPromptInjection && options.recallBudgetChars !== 0) {
@@ -380,11 +413,18 @@ export function registerDelegateRuntime(
           return undefined;
         }
         const cwd = cwdFrom(event, ctx, options.cwd);
+        const scopedNamespace = await sessionNamespaceFrom(
+          sessionKey,
+          event,
+          ctx,
+          namespace,
+          namespaceBindings,
+        );
         const response = await postJson(
           target,
           options.serviceId,
           "/engram/v1/recall",
-          withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace, boundNamespaces), {
+          withNamespace(scopedNamespace, {
             query,
             sessionKey,
             mode: "auto",
@@ -484,11 +524,18 @@ export function registerDelegateRuntime(
     if (turn.length === 0) return;
     try {
       const cwd = cwdFrom(event, ctx, options.cwd);
+      const scopedNamespace = await sessionNamespaceFrom(
+        sessionKey,
+        event,
+        ctx,
+        namespace,
+        namespaceBindings,
+      );
       await postJson(
         target,
         options.serviceId,
         "/engram/v1/observe",
-        withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace, boundNamespaces), {
+        withNamespace(scopedNamespace, {
           sessionKey,
           messages: turn,
           ...(cwd ? { cwd } : {}),
@@ -507,18 +554,34 @@ export function registerDelegateRuntime(
   ): Promise<boolean> => {
     const sessionKey = lifecycleSessionKeyFrom(event, ctx);
     try {
-      await postJson(
-        target,
-        options.serviceId,
-        "/engram/v1/lcm/compaction/flush",
-        withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace, boundNamespaces), { sessionKey }),
-        options.flushTimeoutMs,
+      const namespaces = await lifecycleSessionNamespacesFrom(
+        sessionKey,
+        event,
+        ctx,
+        namespace,
+        namespaceBindings,
       );
-      return true;
+      let flushed = true;
+      for (const sessionNamespace of namespaces) {
+        try {
+          await postJson(
+            target,
+            options.serviceId,
+            "/engram/v1/lcm/compaction/flush",
+            withNamespace(sessionNamespace, { sessionKey }),
+            options.flushTimeoutMs,
+          );
+        } catch (err) {
+          log.warn(`delegate flush failed: ${String(err)}`);
+          flushed = false;
+        }
+      }
+      return flushed;
     } catch (err) {
       log.warn(`delegate flush failed: ${String(err)}`);
       return false;
     }
+    return flushed;
   };
   api.on("before_compaction", flushHandler);
   if (options.flushOnResetEnabled) {
@@ -526,8 +589,7 @@ export function registerDelegateRuntime(
       event: Record<string, unknown>,
       ctx: Record<string, unknown>,
     ): Promise<void> => {
-      const sessionKey = lifecycleSessionKeyFrom(event, ctx);
-      if (await flushHandler(event, ctx)) boundNamespaces.delete(sessionKey);
+      await flushHandler(event, ctx);
     };
     api.on("before_reset", flushEndedSession);
     api.on("session_end", flushEndedSession);
@@ -686,6 +748,15 @@ export function maybeRegisterDelegateRuntime(
     serviceId: options.serviceId,
     target,
     namespace: "",
+    namespaceBindings: createFileSessionNamespaceBindingStore(
+      path.join(
+        options.memoryDir,
+        "state",
+        "plugins",
+        options.serviceId,
+        "session-namespace-bindings.json",
+      ),
+    ),
     allowPromptInjection: options.allowPromptInjection,
     passive: options.passive,
     gateHeartbeatTurns: options.gateHeartbeatTurns,

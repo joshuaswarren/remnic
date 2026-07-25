@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
@@ -14,6 +15,10 @@ import {
   type MaybeRegisterDelegateDeps,
 } from "./delegate-runtime.js";
 import { loadDaemonAuth, resolveBridgeMode } from "./bridge.js";
+import {
+  createFileSessionNamespaceBindingStore,
+  createInMemorySessionNamespaceBindingStore,
+} from "@remnic/core/session-namespace-bindings";
 
 type HookHandler = (
   event: Record<string, unknown>,
@@ -111,6 +116,7 @@ function optionsFor(port: number, overrides: Partial<DelegateRuntimeOptions> = {
       }),
     },
     namespace: "",
+    namespaceBindings: createInMemorySessionNamespaceBindingStore(),
     allowPromptInjection: true,
     passive: false,
     gateHeartbeatTurns: false,
@@ -455,8 +461,9 @@ test("delegate retains a namespace binding after a failed ended-session flush", 
 test("delegate retains a namespace binding across runtime re-registration", async () => {
   const stub = await startDaemonStub(() => ({ accepted: true }));
   try {
+    const namespaceBindings = createInMemorySessionNamespaceBindingStore();
     const originalApi = recordingApi();
-    registerDelegateRuntime(originalApi, optionsFor(stub.port));
+    registerDelegateRuntime(originalApi, optionsFor(stub.port, { namespaceBindings }));
     const endedContext = {
       sessionKey: "reload-session",
       runtime: { agent: { session: { namespace: "team-reload" } } },
@@ -476,7 +483,7 @@ test("delegate retains a namespace binding across runtime re-registration", asyn
     );
 
     const reloadedApi = recordingApi();
-    registerDelegateRuntime(reloadedApi, optionsFor(stub.port));
+    registerDelegateRuntime(reloadedApi, optionsFor(stub.port, { namespaceBindings }));
     await invoke(reloadedApi, "session_end", { sessionKey: "reload-session" });
 
     const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
@@ -484,6 +491,147 @@ test("delegate retains a namespace binding across runtime re-registration", asyn
     assert.equal(flush.body.sessionKey, "reload-session");
     assert.equal(flush.body.namespace, "team-reload");
   } finally {
+    await stub.close();
+  }
+});
+
+test("delegate replays ended-session flushes in the remembered namespace", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: true }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const endedContext = {
+      sessionKey: "replayed-session",
+      runtime: { agent: { session: { namespace: "team-replayed" } } },
+    };
+
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the replayed session namespace" },
+          { role: "assistant", content: "the namespace is bound" },
+        ],
+      },
+      endedContext,
+    );
+    await invoke(api, "before_reset", { sessionKey: "replayed-session" });
+    await invoke(api, "session_end", { sessionKey: "replayed-session" });
+
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.deepEqual(
+      flushes.map((call) => call.body.namespace),
+      ["team-replayed", "team-replayed"],
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate flushes every namespace observed before a session rebind", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: true }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const sessionKey = "rebound-session";
+
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} session namespace` },
+            { role: "assistant", content: "the namespace is bound" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+    await invoke(api, "session_end", { sessionKey });
+
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.deepEqual(
+      flushes.map((call) => call.body.namespace).sort(),
+      ["team-first", "team-second"],
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate reloads a persisted namespace binding after its daemon host configuration changes", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: true }));
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-bindings-"));
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  try {
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    process.env.REMNIC_PORT = String(stub.port);
+    const common = {
+      serviceId: "persistent-delegate",
+      configBridgeMode: "delegate",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir,
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (text: string) => text,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+    };
+    const firstApi = recordingApi();
+    assert.equal(maybeRegisterDelegateRuntime(firstApi, common, { checkHealth: () => true }), true);
+    await invoke(
+      firstApi,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the persisted namespace binding" },
+          { role: "assistant", content: "the namespace is bound" },
+        ],
+      },
+      {
+        sessionKey: "persisted-session",
+        runtime: { agent: { session: { namespace: "team-persisted" } } },
+      },
+    );
+    const persistedBindings = createFileSessionNamespaceBindingStore(
+      path.join(
+        memoryDir,
+        "state",
+        "plugins",
+        "persistent-delegate",
+        "session-namespace-bindings.json",
+      ),
+    );
+    assert.deepEqual(await persistedBindings.namespacesFor("persisted-session"), ["team-persisted"]);
+
+    process.env.REMNIC_HOST = "localhost";
+    const reloadedApi = recordingApi();
+    assert.equal(maybeRegisterDelegateRuntime(reloadedApi, common, { checkHealth: () => true }), true);
+    await invoke(reloadedApi, "session_end", { sessionKey: "persisted-session" });
+
+    const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush);
+    assert.equal(flush.body.namespace, "team-persisted");
+  } finally {
+    if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) Reflect.deleteProperty(process.env, "REMNIC_HOST");
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) Reflect.deleteProperty(process.env, "REMNIC_PORT");
+    else process.env.REMNIC_PORT = priorPort;
+    await rm(memoryDir, { recursive: true, force: true });
     await stub.close();
   }
 });
