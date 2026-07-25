@@ -178,6 +178,58 @@ test("entity retrieval resolves non-ASCII canonical and alias mentions without p
   }
 });
 
+test("entity retrieval resolves Korean grammatical particles after Unicode mentions", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-korean-names");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const seoul = await writeEntity(
+    storage,
+    "서울",
+    "project",
+    ["서울 is synthetic."],
+    "서울 is synthetic.",
+  );
+  await storage.writeMemory("fact", "서울의 검증 코드는 Hangang-314 입니다.", {
+    entityRef: seoul,
+    confidence: 1,
+  });
+
+  const section = await buildSection(config, storage, "서울은 어디인가요?");
+  assert.ok(section);
+  assert.match(section!, /target: 서울 \(project\)/);
+  assert.match(section!, /Hangang-314/);
+});
+
+test("entity retrieval treats canonically equivalent Unicode mentions as equal", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-unicode-normalization");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const cafe = await writeEntity(
+    storage,
+    "Café",
+    "project",
+    ["Café is synthetic."],
+    "Café is synthetic.",
+  );
+  await storage.writeMemory("fact", "Café validation code is Latte-804.", {
+    entityRef: cafe,
+    confidence: 1,
+  });
+
+  const section = await buildSection(config, storage, "What do we know about Cafe\u0301?");
+  assert.ok(section);
+  assert.match(section!, /target: Café \(project\)/);
+  assert.match(section!, /Latte-804/);
+});
+
 test("entity retrieval keeps multiple explicit entities in Japanese direct questions separate", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-multiple");
   t.after(async () => {

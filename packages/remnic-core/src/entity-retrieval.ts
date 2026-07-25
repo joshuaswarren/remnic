@@ -92,9 +92,19 @@ function uniqueStrings(values: string[]): string[] {
 
 const UNICODE_WORD_OR_NUMBER_RE = /[\p{L}\p{N}]/u;
 const JAPANESE_PARTICLE_RE = /^[のはがをにへともやかでだ]$/u;
+const KOREAN_PARTICLE_PREFIX_RE = new RegExp(
+  "^(?:은|는|이|가|을|를|의|에서|에게|한테|께|으로|와|과|도|만|까지|부터|보다|처럼|같이|이나|든" +
+    "|라도|밖에|마다|조차|이랑|하고|에|로|나|랑)(?=[\\p{L}\\p{N}\\s]|$)",
+  "u",
+);
 
-function isUnicodePhraseBoundary(character: string): boolean {
-  return character.length === 0 || !UNICODE_WORD_OR_NUMBER_RE.test(character) || JAPANESE_PARTICLE_RE.test(character);
+function isUnicodePhraseBoundary(character: string, suffix: string = ""): boolean {
+  return (
+    character.length === 0 ||
+    !UNICODE_WORD_OR_NUMBER_RE.test(character) ||
+    JAPANESE_PARTICLE_RE.test(character) ||
+    KOREAN_PARTICLE_PREFIX_RE.test(suffix)
+  );
 }
 
 function containsPhrase(haystack: string, needle: string): boolean {
@@ -106,8 +116,8 @@ function containsPhrase(haystack: string, needle: string): boolean {
   let offset = haystack.indexOf(needle);
   while (offset >= 0) {
     const before = haystack.slice(0, offset).at(-1) ?? "";
-    const after = haystack.slice(offset + needle.length, offset + needle.length + 1);
-    if (isUnicodePhraseBoundary(before) && isUnicodePhraseBoundary(after)) {
+    const after = haystack.slice(offset + needle.length);
+    if (isUnicodePhraseBoundary(before) && isUnicodePhraseBoundary(after.at(0) ?? "", after)) {
       return true;
     }
     offset = haystack.indexOf(needle, offset + needle.length);
