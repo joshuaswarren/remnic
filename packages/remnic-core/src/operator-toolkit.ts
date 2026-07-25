@@ -57,8 +57,8 @@ import type {
 } from "./types.js";
 import { reportBufferSurpriseDistribution } from "./buffer-surprise-report.js";
 import { readJudgeVerdictStats } from "./extraction-judge-telemetry.js";
-import { corpusWatermarksFromCheck, summarizeCorpusWatermark } from "./operator-doctor-corpus.js";
-import { summarizeReplicaDivergence } from "./operator-doctor-replica.js";
+import { summarizeCorpusAndReplica } from "./operator-doctor-replica.js";
+import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
@@ -385,6 +385,8 @@ export interface OperatorDoctorOptions {
   orchestrator: OperatorToolkitOrchestrator;
   configPath?: string;
   now?: Date;
+  /** Host SecretRef resolver so a SecretRef peer token authenticates during doctor replica polling (#2149). */
+  resolveSecretRef?: ResolveSecretRefFn | null;
 }
 
 export interface OperatorConfigReviewOptions {
@@ -1499,9 +1501,7 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   checks.push(await summarizeTierDistribution(options.orchestrator.storage));
   checks.push(await summarizeDreamsPhases(config, storage));
   checks.push(await summarizeExtractionLiveness(config, storage, options.orchestrator.buffer));
-  const watermarkCheck = await summarizeCorpusWatermark(config, (dir) => new StorageManager(dir)); // corpus watermark #2149
-  checks.push(watermarkCheck);
-  checks.push(await summarizeReplicaDivergence(config.replicaPeers, corpusWatermarksFromCheck(watermarkCheck))); // replica #2149
+  checks.push(...(await summarizeCorpusAndReplica(config, (d) => new StorageManager(d), options.resolveSecretRef)));
   // Security mitigation status (issue #565).
   // Reports whether the cross-namespace budget and anomaly detection
   // mitigations are enabled and surfaces config values for operator review.

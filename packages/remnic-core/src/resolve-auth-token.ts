@@ -154,3 +154,23 @@ export function isAgentAccessSecretRef(value: unknown): value is SecretRef {
 export function clearAuthTokenSecretCache(): void {
   resolvedCache = new WeakMap<ResolveSecretRefFn, Map<string, string>>();
 }
+
+/**
+ * Resolve a host SecretRef resolver, preferring an explicitly supplied one over
+ * the lazy loader.
+ *
+ * Shared by every CLI command that authenticates with a SecretRef — `access
+ * serve` and `doctor` (replica peer tokens, issue #2149) — so the two cannot
+ * drift. Structurally typed rather than importing the CLI's options type, which
+ * would invert the dependency.
+ */
+export async function loadHostSecretRefResolver(options: {
+  resolveSecretRef?: ResolveSecretRefFn | null;
+  loadResolveSecretRef?: () =>
+    | Promise<ResolveSecretRefFn | null | undefined>
+    | ResolveSecretRefFn
+    | null
+    | undefined;
+}): Promise<ResolveSecretRefFn | null | undefined> {
+  return options.resolveSecretRef ?? (options.loadResolveSecretRef ? await options.loadResolveSecretRef() : null);
+}

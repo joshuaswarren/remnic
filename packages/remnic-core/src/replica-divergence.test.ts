@@ -220,14 +220,19 @@ test("compareReplicaWatermarks: a one-sided namespace is reported; local_only ad
   assert.equal(result.state, "diverged", "peer_only still diverges the peer");
 });
 
-test("compareReplicaWatermarks: a namespace-restricted peer token does not cause false divergence (review round 1)", () => {
-  // The peer bearer is namespace-scoped so its /health returns only `default`;
-  // our local set still has both. local_only must NOT flip the peer to diverged.
+test("compareReplicaWatermarks: a local-only namespace is ambiguous, not converged (round 2, codex P1)", () => {
+  // A namespace-scoped peer token returns only `default`, and an unrestricted
+  // peer that genuinely LOST `team-a` returns exactly the same shape. Round 1
+  // called this advisory and certified `converged`, which would hide a peer
+  // that dropped an entire namespace. It is neither divergence nor health:
+  // the comparison resolves the peer to `unknown` so nothing is certified on
+  // evidence that cannot distinguish the two cases.
   const local = [watermark("default", { digest: "d" }), watermark("team-a", { digest: "d" })];
   const peer = [watermark("default", { digest: "d" })];
   const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
-  assert.equal(result.state, "converged", "a hidden local namespace is advisory, not divergence");
-  assert.equal(result.divergedNamespaceCount, 0);
+  assert.equal(result.state, "unknown", "an ambiguous local-only namespace must not read as converged");
+  assert.notEqual(result.state, "converged", "the round-1 contract would have hidden a peer that lost a namespace");
+  assert.equal(result.divergedNamespaceCount, 0, "ambiguous is not divergence either");
   const teamA = result.namespaces.find((delta) => delta.namespace === "team-a");
   assert.equal(teamA?.presence, "local_only");
   assert.equal(teamA?.diverged, false);
@@ -580,4 +585,96 @@ test("ReplicaDivergenceMonitor: warming state is distinguishable from no-peers c
   const polled = monitor.getReport({ config: withPeers, computeLocalWatermarks });
   assert.equal(polled.pending, false);
   assert.equal(polled.peers[0]?.state, "converged");
+});
+
+test("ReplicaDivergenceMonitor: a partial config with no replicaPeers block reads as disabled, never crashes (review round 1)", () => {
+  const monitor = new ReplicaDivergenceMonitor();
+  // A duck-typed/legacy orchestrator whose config has no `replicaPeers` block:
+  // health() -> getReport must degrade to disabled, not throw on `config.enabled`.
+  const report = monitor.getReport({ config: undefined, computeLocalWatermarks: async () => [] });
+  assert.equal(report.enabled, false);
+  assert.equal(report.pending, false);
+  assert.equal(report.peers.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2 regressions
+// ---------------------------------------------------------------------------
+
+test("round 2 (cursor): poll TTL runs from completion, so a slow poll cannot self-expire", async () => {
+  // expiresAt was computed from the poll's START. A poll slower than
+  // pollIntervalMs was therefore already stale when stored, so every probe
+  // scheduled another peer poll — unbounded re-polling under slow peers,
+  // exactly when peers can least afford it.
+  let now = 1_000_000;
+  let polls = 0;
+  const fetchImpl: FetchLike = async () => {
+    polls += 1;
+    now += 60_000; // the poll itself outlasts the 30s interval below
+    return { ok: true, status: 200, json: async () => ({ corpus: [watermark("default")] }) };
+  };
+  const monitor = new ReplicaDivergenceMonitor({ fetchImpl, clock: () => now });
+  const config = parseReplicaPeersConfig({
+    replicaPeers: { enabled: true, pollIntervalMs: 30_000, peers: [{ url: "http://127.0.0.1:4318" }] },
+  });
+  const computeLocalWatermarks = async () => [watermark("default")];
+
+  monitor.getReport({ config, computeLocalWatermarks });
+  await monitor.whenIdle();
+  assert.equal(polls, 1, "first probe triggers exactly one poll");
+
+  // Immediately after completion the entry must still be fresh: the TTL starts
+  // when the poll FINISHED, so no second poll is scheduled.
+  monitor.getReport({ config, computeLocalWatermarks });
+  await monitor.whenIdle();
+  assert.equal(polls, 1, "a poll slower than the interval must not be born expired");
+
+  now += 31_000; // now past the interval measured from completion
+  monitor.getReport({ config, computeLocalWatermarks });
+  await monitor.whenIdle();
+  assert.equal(polls, 2, "the cache still expires once the interval genuinely elapses");
+});
+
+test("round 2 (codex P2): the file-count threshold tolerates a real sub-threshold delta", async () => {
+  // Any nonzero count delta also perturbs the census digest, so flagging
+  // digest mismatch unconditionally made maxFileCountDelta unreachable for
+  // REAL watermarks — a delta of 1 always reported diverged. Digest mismatch
+  // is now the equal-count (split-brain) signal only.
+  const baseDir = "/tmp/replica-threshold-fixture";
+  const localPaths = ["facts/2026-03-01/a.md", "facts/2026-03-01/b.md"].map((rel) => `${baseDir}/${rel}`);
+  const peerPaths = [...localPaths, `${baseDir}/facts/2026-03-01/c.md`];
+  const now = new Date("2026-03-08T00:00:00.000Z");
+  const local = await computeCorpusWatermark({ namespace: "default", paths: localPaths, baseDir, now });
+  const peer = await computeCorpusWatermark({ namespace: "default", paths: peerPaths, baseDir, now });
+  assert.notEqual(local.digest, peer.digest, "a real count delta necessarily changes the digest");
+
+  const tolerant = compareReplicaWatermarks([local], [peer], THRESHOLDS);
+  assert.equal(tolerant.state, "converged", "a delta of 1 is within maxFileCountDelta=100 and must be tolerated");
+
+  const strict = compareReplicaWatermarks([local], [peer], { maxFileCountDelta: 0, maxWatermarkAgeDeltaMs: 900_000 });
+  assert.equal(strict.state, "diverged", "the same pair still diverges once the threshold is tightened");
+});
+
+test("round 2 (codex P2): semantically malformed peer watermarks read as unknown, never converged", async () => {
+  // Structurally present but invalid values used to pass: a peer could return
+  // memoryFileCount: -1 with an unparseable timestamp and be certified
+  // converged. Corrupt telemetry must be unknown, not health.
+  const cases: Array<[string, unknown]> = [
+    ["negative count", { ...watermark("default"), memoryFileCount: -1 }],
+    ["fractional count", { ...watermark("default"), memoryFileCount: 1.5 }],
+    ["unparseable timestamp", { ...watermark("default"), newestWriteAt: "not-a-date" }],
+    ["non-string digest", { ...watermark("default"), digest: 42 }],
+  ];
+  for (const [label, corpus] of cases) {
+    const fetchImpl: FetchLike = async () => ({ ok: true, status: 200, json: async () => ({ corpus: [corpus] }) });
+    const status = await pollReplicaPeers({
+      config: parseReplicaPeersConfig({
+        replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] },
+      }),
+      localWatermarks: [watermark("default")],
+      fetchImpl,
+    });
+    assert.equal(status.peers[0]?.state, "unknown", `${label} must resolve to unknown`);
+    assert.notEqual(status.peers[0]?.state, "converged", `${label} must never be certified converged`);
+  }
 });

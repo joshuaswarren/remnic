@@ -147,3 +147,47 @@ export function parseReplicaPeersConfig(cfg: Record<string, unknown>): ReplicaPe
     ),
   };
 }
+
+/**
+ * READ-boundary resolver (mirrors `resolveExtractionLivenessConfig`, issue #2155).
+ * `parseConfig` always populates `replicaPeers`, but a host adapter, an older
+ * persisted config, or a hand-built `PluginConfig` can hand a READ surface
+ * (/health, doctor) an absent, partial, or loosely-typed block. Every replica
+ * surface must degrade to the documented default (disabled, no peers, no polling)
+ * rather than throw — `/health` must stay answerable. Unlike the strict parser, a
+ * present-but-invalid field falls back to its default here instead of throwing, and
+ * a malformed peer entry is dropped rather than aborting the whole block.
+ */
+export function resolveReplicaPeersConfig(block: unknown): ReplicaPeersConfig {
+  const record =
+    block !== null && typeof block === "object" && !Array.isArray(block) ? (block as Record<string, unknown>) : {};
+  return {
+    enabled: coerceBool(record.enabled) ?? false,
+    peers: resolveReplicaPeers(record.peers),
+    pollIntervalMs: resolveIntegerAtLeast(record.pollIntervalMs, 1, DEFAULT_POLL_INTERVAL_MS),
+    requestTimeoutMs: resolveIntegerAtLeast(record.requestTimeoutMs, 1, DEFAULT_REQUEST_TIMEOUT_MS),
+    maxFileCountDelta: resolveIntegerAtLeast(record.maxFileCountDelta, 0, DEFAULT_MAX_FILE_COUNT_DELTA),
+    maxWatermarkAgeDeltaMs: resolveIntegerAtLeast(record.maxWatermarkAgeDeltaMs, 0, DEFAULT_MAX_WATERMARK_AGE_DELTA_MS),
+  };
+}
+
+/** Lenient sibling of {@link parseIntegerAtLeast}: a present-but-invalid value falls back, never throws. */
+function resolveIntegerAtLeast(value: unknown, min: number, dflt: number): number {
+  if (value === undefined) return dflt;
+  const coerced = coerceNumber(value);
+  return coerced !== undefined && Number.isFinite(coerced) && Number.isInteger(coerced) && coerced >= min ? coerced : dflt;
+}
+
+/** Lenient peer list: a non-array is empty; a malformed entry is dropped, never thrown (read boundary). */
+function resolveReplicaPeers(value: unknown): ReplicaPeerConfig[] {
+  if (!Array.isArray(value)) return [];
+  const peers: ReplicaPeerConfig[] = [];
+  value.forEach((entry, index) => {
+    try {
+      peers.push(parseReplicaPeer(entry, index));
+    } catch {
+      // Read surfaces never throw on a bad peer — parseConfig is the enforcing boundary.
+    }
+  });
+  return peers;
+}

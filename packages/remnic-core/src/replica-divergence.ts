@@ -34,6 +34,7 @@ import {
   type TokenCapabilities,
 } from "./access-token-capabilities.js";
 import type { CorpusWatermark } from "./corpus-watermark.js";
+import { resolveReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ReplicaPeerConfig, ReplicaPeersConfig } from "./replica-peers-config.js";
 import { resolveAgentAccessAuthToken, type ResolveSecretRefFn } from "./resolve-auth-token.js";
 
@@ -73,7 +74,11 @@ export interface ReplicaPeerReport {
   peer: string;
   state: ReplicaPeerState;
   polledAt: string;
-  /** Per-namespace deltas (empty for unreachable/unknown — no comparison happened). */
+  /**
+   * Per-namespace deltas. Empty only for a fetch-level `unreachable`/`unknown`
+   * (no comparison ran); a comparison that resolves to `unknown` (an ambiguous
+   * local-only namespace) still carries its deltas.
+   */
   namespaces: ReplicaNamespaceDelta[];
   divergedNamespaceCount: number;
   /** Stable reason code for a non-comparison state (e.g. "timeout", "http_500", "missing_corpus"). */
@@ -115,15 +120,23 @@ function writeAgeDeltaMs(local: string | null, peer: string | null): number | nu
 
 /**
  * Compare a local watermark set against a peer's, per namespace. A namespace on
- * only one side is its own outcome (never silently skipped). Digest mismatch
- * flags divergence even at equal file counts — the split-brain case the issue
- * exists for (two corpora of equal size but different content/distribution).
+ * only one side is its own outcome (never silently skipped):
+ * - `peer_only` is divergence — the peer holds data we lack.
+ * - `local_only` is AMBIGUOUS — a namespace-restricted peer token hides
+ *   namespaces it cannot see (not divergence), but an unrestricted peer that
+ *   genuinely lost the namespace omits it the SAME way, so it cannot be
+ *   certified converged either. It resolves the peer to `unknown` (codex P1).
+ * Digest mismatch flags divergence ONLY at EQUAL file counts — the split-brain
+ * case the issue exists for (equal size, different content). Any nonzero count
+ * delta already perturbs the census digest, so flagging digest there too would
+ * make `maxFileCountDelta` unreachable (codex P2); within tolerance the count
+ * delta is the sole signal.
  */
 export function compareReplicaWatermarks(
   local: readonly CorpusWatermark[],
   peer: readonly CorpusWatermark[],
   thresholds: Pick<ReplicaPeersConfig, "maxFileCountDelta" | "maxWatermarkAgeDeltaMs">,
-): { state: "converged" | "diverged"; namespaces: ReplicaNamespaceDelta[]; divergedNamespaceCount: number } {
+): { state: "converged" | "diverged" | "unknown"; namespaces: ReplicaNamespaceDelta[]; divergedNamespaceCount: number } {
   const byLocal = new Map(local.map((watermark) => [watermark.namespace, watermark]));
   const byPeer = new Map(peer.map((watermark) => [watermark.namespace, watermark]));
   const allNamespaces = [...new Set([...byLocal.keys(), ...byPeer.keys()])].sort((a, b) =>
@@ -178,8 +191,14 @@ export function compareReplicaWatermarks(
     const digestMatch = l.digest === p.digest;
     const ageDelta = writeAgeDeltaMs(l.newestWriteAt, p.newestWriteAt);
     const reasons: string[] = [];
-    if (fileCountDelta > thresholds.maxFileCountDelta) reasons.push(`file_count_delta=${fileCountDelta}`);
-    if (!digestMatch) reasons.push("digest_mismatch");
+    if (fileCountDelta > thresholds.maxFileCountDelta) {
+      reasons.push(`file_count_delta=${fileCountDelta}`);
+    } else if (fileCountDelta === 0 && !digestMatch) {
+      // Equal counts, different digest = equal size / different content: the
+      // split-brain signal. A nonzero delta within tolerance is NOT flagged on
+      // digest, since it necessarily perturbs the digest anyway (codex P2).
+      reasons.push("digest_mismatch");
+    }
     if (ageDelta !== null && ageDelta > thresholds.maxWatermarkAgeDeltaMs) {
       reasons.push(`write_age_delta_ms=${ageDelta}`);
     }
@@ -199,7 +218,10 @@ export function compareReplicaWatermarks(
   });
 
   const divergedNamespaceCount = namespaces.filter((delta) => delta.diverged).length;
-  return { state: divergedNamespaceCount > 0 ? "diverged" : "converged", namespaces, divergedNamespaceCount };
+  const hasAmbiguousLocalOnly = namespaces.some((delta) => delta.presence === "local_only");
+  // Precedence: real divergence > ambiguous local-only (unverifiable) > agreement.
+  const state = divergedNamespaceCount > 0 ? "diverged" : hasAmbiguousLocalOnly ? "unknown" : "converged";
+  return { state, namespaces, divergedNamespaceCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -254,13 +276,29 @@ function coerceCorpusWatermark(raw: unknown): CorpusWatermark | null {
   if (!raw || typeof raw !== "object") return null;
   const record = raw as Record<string, unknown>;
   if (typeof record.namespace !== "string" || record.namespace.length === 0) return null;
-  if (typeof record.memoryFileCount !== "number" || !Number.isFinite(record.memoryFileCount)) return null;
-  if (typeof record.digest !== "string") return null;
+  // A file count must be a nonnegative integer: a negative/fractional count is
+  // corrupted telemetry, not a valid corpus (codex P2). Rejecting it here routes
+  // the whole peer response to `unknown` via the malformed_corpus guard.
+  if (
+    typeof record.memoryFileCount !== "number" ||
+    !Number.isInteger(record.memoryFileCount) ||
+    record.memoryFileCount < 0
+  ) {
+    return null;
+  }
+  if (typeof record.digest !== "string" || record.digest.length === 0) return null;
+  // `newestWriteAt` is either absent/null or a parseable timestamp; an
+  // unparseable string is corrupted telemetry, not "undated" (codex P2).
+  let newestWriteAt: string | null = null;
+  if (record.newestWriteAt !== undefined && record.newestWriteAt !== null) {
+    if (typeof record.newestWriteAt !== "string" || !Number.isFinite(Date.parse(record.newestWriteAt))) return null;
+    newestWriteAt = record.newestWriteAt;
+  }
   return {
     namespace: record.namespace,
     memoryFileCount: record.memoryFileCount,
     newestPartition: typeof record.newestPartition === "string" ? record.newestPartition : null,
-    newestWriteAt: typeof record.newestWriteAt === "string" ? record.newestWriteAt : null,
+    newestWriteAt,
     digest: record.digest,
     computedAt: typeof record.computedAt === "string" ? record.computedAt : "",
   };
@@ -391,13 +429,18 @@ export async function pollReplicaPeers(options: PollReplicaPeersOptions): Promis
           return { peer: label, state: outcome.kind, polledAt, namespaces: [], divergedNamespaceCount: 0, reason: outcome.reason };
         }
         const comparison = compareReplicaWatermarks(localWatermarks, outcome.corpus, thresholds);
-        return {
+        const peerReport: ReplicaPeerReport = {
           peer: label,
           state: comparison.state,
           polledAt,
           namespaces: comparison.namespaces,
           divergedNamespaceCount: comparison.divergedNamespaceCount,
         };
+        // A comparison that resolves to `unknown` (ambiguous local-only namespace)
+        // carries a token-free reason so /health and doctor show WHY it is not
+        // certified converged.
+        if (comparison.state === "unknown") peerReport.reason = "namespace_scope_unverifiable";
+        return peerReport;
       } catch {
         // Defense in depth: no per-peer error may reject the whole poll (§22).
         return { peer: label, state: "unreachable", polledAt, namespaces: [], divergedNamespaceCount: 0, reason: "error" };
@@ -438,10 +481,21 @@ export function filterReplicaReportByCaps(
 ): ReplicaDivergenceStatus {
   if (!isCapabilityRestricted(caps ?? undefined)) return report;
   const peers = report.peers.map((peer): ReplicaPeerReport => {
-    if (peer.state === "unreachable" || peer.state === "unknown") return peer;
+    // Fetch-level states (unreachable, or unknown with no comparison) carry no
+    // namespace data — preserve verbatim. A comparison peer (converged/diverged,
+    // or comparison-`unknown` from an ambiguous local-only namespace) has deltas
+    // that MUST be filtered so a restricted token never learns a hidden namespace.
+    if (peer.namespaces.length === 0) return peer;
     const namespaces = peer.namespaces.filter((delta) => capabilityAllowsNamespace(caps ?? undefined, delta.namespace));
     const divergedNamespaceCount = namespaces.filter((delta) => delta.diverged).length;
-    return { ...peer, namespaces, divergedNamespaceCount, state: divergedNamespaceCount > 0 ? "diverged" : "converged" };
+    const hasAmbiguousLocalOnly = namespaces.some((delta) => delta.presence === "local_only");
+    const state = divergedNamespaceCount > 0 ? "diverged" : hasAmbiguousLocalOnly ? "unknown" : "converged";
+    const filtered: ReplicaPeerReport = { ...peer, namespaces, divergedNamespaceCount, state };
+    // The comparison-`unknown` reason is generic (no namespace name); keep it
+    // only while the visible state stays unknown, else drop the stale reason.
+    if (state === "unknown") filtered.reason = "namespace_scope_unverifiable";
+    else delete filtered.reason;
+    return filtered;
   });
   return { ...report, peers };
 }
@@ -484,12 +538,18 @@ export class ReplicaDivergenceMonitor {
   }
 
   getReport(input: {
-    config: ReplicaPeersConfig;
+    /**
+     * Raw `replicaPeers` block. An absent/partial/loosely-typed block (a host
+     * adapter or an older persisted config that bypassed `parseConfig`) resolves
+     * to the documented default — disabled, no peers, no polling — so `/health`
+     * stays answerable instead of throwing (issue #2155 read-boundary pattern).
+     */
+    config: ReplicaPeersConfig | undefined;
     /** Fresh local watermark set for comparison; invoked only during a background refresh. */
     computeLocalWatermarks: () => Promise<CorpusWatermark[]>;
     caps?: TokenCapabilities | null;
   }): ReplicaDivergenceStatus {
-    const { config } = input;
+    const config = resolveReplicaPeersConfig(input.config);
     if (!config.enabled) return { enabled: false, pending: false, polledAt: null, peers: [] };
     if (config.peers.length === 0) return { enabled: true, pending: false, polledAt: null, peers: [] };
     const fresh = this.cached !== undefined && this.clock() < this.cached.expiresAt;
@@ -501,7 +561,6 @@ export class ReplicaDivergenceMonitor {
 
   private refresh(config: ReplicaPeersConfig, computeLocalWatermarks: () => Promise<CorpusWatermark[]>): void {
     if (this.inFlight) return;
-    const startedAt = this.clock();
     this.inFlight = (async () => {
       const localWatermarks = await computeLocalWatermarks();
       const report = await pollReplicaPeers({
@@ -512,7 +571,10 @@ export class ReplicaDivergenceMonitor {
         maxConcurrent: this.maxConcurrent,
         log: this.log,
       });
-      this.cached = { report, expiresAt: startedAt + config.pollIntervalMs };
+      // Expiry is measured from when the poll FINISHES, not when it starts: a
+      // poll slower than pollIntervalMs would otherwise store an already-expired
+      // entry and re-poll on every probe (cursor: unbounded re-polling).
+      this.cached = { report, expiresAt: this.clock() + config.pollIntervalMs };
     })()
       .catch(() => {
         // A failed poll never caches — keep serving the last good report.
