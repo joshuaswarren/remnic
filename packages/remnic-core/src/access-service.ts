@@ -4373,6 +4373,7 @@ export class EngramAccessService {
     // overlay write and only collapses to `config.defaultNamespace` (always
     // writable) when no overlay applies — so it never throws `not writable:
     // default` for a validly scoped observe's queue.
+    try {
     const scope = await this.resolveMemoryScopePlan(request);
     captureSeededCodingContext();
     // Legacy `namespace` response field: pre-#1505 semantics were exactly
@@ -4415,6 +4416,10 @@ export class EngramAccessService {
       sessionKey: request.sessionKey,
       namespace,
     };
+    } catch (error) {
+      clearSeededCodingContext();
+      throw error;
+    }
   }
 
   async extractionForceFlush(

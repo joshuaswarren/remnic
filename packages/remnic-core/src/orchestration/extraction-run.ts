@@ -51,6 +51,17 @@ export interface ExtractionRunResult {
   postPersistMetadataFailed?: boolean;
 }
 
+export class ExtractionDeadlineError extends Error {
+  readonly stage: string;
+
+  constructor(stage: string) {
+    super(`replay extraction deadline exceeded (${stage})`);
+    this.name = "ExtractionDeadlineError";
+    this.stage = stage;
+  }
+}
+
+
 /** Dependencies injected by the orchestrator. All stable references or
  *  live accessors — lazy getters for anything tests reassign
  *  post-construction (buffer, extraction, storageRouter, threading). */
@@ -496,6 +507,7 @@ export class ExtractionRunCoordinator {
     turns: BufferTurn[],
     options: {
       clearBufferAfterExtraction?: boolean;
+      clearMatchingTurns?: boolean;
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       deadlineMs?: number;
@@ -530,14 +542,15 @@ export class ExtractionRunCoordinator {
   ): Promise<ExtractionRunResult> {
     log.debug(`running extraction on ${turns.length} turns`);
     const clearBufferAfterExtraction = options.clearBufferAfterExtraction ?? true;
+    const clearMatchingTurns = options.clearMatchingTurns === true;
     const skipCharThreshold = options.skipCharThreshold ?? false;
     const skipUserTurnThreshold = options.skipUserTurnThreshold ?? false;
     const deadlineMs =
       typeof options.deadlineMs === "number" && Number.isFinite(options.deadlineMs) ? options.deadlineMs : undefined;
     const bufferKey = options.bufferKey ?? turns[0]?.sessionKey ?? "default";
     const throwIfDeadlineExceeded = (stage: string): void => {
-      if (typeof deadlineMs === "number" && Date.now() > deadlineMs) {
-        throw new Error(`replay extraction deadline exceeded (${stage})`);
+      if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+        throw new ExtractionDeadlineError(stage);
       }
     };
     const throwIfAborted = (stage: string): void => {
@@ -545,10 +558,13 @@ export class ExtractionRunCoordinator {
     };
     const clearBuffer = async (options?: { ignoreAbort?: boolean }) => {
       if (options?.ignoreAbort !== true) {
+        throwIfDeadlineExceeded("before_clear_buffer");
         throwIfAborted("before_clear_buffer");
       }
       if (clearBufferAfterExtraction) {
-        await this.deps.getBuffer().clearAfterExtraction(bufferKey, turns);
+        await this.deps
+          .getBuffer()
+          .clearAfterExtraction(bufferKey, turns, clearMatchingTurns ? { allowNonPrefix: true } : undefined);
       }
     };
 
@@ -792,22 +808,36 @@ export class ExtractionRunCoordinator {
       : options.abortSignal;
     let extractionDeadlineTimer: NodeJS.Timeout | undefined;
     if (extractionDeadlineController && typeof deadlineMs === "number") {
-      const remainingMs = deadlineMs - Date.now();
-      if (remainingMs <= 0) {
-        extractionDeadlineController.abort();
-      } else {
-        extractionDeadlineTimer = setTimeout(() => {
+      const deadline = deadlineMs;
+      const maxTimerDelayMs = 2_147_483_647;
+      const scheduleDeadlineAbort = (): void => {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
           extractionDeadlineController.abort();
-        }, remainingMs);
-      }
+          return;
+        }
+        extractionDeadlineTimer = setTimeout(() => {
+          if (Date.now() >= deadline) {
+            extractionDeadlineController.abort();
+          } else {
+            scheduleDeadlineAbort();
+          }
+        }, Math.min(remainingMs, maxTimerDelayMs));
+      };
+      scheduleDeadlineAbort();
     }
     let result: ExtractionResult;
     try {
       result = await raceRecallAbort(
-        this.deps.getExtraction().extract(normalizedTurns, existingEntities),
+        this.deps.getExtraction().extract(normalizedTurns, existingEntities, extractionAbortSignal),
         extractionAbortSignal,
         "extraction aborted (during_extract)",
       );
+    } catch (error) {
+      if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+        throw new ExtractionDeadlineError("during_extract");
+      }
+      throw error;
     } finally {
       if (extractionDeadlineTimer) {
         clearTimeout(extractionDeadlineTimer);

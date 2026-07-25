@@ -28,7 +28,11 @@ import { StorageManager } from "../index.js";
 import { LcmEngine } from "../lcm/index.js";
 import { log } from "../logger.js";
 import { ExtractionQueueCoordinator } from "./extraction-queue-coordinator.js";
-import { ExtractionRunCoordinator, type ExtractionRunResult } from "./extraction-run.js";
+import {
+  ExtractionDeadlineError,
+  ExtractionRunCoordinator,
+  type ExtractionRunResult,
+} from "./extraction-run.js";
 import { stripHandles } from "../recall-handles.js";
 import { type ReplayTurn, normalizeReplaySessionKey } from "../replay/types.js";
 import { SessionObserverState } from "../session-observer-state.js";
@@ -64,6 +68,7 @@ export interface TurnIngestionDeps {
     options?: {
       skipDedupeCheck?: boolean;
       clearBufferAfterExtraction?: boolean;
+      clearMatchingTurns?: boolean;
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
@@ -605,6 +610,7 @@ export class TurnIngestionCoordinator {
     options: {
       skipDedupeCheck?: boolean;
       clearBufferAfterExtraction?: boolean;
+      clearMatchingTurns?: boolean;
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
@@ -672,14 +678,23 @@ export class TurnIngestionCoordinator {
     };
 
     if (typeof extractionDeadlineMs === "number") {
-      const remainingMs = extractionDeadlineMs - Date.now();
-      if (remainingMs <= 0) {
-        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
-        return;
-      }
-      timeout = setTimeout(() => {
-        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
-      }, remainingMs);
+      const deadline = extractionDeadlineMs;
+      const maxTimerDelayMs = 2_147_483_647;
+      const scheduleQueueWaitTimeout = (): void => {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          settleTask(new ExtractionDeadlineError("queue_wait"));
+          return;
+        }
+        timeout = setTimeout(() => {
+          if (Date.now() >= deadline) {
+            settleTask(new ExtractionDeadlineError("queue_wait"));
+          } else {
+            scheduleQueueWaitTimeout();
+          }
+        }, Math.min(remainingMs, maxTimerDelayMs));
+      };
+      scheduleQueueWaitTimeout();
     }
 
     this.deps.extractionQueueCoordinator.enqueue(async () => {
@@ -688,7 +703,7 @@ export class TurnIngestionCoordinator {
         typeof extractionDeadlineMs === "number" &&
         extractionDeadlineMs <= Date.now()
       ) {
-        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
+        settleTask(new ExtractionDeadlineError("queue_wait"));
         return;
       }
       clearQueueWaitTimer();
@@ -696,6 +711,7 @@ export class TurnIngestionCoordinator {
         const result = await this.deps.runExtraction(turnsToExtract, {
           clearBufferAfterExtraction:
             options.clearBufferAfterExtraction ?? true,
+          clearMatchingTurns: options.clearMatchingTurns === true,
           skipCharThreshold: options.skipCharThreshold ?? false,
           skipUserTurnThreshold: options.skipUserTurnThreshold ?? false,
           deadlineMs: extractionDeadlineMs,

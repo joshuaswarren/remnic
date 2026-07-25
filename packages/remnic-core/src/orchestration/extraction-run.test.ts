@@ -15,6 +15,7 @@ import test from "node:test";
 
 import { SmartBuffer } from "../buffer.js";
 import {
+  ExtractionDeadlineError,
   ExtractionRunCoordinator,
   type ExtractionRunCoordinatorDeps,
   computeExtractionRetryNextEligibleMs,
@@ -259,7 +260,7 @@ test("context-only extraction honors its deadline during passive capture", async
       {
         bufferKey: "context-only-deadline",
         clearBufferAfterExtraction: false,
-        deadlineMs: 1_000,
+        deadlineMs: 1_001,
       },
     );
 
@@ -280,7 +281,6 @@ test("runExtraction aborts an in-flight provider when its deadline expires", asy
   try {
     const coordinator = harness.newCoordinator();
     harness.setRespond(() => new Promise<ExtractionResult>(() => {}));
-
     await assert.rejects(
       coordinator.runExtraction(makeTurns("deadline"), {
         skipCharThreshold: true,
@@ -289,11 +289,36 @@ test("runExtraction aborts an in-flight provider when its deadline expires", asy
         bufferKey: "deadline",
         deadlineMs: Date.now() + 40,
       }),
-      /extraction aborted \(during_extract\)/,
+      (error: unknown) => error instanceof ExtractionDeadlineError && error.stage === "during_extract",
     );
   } finally {
     await harness.cleanup();
   }
+});
+
+test("runExtraction clamps long deadline timers to the Node setTimeout limit", async () => {
+  const harness = await makeHarness();
+  const timerGlobal = globalThis as unknown as { setTimeout: typeof setTimeout };
+  const realSetTimeout = timerGlobal.setTimeout;
+  const armedDelays: number[] = [];
+  timerGlobal.setTimeout = ((handler: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    if (typeof delay === "number") armedDelays.push(delay);
+    return realSetTimeout(handler, 0, ...args);
+  }) as typeof setTimeout;
+  try {
+    const coordinator = harness.newCoordinator();
+    await coordinator.runExtraction(makeTurns("long-deadline"), {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: false,
+      bufferKey: "long-deadline",
+      deadlineMs: Date.now() + 2_147_483_647 + 60_000,
+    });
+  } finally {
+    timerGlobal.setTimeout = realSetTimeout;
+    await harness.cleanup();
+  }
+  assert.ok(armedDelays.includes(2_147_483_647), `expected a clamped deadline timer, got ${armedDelays.join(", ")}`);
 });
 
 // ---------------------------------------------------------------------------

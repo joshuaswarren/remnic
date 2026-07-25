@@ -185,6 +185,12 @@ export function shouldEnableLocalExtractionThinking(
     conversationChars < config.localLlmThinkingThresholdChars;
 }
 
+function throwIfExtractionAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const reason = signal.reason;
+  throw reason instanceof Error ? reason : new Error("extraction aborted");
+}
+
 export class ExtractionEngine {
   private client: OpenAI | null;
   private localLlm: LocalLlmClient;
@@ -661,19 +667,21 @@ export class ExtractionEngine {
     assertionSource: string,
     messageTimestamp?: Date,
     roleAssertionSources?: ExtractionGroundingRoleSources,
+    signal?: AbortSignal,
   ): Promise<ExtractionResult> {
     if (!resolvePipelineProcessingCapabilities(this.config).proactiveExtraction) return base;
     const maxAdditional = Math.max(0, Math.floor(this.config.maxProactiveQuestionsPerExtraction));
     if (!shouldRunProactivePass(this.config, maxAdditional, this.shouldUseLocalLlm, this.localLlm)) return base;
 
     try {
-      const proactive = await this.generateProactiveQuestions(conversation, base, maxAdditional);
+      const proactive = await this.generateProactiveQuestions(conversation, base, maxAdditional, signal);
       if (proactive.length === 0) return base;
       const proactiveAdditions = await this.answerProactiveQuestions(
         conversation,
         base,
         proactive,
         maxAdditional,
+        signal,
       );
       const sanitizedAdditions = this.sanitizeExtractionResult(proactiveAdditions, messageTimestamp);
       const groundedAdditions = this.applySourceGrounding(
@@ -686,6 +694,7 @@ export class ExtractionEngine {
       if (!this.hasExtractionOutputs(groundedAdditions)) return base;
       return this.mergeProactiveExtractionPass(base, groundedAdditions, maxAdditional);
     } catch (err) {
+      if (signal?.aborted) throw err;
       log.debug(`proactive extraction question pass failed (ignored): ${err}`);
       return base;
     }
@@ -729,6 +738,7 @@ export class ExtractionEngine {
     conversation: string,
     base: ExtractionResult,
     maxAdditional: number,
+    signal?: AbortSignal,
   ): Promise<ExtractionQuestion[]> {
     const existingQuestionKeys = new Set(
       (base.questions ?? [])
@@ -776,8 +786,10 @@ export class ExtractionEngine {
             timeoutMs: this.config.proactiveExtractionTimeoutMs,
             operation: "proactive_extraction",
             priority: "background",
+            signal,
           },
         );
+        throwIfExtractionAborted(signal);
         if (localResponse?.content) {
           const localParsed = this.parseProactiveQuestionsFromText(
             localResponse.content.trim(),
@@ -791,7 +803,7 @@ export class ExtractionEngine {
           return [];
         }
       } catch (err) {
-        if (!this.config.localLlmFallback) {
+        if (signal?.aborted || !this.config.localLlmFallback) {
           throw err;
         }
       }
@@ -810,6 +822,7 @@ export class ExtractionEngine {
         temperature: 0.2,
         maxTokens: this.config.proactiveExtractionMaxTokens,
         timeoutMs: this.config.proactiveExtractionTimeoutMs,
+        signal,
       }),
     );
     if (!fallbackResult?.questions) return [];
@@ -825,6 +838,7 @@ export class ExtractionEngine {
     base: ExtractionResult,
     proactiveQuestions: ExtractionQuestion[],
     maxAdditional: number,
+    signal?: AbortSignal,
   ): Promise<ExtractionResult> {
     const factsPreview = base.facts
       .slice(0, 8)
@@ -883,8 +897,10 @@ export class ExtractionEngine {
             timeoutMs: this.config.proactiveExtractionTimeoutMs,
             operation: "proactive_extraction",
             priority: "background",
+            signal,
           },
         );
+        throwIfExtractionAborted(signal);
         if (localResponse?.content) {
           const parsed = this.parseProactiveExtractionResultFromText(localResponse.content.trim());
           if (parsed) {
@@ -895,7 +911,7 @@ export class ExtractionEngine {
           return { facts: [], profileUpdates: [], entities: [], questions: [] };
         }
       } catch (err) {
-        if (!this.config.localLlmFallback) {
+        if (signal?.aborted || !this.config.localLlmFallback) {
           throw err;
         }
       }
@@ -914,6 +930,7 @@ export class ExtractionEngine {
         temperature: 0.2,
         maxTokens: this.config.proactiveExtractionMaxTokens,
         timeoutMs: this.config.proactiveExtractionTimeoutMs,
+        signal,
       }),
     );
     if (!fallbackResult) {
@@ -1178,7 +1195,11 @@ export class ExtractionEngine {
     return this.attachProvenanceToResult(result, turns);
   }
 
-  async extract(turns: BufferTurn[], existingEntities?: string[]): Promise<ExtractionResult> {
+  async extract(
+    turns: BufferTurn[],
+    existingEntities?: string[],
+    signal?: AbortSignal,
+  ): Promise<ExtractionResult> {
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
 
     // Guard: skip if buffer is empty or all turns are whitespace-only
@@ -1269,7 +1290,8 @@ export class ExtractionEngine {
       this.profiler.startSpan("local-llm", extractionTraceId);
       primaryExtractorAttempted = true;
       try {
-        const localResult = await this.extractWithLocalLlm(conversation, existingEntities);
+        const localResult = await this.extractWithLocalLlm(conversation, existingEntities, signal);
+        throwIfExtractionAborted(signal);
         if (localResult) {
           const durationMs = Date.now() - startTime;
           this.profiler.endSpan("local-llm", extractionTraceId);
@@ -1290,6 +1312,7 @@ export class ExtractionEngine {
             assertionSource,
             messageTimestamp,
             roleAssertionSources,
+            signal,
           );
           return this.finalizeExtractionResult(finalResult, boundedTurns);
         }
@@ -1307,6 +1330,7 @@ export class ExtractionEngine {
         }
         log.info("extraction: local LLM unavailable, falling back to gateway default AI");
       } catch (err) {
+        if (signal?.aborted) throw err;
         if (!this.config.localLlmFallback) {
           log.warn("extraction: local LLM error and fallback disabled:", err);
           return {
@@ -1330,7 +1354,7 @@ export class ExtractionEngine {
       this.profiler.startSpan("direct-client", extractionTraceId);
       primaryExtractorAttempted = true;
       try {
-        const directResult = await this.extractWithDirectClient(conversation, existingEntities);
+        const directResult = await this.extractWithDirectClient(conversation, existingEntities, signal);
         if (directResult) {
           const durationMs = Date.now() - startTime;
           this.profiler.endSpan("direct-client", extractionTraceId);
@@ -1351,6 +1375,7 @@ export class ExtractionEngine {
             assertionSource,
             messageTimestamp,
             roleAssertionSources,
+            signal,
           );
           return this.finalizeExtractionResult(finalResult, boundedTurns);
         }
@@ -1365,6 +1390,7 @@ export class ExtractionEngine {
         closedDirectTrace = true;
         log.info("extraction: direct client returned no result, falling back to gateway AI");
       } catch (err) {
+        if (signal?.aborted) throw err;
         try {
           this.emit({
             kind: "llm_error", traceId, model: this.config.model, operation: "extraction",
@@ -1420,6 +1446,7 @@ export class ExtractionEngine {
           temperature: 0.3,
           maxTokens: this.config.extractionMaxOutputTokens,
           timeoutMs: this.config.localLlmTimeoutMs,
+          signal,
         }),
       );
 
@@ -1450,6 +1477,7 @@ export class ExtractionEngine {
           assertionSource,
           messageTimestamp,
           roleAssertionSources,
+          signal,
         );
         return this.finalizeExtractionResult(finalResult, boundedTurns);
       }
@@ -1476,6 +1504,7 @@ export class ExtractionEngine {
         extractionFailureClass: fallbackParseFailureClass,
       };
     } catch (err) {
+      if (signal?.aborted) throw err;
       this.emit({
         kind: "llm_error", traceId: fallbackTraceId, model: "fallback", operation: "extraction",
         durationMs: Date.now() - fallbackStartTime, error: String(err),
@@ -1504,7 +1533,11 @@ export class ExtractionEngine {
    * Extract memories using local LLM with JSON mode.
    * Uses a minimal prompt to fit within local model context limits (typically 4k-8k).
    */
-  private async extractWithLocalLlm(conversation: string, existingEntities?: string[]): Promise<ExtractionResult | null> {
+  private async extractWithLocalLlm(
+    conversation: string,
+    existingEntities?: string[],
+    signal?: AbortSignal,
+  ): Promise<ExtractionResult | null> {
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     log.debug(
       `extractWithLocalLlm: starting extraction, localLlmEnabled=${this.shouldUseLocalLlm}, model=${this.config.localLlmModel}`,
@@ -1574,6 +1607,7 @@ ${truncatedConversation}`;
           ? false
           : undefined,
         priority: "background",
+        signal,
       },
     );
 
@@ -1625,6 +1659,7 @@ ${truncatedConversation}`;
   private async extractWithDirectClient(
     conversation: string,
     existingEntities?: string[],
+    signal?: AbortSignal,
   ): Promise<ExtractionResult | null> {
     if (!this.client) return null;
 
@@ -1633,19 +1668,22 @@ ${truncatedConversation}`;
     });
     log.debug(`extractWithDirectClient: calling model=${this.config.model} tokenParams=${JSON.stringify(tokenParams)}`);
 
-    const response = await this.client.chat.completions.create({
-      model: this.config.model,
-      messages: [
-        {
-          role: "system",
-          content:
-            this.buildExtractionInstructions(existingEntities) +
-            `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${EXTRACTION_RESPONSE_SHAPE}`,
-        },
-        { role: "user", content: conversation },
-      ],
-      ...tokenParams,
-    });
+    const response = await this.client.chat.completions.create(
+      {
+        model: this.config.model,
+        messages: [
+          {
+            role: "system",
+            content:
+              this.buildExtractionInstructions(existingEntities) +
+              `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${EXTRACTION_RESPONSE_SHAPE}`,
+          },
+          { role: "user", content: conversation },
+        ],
+        ...tokenParams,
+      },
+      signal ? { signal } : undefined,
+    );
 
     const content = response.choices?.[0]?.message?.content?.trim();
     if (!content) {

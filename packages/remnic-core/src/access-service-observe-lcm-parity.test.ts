@@ -31,6 +31,7 @@ import test from "node:test";
 
 import { EngramAccessInputError, EngramAccessService } from "./access-service.js";
 import { Orchestrator } from "./orchestrator.js";
+import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
 import {
   combineNamespaces,
@@ -55,7 +56,10 @@ interface ParityProbe {
     writeNamespaceOverride?: string;
     principalOverride?: string;
   }>;
-  lcmEngine: { enabled: boolean };
+  lcmEngine: {
+    enabled: boolean;
+    waitForSessionObserveIdle?: (sessionKey: string) => Promise<void>;
+  };
   extractionForceFlushCalls: ExtractionForceFlushCall[];
 }
 
@@ -380,6 +384,26 @@ test("#2128: disabled LCM flush does not bind per-call project context", async (
   assert.equal(probe.compactionFlushKeys.length, 0);
 });
 
+test("#2128: failed LCM flush rolls back a seeded project context", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "pi-geek:failed-lcm-flush";
+  probe.lcmEngine.waitForSessionObserveIdle = async () => {
+    throw new Error("idle wait failed");
+  };
+
+  await assert.rejects(
+    () =>
+      service.lcmCompactionFlush({
+        sessionKey,
+        projectTag: "Acme/Webshop",
+        authenticatedPrincipal: "pi-geek",
+      }),
+    /idle wait failed/,
+  );
+  assert.equal(probe.orch.getCodingContextForSession(sessionKey), null);
+});
+
 test("#2128: extraction force-flush uses observe's scoped target even when LCM is disabled", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);
@@ -484,6 +508,26 @@ test("#2128: aborted or expired extraction force-flush never touches a buffer", 
       error.message === "extraction force-flush deadline exceeded before scope resolution",
   );
   assert.equal(probe.extractionForceFlushCalls.length, 0);
+});
+
+test("#2128: late extraction deadline is surfaced as an access input error", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  probe.orch.flushSession = async () => {
+    throw new ExtractionDeadlineError("during_extract");
+  };
+  const service = new EngramAccessService(probe.orch);
+
+  await assert.rejects(
+    () =>
+      service.extractionForceFlush({
+        sessionKey: "pi-geek:late-deadline",
+        authenticatedPrincipal: "pi-geek",
+        deadlineMs: Date.now() + 10_000,
+      }),
+    (error: unknown) =>
+      error instanceof EngramAccessInputError &&
+      error.message === "replay extraction deadline exceeded (during_extract)",
+  );
 });
 
 test("#2128: an abort while attaching single-store context never starts the buffer drain", async () => {

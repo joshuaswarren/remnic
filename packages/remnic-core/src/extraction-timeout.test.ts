@@ -268,3 +268,54 @@ test("extraction keeps action transcripts with durable memory cues", async () =>
 
   assert.equal(fallbackCalls, 1);
 });
+
+test("gateway extraction forwards caller cancellation to the provider", async () => {
+  const config = parseConfig({
+    modelSource: "gateway",
+    gatewayConfig: {
+      agents: {
+        defaults: { model: { primary: "bench-internal/gpt-5.5" } },
+        list: [],
+      },
+      models: {
+        providers: {
+          "bench-internal": {
+            api: "codex-cli",
+            baseUrl: "codex-cli://local",
+            models: [{ id: "gpt-5.5", name: "gpt-5.5" }],
+          },
+        },
+      },
+    },
+  });
+  const engine = new ExtractionEngine(config);
+  const controller = new AbortController();
+  let capturedSignal: AbortSignal | undefined;
+  (engine as unknown as {
+    fallbackLlm: {
+      parseWithSchemaDetailed(
+        messages: unknown,
+        schema: unknown,
+        options: { signal?: AbortSignal },
+      ): Promise<unknown>;
+    };
+  }).fallbackLlm = {
+    async parseWithSchemaDetailed(_messages, _schema, options) {
+      capturedSignal = options.signal;
+      await new Promise<never>((_resolve, reject) => {
+        options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+      });
+      return null;
+    },
+  };
+
+  const extraction = engine.extract(
+    [{ role: "user", content: "Remember this cancellation test.", timestamp: "2026-05-08T00:00:00.000Z" }],
+    undefined,
+    controller.signal,
+  );
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  assert.equal(capturedSignal, controller.signal);
+  controller.abort(new Error("deadline"));
+  await assert.rejects(extraction, /deadline/);
+});

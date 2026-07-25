@@ -223,6 +223,7 @@ interface LocalLlmChatCompletionOptions {
   forceDisableThinking?: boolean;
   disableThinking?: boolean;
   priority?: LocalLlmRequestPriority;
+  signal?: AbortSignal;
 }
 
 interface LocalLlmQueuedRequest {
@@ -903,6 +904,10 @@ export class LocalLlmClient {
 
   private async runQueuedRequest(next: LocalLlmQueuedRequest): Promise<void> {
     try {
+      if (next.options.signal?.aborted) {
+        next.resolve(null);
+        return;
+      }
       const remainingCooldownMs = this.remainingCooldownMs();
       if (remainingCooldownMs > 0) {
         const additionalDropped = this.failOpenQueuedRequestsForCooldown();
@@ -949,6 +954,7 @@ export class LocalLlmClient {
     }
 
     try {
+      if (options.signal?.aborted) return null;
       const isAvailable = await this.checkAvailability();
       if (!isAvailable) {
         log.debug(
@@ -1040,6 +1046,16 @@ export class LocalLlmClient {
       let lastAbortError: Error | null = null;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         const attemptAbort = new AbortController();
+        const onCallerAbort = (): void => {
+          attemptAbort.abort(options.signal?.reason);
+        };
+        if (options.signal) {
+          if (options.signal.aborted) {
+            onCallerAbort();
+          } else {
+            options.signal.addEventListener("abort", onCallerAbort, { once: true });
+          }
+        }
         const attemptTimeout = setTimeout(() => attemptAbort.abort(), effectiveTimeoutMs);
         try {
           response = await this.chatTransport.post({
@@ -1054,17 +1070,20 @@ export class LocalLlmClient {
         } catch (err) {
           if (!this.isAbortError(err)) throw err;
           lastAbortError = err instanceof Error ? err : new Error(String(err));
-          if (attempt < maxAttempts) {
-            const backoffMs = this.config.localLlmRetryBackoffMs * attempt;
-            log.warn(
-              `local LLM request aborted: op=${operation} attempt=${attempt}/${maxAttempts} timeoutMs=${effectiveTimeoutMs} model=${this.config.localLlmModel}; retrying after ${backoffMs}ms`,
-            );
-            await new Promise((resolve) => setTimeout(resolve, backoffMs));
-            continue;
+          if (options.signal?.aborted || attempt >= maxAttempts) {
+            break;
           }
-          break;
+          const backoffMs = this.config.localLlmRetryBackoffMs * attempt;
+          log.warn(
+            `local LLM request aborted: op=${operation} attempt=${attempt}/${maxAttempts} timeoutMs=${effectiveTimeoutMs} model=${this.config.localLlmModel}; retrying after ${backoffMs}ms`,
+          );
+          const backoffWait = Promise.withResolvers<void>();
+          setTimeout(backoffWait.resolve, backoffMs);
+          await backoffWait.promise;
+          continue;
         } finally {
           clearTimeout(attemptTimeout);
+          options.signal?.removeEventListener("abort", onCallerAbort);
         }
 
         if (response.ok) break;
@@ -1091,7 +1110,9 @@ export class LocalLlmClient {
         log.warn(
           `local LLM request got ${response.status}; retrying (attempt ${attempt + 1}/${maxAttempts}) after ${backoffMs}ms`,
         );
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        const backoffWait = Promise.withResolvers<void>();
+        setTimeout(backoffWait.resolve, backoffMs);
+        await backoffWait.promise;
       }
       log.debug(
         `local LLM: received response, status=${response?.status}, ok=${response?.ok}`,

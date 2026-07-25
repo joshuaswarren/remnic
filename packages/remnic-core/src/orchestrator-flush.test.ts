@@ -398,6 +398,39 @@ test("ingestBulkImportBatch rejects when the extraction deadline expires in the 
   );
 });
 
+test("queued extraction clamps long deadline timers to the Node setTimeout limit", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
+  orchestrator.extractionQueueCoordinator.setProcessingForTest(true);
+  orchestrator.runExtraction = async () => ({
+    status: "completed",
+    persistedCount: 0,
+    durableOutputCount: 0,
+  });
+
+  const timerGlobal = globalThis as unknown as { setTimeout: typeof setTimeout };
+  const realSetTimeout = timerGlobal.setTimeout;
+  const armedDelays: number[] = [];
+  timerGlobal.setTimeout = ((handler: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    if (typeof delay === "number") armedDelays.push(delay);
+    return realSetTimeout(handler, delay, ...args);
+  }) as typeof setTimeout;
+  try {
+    const pending = orchestrator.ingestBulkImportBatch(
+      [{ role: "user", timestamp: "2026-06-24T12:00:00.000Z", content: "Remember this long-deadline import." }],
+      { deadlineMs: Date.now() + 2_147_483_647 + 60_000, failOnExtractionFailure: true },
+    );
+    const queuedTask = orchestrator.extractionQueueCoordinator.shift();
+    assert.ok(queuedTask);
+    await queuedTask();
+    await pending;
+  } finally {
+    timerGlobal.setTimeout = realSetTimeout;
+  }
+  assert.ok(armedDelays.includes(2_147_483_647), `expected a clamped queue timer, got ${armedDelays.join(", ")}`);
+});
+
 test("ingestBulkImportBatch does not report queue wait timeout after extraction starts", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = parseConfig({});
@@ -832,6 +865,41 @@ test("flushSession drains every discovered buffer for the session", async () => 
     "session-z",
     "codex-thread:thread-11::principal:cli",
   ]);
+});
+
+test("flushSession filters shared-buffer turns before scoped extraction", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const ownedTurn = makeTurn("session-z", "remember owned");
+  const foreignTurn = makeTurn("session-other", "remember foreign");
+  let queuedTurns: BufferTurn[] = [];
+  let queuedOptions: Record<string, unknown> | undefined;
+
+  orchestrator.buffer = {
+    async findBufferKeysForSession() {
+      return ["codex-thread:shared"];
+    },
+    getTurns() {
+      return [ownedTurn, foreignTurn];
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queuedTurns = turns;
+    queuedOptions = options;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("session-z", {
+    reason: "access_force_flush",
+    writeNamespaceOverride: "session-z-project",
+    principalOverride: "session-z",
+  });
+
+  assert.deepEqual(queuedTurns, [ownedTurn]);
+  assert.equal(queuedOptions?.clearMatchingTurns, true);
 });
 
 test("runExtraction skips active scope profile writes when no layer is writable", async () => {

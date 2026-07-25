@@ -46,6 +46,7 @@ import { log } from "./logger.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import type { Orchestrator } from "./orchestrator.js";
+import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import { displayErrorDetail } from "./runtime/better-sqlite.js";
 import type { MemoryActionOutcome, MemoryActionType } from "./types.js";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "./work/board.js";
@@ -938,6 +939,9 @@ export class AccessObserveWriteSurface {
       };
     } catch (error) {
       clearSeededCodingContext();
+      if (error instanceof ExtractionDeadlineError) {
+        throw new EngramAccessInputError(error.message);
+      }
       throw error;
     }
   }

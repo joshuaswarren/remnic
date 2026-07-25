@@ -942,6 +942,7 @@ export class SmartBuffer {
   async clearAfterExtraction(
     bufferKey = "default",
     extractedTurns?: readonly BufferTurn[],
+    options?: { allowNonPrefix?: boolean },
   ): Promise<void> {
     await this.enqueueMutation(async () => {
       // Drop any armed debounce TIMER so it cannot fire mid-mutation and race
@@ -964,14 +965,29 @@ export class SmartBuffer {
         );
         let clearedLiveTurns = false;
         if (liveExtractedTurns.length > 0) {
-          const matchedCount = matchingQueuedExtractionPrefixLength(
-            entry.turns,
-            liveExtractedTurns,
-          );
-          if (matchedCount > 0) {
-            entry.turns = entry.turns.slice(matchedCount);
-            clearedLiveTurns = true;
+          if (options?.allowNonPrefix === true) {
+            const remainingTurns = [...entry.turns];
+            for (const extractedTurn of liveExtractedTurns) {
+              const matchingIndex = remainingTurns.findIndex((liveTurn) =>
+                bufferTurnsEqual(liveTurn, extractedTurn),
+              );
+              if (matchingIndex >= 0) {
+                remainingTurns.splice(matchingIndex, 1);
+                clearedLiveTurns = true;
+              }
+            }
+            if (clearedLiveTurns) entry.turns = remainingTurns;
           } else {
+            const matchedCount = matchingQueuedExtractionPrefixLength(
+              entry.turns,
+              liveExtractedTurns,
+            );
+            if (matchedCount > 0) {
+              entry.turns = entry.turns.slice(matchedCount);
+              clearedLiveTurns = true;
+            }
+          }
+          if (!clearedLiveTurns) {
             log.debug(
               `buffer[${bufferKey}]: extraction clear skipped because live turns changed before clear`,
             );

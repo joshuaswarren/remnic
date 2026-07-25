@@ -48,6 +48,7 @@ export interface SessionContextDeps {
     options?: {
       skipDedupeCheck?: boolean;
       clearBufferAfterExtraction?: boolean;
+      clearMatchingTurns?: boolean;
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
@@ -86,6 +87,7 @@ export interface SessionFlushOptions {
   reason: string;
   abortSignal?: AbortSignal;
   bufferKey?: string;
+  clearMatchingTurns?: boolean;
   extractionDeadlineMs?: number;
   writeNamespaceOverride?: string;
   failOnExtractionFailure?: boolean;
@@ -369,20 +371,27 @@ export class SessionContextCoordinator {
           : ["default"];
     for (const bufferKey of bufferKeys) {
       const turns = this.deps.buffer.getTurns(bufferKey);
-      if (turns.length === 0) continue;
+      const scopedOwnership =
+        typeof options.writeNamespaceOverride === "string" ||
+        typeof options.principalOverride === "string";
+      const turnsForSession = scopedOwnership
+        ? turns.filter((turn) => turn.sessionKey === sessionKey)
+        : turns;
+      if (turnsForSession.length === 0) continue;
       await new Promise<void>((resolve, reject) => {
-        void this.deps.queueBufferedExtraction(turns, "trigger_mode", {
-            bufferKey,
-            clearBufferAfterExtraction: true,
-            skipDedupeCheck: true,
-            failOnExtractionFailure: options.failOnExtractionFailure === true,
-            forceExtractionAttempt: true,
-            abortSignal: options.abortSignal,
-            extractionDeadlineMs: options.extractionDeadlineMs,
-            writeNamespaceOverride: options.writeNamespaceOverride,
-            principalOverride: options.principalOverride,
-            onTaskSettled: (error) => (error ? reject(error) : resolve()),
-          })
+        void this.deps.queueBufferedExtraction(turnsForSession, "trigger_mode", {
+          bufferKey,
+          clearBufferAfterExtraction: true,
+          skipDedupeCheck: true,
+          failOnExtractionFailure: options.failOnExtractionFailure === true,
+          forceExtractionAttempt: true,
+          abortSignal: options.abortSignal,
+          extractionDeadlineMs: options.extractionDeadlineMs,
+          writeNamespaceOverride: options.writeNamespaceOverride,
+          principalOverride: options.principalOverride,
+          clearMatchingTurns: options.clearMatchingTurns ?? scopedOwnership,
+          onTaskSettled: (error) => (error ? reject(error) : resolve()),
+        })
           .catch(reject);
       });
     }

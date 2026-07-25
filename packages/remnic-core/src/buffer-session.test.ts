@@ -216,6 +216,25 @@ test("SmartBuffer clearAfterExtraction preserves appends after queued snapshots"
   );
 });
 
+test("SmartBuffer shared-buffer clear removes only the extracted session turns", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const aliceTurn = makeTurn("alice", "alice memory");
+  const bobTurn = makeTurn("bob", "bob memory");
+
+  await buffer.addTurn("provider-thread", aliceTurn);
+  await buffer.addTurn("provider-thread", bobTurn);
+  await buffer.clearAfterExtraction("provider-thread", [aliceTurn], {
+    allowNonPrefix: true,
+  });
+
+  assert.deepEqual(buffer.getTurns("provider-thread"), [bobTurn]);
+});
+
 test("SmartBuffer clearAfterExtraction chooses the longest queued snapshot overlap", async () => {
   const storage = new FakeStorage({
     turns: [],

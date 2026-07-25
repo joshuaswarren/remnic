@@ -3025,6 +3025,7 @@ export class Orchestrator {
     options: {
       skipDedupeCheck?: boolean;
       clearBufferAfterExtraction?: boolean;
+      clearMatchingTurns?: boolean;
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
