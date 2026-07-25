@@ -523,6 +523,49 @@ test("access-cli rejects adjacent option-looking values", async () => {
   assert.match(output, /missing required option: --content/);
 });
 
+test("access-cli extraction-flush drains the requested session through the boundary", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-access-cli-"));
+  let output = "";
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    output += String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const configPath = path.join(tempDir, "openclaw.json");
+    writeOpenClawConfig(configPath, {
+      memoryDir: path.join(tempDir, "memory"),
+      defaultNamespace: "default",
+    });
+
+    await withPatchedEnv(
+      {
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_ENGRAM_CONFIG_PATH: undefined,
+      },
+      async () => {
+        await main([
+          "extraction-flush",
+          "--session-key",
+          "cli:flush",
+          "--namespace",
+          "default",
+          "--deadline-ms",
+          String(Date.now() + 10_000),
+        ]);
+      },
+    );
+
+    assert.match(output, /"flushed": true/);
+    assert.match(output, /"sessionKey": "cli:flush"/);
+    assert.match(output, /"effectiveNamespace": "default"/);
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // architecture command — wired through the boundary operation (#1548 PR3)
 // ──────────────────────────────────────────────────────────────────────────
