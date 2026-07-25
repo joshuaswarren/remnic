@@ -38,16 +38,12 @@ function truncateToBudget(content: string, maxChars: number): string {
   return `${content.slice(0, maxChars - TRIM_MARKER.length)}${TRIM_MARKER}`;
 }
 
-export function selectCuriosityQuestion(
-  questions: readonly CuriosityQuestion[],
-): CuriosityQuestion | undefined {
-  return questions
+export function selectCuriosityQuestion(questions: readonly CuriosityQuestion[]): CuriosityQuestion | undefined {
+  return [...questions]
     .filter((question) => trimText(question.question).length > 0)
-    .toSorted(
+    .sort(
       (left, right) =>
-        right.priority - left.priority ||
-        left.created.localeCompare(right.created) ||
-        left.id.localeCompare(right.id),
+        right.priority - left.priority || left.created.localeCompare(right.created) || left.id.localeCompare(right.id)
     )[0];
 }
 
@@ -68,7 +64,6 @@ export function contextBudgetForFooter(maxChars: number, footer?: string): numbe
   return maxChars - normalizedFooter.length - RECALL_CONTEXT_SEPARATOR.length;
 }
 
-
 export function boundRecallContextComposition({
   context: rawContext,
   footer: rawFooter,
@@ -78,12 +73,8 @@ export function boundRecallContextComposition({
 
   const limit = Math.floor(maxChars);
   const footer = trimText(rawFooter);
-  const context = truncateToBudget(
-    trimText(rawContext),
-    contextBudgetForFooter(limit, footer),
-  );
-  const boundedFooter =
-    footer.length > limit ? truncateToBudget(footer, limit) : footer;
+  const context = truncateToBudget(trimText(rawContext), contextBudgetForFooter(limit, footer));
+  const boundedFooter = footer.length > limit ? truncateToBudget(footer, limit) : footer;
   return { context, ...(boundedFooter ? { footer: boundedFooter } : {}) };
 }
 export function composeRecallContext(composition: RecallContextComposition): string {
@@ -107,16 +98,7 @@ export function renderMemoryContextPrompt({
   const body = composeRecallContext(bounded);
   if (body.length === 0) return null;
 
-  const boundedBody = body.length <= maxChars
-    ? body
-    : truncateToBudget(bounded.footer || body, Math.floor(maxChars));
-  const lines = [
-    MEMORY_CONTEXT_HEADER,
-    "",
-    boundedBody,
-    "",
-    MEMORY_CONTEXT_INSTRUCTION,
-    "",
-  ];
+  const boundedBody = body.length <= maxChars ? body : truncateToBudget(bounded.footer || body, Math.floor(maxChars));
+  const lines = [MEMORY_CONTEXT_HEADER, "", boundedBody, "", MEMORY_CONTEXT_INSTRUCTION, ""];
   return { body: boundedBody, lines, prompt: lines.join("\n").replace(/\n$/, "") };
 }
