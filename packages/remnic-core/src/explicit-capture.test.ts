@@ -622,3 +622,28 @@ test("inline capture accepts corrected metadata after queuing a validation failu
   assert.equal(corrected.accepted, 1);
   assert.equal(probe.envelopes.length, 2);
 });
+
+test("inline capture processes a corrected sibling after queuing invalid metadata", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const content = "A corrected sibling must survive the invalid review fallback.";
+  const result = await probe.processor.process({
+    captureMode: "hybrid",
+    dedupeKeys: ["shared-delivery"],
+    content: [
+      "<memory_note>",
+      `content: ${content}`,
+      "category: fact",
+      "confidence: invalid",
+      "</memory_note>",
+      "<memory_note>",
+      `content: ${content}`,
+      "category: fact",
+      "confidence: 0.8",
+      "</memory_note>",
+    ].join("\n"),
+  });
+
+  assert.equal(result.queued, 1);
+  assert.equal(result.accepted, 1);
+  assert.equal(probe.envelopes.length, 2);
+});

@@ -695,7 +695,7 @@ export class InlineExplicitCaptureProcessor {
     input: ExplicitCaptureInput,
     namespacePreResolved: boolean,
     fallbackReviewNamespace?: string,
-  ): { replayKeys: string[]; fallbackKey: string } {
+  ): string[] {
     let effectiveNamespace = asTrimmed(input.namespace);
     if (!namespacePreResolved) {
       try {
@@ -723,15 +723,12 @@ export class InlineExplicitCaptureProcessor {
       .filter((key): key is string => key !== undefined);
     const identityPrefix = `${namespaceScope}\u0000${sourceConnectorScope}\u0000`;
     const fallbackKey = `${identityPrefix}fallback:inline-memory-note:${noteHash}`;
-    return {
-      replayKeys: [
-        ...deliveryKeys.map(
-          (key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`,
-        ),
-        fallbackKey,
-      ],
+    return [
+      ...deliveryKeys.map(
+        (key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`,
+      ),
       fallbackKey,
-    };
+    ];
   }
 
   private isNamespacePolicyAuthorized(namespace: string | undefined): boolean {
@@ -782,7 +779,7 @@ export class InlineExplicitCaptureProcessor {
         ...(request.namespace !== undefined ? { namespace: request.namespace } : {}),
         ...(sourceConnector ? { sourceConnector } : {}),
       };
-      const { replayKeys, fallbackKey } = this.buildDedupeKeys(
+      const dedupeKeys = this.buildDedupeKeys(
         request.dedupeKeys,
         input,
         request.namespacePreResolved === true,
@@ -790,13 +787,13 @@ export class InlineExplicitCaptureProcessor {
           ? request.reviewNamespace
           : undefined,
       );
-      if (replayKeys.some((key) => this.observedKeys.has(key))) continue;
+      if (dedupeKeys.some((key) => this.observedKeys.has(key))) continue;
 
       try {
         const candidate = validateExplicitCaptureInput(input);
         if (request.namespacePreResolved === true) candidate.namespacePreResolved = true;
         const persisted = await persistExplicitCapture(this.orchestrator, candidate, "inline");
-        this.remember(replayKeys);
+        this.remember(dedupeKeys);
         processed += 1;
         if (persisted.duplicateOf) {
           duplicates += 1;
@@ -825,7 +822,6 @@ export class InlineExplicitCaptureProcessor {
             error,
             reviewNamespace ? { resolvedNamespace: reviewNamespace } : undefined,
           );
-          this.remember(replayKeys.filter((key) => key !== fallbackKey));
           processed += 1;
           if (review.duplicateOf) {
             duplicates += 1;
