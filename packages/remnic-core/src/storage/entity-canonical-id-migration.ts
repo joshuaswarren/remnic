@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, lstat, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { access, lstat, readFile, readdir, rename, stat as statFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { computeSupersessionKey, normalizeSupersessionKey } from "../temporal-supersession.js";
@@ -106,6 +106,16 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+async function sameFileIdentity(leftPath: string, rightPath: string): Promise<boolean> {
+  try {
+    const [left, right] = await Promise.all([statFile(leftPath), statFile(rightPath)]);
+    return left.dev === right.dev && left.ino === right.ino;
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) return false;
+    throw error;
+  }
+}
+
 async function assertNotSymlink(filePath: string, label: string): Promise<void> {
   let stat;
   try {
@@ -155,7 +165,9 @@ async function discoverMappings(deps: EntityCanonicalIdMigrationDependencies): P
     if (legacyId === canonicalId) continue;
     const canonicalPath = deps.resolveEntityFilePath(canonicalId);
     if (canonicalPath === null) continue;
-    if (await fileExists(canonicalPath)) {
+    const canonicalExists = await fileExists(canonicalPath);
+    if (canonicalExists && await sameFileIdentity(legacyPath, canonicalPath)) continue;
+    if (canonicalExists) {
       const canonicalContent = await deps.readStorageSecureFile(canonicalPath);
       if (entityContent !== canonicalContent) {
         throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
@@ -428,6 +440,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
           const legacyExists = await fileExists(legacyPath);
           const canonicalExists = await fileExists(canonicalPath);
           if (legacyExists && canonicalExists) {
+            if (await sameFileIdentity(legacyPath, canonicalPath)) continue;
             const [legacyContent, canonicalContent, legacyEncrypted, canonicalEncrypted] = await Promise.all([
               deps.readStorageSecureFile(legacyPath),
               deps.readStorageSecureFile(canonicalPath),

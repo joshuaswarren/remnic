@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import {
   StorageManager,
   compareEntityTimestamps,
@@ -835,6 +835,30 @@ test("ensureDirectories rescans legacy entities created during migration", async
       await readFile(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), "utf-8"),
     ) as { complete?: unknown };
     assert.equal(migrationState.complete, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories preserves entities whose legacy and canonical paths share an inode", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-same-inode-"));
+  try {
+    const name = "Café";
+    const type = "project";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Canonical entity fact."]);
+    const canonical = normalizeEntityName(name, type);
+    const legacy = normalizeLegacyEntityName(name, type);
+    const canonicalPath = path.join(dir, "entities", `${canonical}.md`);
+    const legacyPath = path.join(dir, "entities", `${legacy}.md`);
+    await link(canonicalPath, legacyPath);
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
+
+    await new StorageManager(dir).ensureDirectories();
+
+    assert.match(await readFile(canonicalPath, "utf-8"), /# Café/);
+    assert.match(await readFile(legacyPath, "utf-8"), /# Café/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
