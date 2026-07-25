@@ -544,10 +544,11 @@ export class RecallSearchPipelineCoordinator {
       lastHybridTopUpUsed = false;
       lastHybridTopUpSkippedReason = undefined;
       let mergedResults = primaryResults;
+      const primaryRecallableCount = primaryResults.filter(recallable).length;
 
-      // Backfill with hybrid results only when primary retrieval underfills.
+      // Backfill with hybrid results when the recallable primary page underfills.
       if (
-        primaryResults.length < qmdFetchLimit &&
+        primaryRecallableCount < qmdFetchLimit &&
         (!qmdRecallBudgetEnabled ||
           Date.now() - startedAtMs < qmdRecallBudgetMs)
       ) {
@@ -625,7 +626,7 @@ export class RecallSearchPipelineCoordinator {
         await emitDebugSnapshot(filteredResults, fetchLimit);
         return filteredResults;
       }
-      if (mergedResults.length < fetchLimit && filteredResults.length > 0) {
+      if (mergedResults.length < fetchLimit) {
         await emitDebugSnapshot(filteredResults, fetchLimit);
         return filteredResults;
       }

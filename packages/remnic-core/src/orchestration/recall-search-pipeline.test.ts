@@ -323,3 +323,96 @@ test("QMD widening continues past archive-only pages", async () => {
 
   assert.deepEqual(out.map((candidate) => candidate.path), ["facts/live.md"]);
 });
+
+test("QMD hybrid top-up runs when primary results are archive-only", async () => {
+  const archived = Array.from({ length: 20 }, (_, index) =>
+    resultScored("default", `archive/2026-07-25/archive-${index}.md`, 2),
+  );
+  const live = resultScored("default", "facts/hybrid-live.md", 1);
+  let hybridCalls = 0;
+  const coordinator = new RecallSearchPipelineCoordinator({
+    config: {
+      memoryDir: "/mem",
+      qmdSearchStrategy: "hybrid",
+      searchBackend: "qmd",
+    },
+    qmd: {
+      search: async (
+        _query: string,
+        _collection: string,
+        maxResults: number,
+      ) => archived.slice(0, maxResults),
+      hybridSearch: async () => {
+        hybridCalls += 1;
+        return [live];
+      },
+    },
+    namespaceFromPath: () => "default",
+  } as unknown as RecallSearchPipelineDeps);
+
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
+    "archive-starved-hybrid",
+    2,
+    2,
+    {
+      namespacesEnabled: false,
+      recallNamespaces: ["default"],
+      resolveNamespace: () => "default",
+      collection: "openclaw-engram",
+      queryAwarePrefilter: {
+        candidatePaths: null,
+        temporalFromDate: null,
+        matchedTags: [],
+        expandedTags: [],
+        combination: "none",
+        filteredToFullSearch: false,
+      },
+    },
+  );
+
+  assert.ok(hybridCalls > 0, "archive-only primary pages must trigger hybrid top-up");
+  assert.deepEqual(out.map((candidate) => candidate.path), ["facts/hybrid-live.md"]);
+});
+
+test("QMD stops after an underfilled archive-only page", async () => {
+  const archived = [resultScored("default", "archive/2026-07-25/only.md", 2)];
+  let searchCalls = 0;
+  const coordinator = new RecallSearchPipelineCoordinator({
+    config: {
+      memoryDir: "/mem",
+      qmdSearchStrategy: "hybrid",
+      searchBackend: "qmd",
+    },
+    qmd: {
+      search: async () => {
+        searchCalls += 1;
+        return archived;
+      },
+      hybridSearch: async () => [],
+    },
+    namespaceFromPath: () => "default",
+  } as unknown as RecallSearchPipelineDeps);
+
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
+    "archive-underfilled",
+    20,
+    20,
+    {
+      namespacesEnabled: false,
+      recallNamespaces: ["default"],
+      resolveNamespace: () => "default",
+      collection: "openclaw-engram",
+      queryAwarePrefilter: {
+        candidatePaths: null,
+        temporalFromDate: null,
+        matchedTags: [],
+        expandedTags: [],
+        combination: "none",
+        filteredToFullSearch: false,
+      },
+    },
+  );
+
+  assert.deepEqual(out, []);
+  assert.equal(searchCalls, 1, "an underfilled raw page must not trigger widening");
+});
