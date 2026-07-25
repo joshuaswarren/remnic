@@ -408,10 +408,89 @@ export class TombstoneBlockedCaptureIndex {
 export abstract class TombstoneBlockedCaptureIndexHost {
   private tombstoneBlockedCaptureIndex: TombstoneBlockedCaptureIndex | null = null;
   protected abstract tombstoneBlockedCaptureIndexOptions(): TombstoneBlockedCaptureIndexOptions;
+  protected abstract writeStorageSecureFile(
+    filePath: string,
+    content: string | Buffer,
+    forceEncrypt?: boolean,
+  ): Promise<void>;
 
   protected getTombstoneBlockedCaptureIndex(): TombstoneBlockedCaptureIndex {
     return this.tombstoneBlockedCaptureIndex ??= new TombstoneBlockedCaptureIndex(
       this.tombstoneBlockedCaptureIndexOptions(),
+    );
+  }
+  private tombstoneBlocked(frontmatter: MemoryFrontmatter): boolean {
+    return frontmatter.status === "pending_review" && Boolean(frontmatter.blockedBy);
+  }
+
+  private async writeTombstoneBlockedMutation(
+    blocked: boolean,
+    pathname: string,
+    fileContent: string,
+    updateIndex: (rebuildMarker?: string) => Promise<void>,
+  ): Promise<void> {
+    const rebuildMarker = blocked
+      ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
+      : undefined;
+    await this.writeStorageSecureFile(pathname, fileContent);
+    if (rebuildMarker) {
+      await this.getTombstoneBlockedCaptureIndex().commitWrite(rebuildMarker);
+    }
+    await updateIndex(rebuildMarker);
+  }
+
+  protected async writeTombstoneBlockedMemory(
+    pathname: string,
+    fileContent: string,
+    frontmatter: MemoryFrontmatter,
+    content: string,
+  ): Promise<void> {
+    await this.writeTombstoneBlockedMutation(
+      this.tombstoneBlocked(frontmatter),
+      pathname,
+      fileContent,
+      (rebuildMarker) => this.getTombstoneBlockedCaptureIndex().addWrittenMemory(
+        pathname,
+        frontmatter,
+        content,
+        rebuildMarker,
+      ),
+    );
+  }
+
+  protected async writeTombstoneBlockedUpdate(
+    before: MemoryFile,
+    fileContent: string,
+    frontmatter: MemoryFrontmatter,
+    content: string,
+  ): Promise<void> {
+    await this.writeTombstoneBlockedMutation(
+      this.tombstoneBlocked(before.frontmatter) || this.tombstoneBlocked(frontmatter),
+      before.path,
+      fileContent,
+      (rebuildMarker) => this.getTombstoneBlockedCaptureIndex().syncUpdatedMemory(
+        before,
+        frontmatter,
+        content,
+        rebuildMarker,
+      ),
+    );
+  }
+
+  protected async writeTombstoneBlockedFrontmatter(
+    before: MemoryFile,
+    fileContent: string,
+    frontmatter: MemoryFrontmatter,
+  ): Promise<void> {
+    await this.writeTombstoneBlockedMutation(
+      this.tombstoneBlocked(before.frontmatter) || this.tombstoneBlocked(frontmatter),
+      before.path,
+      fileContent,
+      (rebuildMarker) => this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(
+        before,
+        frontmatter,
+        rebuildMarker,
+      ),
     );
   }
 
@@ -429,6 +508,10 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     return this.getTombstoneBlockedCaptureIndex().isAuthoritative();
   }
 
+  protected async rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath: string): Promise<void> {
+    if (filePath.includes(`${path.sep}facts${path.sep}`) || filePath.includes(`${path.sep}cold${path.sep}`))
+      await this.rebuildTombstoneBlockedCaptureAfterInvalidation();
+  }
   protected async rebuildTombstoneBlockedCaptureAfterInvalidation(): Promise<void> {
     await this.tombstoneBlockedCaptureIndex?.rebuildAfterInvalidation();
   }

@@ -2736,7 +2736,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private readStorageSecureFile(filePath: string): Promise<string> {
     return readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
   }
-  private writeStorageSecureFile(filePath: string, content: string | Buffer, forceEncrypt = false): Promise<void> {
+  protected writeStorageSecureFile(filePath: string, content: string | Buffer, forceEncrypt = false): Promise<void> {
     const writeKey = this.resolveWriteKey(forceEncrypt);
     return writeMaybeEncryptedFile(filePath, content, writeKey, {}, this.baseDir).then(() => {
       // No manual sniff-cache update needed (issue #1909 round 10): this rewrite
@@ -2959,12 +2959,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // Force a corpus rebuild of the fact-hash index on next use (round 11: no
     // on-disk ready marker — the in-memory authoritative flag is the only gate).
     this.factHashIndexAuthoritative = false;
-    if (
-      filePath.includes(`${path.sep}facts${path.sep}`)
-      || filePath.includes(`${path.sep}cold${path.sep}`)
-    ) {
-      await this.rebuildTombstoneBlockedCaptureAfterInvalidation();
-    }
+    await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath);
     if (filePath.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }
@@ -3270,10 +3265,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return await store.rebuild(retired);
   }
   protected tombstoneBlockedCaptureIndexOptions(): TombstoneBlockedCaptureIndexOptions {
-    return {
-      stateDir: this.stateDir, memoryDir: this.baseDir, secureStoreKeyProvider: () => this._secureStoreKey, secureStoreWriteKeyProvider: () => this.resolveWriteKey(),
-      lockOptions: () => this.factHashIndexLockOptions, readAllMemories: () => this.readAllMemories(), readAllColdMemories: () => this.readAllColdMemories(),
-    };
+    return { stateDir: this.stateDir, memoryDir: this.baseDir, secureStoreKeyProvider: () => this._secureStoreKey, secureStoreWriteKeyProvider: () => this.resolveWriteKey(),
+      lockOptions: () => this.factHashIndexLockOptions, readAllMemories: () => this.readAllMemories(), readAllColdMemories: () => this.readAllColdMemories() };
   }
   private async getFactHashIndex(): Promise<ContentHashIndex> {
     if (this.factHashIndex) {
@@ -3875,15 +3868,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
-    const tombstoneRebuildMarker = tombstoneBlocked
-      ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
-      : undefined;
 
     await this.snapshotBeforeWrite(filePath, "write");
-    await this.writeStorageSecureFile(filePath, fileContent);
-    if (tombstoneRebuildMarker) {
-      await this.getTombstoneBlockedCaptureIndex().commitWrite(tombstoneRebuildMarker);
-    }
+    await this.writeTombstoneBlockedMemory(filePath, fileContent, fm, sanitized.text);
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
@@ -3897,14 +3884,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         ...(options.lineage ?? []).filter(Boolean),
       ],
     });
-    if (tombstoneBlocked) {
-      await this.getTombstoneBlockedCaptureIndex().addWrittenMemory(
-        filePath,
-        fm,
-        sanitized.text,
-        tombstoneRebuildMarker,
-      );
-    }
     if (category === "fact" && !tombstoneBlocked) {
       // Rule 44 (#1579): a tombstone-blocked fact MUST NOT be registered as an
       // active dedup/index entry — otherwise the block is invisible to dedup
@@ -5154,19 +5133,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         ? { sourceConnector: options.sourceConnector }
         : {}),
     };
-    const tombstoneRebuildMarker =
-      memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy)
-        ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
-        : undefined;
     const sanitized = sanitizeMemoryContent(newContent);
     if (!sanitized.clean) {
       log.warn(`updated memory content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
     }
     const fileContent = `${serializeFrontmatter(updated)}\n\n${sanitized.text}\n`;
-    await this.writeStorageSecureFile(memory.path, fileContent);
-    if (tombstoneRebuildMarker) {
-      await this.getTombstoneBlockedCaptureIndex().commitWrite(tombstoneRebuildMarker);
-    }
+    await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text);
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
       memoryId: id,
@@ -5180,12 +5152,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         ...(updated.lineage ?? []).filter(Boolean),
       ],
     });
-    await this.getTombstoneBlockedCaptureIndex().syncUpdatedMemory(
-      memory,
-      updated,
-      sanitized.text,
-      tombstoneRebuildMarker,
-    );
     log.debug(`updated memory ${id}`);
     return true;
   }
@@ -5205,17 +5171,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       ...patch,
     };
     const afterStatus = updated.status ?? "active";
-    const tombstoneRebuildMarker =
-      (beforeStatus === "pending_review" && Boolean(memory.frontmatter.blockedBy))
-      || (afterStatus === "pending_review" && Boolean(updated.blockedBy))
-        ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
-        : undefined;
 
     const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
-    await this.writeStorageSecureFile(memory.path, fileContent);
-    if (tombstoneRebuildMarker) {
-      await this.getTombstoneBlockedCaptureIndex().commitWrite(tombstoneRebuildMarker);
-    }
+    await this.writeTombstoneBlockedFrontmatter(memory, fileContent, updated);
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     // If the target file lives in cold/, bump the cold-version sentinel so
     // other processes detect the change on their next readAllColdMemories()
@@ -5231,11 +5189,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     } catch (err) {
       log.warn(`storage.writeMemoryFrontmatter completed but failed to update fact hash index: ${err}`);
     }
-    await this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(
-      memory,
-      updated,
-      tombstoneRebuildMarker,
-    );
     await this.appendGeneratedMemoryLifecycleEventFailOpen(
       "storage.writeMemoryFrontmatter",
       {
@@ -6788,26 +6741,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
 
-    const tombstoneRebuildMarker =
-      options.status === "pending_review" && Boolean(options.blockedBy)
-        ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
-        : undefined;
 
-    await this.writeStorageSecureFile(filePath, fileContent);
-    if (tombstoneRebuildMarker) {
-      await this.getTombstoneBlockedCaptureIndex().commitWrite(tombstoneRebuildMarker);
-    }
+    await this.writeTombstoneBlockedMemory(filePath, fileContent, fm, sanitized.text);
     // Keep the version-keyed hot-memories cache coherent with the new chunk
     // file (issue #1902) — same single-file patch path writeMemory uses.
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
-    if (tombstoneRebuildMarker) {
-      await this.getTombstoneBlockedCaptureIndex().addWrittenMemory(
-        filePath,
-        fm,
-        sanitized.text,
-        tombstoneRebuildMarker,
-      );
-    }
     log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
     return id;
   }
