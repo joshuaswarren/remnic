@@ -589,6 +589,35 @@ test("writeProfile refreshes compact title metadata", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile recognizes heading and fence metadata boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profiles = [
+        [STALE_HEADER, "# Behavioral Profile", "", "- Keeps leading metadata.", ""].join("\n"),
+        [
+          "# Behavioral Profile",
+          "",
+          "```",
+          "- Keeps fenced content.",
+          "```",
+          STALE_HEADER,
+          "",
+          "- Keeps trailing metadata.",
+          "",
+        ].join("\n"),
+      ];
+
+      for (const profile of profiles) {
+        await storage.writeProfile(profile);
+        assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+      }
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile recognizes whitespace-only metadata gaps", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });

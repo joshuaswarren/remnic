@@ -420,11 +420,17 @@ function isStandaloneMetadataLine(
   const previousWithoutBom = previousLine.startsWith(UTF8_BOM)
     ? previousLine.slice(1)
     : previousLine;
+  const nextWithoutBom = nextLine.startsWith(UTF8_BOM) ? nextLine.slice(1) : nextLine;
   const previousMetadataBoundary =
     previousLine === "" ||
     PROFILE_TITLE.test(previousWithoutBom) ||
-    isLastUpdatedHeader(previousLine);
-  const nextMetadataBoundary = nextLine === "" || isLastUpdatedHeader(nextLine);
+    isLastUpdatedHeader(previousLine) ||
+    getFenceMarker(previousWithoutBom) !== null;
+  const nextMetadataBoundary =
+    nextLine === "" ||
+    PROFILE_TITLE.test(nextWithoutBom) ||
+    isLastUpdatedHeader(nextLine) ||
+    getFenceMarker(nextWithoutBom) !== null;
   const startsBlock =
     index === 0 || index === frontmatterEnd + 1 || previousMetadataBoundary;
   const endsBlock = index === lines.length - 1 || nextMetadataBoundary;
