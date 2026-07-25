@@ -1071,6 +1071,9 @@ function copyBufferTurn(turn: BufferTurn): BufferTurn {
   ) {
     copy.providerThreadId = turn.providerThreadId;
   }
+  if (typeof turn.sessionOwnerPrincipal === "string") {
+    copy.sessionOwnerPrincipal = turn.sessionOwnerPrincipal;
+  }
   if (typeof turn.turnFingerprint === "string") {
     copy.turnFingerprint = turn.turnFingerprint;
   }
@@ -1090,6 +1093,7 @@ function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn): bool
     left.content === right.content &&
     left.timestamp === right.timestamp &&
     left.sessionKey === right.sessionKey &&
+    left.sessionOwnerPrincipal === right.sessionOwnerPrincipal &&
     left.logicalSessionKey === right.logicalSessionKey &&
     left.providerThreadId === right.providerThreadId &&
     left.turnFingerprint === right.turnFingerprint &&
