@@ -41,6 +41,8 @@ function assertSafeExtractionPrompt(prompt: string): void {
   assert.match(prompt, /Questions are optional/i);
   assert.match(prompt, /return an empty array/i);
   assert.match(prompt, /\[context user\].*reference context only|reference context only.*\[context user\]/is);
+  assert.match(prompt, /may resolve references or complete a question-and-answer pair/i);
+  assert.match(prompt, /Explicit \(0\.95-1\.0\).*Speculative \(0\.00-0\.39\)/is);
   assert.match(prompt, /operational noise/i);
   assert.doesNotMatch(prompt, /dark mode|cloud provider|staging environment/i);
   assert.doesNotMatch(prompt, /React over Vue|rate limiting at 1000/i);
