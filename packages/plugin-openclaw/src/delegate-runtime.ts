@@ -259,11 +259,15 @@ function withNamespace(
   return namespace ? { ...body, namespace } : body;
 }
 
+interface ExplicitSessionNamespace {
+  namespace: string | undefined;
+}
+
 function explicitSessionNamespaceFrom(
   sessionKey: string,
   event: Record<string, unknown>,
   ctx: Record<string, unknown>,
-): string | undefined {
+): ExplicitSessionNamespace | undefined {
   const eventSessionKey = typeof event.sessionKey === "string" ? event.sessionKey : undefined;
   const ctxSessionKey = typeof ctx.sessionKey === "string" ? ctx.sessionKey : undefined;
   const sources =
@@ -282,7 +286,7 @@ function explicitSessionNamespaceFrom(
     const session = (agent as Record<string, unknown>).session;
     if (typeof session !== "object" || session === null) continue;
     const namespace = (session as Record<string, unknown>).namespace;
-    if (typeof namespace === "string") return namespace.trim();
+    return { namespace: typeof namespace === "string" ? namespace.trim() || undefined : undefined };
   }
   return undefined;
 }
@@ -320,11 +324,11 @@ async function sessionNamespaceFrom(
 ): Promise<string | undefined> {
   const explicit = explicitSessionNamespaceFrom(sessionKey, event, ctx);
   if (explicit !== undefined) {
-    await rememberNamespace(sessionKey, explicit, namespaceBindings);
-    return explicit || undefined;
+    await rememberNamespace(sessionKey, explicit.namespace ?? "", namespaceBindings);
+    return explicit.namespace;
   }
   const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
-  return remembered.at(-1) || fallback.trim() || undefined;
+  return remembered.length > 0 ? remembered.at(-1) || undefined : fallback.trim() || undefined;
 }
 
 async function lifecycleSessionNamespacesFrom(
@@ -335,7 +339,9 @@ async function lifecycleSessionNamespacesFrom(
   namespaceBindings: SessionNamespaceBindingStore,
 ): Promise<Array<string | undefined>> {
   const explicit = explicitSessionNamespaceFrom(sessionKey, event, ctx);
-  if (explicit !== undefined) await rememberNamespace(sessionKey, explicit, namespaceBindings);
+  if (explicit !== undefined) {
+    await rememberNamespace(sessionKey, explicit.namespace ?? "", namespaceBindings);
+  }
   const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
   if (remembered.length > 0) return remembered.map((namespace) => namespace || undefined);
   return [fallback.trim() || undefined];

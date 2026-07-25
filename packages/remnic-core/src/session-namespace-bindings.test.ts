@@ -35,3 +35,18 @@ test("session namespace bindings retain concurrent scope observations", async ()
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("session namespace bindings persist an explicit default scope", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
+  const filePath = path.join(directory, "session-namespace-bindings.json");
+  try {
+    const store = createFileSessionNamespaceBindingStore(filePath);
+    await store.remember("session-1", "team-named");
+    await store.remember("session-1", "");
+
+    const reloaded = createFileSessionNamespaceBindingStore(filePath);
+    assert.deepEqual(await reloaded.namespacesFor("session-1"), ["team-named", ""]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -58,7 +58,10 @@ function recordingApi(): RecordingApi {
 }
 
 async function startDaemonStub(
-  respond: (pathname: string) => Record<string, unknown>,
+  respond: (
+    pathname: string,
+    body: Record<string, unknown>,
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>,
 ): Promise<DaemonStub> {
   const calls: RecordedCall[] = [];
   const server = http.createServer((req, res) => {
@@ -75,8 +78,17 @@ async function startDaemonStub(
         // empty/non-JSON bodies stay {}
       }
       calls.push({ pathname, body });
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify(respond(pathname)));
+      void Promise.resolve(respond(pathname, body))
+        .then((response) => {
+          if (res.destroyed) return;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify(response));
+        })
+        .catch(() => {
+          if (res.destroyed) return;
+          res.statusCode = 500;
+          res.end();
+        });
     });
   });
   const listening = Promise.withResolvers<void>();
@@ -355,6 +367,72 @@ test("delegate flush uses the ended session namespace after a session rebinding"
   }
 });
 
+test("delegate records a matching default scope as a session rebind", async () => {
+  const stub = await startDaemonStub((pathname) =>
+    pathname === "/engram/v1/recall" ? { context: "default daemon context" } : { accepted: true },
+  );
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const sessionKey = "default-rebound-session";
+
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the named session namespace" },
+          { role: "assistant", content: "the namespace is bound" },
+        ],
+      },
+      { sessionKey, runtime: { agent: { session: { namespace: "team-named" } } } },
+    );
+    const defaultScopeContext = { sessionKey, runtime: { agent: { session: {} } } };
+    await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "recall from the new default scope" },
+      defaultScopeContext,
+    );
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the new default scope" },
+          { role: "assistant", content: "the default binding is explicit" },
+        ],
+      },
+      defaultScopeContext,
+    );
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture sparse default scope metadata" },
+          { role: "assistant", content: "the default binding remains current" },
+        ],
+      },
+      { sessionKey },
+    );
+
+    const calls = stub.calls.filter((call) =>
+      ["/engram/v1/recall", "/engram/v1/observe"].includes(call.pathname),
+    );
+    assert.equal(calls.length, 4);
+    assert.equal(calls[0].body.namespace, "team-named");
+    for (const call of calls.slice(1)) {
+      assert.equal("namespace" in call.body, false);
+    }
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate ignores unkeyed runtime metadata when resolving an ended session namespace", async () => {
   const stub = await startDaemonStub(() => ({ flushed: true }));
   try {
@@ -553,6 +631,48 @@ test("delegate flushes every namespace observed before a session rebind", async 
     }
     await invoke(api, "session_end", { sessionKey });
 
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.deepEqual(
+      flushes.map((call) => call.body.namespace).sort(),
+      ["team-first", "team-second"],
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate flushes rebound namespaces concurrently within one hook deadline", async () => {
+  const pendingFlushes: Array<() => void> = [];
+  const stub = await startDaemonStub((pathname) => {
+    if (pathname !== "/engram/v1/lcm/compaction/flush") return { accepted: true };
+    return new Promise<Record<string, unknown>>((resolve) => {
+      pendingFlushes.push(() => resolve({ flushed: true }));
+      if (pendingFlushes.length === 2) {
+        for (const flush of pendingFlushes) flush();
+      }
+    });
+  });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 50 }));
+    const sessionKey = "concurrent-rebound-session";
+
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} session namespace` },
+            { role: "assistant", content: "the namespace is bound" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+
+    assert.equal(await invoke(api, "before_compaction", { sessionKey }), true);
     const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
     assert.deepEqual(
       flushes.map((call) => call.body.namespace).sort(),
