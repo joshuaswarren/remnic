@@ -1,5 +1,10 @@
 import type { ExtractionResult } from "./types.js";
 
+export interface ExtractionGroundingRoleSources {
+  profile?: string;
+  identity?: string;
+}
+
 const GROUNDING_STOPWORDS: Record<string, true> = {
   a: true,
   an: true,
@@ -219,16 +224,37 @@ function normalizeForExactMatch(text: string): string {
 }
 
 function sourceSentences(source: string): string[] {
-  const sentences = source.match(/[^.!?;]+(?:[.!?;]+(?=\s|$)|$)/gu)
-    ?.map((sentence) => sentence.trim())
-    .filter((sentence) => sentence.length > 0);
-  return sentences && sentences.length > 0 ? sentences : [source];
+  const sentences: string[] = [];
+  let sentenceStart = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const nextCharacter = source[index + 1];
+    const boundary = character === "!"
+      || character === "?"
+      || character === ";"
+      || (character === "." && (
+        nextCharacter === undefined
+        || /\s/u.test(nextCharacter)
+        || /["')\]}]/u.test(nextCharacter)
+      ));
+    if (!boundary) continue;
+    let sentenceEnd = index + 1;
+    while (/[.!?;]/u.test(source[sentenceEnd] ?? "")) sentenceEnd += 1;
+    const sentence = source.slice(sentenceStart, sentenceEnd).trim();
+    if (sentence.length > 0) sentences.push(sentence);
+    sentenceStart = sentenceEnd;
+    index = sentenceEnd - 1;
+  }
+  const trailingSentence = source.slice(sentenceStart).trim();
+  if (trailingSentence.length > 0) sentences.push(trailingSentence);
+  return sentences.length > 0 ? sentences : [source];
 }
 
 function isInterrogativeSourceSentence(sentence: string): boolean {
   const normalized = sentence.trim();
   return normalized.endsWith("?")
-    || /^(?:if|whether|suppose|assuming|maybe|perhaps|hypothetically|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who)\b/iu.test(
+    || /\b(?:whether|if)\b/iu.test(normalized)
+    || /^(?:suppose|assuming|maybe|perhaps|hypothetically|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who)\b/iu.test(
       normalized,
     );
 }
@@ -304,16 +330,10 @@ function isSourceGrounded(
   const sourceText = normalizeForExactMatch(source);
   if (candidateText.length === 0 || sourceText.length === 0) return false;
 
-  if (
-    sourceText.includes(candidateText)
-    && (includeInterrogativeSource || !isInterrogativeSourceSentence(sourceText))
-    && !hasContradictoryPolarity(candidateText, sourceText)
-  ) {
-    return true;
-  }
   const hasSupportedExactMatch = sourceSentences(sourceText).some((sentence) => {
-    if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence)) return false;
     const sentenceText = normalizeForExactMatch(sentence);
+    const isExplanatoryLabel = sentenceText.startsWith(`${candidateText}:`);
+    if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence) && !isExplanatoryLabel) return false;
     return sentenceText.includes(candidateText)
       && !hasContradictoryPolarity(candidateText, sentenceText);
   });
@@ -351,6 +371,23 @@ function hasGroundingAnchor(candidate: string, assertionSource: string): boolean
   return [...candidateTokens].some((token) => assertionTokens.has(token));
 }
 
+function hasAffirmativeAnswerSupport(
+  candidate: string,
+  source: string,
+  assertionSource: string,
+): boolean {
+  if (!tokenSequence(assertionSource).includes("yes")) return false;
+  const sentences = sourceSentences(source);
+  return sentences.some((sentence, index) => {
+    if (!isBareYesNoAnswer(sentence) || tokenSequence(sentence)[0] !== "yes") return false;
+    const precedingSentence = sentences[index - 1];
+    return precedingSentence !== undefined
+      && isInterrogativeSourceSentence(precedingSentence)
+      && groundedTokenScore(candidate, precedingSentence) === 1
+      && !hasContradictoryPolarity(candidate, precedingSentence);
+  });
+}
+
 function isGroundedCandidate(
   candidate: string,
   source: string,
@@ -365,7 +402,11 @@ function isGroundedCandidate(
   if (!isSourceGrounded(candidate, source, allowInterrogativeSource)) return false;
   if (assertionSource === undefined) return true;
   const clauses = candidateClauses(candidate);
-  return clauses.length > 0 && clauses.every((clause) => hasGroundingAnchor(clause, assertionSource));
+  return clauses.length > 0
+    && (
+      clauses.every((clause) => hasGroundingAnchor(clause, assertionSource))
+      || hasAffirmativeAnswerSupport(candidate, source, assertionSource)
+    );
 }
 
 function filterGroundedFact(
@@ -378,18 +419,18 @@ function filterGroundedFact(
   const groundedAttributes = fact.structuredAttributes
     ? Object.fromEntries(
       Object.entries(fact.structuredAttributes)
-        .filter(([key, value]) => isGroundedCandidate(`${key}: ${value}`, source, assertionSource)),
+        .filter(([key, value]) => isGroundedCandidate(`${key}: ${value}`, source, assertionSource, true)),
     )
     : undefined;
   const groundedProcedureSteps = fact.procedureSteps
     ? fact.procedureSteps.flatMap((step) => {
-      if (!isGroundedCandidate(step.intent, source, assertionSource)) return [];
+      if (!isGroundedCandidate(step.intent, source, assertionSource, true)) return [];
       const expectedOutcome = step.expectedOutcome
-        && isGroundedCandidate(step.expectedOutcome, source, assertionSource)
+        && isGroundedCandidate(step.expectedOutcome, source, assertionSource, true)
         ? step.expectedOutcome
         : undefined;
       const toolCall = step.toolCall
-        && isGroundedCandidate(step.toolCall.signature, source, assertionSource)
+        && isGroundedCandidate(step.toolCall.signature, source, assertionSource, true)
         ? step.toolCall
         : undefined;
       const {
@@ -406,15 +447,15 @@ function filterGroundedFact(
     : undefined;
   const groundedReasoningTrace = fact.reasoningTrace
     && fact.reasoningTrace.steps.length > 0
-    && isGroundedCandidate(fact.reasoningTrace.finalAnswer, source, assertionSource)
+    && isGroundedCandidate(fact.reasoningTrace.finalAnswer, source, assertionSource, true)
     && fact.reasoningTrace.steps.every((step) =>
-      isGroundedCandidate(step.description, source, assertionSource),
+      isGroundedCandidate(step.description, source, assertionSource, true),
     )
     ? {
       steps: fact.reasoningTrace.steps,
       finalAnswer: fact.reasoningTrace.finalAnswer,
       ...(fact.reasoningTrace.observedOutcome
-        && isGroundedCandidate(fact.reasoningTrace.observedOutcome, source, assertionSource)
+        && isGroundedCandidate(fact.reasoningTrace.observedOutcome, source, assertionSource, true)
         ? { observedOutcome: fact.reasoningTrace.observedOutcome }
         : {}),
     }
@@ -528,23 +569,28 @@ function isQuestionAnsweredBySource(question: string, source: string): boolean {
   });
 }
 
-function isGroundedQuestion(
-  question: string,
-  context: string,
+function groundQuestion(
+  question: ExtractionResult["questions"][number],
   source: string,
   assertionSource: string | undefined,
-): boolean {
-  if (isQuestionAnsweredBySource(question, source)) return false;
-  if (!isGroundedCandidate(question, source, assertionSource, true)) return false;
-  const normalizedContext = context.trim();
-  return normalizedContext.length === 0
-    || isGroundedCandidate(normalizedContext, `${source}\n${question}`, assertionSource, true);
+): ExtractionResult["questions"][number] | undefined {
+  if (isQuestionAnsweredBySource(question.question, source)) return undefined;
+  if (!isGroundedCandidate(question.question, source, assertionSource, true)) return undefined;
+  const normalizedContext = question.context.trim();
+  if (
+    normalizedContext.length > 0
+    && !isGroundedCandidate(normalizedContext, `${source}\n${question.question}`, assertionSource, true)
+  ) {
+    return { ...question, context: "" };
+  }
+  return question;
 }
 
 export function filterExtractionResultBySource(
   result: ExtractionResult,
   source: string,
   assertionSource?: string,
+  roleAssertionSources?: ExtractionGroundingRoleSources,
 ): ExtractionResult {
   if (source.trim().length === 0) {
     return {
@@ -562,21 +608,26 @@ export function filterExtractionResultBySource(
     const grounded = filterGroundedFact(fact, source, assertionSource);
     return grounded === undefined ? [] : [grounded];
   });
+  const profileGroundingSource = roleAssertionSources?.profile ?? source;
+  const profileAssertionSource = roleAssertionSources?.profile ?? assertionSource;
   const profileUpdates = result.profileUpdates.filter((update) =>
-    isGroundedCandidate(update, source, assertionSource),
+    isGroundedCandidate(update, profileGroundingSource, profileAssertionSource),
   );
   const entities = result.entities.flatMap((entity) => {
     const grounded = filterGroundedEntity(entity, source, assertionSource);
     return grounded === undefined ? [] : [grounded];
   });
-  const questions = result.questions.filter((question) =>
-    isGroundedQuestion(question.question, question.context, source, assertionSource),
-  );
+  const questions = result.questions.flatMap((question) => {
+    const grounded = groundQuestion(question, source, assertionSource);
+    return grounded === undefined ? [] : [grounded];
+  });
   const relationships = result.relationships?.filter((relationship) =>
     isGroundedRelationship(relationship, source, assertionSource),
   );
+  const identityGroundingSource = roleAssertionSources?.identity ?? source;
+  const identityAssertionSource = roleAssertionSources?.identity ?? assertionSource;
   const identityReflection = result.identityReflection
-    && isGroundedCandidate(result.identityReflection, source, assertionSource)
+    && isGroundedCandidate(result.identityReflection, identityGroundingSource, identityAssertionSource)
     ? result.identityReflection
     : undefined;
 

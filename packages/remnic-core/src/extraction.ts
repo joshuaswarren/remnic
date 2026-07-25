@@ -40,7 +40,7 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
-import { filterExtractionResultBySource } from "./extraction-source-grounding.js";
+import { filterExtractionResultBySource, type ExtractionGroundingRoleSources } from "./extraction-source-grounding.js";
 import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
@@ -660,6 +660,7 @@ export class ExtractionEngine {
     groundingSource: string,
     assertionSource: string,
     messageTimestamp?: Date,
+    roleAssertionSources?: ExtractionGroundingRoleSources,
   ): Promise<ExtractionResult> {
     if (!resolvePipelineProcessingCapabilities(this.config).proactiveExtraction) return base;
     const maxAdditional = Math.max(0, Math.floor(this.config.maxProactiveQuestionsPerExtraction));
@@ -674,7 +675,12 @@ export class ExtractionEngine {
         proactive,
         maxAdditional,
       );
-      const groundedAdditions = this.applySourceGrounding(proactiveAdditions, groundingSource, assertionSource);
+      const groundedAdditions = this.applySourceGrounding(
+        proactiveAdditions,
+        groundingSource,
+        assertionSource,
+        roleAssertionSources,
+      );
       const sanitizedAdditions = this.sanitizeExtractionResult(groundedAdditions, messageTimestamp);
       if (!this.hasExtractionOutputs(sanitizedAdditions)) return base;
       return this.mergeProactiveExtractionPass(base, sanitizedAdditions, maxAdditional);
@@ -1141,9 +1147,10 @@ export class ExtractionEngine {
     result: ExtractionResult,
     sourceText: string,
     assertionSourceText: string = sourceText,
+    roleAssertionSources?: ExtractionGroundingRoleSources,
   ): ExtractionResult {
     if (!resolvePipelineProcessingCapabilities(this.config).sourceGrounding) return result;
-    return filterExtractionResultBySource(result, sourceText, assertionSourceText);
+    return filterExtractionResultBySource(result, sourceText, assertionSourceText, roleAssertionSources);
   }
 
   private finalizeExtractionResult(
@@ -1192,6 +1199,16 @@ export class ExtractionEngine {
       .filter((turn) => turn.extractionContextOnly !== true)
       .map((turn) => turn.content)
       .join("\n\n");
+    const roleAssertionSources: ExtractionGroundingRoleSources = {
+      profile: boundedTurns
+        .filter((turn) => turn.role === "user" && turn.extractionContextOnly !== true)
+        .map((turn) => turn.content)
+        .join("\n\n"),
+      identity: boundedTurns
+        .filter((turn) => turn.role === "assistant" && turn.extractionContextOnly !== true)
+        .map((turn) => turn.content)
+        .join("\n\n"),
+    };
     if (conversation.trim().length === 0) {
       log.debug("extraction skipped — conversation only contained non-memory work-layer context");
       return { facts: [], profileUpdates: [], entities: [], questions: [] };
@@ -1246,7 +1263,12 @@ export class ExtractionEngine {
           this.profiler.endSpan("local-llm", extractionTraceId);
           this.emit({ kind: "llm_end", traceId, model: this.config.localLlmModel, operation: "extraction", durationMs });
           log.debug(`extraction: used local LLM — ${localResult.facts.length} facts, ${localResult.entities.length} entities`);
-          const grounded = this.applySourceGrounding(localResult, groundingSource, assertionSource);
+          const grounded = this.applySourceGrounding(
+            localResult,
+            groundingSource,
+            assertionSource,
+            roleAssertionSources,
+          );
           const sanitized = this.sanitizeExtractionResult(grounded, messageTimestamp);
           const finalResult = await this.applyProactiveQuestionPass(
             conversation,
@@ -1254,6 +1276,7 @@ export class ExtractionEngine {
             groundingSource,
             assertionSource,
             messageTimestamp,
+            roleAssertionSources,
           );
           return this.finalizeExtractionResult(finalResult, boundedTurns);
         }
@@ -1300,7 +1323,12 @@ export class ExtractionEngine {
           this.profiler.endSpan("direct-client", extractionTraceId);
           this.emit({ kind: "llm_end", traceId, model: this.config.model, operation: "extraction", durationMs });
           log.debug(`extraction: used direct client (${this.config.model}) — ${directResult.facts.length} facts, ${directResult.entities.length} entities`);
-          const grounded = this.applySourceGrounding(directResult, groundingSource, assertionSource);
+          const grounded = this.applySourceGrounding(
+            directResult,
+            groundingSource,
+            assertionSource,
+            roleAssertionSources,
+          );
           const sanitized = this.sanitizeExtractionResult(grounded, messageTimestamp);
           const finalResult = await this.applyProactiveQuestionPass(
             conversation,
@@ -1308,6 +1336,7 @@ export class ExtractionEngine {
             groundingSource,
             assertionSource,
             messageTimestamp,
+            roleAssertionSources,
           );
           return this.finalizeExtractionResult(finalResult, boundedTurns);
         }
@@ -1392,7 +1421,12 @@ export class ExtractionEngine {
           `extracted ${result.facts.length} facts, ${result.entities.length} entities, ${(result.questions ?? []).length} questions via fallback (${detailed.modelUsed})`,
         );
         const normalized = this.normalizeExtractionResultPayload(result);
-        const grounded = this.applySourceGrounding(normalized, groundingSource, assertionSource);
+        const grounded = this.applySourceGrounding(
+          normalized,
+          groundingSource,
+          assertionSource,
+          roleAssertionSources,
+        );
         const sanitized = this.sanitizeExtractionResult(grounded, messageTimestamp);
         const finalResult = await this.applyProactiveQuestionPass(
           conversation,
@@ -1400,6 +1434,7 @@ export class ExtractionEngine {
           groundingSource,
           assertionSource,
           messageTimestamp,
+          roleAssertionSources,
         );
         return this.finalizeExtractionResult(finalResult, boundedTurns);
       }

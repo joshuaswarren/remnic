@@ -805,3 +805,140 @@ test("proactive extraction grounds before delinearization", async () => {
 
   assert.deepEqual(result.facts.map((fact) => fact.content), ["The deployment finished on 2026-07-24."]);
 });
+
+test("grounding evaluates exact matches in their source sentence", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "Alice is the CEO at Acme.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: ["Alice is the CEO at Acme."],
+      entities: [],
+      questions: [],
+    },
+    "We discussed staffing. Do we know that Alice is the CEO at Acme? Bob joined the call.",
+  );
+
+  assert.deepEqual(result.facts, []);
+  assert.deepEqual(result.profileUpdates, []);
+});
+
+test("grounding rejects embedded whether questions as factual evidence", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "Alice uses PostgreSQL.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: ["Alice uses PostgreSQL."],
+      entities: [],
+      questions: [],
+    },
+    "We need to determine whether Alice uses PostgreSQL.",
+  );
+
+  assert.deepEqual(result.facts, []);
+  assert.deepEqual(result.profileUpdates, []);
+});
+
+test("grounding preserves a supported question while clearing unsupported context", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{
+        question: "Which database should we use?",
+        context: "This blocks the launch schedule.",
+        priority: 0.5,
+      }],
+    },
+    "Which database should we use?",
+  );
+
+  assert.deepEqual(result.questions, [{
+    question: "Which database should we use?",
+    context: "",
+    priority: 0.5,
+  }]);
+});
+
+test("grounding keeps affirmative facts answered by context-only questions", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "The database uses PostgreSQL.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Should the database use PostgreSQL?\nYes.",
+    "Yes.",
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["The database uses PostgreSQL."]);
+});
+
+test("speaker-aware grounding keeps profile and identity evidence from their own roles", async () => {
+  const engine = fixtureEngine({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+  });
+  Object.assign(engine, {
+    localLlm: {
+      async chatCompletion() {
+        return {
+          content: JSON.stringify({
+            facts: [],
+            profileUpdates: [
+              "The user works at Acme.",
+              "The user works at Globex.",
+            ],
+            entities: [],
+            questions: [],
+            identityReflection: "The assistant works at Acme.",
+          }),
+        };
+      },
+    },
+    modelRegistry: {
+      calculateContextSizes: () => ({
+        maxInputChars: 8_000,
+        maxOutputTokens: 1_000,
+        description: "fixture",
+      }),
+    },
+  });
+
+  const result = await engine.extract([
+    {
+      role: "assistant",
+      content: "I work at Acme.",
+      timestamp: "2026-07-25T12:00:00.000Z",
+    },
+    {
+      role: "user",
+      content: "I work at Globex.",
+      timestamp: "2026-07-25T12:00:01.000Z",
+    },
+  ]);
+
+  assert.deepEqual(result.profileUpdates, ["The user works at Globex."]);
+  assert.equal(result.identityReflection, "The assistant works at Acme.");
+});
