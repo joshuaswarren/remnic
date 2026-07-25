@@ -591,3 +591,34 @@ test("inline capture scopes unsupported namespace review replay to the authorize
   assert.ok(probe.requestedNamespaces.includes("review-one"));
   assert.ok(probe.requestedNamespaces.includes("review-two"));
 });
+
+test("inline capture accepts corrected metadata after queuing a validation failure", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const content = "Corrected metadata must not be suppressed by an earlier review.";
+  const invalid = await probe.processor.process({
+    captureMode: "hybrid",
+    dedupeKeys: ["invalid-delivery"],
+    content: [
+      "<memory_note>",
+      `content: ${content}`,
+      "category: fact",
+      "confidence: abc",
+      "</memory_note>",
+    ].join("\n"),
+  });
+  const corrected = await probe.processor.process({
+    captureMode: "hybrid",
+    dedupeKeys: ["corrected-delivery"],
+    content: [
+      "<memory_note>",
+      `content: ${content}`,
+      "category: fact",
+      "confidence: 0.8",
+      "</memory_note>",
+    ].join("\n"),
+  });
+
+  assert.equal(invalid.queued, 1);
+  assert.equal(corrected.accepted, 1);
+  assert.equal(probe.envelopes.length, 2);
+});
