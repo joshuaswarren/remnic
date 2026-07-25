@@ -66,12 +66,12 @@ function pruneBindingEntries(
       return Number.isFinite(updatedAt) && updatedAt >= cutoff;
     })
     .sort(([leftKey, left], [rightKey, right]) => {
+      if (leftKey === rightKey) return 0;
       if (leftKey === protectedKey) return -1;
       if (rightKey === protectedKey) return 1;
       const leftAt = Date.parse(left.updatedAt);
       const rightAt = Date.parse(right.updatedAt);
       if (leftAt !== rightAt) return rightAt > leftAt ? 1 : -1;
-      if (leftKey === rightKey) return 0;
       return leftKey < rightKey ? -1 : 1;
     })
     .slice(0, SESSION_NAMESPACE_BINDING_MAX_ENTRIES);

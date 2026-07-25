@@ -170,6 +170,21 @@ test("HTTP batch LCM flush isolates namespace failures and charges one write quo
       },
     ]);
 
+    const conflicting = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/flush`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "batch-session",
+        namespace: "team-a",
+        namespaces: ["team-b"],
+      }),
+    });
+    assert.equal(conflicting.status, 400);
+    assert.equal(calls.length, 2, "conflicting namespace forms must fail before dispatch");
+
     const rateLimited = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/flush`, {
       method: "POST",
       headers: {

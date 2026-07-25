@@ -273,7 +273,7 @@ const subject: LifecycleSubject<DelegateLifecycleState> = {
         assert.equal("namespace" in (recallCalls[0]?.body ?? {}), false);
         return;
       case "provider-rebinding":
-        assert.deepEqual(flushCalls.map((call) => call.body.namespace).sort(), ["team-first", "team-second"]);
+        assert.deepEqual(flushCalls.map((call) => call.body.namespaces), [["team-first", "team-second"]]);
         return;
       case "restart-reload-recovery":
         assert.equal(recallCalls.at(-1)?.body.namespace, "team-persisted");

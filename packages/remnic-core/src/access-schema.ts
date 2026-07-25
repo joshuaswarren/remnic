@@ -331,15 +331,25 @@ export const lcmSearchRequestSchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
 });
 
-export const lcmCompactionFlushRequestSchema = z.object({
-  sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
-  namespace: namespaceSchema,
-  /**
-   * Optional multi-namespace flush used by delegate lifecycle replay. The
-   * server handles the whole list as one quota-counted write.
-   */
-  namespaces: z.array(z.string().trim().max(256)).min(1).max(64).optional(),
-});
+export const lcmCompactionFlushRequestSchema = z
+  .object({
+    sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
+    namespace: namespaceSchema,
+    /**
+     * Optional multi-namespace flush used by delegate lifecycle replay. The
+     * server handles the whole list as one quota-counted write.
+     */
+    namespaces: z.array(z.string().trim().max(256)).min(1).max(64).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.namespace !== undefined && value.namespaces !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "namespace and namespaces are mutually exclusive",
+        path: ["namespaces"],
+      });
+    }
+  });
 
 export const lcmCompactionRecordRequestSchema = z.object({
   sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
