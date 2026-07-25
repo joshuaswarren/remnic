@@ -768,6 +768,23 @@ test("round 4 (codex P2): a present null peer token is rejected, not silently un
   assert.equal(omitted.peers[0]?.token, undefined);
 });
 
+/** A both-sides, in-agreement namespace delta for report-shaped fixtures. */
+function delta(namespace: string) {
+  return {
+    namespace,
+    presence: "both" as const,
+    fileCountDelta: 0,
+    writeAgeDeltaMs: 0,
+    digestMatch: true,
+    diverged: false,
+    reasons: [] as string[],
+    localFileCount: 10,
+    peerFileCount: 10,
+    localNewestWriteAt: "2026-03-08T00:00:00.000Z",
+    peerNewestWriteAt: "2026-03-08T00:00:00.000Z",
+  };
+}
+
 test("round 5 (cursor/codex): a capability filter cannot clear a census-level unknown", () => {
   // The cap filter recomputes a peer's state from its VISIBLE deltas. A
   // census-level unknown says the LOCAL set was partial, which no amount of
@@ -785,8 +802,8 @@ test("round 5 (cursor/codex): a capability filter cannot clear a census-level un
         polledAt: "2026-03-08T00:00:00.000Z",
         divergedNamespaceCount: 0,
         namespaces: [
-          { namespace: "default", presence: "both", fileCountDelta: 0, writeAgeDeltaMs: 0, digestMatch: true, diverged: false, reasons: [] },
-          { namespace: "team-secret", presence: "both", fileCountDelta: 0, writeAgeDeltaMs: 0, digestMatch: true, diverged: false, reasons: [] },
+          delta("default"),
+          delta("team-secret"),
         ],
       },
     ],
