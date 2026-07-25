@@ -678,6 +678,7 @@ export class InlineExplicitCaptureProcessor {
     dedupeKeys: readonly string[] | undefined,
     note: ExplicitCaptureInput,
     namespace: string | undefined,
+    sourceConnector: string | undefined,
   ): string[] {
     const namespaceScope =
       namespace === undefined ? asTrimmed(note.namespace) ?? "" : asTrimmed(namespace) ?? "";
@@ -687,7 +688,10 @@ export class InlineExplicitCaptureProcessor {
     return (dedupeKeys ?? [])
       .map((key) => asTrimmed(key))
       .filter((key): key is string => key !== undefined)
-      .map((key) => `${namespaceScope}\u0000${key}:inline-memory-note:${noteHash}`);
+      .map(
+        (key) =>
+          `${namespaceScope}\u0000${sourceConnector ?? ""}\u0000${key}:inline-memory-note:${noteHash}`,
+      );
   }
 
   private remember(keys: readonly string[]): void {
@@ -721,7 +725,12 @@ export class InlineExplicitCaptureProcessor {
     let duplicates = 0;
 
     for (const note of notes) {
-      const dedupeKeys = this.buildDedupeKeys(request.dedupeKeys, note, request.namespace);
+      const dedupeKeys = this.buildDedupeKeys(
+        request.dedupeKeys,
+        note,
+        request.namespace,
+        sourceConnector,
+      );
       if (dedupeKeys.some((key) => this.observedKeys.has(key))) continue;
 
       const input: ExplicitCaptureInput = {

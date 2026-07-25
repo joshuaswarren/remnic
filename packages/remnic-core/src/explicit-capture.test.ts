@@ -310,6 +310,29 @@ test("inline capture processor scopes replay keys to the authorized namespace", 
   assert.ok(probe.requestedNamespaces.includes("principal-two"));
 });
 
+test("inline capture processor scopes replay keys to the source connector", async () => {
+  const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
+  const request = {
+    captureMode: "hybrid" as const,
+    content: [
+      "<memory_note>",
+      "content: A replay key must not cross an authenticated connector boundary.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+    dedupeKeys: ["shared-delivery"],
+    namespace: "principal-one",
+    namespacePreResolved: true,
+  };
+
+  const first = await probe.processor.process({ ...request, sourceConnector: "connector-one" });
+  const second = await probe.processor.process({ ...request, sourceConnector: "connector-two" });
+
+  assert.equal(first.queued, 1);
+  assert.equal(second.queued, 1);
+  assert.equal(probe.envelopes.length, 2);
+});
+
 test("inline capture processor canonicalizes reordered note fields for replay dedupe", async () => {
   const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
   const first = await probe.processor.process({
