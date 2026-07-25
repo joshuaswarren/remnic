@@ -537,6 +537,27 @@ test("grounding matches normalized entity identifiers", () => {
   ]);
 });
 
+test("grounding rejects a relationship label unsupported by the source span", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      relationships: [
+        {
+          source: "person-alice",
+          target: "company-acme",
+          label: "works at",
+        },
+      ],
+      questions: [],
+    },
+    "Alice criticized Acme.",
+  );
+
+  assert.deepEqual(result.relationships, []);
+});
+
 test("grounding does not treat questions or hypotheticals as factual evidence", () => {
   const questionResult = filterExtractionResultBySource(
     {
@@ -571,6 +592,19 @@ test("grounding does not treat questions or hypotheticals as factual evidence", 
     "Alice works at Acme.",
   );
   assert.deepEqual(answeredResult.questions, []);
+
+  const unknownAnswerResult = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{ question: "What is the deployment deadline?", context: "", priority: 0.5 }],
+    },
+    "The deployment deadline is unknown.",
+  );
+  assert.deepEqual(unknownAnswerResult.questions, [
+    { question: "What is the deployment deadline?", context: "", priority: 0.5 },
+  ]);
 
   const hypotheticalResult = filterExtractionResultBySource(
     {

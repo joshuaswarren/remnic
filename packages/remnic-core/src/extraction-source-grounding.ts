@@ -453,18 +453,37 @@ function filterGroundedEntity(
   };
 }
 
+function normalizedEntitySourceText(name: string): string {
+  return normalizedEntityIdentifierTokens(name).join(" ");
+}
+
 function isGroundedRelationship(
   relationship: NonNullable<ExtractionResult["relationships"]>[number],
   source: string,
   assertionSource: string | undefined,
 ): boolean {
-  return isGroundedEntityName(relationship.source, source)
-    && isGroundedEntityName(relationship.target, source)
-    && isGroundedCandidate(
-      `${relationship.source} ${relationship.label} ${relationship.target}`,
-      source,
-      assertionSource,
-    );
+  const sourceName = normalizedEntitySourceText(relationship.source);
+  const targetName = normalizedEntitySourceText(relationship.target);
+  const labelTokens = tokenize(relationship.label);
+  if (sourceName.length === 0 || targetName.length === 0 || labelTokens.size === 0) return false;
+  const relationText = `${sourceName} ${relationship.label} ${targetName}`;
+  const allowInterrogativeSource = assertionSource !== undefined
+    && normalizeForExactMatch(assertionSource) !== normalizeForExactMatch(source);
+  const hasCoherentSourceSpan = sourceSentences(source).some((sentence) => {
+    if (!allowInterrogativeSource && isInterrogativeSourceSentence(sentence)) return false;
+    const sentenceText = normalizeForExactMatch(sentence);
+    return groundedTokenScore(relationText, sentenceText) === 1
+      && !hasContradictoryPolarity(relationText, sentenceText);
+  });
+  const hasContextualSourceSupport = allowInterrogativeSource
+    && [...labelTokens].every((token) => tokenize(source).has(token));
+  return (hasCoherentSourceSpan || hasContextualSourceSupport)
+    && isGroundedCandidate(relationText, source, assertionSource);
+}
+
+function isUnknownAnswerSentence(sentence: string): boolean {
+  return /\b(?:unknown|unclear|unsure|unresolved|unanswered|not\s+(?:known|sure|available)|don't\s+know|do\s+not\s+know|no\s+idea|pending)\b/iu
+    .test(sentence);
 }
 
 function isQuestionAnsweredBySource(question: string, source: string): boolean {
@@ -474,6 +493,7 @@ function isQuestionAnsweredBySource(question: string, source: string): boolean {
     .test(question.trim());
   return sourceSentences(source).some((sentence) => {
     if (isInterrogativeSourceSentence(sentence)) return false;
+    if (isUnknownAnswerSentence(sentence)) return false;
     const score = groundedTokenScore(question, sentence);
     if (score === 0) return false;
     const sentenceTokens = tokenize(sentence);
