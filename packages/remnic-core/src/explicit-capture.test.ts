@@ -54,7 +54,7 @@ type StoredMemory = {
   content: string;
 };
 
-function createInlineCaptureProcessorProbe() {
+function createInlineCaptureProcessorProbe(options: { tombstoneBlocked?: boolean } = {}) {
   const envelopes: SealedMemoryEnvelope[] = [];
   const lifecycleEvents: Array<{ eventType: string; actor: string }> = [];
   const maintenanceReasons: string[] = [];
@@ -70,12 +70,13 @@ function createInlineCaptureProcessorProbe() {
         frontmatter: {
           id,
           category: envelope.category,
+          ...(options.tombstoneBlocked ? { status: "pending_review" } : {}),
           tags: [...envelope.tags],
           sourceConnector: envelope.sourceConnector,
         },
         content: envelope.content,
       });
-      return { id };
+      return { id, tombstoneBlocked: options.tombstoneBlocked === true };
     },
     appendMemoryLifecycleEvents: async (events: Array<{ eventType: string; actor: string }>) => {
       lifecycleEvents.push(...events);
@@ -149,6 +150,25 @@ test("inline capture processor persists an authorized inline note once and strip
   assert.deepEqual(probe.maintenanceReasons, ["inline.memory_note"]);
   assert.equal(probe.lifecycleEvents[0]?.eventType, "explicit_capture_accepted");
   assert.equal(probe.lifecycleEvents[0]?.actor, "inline.memory_note");
+});
+
+test("inline capture processor routes tombstone-blocked captures to review", async () => {
+  const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
+  const result = await probe.processor.process({
+    captureMode: "hybrid",
+    content: [
+      "<memory_note>",
+      "content: A tombstone-blocked capture must not be reported active.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+    dedupeKeys: ["message-tombstone-blocked"],
+  });
+
+  assert.equal(result.accepted, 0);
+  assert.equal(result.queued, 1);
+  assert.deepEqual(probe.maintenanceReasons, ["inline.memory_note.review"]);
+  assert.equal(probe.lifecycleEvents[0]?.eventType, "explicit_capture_queued");
 });
 
 test("inline capture processor queues invalid complete markup and never leaves it for hybrid extraction", async () => {

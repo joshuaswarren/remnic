@@ -482,7 +482,7 @@ export async function persistExplicitCapture(
   const event: MemoryLifecycleEvent = {
     eventId: `mle-${randomUUID()}`,
     memoryId: id,
-    eventType: "explicit_capture_accepted",
+    eventType: tombstoneBlocked ? "explicit_capture_queued" : "explicit_capture_accepted",
     timestamp: created,
     actor: explicitCaptureActor(source),
     reasonCode: candidate.sourceReason,
@@ -732,6 +732,9 @@ export class InlineExplicitCaptureProcessor {
         processed += 1;
         if (persisted.duplicateOf) {
           duplicates += 1;
+        } else if (persisted.tombstoneBlocked) {
+          queued += 1;
+          this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note.review");
         } else {
           accepted += 1;
           this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
