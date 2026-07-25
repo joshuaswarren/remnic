@@ -490,8 +490,16 @@ test("entity retrieval ignores one-character and stop-word aliases in implicit q
   });
   await writeEntity(storage, "A", "project", ["A is synthetic."], "A is synthetic.");
   await writeEntity(storage, "The", "project", ["The is synthetic."], "The is synthetic.");
+  await writeEntity(
+    storage,
+    "Stopword Fixture",
+    "project",
+    ["Stopword Fixture is synthetic."],
+    "Stopword Fixture is synthetic.",
+    ["what do"],
+  );
 
-  const section = await buildSection(config, storage, "Can you make a plan for the project?");
+  const section = await buildSection(config, storage, "What do you know about the project?");
 
   assert.equal(section, null);
 });

@@ -742,6 +742,7 @@ const IMPLICIT_ENTITY_STOP_WORDS = new Set([
 
 function isDistinctiveImplicitAlias(normalizedAlias: string): boolean {
   const tokens = normalizedAlias.split(/\s+/).filter(Boolean);
+  if (tokens.length > 1 && tokens.every((token) => IMPLICIT_ENTITY_STOP_WORDS.has(token))) return false;
   if (tokens.length !== 1) return true;
   const token = tokens[0]!;
   return Array.from(token).length > 1 && !IMPLICIT_ENTITY_STOP_WORDS.has(token);

@@ -744,6 +744,71 @@ test("ensureDirectories rejects duplicate canonical targets before migration", a
   }
 });
 
+test("ensureDirectories rejects malformed legacy entity files before migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-malformed-legacy-"));
+  try {
+    const legacyPath = path.join(dir, "entities", "project-.md");
+    const canonicalPath = path.join(dir, "entities", "project-月光.md");
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await writeFile(legacyPath, "# \n**Type:** project\n", "utf-8");
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
+
+    const migrating = new StorageManager(dir);
+    await assert.rejects(
+      () => migrating.ensureDirectories(),
+      /malformed entity file project-\.md/,
+    );
+    assert.match(await readFile(legacyPath, "utf-8"), /^# /);
+    await assert.rejects(() => readFile(canonicalPath, "utf-8"), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories rescans legacy entities created during migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-rescan-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Moonlight is synthetic."]);
+    const canonical = normalizeEntityName(name, type);
+    const canonicalPath = path.join(dir, "entities", `${canonical}.md`);
+    const legacy = normalizeLegacyEntityName(name, type);
+    const legacyPath = path.join(dir, "entities", `${legacy}.md`);
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
+
+    const migrating = new StorageManager(dir);
+    const internals = migrating as unknown as {
+      readStorageSecureFile(filePath: string): Promise<string>;
+    };
+    const originalRead = internals.readStorageSecureFile.bind(migrating);
+    let injected = false;
+    internals.readStorageSecureFile = async (filePath) => {
+      const content = await originalRead(filePath);
+      if (!injected && filePath === canonicalPath) {
+        injected = true;
+        await writeFile(legacyPath, content, "utf-8");
+      }
+      return content;
+    };
+
+    await migrating.ensureDirectories();
+
+    assert.equal(injected, true);
+    assert.match(await readFile(canonicalPath, "utf-8"), /# 月光/);
+    await assert.rejects(() => readFile(legacyPath, "utf-8"), { code: "ENOENT" });
+    const migrationState = JSON.parse(
+      await readFile(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), "utf-8"),
+    ) as { complete?: unknown };
+    assert.equal(migrationState.complete, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories removes identical legacy content when canonical entity already exists", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-identical-canonical-target-"));
   try {
