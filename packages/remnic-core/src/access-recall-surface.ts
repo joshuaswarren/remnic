@@ -27,6 +27,7 @@ import type { Orchestrator, RecallInvocationOptions } from "./orchestrator.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { assembleRecallResponse } from "./access-recall-response.js";
 import type { LastRecallSnapshot } from "./recall-state.js";
+import type { RecallContextComposition } from "./recall-context-composition.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import { type RecallXraySnapshot, estimateRecallTokens } from "./recall-xray.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
@@ -852,10 +853,14 @@ export class AccessRecallSurface {
       }
       asOf = request.asOf;
     }
+    let contextComposition: RecallContextComposition | undefined;
     const recallOptions: RecallInvocationOptions = {
       namespace: namespaceOverride,
       topK,
       mode,
+      onContextComposition: (composition) => {
+        contextComposition = composition;
+      },
       ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
@@ -892,10 +897,15 @@ export class AccessRecallSurface {
     // construction — so ANY failure after the reserve releases the exact
     // budget entry (by token, review #4) instead of leaking it.
     try {
-      const context = await this.deps.orchestrator.recall(query, request.sessionKey, recallOptions);
+      const context = await this.deps.orchestrator.recall(
+        query,
+        request.sessionKey,
+        recallOptions,
+      );
       const assembled = await assembleRecallResponse(this.deps, {
         request,
         context,
+        contextComposition,
         query,
         mode,
         namespace,

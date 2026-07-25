@@ -48,6 +48,14 @@ import { buildProcedureRecallSection } from "../procedural/procedure-recall.js";
 import { ProfilingCollector } from "../profiling.js";
 import { buildQmdRecallCacheKey, getCachedQmdRecall, setCachedQmdRecall } from "../qmd-recall-cache.js";
 import { MEMORY_ID_PATTERN } from "../recall-handles.js";
+import {
+  boundRecallContextComposition,
+  composeRecallContext,
+  contextBudgetForFooter,
+  formatCuriosityFooter,
+  selectCuriosityQuestion,
+  type RecallContextComposition,
+} from "../recall-context-composition.js";
 import { createRecallSectionMetricRecorder } from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
 import { type GraphRecallExpandedEntry, type LastRecallBudgetSummary, type LastRecallSnapshot, LastRecallStore, RecallHandleHistoryStore } from "../recall-state.js";
@@ -5265,7 +5273,7 @@ export class RecallInternalCoordinator {
       );
     }
 
-    // 5. Inject most relevant question (if enabled) (existing)
+    let curiosityFooter: string | undefined;
     if (
       this.deps.config.injectQuestions &&
       this.deps.isRecallSectionEnabled("questions", true)
@@ -5273,16 +5281,9 @@ export class RecallInternalCoordinator {
       const questions = await profileStorage.readQuestions({
         unresolvedOnly: true,
       });
-      if (questions.length > 0) {
-        // Find the most relevant question to the current prompt
-        // Simple approach: use the highest-priority unresolved question
-        // TODO: Could use QMD search to find the most contextually relevant one
-        const topQuestion = questions[0]; // Already sorted by priority desc
-        this.deps.appendRecallSection(
-          sectionBuckets,
-          "questions",
-          `## Open Question\n\nSomething I've been curious about: ${topQuestion.question}\n\n_Context: ${topQuestion.context}_`,
-        );
+      const topQuestion = selectCuriosityQuestion(questions);
+      if (topQuestion) {
+        curiosityFooter = formatCuriosityFooter(topQuestion);
       }
     }
 
@@ -5319,9 +5320,12 @@ export class RecallInternalCoordinator {
       queryPolicy: timings.queryPolicy,
     });
 
+    const recallBudgetChars = this.deps.getRecallBudgetChars(
+      options.budgetCharsOverride,
+    );
     const assembledRecall = this.deps.assembleRecallSections(
       sectionBuckets,
-      options.budgetCharsOverride,
+      contextBudgetForFooter(recallBudgetChars, curiosityFooter),
     );
     recalledMemoryIds = assembledRecall.includedMemoryIds;
     recalledMemoryPaths = assembledRecall.includedMemoryPaths;
@@ -5332,10 +5336,20 @@ export class RecallInternalCoordinator {
       assembledRecall.includedMemoryPaths,
       assembledRecall.includedMemoryNamespaces,
     );
-    const context =
+    const recalledContext =
       assembledRecall.sections.length === 0
         ? ""
         : assembledRecall.sections.join("\n\n---\n\n");
+    const composition: RecallContextComposition = boundRecallContextComposition({
+      context: recalledContext,
+      footer: curiosityFooter,
+      maxChars: recallBudgetChars,
+    });
+    const context = composeRecallContext(composition);
+    options.onContextComposition?.(composition);
+    const compositionTruncated =
+      context.length <
+      composeRecallContext({ context: recalledContext, footer: curiosityFooter }).length;
     const sourcesUsed = this.deps.collectLastRecallSources(
       sectionBuckets,
       recallSource,
@@ -5345,8 +5359,8 @@ export class RecallInternalCoordinator {
       recallResultLimit,
       qmdFetchLimit,
       qmdHybridFetchLimit,
-      finalContextChars: assembledRecall.finalChars,
-      truncated: assembledRecall.truncated,
+      finalContextChars: context.length,
+      truncated: assembledRecall.truncated || compositionTruncated,
       includedSections: assembledRecall.includedIds,
       omittedSections: assembledRecall.omittedIds,
       includedMemoryIds: assembledRecall.includedMemoryIds,
@@ -5535,7 +5549,7 @@ export class RecallInternalCoordinator {
           filters,
           budget: {
             chars: this.deps.getRecallBudgetChars(options.budgetCharsOverride),
-            used: assembledRecall.finalChars,
+            used: context.length,
           },
           sessionKey,
           namespace: selfNamespace,

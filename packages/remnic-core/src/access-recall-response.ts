@@ -16,6 +16,11 @@ import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { displaySafeBudgetsApplied, displaySafeRecallSnapshot } from "./orchestration/recall-result-formatter.js";
+import {
+  boundRecallContextComposition,
+  composeRecallContext,
+  type RecallContextComposition,
+} from "./recall-context-composition.js";
 
 /**
  * Build the recall response from the completed pipeline (issue #1906 review
@@ -29,6 +34,7 @@ export async function assembleRecallResponse(
   params: {
   request: EngramAccessRecallRequest;
   context: string;
+  contextComposition?: RecallContextComposition;
   query: string;
   mode: RecallPlanMode | undefined;
   namespace: string;
@@ -47,6 +53,7 @@ export async function assembleRecallResponse(
   const {
     request,
     context,
+    contextComposition,
     query,
     mode,
     namespace,
@@ -191,7 +198,8 @@ export async function assembleRecallResponse(
       err instanceof Error ? err.message : String(err),
     );
   }
-  let effectiveContext = context;
+  let effectiveComposition: RecallContextComposition = contextComposition ?? { context };
+  let effectiveContext = composeRecallContext(effectiveComposition);
   if (filterTags && filterTags.length > 0) {
     const beforeIds = results.map((r) => r.id);
     const { results: admitted } = applyTagFilter(results, {
@@ -213,20 +221,16 @@ export async function assembleRecallResponse(
     const admittedIds = new Set(results.map((r) => r.id));
     const droppedAny = beforeIds.some((id) => !admittedIds.has(id));
     if (droppedAny) {
-      effectiveContext = results
-        .map((r) => {
-          const content =
-            typeof (r as { content?: unknown }).content === "string"
-              ? ((r as { content?: string }).content ?? "")
-              : "";
-          const preview =
-            typeof (r as { preview?: unknown }).preview === "string"
-              ? ((r as { preview?: string }).preview ?? "")
-              : "";
-          return content || preview;
-        })
+      const filteredContext = results
+        .map((result) => result.content || result.preview)
         .filter((s) => s.length > 0)
         .join("\n\n");
+      effectiveComposition = boundRecallContextComposition({
+        context: filteredContext,
+        footer: effectiveComposition.footer,
+        maxChars: deps.orchestrator.config.recallBudgetChars,
+      });
+      effectiveContext = composeRecallContext(effectiveComposition);
     }
   }
   const filteredMemoryIds = filterTags && filterTags.length > 0
@@ -289,6 +293,7 @@ export async function assembleRecallResponse(
       sessionKey: request.sessionKey,
       namespace: effectiveNamespace,
       context: effectiveContext,
+      contextComposition: effectiveComposition,
       count: filterTags && filterTags.length > 0
         ? results.length
         : (snapshot?.memoryIds.length ?? results.length),

@@ -27,6 +27,7 @@ import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./gra
 import { parseQmdExplain } from "../qmd.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import type { RecallXrayServedBy } from "../recall-xray.js";
+import type { RecallContextComposition } from "../recall-context-composition.js";
 import { type BufferTurn, type MemoryActionEvent, type MemoryFile, type MemoryFrontmatter, type MemoryIntent, type PluginConfig, type QmdSearchResult, type RecallPlanMode, confidenceTier } from "../types.js";
 import { categoryDirName } from "../utils/category-dir.js";
 import { parseFlexibleIsoTimestamp } from "../utils/iso-timestamp.js";
@@ -256,6 +257,12 @@ export interface RecallInvocationOptions {
    * absent, so existing timing consumers are unaffected.
    */
   queueWaitMs?: number;
+  /**
+   * Receives the bounded, request-local split between recall body and an
+   * optional enrichment footer. Transport surfaces use it to serialize the
+   * footer without reading storage or relying on a session-global snapshot.
+   */
+  onContextComposition?: (composition: RecallContextComposition) => void;
 }
 
 export type QueryAwarePrefilter = {
