@@ -88,6 +88,7 @@ interface Harness {
   newCoordinator: () => ExtractionRunCoordinator;
   engineCalls: () => number;
   setRespond: (fn: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult>) => void;
+  setPassiveCapture: (fn: () => void | Promise<void>) => void;
   recordedProcessedCount: () => number;
   run: (
     coord: ExtractionRunCoordinator,
@@ -126,6 +127,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   let respond: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult> = () => successResult();
   let recordedProcessedCount = 0;
   let passiveCapture: { principal?: string; namespace?: string } | null = null;
+  let passiveCaptureHandler: () => void | Promise<void> = () => {};
 
   const makeDeps = (): ExtractionRunCoordinatorDeps => ({
     config,
@@ -145,6 +147,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     }),
     persistExtraction: async () => ({ persistedIds: ["memory-1"], memoryPathById: new Map() }),
     maybeCapturePassiveCorrections: async (_turns, options) => {
+      await passiveCaptureHandler();
       passiveCapture = { principal: options.principal, namespace: options.namespace };
     },
     resolveSelfNamespace: () => "default",
@@ -168,6 +171,9 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     engineCalls: () => engineCalls,
     setRespond: (fn) => {
       respond = fn;
+    },
+    setPassiveCapture: (fn) => {
+      passiveCaptureHandler = fn;
     },
     recordedProcessedCount: () => recordedProcessedCount,
     passiveCapture: () => passiveCapture,
@@ -218,6 +224,53 @@ test("context-only extraction honors scoped principal and namespace overrides", 
       namespace: "alice-project",
     });
   } finally {
+    await harness.cleanup();
+  }
+});
+
+test("context-only extraction honors its deadline during passive capture", async () => {
+  const harness = await makeHarness();
+  const originalDateNow = Date.now;
+  let now = 1_000;
+  let releaseCapture!: () => void;
+  let captureStartedResolve!: () => void;
+  const captureStarted = new Promise<void>((resolve) => {
+    captureStartedResolve = resolve;
+  });
+  const passiveCaptureDone = new Promise<void>((resolve) => {
+    releaseCapture = resolve;
+  });
+  Date.now = () => now;
+  try {
+    harness.setPassiveCapture(async () => {
+      captureStartedResolve();
+      now = 1_001;
+      await passiveCaptureDone;
+    });
+    const coordinator = harness.newCoordinator();
+    const extraction = coordinator.runExtraction(
+      [{
+        role: "user",
+        content: "The correction capture must not clear this buffer after its deadline.",
+        timestamp: "2026-07-15T00:00:00Z",
+        sessionKey: "context-only-deadline",
+        extractionContextOnly: true,
+      }],
+      {
+        bufferKey: "context-only-deadline",
+        clearBufferAfterExtraction: false,
+        deadlineMs: 1_000,
+      },
+    );
+
+    await captureStarted;
+    releaseCapture();
+    await assert.rejects(
+      extraction,
+      /replay extraction deadline exceeded \(before_context_only_clear\)/,
+    );
+  } finally {
+    Date.now = originalDateNow;
     await harness.cleanup();
   }
 });

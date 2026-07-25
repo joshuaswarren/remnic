@@ -363,6 +363,23 @@ test("#1505 thread 2 (c) projectTag: observe LCM write key == recall reader key 
   assert.equal(probe.compactionRecordKeys[0], expectedKey, "record key");
 });
 
+test("#2128: disabled LCM flush does not bind per-call project context", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "pi-geek:disabled-lcm-flush";
+  probe.lcmEngine.enabled = false;
+
+  const response = await service.lcmCompactionFlush({
+    sessionKey,
+    projectTag: "Acme/Webshop",
+    authenticatedPrincipal: "pi-geek",
+  });
+
+  assert.equal(response.enabled, false);
+  assert.equal(probe.orch.getCodingContextForSession(sessionKey), null);
+  assert.equal(probe.compactionFlushKeys.length, 0);
+});
+
 test("#2128: extraction force-flush uses observe's scoped target even when LCM is disabled", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);

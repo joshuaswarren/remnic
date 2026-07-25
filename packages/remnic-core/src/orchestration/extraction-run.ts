@@ -578,6 +578,7 @@ export class ExtractionRunCoordinator {
       // Context-only turns may still contain corrections (review: "context-only
       // turns skip capture"). Scan normalizedTurns before clearing the buffer.
       if (normalizedTurns.length > 0) {
+        throwIfDeadlineExceeded("before_context_only_capture");
         const capturePrincipal =
           typeof options.principalOverride === "string" && options.principalOverride.length > 0
             ? options.principalOverride
@@ -593,6 +594,7 @@ export class ExtractionRunCoordinator {
           bufferKey,
           isLiveSession: clearBufferAfterExtraction,
         });
+        throwIfDeadlineExceeded("before_context_only_clear");
       }
       await clearBuffer();
       return { status: "skipped", reason: "empty_normalized_turns", persistedCount: 0, durableOutputCount: 0 };

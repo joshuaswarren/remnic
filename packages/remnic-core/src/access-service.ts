@@ -4347,6 +4347,19 @@ export class EngramAccessService {
     if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
       throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
     }
+    const previousCodingContext = this.orchestrator.getCodingContextForSession(request.sessionKey);
+    let seededCodingContext: CodingContext | null = null;
+    const captureSeededCodingContext = (): void => {
+      if (previousCodingContext !== null || seededCodingContext !== null) return;
+      const currentCodingContext = this.orchestrator.getCodingContextForSession(request.sessionKey);
+      if (currentCodingContext !== null) seededCodingContext = currentCodingContext;
+    };
+    const clearSeededCodingContext = (): void => {
+      if (previousCodingContext !== null || seededCodingContext === null) return;
+      if (this.orchestrator.getCodingContextForSession(request.sessionKey) === seededCodingContext) {
+        this.orchestrator.setCodingContextForSession(request.sessionKey, null);
+      }
+    };
 
     // Authorize compaction against the SCOPED WRITE TARGET — the SAME effective
     // write namespace `observe` archived the LCM queue under — NOT a premature
@@ -4361,6 +4374,7 @@ export class EngramAccessService {
     // writable) when no overlay applies — so it never throws `not writable:
     // default` for a validly scoped observe's queue.
     const scope = await this.resolveMemoryScopePlan(request);
+    captureSeededCodingContext();
     // Legacy `namespace` response field: pre-#1505 semantics were exactly
     // the writable-namespace resolver (overlay-agnostic) — the
     // authorized explicit namespace when supplied, else `config.defaultNamespace`.
@@ -4370,6 +4384,7 @@ export class EngramAccessService {
     // observe's legacy field.
     const namespace = this.legacyResponseNamespaceForScope(scope);
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
+      clearSeededCodingContext();
       return {
         enabled: false,
         flushed: false,
