@@ -14,23 +14,34 @@
  * each `<tier>:<category>/<day>` partition produce the same digest, so a
  * differing digest is a cheap divergence signal without reading or hashing file
  * bodies. Buckets are tier-aware (`hot:` / `cold:`): demoted memories stay
- * active and reachable via cold recall, so the census counts BOTH tiers and a
- * hot/cold split shows in the digest rather than being silently folded together
- * (issue #2156 finding D). `newestWriteAt` stays scoped to the newest HOT
- * partition only, so the freshness probe stays O(one day's active files) even
- * on a 100k+ corpus.
+ * reachable via cold recall, so the census counts BOTH tiers and a hot/cold
+ * split shows in the digest rather than being silently folded together (issue
+ * #2156 finding D). `newestWriteAt` stays scoped to the newest HOT partition
+ * only, so the freshness probe stays O(one day's active files) even on a 100k+
+ * corpus.
  *
- * Two consumers share this module: the authenticated `/health` route (behind a
- * bounded TTL + single-flight {@link CorpusWatermarkCache}, filtered to the
- * caller's namespaces) and the `remnic doctor` corpus check. Both resolve their
- * namespace set through the ONE {@link resolveCorpusNamespaceRoots} helper so
- * they cannot drift and silently omit a tenant (issue #2156 finding C).
+ * Robustness (issue #2156 review rounds):
+ * - `/health` and `remnic doctor` resolve their namespace set through the ONE
+ *   {@link resolveCorpusNamespaceRoots} helper — config-driven enumeration
+ *   unioned with the PERSISTED namespace catalog read from config — so both
+ *   surfaces enumerate the same tenants and cannot drift.
+ * - The `/health` builder serves through a stale-while-revalidate
+ *   {@link CorpusWatermarkCache}, so a probe NEVER awaits the recursive corpus
+ *   scan (it returns the cached/stale value and refreshes in the background).
+ * - Each namespace's census brackets its hot+cold walk with a corpus-mutation
+ *   sentinel and retries when a tier migration races it, so a transient
+ *   double-count/miss is never cached as a false divergence.
+ * - An unreadable corpus root (EACCES) is OMITTED, not published as a false
+ *   empty; a missing root (ENOENT — a not-yet-created namespace) is a genuine
+ *   empty corpus.
  */
 
 import { createHash } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import path from "node:path";
 import { capabilityAllowsNamespace, type TokenCapabilities } from "./access-token-capabilities.js";
+import { NamespaceCatalog } from "./namespaces/catalog.js";
 import { listNamespaces } from "./namespaces/migrate.js";
 import type { PluginConfig } from "./types.js";
 
@@ -128,7 +139,6 @@ export async function computeCorpusWatermark(input: {
   now?: Date;
 }): Promise<CorpusWatermark> {
   const { namespace, paths, baseDir } = input;
-  const computedAt = (input.now ?? new Date()).toISOString();
 
   const census = new Map<string, number>();
   let newestPartition: string | null = null;
@@ -164,6 +174,11 @@ export async function computeCorpusWatermark(input: {
     }
   }
 
+  // Stamp AFTER the (possibly slow) stat loop so an age-based HA consumer never
+  // sees a timestamp earlier than when the scan actually finished (finding
+  // round-4). An explicit `now` (tests / determinism) still wins.
+  const computedAt = (input.now ?? new Date()).toISOString();
+
   return {
     namespace,
     memoryFileCount: paths.length,
@@ -181,30 +196,64 @@ export interface CorpusStorage {
   collectActiveMemoryPaths(): Promise<string[]>;
   /** Cold-tier (demoted-but-reachable) memory paths (issue #2156 finding D). */
   collectColdMemoryPaths(): Promise<string[]>;
+  /**
+   * Optional combined hot+cold corpus-mutation sentinel. When present, the
+   * census brackets its scan with it and retries on change so a tier migration
+   * racing the walkers is not cached as a false divergence. Absent (test fakes)
+   * ⇒ single-pass.
+   */
+  getCorpusScanVersion?(): string | Promise<string>;
 }
+
+/** Max census re-scans when a corpus mutation keeps racing the walkers. */
+const CENSUS_RACE_MAX_ATTEMPTS = 3;
 
 /**
  * Compute one namespace's watermark from its storage, spanning BOTH tiers so a
- * cold-tier divergence is caught. The two collectors run concurrently; each
- * returns paths only (no frontmatter parse), and neither throws on a missing
- * tier, so the probe stays cheap and never fails on an empty cold tree.
+ * cold-tier divergence is caught. Fails DISTINCT from empty: an unreadable
+ * corpus root (EACCES) throws so the caller omits the namespace rather than
+ * publishing a false zero; a missing root (ENOENT) is a genuine empty corpus.
+ * The hot+cold walk is bracketed by the corpus-mutation sentinel (when the
+ * storage exposes one) and retried on change, so a hot↔cold migration racing
+ * the two walkers never yields a cached double-count or miss.
  */
 async function computeNamespaceWatermark(
   namespace: string,
   storage: CorpusStorage,
   now?: Date,
 ): Promise<CorpusWatermark> {
-  const [hotPaths, coldPaths] = await Promise.all([
-    storage.collectActiveMemoryPaths(),
-    storage.collectColdMemoryPaths(),
-  ]);
-  return computeCorpusWatermark({ namespace, paths: [...hotPaths, ...coldPaths], baseDir: storage.dir, now });
+  try {
+    await access(storage.dir, constants.R_OK | constants.X_OK);
+  } catch (err) {
+    // ENOENT = a not-yet-created namespace ⇒ a legitimate empty corpus. Any
+    // other error (EACCES etc.) means the corpus is UNREADABLE: rethrow so the
+    // caller omits this namespace instead of publishing a false empty census.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+
+  const readVersion = storage.getCorpusScanVersion?.bind(storage);
+  const maxAttempts = readVersion ? CENSUS_RACE_MAX_ATTEMPTS : 1;
+  let result: CorpusWatermark | undefined;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const before = readVersion ? await readVersion() : null;
+    const [hotPaths, coldPaths] = await Promise.all([
+      storage.collectActiveMemoryPaths(),
+      storage.collectColdMemoryPaths(),
+    ]);
+    result = await computeCorpusWatermark({ namespace, paths: [...hotPaths, ...coldPaths], baseDir: storage.dir, now });
+    const after = readVersion ? await readVersion() : null;
+    if (before === after) return result;
+    // A tier write (e.g. hot→cold migration) raced the two walkers, so the
+    // count/digest may double-count or miss the in-flight memory. Retry for a
+    // consistent snapshot rather than caching a transient false divergence.
+  }
+  return result as CorpusWatermark;
 }
 
 /**
  * Compute watermarks for a set of namespaces. A namespace whose storage is
- * unavailable is skipped rather than failing the whole read, so a single bad
- * namespace never blanks the health/doctor payload.
+ * unavailable (or unreadable) is skipped rather than failing the whole read, so
+ * a single bad namespace never blanks the health/doctor payload.
  */
 export async function computeCorpusWatermarks(
   namespaces: readonly string[],
@@ -216,7 +265,7 @@ export async function computeCorpusWatermarks(
     try {
       watermarks.push(await computeNamespaceWatermark(namespace, await storageFor(namespace), now));
     } catch {
-      // Storage unavailable for this namespace — degrade gracefully.
+      // Storage unavailable/unreadable for this namespace — degrade gracefully.
     }
   }
   return watermarks;
@@ -231,22 +280,28 @@ export interface CorpusNamespaceRoot {
 /**
  * Resolve the namespace set the corpus census covers, shared by the `/health`
  * builder AND the `remnic doctor` corpus check (issue #2156 finding C) so the
- * two surfaces cannot drift and silently omit a tenant from the divergence
- * signal. Config-driven enumeration is authoritative because it still works
- * when the namespace catalog is opted out (`namespaceCatalogEnabled: false`) or
- * not yet populated — a live-catalog scan returns nothing in that state. Live
- * catalog names are unioned in when supplied (health) so a freshly-registered
- * namespace not yet on disk is still covered. Deduped by resolved root so a
+ * two surfaces enumerate the SAME tenants and cannot drift. Config-driven
+ * enumeration is authoritative because it still works when the namespace
+ * catalog is opted out or not yet populated. The PERSISTED namespace catalog
+ * (read from config, so both surfaces see it identically — not just the process
+ * holding a live catalog) is unioned in, covering a catalog-registered tenant
+ * whose directory does not exist yet. Deduped by resolved root so a
  * namespaces-disabled / flat-root deployment reports its single shared corpus
  * once, under the default-namespace label.
  */
 export async function resolveCorpusNamespaceRoots(options: {
   config: PluginConfig;
-  catalogNamespaces?: readonly string[];
-  rootDirFor?: (namespace: string) => string | Promise<string>;
 }): Promise<CorpusNamespaceRoot[]> {
   const { config } = options;
   const configDriven = await listNamespaces({ config });
+  let catalogRecords: ReadonlyArray<{ namespace: string; storageDir: string }> = [];
+  try {
+    // Returns [] when the catalog is opted out, leaving config-driven authoritative.
+    catalogRecords = await new NamespaceCatalog(config).listNamespaces();
+  } catch {
+    // Catalog unreadable — config-driven enumeration stands alone.
+  }
+
   // Default namespace first so it wins the representative label when several
   // configured names collapse onto one root (namespaces disabled → memoryDir).
   const ordered = [
@@ -263,14 +318,9 @@ export async function resolveCorpusNamespaceRoots(options: {
     roots.push({ namespace, rootDir });
   };
   for (const entry of ordered) add(entry.namespace, entry.rootDir);
-  for (const namespace of options.catalogNamespaces ?? []) {
-    if (typeof namespace !== "string" || namespace.length === 0 || seenNamespaces.has(namespace)) continue;
-    if (!options.rootDirFor) continue;
-    try {
-      add(namespace, await options.rootDirFor(namespace));
-    } catch {
-      // Storage unresolvable for a catalog-only namespace — skip it, never fail
-      // the whole enumeration.
+  for (const record of catalogRecords) {
+    if (typeof record.namespace === "string" && record.namespace.length > 0 && typeof record.storageDir === "string") {
+      add(record.namespace, record.storageDir);
     }
   }
   if (roots.length === 0) {
@@ -284,21 +334,24 @@ export async function resolveCorpusNamespaceRoots(options: {
  * (peers are compared on a slow cadence); a health/readiness probe does NOT
  * tolerate a full corpus scan (a recursive realpath-per-Markdown-file walk) on
  * every request. This TTL is that trade-off: recompute a namespace's watermark
- * at most once per window and serve the cached census — which carries its own
- * `computedAt` so a consumer can see the staleness — to every probe in between.
+ * at most once per window; probes in between serve the cached census (whose
+ * `computedAt` shows its staleness).
  */
 export const WATERMARK_CACHE_TTL_MS = 60_000;
 
 /**
- * Instance-scoped (AGENTS.md pattern 5 — never a bare module global) TTL +
- * single-flight cache in front of the per-namespace corpus scan. Back-to-back
- * probes reuse the cached watermark; N concurrent probes for one namespace
- * collapse to ONE scan via the in-flight promise map instead of N recursive
- * realpath-per-file walks. Owned by the long-lived access service instance.
+ * Instance-scoped (AGENTS.md pattern 5 — never a bare module global)
+ * stale-while-revalidate cache in front of the per-namespace corpus scan.
+ * {@link get} NEVER awaits the scan: it returns the freshest already-computed
+ * watermark (stale allowed, or undefined for a cold namespace) and triggers a
+ * single-flight background refresh when the entry is missing or expired. So a
+ * `/health` probe is always O(1) — it never blocks on a recursive corpus walk,
+ * even on the first request after startup or after a TTL expiry. Owned by the
+ * long-lived access service instance.
  */
 export class CorpusWatermarkCache {
   private readonly entries = new Map<string, { value: CorpusWatermark; expiresAt: number }>();
-  private readonly inFlight = new Map<string, Promise<CorpusWatermark>>();
+  private readonly inFlight = new Map<string, Promise<void>>();
   private readonly ttlMs: number;
   private readonly clock: () => number;
 
@@ -307,38 +360,42 @@ export class CorpusWatermarkCache {
     this.clock = options.clock ?? Date.now;
   }
 
-  async get(namespace: string, compute: () => Promise<CorpusWatermark>): Promise<CorpusWatermark> {
+  get(namespace: string, compute: () => Promise<CorpusWatermark>): CorpusWatermark | undefined {
     const cached = this.entries.get(namespace);
-    if (cached && this.clock() < cached.expiresAt) return cached.value;
+    const fresh = cached !== undefined && this.clock() < cached.expiresAt;
+    if (!fresh) this.refresh(namespace, compute);
+    return cached?.value;
+  }
 
-    const pending = this.inFlight.get(namespace);
-    if (pending) return pending;
+  private refresh(namespace: string, compute: () => Promise<CorpusWatermark>): void {
+    if (this.inFlight.has(namespace)) return; // single-flight: one background scan per namespace
+    const pending = compute()
+      .then((value) => {
+        this.entries.set(namespace, { value, expiresAt: this.clock() + this.ttlMs });
+      })
+      .catch(() => {
+        // Failed/unreadable scan: never cache it; keep serving any stale value.
+      })
+      .finally(() => {
+        this.inFlight.delete(namespace);
+      });
+    this.inFlight.set(namespace, pending);
+  }
 
-    const promise = (async () => {
-      const value = await compute();
-      this.entries.set(namespace, { value, expiresAt: this.clock() + this.ttlMs });
-      return value;
-    })();
-    this.inFlight.set(namespace, promise);
-    try {
-      return await promise;
-    } finally {
-      // Clear the in-flight marker whether it resolved or rejected; a failed
-      // scan is never cached, so the next probe retries a clean computation.
-      this.inFlight.delete(namespace);
-    }
+  /** Await all in-flight background refreshes (shutdown / deterministic tests). */
+  async whenIdle(): Promise<void> {
+    await Promise.all([...this.inFlight.values()]);
   }
 }
 
 /** Orchestrator surface the service watermark builder reads — satisfied by Orchestrator. */
 export interface CorpusWatermarkHost {
   config: PluginConfig;
-  namespaceCatalog?: { listNamespaces?(): Promise<ReadonlyArray<{ namespace: string }>> };
   getStorage(namespace: string): CorpusStorage | Promise<CorpusStorage>;
 }
 
 export interface ServiceCorpusWatermarkOptions {
-  /** Bounded cache so routine probes do not re-scan the corpus every request. */
+  /** Stale-while-revalidate cache so probes never await the corpus scan. */
   cache?: CorpusWatermarkCache;
   /**
    * Presenting token capabilities. When the token is namespace-restricted the
@@ -351,40 +408,37 @@ export interface ServiceCorpusWatermarkOptions {
 
 /**
  * Build the per-namespace watermark array served on `/health`. Namespaces are
- * resolved through {@link resolveCorpusNamespaceRoots} (config-driven, catalog
- * unioned in), filtered to the caller's capabilities, then each is computed
- * through the (optional) TTL + single-flight cache. Degrades to an empty array
- * — never throws — if enumeration or storage is unavailable.
+ * resolved through {@link resolveCorpusNamespaceRoots} (shared with the doctor),
+ * filtered to the caller's capabilities, then served through the (optional)
+ * stale-while-revalidate cache so a probe never blocks on a scan. Degrades to an
+ * empty array — never throws — if enumeration is unavailable; an individual
+ * namespace whose scan fails is omitted, not allowed to blank the payload.
  */
 export async function computeServiceCorpusWatermarks(
   host: CorpusWatermarkHost,
   options: ServiceCorpusWatermarkOptions = {},
 ): Promise<CorpusWatermark[]> {
+  let roots: CorpusNamespaceRoot[];
   try {
-    const catalogRecords = (await host.namespaceCatalog?.listNamespaces?.()) ?? [];
-    const catalogNamespaces = catalogRecords
-      .map((record) => record?.namespace)
-      .filter((namespace): namespace is string => typeof namespace === "string" && namespace.length > 0);
-    const roots = await resolveCorpusNamespaceRoots({
-      config: host.config,
-      catalogNamespaces,
-      rootDirFor: async (namespace) => (await host.getStorage(namespace)).dir,
-    });
-    const visible = roots.filter((root) => capabilityAllowsNamespace(options.caps, root.namespace));
-    const watermarks: CorpusWatermark[] = [];
-    for (const { namespace } of visible) {
-      try {
-        const compute = async (): Promise<CorpusWatermark> =>
-          computeNamespaceWatermark(namespace, await host.getStorage(namespace), options.now);
-        watermarks.push(options.cache ? await options.cache.get(namespace, compute) : await compute());
-      } catch {
-        // One tenant's storage/scan failed — omit just that namespace, matching
-        // computeCorpusWatermarks' per-namespace degrade. Never blank the whole
-        // payload because a single bad namespace threw.
-      }
-    }
-    return watermarks;
+    roots = await resolveCorpusNamespaceRoots({ config: host.config });
   } catch {
     return [];
   }
+  const visible = roots.filter((root) => capabilityAllowsNamespace(options.caps, root.namespace));
+  const watermarks: CorpusWatermark[] = [];
+  for (const { namespace } of visible) {
+    const compute = async (): Promise<CorpusWatermark> =>
+      computeNamespaceWatermark(namespace, await host.getStorage(namespace), options.now);
+    if (options.cache) {
+      const cached = options.cache.get(namespace, compute);
+      if (cached) watermarks.push(cached);
+    } else {
+      try {
+        watermarks.push(await compute());
+      } catch {
+        // One tenant's storage/scan failed — omit just that namespace.
+      }
+    }
+  }
+  return watermarks;
 }

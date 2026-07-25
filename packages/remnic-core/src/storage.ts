@@ -4661,6 +4661,17 @@ export class StorageManager {
     return this.memoryReadStore.collectColdMemoryPaths();
   }
 
+  /**
+   * Combined hot+cold corpus-mutation sentinel (issue #2156). Changes whenever
+   * EITHER tier is written, so a divergence census can bracket its hot/cold scan
+   * and detect a tier migration (write-cold-then-unlink-hot) racing the walkers,
+   * then retry for a consistent snapshot instead of caching a transient
+   * double-count or miss.
+   */
+  getCorpusScanVersion(): string {
+    return `${this.getMemoryCorpusVersion()}:${this.readColdWriteVersion()}`;
+  }
+
   private async readParsedMemoriesFromPaths(filePaths: string[], batchSize?: number): Promise<MemoryFile[]> {
     if (filePaths.length === 0) return [];
 

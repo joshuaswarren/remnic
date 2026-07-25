@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 /**
@@ -7,11 +7,12 @@ import path from "node:path";
  *
  * The digest is a per-partition, TIER-AWARE census fingerprint, so two daemons
  * that agree on per-day HOT and COLD file counts share a digest and a differing
- * digest is a cheap divergence signal. These tests pin that property plus the
- * census determinism (AGENTS.md pattern 26), the "newest write is scoped to the
- * newest HOT partition" contract, and the four #2156 findings: the cold-tier
- * census (D), the shared namespace resolver (C), the caller-capability filter
- * (B), and the TTL + single-flight cache (A).
+ * digest is a cheap divergence signal. These tests pin that property, the census
+ * determinism (AGENTS.md pattern 26), the "newest write is scoped to the newest
+ * HOT partition" contract, and the #2156 findings across review rounds: the
+ * cold-tier census (D), the shared config-driven namespace resolver (C), the
+ * caller-capability filter (B), the stale-while-revalidate cache (A), the
+ * per-namespace degrade, the migration-race retry, and fail-distinct scans.
  */
 import test from "node:test";
 import { parseConfig } from "./config.js";
@@ -22,8 +23,10 @@ import {
   UNPARTITIONED_BUCKET,
   buildPartitionCensus,
   computeCorpusWatermark,
+  computeCorpusWatermarks,
   computeServiceCorpusWatermarks,
   digestPartitionCensus,
+  resolveCorpusNamespaceRoots,
 } from "./corpus-watermark.js";
 import { StorageManager } from "./storage.js";
 import type { PluginConfig } from "./types.js";
@@ -60,6 +63,17 @@ function fakeStorage(dir: string, hotPaths: string[], coldPaths: string[] = []):
     dir,
     collectActiveMemoryPaths: async () => hotPaths,
     collectColdMemoryPaths: async () => coldPaths,
+  };
+}
+
+function sampleWatermark(namespace = "global"): CorpusWatermark {
+  return {
+    namespace,
+    memoryFileCount: 0,
+    newestPartition: null,
+    newestWriteAt: null,
+    digest: "d",
+    computedAt: "t",
   };
 }
 
@@ -214,6 +228,25 @@ test("computeCorpusWatermark: newestWriteAt reflects the newest mtime IN the new
   }
 });
 
+test("computeCorpusWatermark: computedAt is stamped and reflects the invocation, not passed as a stale literal", async () => {
+  // Finding round-4: computedAt is captured AFTER the (possibly slow) stat loop.
+  const before = Date.now();
+  const memoryDir = await makeMemoryDir();
+  try {
+    await writeMemory(memoryDir, "facts/2026-03-08/a.md");
+    const { paths, baseDir } = await scanHot(memoryDir);
+    const watermark = await computeCorpusWatermark({ namespace: "global", paths, baseDir });
+    const stampedMs = Date.parse(watermark.computedAt);
+    assert.ok(Number.isFinite(stampedMs), "computedAt is a valid ISO timestamp");
+    assert.ok(stampedMs >= before, "computedAt is not stamped before the scan began");
+    // An explicit `now` still wins (deterministic callers).
+    const fixed = await computeCorpusWatermark({ namespace: "global", paths, baseDir, now: new Date("2026-01-01T00:00:00.000Z") });
+    assert.equal(fixed.computedAt, "2026-01-01T00:00:00.000Z");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("two corpora with identical layouts share a digest; adding one file diverges it (the detection property)", async () => {
   const dirA = await makeMemoryDir("remnic-corpus-wm-a-");
   const dirB = await makeMemoryDir("remnic-corpus-wm-b-");
@@ -255,7 +288,7 @@ test("finding D: moving a memory from hot to cold changes the digest while the c
     const coldWatermark = await computeCorpusWatermark({ namespace: "global", ...coldScan });
 
     assert.equal(hotWatermark.memoryFileCount, 1);
-    assert.equal(coldWatermark.memoryFileCount, 1, "cold memories still count as active");
+    assert.equal(coldWatermark.memoryFileCount, 1, "cold memories still count");
     assert.notEqual(
       hotWatermark.digest,
       coldWatermark.digest,
@@ -328,7 +361,23 @@ test("StorageManager.collectColdMemoryPaths finds cold files and leaves the hot 
   }
 });
 
-// ── service (/health) watermark builder + finding C (shared resolver) ─────────
+// ── finding C / round-4: one shared, config-driven namespace resolver ─────────
+
+test("resolveCorpusNamespaceRoots: config-driven enumeration is deterministic and covers on-disk tenants", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    await writeMemory(memoryDir, "namespaces/team-a/facts/2026-03-08/x.md");
+    const config = serviceConfig(memoryDir, { namespacesEnabled: true, defaultNamespace: "global" });
+    // Both /health and the doctor call this ONE helper with just `{ config }`, so
+    // identical output here is what guarantees the two surfaces cannot drift.
+    const a = (await resolveCorpusNamespaceRoots({ config })).map((r) => r.namespace).sort();
+    const b = (await resolveCorpusNamespaceRoots({ config })).map((r) => r.namespace).sort();
+    assert.deepEqual(a, b, "the shared resolver is deterministic for a given config");
+    assert.ok(a.includes("global") && a.includes("team-a"), "config-driven enumeration finds on-disk tenants");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("computeServiceCorpusWatermarks: namespaces disabled -> single default-namespace watermark", async () => {
   const memoryDir = await makeMemoryDir();
@@ -351,21 +400,17 @@ test("computeServiceCorpusWatermarks: namespaces disabled -> single default-name
 test("finding C: with the catalog opted out, config-driven enumeration still covers every tenant", async () => {
   const memoryDir = await makeMemoryDir();
   try {
-    // A tenant present on disk but NOT surfaced by the (opted-out) live catalog.
+    // A tenant present on disk; there is NO persisted catalog (opted out). The
+    // pre-fix health path returned ONLY the default namespace here.
     await writeMemory(memoryDir, "namespaces/team-a/facts/2026-03-08/x.md");
     const config = serviceConfig(memoryDir, { namespacesEnabled: true, defaultNamespace: "global" });
     const host = {
       config,
-      // Empty catalog === opted out: the pre-fix health path returned ONLY the default here.
-      namespaceCatalog: { listNamespaces: async () => [] },
       getStorage: (namespace: string) => fakeStorage(`/mem/${namespace}`, [`/mem/${namespace}/facts/2026-03-08/x.md`]),
     };
     const names = (await computeServiceCorpusWatermarks(host)).map((w) => w.namespace);
     assert.ok(names.includes("global"), "default namespace present");
-    assert.ok(
-      names.includes("team-a"),
-      "config-driven enumeration finds the on-disk tenant even though the catalog is empty",
-    );
+    assert.ok(names.includes("team-a"), "config-driven enumeration finds the on-disk tenant despite an empty catalog");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -412,79 +457,7 @@ test("finding B: an unrestricted/operator token keeps the full fleet view", asyn
   }
 });
 
-// ── finding A: bounded TTL + single-flight cache ─────────────────────────────
-
-test("finding A: the cache computes once for back-to-back calls and recomputes after the TTL expires", async () => {
-  let now = 1_000;
-  const cache = new CorpusWatermarkCache({ ttlMs: 60_000, clock: () => now });
-  let computeCalls = 0;
-  const compute = async (): Promise<CorpusWatermark> => {
-    computeCalls += 1;
-    return {
-      namespace: "global",
-      memoryFileCount: 0,
-      newestPartition: null,
-      newestWriteAt: null,
-      digest: "d",
-      computedAt: new Date(now).toISOString(),
-    };
-  };
-  await cache.get("global", compute);
-  await cache.get("global", compute);
-  assert.equal(computeCalls, 1, "the second back-to-back probe is served from cache");
-  now += 60_001;
-  await cache.get("global", compute);
-  assert.equal(computeCalls, 2, "the cache recomputes once the TTL has elapsed");
-});
-
-test("finding A: concurrent probes for one namespace collapse to a single computation", async () => {
-  const cache = new CorpusWatermarkCache();
-  let computeCalls = 0;
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const compute = async (): Promise<CorpusWatermark> => {
-    computeCalls += 1;
-    await gate;
-    return {
-      namespace: "global",
-      memoryFileCount: 0,
-      newestPartition: null,
-      newestWriteAt: null,
-      digest: "d",
-      computedAt: "t",
-    };
-  };
-  const first = cache.get("global", compute);
-  const second = cache.get("global", compute);
-  release();
-  await Promise.all([first, second]);
-  assert.equal(computeCalls, 1, "N in-flight probes trigger ONE computation, not N corpus scans");
-});
-
-test("finding A: with a cache, two /health probes trigger ONE corpus scan", async () => {
-  const memoryDir = await makeMemoryDir();
-  try {
-    const config = serviceConfig(memoryDir, { namespacesEnabled: false, defaultNamespace: "global" });
-    let scans = 0;
-    const storage: CorpusStorage = {
-      dir: "/mem",
-      collectActiveMemoryPaths: async () => {
-        scans += 1;
-        return ["/mem/facts/2026-03-08/a.md"];
-      },
-      collectColdMemoryPaths: async () => [],
-    };
-    const host = { config, getStorage: (_namespace: string) => storage };
-    const cache = new CorpusWatermarkCache();
-    await computeServiceCorpusWatermarks(host, { cache });
-    await computeServiceCorpusWatermarks(host, { cache });
-    assert.equal(scans, 1, "the path-collector runs once across two cached probes");
-  } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-  }
-});
+// ── per-namespace degrade + fail-distinct scans ──────────────────────────────
 
 test("computeServiceCorpusWatermarks: one failing namespace is omitted, not the whole payload (per-namespace degrade)", async () => {
   const memoryDir = await makeMemoryDir();
@@ -502,6 +475,178 @@ test("computeServiceCorpusWatermarks: one failing namespace is omitted, not the 
     assert.ok(names.includes("global"), "a healthy namespace is still reported");
     assert.ok(!names.includes("team-a"), "the failing namespace is omitted");
     assert.ok(names.length >= 1, "a single bad namespace must not blank the whole corpus payload");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("finding round-4: an unreadable corpus root is omitted, not published as a false-empty census", async () => {
+  const root = await makeMemoryDir();
+  try {
+    // A regular, NON-executable file used as a corpus dir: access(R_OK|X_OK)
+    // fails EACCES (execute bit unset — enforced even for the superuser), the
+    // same signature as an EACCES permission regression on a real directory.
+    const unreadable = path.join(root, "unreadable-corpus");
+    await writeFile(unreadable, "not a directory", "utf-8");
+    await chmod(unreadable, 0o644);
+
+    // ENOENT (a namespace whose dir was never created) is a GENUINE empty corpus.
+    const missing = path.join(root, "never-created");
+
+    const watermarks = await computeCorpusWatermarks(
+      ["broken", "empty"],
+      (namespace) =>
+        namespace === "broken"
+          ? fakeStorage(unreadable, [path.join(unreadable, "facts/2026-03-08/a.md")])
+          : fakeStorage(missing, []),
+    );
+    const names = watermarks.map((w) => w.namespace);
+    assert.ok(!names.includes("broken"), "an unreadable corpus root is omitted, not counted as zero");
+    assert.ok(names.includes("empty"), "a not-yet-created (ENOENT) namespace is a legitimate empty corpus");
+    assert.equal(watermarks.find((w) => w.namespace === "empty")?.memoryFileCount, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ── migration-race retry ─────────────────────────────────────────────────────
+
+test("computeNamespaceWatermark: retries when a corpus-mutation sentinel changes mid-scan (tier-migration race)", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    let scanVersion = 0;
+    let racesLeft = 1; // a single racing write during the first attempt, then stable
+    let collectCalls = 0;
+    const storage: CorpusStorage = {
+      dir: memoryDir, // a real, readable dir so the access() pre-check passes
+      getCorpusScanVersion: async () => String(scanVersion),
+      collectActiveMemoryPaths: async () => {
+        collectCalls += 1;
+        if (racesLeft > 0) {
+          racesLeft -= 1;
+          scanVersion += 1; // a tier write lands between the before/after sentinel reads
+        }
+        return [path.join(memoryDir, "facts/2026-03-08/a.md")];
+      },
+      collectColdMemoryPaths: async () => [],
+    };
+    const [watermark] = await computeCorpusWatermarks(["global"], () => storage);
+    assert.equal(collectCalls, 2, "a sentinel change mid-scan triggers exactly one retry");
+    assert.equal(watermark?.memoryFileCount, 1, "the retried snapshot is returned");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("computeNamespaceWatermark: a stable sentinel scans once (no needless retry)", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    let collectCalls = 0;
+    const storage: CorpusStorage = {
+      dir: memoryDir,
+      getCorpusScanVersion: async () => "stable",
+      collectActiveMemoryPaths: async () => {
+        collectCalls += 1;
+        return [];
+      },
+      collectColdMemoryPaths: async () => [],
+    };
+    await computeCorpusWatermarks(["global"], () => storage);
+    assert.equal(collectCalls, 1, "a consistent snapshot is not re-scanned");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── finding A: stale-while-revalidate TTL + single-flight cache ───────────────
+
+test("finding A: the cache computes once for back-to-back calls and recomputes after the TTL expires", async () => {
+  let now = 1_000;
+  const cache = new CorpusWatermarkCache({ ttlMs: 60_000, clock: () => now });
+  let computeCalls = 0;
+  const compute = async (): Promise<CorpusWatermark> => {
+    computeCalls += 1;
+    return sampleWatermark();
+  };
+  assert.equal(cache.get("global", compute), undefined, "cold start returns nothing and refreshes in the background");
+  await cache.whenIdle();
+  const warm = cache.get("global", compute);
+  assert.ok(warm, "the value is served once the background refresh settles");
+  assert.equal(computeCalls, 1, "a fresh entry is not recomputed");
+  now += 60_001;
+  cache.get("global", compute); // stale -> triggers a background refresh
+  await cache.whenIdle();
+  assert.equal(computeCalls, 2, "the cache recomputes once the TTL has elapsed");
+});
+
+test("finding A: a probe serves the stale value immediately while revalidating (never blocks on the scan)", async () => {
+  let now = 1_000;
+  const cache = new CorpusWatermarkCache({ ttlMs: 60_000, clock: () => now });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let computeCalls = 0;
+  const first = sampleWatermark();
+  const compute = async (): Promise<CorpusWatermark> => {
+    computeCalls += 1;
+    if (computeCalls === 1) return first; // warm the cache promptly
+    await gate; // the second (revalidation) scan is slow
+    return { ...sampleWatermark(), digest: "d2" };
+  };
+  cache.get("global", compute);
+  await cache.whenIdle(); // entry is now warm with `first`
+  now += 60_001; // expire
+
+  const served = cache.get("global", compute); // stale served immediately; revalidation in flight
+  assert.equal(served?.digest, "d", "the probe gets the stale value without awaiting the slow rescan");
+  assert.equal(computeCalls, 2, "a background revalidation was triggered");
+  release();
+  await cache.whenIdle();
+  assert.equal(cache.get("global", compute)?.digest, "d2", "the refreshed value is served after revalidation");
+});
+
+test("finding A: concurrent probes for one namespace collapse to a single computation", async () => {
+  const cache = new CorpusWatermarkCache();
+  let computeCalls = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const compute = async (): Promise<CorpusWatermark> => {
+    computeCalls += 1;
+    await gate;
+    return sampleWatermark();
+  };
+  cache.get("global", compute);
+  cache.get("global", compute);
+  release();
+  await cache.whenIdle();
+  assert.equal(computeCalls, 1, "N in-flight probes trigger ONE background scan, not N");
+});
+
+test("finding A: with a cache, /health probes never re-run the corpus scan within the TTL", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    const config = serviceConfig(memoryDir, { namespacesEnabled: false, defaultNamespace: "global" });
+    let scans = 0;
+    const storage: CorpusStorage = {
+      dir: memoryDir,
+      collectActiveMemoryPaths: async () => {
+        scans += 1;
+        return [path.join(memoryDir, "facts/2026-03-08/a.md")];
+      },
+      collectColdMemoryPaths: async () => [],
+    };
+    const host = { config, getStorage: (_namespace: string) => storage };
+    const cache = new CorpusWatermarkCache();
+
+    const cold = await computeServiceCorpusWatermarks(host, { cache });
+    assert.deepEqual(cold, [], "the first probe never blocks on the scan (serves nothing, refreshes async)");
+    await cache.whenIdle();
+    const warm = await computeServiceCorpusWatermarks(host, { cache });
+    assert.equal(warm.length, 1, "the warmed probe serves the cached watermark");
+    assert.equal(scans, 1, "the path-collector runs once across the two probes");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
