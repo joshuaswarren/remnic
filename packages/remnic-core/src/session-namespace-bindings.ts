@@ -8,6 +8,7 @@ export interface SessionNamespaceBindingStore {
 }
 
 export const SESSION_NAMESPACE_BINDING_MAX_ENTRIES = 1_000;
+export const SESSION_NAMESPACE_BINDING_MAX_NAMESPACES = 64;
 export const SESSION_NAMESPACE_BINDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 interface NamespaceBindingEntry {
@@ -26,6 +27,12 @@ function emptyBindingFile(): NamespaceBindingFile {
   return { version: 1, entries: Object.create(null) as Record<string, NamespaceBindingEntry> };
 }
 
+function capNamespaceHistory(namespaces: string[]): string[] {
+  return namespaces.length > SESSION_NAMESPACE_BINDING_MAX_NAMESPACES
+    ? namespaces.slice(-SESSION_NAMESPACE_BINDING_MAX_NAMESPACES)
+    : namespaces;
+}
+
 function normalizeNamespaces(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const namespaces: string[] = [];
@@ -36,12 +43,15 @@ function normalizeNamespaces(value: unknown): string[] {
     if (existing >= 0) namespaces.splice(existing, 1);
     namespaces.push(namespace);
   }
-  return namespaces;
+  return capNamespaceHistory(namespaces);
 }
 
 function addNamespace(namespaces: string[], namespace: string): string[] {
   const normalized = namespace.trim();
-  return [...namespaces.filter((candidate) => candidate !== normalized), normalized];
+  return capNamespaceHistory([
+    ...namespaces.filter((candidate) => candidate !== normalized),
+    normalized,
+  ]);
 }
 
 function pruneBindingEntries(
@@ -98,21 +108,31 @@ async function writeBindingFile(filePath: string, bindings: NamespaceBindingFile
   await rename(temporaryPath, filePath);
 }
 
-async function queueFileWrite(filePath: string, operation: () => Promise<void>): Promise<void> {
+async function queueFileWrite<TResult>(
+  filePath: string,
+  operation: () => Promise<TResult>,
+): Promise<TResult> {
   const prior = fileWriteChains.get(filePath) ?? Promise.resolve();
   const run = prior.catch(() => undefined).then(operation);
   fileWriteChains.set(
     filePath,
-    run.catch(() => undefined)
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
   );
-  await run;
+  return run;
 }
 
 export function createInMemorySessionNamespaceBindingStore(): SessionNamespaceBindingStore {
   const entries = new Map<string, string[]>();
   return {
     async namespacesFor(sessionKey: string): Promise<string[]> {
-      return [...(entries.get(sessionKey) ?? [])];
+      const namespaces = entries.get(sessionKey);
+      if (namespaces === undefined) return [];
+      entries.delete(sessionKey);
+      entries.set(sessionKey, namespaces);
+      return [...namespaces];
     },
     async remember(sessionKey: string, namespace: string): Promise<void> {
       const existing = entries.get(sessionKey) ?? [];
@@ -130,9 +150,16 @@ export function createInMemorySessionNamespaceBindingStore(): SessionNamespaceBi
 export function createFileSessionNamespaceBindingStore(filePath: string): SessionNamespaceBindingStore {
   return {
     async namespacesFor(sessionKey: string): Promise<string[]> {
-      await (fileWriteChains.get(filePath) ?? Promise.resolve()).catch(() => undefined);
-      const bindings = await readBindingFile(filePath);
-      return [...(bindings.entries[encodeSessionKey(sessionKey)]?.namespaces ?? [])];
+      const key = encodeSessionKey(sessionKey);
+      return queueFileWrite(filePath, async () => {
+        const bindings = await readBindingFile(filePath);
+        const entry = bindings.entries[key];
+        if (entry === undefined) return [];
+        entry.updatedAt = new Date().toISOString();
+        bindings.entries = pruneBindingEntries(bindings.entries, key);
+        await writeBindingFile(filePath, bindings);
+        return [...(bindings.entries[key]?.namespaces ?? [])];
+      });
     },
     async remember(sessionKey: string, namespace: string): Promise<void> {
       const key = encodeSessionKey(sessionKey);

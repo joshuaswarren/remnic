@@ -343,6 +343,13 @@ async function lifecycleSessionNamespacesFrom(
     await rememberNamespace(sessionKey, explicit.namespace ?? "", namespaceBindings);
   }
   const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
+  if (explicit !== undefined) {
+    const explicitNamespace = explicit.namespace ?? "";
+    const namespaces = remembered.includes(explicitNamespace)
+      ? remembered
+      : [...remembered, explicitNamespace];
+    return namespaces.map((namespace) => namespace || undefined);
+  }
   if (remembered.length > 0) return remembered.map((namespace) => namespace || undefined);
   return [fallback.trim() || undefined];
 }

@@ -367,6 +367,35 @@ test("delegate flush uses the ended session namespace after a session rebinding"
   }
 });
 
+test("delegate flush retains an explicit namespace when binding persistence fails", async () => {
+  const stub = await startDaemonStub(() => ({ flushed: true }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        namespaceBindings: {
+          namespacesFor: async () => [],
+          remember: async () => {
+            throw new Error("binding storage unavailable");
+          },
+        },
+      }),
+    );
+
+    await invoke(api, "session_end", {
+      sessionKey: "persist-failure-session",
+      runtime: { agent: { session: { namespace: "team-explicit" } } },
+    });
+
+    const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush);
+    assert.equal(flush.body.namespace, "team-explicit");
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate records a matching default scope as a session rebind", async () => {
   const stub = await startDaemonStub((pathname) =>
     pathname === "/engram/v1/recall" ? { context: "default daemon context" } : { accepted: true },
