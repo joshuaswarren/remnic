@@ -504,9 +504,9 @@ test("writeProfile retains a BOM when removing a duplicate pre-title header", as
       assert.equal(
         await storage.readProfile(),
         [
-          "# Behavioral Profile",
+          "\uFEFF# Behavioral Profile",
           "",
-          `\uFEFF${FRESH_HEADER}`,
+          FRESH_HEADER,
           "",
           "- Keeps the file marker.",
           "",

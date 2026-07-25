@@ -516,16 +516,21 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
       titleIndex >= 0
         ? headerIndexes.find((index) => index > titleIndex) ?? firstHeaderIndex
         : firstHeaderIndex;
-    const bomPrefix = headerIndexes.some((index) =>
+    const preserveBomAtFileStart = headerIndexes.some((index) =>
       lines[index].content.startsWith(UTF8_BOM),
-    )
-      ? UTF8_BOM
-      : "";
+    );
+    const bomPrefix =
+      canonicalIndex === 0 && lines[canonicalIndex].content.startsWith(UTF8_BOM)
+        ? UTF8_BOM
+        : "";
     lines[canonicalIndex].content = `${bomPrefix}${header}`;
     for (let index = headerIndexes.length - 1; index >= 0; index -= 1) {
       const headerIndex = headerIndexes[index];
       if (headerIndex === undefined || headerIndex === canonicalIndex) continue;
       lines.splice(headerIndex, 1);
+    }
+    if (preserveBomAtFileStart && !lines[0].content.startsWith(UTF8_BOM)) {
+      lines[0].content = `${UTF8_BOM}${lines[0].content}`;
     }
     return renderProfileLines(lines);
   }
