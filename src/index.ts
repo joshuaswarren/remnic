@@ -4071,6 +4071,8 @@ const pluginDefinition = {
             return;
           }
           const processedExplicitNotes = inlineCapture.processed;
+          const inlineCaptureWasHandled =
+            inlineCapture.processed > 0 || inlineCapture.content === cleaned;
           if (!orchestrator.config.transcriptEnabled || transcriptContent.length === 0) {
             rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             if (processedExplicitNotes > 0) {
@@ -4096,7 +4098,9 @@ const pluginDefinition = {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
               rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
-            rememberObservedInboundContentFingerprint(inlineCaptureContentFingerprint);
+            if (inlineCaptureWasHandled) {
+              rememberObservedInboundContentFingerprint(inlineCaptureContentFingerprint);
+            }
             rememberObservedInboundContentFingerprint(inboundContentFingerprint);
             if (inboundMessageKeys.length === 0) {
               rememberPendingSparseInboundContentFingerprint(sparseInboundContentFingerprint);

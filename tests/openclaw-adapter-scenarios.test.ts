@@ -798,6 +798,51 @@ test("scenario: inline markup changes do not duplicate the stripped transcript",
   );
 });
 
+test("scenario: failed inline capture retries after transcript delivery succeeds", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const storage = await orchestrator.getStorage();
+      const writeSealedMemory = storage.writeSealedMemory.bind(storage);
+      let writeAttempts = 0;
+      storage.writeSealedMemory = async (...args: Parameters<typeof writeSealedMemory>) => {
+        writeAttempts += 1;
+        if (writeAttempts <= 2) throw new Error("simulated inline capture write failure");
+        return writeSealedMemory(...args);
+      };
+      const content = [
+        "Remember this retryable visible transcript turn.",
+        "<memory_note>",
+        "content: This inline capture must retry after its first write failure.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+      const event = {
+        content,
+        runId: "inline-retry-run",
+        timestamp: 1_780_000_200_000,
+      };
+
+      await messageReceived(event, { sessionKey: "inline-retry-session" });
+      await messageReceived(event, { sessionKey: "inline-retry-session" });
+
+      assert.equal(writeAttempts, 3);
+      assert.match(readAllText(memoryDir), /inline capture must retry after its first write failure/);
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: inline capture dedupe matches sparse thread and run metadata", async () => {
   await withScenarioRegistration(
     async ({ capture, orchestrator }) => {

@@ -668,9 +668,9 @@ function canonicalInlineCaptureDedupeInput(
         .map((tag) => asTrimmed(tag))
         .filter((tag): tag is string => tag !== undefined),
     ),
-  ).sort((left, right) => left.localeCompare(right));
+  ).sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
   return {
-    content: asTrimmed(input.content) ?? "",
+    content: normalizeCaptureContent(input.content),
     category: asTrimmed(input.category) ?? "fact",
     confidence: input.confidence ?? 0.95,
     namespace,
@@ -721,13 +721,16 @@ export class InlineExplicitCaptureProcessor {
       effectiveNamespace ?? this.orchestrator.config.defaultNamespace,
     );
     const noteHash = createHash("sha256").update(JSON.stringify(canonicalInput)).digest("hex");
-    return (dedupeKeys ?? [])
+    const deliveryKeys = (dedupeKeys ?? [])
       .map((key) => asTrimmed(key))
-      .filter((key): key is string => key !== undefined)
-      .map(
-        (key) =>
-          `${canonicalInput.namespace}\u0000${canonicalInput.sourceConnector}\u0000${key}:inline-memory-note:${noteHash}`,
-      );
+      .filter((key): key is string => key !== undefined);
+    const identityPrefix = `${canonicalInput.namespace}\u0000${canonicalInput.sourceConnector}\u0000`;
+    if (deliveryKeys.length === 0) {
+      return [`${identityPrefix}fallback:inline-memory-note:${noteHash}`];
+    }
+    return deliveryKeys.map(
+      (key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`,
+    );
   }
 
   private remember(keys: readonly string[]): void {

@@ -416,11 +416,31 @@ test("inline capture processor canonicalizes reordered note fields for replay de
       "<memory_note>",
       "tags: capture, release",
       "category: fact",
-      "content: Reordered note fields must share one replay identity.",
+      "content: reordered   note fields must share ONE replay identity.",
       "</memory_note>",
     ].join("\n"),
     dedupeKeys: ["reordered-delivery"],
   });
+
+  assert.equal(first.queued, 1);
+  assert.equal(replay.processed, 0);
+  assert.equal(probe.envelopes.length, 1);
+});
+
+test("inline capture processor derives a replay key without delivery metadata", async () => {
+  const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
+  const request = {
+    captureMode: "hybrid" as const,
+    content: [
+      "<memory_note>",
+      "content: An id-less replay must not create a second review capture.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+  };
+
+  const first = await probe.processor.process(request);
+  const replay = await probe.processor.process(request);
 
   assert.equal(first.queued, 1);
   assert.equal(replay.processed, 0);
