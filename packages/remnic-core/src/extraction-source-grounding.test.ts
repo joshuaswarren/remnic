@@ -306,6 +306,12 @@ test("grounding filters unsupported durable fact fields and nested entity facts"
               order: 2,
               intent: "invent a secret deployment step",
             },
+            {
+              order: 3,
+              intent: "then deploy service",
+              expectedOutcome: "secret outcome",
+              toolCall: { kind: "shell", signature: "invent-secret-command" },
+            },
           ],
         },
         {
@@ -357,6 +363,10 @@ test("grounding filters unsupported durable fact fields and nested entity facts"
       expectedOutcome: "tests pass",
       toolCall: { kind: "shell", signature: "run-tests" },
     },
+    {
+      order: 3,
+      intent: "then deploy service",
+    },
   ]);
   assert.deepEqual(result.facts[2]?.reasoningTrace, {
     steps: [
@@ -406,6 +416,61 @@ test("grounding drops entities with no grounded facts", () => {
   );
 
   assert.deepEqual(result.entities, []);
+});
+
+test("grounding rejects an unsupported appended clause", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "Alice works at Acme and secretly owns Mars.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice works at Acme.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding matches normalized entity identifiers", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [
+        {
+          name: "acme-corp",
+          type: "company",
+          facts: ["Acme Corp uses PostgreSQL."],
+        },
+      ],
+      relationships: [
+        {
+          source: "company-acme-corp",
+          target: "tool-postgresql",
+          label: "uses",
+        },
+      ],
+      questions: [],
+    },
+    "Acme Corp uses PostgreSQL.",
+  );
+
+  assert.deepEqual(result.entities.map((entity) => entity.name), ["acme-corp"]);
+  assert.deepEqual(result.relationships, [
+    {
+      source: "company-acme-corp",
+      target: "tool-postgresql",
+      label: "uses",
+    },
+  ]);
 });
 
 test("proactive extraction grounds before delinearization", async () => {

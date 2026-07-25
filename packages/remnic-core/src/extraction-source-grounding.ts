@@ -129,6 +129,15 @@ const GROUNDING_AUXILIARY_TOKENS = new Set([
   "should",
 ]);
 
+const GROUNDING_ENTITY_TYPE_PREFIXES = new Set([
+  "person",
+  "project",
+  "tool",
+  "company",
+  "place",
+  "other",
+]);
+
 function tokenSequence(text: string): string[] {
   return text.normalize("NFKC").toLocaleLowerCase().match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu)
     ?.map((token) => token.replaceAll("’", "'"))
@@ -230,23 +239,26 @@ function groundedTokenScore(candidate: string, source: string): number {
     : 0;
 }
 
-function isSourceGrounded(candidate: string, source: string): boolean {
-  const candidateText = normalizeForExactMatch(candidate);
-  const sourceText = normalizeForExactMatch(source);
-  if (candidateText.length === 0 || sourceText.length === 0) return false;
+function candidateClauses(candidate: string): string[] {
+  return candidate
+    .split(/\s+(?:and|but|or|while|although|because)\s+/gu)
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.length > 0);
+}
 
+function isSourceGroundedClause(candidate: string, source: string): boolean {
   let bestSupportedScore = 0;
   let bestContradictedScore = 0;
-  for (const sentence of sourceSentences(sourceText)) {
+  for (const sentence of sourceSentences(source)) {
     const sentenceText = normalizeForExactMatch(sentence);
-    if (sentenceText.includes(candidateText)) {
-      if (!hasContradictoryPolarity(candidateText, sentenceText)) return true;
+    if (sentenceText.includes(candidate)) {
+      if (!hasContradictoryPolarity(candidate, sentenceText)) return true;
       bestContradictedScore = Math.max(bestContradictedScore, 1);
       continue;
     }
-    const score = groundedTokenScore(candidateText, sentenceText);
+    const score = groundedTokenScore(candidate, sentenceText);
     if (score === 0) continue;
-    if (hasContradictoryPolarity(candidateText, sentenceText)) {
+    if (hasContradictoryPolarity(candidate, sentenceText)) {
       bestContradictedScore = Math.max(bestContradictedScore, score);
     } else {
       bestSupportedScore = Math.max(bestSupportedScore, score);
@@ -255,10 +267,44 @@ function isSourceGrounded(candidate: string, source: string): boolean {
   return bestSupportedScore > bestContradictedScore;
 }
 
+function isSourceGrounded(candidate: string, source: string): boolean {
+  const candidateText = normalizeForExactMatch(candidate);
+  const sourceText = normalizeForExactMatch(source);
+  if (candidateText.length === 0 || sourceText.length === 0) return false;
+
+  const hasSupportedExactMatch = sourceSentences(sourceText).some((sentence) => {
+    const sentenceText = normalizeForExactMatch(sentence);
+    return sentenceText.includes(candidateText)
+      && !hasContradictoryPolarity(candidateText, sentenceText);
+  });
+  if (hasSupportedExactMatch) return true;
+
+  const clauses = candidateClauses(candidateText);
+  if (clauses.length > 1 && clauses.some((clause) => !isSourceGroundedClause(clause, sourceText))) {
+    return false;
+  }
+  return isSourceGroundedClause(candidateText, sourceText);
+}
+
+function normalizedEntityIdentifierTokens(name: string): string[] {
+  const identifier = normalizeForExactMatch(name).replace(/[-_]+/gu, " ");
+  const tokens = tokenSequence(identifier)
+    .filter((token) => GROUNDING_STOPWORDS[token] !== true)
+    .map(stemToken);
+  return tokens.length > 1 && GROUNDING_ENTITY_TYPE_PREFIXES.has(tokens[0] ?? "")
+    ? tokens.slice(1)
+    : tokens;
+}
+
 function isGroundedEntityName(name: string, source: string): boolean {
   const normalizedName = normalizeForExactMatch(name);
   const normalizedSource = normalizeForExactMatch(source);
-  return normalizedName.length > 0 && normalizedSource.includes(normalizedName);
+  if (normalizedName.length === 0 || normalizedSource.length === 0) return false;
+  if (normalizedSource.includes(normalizedName)) return true;
+
+  const nameTokens = normalizedEntityIdentifierTokens(name);
+  const sourceTokens = tokenize(source);
+  return nameTokens.length > 0 && nameTokens.every((token) => sourceTokens.has(token));
 }
 
 function filterGroundedFact(
@@ -279,14 +325,16 @@ function filterGroundedFact(
       const expectedOutcome = step.expectedOutcome && isSourceGrounded(step.expectedOutcome, source)
         ? step.expectedOutcome
         : undefined;
-      const toolCall = step.toolCall && isSourceGrounded(
-        `${step.toolCall.kind} ${step.toolCall.signature}`,
-        source,
-      )
+      const toolCall = step.toolCall && isSourceGrounded(step.toolCall.signature, source)
         ? step.toolCall
         : undefined;
+      const {
+        expectedOutcome: _expectedOutcome,
+        toolCall: _toolCall,
+        ...stepWithoutOptionalFields
+      } = step;
       return [{
-        ...step,
+        ...stepWithoutOptionalFields,
         ...(expectedOutcome !== undefined ? { expectedOutcome } : {}),
         ...(toolCall !== undefined ? { toolCall } : {}),
       }];
