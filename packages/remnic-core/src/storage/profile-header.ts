@@ -1,20 +1,33 @@
-const LAST_UPDATED_PREFIX = "*Last updated: ";
+const LAST_UPDATED_PREFIX = "*Last updated:";
 const PROFILE_TITLE = /^#\s+/;
 
-function isCanonicalLastUpdatedHeader(line: string): boolean {
-  if (!line.startsWith(LAST_UPDATED_PREFIX) || !line.endsWith("*")) return false;
-  const timestamp = line.slice(LAST_UPDATED_PREFIX.length, -1);
-  if (!timestamp) return false;
-  const time = Date.parse(timestamp);
-  return Number.isFinite(time) && new Date(time).toISOString() === timestamp;
+function isLastUpdatedHeader(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.startsWith(LAST_UPDATED_PREFIX) && trimmed.endsWith("*");
+}
+
+
+function findProfileTitleIndex(lines: string[]): number {
+  let inFence = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || trimmed === "") continue;
+    return PROFILE_TITLE.test(line) ? index : -1;
+  }
+  return -1;
 }
 
 function findProfileMetadataHeaderIndexes(lines: string[], start: number): number[] {
   const indexes: number[] = [];
   for (let index = start; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
-    if (line === "") continue;
-    if (!isCanonicalLastUpdatedHeader(line)) break;
+    if (line.trim() === "") continue;
+    if (!isLastUpdatedHeader(line)) break;
     indexes.push(index);
   }
   return indexes;
@@ -24,7 +37,7 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
   const lineEnding = content.includes("\r\n") ? "\r\n" : "\n";
   const lines = content.split(/\r?\n/);
   const header = `*Last updated: ${updatedAt}*`;
-  const titleIndex = lines.findIndex((line) => PROFILE_TITLE.test(line));
+  const titleIndex = findProfileTitleIndex(lines);
   const metadataStart = titleIndex < 0 ? 0 : titleIndex + 1;
   const headerIndexes = findProfileMetadataHeaderIndexes(lines, metadataStart);
 
@@ -39,7 +52,7 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
   if (titleIndex < 0) return [header, "", ...lines].join(lineEnding);
 
   const insertAt = titleIndex + 1;
-  if (lines[insertAt] === "") {
+  if (lines[insertAt]?.trim() === "") {
     lines.splice(insertAt + 1, 0, header, "");
   } else {
     lines.splice(insertAt, 0, "", header, "");

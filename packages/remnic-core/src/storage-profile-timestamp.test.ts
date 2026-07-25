@@ -63,6 +63,24 @@ test("writeProfile adds one canonical header when content has none", async (t) =
   }
 });
 
+test("writeProfile preserves CRLF line endings", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+
+      await storage.writeProfile("# Behavioral Profile\r\n\r\n- Values direct communication.\r\n");
+
+      assert.equal(
+        await storage.readProfile(),
+        `# Behavioral Profile\r\n\r\n${FRESH_HEADER}\r\n\r\n- Values direct communication.\r\n`,
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile removes duplicate stale headers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -82,6 +100,71 @@ test("writeProfile removes duplicate stale headers", async (t) => {
       const profile = await storage.readProfile();
       assert.deepEqual(profile.match(/^\*Last updated:.*\*$/gm), [FRESH_HEADER]);
       assert.match(profile, /- Keeps decisions short\./);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile replaces a noncanonical metadata header", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "*Last updated: before launch*",
+        "",
+        "- Keeps decisions short.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("*Last updated: before launch*", FRESH_HEADER),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile recognizes whitespace-only metadata gaps", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        " \t",
+        STALE_HEADER,
+        "",
+        "- Keeps decisions short.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile does not treat fenced headings as a profile title", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = ["```shell", "# install dependencies", "```", ""].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), `${FRESH_HEADER}\n\n${profile}`);
     });
   } finally {
     t.mock.timers.reset();
@@ -109,6 +192,38 @@ test("writeProfile preserves code examples that mention Last updated", async (t)
       assert.equal(
         await storage.readProfile(),
         profile.replace("\n\n## Notes", `\n\n${FRESH_HEADER}\n\n## Notes`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("appendToProfile preserves timestamp-shaped fenced code", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "## Notes",
+        "",
+        "```markdown",
+        STALE_HEADER,
+        "```",
+        "",
+        "- Uses markdown code examples.",
+        "",
+      ].join("\n");
+      await writeFile(path.join(dir, "profile.md"), profile, "utf8");
+
+      await storage.appendToProfile(["Adds durable details."]);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\n## Notes", `\n\n${FRESH_HEADER}\n\n## Notes`).trimEnd() +
+          "\n- Adds durable details.\n",
       );
     });
   } finally {

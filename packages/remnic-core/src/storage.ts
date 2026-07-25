@@ -4307,15 +4307,13 @@ export class StorageManager {
       const content = [
         "# Behavioral Profile",
         "",
-        `*Last updated: ${new Date().toISOString()}*`,
-        "",
         ...newBullets.map((b) => `- ${b}`),
         "",
       ].join("\n");
       await this.writeProfile(content);
     } else {
-      const updatedTimestamp = existing.replace(/\*Last updated:.*\*/, `*Last updated: ${new Date().toISOString()}*`);
-      const withBullets = updatedTimestamp.trimEnd() + "\n" + newBullets.map((b) => `- ${b}`).join("\n") + "\n";
+      const withBullets =
+        existing.trimEnd() + "\n" + newBullets.map((b) => `- ${b}`).join("\n") + "\n";
       await this.writeProfile(withBullets);
     }
   }
