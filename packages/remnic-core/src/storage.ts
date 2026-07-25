@@ -1,6 +1,5 @@
 import { readProjectionRebuiltAt } from "./maintenance/projection-support.js";
 import {
-  access,
   lstat,
   readdir,
   readFile,
@@ -9,13 +8,11 @@ import {
   writeFile,
   mkdir,
   unlink,
-  rename,
   appendFile,
   open,
 } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
-import { z } from "zod";
+import { createHash } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
 import path from "node:path";
 import { log } from "./logger.js";
@@ -36,8 +33,9 @@ import {
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
+import { migrateLegacyEntityCanonicalIds } from "./storage/entity-canonical-id-migration.js";
+export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
-import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
@@ -1096,92 +1094,6 @@ function inferCurrentStateStatus(
   return inferMemoryStatus(frontmatter, pathRel, fallbackStatus);
 }
 
-/** Built-in aliases for common structural normalizations (no personal data) */
-const BUILTIN_ALIASES: Record<string, string> = {
-  openclaw: "openclaw",
-  "open-claw": "openclaw",
-};
-
-/**
- * Normalize an entity name to a canonical form.
- * Strips non-letter/digit chars, collapses hyphens, removes type prefix duplication.
- * e.g. "My Project" → "my-project"
- *
- * Checks caller-provided user aliases first, then built-in aliases. Alias
- * tables are instance state on StorageManager (issue #1534) — use
- * `storageManager.normalizeEntityName(raw, type)` when normalizing within a
- * store, or pass `storageManager.entityAliases` explicitly. Without an
- * aliases argument only the built-in structural aliases apply.
- */
-export function normalizeEntityName(raw: string, type: string, aliases?: Readonly<Record<string, string>>): string {
-  // Strip type prefix if present (e.g. name="person-jane-doe", type="person")
-  const rawStr = typeof raw === "string" ? raw : "";
-  const typeStr = typeof type === "string" && type.trim().length > 0 ? type : "entity";
-
-  let name = rawStr.normalize("NFC").toLowerCase().trim();
-  const typePrefix = `${typeStr.toLowerCase()}-`;
-  if (name.startsWith(typePrefix)) {
-    name = name.slice(typePrefix.length);
-  }
-
-  // Replace non-letter/digit characters with hyphens, collapse multiples, trim edges.
-  let normalized = name
-    .replace(/[^\p{L}\p{N}]+/gu, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-
-  // Check caller-provided user aliases first, then built-in. Own-property and
-  // string guards keep inherited object keys (e.g. an entity literally named
-  // "constructor") and malformed alias values from corrupting canonical ids.
-  const userAlias = aliases !== undefined && Object.hasOwn(aliases, normalized) ? aliases[normalized] : undefined;
-  if (typeof userAlias === "string" && userAlias.length > 0) {
-    normalized = userAlias;
-  } else if (Object.hasOwn(BUILTIN_ALIASES, normalized)) {
-    normalized = BUILTIN_ALIASES[normalized];
-  }
-
-  return `${typeStr.toLowerCase()}-${normalized}`;
-}
-
-const ENTITY_CANONICAL_ID_MIGRATION_VERSION = 1;
-const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
-const ENTITY_CANONICAL_ID_MIGRATION_LOCK_STALE_MS = 60_000;
-const ENTITY_CANONICAL_ID_MIGRATION_LOCK_MAX_WAIT_MS = 300_000;
-
-const EntityCanonicalIdMigrationStateSchema = z.object({
-  version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),
-  complete: z.boolean(),
-  mappings: z.record(z.string().min(1)),
-});
-
-type EntityCanonicalIdMigrationState = z.infer<typeof EntityCanonicalIdMigrationStateSchema>;
-
-function normalizeLegacyEntityName(
-  raw: string,
-  type: string,
-  aliases?: Readonly<Record<string, string>>,
-): string {
-  const rawStr = typeof raw === "string" ? raw : "";
-  const typeStr = typeof type === "string" && type.trim().length > 0 ? type : "entity";
-  let name = rawStr.toLowerCase().trim();
-  const typePrefix = `${typeStr.toLowerCase()}-`;
-  if (name.startsWith(typePrefix)) {
-    name = name.slice(typePrefix.length);
-  }
-
-  let normalized = name
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-  const userAlias = aliases !== undefined && Object.hasOwn(aliases, normalized) ? aliases[normalized] : undefined;
-  if (typeof userAlias === "string" && userAlias.length > 0) {
-    normalized = userAlias;
-  } else if (Object.hasOwn(BUILTIN_ALIASES, normalized)) {
-    normalized = BUILTIN_ALIASES[normalized];
-  }
-
-  return `${typeStr.toLowerCase()}-${normalized}`;
-}
 
 /**
  * Simple Levenshtein distance between two strings.
@@ -3689,233 +3601,30 @@ export class StorageManager {
     }
   }
 
-  private entityCanonicalIdMigrationStatePath(): string {
-    return path.join(this.stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE);
-  }
-
-  private entityCanonicalIdMigrationLockPath(): string {
-    return path.join(this.stateDir, "entity-canonical-id-migration.lock");
-  }
-
-  private async readEntityCanonicalIdMigrationState(): Promise<EntityCanonicalIdMigrationState | null> {
-    let raw: string;
-    try {
-      raw = await readFile(this.entityCanonicalIdMigrationStatePath(), "utf-8");
-    } catch (error) {
-      if (isErrnoCode(error, "ENOENT")) return null;
-      throw error;
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error("Invalid entity canonical-id migration state.");
-    }
-    const result = EntityCanonicalIdMigrationStateSchema.safeParse(parsed);
-    if (!result.success) {
-      throw new Error("Invalid entity canonical-id migration state.");
-    }
-    return result.data;
-  }
-
-  private async writeEntityCanonicalIdMigrationState(
-    state: EntityCanonicalIdMigrationState,
-  ): Promise<void> {
-    const statePath = this.entityCanonicalIdMigrationStatePath();
-    const temporaryPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
-    try {
-      await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
-      await rename(temporaryPath, statePath);
-    } finally {
-      await unlink(temporaryPath).catch(() => undefined);
-    }
-  }
-
-  private async storageFileExists(filePath: string): Promise<boolean> {
-    try {
-      await access(filePath);
-      return true;
-    } catch (error) {
-      if (isErrnoCode(error, "ENOENT")) return false;
-      throw error;
-    }
-  }
-
-  private async discoverLegacyEntityCanonicalIdMappings(): Promise<Record<string, string>> {
-    const mappings: Record<string, string> = {};
-    const entries = await readdir(this.entitiesDir);
-    for (const entry of entries) {
-      if (!entry.endsWith(".md")) continue;
-      const legacyId = entry.slice(0, -".md".length);
-      const legacyPath = this.resolveEntityFilePath(legacyId);
-      if (legacyPath === null) continue;
-      const entity = parseEntityFile(await this.readStorageSecureFile(legacyPath), this.entitySchemas);
-      const previousCanonicalId = normalizeLegacyEntityName(entity.name, entity.type, this.userAliases);
-      const canonicalId = this.normalizeEntityName(entity.name, entity.type);
-      if (legacyId !== previousCanonicalId || previousCanonicalId === canonicalId) continue;
-      const canonicalPath = this.resolveEntityFilePath(canonicalId);
-      if (canonicalPath === null) continue;
-      if (await this.storageFileExists(canonicalPath)) {
-        throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
-      }
-      mappings[legacyId] = canonicalId;
-    }
-    return mappings;
-  }
-
-  private async rewriteLegacyEntityReferences(
-    mappings: Readonly<Record<string, string>>,
-    refreshLock: () => Promise<boolean>,
-  ): Promise<{ rewroteColdMemory: boolean }> {
-    const [hotMemories, coldMemories, archivedMemories] = await Promise.all([
-      this.readAllMemories(),
-      this.readAllColdMemories(),
-      this.readArchivedMemories(),
-    ]);
-    const seenPaths = new Set<string>();
-    let rewroteColdMemory = false;
-    for (const memory of [...hotMemories, ...coldMemories, ...archivedMemories]) {
-      const memoryPath = path.resolve(memory.path);
-      if (seenPaths.has(memoryPath)) continue;
-      seenPaths.add(memoryPath);
-      const canonicalId = memory.frontmatter.entityRef ? mappings[memory.frontmatter.entityRef] : undefined;
-      if (!canonicalId) continue;
-      if (!await refreshLock()) {
-        throw new Error("Lost entity canonical-id migration lock.");
-      }
-      await this.snapshotBeforeWrite(memory.path, "write");
-      await this.writeStorageSecureFile(
-        memory.path,
-        `${serializeFrontmatter({ ...memory.frontmatter, entityRef: canonicalId })}\n\n${memory.content}\n`,
-      );
-      rewroteColdMemory ||= memory.path.includes(`${path.sep}cold${path.sep}`);
-    }
-    return { rewroteColdMemory };
-  }
-
-  private async rewriteLegacyEntityRelationshipTargets(
-    mappings: Readonly<Record<string, string>>,
-    refreshLock: () => Promise<boolean>,
-  ): Promise<boolean> {
-    let rewritten = false;
-    for (const entry of await readdir(this.entitiesDir)) {
-      if (!entry.endsWith(".md")) continue;
-      const entityPath = this.resolveEntityFilePath(entry.slice(0, -".md".length));
-      if (entityPath === null) continue;
-      const entity = parseEntityFile(await this.readStorageSecureFile(entityPath), this.entitySchemas);
-      const relationships = entity.relationships.map((relationship) => {
-        const target = mappings[relationship.target];
-        return target ? { ...relationship, target } : relationship;
-      });
-      if (relationships.every((relationship, index) => relationship === entity.relationships[index])) continue;
-      if (!await refreshLock()) {
-        throw new Error("Lost entity canonical-id migration lock.");
-      }
-      await this.snapshotBeforeWrite(entityPath, "write");
-      await this.writeStorageSecureFile(
-        entityPath,
-        serializeEntityFile({ ...entity, relationships }, this.entitySchemas),
-      );
-      rewritten = true;
-    }
-    return rewritten;
-  }
-
   private async migrateLegacyEntityCanonicalIds(): Promise<void> {
     if (this.entityCanonicalIdMigrationComplete) return;
-    await withHeldFileLock(
-      this.entityCanonicalIdMigrationLockPath(),
-      {
-        staleMs: ENTITY_CANONICAL_ID_MIGRATION_LOCK_STALE_MS,
-        maxWaitMs: ENTITY_CANONICAL_ID_MIGRATION_LOCK_MAX_WAIT_MS,
-      },
-      async (acquired, lock) => {
-        if (!acquired) {
-          throw new Error("Timed out waiting for active entity canonical-id migration.");
-        }
-        let state = await this.readEntityCanonicalIdMigrationState();
-        if (state?.complete) {
-          this.entityCanonicalIdMigrationComplete = true;
-          return;
-        }
-        if (!state) {
-          state = {
-            version: ENTITY_CANONICAL_ID_MIGRATION_VERSION,
-            complete: false,
-            mappings: await this.discoverLegacyEntityCanonicalIdMappings(),
-          };
-          await this.writeEntityCanonicalIdMigrationState(state);
-        }
-        if (Object.keys(state.mappings).length === 0) {
-          await this.writeEntityCanonicalIdMigrationState({
-            ...state,
-            complete: true,
-          });
-          this.entityCanonicalIdMigrationComplete = true;
-          return;
-        }
-        for (const [legacyId, canonicalId] of Object.entries(state.mappings)) {
-          const legacyPath = this.resolveEntityFilePath(legacyId);
-          const canonicalPath = this.resolveEntityFilePath(canonicalId);
-          if (legacyPath === null || canonicalPath === null) {
-            throw new Error("Invalid entity canonical-id migration path.");
-          }
-          const legacyExists = await this.storageFileExists(legacyPath);
-          const canonicalExists = await this.storageFileExists(canonicalPath);
-          if (legacyExists && canonicalExists) {
-            const [legacyContent, canonicalContent] = await Promise.all([
-              this.readStorageSecureFile(legacyPath),
-              this.readStorageSecureFile(canonicalPath),
-            ]);
-            if (legacyContent !== canonicalContent) {
-              throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
-            }
-            if (!await lock.refresh()) {
-              throw new Error("Lost entity canonical-id migration lock.");
-            }
-            await this.snapshotBeforeWrite(legacyPath, "write");
-            await unlink(legacyPath);
-            continue;
-          }
-          if (!legacyExists && !canonicalExists) {
-            throw new Error(`Cannot migrate legacy entity id ${legacyId}: both files are missing.`);
-          }
-          if (!legacyExists) continue;
-          if (!await lock.refresh()) {
-            throw new Error("Lost entity canonical-id migration lock.");
-          }
-          const entityContent = await this.readStorageSecureFile(legacyPath);
-          await this.snapshotBeforeWrite(legacyPath, "write");
-          await this.writeStorageSecureFile(canonicalPath, entityContent);
-          if (await this.readStorageSecureFile(canonicalPath) !== entityContent) {
-            throw new Error(`Cannot verify migrated entity id ${canonicalId}.`);
-          }
-          if (!await lock.refresh()) {
-            throw new Error("Lost entity canonical-id migration lock.");
-          }
-          await unlink(legacyPath);
-        }
-
-        await this.rewriteLegacyEntityRelationshipTargets(
-          state.mappings,
-          () => lock.refresh(),
-        );
-        const { rewroteColdMemory } = await this.rewriteLegacyEntityReferences(
-          state.mappings,
-          () => lock.refresh(),
-        );
-        this.invalidateKnowledgeIndexCache();
-        this.invalidateAllMemoriesCache();
-        if (rewroteColdMemory) this.invalidateColdMemoriesCache();
-        this.bumpMemoryStatusVersion();
-        await this.writeEntityCanonicalIdMigrationState({
-          ...state,
-          complete: true,
-        });
-        this.entityCanonicalIdMigrationComplete = true;
-      },
-    );
+    await migrateLegacyEntityCanonicalIds({
+      stateDir: this.stateDir,
+      entitiesDir: this.entitiesDir,
+      entityAliases: this.userAliases,
+      normalizeEntityName: this.normalizeEntityName.bind(this),
+      resolveEntityFilePath: this.resolveEntityFilePath.bind(this),
+      readStorageSecureFile: this.readStorageSecureFile.bind(this),
+      writeStorageSecureFile: this.writeStorageSecureFile.bind(this),
+      snapshotBeforeWrite: this.snapshotBeforeWrite.bind(this),
+      parseEntityFile: (content) => parseEntityFile(content, this.entitySchemas),
+      serializeEntityFile: (entity) => serializeEntityFile(entity, this.entitySchemas),
+      serializeMemoryWithEntityRef: (memory, entityRef) =>
+        `${serializeFrontmatter({ ...memory.frontmatter, entityRef })}\n\n${memory.content}\n`,
+      readAllMemories: this.readAllMemories.bind(this),
+      readAllColdMemories: this.readAllColdMemories.bind(this),
+      readArchivedMemories: this.readArchivedMemories.bind(this),
+      invalidateKnowledgeIndexCache: this.invalidateKnowledgeIndexCache.bind(this),
+      invalidateAllMemoriesCache: this.invalidateAllMemoriesCache.bind(this),
+      invalidateColdMemoriesCache: this.invalidateColdMemoriesCache.bind(this),
+      bumpMemoryStatusVersion: this.bumpMemoryStatusVersion.bind(this),
+    });
+    this.entityCanonicalIdMigrationComplete = true;
   }
 
   async ensureDirectories(): Promise<void> {
