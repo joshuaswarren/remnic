@@ -90,7 +90,11 @@ function asRecord(value: unknown, label: string): Record<string, unknown> {
 }
 
 function parseReplicaPeerToken(raw: unknown, index: number): AgentAccessAuthToken | undefined {
-  if (raw === undefined || raw === null) return undefined;
+  // Only an OMITTED token selects unauthenticated polling. A present `null` is
+  // schema-invalid; silently dropping it polls without the credential and
+  // surfaces a healthy peer as `http_401`, hiding the real config error
+  // (round 4, codex P2).
+  if (raw === undefined) return undefined;
   if (typeof raw === "string") {
     const trimmed = raw.trim();
     return trimmed.length === 0 ? undefined : expandEnvValue(trimmed);

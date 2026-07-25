@@ -513,19 +513,39 @@ export async function computeServiceCorpusWatermarks(
   if (!roots) return []; // enumeration still warming (cold) — served on a later probe
   const visible = roots.filter((root) => root.namespaces.some((ns) => capabilityAllowsNamespace(options.caps, ns)));
   const watermarks: CorpusWatermark[] = [];
+  let complete = true;
   for (const { namespace } of visible) {
     const compute = async (): Promise<CorpusWatermark> =>
       computeNamespaceWatermark(namespace, await host.getStorage(namespace), options.now);
     if (options.cache) {
       const cached = options.cache.get(namespace, compute);
       if (cached) watermarks.push(cached);
+      else complete = false; // still warming — the set is not the full census yet
     } else {
       try {
         watermarks.push(await compute());
       } catch {
         // One tenant's storage/scan failed — omit just that namespace.
+        complete = false;
       }
     }
   }
+  lastCensusComplete.set(host, complete);
   return watermarks;
+}
+
+/**
+ * Whether the LAST `computeServiceCorpusWatermarks` call for this host returned
+ * every configured namespace, or silently dropped some (failed scan, or a cache
+ * still warming). A dropped tenant never enters a replica comparison, so a peer
+ * must not be certified `converged` against an incomplete set (issue #2149).
+ */
+const lastCensusComplete = new WeakMap<object, boolean>();
+
+export async function computeServiceCorpusCensus(
+  host: CorpusWatermarkHost,
+  options: ServiceCorpusWatermarkOptions = {},
+): Promise<{ watermarks: CorpusWatermark[]; complete: boolean }> {
+  const watermarks = await computeServiceCorpusWatermarks(host, options);
+  return { watermarks, complete: lastCensusComplete.get(host) ?? true };
 }

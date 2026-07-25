@@ -19,7 +19,11 @@ import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
   resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
-import { CorpusWatermarkCache, computeServiceCorpusWatermarks } from "./corpus-watermark.js";
+import {
+  CorpusWatermarkCache,
+  computeServiceCorpusCensus,
+  computeServiceCorpusWatermarks,
+} from "./corpus-watermark.js";
 import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
 import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import type {
@@ -2465,7 +2469,7 @@ export class EngramAccessService {
         cache: this.corpusWatermarkCache, caps: tokenCapabilityStore.getStore() }),
       replica: this.replicaDivergenceMonitor.getReport({
         config: this.orchestrator.config.replicaPeers,
-        computeLocalWatermarks: () => computeServiceCorpusWatermarks(this.orchestrator, {}),
+        computeLocalWatermarks: () => computeServiceCorpusCensus(this.orchestrator, {}),
         caps: tokenCapabilityStore.getStore(),
       }),
     };

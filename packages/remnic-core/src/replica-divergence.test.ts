@@ -513,7 +513,7 @@ test("ReplicaDivergenceMonitor: disabled config never polls and reports disabled
   let computed = 0;
   const monitor = new ReplicaDivergenceMonitor();
   const config = parseReplicaPeersConfig({ replicaPeers: { enabled: false, peers: [{ url: "http://127.0.0.1:1" }] } });
-  const report = monitor.getReport({ config, computeLocalWatermarks: async () => { computed += 1; return []; } });
+  const report = monitor.getReport({ config, computeLocalWatermarks: async () => { computed += 1; return { watermarks: [], complete: true }; } });
   assert.equal(report.enabled, false);
   assert.equal(computed, 0, "a disabled monitor never computes local watermarks or polls");
 });
@@ -524,7 +524,7 @@ test("ReplicaDivergenceMonitor: stale-while-revalidate serves cached state and s
   let computeCalls = 0;
   const computeLocalWatermarks = async () => {
     computeCalls += 1;
-    return [watermark("default", { memoryFileCount: 1, digest: "a" })];
+    return { watermarks: [watermark("default", { memoryFileCount: 1, digest: "a" })], complete: true };
   };
   const monitor = new ReplicaDivergenceMonitor({ clock: () => clock, fetchImpl });
   const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, pollIntervalMs: 60_000, peers: [{ url: "http://127.0.0.1:4318" }] } });
@@ -555,7 +555,10 @@ test("ReplicaDivergenceMonitor: applies capability filtering at read time", asyn
     status: 200,
     json: async () => ({ corpus: [watermark("default", { digest: "a" }), watermark("team-secret", { digest: "b" })] }),
   });
-  const computeLocalWatermarks = async () => [watermark("default", { digest: "a" }), watermark("team-secret", { digest: "a" })];
+  const computeLocalWatermarks = async () => ({
+    watermarks: [watermark("default", { digest: "a" }), watermark("team-secret", { digest: "a" })],
+    complete: true,
+  });
   const monitor = new ReplicaDivergenceMonitor({ fetchImpl });
   const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } });
   monitor.getReport({ config, computeLocalWatermarks });
@@ -567,7 +570,7 @@ test("ReplicaDivergenceMonitor: applies capability filtering at read time", asyn
 
 test("ReplicaDivergenceMonitor: warming state is distinguishable from no-peers configured (review round 1)", async () => {
   const fetchImpl: FetchLike = async () => ({ ok: true, status: 200, json: async () => ({ corpus: [watermark("default")] }) });
-  const computeLocalWatermarks = async () => [watermark("default")];
+  const computeLocalWatermarks = async () => ({ watermarks: [watermark("default")], complete: true });
   const monitor = new ReplicaDivergenceMonitor({ fetchImpl });
   const withPeers = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } });
   const noPeers = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [] } });
@@ -591,7 +594,7 @@ test("ReplicaDivergenceMonitor: a partial config with no replicaPeers block read
   const monitor = new ReplicaDivergenceMonitor();
   // A duck-typed/legacy orchestrator whose config has no `replicaPeers` block:
   // health() -> getReport must degrade to disabled, not throw on `config.enabled`.
-  const report = monitor.getReport({ config: undefined, computeLocalWatermarks: async () => [] });
+  const report = monitor.getReport({ config: undefined, computeLocalWatermarks: async () => ({ watermarks: [], complete: true }) });
   assert.equal(report.enabled, false);
   assert.equal(report.pending, false);
   assert.equal(report.peers.length, 0);
@@ -617,7 +620,7 @@ test("round 2 (cursor): poll TTL runs from completion, so a slow poll cannot sel
   const config = parseReplicaPeersConfig({
     replicaPeers: { enabled: true, pollIntervalMs: 30_000, peers: [{ url: "http://127.0.0.1:4318" }] },
   });
-  const computeLocalWatermarks = async () => [watermark("default")];
+  const computeLocalWatermarks = async () => ({ watermarks: [watermark("default")], complete: true });
 
   monitor.getReport({ config, computeLocalWatermarks });
   await monitor.whenIdle();
@@ -716,4 +719,51 @@ test("round 3 (codex P2): a present-but-invalid replicaPeers.enabled is rejected
   assert.equal(parseReplicaPeersConfig({ replicaPeers: { enabled: "false", peers: [] } }).enabled, false);
   assert.equal(parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [] } }).enabled, true);
   assert.equal(parseReplicaPeersConfig({ replicaPeers: { peers: [] } }).enabled, false, "absent -> default");
+});
+
+test("round 4 (cursor): an incomplete local census cannot certify a peer converged", async () => {
+  // computeServiceCorpusWatermarks DROPS a namespace whose scan failed, so an
+  // unscanned tenant never enters the comparison and its divergence would be
+  // invisible. Doctor already gated on this; /health did not.
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ corpus: [watermark("default")] }),
+  });
+  const config = parseReplicaPeersConfig({
+    replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] },
+  });
+
+  const complete = new ReplicaDivergenceMonitor({ fetchImpl });
+  complete.getReport({ config, computeLocalWatermarks: async () => ({ watermarks: [watermark("default")], complete: true }) });
+  await complete.whenIdle();
+  const ok = complete.getReport({ config, computeLocalWatermarks: async () => ({ watermarks: [watermark("default")], complete: true }) });
+  assert.equal(ok.peers[0]?.state, "converged", "a complete census still certifies convergence");
+  assert.equal(ok.censusComplete, true);
+
+  const partial = new ReplicaDivergenceMonitor({ fetchImpl });
+  const incomplete = async () => ({ watermarks: [watermark("default")], complete: false });
+  partial.getReport({ config, computeLocalWatermarks: incomplete });
+  await partial.whenIdle();
+  const gated = partial.getReport({ config, computeLocalWatermarks: incomplete });
+  assert.equal(gated.censusComplete, false);
+  assert.equal(gated.peers[0]?.state, "unknown", "an incomplete census downgrades converged to unknown");
+  assert.equal(gated.peers[0]?.reason, "local_census_incomplete");
+});
+
+test("round 4 (codex P2): a present null peer token is rejected, not silently unauthenticated", () => {
+  // Dropping `token: null` polls without the credential and surfaces a healthy
+  // peer as http_401, hiding the real configuration error.
+  assert.throws(
+    () =>
+      parseReplicaPeersConfig({
+        replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318", token: null }] },
+      }),
+    /token must be a string or a SecretRef object/,
+  );
+  // An OMITTED token still selects unauthenticated polling.
+  const omitted = parseReplicaPeersConfig({
+    replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] },
+  });
+  assert.equal(omitted.peers[0]?.token, undefined);
 });

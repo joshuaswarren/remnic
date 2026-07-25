@@ -85,8 +85,22 @@ export interface ReplicaPeerReport {
   reason?: string;
 }
 
+/** Local watermark set plus whether every configured namespace was scanned. */
+export interface LocalCensus {
+  watermarks: CorpusWatermark[];
+  complete: boolean;
+}
+
 export interface ReplicaDivergenceStatus {
   enabled: boolean;
+  /**
+   * False when the local corpus census dropped namespaces (a per-namespace scan
+   * failed, or enumeration was still warming). A peer can only be certified
+   * `converged` against a COMPLETE local set — otherwise an unscanned tenant
+   * never enters the comparison and its divergence is invisible. Mirrors the
+   * doctor check's `localCensusComplete` gate (round 4, cursor).
+   */
+  censusComplete?: boolean;
   /**
    * True when the feature is enabled with peers configured but no poll has
    * completed yet (warming, or a persistently failing local-watermark scan).
@@ -552,7 +566,7 @@ export class ReplicaDivergenceMonitor {
      */
     config: ReplicaPeersConfig | undefined;
     /** Fresh local watermark set for comparison; invoked only during a background refresh. */
-    computeLocalWatermarks: () => Promise<CorpusWatermark[]>;
+    computeLocalWatermarks: () => Promise<LocalCensus>;
     caps?: TokenCapabilities | null;
   }): ReplicaDivergenceStatus {
     const config = resolveReplicaPeersConfig(input.config);
@@ -565,10 +579,11 @@ export class ReplicaDivergenceMonitor {
     return { enabled: true, pending: true, polledAt: null, peers: [] };
   }
 
-  private refresh(config: ReplicaPeersConfig, computeLocalWatermarks: () => Promise<CorpusWatermark[]>): void {
+  private refresh(config: ReplicaPeersConfig, computeLocalWatermarks: () => Promise<LocalCensus>): void {
     if (this.inFlight) return;
     this.inFlight = (async () => {
-      const localWatermarks = await computeLocalWatermarks();
+      const census = await computeLocalWatermarks();
+      const localWatermarks = census.watermarks;
       const report = await pollReplicaPeers({
         config,
         localWatermarks,
@@ -580,7 +595,19 @@ export class ReplicaDivergenceMonitor {
       // Expiry is measured from when the poll FINISHES, not when it starts: a
       // poll slower than pollIntervalMs would otherwise store an already-expired
       // entry and re-poll on every probe (cursor: unbounded re-polling).
-      this.cached = { report, expiresAt: this.clock() + config.pollIntervalMs };
+      // An incomplete local census cannot certify convergence: an unscanned
+      // tenant never enters the comparison, so its divergence would be
+      // invisible. Downgrade any `converged` peer to `unknown` (round 4).
+      const gated: ReplicaDivergenceStatus = census.complete
+        ? { ...report, censusComplete: true }
+        : {
+            ...report,
+            censusComplete: false,
+            peers: report.peers.map((peer) =>
+              peer.state === "converged" ? { ...peer, state: "unknown" as const, reason: "local_census_incomplete" } : peer,
+            ),
+          };
+      this.cached = { report: gated, expiresAt: this.clock() + config.pollIntervalMs };
     })()
       .catch(() => {
         // A failed poll never caches — keep serving the last good report.

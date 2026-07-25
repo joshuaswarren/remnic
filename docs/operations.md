@@ -225,8 +225,15 @@ Per peer, the reported state is one of:
      ambiguous: a namespace-restricted peer token hides namespaces it cannot see, and a peer
      that has genuinely LOST the namespace omits it in exactly the same way. The evidence cannot
      distinguish the two, so the peer is reported `unknown` rather than certified healthy — and
-     `remnic doctor` warns. **Use an unrestricted (operator) peer token** so this resolves: with
-     full visibility, a namespace missing on the peer is real and reports as divergence.
+     `remnic doctor` warns. The comparison has no view of the peer token's scope, so it cannot
+     currently tell the two apart even with an unrestricted token — a local-only namespace always
+     reports `unknown`. Scope-aware comparison would need the peer to advertise its authorized
+     namespace set; until then, treat a persistent `unknown` on a scoped-token peer as expected,
+     and investigate it as a possible real loss on an unrestricted-token peer.
+  3. The local corpus census was incomplete (a per-namespace scan failed, or enumeration was
+     still warming), reported as `censusComplete: false` with reason `local_census_incomplete`.
+     A peer cannot be certified against a partial local set — resolve the `corpus_watermark`
+     warning first.
 
 `unreachable`/`unknown` are deliberately distinct from `converged`: a monitor must be able to
 tell "the peer agrees" from "we could not ask" (the same error-vs-empty distinction the corpus
