@@ -329,19 +329,20 @@ export class ExtractionLivenessWarnThrottle {
  * always populates it, but a host adapter, an older persisted config, or a
  * hand-built `PluginConfig` can hand us an absent, partial, or loosely-typed
  * block - and every liveness surface (/health, doctor, stats) must degrade to
- * the documented default (enabled, 24h window) rather than throw. `enabled` is
- * coerced with the same string-boolean rules as `parseExtractionLivenessConfig`
- * (§24: `"false"`/`"0"` read as falsy); a present but non-integer or non-positive
- * `staleWindowMs` falls back to the default.
+ * the documented default (enabled, 24h window) rather than throw. Both fields
+ * are coerced with the same rules as `parseExtractionLivenessConfig` (§24:
+ * `"false"`/`"0"` read as falsy; a numeric string like `"5000"` parses), except a
+ * present but non-integer or non-positive `staleWindowMs` falls back to the
+ * default here rather than throwing.
  */
 export function resolveExtractionLivenessConfig(
   block: { enabled?: unknown; staleWindowMs?: unknown } | undefined,
 ): ExtractionLivenessConfig {
-  const staleWindowMs = block?.staleWindowMs;
+  const staleWindowMs = coerceNumber(block?.staleWindowMs);
   return {
     enabled: coerceBool(block?.enabled) ?? true,
     staleWindowMs:
-      typeof staleWindowMs === "number" && Number.isInteger(staleWindowMs) && staleWindowMs >= 1
+      staleWindowMs !== undefined && Number.isInteger(staleWindowMs) && staleWindowMs >= 1
         ? staleWindowMs
         : DEFAULT_STALE_WINDOW_MS,
   };
