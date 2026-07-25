@@ -29,7 +29,9 @@ function getFenceMarker(line: string): FenceMarker | null {
   let length = 0;
   while (trimmed[length] === character) length += 1;
   if (length < 3) return null;
-  return { character, length, trailing: trimmed.slice(length) };
+  const trailing = trimmed.slice(length);
+  if (character === "`" && trailing.includes("`")) return null;
+  return { character, length, trailing };
 }
 
 function isClosingFence(fence: FenceMarker, openFence: FenceMarker): boolean {
@@ -41,6 +43,98 @@ function isClosingFence(fence: FenceMarker, openFence: FenceMarker): boolean {
 }
 
 const RAW_HTML_BLOCK_TAGS = ["pre", "textarea", "script", "style", "xmp"] as const;
+const HTML_BLOCK_TAGS = [
+  "address",
+  "article",
+  "aside",
+  "base",
+  "basefont",
+  "blockquote",
+  "body",
+  "caption",
+  "center",
+  "col",
+  "colgroup",
+  "dd",
+  "details",
+  "dialog",
+  "dir",
+  "div",
+  "dl",
+  "dt",
+  "fieldset",
+  "figcaption",
+  "figure",
+  "footer",
+  "form",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "head",
+  "header",
+  "hr",
+  "html",
+  "iframe",
+  "legend",
+  "li",
+  "link",
+  "main",
+  "menu",
+  "menuitem",
+  "nav",
+  "noframes",
+  "ol",
+  "optgroup",
+  "option",
+  "p",
+  "param",
+  "search",
+  "section",
+  "summary",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "title",
+  "tr",
+  "track",
+  "ul",
+] as const;
+
+type HtmlBlock = {
+  endMarker: string | null;
+};
+
+function findHtmlBlockTag(line: string, tags: readonly string[]): string | null {
+  for (const tag of tags) {
+    const nextCharacter = line[tag.length + 1];
+    if (
+      line.startsWith(`<${tag}`) &&
+      (nextCharacter === ">" || nextCharacter === " " || nextCharacter === "\t")
+    ) {
+      return tag;
+    }
+  }
+  return null;
+}
+
+function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBlock | null {
+  const rawTag = findHtmlBlockTag(normalizedLine, RAW_HTML_BLOCK_TAGS);
+  if (rawTag) return { endMarker: `</${rawTag}>` };
+  if (normalizedLine.startsWith("<!--")) return { endMarker: "-->" };
+  if (normalizedLine.startsWith("<?")) return { endMarker: "?>" };
+  if (normalizedLine.startsWith("<![cdata[")) return { endMarker: "]]>" };
+  const declarationFirst = trimmedLine[2];
+  if (trimmedLine.startsWith("<!") && declarationFirst && declarationFirst >= "A" && declarationFirst <= "Z") {
+    return { endMarker: null };
+  }
+  return findHtmlBlockTag(normalizedLine, HTML_BLOCK_TAGS) ? { endMarker: null } : null;
+}
 
 type ProfileLine = {
   content: string;
@@ -83,8 +177,7 @@ function visitProfileMetadataLines(
 ): void {
   const frontmatterEnd = findFrontmatterEnd(lines);
   let openFence: FenceMarker | null = null;
-  let openHtmlBlock: string | null = null;
-  let openHtmlComment = false;
+  let openHtmlBlock: HtmlBlock | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]?.content ?? "";
     if (index <= frontmatterEnd || isIndentedCodeLine(line)) continue;
@@ -93,38 +186,22 @@ function visitProfileMetadataLines(
       if (fence && isClosingFence(fence, openFence)) openFence = null;
       continue;
     }
-    const normalizedLine = line.trimStart().toLowerCase();
+    const trimmedLine = line.trimStart();
+    const normalizedLine = trimmedLine.toLowerCase();
     if (openHtmlBlock) {
-      if (normalizedLine.includes(`</${openHtmlBlock}>`)) openHtmlBlock = null;
-      continue;
-    }
-    if (openHtmlComment) {
-      if (normalizedLine.includes("-->")) openHtmlComment = false;
+      if (openHtmlBlock.endMarker ? normalizedLine.includes(openHtmlBlock.endMarker) : normalizedLine === "") {
+        openHtmlBlock = null;
+      }
       continue;
     }
     if (fence) {
       openFence = fence;
       continue;
     }
-    let rawHtmlBlock: string | null = null;
-    for (const tag of RAW_HTML_BLOCK_TAGS) {
-      const nextCharacter = normalizedLine[tag.length + 1];
-      if (
-        normalizedLine.startsWith(`<${tag}`) &&
-        (nextCharacter === ">" || nextCharacter === " " || nextCharacter === "\t")
-      ) {
-        rawHtmlBlock = tag;
-        break;
-      }
-    }
-    if (rawHtmlBlock) {
-      openHtmlBlock = normalizedLine.includes(`</${rawHtmlBlock}>`) ? null : rawHtmlBlock;
-      continue;
-    }
-    const startsHtmlComment = normalizedLine.startsWith("<!--");
-    const closesHtmlComment = normalizedLine.includes("-->");
-    if (startsHtmlComment) {
-      openHtmlComment = !closesHtmlComment;
+    const htmlBlock = findHtmlBlockStart(normalizedLine, trimmedLine);
+    if (htmlBlock) {
+      openHtmlBlock =
+        htmlBlock.endMarker && normalizedLine.includes(htmlBlock.endMarker) ? null : htmlBlock;
       continue;
     }
     visit(line, index);

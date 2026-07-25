@@ -140,6 +140,60 @@ test("writeProfile ignores HTML comment markers inside fenced code", async (t) =
   }
 });
 
+test("writeProfile preserves timestamp-shaped ordinary HTML blocks", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      for (const tag of ["div", "table"]) {
+        const profile = [
+          "# Behavioral Profile",
+          "",
+          `<${tag}>`,
+          "*Last updated: literal example*",
+          `</${tag}>`,
+          "",
+          "- Keeps HTML examples.",
+          "",
+        ].join("\n");
+
+        await storage.writeProfile(profile);
+
+        assert.equal(
+          await storage.readProfile(),
+          profile.replace(`\n\n<${tag}>`, `\n\n${FRESH_HEADER}\n\n<${tag}>`),
+        );
+      }
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile ignores invalid backtick fence openers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "```markdown`invalid",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps ordinary Markdown visible.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 
 test("writeProfile removes duplicate stale headers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
