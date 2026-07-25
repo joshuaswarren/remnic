@@ -86,6 +86,16 @@ test("isGenericRecallExcludedPath root-aware keeps nested activity and archive-n
   assert.equal(isGenericRecallExcludedPath("/mem/facts/a.md", policy), false);
 });
 
+test("category-named QMD collections do not hide nested archive paths", () => {
+  assert.equal(
+    isGenericRecallExcludedPath("/mem/facts/archive/2026-07-22/a.md", {
+      memoryDir: "/mem",
+      qmdCollection: "facts",
+    }),
+    false,
+  );
+});
+
 test("filterRecallCandidates applies namespace/artifact filters before final cap", () => {
   const candidates = [
     { docid: "/tmp/memory/artifacts/2026-02-21/a.md", path: "/tmp/memory/artifacts/2026-02-21/a.md", snippet: "", score: 0.99 },

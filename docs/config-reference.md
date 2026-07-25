@@ -171,7 +171,7 @@ See [Search Backends](search-backends.md) for detailed configuration and compari
 | `qmdEnabled` | `true` | Use QMD for hybrid search |
 | `qmdCollection` | `openclaw-engram` | QMD collection name |
 | `qmdMaxResults` | `8` | Final result cap after over-scanning and ranking (fetch size may be larger) |
-| `qmdColdTierEnabled` | `false` | Query a secondary cold QMD collection before archive fallback when hot recall misses |
+| `qmdColdTierEnabled` | `false` | Query a secondary cold QMD collection after hot recall misses; generic recall never reads archive records |
 | `qmdColdCollection` | `openclaw-engram-cold` | QMD collection name used for cold-tier recall |
 | `qmdColdMaxResults` | `8` | Final result cap for cold-tier recall before merging into the normal ranking pipeline |
 | `qmdPath` | `(auto)` | Absolute path to `qmd` binary (bypasses PATH) |

@@ -56,8 +56,8 @@ Remnic stores memories in two **physical tiers** plus an archival escape hatch:
   collection named by `qmdColdCollection` (default `openclaw-engram-cold`). Searched
   only when `qmdColdTierEnabled` is `true` and the recall path opts into the
   cold-fallback pipeline.
-- **Archive** — `<memoryDir>/archive/...`. Not part of either active tier; scanned
-  only as a last-ditch fallback when both hot and cold yield no results.
+- **Archive** — `<memoryDir>/archive/...`. Not part of either active tier or
+  generic recall. Use an explicit read or search surface to access archived data.
 
 `tier-routing.ts` and `tier-migration.ts` implement the migration logic, the
 value-score model, and the journaling. The cold collection is a real, separate QMD
@@ -119,14 +119,12 @@ The recall path was audited and pinned with regression tests in
    `false` — a fresh install never reaches the cold-QMD branch.
 3. **The cold *directory* is not read on recall.**
    `StorageManager.collectActiveMemoryPaths` scans only the hot subtrees.
-4. **Archive is read only as a last-ditch fallback.**
+4. **Archive never enters generic recall.** Explicit read and search surfaces can
+   still access archived data.
 
-Regression tests in `tests/retrieval-cold-tier-default-excluded.test.ts` keep this
-contract enforced via runtime tripwires that hook `qmd.search` /
-`qmd.hybridSearch`, `fetchQmdMemoryResultsWithArtifactTopUp`, and
-`searchLongTermArchiveFallback`. Static AST audits were intentionally dropped
-because their completeness is unbounded (computed property names, shadowed
-identifiers, etc.); the runtime boundary check is strictly stronger.
+Regression tests in `tests/retrieval-cold-tier-default-excluded.test.ts` pin the
+hot/cold collection boundary. Path-policy and recall-pipeline tests ensure generic
+recall excludes archive records before ranking or injection.
 
 ## Bench: aged-dataset retention harness (#686 PR 2/6)
 
@@ -271,7 +269,7 @@ hooked into `orchestrator.ts:deferredInitialize()`.
 
 ## Cold QMD opt-in
 
-To search the cold QMD collection before archive fallback on hot misses:
+To search the cold QMD collection on hot misses:
 
 ```json
 {
@@ -281,8 +279,8 @@ To search the cold QMD collection before archive fallback on hot misses:
 
 When enabled, `applyColdFallbackPipeline` queries the cold QMD collection only
 after the hot-tier search returns no results. If cold QMD is disabled or returns no
-hits, archive scan fallback can still run. Default off because the long-tail rarely
-contributes a recall worth the latency.
+hits, generic recall does not read archive records. Default off because the
+long-tail rarely contributes a recall worth the latency.
 
 ## Configuration knobs
 
@@ -299,7 +297,7 @@ contributes a recall worth the latency.
 | `qmdTierDemotionMinAgeDays`               | `14`                   | Minimum age before hot→cold demotion.         |
 | `qmdTierDemotionValueThreshold`           | `0.35`                 | Value score threshold for hot→cold demotion.  |
 | `qmdTierPromotionValueThreshold`          | `0.7`                  | Value score threshold for cold→hot promotion. |
-| `qmdColdTierEnabled`                      | `false`                | Query cold QMD before archive fallback.       |
+| `qmdColdTierEnabled`                      | `false`                | Query cold QMD after hot misses.              |
 | `qmdColdCollection`                       | `openclaw-engram-cold` | QMD collection name for the cold tier.        |
 
 See [Config reference](config-reference.md) for the full schema.

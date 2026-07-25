@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { QmdSearchResult } from "../types.js";
+import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import {
   isActivityDigestPath,
   isArtifactMemoryPath,
@@ -24,11 +25,13 @@ function stripQmdCollectionPrefix(
   const matchesHotCollection =
     typeof policy.qmdCollection === "string" &&
     policy.qmdCollection.length > 0 &&
-    (prefix === policy.qmdCollection || prefix.startsWith(`${policy.qmdCollection}--`));
+    ((prefix === policy.qmdCollection && !ALL_CATEGORY_DIRS.includes(prefix)) ||
+      prefix.startsWith(`${policy.qmdCollection}--`));
   const matchesColdCollection =
     typeof policy.qmdColdCollection === "string" &&
     policy.qmdColdCollection.length > 0 &&
-    (prefix === policy.qmdColdCollection || prefix.startsWith(`${policy.qmdColdCollection}--`));
+    ((prefix === policy.qmdColdCollection && !ALL_CATEGORY_DIRS.includes(prefix)) ||
+      prefix.startsWith(`${policy.qmdColdCollection}--`));
   return matchesHotCollection || matchesColdCollection
     ? normalized.slice(slashIndex + 1)
     : relativePath;
