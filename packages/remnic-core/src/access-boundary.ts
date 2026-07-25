@@ -186,6 +186,21 @@ export const OPERATION_NAMES = [
  */
 export type OperationName = (typeof OPERATION_NAMES)[number];
 
+const IMPLICIT_HTTP_NAMESPACE_OPERATIONS = new Set<OperationName>([
+  "offline_sync_snapshot",
+  "offline_sync_snapshot_stream",
+  "memory_list",
+  "entity_list",
+  "maintenance_status",
+  "quality_status",
+  "trust_zones_status",
+  "graph_events",
+  "citations_observed",
+  "review_resolve",
+  "chat_message",
+  "chat_events",
+]);
+
 // ---------------------------------------------------------------------------
 // Operation context — what every handler receives
 // ---------------------------------------------------------------------------
@@ -433,6 +448,15 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
 /** Look up a registered operation by canonical name. */
 export function getOperation(name: OperationName): BoundOperation | undefined {
   return registry.get(name);
+}
+
+/** Whether a probe must authorize an operation's effective namespace. */
+export function operationRequiresAuthorizedNamespace(name: OperationName): boolean {
+  if (name === "namespace_writable") return false;
+  if (IMPLICIT_HTTP_NAMESPACE_OPERATIONS.has(name)) return true;
+  const schema = registry.get(name)?.spec.schema;
+  const objectSchema = schema instanceof z.ZodEffects ? schema.innerType() : schema;
+  return objectSchema instanceof z.ZodObject && Object.hasOwn(objectSchema.shape, "namespace");
 }
 
 /** All registered operation names. */

@@ -37,7 +37,7 @@ import {
 } from "./graph-events.js";
 import { expandTildePath } from "./utils/path.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
-import { getOperation, type OperationName } from "./access-boundary.js";
+import { getOperation, operationRequiresAuthorizedNamespace, type OperationName } from "./access-boundary.js";
 import { probeOperationAuthorization } from "./access-authorization-probe.js";
 import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
 import {
@@ -892,11 +892,11 @@ export class EngramAccessHttpServer {
 
     if (req.method === "GET" && pathname === "/engram/v1/authorization") {
       res.setHeader("cache-control", "no-store");
-      this.respondJson(
-        res,
-        200,
-        probeOperationAuthorization(tokenCapabilityStore.getStore(), parsed.searchParams.getAll("op")),
-      );
+      const probe = probeOperationAuthorization(tokenCapabilityStore.getStore(), parsed.searchParams.getAll("op"));
+      if (probe.operations.some(operationRequiresAuthorizedNamespace)) {
+        this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
+      }
+      this.respondJson(res, 200, probe);
       return;
     }
 

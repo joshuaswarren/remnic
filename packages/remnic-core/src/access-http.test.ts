@@ -2983,6 +2983,20 @@ test("HTTP authorization probe verifies requested operation grants without invok
   const service = {
     configRef: parseConfig({ memoryDir: "/tmp/remnic-http-authorization-probe", defaultNamespace: "default" }),
   } as unknown as EngramAccessService;
+  const implicitNamespaceOperations = [
+    "offline_sync_snapshot",
+    "offline_sync_snapshot_stream",
+    "memory_list",
+    "entity_list",
+    "maintenance_status",
+    "quality_status",
+    "trust_zones_status",
+    "graph_events",
+    "citations_observed",
+    "review_resolve",
+    "chat_message",
+    "chat_events",
+  ];
   const server = new EngramAccessHttpServer({
     service,
     port: 0,
@@ -2993,6 +3007,30 @@ test("HTTP authorization probe verifies requested operation grants without invok
       },
       { token: "recall-only-token", capabilities: { version: 1, ops: ["recall"] } },
       { token: "observe-only-token", capabilities: { version: 1, ops: ["observe"] } },
+      {
+        token: "namespace-scoped-delegate-token",
+        capabilities: {
+          version: 1,
+          ops: ["recall", "observe", "lcm_compaction_flush"],
+          namespaces: ["other"],
+        },
+      },
+      {
+        token: "namespace-scoped-adapters-token",
+        capabilities: {
+          version: 1,
+          ops: ["adapters_status"],
+          namespaces: ["other"],
+        },
+      },
+      {
+        token: "implicit-namespace-token",
+        capabilities: {
+          version: 1,
+          ops: implicitNamespaceOperations,
+          namespaces: ["other"],
+        },
+      },
       {
         token: "fleet-scoped-token",
         capabilities: {
@@ -3005,9 +3043,10 @@ test("HTTP authorization probe verifies requested operation grants without invok
     adminConsoleEnabled: false,
   });
   const status = await server.start();
-  const probe = (token: string, operations: string[]) => {
+  const probe = (token: string, operations: string[], namespace?: string) => {
     const query = new URLSearchParams();
     for (const operation of operations) query.append("op", operation);
+    if (namespace !== undefined) query.set("namespace", namespace);
     return fetch(`http://127.0.0.1:${status.port}/engram/v1/authorization?${query}`, {
       headers: { authorization: `Bearer ${token}` },
     });
@@ -3022,6 +3061,35 @@ test("HTTP authorization probe verifies requested operation grants without invok
     const alternateGrant = await probe("observe-only-token", ["namespace_writable"]);
     assert.equal(alternateGrant.status, 200);
     await alternateGrant.text();
+
+    const namespaceDiagnostic = await probe(
+      "namespace-scoped-delegate-token",
+      ["namespace_writable"],
+    );
+    assert.equal(namespaceDiagnostic.status, 200, "writability diagnostics report scope in their response");
+    await namespaceDiagnostic.text();
+
+    const namespaceAgnostic = await probe("namespace-scoped-adapters-token", ["adapters_status"]);
+    assert.equal(namespaceAgnostic.status, 200, "namespace-free operations must not use the daemon default");
+    await namespaceAgnostic.text();
+
+    const namespaceDenied = await probe("namespace-scoped-delegate-token", delegateOperations);
+    assert.equal(namespaceDenied.status, 403, "a scoped token must cover the daemon default namespace");
+
+    for (const operation of implicitNamespaceOperations) {
+      const implicitNamespace = await probe("implicit-namespace-token", [operation]);
+      assert.equal(implicitNamespace.status, 403, `${operation} must authorize the effective namespace`);
+      await implicitNamespace.text();
+    }
+    await namespaceDenied.text();
+
+    const namespaceAllowed = await probe(
+      "namespace-scoped-delegate-token",
+      delegateOperations,
+      "other",
+    );
+    assert.equal(namespaceAllowed.status, 200);
+    await namespaceAllowed.text();
 
     const fleetWide = await probe("fleet-scoped-token", ["continuity_audit_generate"]);
     assert.equal(fleetWide.status, 403);

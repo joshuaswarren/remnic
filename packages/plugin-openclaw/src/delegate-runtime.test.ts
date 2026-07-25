@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import http from "node:http";
+import test from "node:test";
+import { initLogger, resetLogger } from "@remnic/core/logger";
 
 import {
   maybeRegisterDelegateRuntime,
+  probeDelegateAuthorization,
   registerDelegateRuntime,
   type DelegateRuntimeOptions,
+  type MaybeRegisterDelegateDeps,
 } from "./delegate-runtime.js";
-import { resolveBridgeMode } from "./bridge.js";
+import { loadDaemonAuth, resolveBridgeMode } from "./bridge.js";
 
 type HookHandler = (
   event: Record<string, unknown>,
@@ -96,7 +102,14 @@ async function startDaemonStub(
 function optionsFor(port: number, overrides: Partial<DelegateRuntimeOptions> = {}): DelegateRuntimeOptions {
   return {
     serviceId: "openclaw-remnic",
-    target: { host: "127.0.0.1", port, authToken: "test-token" },
+    target: {
+      host: "127.0.0.1",
+      port,
+      resolveAuthToken: () => ({
+        token: "test-token",
+        source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+      }),
+    },
     namespace: "",
     allowPromptInjection: true,
     passive: false,
@@ -249,6 +262,58 @@ test("delegate honors allowPromptInjection=false but keeps observe/flush", async
   assert.ok(api.handlers.has("before_reset"), "flush hooks still registered");
 });
 
+
+test("loadDaemonAuth selects only the OpenClaw token from multi-connector stores", () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-openclaw-token-"));
+  const priorHome = process.env.HOME;
+  const authVariables = [
+    "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    "OPENCLAW_ENGRAM_ACCESS_TOKEN",
+    "REMNIC_AUTH_TOKEN",
+    "ENGRAM_AUTH_TOKEN",
+  ] as const;
+  const priorAuth = new Map(authVariables.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of authVariables) Reflect.deleteProperty(process.env, name);
+    process.env.HOME = tempHome;
+    fs.mkdirSync(path.join(tempHome, ".remnic"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempHome, ".remnic", "tokens.json"),
+      JSON.stringify({
+        tokens: [
+          { token: "remnic_other_token", connector: "other", createdAt: "2026-01-01T00:00:00.000Z" },
+          { token: "remnic_openclaw_token", connector: "openclaw", createdAt: "2026-01-01T00:00:00.000Z" },
+        ],
+      }),
+    );
+
+    assert.deepEqual(loadDaemonAuth(), {
+      token: "remnic_openclaw_token",
+      source: "remnic token store",
+    });
+
+    fs.writeFileSync(
+      path.join(tempHome, ".remnic", "tokens.json"),
+      JSON.stringify({
+        tokens: [
+          { token: "remnic_other_token", connector: "other", createdAt: "2026-01-01T00:00:00.000Z" },
+        ],
+      }),
+    );
+    assert.deepEqual(loadDaemonAuth(), {
+      token: "",
+      source: "no configured token",
+    });
+  } finally {
+    if (priorHome === undefined) Reflect.deleteProperty(process.env, "HOME");
+    else process.env.HOME = priorHome;
+    for (const [name, value] of priorAuth) {
+      if (value === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = value;
+    }
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
 test("resolveBridgeMode is explicit-only: config delegate activates, absence stays embedded", () => {
   const priorEnv = process.env.REMNIC_BRIDGE_MODE;
   Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
@@ -749,5 +814,250 @@ test("maybeRegister: an embedded-mode registration blocks a later delegate flip 
   } finally {
     if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorEnv;
+  }
+});
+
+test("delegate runtime reloads a rotated daemon token without re-registering hooks", async () => {
+  let currentToken = "expired-token";
+  const receivedAuthorization: Array<string | undefined> = [];
+  const server = http.createServer((req, res) => {
+    receivedAuthorization.push(req.headers.authorization);
+    res.setHeader("content-type", "application/json");
+    if (req.headers.authorization !== "Bearer accepted-token") {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    res.end(JSON.stringify({ context: "recovered context" }));
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const target: DelegateRuntimeOptions["target"] = {
+    host: "127.0.0.1",
+    port: address.port,
+    resolveAuthToken: () => ({
+      token: currentToken,
+      source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    }),
+  };
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(address.port, { target }));
+
+    const first = await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the durable release?" },
+      { sessionKey: "rotation" },
+    );
+    assert.equal(first, undefined, "the expired token receives no injected context");
+
+    currentToken = "accepted-token";
+    const second = await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the durable release?" },
+      { sessionKey: "rotation" },
+    );
+    assert.match(String((second as Record<string, unknown>)?.prependSystemContext), /recovered context/);
+    assert.deepEqual(receivedAuthorization, ["Bearer expired-token", "Bearer accepted-token"]);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()),
+    );
+  }
+});
+
+test("delegate authorization probe reports grant, rejection, and network failure without exposing credentials", async () => {
+  let responseStatus = 200;
+  const receivedAuthorization: Array<string | undefined> = [];
+  const server = http.createServer((req, res) => {
+    assert.equal(req.method, "GET");
+    assert.match(
+      String(req.url),
+      /\/engram\/v1\/authorization\?op=recall&op=observe&op=lcm_compaction_flush&namespace=/,
+    );
+    receivedAuthorization.push(req.headers.authorization);
+    res.writeHead(responseStatus, { "content-type": "application/json" });
+    res.end(JSON.stringify({ authorized: responseStatus === 200 }));
+  });
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const target: DelegateRuntimeOptions["target"] = {
+    host: "127.0.0.1",
+    port: address.port,
+    resolveAuthToken: () => ({
+      token: "test-preflight-token",
+      source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    }),
+  };
+  try {
+    assert.deepEqual(await probeDelegateAuthorization(target), {
+      state: "authorized",
+      tokenSource: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    });
+
+    responseStatus = 403;
+    assert.deepEqual(await probeDelegateAuthorization(target), {
+      state: "unauthorized",
+      status: 403,
+      tokenSource: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    });
+    assert.deepEqual(receivedAuthorization, ["Bearer test-preflight-token", "Bearer test-preflight-token"]);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()),
+    );
+  }
+
+  const unavailable: DelegateRuntimeOptions["target"] = {
+    host: "127.0.0.1",
+    port: 1,
+    resolveAuthToken: () => ({
+      token: "test-preflight-token",
+      source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    }),
+  };
+  assert.deepEqual(await probeDelegateAuthorization(unavailable), {
+    state: "unavailable",
+    tokenSource: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+  });
+});
+
+test("delegate activation warns each service once and keeps its memory hooks", async (t) => {
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorToken = process.env.OPENCLAW_REMNIC_ACCESS_TOKEN;
+  const warnings: string[] = [];
+  initLogger(
+    {
+      info() {},
+      warn(message) {
+        warnings.push(message);
+      },
+      error() {},
+    },
+    false,
+    { timestamps: false },
+  );
+  t.after(() => {
+    resetLogger();
+    if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorToken === undefined) Reflect.deleteProperty(process.env, "OPENCLAW_REMNIC_ACCESS_TOKEN");
+    else process.env.OPENCLAW_REMNIC_ACCESS_TOKEN = priorToken;
+  });
+  process.env.REMNIC_BRIDGE_MODE = "delegate";
+  process.env.OPENCLAW_REMNIC_ACCESS_TOKEN = "test-preflight-token";
+  const api = recordingApi();
+  const options = {
+    serviceId: "openclaw-remnic",
+    configBridgeMode: "delegate",
+    passive: false,
+    allowPromptInjection: true,
+    gateHeartbeatTurns: false,
+    recallBudgetChars: 8_000,
+    memoryDir: "/tmp/remnic-delegate-test-memory",
+    sessionTogglesEnabled: false,
+    respectBundledActiveMemoryToggle: false,
+    cleanUserMessage: (text: string) => text,
+    hookTimeoutMs: 5_000,
+    shouldSkipRecall: () => false,
+    flushOnResetEnabled: true,
+  };
+  let probeCalls = 0;
+  const probedOperations: Array<readonly string[]> = [];
+  const deps: MaybeRegisterDelegateDeps = {
+    checkHealth: () => true,
+    probeAuthorization: async (_target, _namespace, operations) => {
+      probeCalls += 1;
+      probedOperations.push(operations);
+      return {
+        state: "unauthorized" as const,
+        status: 403 as const,
+        tokenSource: "OPENCLAW_REMNIC_ACCESS_TOKEN" as const,
+      };
+    },
+  };
+  assert.equal(maybeRegisterDelegateRuntime(api, options, deps), true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.ok(api.handlers.has("agent_end"), "authorization preflight must not fall back to embedded");
+  assert.equal(probeCalls, 1);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /authorization preflight rejected/);
+  assert.match(warnings[0]!, /OPENCLAW_REMNIC_ACCESS_TOKEN/);
+  assert.doesNotMatch(warnings[0]!, /test-preflight-token/);
+
+  assert.equal(
+    maybeRegisterDelegateRuntime(
+      api,
+      { ...options, serviceId: "openclaw-engram", allowPromptInjection: false },
+      deps,
+    ),
+    true,
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(probeCalls, 2, "each service receives a preflight");
+  assert.equal(warnings.length, 2);
+  assert.deepEqual(probedOperations, [
+    ["recall", "observe", "lcm_compaction_flush"],
+    ["observe", "lcm_compaction_flush"],
+  ]);
+});
+
+test("delegate authorization preflight probes only the operations enabled by configuration", async () => {
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  process.env.REMNIC_BRIDGE_MODE = "delegate";
+  const options = {
+    serviceId: "openclaw-remnic",
+    configBridgeMode: "delegate",
+    passive: false,
+    allowPromptInjection: true,
+    gateHeartbeatTurns: false,
+    recallBudgetChars: 8_000,
+    memoryDir: "/tmp/remnic-delegate-test-memory",
+    sessionTogglesEnabled: false,
+    respectBundledActiveMemoryToggle: false,
+    cleanUserMessage: (text: string) => text,
+    hookTimeoutMs: 5_000,
+    shouldSkipRecall: () => false,
+    flushOnResetEnabled: true,
+  };
+  try {
+    for (const disabledRecall of [
+      { allowPromptInjection: false },
+      { recallBudgetChars: 0 },
+    ]) {
+      let operations: readonly string[] | undefined;
+      const api = recordingApi();
+      assert.equal(
+        maybeRegisterDelegateRuntime(
+          api,
+          { ...options, ...disabledRecall },
+          {
+            checkHealth: () => true,
+            probeAuthorization: async (_target, _namespace, requestedOperations) => {
+              operations = requestedOperations;
+              return {
+                state: "authorized",
+                tokenSource: "no configured token",
+              };
+            },
+          },
+        ),
+        true,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(operations, ["observe", "lcm_compaction_flush"]);
+    }
+  } finally {
+    if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
   }
 });

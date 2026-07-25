@@ -25,8 +25,9 @@ import path from "node:path";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
   checkDaemonHealthSync,
-  loadDaemonAuthToken,
+  loadDaemonAuth,
   resolveBridgeMode,
+  type DaemonAuthToken,
 } from "./bridge.js";
 import {
   extractLastTurn,
@@ -36,7 +37,7 @@ import {
 export interface DelegateDaemonTarget {
   host: string;
   port: number;
-  authToken: string;
+  resolveAuthToken: () => DaemonAuthToken;
 }
 
 export interface DelegateRuntimeOptions {
@@ -90,6 +91,55 @@ export interface DelegateHookApi {
 
 const MEMORY_CONTEXT_HEADER = "## Memory Context (Remnic)";
 
+const DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS = [
+  "recall",
+  "observe",
+  "lcm_compaction_flush",
+] as const;
+
+type DelegateAuthorizationOperation = (typeof DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS)[number];
+
+export interface DelegateAuthorizationPreflight {
+  readonly state: "authorized" | "unauthorized" | "unavailable";
+  readonly tokenSource: DaemonAuthToken["source"];
+  readonly status?: 401 | 403;
+}
+
+function daemonUrl(target: DelegateDaemonTarget, pathname: string): string {
+  const host = target.host.includes(":") && !target.host.startsWith("[")
+    ? `[${target.host}]`
+    : target.host;
+  return `http://${host}:${target.port}${pathname}`;
+}
+
+export async function probeDelegateAuthorization(
+  target: DelegateDaemonTarget,
+  namespace = "",
+  operations: readonly DelegateAuthorizationOperation[] = DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS,
+): Promise<DelegateAuthorizationPreflight> {
+  const auth = target.resolveAuthToken();
+  const headers = auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined;
+  const query = new URLSearchParams();
+  for (const operation of operations) query.append("op", operation);
+  query.set("namespace", namespace);
+  try {
+    const response = await fetch(daemonUrl(target, `/engram/v1/authorization?${query}`), {
+      headers,
+      signal: AbortSignal.timeout(2_000),
+    });
+    await response.body?.cancel();
+    if (response.status === 200) {
+      return { state: "authorized", tokenSource: auth.source };
+    }
+    if (response.status === 401 || response.status === 403) {
+      return { state: "unauthorized", status: response.status, tokenSource: auth.source };
+    }
+  } catch {
+    return { state: "unavailable", tokenSource: auth.source };
+  }
+  return { state: "unavailable", tokenSource: auth.source };
+}
+
 async function postJson(
   target: DelegateDaemonTarget,
   pathname: string,
@@ -97,13 +147,9 @@ async function postJson(
   timeoutMs: number,
 ): Promise<Record<string, unknown> | null> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (target.authToken) headers.Authorization = `Bearer ${target.authToken}`;
-  // Bracket bare IPv6 hosts (e.g. ::1, fd00::1) — a raw colon-containing
-  // host in a URL literal is ambiguous with the port separator.
-  const host = target.host.includes(":") && !target.host.startsWith("[")
-    ? `[${target.host}]`
-    : target.host;
-  const res = await fetch(`http://${host}:${target.port}${pathname}`, {
+  const auth = target.resolveAuthToken();
+  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
+  const res = await fetch(daemonUrl(target, pathname), {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -409,6 +455,14 @@ export interface MaybeRegisterDelegateOptions {
   flushOnResetEnabled: boolean;
 }
 
+function activeDelegateAuthorizationOperations(
+  options: MaybeRegisterDelegateOptions,
+): readonly DelegateAuthorizationOperation[] {
+  return options.allowPromptInjection && options.recallBudgetChars !== 0
+    ? DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS
+    : DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS.slice(1);
+}
+
 // Mirrors the embedded runtime's per-api hook dedup (globalThis HOOK_APIS
 // WeakSet), scoped per serviceId: a migration install can register BOTH the
 // canonical and legacy plugin ids against the same api object, and each
@@ -420,6 +474,7 @@ const delegateHookApiServices = new WeakMap<object, Set<string>>();
 // hooks from the fallback are still bound (OpenClaw exposes no unregister), so
 // switching would stack both memory paths (double recall/observe/flush).
 const delegateEmbeddedFallbackApis = new WeakSet<object>();
+const delegateAuthorizationPreflightServices = new WeakMap<object, Set<string>>();
 
 /**
  * Resolve bridge mode, preflight the daemon, and register the delegate
@@ -429,8 +484,14 @@ const delegateEmbeddedFallbackApis = new WeakSet<object>();
  * requested daemon failed its preflight (logged loudly).
  */
 export interface MaybeRegisterDelegateDeps {
-  /** Injectable preflight — defaults to the bridge's worker-backed sync probe. */
+  /** Injectable liveness preflight — defaults to the bridge's worker-backed sync probe. */
   checkHealth: (host: string, port: number) => boolean;
+  /** Injectable authorization preflight for standalone daemon compatibility. */
+  probeAuthorization?: (
+    target: DelegateDaemonTarget,
+    namespace: string,
+    operations: readonly DelegateAuthorizationOperation[],
+  ) => Promise<DelegateAuthorizationPreflight>;
 }
 
 export function maybeRegisterDelegateRuntime(
@@ -502,13 +563,14 @@ export function maybeRegisterDelegateRuntime(
         },
       )
     : null;
+  const target: DelegateDaemonTarget = {
+    host: bridge.daemonHost,
+    port: bridge.daemonPort,
+    resolveAuthToken: loadDaemonAuth,
+  };
   registerDelegateRuntime(api, {
     serviceId: options.serviceId,
-    target: {
-      host: bridge.daemonHost,
-      port: bridge.daemonPort,
-      authToken: loadDaemonAuthToken(),
-    },
+    target,
     namespace: "",
     allowPromptInjection: options.allowPromptInjection,
     passive: options.passive,
@@ -526,5 +588,32 @@ export function maybeRegisterDelegateRuntime(
     observeTimeoutMs: 120_000,
     flushTimeoutMs: 55_000,
   });
+  let preflightServices = delegateAuthorizationPreflightServices.get(api);
+  if (!options.passive && !preflightServices?.has(options.serviceId)) {
+    if (!preflightServices) {
+      preflightServices = new Set<string>();
+      delegateAuthorizationPreflightServices.set(api, preflightServices);
+    }
+    preflightServices.add(options.serviceId);
+    const operations = activeDelegateAuthorizationOperations(options);
+    const probe = deps.probeAuthorization ?? probeDelegateAuthorization;
+    const operationLabel = operations.join("/");
+    void probe(target, "", operations)
+      .then((result) => {
+        if (result.state === "authorized") return;
+        if (result.state === "unauthorized") {
+          log.warn(
+            `delegate authorization preflight rejected ${operationLabel} (${result.status}; token source: ${result.tokenSource}) — runtime remains active`,
+          );
+          return;
+        }
+        log.warn(
+          `delegate authorization preflight could not verify ${operationLabel} (token source: ${result.tokenSource}) — runtime remains active`,
+        );
+      })
+      .catch(() => {
+        log.warn("delegate authorization preflight could not complete — runtime remains active");
+      });
+  }
   return true;
 }
