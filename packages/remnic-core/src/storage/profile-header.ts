@@ -149,8 +149,7 @@ function isHtmlTagNameCharacter(character: string): boolean {
   return (
     isAsciiLetter(character) ||
     (character >= "0" && character <= "9") ||
-    character === "-" ||
-    character === ":"
+    character === "-"
   );
 }
 
@@ -161,6 +160,15 @@ function findCompleteHtmlTag(line: string): HtmlTag | null {
   const nameStart = index;
   if (!isAsciiLetter(line[index] ?? "")) return null;
   while (isHtmlTagNameCharacter(line[index] ?? "")) index += 1;
+  const nextCharacter = line[index] ?? "";
+  if (
+    nextCharacter !== ">" &&
+    nextCharacter !== "/" &&
+    nextCharacter !== " " &&
+    nextCharacter !== "\t"
+  ) {
+    return null;
+  }
   const name = line.slice(nameStart, index).toLowerCase();
   let quote: string | null = null;
   for (; index < line.length; index += 1) {
@@ -276,7 +284,7 @@ function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBl
   if (normalizedLine.startsWith("<?")) {
     return { endMarker: "?>", endsAtBlankLine: false, tagName: null, depth: 0 };
   }
-  if (normalizedLine.startsWith("<![cdata[")) {
+  if (trimmedLine.startsWith("<![CDATA[")) {
     return { endMarker: "]]>", endsAtBlankLine: false, tagName: null, depth: 0 };
   }
   const declarationFirst = trimmedLine[2];
