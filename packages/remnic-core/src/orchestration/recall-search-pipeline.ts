@@ -432,7 +432,6 @@ export class RecallSearchPipelineCoordinator {
       320,
       Math.max(fetchLimit, qmdFetchLimit * 5),
     );
-    const MAX_ATTEMPTS = 2;
     const qmdRecallBudgetMs = this.deps.config.recallEnrichmentDeadlineMs ?? 25_000;
     const qmdRecallBudgetEnabled = qmdRecallBudgetMs > 0;
     const startedAtMs = Date.now();
@@ -499,7 +498,7 @@ export class RecallSearchPipelineCoordinator {
       return [];
     }
 
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    for (;;) {
       throwIfRecallAborted(options.abortSignal);
       if (
         qmdRecallBudgetEnabled &&

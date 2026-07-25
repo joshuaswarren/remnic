@@ -287,3 +287,39 @@ test("finding 1 (round-5) — excluded seeds must not fill the merge cap and sta
     "excluded seeds ranked ahead must not fill the fetchLimit cap and starve the recallable primary hit",
   );
 });
+
+test("QMD widening continues past archive-only pages", async () => {
+  const archived = Array.from({ length: 45 }, (_, index) =>
+    resultScored("default", `archive/2026-07-25/archive-${index}.md`, 2),
+  );
+  const live = resultScored("default", "facts/live.md", 1);
+  const ranked = [...archived, live];
+  const coordinator = new RecallSearchPipelineCoordinator({
+    config: { memoryDir: "/mem", qmdSearchStrategy: "lex", searchBackend: "qmd" },
+    qmd: {},
+    namespaceFromPath: () => "default",
+    searchAcrossNamespaces: async ({ maxResults }: { maxResults: number }) =>
+      ranked.slice(0, maxResults),
+  } as unknown as RecallSearchPipelineDeps);
+
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
+    "archive-starved",
+    20,
+    20,
+    {
+      namespacesEnabled: false,
+      recallNamespaces: ["default"],
+      resolveNamespace: () => "default",
+      queryAwarePrefilter: {
+        candidatePaths: null,
+        temporalFromDate: null,
+        matchedTags: [],
+        expandedTags: [],
+        combination: "none",
+        filteredToFullSearch: false,
+      },
+    },
+  );
+
+  assert.deepEqual(out.map((candidate) => candidate.path), ["facts/live.md"]);
+});
