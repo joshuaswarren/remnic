@@ -62,6 +62,20 @@ test("writeProfile adds one canonical header when content has none", async (t) =
     t.mock.timers.reset();
   }
 });
+test("writeProfile handles a title-only profile without a trailing newline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+
+      await storage.writeProfile("# Behavioral Profile");
+
+      assert.equal(await storage.readProfile(), `# Behavioral Profile\n${FRESH_HEADER}\n\n`);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile keeps an inserted header standalone", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
