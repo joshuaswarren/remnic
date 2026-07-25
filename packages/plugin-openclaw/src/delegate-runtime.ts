@@ -253,6 +253,23 @@ function withNamespace(
   return namespace ? { ...body, namespace } : body;
 }
 
+const namespaceBindingsByDaemonScope = new Map<string, Map<string, string>>();
+
+function namespaceBindingsFor(
+  serviceId: string,
+  target: DelegateDaemonTarget,
+  fallbackNamespace: string,
+): Map<string, string> {
+  const scope = JSON.stringify([serviceId, target.host, target.port, fallbackNamespace.trim()]);
+  let bindings = namespaceBindingsByDaemonScope.get(scope);
+  if (!bindings) {
+    bindings = new Map<string, string>();
+    namespaceBindingsByDaemonScope.set(scope, bindings);
+  }
+  return bindings;
+}
+
+
 function sessionNamespaceFrom(
   sessionKey: string,
   event: Record<string, unknown>,
@@ -328,7 +345,7 @@ export function registerDelegateRuntime(
     );
     return;
   }
-  const boundNamespaces = new Map<string, string>();
+  const boundNamespaces = namespaceBindingsFor(options.serviceId, target, namespace);
 
   // Embedded zero-limit contract: recallBudgetChars === 0 disables injection.
   if (options.allowPromptInjection && options.recallBudgetChars !== 0) {
@@ -487,7 +504,7 @@ export function registerDelegateRuntime(
   const flushHandler = async (
     event: Record<string, unknown>,
     ctx: Record<string, unknown>,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     const sessionKey = lifecycleSessionKeyFrom(event, ctx);
     try {
       await postJson(
@@ -497,8 +514,10 @@ export function registerDelegateRuntime(
         withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace, boundNamespaces), { sessionKey }),
         options.flushTimeoutMs,
       );
+      return true;
     } catch (err) {
       log.warn(`delegate flush failed: ${String(err)}`);
+      return false;
     }
   };
   api.on("before_compaction", flushHandler);
@@ -508,8 +527,7 @@ export function registerDelegateRuntime(
       ctx: Record<string, unknown>,
     ): Promise<void> => {
       const sessionKey = lifecycleSessionKeyFrom(event, ctx);
-      await flushHandler(event, ctx);
-      boundNamespaces.delete(sessionKey);
+      if (await flushHandler(event, ctx)) boundNamespaces.delete(sessionKey);
     };
     api.on("before_reset", flushEndedSession);
     api.on("session_end", flushEndedSession);

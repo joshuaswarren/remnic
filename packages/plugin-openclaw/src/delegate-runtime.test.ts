@@ -412,6 +412,82 @@ test("delegate retains a proven namespace binding for a sparse ended-session flu
   }
 });
 
+test("delegate retains a namespace binding after a failed ended-session flush", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: true }));
+  const unavailable = await startDaemonStub(() => ({ accepted: true }));
+  const unavailablePort = unavailable.port;
+  await unavailable.close();
+  try {
+    const api = recordingApi();
+    const options = optionsFor(stub.port);
+    registerDelegateRuntime(api, options);
+    const endedContext = {
+      sessionKey: "retry-session",
+      runtime: { agent: { session: { namespace: "team-retry" } } },
+    };
+
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the retry session namespace" },
+          { role: "assistant", content: "the namespace is bound" },
+        ],
+      },
+      endedContext,
+    );
+    options.target.port = unavailablePort;
+    await invoke(api, "before_reset", { sessionKey: "retry-session" });
+    options.target.port = stub.port;
+    await invoke(api, "session_end", { sessionKey: "retry-session" });
+
+    const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush);
+    assert.equal(flush.body.sessionKey, "retry-session");
+    assert.equal(flush.body.namespace, "team-retry");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate retains a namespace binding across runtime re-registration", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: true }));
+  try {
+    const originalApi = recordingApi();
+    registerDelegateRuntime(originalApi, optionsFor(stub.port));
+    const endedContext = {
+      sessionKey: "reload-session",
+      runtime: { agent: { session: { namespace: "team-reload" } } },
+    };
+
+    await invoke(
+      originalApi,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the reload session namespace" },
+          { role: "assistant", content: "the namespace is bound" },
+        ],
+      },
+      endedContext,
+    );
+
+    const reloadedApi = recordingApi();
+    registerDelegateRuntime(reloadedApi, optionsFor(stub.port));
+    await invoke(reloadedApi, "session_end", { sessionKey: "reload-session" });
+
+    const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush);
+    assert.equal(flush.body.sessionKey, "reload-session");
+    assert.equal(flush.body.namespace, "team-reload");
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate passive mode registers no hooks", async () => {
   const api = recordingApi();
   registerDelegateRuntime(api, optionsFor(1, { passive: true }));
