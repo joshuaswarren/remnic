@@ -519,6 +519,35 @@ test("writeProfile replaces a noncanonical metadata header", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile preserves timestamp-shaped prose continuations", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "This example displays the following label",
+        "*Last updated: literal example*",
+        "",
+        "- Keeps prose content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace(
+          "\n\nThis example displays",
+          `\n\n${FRESH_HEADER}\n\nThis example displays`,
+        ),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile recognizes whitespace-only metadata gaps", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });

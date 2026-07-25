@@ -395,10 +395,28 @@ function findProfileTitleIndex(lines: ProfileLine[]): number {
   return titleIndex;
 }
 
+function isStandaloneMetadataLine(
+  lines: ProfileLine[],
+  index: number,
+  frontmatterEnd: number,
+): boolean {
+  const previousLine = lines[index - 1]?.content.trim() ?? "";
+  const nextLine = lines[index + 1]?.content.trim() ?? "";
+  const startsBlock = index === 0 || index === frontmatterEnd + 1 || previousLine === "";
+  const endsBlock = index === lines.length - 1 || nextLine === "";
+  return startsBlock && endsBlock;
+}
+
 function findProfileHeaderIndexes(lines: ProfileLine[]): number[] {
   const indexes: number[] = [];
+  const frontmatterEnd = findFrontmatterEnd(lines);
   visitProfileMetadataLines(lines, (line, index) => {
-    if (isLastUpdatedHeader(line)) indexes.push(index);
+    if (
+      isLastUpdatedHeader(line) &&
+      isStandaloneMetadataLine(lines, index, frontmatterEnd)
+    ) {
+      indexes.push(index);
+    }
   });
   return indexes;
 }
