@@ -63,7 +63,6 @@ interface ExtractionForceFlushCall {
   sessionKey: string;
   options: {
     reason: string;
-    bufferKey?: string;
     extractionDeadlineMs?: number;
     abortSignal?: AbortSignal;
     writeNamespaceOverride?: string;
@@ -388,7 +387,11 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
   const [call] = probe.extractionForceFlushCalls;
   assert.equal(call.sessionKey, "pi-geek:force-flush");
   assert.equal(call.options.reason, "access_force_flush");
-  assert.equal(call.options.bufferKey, "pi-geek:force-flush");
+  assert.equal(
+    Object.hasOwn(call.options, "bufferKey"),
+    false,
+    "force-flush must let the orchestrator discover all session buffer keys",
+  );
   assert.equal(call.options.extractionDeadlineMs, deadlineMs);
   assert.equal(call.options.abortSignal, abortController.signal);
   assert.equal(call.options.writeNamespaceOverride, expectedNamespace);

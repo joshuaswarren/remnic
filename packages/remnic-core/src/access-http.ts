@@ -3206,6 +3206,8 @@ export class EngramAccessHttpServer {
         toolName === "remnic.observe" ||
         toolName === "engram.lcm_compaction_flush" ||
         toolName === "remnic.lcm_compaction_flush" ||
+        toolName === "engram.extraction_force_flush" ||
+        toolName === "remnic.extraction_force_flush" ||
         toolName === "engram.lcm_compaction_record" ||
         toolName === "remnic.lcm_compaction_record" ||
         toolName === "engram.capsule_export" ||

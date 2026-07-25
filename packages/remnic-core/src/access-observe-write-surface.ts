@@ -890,7 +890,6 @@ export class AccessObserveWriteSurface {
     }
     await this.deps.orchestrator.flushSession(request.sessionKey, {
       reason: "access_force_flush",
-      bufferKey: request.sessionKey,
       abortSignal: request.abortSignal,
       extractionDeadlineMs: request.deadlineMs,
       writeNamespaceOverride:

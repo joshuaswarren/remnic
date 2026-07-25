@@ -3172,6 +3172,66 @@ test("HTTP meetings build enforces the per-principal write rate limit (issue #19
     await server.stop();
   }
 });
+test("HTTP-MCP extraction force-flush aliases consume the write quota", async () => {
+  let flushes = 0;
+  const service = {
+    extractionForceFlush: async () => {
+      flushes += 1;
+      return {
+        flushed: true,
+        sessionKey: "session-1",
+        namespace: "default",
+        effectiveNamespace: "default",
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  try {
+    const responses: Response[] = [];
+    for (const name of ["remnic.extraction_force_flush", "engram.extraction_force_flush"]) {
+      responses.push(
+        await fetch(`http://127.0.0.1:${status.port}/mcp`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer test-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: name,
+            method: "tools/call",
+            params: {
+              name,
+              arguments: {
+                sessionKey: "session-1",
+                namespace: "default",
+                cwd: "/workspace/project",
+                projectTag: "Acme/Webshop",
+                deadlineMs: Date.now() + 60_000,
+              },
+            },
+          }),
+        }),
+      );
+    }
+    const [first, second] = responses;
+    assert.equal(first.status, 200);
+    await first.text();
+    assert.equal(second.status, 429);
+    const rateLimited = await second.json() as { code?: string };
+    assert.equal(rateLimited.code, "write_rate_limited");
+    assert.equal(flushes, 1, "the rate-limited alias must not reach the service");
+  } finally {
+    await server.stop();
+  }
+});
 
 test("HTTP meetings get returns 400 (not 500) for a malformed percent-encoded id (issue #1900)", async () => {
   let called = 0;
