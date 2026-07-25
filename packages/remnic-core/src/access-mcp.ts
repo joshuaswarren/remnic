@@ -207,6 +207,7 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.observe": "observe",
   "engram.lcm_search": "lcm_search",
   "engram.lcm_compaction_flush": "lcm_compaction_flush",
+  "engram.extraction_force_flush": "extraction_force_flush",
   "engram.lcm_compaction_record": "lcm_compaction_record",
   "engram.continuity_audit_generate": "continuity_audit_generate",
   "engram.continuity_incident_open": "continuity_incident_open",
@@ -1062,6 +1063,24 @@ export class EngramMcpServer {
           properties: {
             sessionKey: { type: "string", description: "Conversation session identifier" },
             namespace: { type: "string" },
+            cwd: { type: "string", description: "Working directory for auto git-context resolution." },
+            projectTag: { type: "string", description: "Project tag for non-git project scoping." },
+          },
+          required: ["sessionKey"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.extraction_force_flush",
+        description: "Force-drain a session extraction buffer before a lifecycle boundary.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionKey: { type: "string", description: "Conversation session identifier" },
+            namespace: { type: "string" },
+            cwd: { type: "string", description: "Working directory for auto git-context resolution." },
+            projectTag: { type: "string", description: "Project tag for non-git project scoping." },
+            deadlineMs: { type: "number", minimum: 0 },
           },
           required: ["sessionKey"],
           additionalProperties: false,
@@ -2659,6 +2678,8 @@ export class EngramMcpServer {
       envelope = parseMcpRequest("observe", args);
     } else if (migrated === "lcm_compaction_flush") {
       envelope = parseMcpRequest("lcmCompactionFlush", args);
+    } else if (migrated === "extraction_force_flush") {
+      envelope = parseMcpRequest("extractionForceFlush", args);
     } else if (migrated === "lcm_compaction_record") {
       envelope = parseMcpRequest("lcmCompactionRecord", args);
     } else if (migrated.startsWith("codegraph_")) {
