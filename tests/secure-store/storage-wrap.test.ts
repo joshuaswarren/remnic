@@ -532,6 +532,31 @@ test("StorageManager.setSecureStoreKey — isSecureStoreUnlocked reflects key st
   storage.setSecureStoreKey(null);
   assert.strictEqual(storage.isSecureStoreUnlocked(), false, "locked after key cleared");
 });
+test("StorageManager.setSecureStoreKey — repeated same key and policy do not refresh secure-store state", async () => {
+  await withTempDir(async (dir) => {
+    const storage = new StorageManager(dir, {});
+    await storage.ensureDirectories();
+    const migration = (
+      storage as unknown as {
+        entityCanonicalIdMigration: { triggerAfterUnlock: () => Promise<void> };
+      }
+    ).entityCanonicalIdMigration;
+    const triggerAfterUnlock = migration.triggerAfterUnlock.bind(migration);
+    let triggerCalls = 0;
+    migration.triggerAfterUnlock = async () => {
+      triggerCalls += 1;
+      return triggerAfterUnlock();
+    };
+
+    const key = makeKey();
+    await storage.setSecureStoreKey(key, true);
+    await storage.setSecureStoreKey(Buffer.from(key), true);
+    assert.equal(triggerCalls, 1, "same key bytes and policy must be a no-op");
+
+    await storage.setSecureStoreKey(Buffer.from(key), false);
+    assert.equal(triggerCalls, 2, "changing encrypt-on-write policy must refresh state");
+  });
+});
 
 test("StorageManager — writeMemory encrypts and readAllMemories decrypts", async () => {
   await withTempDir(async (dir) => {

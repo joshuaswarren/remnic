@@ -2098,6 +2098,11 @@ export class StorageManager {
    * module (`keyring.ts`) owns zeroization.
    */
   async setSecureStoreKey(key: Buffer | null, encryptOnWrite = true): Promise<void> {
+    const sameKey =
+      this._secureStoreKey === key ||
+      (this._secureStoreKey !== null && key !== null && this._secureStoreKey.equals(key));
+    if (sameKey && this._secureStoreEncryptOnWrite === encryptOnWrite) return;
+
     this._secureStoreKey = key;
     this._secureStoreEncryptOnWrite = encryptOnWrite;
     // Route through the invalidation chokepoint (issue #1535): a key change
