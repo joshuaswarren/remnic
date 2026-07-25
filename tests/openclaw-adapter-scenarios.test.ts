@@ -1036,9 +1036,19 @@ test("scenario: agent_end records repeated user transcript content without messa
 
 test("scenario: message_received dedupes same delivery content with changed messageId", async () => {
   await withScenarioRegistration(
-    async ({ capture, memoryDir }) => {
+    async ({ capture, memoryDir, orchestrator }) => {
       const messageReceived = registeredHook(capture, "message_received");
-      const content = "Remember the same delivery changed id inbound message.";
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const content = [
+        "Remember the same delivery changed id inbound message.",
+        "<memory_note>",
+        "content: The changed-id inline capture should only persist once.",
+        "category: preference",
+        "</memory_note>",
+      ].join("\n");
       const sharedTimestamp = 1_780_000_000_000;
 
       await messageReceived(
@@ -1060,6 +1070,7 @@ test("scenario: message_received dedupes same delivery content with changed mess
         { sessionKey: "same-delivery-inbound-session" },
       );
 
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
       const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
       assert.equal(
         (transcriptText.match(/same delivery changed id inbound message/g) ?? []).length,
@@ -1068,6 +1079,7 @@ test("scenario: message_received dedupes same delivery content with changed mess
     },
     {
       pluginConfig: {
+        captureMode: "hybrid",
         transcriptEnabled: true,
       },
     },

@@ -656,6 +656,8 @@ export interface InlineExplicitCaptureProcessorOptions {
   maxDedupeKeys?: number;
 }
 
+const DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT = 1024;
+
 export class InlineExplicitCaptureProcessor {
   private readonly observedKeys = new Set<string>();
   private readonly observedKeyOrder: string[] = [];
@@ -665,7 +667,11 @@ export class InlineExplicitCaptureProcessor {
     private readonly orchestrator: Orchestrator,
     private readonly options: InlineExplicitCaptureProcessorOptions = {},
   ) {
-    this.maxDedupeKeys = Math.max(1, Math.floor(options.maxDedupeKeys ?? 1024));
+    const requestedLimit = options.maxDedupeKeys ?? DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT;
+    this.maxDedupeKeys =
+      Number.isFinite(requestedLimit) && requestedLimit > 0
+        ? Math.floor(requestedLimit)
+        : DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT;
   }
 
   private buildDedupeKeys(
@@ -694,6 +700,9 @@ export class InlineExplicitCaptureProcessor {
   async process(request: InlineExplicitCaptureProcessRequest): Promise<InlineExplicitCaptureProcessResult> {
     if (!shouldProcessInlineExplicitCapture({ captureMode: request.captureMode })) {
       return { content: request.content, processed: 0, accepted: 0, queued: 0, duplicates: 0 };
+    }
+    if (request.namespacePreResolved === true && !asTrimmed(request.namespace)) {
+      throw new Error("namespacePreResolved requires a resolved namespace");
     }
 
     const notes = parseInlineExplicitCaptureNotes(request.content);

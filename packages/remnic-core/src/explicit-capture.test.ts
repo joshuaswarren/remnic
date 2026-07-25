@@ -111,6 +111,7 @@ function createInlineCaptureProcessorProbe() {
     lifecycleEvents,
     maintenanceReasons,
     memories,
+    orchestrator,
     processor: new InlineExplicitCaptureProcessor(orchestrator, { sourceConnector: "openclaw" }),
     requestedNamespaces,
   };
@@ -189,4 +190,56 @@ test("inline capture processor queues invalid complete markup and never leaves i
   assert.equal(disabled.content, content);
   assert.equal(disabled.processed, 0);
   assert.equal(probe.envelopes.length, 1);
+});
+
+test("inline capture processor rejects pre-resolved input without a resolved namespace", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const content = [
+    "<memory_note>",
+    "content: A caller must authorize this namespace before writing.",
+    "category: fact",
+    "namespace: another-principal",
+    "</memory_note>",
+  ].join("\n");
+
+  await assert.rejects(
+    probe.processor.process({
+      captureMode: "hybrid",
+      content,
+      dedupeKeys: ["message-untrusted-namespace"],
+      namespacePreResolved: true,
+    }),
+    /namespacePreResolved requires a resolved namespace/,
+  );
+  assert.equal(probe.envelopes.length, 0);
+});
+
+test("inline capture processor bounds non-finite dedupe limits", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const processor = new InlineExplicitCaptureProcessor(probe.orchestrator, {
+    maxDedupeKeys: Number.POSITIVE_INFINITY,
+    sourceConnector: "openclaw",
+  });
+  const contentFor = (index: number) => [
+    "<memory_note>",
+    `content: A bounded dedupe capture item number ${index}.`,
+    "category: fact",
+    "</memory_note>",
+  ].join("\n");
+
+  for (let index = 0; index <= 1024; index += 1) {
+    await processor.process({
+      captureMode: "hybrid",
+      content: contentFor(index),
+      dedupeKeys: [`message-${index}`],
+    });
+    probe.memories.length = 0;
+  }
+
+  const replay = await processor.process({
+    captureMode: "hybrid",
+    content: contentFor(0),
+    dedupeKeys: ["message-0"],
+  });
+  assert.equal(replay.processed, 1);
 });
