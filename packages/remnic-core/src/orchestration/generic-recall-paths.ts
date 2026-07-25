@@ -27,8 +27,12 @@ function isQmdCollectionPrefix(
 ): boolean {
   if (typeof collection !== "string" || collection.length === 0) return false;
   if (prefix.startsWith(`${collection}--`)) return true;
-  if (prefix !== collection || Object.hasOwn(CATEGORY_MEMORY_ROOTS, prefix)) return false;
-  return source === "qmd" || !Object.hasOwn(RESERVED_ARCHIVE_ROOTS, prefix);
+  if (prefix !== collection) return false;
+  if (source === "qmd") return true;
+  return (
+    !Object.hasOwn(CATEGORY_MEMORY_ROOTS, prefix) &&
+    !Object.hasOwn(RESERVED_ARCHIVE_ROOTS, prefix)
+  );
 }
 
 function stripQmdCollectionPrefix(

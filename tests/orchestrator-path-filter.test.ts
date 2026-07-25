@@ -86,13 +86,15 @@ test("isGenericRecallExcludedPath root-aware keeps nested activity and archive-n
   assert.equal(isGenericRecallExcludedPath("/mem/facts/a.md", policy), false);
 });
 
-test("category-named QMD collections do not hide nested archive paths", () => {
+test("category-named QMD collections preserve filesystem paths and exclude qualified archives", () => {
+  const policy = { memoryDir: "/mem", qmdCollection: "facts" };
   assert.equal(
-    isGenericRecallExcludedPath("/mem/facts/archive/2026-07-22/a.md", {
-      memoryDir: "/mem",
-      qmdCollection: "facts",
-    }),
+    isGenericRecallExcludedPath("/mem/facts/archive/2026-07-22/a.md", policy),
     false,
+  );
+  assert.equal(
+    isGenericRecallExcludedPath("facts/archive/2026-07-22/a.md", policy, "qmd"),
+    true,
   );
 });
 

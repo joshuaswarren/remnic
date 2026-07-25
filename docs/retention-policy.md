@@ -8,11 +8,12 @@ slow to search.
 
 **Default posture:** lifecycle scoring is **on by default** (`lifecyclePolicyEnabled`,
 default `true` since [#686](https://github.com/joshuaswarren/remnic/issues/686)),
-but the behaviors that actually move or hide data are **opt-in**: hot/cold tier
-migration (`qmdTierMigrationEnabled`, default `false`), cold-tier search
-(`qmdColdTierEnabled`, default `false`), and the recall-time stale filter
-(`lifecycleFilterStaleEnabled`, default `false`). A fresh install scores memories
-but does not migrate, hide, or delete anything until you turn those gates on.
+but hot/cold tier migration (`qmdTierMigrationEnabled`, default `false`), cold-tier
+search (`qmdColdTierEnabled`, default `false`), and the recall-time stale filter
+(`lifecycleFilterStaleEnabled`, default `false`) are **opt-in**. Archive-path
+isolation is always on: generic recall omits `archive/` data even when those gates
+are disabled. A fresh install scores memories but does not migrate, search cold
+tiers, filter stale metadata, or delete data.
 
 ## Enable it
 
