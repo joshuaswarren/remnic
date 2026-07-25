@@ -73,6 +73,7 @@ interface ExtractionForceFlushCall {
     abortSignal?: AbortSignal;
     writeNamespaceOverride?: string;
     principalOverride?: string;
+    sessionOwnerPrincipal?: string;
   };
 }
 
@@ -445,6 +446,7 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
   assert.equal(call.options.abortSignal, abortController.signal);
   assert.equal(call.options.writeNamespaceOverride, expectedNamespace);
   assert.equal(call.options.principalOverride, "pi-geek");
+  assert.equal(call.options.sessionOwnerPrincipal, "pi-geek");
 });
 
 test("#2128: authenticated opaque sessions persist their trusted owner for force-flush", async () => {
@@ -464,9 +466,15 @@ test("#2128: authenticated opaque sessions persist their trusted owner for force
   const response = await service.extractionForceFlush({
     sessionKey,
     authenticatedPrincipal: "pi-geek",
+    projectTag: "Acme/Webshop",
   });
   assert.equal(response.flushed, true);
   assert.equal(probe.extractionForceFlushCalls[0]?.options.principalOverride, "pi-geek");
+  assert.equal(
+    probe.orch.getCodingContextForSession(sessionKey),
+    null,
+    "opaque force-flush must not persist caller project context",
+  );
 });
 
 

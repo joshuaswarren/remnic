@@ -12,7 +12,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
@@ -154,6 +154,40 @@ test("search-located plan: no targetIds → search runs and top hits become cand
     // candidates but only mem-a is annotated by the LLM.
     assert.equal(plan.affected.length, 1);
     assert.equal(plan.affected[0].memoryId, "mem-a");
+  });
+});
+
+test("aborted planning does not persist a pending plan", async () => {
+  await withTempDir(async (dir) => {
+    const abortController = new AbortController();
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-a", makeCandidate({ memoryId: "mem-a", content: "PostgreSQL" })],
+      ]),
+      llmResult: () => {
+        abortController.abort();
+        return {
+          classification: "outdated",
+          confidence: 0.9,
+          actions: [{ kind: "retract", memoryId: "mem-a" }],
+          relevance: [{ memoryId: "mem-a", why: "directly contradicted" }],
+          warnings: [],
+        };
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const planner = new CorrectionPlanner(makeDeps(dir, state));
+
+    await assert.rejects(
+      planner.plan({ text: "PostgreSQL" }, ["default"], { abortSignal: abortController.signal }),
+      /correction planning aborted/,
+    );
+    await assert.rejects(
+      readdir(path.join(dir, "state", "corrections", "pending")),
+      /ENOENT/,
+    );
   });
 });
 

@@ -181,6 +181,41 @@ test("auto mode: applies when all guards pass", async () => {
   assert.deepStrictEqual(appliedPlans, ["corr-test-001"]);
 });
 
+test("passive capture forwards its cancellation signal to plan and apply", async () => {
+  const abortController = new AbortController();
+  const plan = makePlan({ confidence: 0.9, classification: "outdated" });
+  let plannedSignal: AbortSignal | undefined;
+  let appliedSignal: AbortSignal | undefined;
+  const deps: PassiveCaptureDeps = {
+    planCorrection: async (_request, opts) => {
+      plannedSignal = opts?.abortSignal;
+      return plan;
+    },
+    applyCorrection: async (_planId, opts) => {
+      appliedSignal = opts.abortSignal;
+      return {
+        planId: plan.planId,
+        status: "applied",
+        results: [{ action: plan.actions[0]!, status: "applied" }],
+        auditMemoryId: "audit-001",
+        appliedAt: new Date().toISOString(),
+      };
+    },
+    storageDir: async () => "/tmp/test-passive-capture",
+  };
+
+  await capturePassiveCorrections(
+    [makeCorrection()],
+    { ...LIVE_CTX, abortSignal: abortController.signal },
+    AUTO_CONFIG,
+    deps,
+    new Set<string>(),
+  );
+
+  assert.equal(plannedSignal, abortController.signal);
+  assert.equal(appliedSignal, abortController.signal);
+});
+
 test("auto mode: suppressed — confidence below floor → queued", async () => {
   const appliedPlans: string[] = [];
   const plan = makePlan({ confidence: 0.5 });

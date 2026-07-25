@@ -24,6 +24,7 @@
  * (`markConsumed`) under `serializeMutations` keyed by plan id (rule 40).
  */
 
+import { throwIfAborted } from "../abort-error.js";
 import { serializeMutations } from "../utils/serialize-mutations.js";
 import type { CorrectionPlanner } from "./correction-planner.js";
 import {
@@ -192,6 +193,7 @@ export class CorrectionExecutor {
     planId: string,
     opts: {
       confirm: boolean;
+      abortSignal?: AbortSignal;
       /**
        * Authorize a rescope destination namespace. Bound per-request by the
        * service from the namespace policy + principal so a plan can never
@@ -202,6 +204,7 @@ export class CorrectionExecutor {
       canWriteDestination?: (namespace: string) => Promise<boolean>;
     },
   ): Promise<CorrectionOutcome> {
+    throwIfAborted(opts.abortSignal, "correction apply aborted");
     if (!opts.confirm) {
       throw new CorrectionContractError(
         "Correction apply requires explicit confirmation (correction.applyRequiresConfirm).",
@@ -210,12 +213,24 @@ export class CorrectionExecutor {
     // serializeMutations on the plan id so two concurrent applies of the SAME
     // plan serialize — the second observes the consumed status and rejects.
     return serializeMutations(`correction-apply:${namespace}:${planId}`, () =>
-      this.applyInternal(namespace, planId, opts.canWriteDestination),
+      this.applyInternal(
+        namespace,
+        planId,
+        opts.canWriteDestination,
+        opts.abortSignal,
+      ),
     );
   }
 
-  private async applyInternal(namespace: string, planId: string, canWriteDestination?: (namespace: string) => Promise<boolean>): Promise<CorrectionOutcome> {
+  private async applyInternal(
+    namespace: string,
+    planId: string,
+    canWriteDestination?: (namespace: string) => Promise<boolean>,
+    abortSignal?: AbortSignal,
+  ): Promise<CorrectionOutcome> {
+    throwIfAborted(abortSignal, "correction apply aborted");
     const plan = await this.planner.loadPlan(namespace, planId);
+    throwIfAborted(abortSignal, "correction apply aborted");
     if (!plan) {
       throw new CorrectionContractError(`Correction plan not found: ${planId}`);
     }
@@ -257,6 +272,7 @@ export class CorrectionExecutor {
     // replacements, tombstones, and audits. The operator inspects the
     // outcome and files a NEW plan for any failed actions. This mark runs
     // inside the serializeMutations lock so concurrent applies serialize.
+    throwIfAborted(abortSignal, "correction apply aborted");
     try {
       await this.planner.markConsumed(namespace, planId, "applying");
     } catch {
@@ -266,6 +282,7 @@ export class CorrectionExecutor {
         `Correction plan ${planId}: cannot mark in-progress (filesystem unwritable?) — aborting before any mutation.`,
       );
     }
+    throwIfAborted(abortSignal, "correction apply aborted");
 
     const results: CorrectionActionResult[] = [];
     const appliedTouched: string[] = [];
@@ -275,6 +292,7 @@ export class CorrectionExecutor {
     // the write fails, the loser is NOT superseded (§14: never destroy old
     // state for an action whose replacement write failed).
     for (const action of plan.actions) {
+      throwIfAborted(abortSignal, "correction apply aborted");
       if (action.kind === "supersede" && action.replacement) {
         // Preflight the loser BEFORE writing the replacement (review thread
         // Of0pz): if the loser was deleted between plan and apply, writing a
@@ -335,6 +353,7 @@ export class CorrectionExecutor {
     // Only run for supersede/retract actions whose replacement write (if any)
     // succeeded. A supersede WITHOUT a replacement is a pure retract.
     for (const action of plan.actions) {
+      throwIfAborted(abortSignal, "correction apply aborted");
       if (action.kind === "supersede") {
         const replacementResult = results.find(
           (r) => r.action === action && r.status === "applied",
@@ -383,6 +402,7 @@ export class CorrectionExecutor {
         }
       }
     }
+    throwIfAborted(abortSignal, "correction apply aborted");
 
     // ── Phase 3: propagation (post-write reindex + graph) ─────────────────
     // Best-effort: a propagation failure is recorded as a warning on the
@@ -396,6 +416,7 @@ export class CorrectionExecutor {
       }
     }
 
+    throwIfAborted(abortSignal, "correction apply aborted");
     // ── Phase 4: audit record ─────────────────────────────────────────────
     const anyFailed = results.some((r) => r.status === "failed");
     const status: CorrectionOutcome["status"] = anyFailed ? "partial" : "applied";
@@ -426,6 +447,7 @@ export class CorrectionExecutor {
         `audit record write failed (non-fatal): ${errMsg(err)}`,
       ];
     }
+    throwIfAborted(abortSignal, "correction apply aborted");
 
     // ── Phase 5: mark plan consumed ───────────────────────────────────────
     // Corrections are already applied (phases 1-4 succeeded). A markConsumed

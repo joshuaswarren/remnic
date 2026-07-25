@@ -176,6 +176,36 @@ test("flushSession preserves scoped force-drain routing and deadline options", a
   assert.equal(queuedOptions?.clearBufferAfterExtraction, true);
 });
 
+test("flushSession binds an authenticated owner before draining opaque buffers", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const turn = makeTurn("opaque-session", "remember gamma");
+  let bound: { sessionKey: string; principal: string } | undefined;
+
+  orchestrator.buffer = {
+    flushPendingSave: async () => {},
+    bindSessionOwnerPrincipal: async (sessionKey: string, principal: string) => {
+      bound = { sessionKey, principal };
+    },
+    findBufferKeysForSession: async () => ["provider-thread"],
+    getTurns: (bufferKey: string) => (bufferKey === "provider-thread" ? [turn] : []),
+  };
+  orchestrator.queueBufferedExtraction = async (
+    _turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    (options?.onTaskSettled as (() => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("opaque-session", {
+    reason: "access_force_flush",
+    failOnExtractionFailure: true,
+    sessionOwnerPrincipal: "alice",
+  });
+
+  assert.deepEqual(bound, { sessionKey: "opaque-session", principal: "alice" });
+});
+
 test("flushSession waits for queued extraction task completion", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   let releaseExtraction!: () => void;

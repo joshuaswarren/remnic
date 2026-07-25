@@ -793,7 +793,7 @@ export class TurnIngestionCoordinator {
         },
         captureConfig,
         {
-          planCorrection: (req) => service.plan(req),
+          planCorrection: (req, planOpts) => service.plan(req, planOpts),
           applyCorrection: (planId, applyOpts) => service.apply(planId, applyOpts),
           storageDir: async (ns) => (await this.deps.getStorage(ns)).dir,
           // Resolve `[m:xxxx]` handles to concrete memory ids via the single

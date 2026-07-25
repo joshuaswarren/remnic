@@ -267,6 +267,49 @@ test("SmartBuffer preserves owner identity in deferred turns", async () => {
 
   assert.deepEqual(buffer.getRetainedDeferredTurns("provider-thread"), [aliceTurn]);
 });
+test("SmartBuffer binds a trusted session owner across every matching buffer key", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const first = makeTurn("opaque-session", "first");
+  const second = makeTurn("opaque-session", "second");
+
+  await buffer.addTurn("provider-thread", first);
+  await buffer.addTurn("logical-thread", second);
+  await buffer.bindSessionOwnerPrincipal("opaque-session", "alice");
+
+  assert.equal(buffer.getTurns("provider-thread")[0]?.sessionOwnerPrincipal, "alice");
+  assert.equal(buffer.getTurns("logical-thread")[0]?.sessionOwnerPrincipal, "alice");
+  assert.equal(
+    storage.saved?.entries?.["provider-thread"]?.turns[0]?.sessionOwnerPrincipal,
+    "alice",
+  );
+  assert.equal(
+    storage.saved?.entries?.["logical-thread"]?.turns[0]?.sessionOwnerPrincipal,
+    "alice",
+  );
+});
+
+test("SmartBuffer rejects rebinding a session to a different trusted owner", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+
+  await buffer.addTurn("provider-thread", makeTurn("opaque-session", "memory"));
+  await buffer.bindSessionOwnerPrincipal("opaque-session", "alice");
+
+  await assert.rejects(
+    buffer.bindSessionOwnerPrincipal("opaque-session", "bob"),
+    /already owned by alice/,
+  );
+  assert.equal(buffer.getTurns("provider-thread")[0]?.sessionOwnerPrincipal, "alice");
+});
 
 test("SmartBuffer clearAfterExtraction chooses the longest queued snapshot overlap", async () => {
   const storage = new FakeStorage({

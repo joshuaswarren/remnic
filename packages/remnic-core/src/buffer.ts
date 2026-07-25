@@ -902,6 +902,48 @@ export class SmartBuffer {
   }
 
   /**
+   * Bind the authenticated owner to every buffered turn for a session.
+   *
+   * The access layer supplies this only after authentication; storing it on
+   * the host buffer makes later force-flush ownership checks independent of
+   * caller-controlled session-key prefixes.
+   */
+  async bindSessionOwnerPrincipal(sessionKey: string, principal: string): Promise<void> {
+    const normalizedSessionKey = sessionKey.trim();
+    const normalizedPrincipal = principal.trim();
+    if (normalizedSessionKey.length === 0 || normalizedPrincipal.length === 0) {
+      throw new Error("session owner binding requires a non-empty session key and principal");
+    }
+
+    await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      const matchingTurns: BufferTurn[] = [];
+      for (const entry of Object.values(this.state.entries ?? {})) {
+        for (const turn of [...entry.turns, ...(entry.retainedTurns ?? [])]) {
+          if (turn.sessionKey !== normalizedSessionKey) continue;
+          if (
+            turn.sessionOwnerPrincipal &&
+            turn.sessionOwnerPrincipal !== normalizedPrincipal
+          ) {
+            throw new Error(
+              `session ${normalizedSessionKey} is already owned by ${turn.sessionOwnerPrincipal}`,
+            );
+          }
+          matchingTurns.push(turn);
+        }
+      }
+      let changed = false;
+      for (const turn of matchingTurns) {
+        if (!turn.sessionOwnerPrincipal) {
+          turn.sessionOwnerPrincipal = normalizedPrincipal;
+          changed = true;
+        }
+      }
+      if (changed) await this.saveNowRetainingPendingOnFailure("bindSessionOwnerPrincipal");
+    });
+  }
+
+  /**
    * Return the current retention window (issue #562, PR 2). Primarily for
    * tests and diagnostics.
    */
@@ -921,20 +963,18 @@ export class SmartBuffer {
     await this.load();
 
     const matches: string[] = [];
+    const hasSessionTurns = (entry: BufferEntryState | null | undefined): boolean =>
+      [...(entry?.turns ?? []), ...(entry?.retainedTurns ?? [])].some(
+        (turn) => typeof turn.sessionKey === "string" && turn.sessionKey === sessionKey,
+      );
     const directEntry = this.peekEntry(sessionKey);
-    if ((directEntry?.turns.length ?? 0) > 0) {
+    if (hasSessionTurns(directEntry)) {
       matches.push(sessionKey);
     }
 
     const entries = this.state.entries ?? {};
     for (const [bufferKey, entry] of Object.entries(entries)) {
-      if (
-        !matches.includes(bufferKey) &&
-        entry.turns.some(
-          (turn) =>
-            typeof turn.sessionKey === "string" && turn.sessionKey === sessionKey,
-        )
-      ) {
+      if (!matches.includes(bufferKey) && hasSessionTurns(entry)) {
         matches.push(bufferKey);
       }
     }

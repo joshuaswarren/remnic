@@ -13,6 +13,7 @@
  * WRITE — both resolved through the injected namespace policy.
  */
 
+import { throwIfAborted } from "../abort-error.js";
 import {
   CorrectionContractError,
   type CorrectionOutcome,
@@ -105,16 +106,16 @@ export class CorrectionService {
    * the principal can write, so reading from a non-writable namespace to
    * draft a correction that can never be applied would be misleading.
    */
-  async plan(request: CorrectionRequest): Promise<CorrectionPlan> {
+  async plan(
+    request: CorrectionRequest,
+    opts?: { abortSignal?: AbortSignal },
+  ): Promise<CorrectionPlan> {
     this.requireEnabled();
+    throwIfAborted(opts?.abortSignal, "correction planning aborted");
     const authorized = await this.deps.policy.resolveAuthorizedNamespace(request);
-    return this.planner.plan(request, [authorized]);
+    throwIfAborted(opts?.abortSignal, "correction planning aborted");
+    return this.planner.plan(request, [authorized], opts);
   }
-
-  /**
-   * Apply a persisted plan by id. Requires `confirm: true` (or interactive
-   * yes at the CLI) when `applyRequiresConfirm` is on (default).
-   */
   async apply(
     planId: string,
     opts: {
@@ -122,9 +123,11 @@ export class CorrectionService {
       namespace?: string;
       sessionKey?: string;
       principal?: string;
+      abortSignal?: AbortSignal;
     },
   ): Promise<CorrectionOutcome> {
     this.requireEnabled();
+    throwIfAborted(opts.abortSignal, "correction apply aborted");
     if (this.deps.applyRequiresConfirm() && opts.confirm !== true) {
       throw new CorrectionContractError(
         "Correction apply requires explicit confirmation (pass `confirm: true`).",
@@ -135,8 +138,10 @@ export class CorrectionService {
       ...(opts.sessionKey ? { sessionKey: opts.sessionKey } : {}),
       ...(opts.principal ? { principal: opts.principal } : {}),
     });
+    throwIfAborted(opts.abortSignal, "correction apply aborted");
     return this.executor.apply(namespace, planId, {
       confirm: true,
+      abortSignal: opts.abortSignal,
       // Authorize rescope destinations through the namespace policy bound to
       // THIS caller's principal (review thread: authorize-rescope-destination).
       canWriteDestination: (dest) =>

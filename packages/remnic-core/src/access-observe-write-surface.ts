@@ -875,9 +875,14 @@ export class AccessObserveWriteSurface {
       throw new EngramAccessInputError("deadlineMs must be a finite non-negative number");
     }
     throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-    if (resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true) {
-      const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
-      const sessionPrincipal = resolvePrincipal(request.sessionKey, this.deps.orchestrator.config);
+    const namespacesEnabled = resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true;
+    const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
+    const sessionPrincipal = namespacesEnabled
+      ? resolvePrincipal(request.sessionKey, this.deps.orchestrator.config)
+      : undefined;
+    const opaqueSession =
+      namespacesEnabled && (sessionPrincipal === undefined || sessionPrincipal === "default");
+    if (namespacesEnabled) {
       if (
         !authenticatedPrincipal ||
         (sessionPrincipal !== undefined &&
@@ -905,12 +910,24 @@ export class AccessObserveWriteSurface {
     try {
       const scope = await this.deps.resolveMemoryScopePlan(request);
       captureSeededCodingContext();
+      if (opaqueSession && previousCodingContext === null) {
+        // Scope resolution may seed a temporary overlay to reuse the shared
+        // resolver. Opaque keys cannot prove ownership, so remove that seed
+        // before draining while retaining the resolved write namespace.
+        const scopedCodingContext = this.deps.orchestrator.getCodingContextForSession(request.sessionKey);
+        if (scopedCodingContext !== null) {
+          this.deps.orchestrator.setCodingContextForSession(request.sessionKey, null);
+          seededCodingContext = null;
+        }
+      }
       throwIfAborted(request.abortSignal, "extraction force-flush aborted");
       if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
         throw new EngramAccessInputError("extraction force-flush deadline exceeded before buffer drain");
       }
 
-      if (!request.namespace?.trim()) {
+      // An opaque session has no principal proof, so keep project context
+      // per-call during this drain instead of persisting it on the key.
+      if (!request.namespace?.trim() && !opaqueSession) {
         await this.deps.maybeAttachCodingContext(request.sessionKey, {
           cwd: request.cwd,
           projectTag: request.projectTag,
@@ -926,13 +943,14 @@ export class AccessObserveWriteSurface {
         abortSignal: request.abortSignal,
         failOnExtractionFailure: true,
         extractionDeadlineMs: request.deadlineMs,
-        writeNamespaceOverride:
-          resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true
-            ? scope.writeNamespace
-            : undefined,
+        writeNamespaceOverride: namespacesEnabled ? scope.writeNamespace : undefined,
         principalOverride:
           typeof scope.principal === "string" && scope.principal.length > 0
             ? scope.principal
+            : undefined,
+        sessionOwnerPrincipal:
+          typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
+            ? request.authenticatedPrincipal.trim()
             : undefined,
       });
 

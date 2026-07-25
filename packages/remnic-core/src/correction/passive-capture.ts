@@ -74,11 +74,20 @@ export interface PassiveCaptureContext {
 
 export interface PassiveCaptureDeps {
   /** Plan a correction through the Correction Contract. */
-  planCorrection(request: CorrectionRequest): Promise<CorrectionPlan>;
+  planCorrection(
+    request: CorrectionRequest,
+    opts?: { abortSignal?: AbortSignal },
+  ): Promise<CorrectionPlan>;
   /** Apply a planned correction (auto mode only). */
   applyCorrection(
     planId: string,
-    opts: { confirm: true; namespace?: string; sessionKey?: string; principal?: string },
+    opts: {
+      confirm: true;
+      namespace?: string;
+      sessionKey?: string;
+      principal?: string;
+      abortSignal?: AbortSignal;
+    },
   ): Promise<CorrectionOutcome>;
   /** Resolve the storage dir for notification enqueue (per namespace). */
   storageDir(namespace: string): Promise<string>;
@@ -246,7 +255,7 @@ export async function capturePassiveCorrections(
 
     let plan: CorrectionPlan;
     try {
-      plan = await deps.planCorrection(request);
+      plan = await deps.planCorrection(request, { abortSignal: ctx.abortSignal });
     } catch (err) {
       log.warn(
         `passive-correction: planning failed for "${correction.targetHint.slice(0, 60)}": ${err instanceof Error ? err.message : String(err)}`,
@@ -280,6 +289,7 @@ export async function capturePassiveCorrections(
         namespace: ctx.namespace,
         ...(ctx.sessionKey ? { sessionKey: ctx.sessionKey } : {}),
         ...(ctx.principal ? { principal: ctx.principal } : {}),
+        abortSignal: ctx.abortSignal,
       });
       // A partial outcome means some actions failed (per-action races or
       // storage failures). Don't count it as auto-applied or notify — queue

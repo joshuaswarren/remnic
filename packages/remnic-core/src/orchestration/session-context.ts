@@ -92,6 +92,8 @@ export interface SessionFlushOptions {
   writeNamespaceOverride?: string;
   failOnExtractionFailure?: boolean;
   principalOverride?: string;
+  /** Authenticated owner to persist on matching turns before scoped draining. */
+  sessionOwnerPrincipal?: string;
 }
 
 export class SessionContextCoordinator {
@@ -350,6 +352,17 @@ export class SessionContextCoordinator {
     // then failed and the host exited, the turn was lost.
     if (typeof this.deps.buffer.flushPendingSave === "function") {
       await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
+    }
+    const sessionOwnerPrincipal =
+      typeof options.sessionOwnerPrincipal === "string" && options.sessionOwnerPrincipal.trim().length > 0
+        ? options.sessionOwnerPrincipal.trim()
+        : undefined;
+    if (
+      sessionOwnerPrincipal &&
+      sessionKey.length > 0 &&
+      typeof this.deps.buffer.bindSessionOwnerPrincipal === "function"
+    ) {
+      await this.deps.buffer.bindSessionOwnerPrincipal(sessionKey, sessionOwnerPrincipal);
     }
     const explicitBufferKey =
       typeof options.bufferKey === "string" && options.bufferKey.length > 0
