@@ -1381,3 +1381,121 @@ test("tombstone blocked index sync failure persists a rebuild marker across rest
     assert.deepEqual(await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required")), []);
   });
 });
+
+test("tombstone-blocked writes reserve rebuild intent before post-write index work", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked write must remain deduplicable if its index hook fails.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-blocked-write",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+
+    const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
+    const addSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "addWrittenMemory",
+      async () => {
+        throw new Error("simulated post-write index failure");
+      },
+    );
+    try {
+      await assert.rejects(
+        storage.writeMemory("fact", content, { source: "test", sourceConnector: "provider-a" }),
+        /simulated post-write index failure/,
+      );
+      assert.equal(
+        (await readdir(markerDir)).length > 0,
+        true,
+        "blocked memory persistence must leave a durable marker before its index hook",
+      );
+    } finally {
+      addSpy.mock.restore();
+    }
+
+    const restarted = new StorageManager(dir);
+    restarted.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    assert.equal(
+      await restarted.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      true,
+      "restart must rebuild the blocked identity from the durable memory",
+    );
+    assert.deepEqual(await readdir(markerDir), [], "successful restart rebuild clears the marker");
+  });
+});
+
+test("offline sync mutation rebuilds a loaded tombstone-blocked index", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "An offline sync update changes the blocked provider identity.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-offline-sync",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"), true);
+
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory, "blocked memory must be readable before offline sync");
+    const updatedAt = new Date(Date.now() + 1_000).toISOString();
+    const updatedFile = [
+      "---",
+      `id: ${memory.frontmatter.id}`,
+      "category: fact",
+      `created: ${memory.frontmatter.created}`,
+      `updated: ${updatedAt}`,
+      `source: ${memory.frontmatter.source}`,
+      `confidence: ${memory.frontmatter.confidence}`,
+      `confidenceTier: ${memory.frontmatter.confidenceTier}`,
+      "tags: []",
+      "sourceConnector: provider-b",
+      "status: pending_review",
+      `blockedBy: ${memory.frontmatter.blockedBy}`,
+      "---",
+      "",
+      memory.content,
+      "",
+    ].join("\n");
+    await storage.writeOfflineSyncFile(memory.path, Buffer.from(updatedFile, "utf8"));
+
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      false,
+      "offline sync must remove the stale provider identity from the loaded index",
+    );
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
+      true,
+      "offline sync must add the updated provider identity",
+    );
+  });
+});

@@ -2959,6 +2959,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // Force a corpus rebuild of the fact-hash index on next use (round 11: no
     // on-disk ready marker — the in-memory authoritative flag is the only gate).
     this.factHashIndexAuthoritative = false;
+    if (
+      filePath.includes(`${path.sep}facts${path.sep}`)
+      || filePath.includes(`${path.sep}cold${path.sep}`)
+    ) {
+      await this.rebuildTombstoneBlockedCaptureAfterInvalidation();
+    }
     if (filePath.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }
@@ -3869,6 +3875,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
+    const tombstoneRebuildMarker = tombstoneBlocked
+      ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
+      : undefined;
 
     await this.snapshotBeforeWrite(filePath, "write");
     await this.writeStorageSecureFile(filePath, fileContent);
@@ -3884,7 +3893,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         ...(options.supersedes ? [options.supersedes] : []),
         ...(options.lineage ?? []).filter(Boolean),
       ],
-    }); if (tombstoneBlocked) await this.getTombstoneBlockedCaptureIndex().addWrittenMemory(filePath, fm, sanitized.text);
+    });
+    if (tombstoneBlocked) {
+      await this.getTombstoneBlockedCaptureIndex().addWrittenMemory(
+        filePath,
+        fm,
+        sanitized.text,
+        tombstoneRebuildMarker,
+      );
+    }
     if (category === "fact" && !tombstoneBlocked) {
       // Rule 44 (#1579): a tombstone-blocked fact MUST NOT be registered as an
       // active dedup/index entry — otherwise the block is invisible to dedup

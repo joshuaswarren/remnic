@@ -241,8 +241,13 @@ export class TombstoneBlockedCaptureIndex {
     return this.authoritative;
   }
 
+  /** Reserve durable rebuild intent before a blocked memory file is committed. */
+  async prepareWrite(): Promise<string> {
+    return this.markRebuildRequired();
+  }
+
   /** Add a newly persisted blocked row to the durable targeted index. */
-  async add(memory: MemoryFile): Promise<void> {
+  async add(memory: MemoryFile, rebuildMarker?: string): Promise<void> {
     if (!this.isBlocked(memory)) return;
     let index = await this.getIndex();
     if (
@@ -258,14 +263,14 @@ export class TombstoneBlockedCaptureIndex {
         memory.frontmatter.sourceConnector,
       ),
     );
-    const rebuildMarker = await this.markRebuildRequired();
+    const marker = rebuildMarker ?? await this.markRebuildRequired();
     await index.saveMergingWithDisk();
     await index.flushReconcileRetry();
     if (index.hasPendingChanges) {
       this.markUntrusted();
       return;
     }
-    await this.clearRebuildRequired([rebuildMarker]);
+    await this.clearRebuildRequired([marker]);
     this.authoritative = true;
   }
 
@@ -315,8 +320,15 @@ export class TombstoneBlockedCaptureIndex {
     }
   }
 
-  async addWrittenMemory(pathname: string, frontmatter: MemoryFrontmatter, content: string): Promise<void> {
-    await this.failOpen("writeMemory", () => this.add({ path: pathname, frontmatter, content }));
+  async addWrittenMemory(
+    pathname: string,
+    frontmatter: MemoryFrontmatter,
+    content: string,
+    rebuildMarker?: string,
+  ): Promise<void> {
+    await this.failOpen("writeMemory", () =>
+      this.add({ path: pathname, frontmatter, content }, rebuildMarker),
+    );
   }
 
   async rebuildAfterInvalidation(): Promise<void> {
