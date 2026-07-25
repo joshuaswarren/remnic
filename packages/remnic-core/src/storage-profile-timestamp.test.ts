@@ -484,6 +484,39 @@ test("writeProfile keeps the post-title header when duplicate headers exist", as
     t.mock.timers.reset();
   }
 });
+test("writeProfile retains a BOM when removing a duplicate pre-title header", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        `\uFEFF${STALE_HEADER}`,
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps the file marker.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          `\uFEFF${FRESH_HEADER}`,
+          "",
+          "- Keeps the file marker.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile removes duplicate stale headers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });

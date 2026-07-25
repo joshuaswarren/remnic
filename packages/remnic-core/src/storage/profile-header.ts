@@ -507,7 +507,11 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
       titleIndex >= 0
         ? headerIndexes.find((index) => index > titleIndex) ?? firstHeaderIndex
         : firstHeaderIndex;
-    const bomPrefix = lines[canonicalIndex].content.startsWith(UTF8_BOM) ? UTF8_BOM : "";
+    const bomPrefix = headerIndexes.some((index) =>
+      lines[index].content.startsWith(UTF8_BOM),
+    )
+      ? UTF8_BOM
+      : "";
     lines[canonicalIndex].content = `${bomPrefix}${header}`;
     for (let index = headerIndexes.length - 1; index >= 0; index -= 1) {
       const headerIndex = headerIndexes[index];
