@@ -64,17 +64,19 @@ export interface ExtractionBufferSource {
  * The liveness payload surfaced on `/health.extraction` and in the doctor/stats
  * details.
  *
- * DAEMON-SCOPED SIGNAL: a daemon has a single implicit extraction pipeline fed by
- * one global buffer (`SmartBuffer` aggregates every session/namespace). The
+ * DAEMON-SCOPED SIGNAL: a daemon exposes a single extraction verdict; the
  * last-extraction watermark is read from the daemon's default/root store, so
  * `/health` returns the same `extraction` block for every namespace argument.
  *
  * KNOWN LIMITATION (issue #2159): extraction stamps `lastExtractionAt` on the
- * per-namespace store, so on a multi-namespace deployment an extraction confined
- * to a NON-default namespace does not advance this watermark. The bias is
- * conservative: the buffer is global, so a stale root watermark can only push the
- * verdict toward `degraded` (a false alarm) — never toward falsely reporting
- * healthy. Aggregating the watermark across namespaces is tracked in #2159.
+ * PER-NAMESPACE store (`storageFor(selfNamespace)`), so this watermark reflects
+ * only extraction that stamped the root store (default-namespace work). On a
+ * single-namespace deployment (the common case) the watermark and buffer share
+ * one scope and the verdict is exact. On a multi-namespace deployment the verdict
+ * is NOT guaranteed correct for work isolated to a non-default namespace: it can
+ * over-report `degraded` (the default namespace idle while another is extracting)
+ * or miss a stall confined to a non-default namespace. Aggregating the watermark
+ * across namespace stores is tracked in #2159.
  */
 export interface ExtractionLivenessStatus {
   lastExtractionAt: string | null;
@@ -309,9 +311,9 @@ export class ExtractionLivenessWarnThrottle {
  * The watermark is read from the daemon's default/root store (`orchestrator.storage`),
  * which is why `/health` returns the same `extraction` block for any namespace
  * argument. KNOWN LIMITATION (issue #2159): extraction writes `lastExtractionAt`
- * per-namespace, so on a multi-namespace daemon an extraction confined to a
- * non-default namespace does not advance this watermark; the bias is conservative
- * (a stale root watermark over-reports `degraded`, never falsely healthy).
+ * per-namespace, so this watermark reflects only default-namespace extraction and
+ * the verdict is exact only for a single-namespace daemon (see
+ * `ExtractionLivenessStatus`).
  */
 export async function computeExtractionLivenessStatus(
   orchestrator: ExtractionLivenessOrchestratorLike & { storage: ExtractionLivenessStorageLike },
