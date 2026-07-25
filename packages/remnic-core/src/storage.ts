@@ -4648,8 +4648,8 @@ export class StorageManager {
    * active memory file paths without parsing frontmatter — safe on a 100k+
    * corpus, unlike readAllMemories().
    */
-  async collectActiveMemoryPaths(): Promise<string[]> {
-    return this.memoryReadStore.collectActiveMemoryPaths();
+  async collectActiveMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
+    return this.memoryReadStore.collectActiveMemoryPaths(options);
   }
 
   /**
@@ -4657,8 +4657,8 @@ export class StorageManager {
    * Lists demoted-but-reachable memory paths under `cold/` without parsing
    * frontmatter, so the divergence watermark counts the cold tier too.
    */
-  async collectColdMemoryPaths(): Promise<string[]> {
-    return this.memoryReadStore.collectColdMemoryPaths();
+  async collectColdMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
+    return this.memoryReadStore.collectColdMemoryPaths(options);
   }
 
   /**

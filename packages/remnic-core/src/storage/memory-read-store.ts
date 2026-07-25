@@ -79,6 +79,20 @@ export interface MemoryReadStoreDeps {
   readonly wearablesDir: string;
 }
 
+/**
+ * A backend READ failure worth propagating from a strict (census) scan: an
+ * errno-coded fs error that is NOT `ENOENT`. `ENOENT` (an absent dir) and
+ * code-less rejections (symlink-escape containment failures from
+ * assertPathInsideRoot) are expected and skipped; `EACCES`/`EIO`/… mean the
+ * corpus is unreadable and a divergence census must fail loud rather than
+ * silently publish a partial count (issue #2156 round-5). Non-strict (recall)
+ * callers ignore this and degrade to a best-effort partial scan.
+ */
+function isPropagatableReadError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  return typeof code === "string" && code !== "ENOENT";
+}
+
 export class MemoryReadStore {
   constructor(
     private readonly deps: MemoryReadStoreDeps,
@@ -192,14 +206,21 @@ export class MemoryReadStore {
    * consolidation-provenance-check.ts; reuses the shared containment helper.
    * Paths only — no frontmatter parse.
    */
-  private async collectContainedMarkdownPaths(startDirs: readonly string[]): Promise<string[]> {
+  private async collectContainedMarkdownPaths(
+    startDirs: readonly string[],
+    propagateReadErrors = false,
+  ): Promise<string[]> {
     const filePaths: string[] = [];
 
     // Resolve the memory root once for the containment checks below.
     let memoryRootReal: string;
     try {
       memoryRootReal = await realpath(this.deps.baseDir);
-    } catch {
+    } catch (err) {
+      // ENOENT: a not-yet-created root ⇒ empty. Any other errno is a backend
+      // read failure — propagate for strict census callers (never publish an
+      // unreadable corpus as empty); non-strict (recall) callers degrade.
+      if (propagateReadErrors && isPropagatableReadError(err)) throw err;
       return filePaths;
     }
 
@@ -214,7 +235,11 @@ export class MemoryReadStore {
         if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
         assertPathInsideRoot(memoryRootReal, await realpath(dir), dir);
         entries = await readdir(dir, { withFileTypes: true });
-      } catch {
+      } catch (err) {
+        // Symlink/non-dir already returned above; a containment failure carries
+        // no errno (skip). A backend read error (EACCES …) propagates in strict
+        // census mode so a partial subtree is not silently counted.
+        if (propagateReadErrors && isPropagatableReadError(err)) throw err;
         return;
       }
 
@@ -235,8 +260,11 @@ export class MemoryReadStore {
           try {
             assertPathInsideRoot(memoryRootReal, await realpath(fullPath), fullPath);
             filePaths.push(fullPath);
-          } catch {
-            // Skip just this entry (symlink/containment/realpath failure).
+          } catch (err) {
+            // ENOENT (vanished mid-scan) or a code-less containment/symlink
+            // rejection ⇒ skip just this file. A backend read error propagates
+            // in strict census mode.
+            if (propagateReadErrors && isPropagatableReadError(err)) throw err;
           }
         }
       }
@@ -253,7 +281,7 @@ export class MemoryReadStore {
     return filePaths;
   }
 
-  async collectActiveMemoryPaths(): Promise<string[]> {
+  async collectActiveMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
     // Scan EVERY supported memory category directory, not just the legacy four
     // (facts/procedures/reasoning-traces/corrections). Issue #1497: the QMD
     // filesystem-fallback recall path (orchestrator `recent_scan` ->
@@ -282,6 +310,7 @@ export class MemoryReadStore {
     // exclusion is asserted by tests in storage-fallback-category-dirs.test.ts.
     return this.collectContainedMarkdownPaths(
       RECALL_FALLBACK_DIRS.map((dir) => path.join(this.deps.baseDir, dir)),
+      options?.propagateReadErrors ?? false,
     );
   }
 
@@ -294,8 +323,11 @@ export class MemoryReadStore {
    * of the recall fallback corpus (collectActiveMemoryPaths), whose scan is
    * intentionally unchanged.
    */
-  async collectColdMemoryPaths(): Promise<string[]> {
-    return this.collectContainedMarkdownPaths([this.deps.resolveTierRootDir("cold")]);
+  async collectColdMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
+    return this.collectContainedMarkdownPaths(
+      [this.deps.resolveTierRootDir("cold")],
+      options?.propagateReadErrors ?? false,
+    );
   }
 
   async readMemoriesWindow(options: {

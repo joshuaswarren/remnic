@@ -37,8 +37,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { access, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { capabilityAllowsNamespace, type TokenCapabilities } from "./access-token-capabilities.js";
 import { NamespaceCatalog } from "./namespaces/catalog.js";
@@ -193,9 +192,9 @@ export async function computeCorpusWatermark(input: {
 export interface CorpusStorage {
   readonly dir: string;
   /** Hot-tier active memory paths (the recall corpus). */
-  collectActiveMemoryPaths(): Promise<string[]>;
+  collectActiveMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]>;
   /** Cold-tier (demoted-but-reachable) memory paths (issue #2156 finding D). */
-  collectColdMemoryPaths(): Promise<string[]>;
+  collectColdMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]>;
   /**
    * Optional combined hot+cold corpus-mutation sentinel. When present, the
    * census brackets its scan with it and retries on change so a tier migration
@@ -210,44 +209,36 @@ const CENSUS_RACE_MAX_ATTEMPTS = 3;
 
 /**
  * Compute one namespace's watermark from its storage, spanning BOTH tiers so a
- * cold-tier divergence is caught. Fails DISTINCT from empty: an unreadable
- * corpus root (EACCES) throws so the caller omits the namespace rather than
- * publishing a false zero; a missing root (ENOENT) is a genuine empty corpus.
- * The hot+cold walk is bracketed by the corpus-mutation sentinel (when the
- * storage exposes one) and retried on change, so a hot↔cold migration racing
- * the two walkers never yields a cached double-count or miss.
+ * cold-tier divergence is caught. Reads are STRICT: the collectors propagate a
+ * backend read failure (EACCES on the root OR any nested category dir, ENOTDIR,
+ * …) so an unreadable corpus is OMITTED by the caller rather than published as a
+ * false empty census; a missing root (ENOENT — a not-yet-created namespace)
+ * stays a genuine empty corpus. The hot+cold walk is bracketed by the
+ * corpus-mutation sentinel (when the storage exposes one) and retried on change;
+ * if it never stabilizes (sustained tier churn) this THROWS rather than caching
+ * a transient double-count/miss as a false divergence.
  */
 async function computeNamespaceWatermark(
   namespace: string,
   storage: CorpusStorage,
   now?: Date,
 ): Promise<CorpusWatermark> {
-  try {
-    await access(storage.dir, constants.R_OK | constants.X_OK);
-  } catch (err) {
-    // ENOENT = a not-yet-created namespace ⇒ a legitimate empty corpus. Any
-    // other error (EACCES etc.) means the corpus is UNREADABLE: rethrow so the
-    // caller omits this namespace instead of publishing a false empty census.
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-
   const readVersion = storage.getCorpusScanVersion?.bind(storage);
   const maxAttempts = readVersion ? CENSUS_RACE_MAX_ATTEMPTS : 1;
-  let result: CorpusWatermark | undefined;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const before = readVersion ? await readVersion() : null;
     const [hotPaths, coldPaths] = await Promise.all([
-      storage.collectActiveMemoryPaths(),
-      storage.collectColdMemoryPaths(),
+      storage.collectActiveMemoryPaths({ propagateReadErrors: true }),
+      storage.collectColdMemoryPaths({ propagateReadErrors: true }),
     ]);
-    result = await computeCorpusWatermark({ namespace, paths: [...hotPaths, ...coldPaths], baseDir: storage.dir, now });
+    const result = await computeCorpusWatermark({ namespace, paths: [...hotPaths, ...coldPaths], baseDir: storage.dir, now });
     const after = readVersion ? await readVersion() : null;
     if (before === after) return result;
     // A tier write (e.g. hot→cold migration) raced the two walkers, so the
     // count/digest may double-count or miss the in-flight memory. Retry for a
-    // consistent snapshot rather than caching a transient false divergence.
+    // consistent snapshot.
   }
-  return result as CorpusWatermark;
+  throw new Error(`corpus census for namespace "${namespace}" did not stabilize after ${maxAttempts} attempts`);
 }
 
 /**

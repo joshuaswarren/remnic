@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 /**
@@ -480,25 +480,20 @@ test("computeServiceCorpusWatermarks: one failing namespace is omitted, not the 
   }
 });
 
-test("finding round-4: an unreadable corpus root is omitted, not published as a false-empty census", async () => {
+test("finding round-4/5: an unreadable corpus root is omitted, not published as false-empty; ENOENT stays empty", async () => {
   const root = await makeMemoryDir();
   try {
-    // A regular, NON-executable file used as a corpus dir: access(R_OK|X_OK)
-    // fails EACCES (execute bit unset — enforced even for the superuser), the
-    // same signature as an EACCES permission regression on a real directory.
-    const unreadable = path.join(root, "unreadable-corpus");
-    await writeFile(unreadable, "not a directory", "utf-8");
-    await chmod(unreadable, 0o644);
-
-    // ENOENT (a namespace whose dir was never created) is a GENUINE empty corpus.
-    const missing = path.join(root, "never-created");
+    // A regular FILE used as a namespace base dir: the strict scan hits ENOTDIR
+    // walking its category children — a backend read failure it must propagate,
+    // portably (no permission bits, so it holds even for the superuser).
+    const brokenBase = path.join(root, "broken-base");
+    await writeFile(brokenBase, "not a directory", "utf-8");
+    // A never-created base dir is ENOENT => a genuine empty corpus.
+    const missingBase = path.join(root, "never-created");
 
     const watermarks = await computeCorpusWatermarks(
       ["broken", "empty"],
-      (namespace) =>
-        namespace === "broken"
-          ? fakeStorage(unreadable, [path.join(unreadable, "facts/2026-03-08/a.md")])
-          : fakeStorage(missing, []),
+      (namespace) => new StorageManager(namespace === "broken" ? brokenBase : missingBase),
     );
     const names = watermarks.map((w) => w.namespace);
     assert.ok(!names.includes("broken"), "an unreadable corpus root is omitted, not counted as zero");
@@ -506,6 +501,36 @@ test("finding round-4: an unreadable corpus root is omitted, not published as a 
     assert.equal(watermarks.find((w) => w.namespace === "empty")?.memoryFileCount, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("finding round-5: an unreadable NESTED category dir propagates (partial census is omitted, not published)", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    await writeMemory(memoryDir, "facts/2026-03-08/a.md");
+    const lockedDir = path.join(memoryDir, "procedures");
+    await mkdir(lockedDir, { recursive: true });
+    await chmod(lockedDir, 0o000);
+    // The superuser bypasses directory permissions; only assert where the OS
+    // actually enforces them (probe the exact op the walker performs).
+    let enforced = false;
+    try {
+      await readdir(lockedDir);
+    } catch {
+      enforced = true;
+    }
+    try {
+      const watermarks = await computeCorpusWatermarks(["global"], () => new StorageManager(memoryDir));
+      if (enforced) {
+        assert.deepEqual(watermarks, [], "an unreadable category dir omits the namespace, not a partial count");
+      } else {
+        assert.ok(watermarks.length <= 1, "perms bypassed (superuser): the scan simply succeeds without crashing");
+      }
+    } finally {
+      await chmod(lockedDir, 0o755); // restore so rm() can clean up
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
 
@@ -553,6 +578,29 @@ test("computeNamespaceWatermark: a stable sentinel scans once (no needless retry
     };
     await computeCorpusWatermarks(["global"], () => storage);
     assert.equal(collectCalls, 1, "a consistent snapshot is not re-scanned");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("computeNamespaceWatermark: throws (namespace omitted) when the sentinel never stabilizes", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    let scanVersion = 0;
+    let collectCalls = 0;
+    const storage: CorpusStorage = {
+      dir: memoryDir,
+      getCorpusScanVersion: async () => String(scanVersion),
+      collectActiveMemoryPaths: async () => {
+        collectCalls += 1;
+        scanVersion += 1; // a write races EVERY attempt (sustained churn)
+        return [path.join(memoryDir, "facts/2026-03-08/a.md")];
+      },
+      collectColdMemoryPaths: async () => [],
+    };
+    const watermarks = await computeCorpusWatermarks(["global"], () => storage);
+    assert.deepEqual(watermarks, [], "a never-stable census is omitted, not cached as a transient snapshot");
+    assert.ok(collectCalls >= 2, "it retried before giving up");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
