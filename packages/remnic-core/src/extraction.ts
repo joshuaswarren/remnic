@@ -321,7 +321,7 @@ export class ExtractionEngine {
       ? parsed.facts
           .map((candidate: unknown) => {
             const fact = isPlainRecord(candidate) ? candidate : {};
-            const category = extractionText(fact.category) ?? "fact";
+            const category = typeof fact.category === "string" ? fact.category.trim() : "fact";
             const reasoningTrace = isPlainRecord(fact.reasoningTrace)
               ? fact.reasoningTrace
               : isPlainRecord(fact.reasoning_trace)

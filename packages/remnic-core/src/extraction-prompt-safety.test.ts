@@ -32,6 +32,12 @@ const STRUCTURAL_PLACEHOLDER_EXTRACTION = {
     entityRef: "<optional normalized-name>",
     promptedByQuestion: "<optional source-grounded question>",
     quote: "<optional exact contiguous source span>",
+  },
+  {
+    category: "<category>",
+    content: SOURCE_TURN.content,
+    confidence: 0.95,
+    tags: ["theme"],
   }],
   profileUpdates: ["<source-grounded profile update>"],
   entities: [{
