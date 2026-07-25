@@ -23,6 +23,35 @@ const SOURCE_GROUNDED_EXTRACTION = {
   entities: [],
   questions: [],
 };
+const STRUCTURAL_PLACEHOLDER_EXTRACTION = {
+  facts: [{
+    category: "<category>",
+    content: "<source-grounded statement>",
+    confidence: 0,
+    tags: ["<tag>"],
+    entityRef: "<optional normalized-name>",
+    promptedByQuestion: "<optional source-grounded question>",
+    quote: "<optional exact contiguous source span>",
+  }],
+  profileUpdates: ["<source-grounded profile update>"],
+  entities: [{
+    name: "<normalized-name>",
+    type: "<entity-type>",
+    facts: ["<source-grounded statement>"],
+    promptedByQuestion: "<optional source-grounded question>",
+  }],
+  questions: [{
+    question: "<source-grounded unresolved question>",
+    context: "<source-grounded context>",
+    priority: 0,
+  }],
+  identityReflection: "<conversation-grounded agent reflection>",
+  relationships: [{
+    source: "<normalized-name>",
+    target: "<normalized-name>",
+    label: "<source-grounded relationship>",
+  }],
+};
 
 type ChatMessage = { role: string; content: string };
 
@@ -98,6 +127,33 @@ test("local extraction prompt uses placeholders and accepts an empty question li
   assertSafeExtractionPrompt(prompt);
   assertStructuralResponseShape(prompt);
   assert.doesNotMatch(prompt, /^- rule:/m);
+});
+
+test("local extraction discards literal structural placeholders", async () => {
+  const engine = new ExtractionEngine(parseConfig({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+  }));
+  const localLlm: LocalLlmFixture = {
+    async chatCompletion() {
+      return { content: JSON.stringify(STRUCTURAL_PLACEHOLDER_EXTRACTION) };
+    },
+  };
+  const modelRegistry = {
+    calculateContextSizes: () => ({ maxInputChars: 8_000, maxOutputTokens: 1_000, description: "fixture" }),
+  };
+  assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
+  assert.equal(Reflect.set(engine, "modelRegistry", modelRegistry), true);
+
+  const result = await engine.extract([SOURCE_TURN]);
+
+  assert.deepEqual(result.facts, []);
+  assert.deepEqual(result.profileUpdates, []);
+  assert.deepEqual(result.entities, []);
+  assert.deepEqual(result.questions, []);
+  assert.deepEqual(result.relationships, []);
+  assert.equal(result.identityReflection, undefined);
 });
 
 test("gateway extraction prompt uses placeholders and accepts an empty question list", async () => {
