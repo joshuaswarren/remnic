@@ -196,6 +196,29 @@ test("writeProfile does not treat fenced headings as a profile title", async (t)
   }
 });
 
+test("writeProfile keeps nested fences from exposing code headings", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "````markdown",
+        "```",
+        "# install dependencies",
+        "```",
+        "````",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), `${FRESH_HEADER}\n\n${profile}`);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile preserves code examples that mention Last updated", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

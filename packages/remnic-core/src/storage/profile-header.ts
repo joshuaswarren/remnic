@@ -7,16 +7,34 @@ function isLastUpdatedHeader(line: string): boolean {
 }
 
 
+function getFenceMarker(line: string): { character: string; length: number } | null {
+  const trimmed = line.trimStart();
+  const character = trimmed[0];
+  if (character !== "`" && character !== "~") return null;
+  let length = 0;
+  while (trimmed[length] === character) length += 1;
+  return length >= 3 ? { character, length } : null;
+}
+
 function findProfileTitleIndex(lines: string[]): number {
-  let inFence = false;
+  let openFence: { character: string; length: number } | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
-    const trimmed = line.trim();
-    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
-      inFence = !inFence;
+    const fence = getFenceMarker(line);
+    if (openFence) {
+      if (
+        fence &&
+        fence.character === openFence.character &&
+        fence.length >= openFence.length
+      ) {
+        openFence = null;
+      }
       continue;
     }
-    if (inFence) continue;
+    if (fence) {
+      openFence = fence;
+      continue;
+    }
     if (PROFILE_TITLE.test(line)) return index;
   }
   return -1;
