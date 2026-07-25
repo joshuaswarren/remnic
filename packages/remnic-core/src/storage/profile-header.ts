@@ -1,54 +1,80 @@
 const LAST_UPDATED_PREFIX = "*Last updated:";
 const PROFILE_TITLE = /^#\s+/;
+const UTF8_BOM = "\uFEFF";
+
+type FenceMarker = {
+  character: string;
+  length: number;
+  trailing: string;
+};
 
 function isLastUpdatedHeader(line: string): boolean {
   const trimmed = line.trim();
   return trimmed.startsWith(LAST_UPDATED_PREFIX) && trimmed.endsWith("*");
 }
 
-
-function getFenceMarker(line: string): { character: string; length: number } | null {
+function getFenceMarker(line: string): FenceMarker | null {
   const trimmed = line.trimStart();
   const character = trimmed[0];
   if (character !== "`" && character !== "~") return null;
   let length = 0;
   while (trimmed[length] === character) length += 1;
-  return length >= 3 ? { character, length } : null;
+  if (length < 3) return null;
+  return { character, length, trailing: trimmed.slice(length) };
 }
 
-function findProfileTitleIndex(lines: string[]): number {
-  let openFence: { character: string; length: number } | null = null;
+function isClosingFence(fence: FenceMarker, openFence: FenceMarker): boolean {
+  return (
+    fence.character === openFence.character &&
+    fence.length >= openFence.length &&
+    fence.trailing.trim() === ""
+  );
+}
+
+function visitOutsideFencedBlocks(
+  lines: string[],
+  visit: (line: string, index: number) => void,
+): void {
+  let openFence: FenceMarker | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     const fence = getFenceMarker(line);
     if (openFence) {
-      if (
-        fence &&
-        fence.character === openFence.character &&
-        fence.length >= openFence.length
-      ) {
-        openFence = null;
-      }
+      if (fence && isClosingFence(fence, openFence)) openFence = null;
       continue;
     }
     if (fence) {
       openFence = fence;
       continue;
     }
-    if (PROFILE_TITLE.test(line)) return index;
+    visit(line, index);
   }
-  return -1;
 }
 
-function findProfileMetadataHeaderIndexes(lines: string[], start: number): number[] {
+function findProfileTitleIndex(lines: string[]): number {
+  let titleIndex = -1;
+  visitOutsideFencedBlocks(lines, (line, index) => {
+    if (titleIndex >= 0) return;
+    const titleLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
+    if (PROFILE_TITLE.test(titleLine)) titleIndex = index;
+  });
+  return titleIndex;
+}
+
+function findProfileHeaderIndexes(lines: string[]): number[] {
   const indexes: number[] = [];
-  for (let index = start; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    if (line.trim() === "") continue;
-    if (!isLastUpdatedHeader(line)) break;
-    indexes.push(index);
-  }
+  visitOutsideFencedBlocks(lines, (line, index) => {
+    if (isLastUpdatedHeader(line)) indexes.push(index);
+  });
   return indexes;
+}
+
+function prependHeader(lines: string[], header: string, lineEnding: string): string {
+  if (lines[0]?.startsWith(UTF8_BOM)) {
+    lines[0] = lines[0].slice(1);
+    return [`${UTF8_BOM}${header}`, "", ...lines].join(lineEnding);
+  }
+  return [header, "", ...lines].join(lineEnding);
 }
 
 export function renderProfileWithLastUpdated(content: string, updatedAt: string): string {
@@ -56,8 +82,7 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
   const lines = content.split(/\r?\n/);
   const header = `*Last updated: ${updatedAt}*`;
   const titleIndex = findProfileTitleIndex(lines);
-  const metadataStart = titleIndex < 0 ? 0 : titleIndex + 1;
-  const headerIndexes = findProfileMetadataHeaderIndexes(lines, metadataStart);
+  const headerIndexes = findProfileHeaderIndexes(lines);
 
   if (headerIndexes.length > 0) {
     lines[headerIndexes[0]!] = header;
@@ -67,7 +92,7 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
     return lines.join(lineEnding);
   }
 
-  if (titleIndex < 0) return [header, "", ...lines].join(lineEnding);
+  if (titleIndex < 0) return prependHeader(lines, header, lineEnding);
 
   const insertAt = titleIndex + 1;
   if (lines[insertAt]?.trim() === "") {

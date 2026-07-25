@@ -219,6 +219,69 @@ test("writeProfile keeps nested fences from exposing code headings", async (t) =
   }
 });
 
+test("writeProfile refreshes an off-slot header outside fenced code", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "- Keeps decisions short.",
+        "",
+        "## Notes",
+        "",
+        STALE_HEADER,
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile keeps fence lines with language text inside code", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "```markdown",
+        "```js",
+        "# install dependencies",
+        "```",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), `${FRESH_HEADER}\n\n${profile}`);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile preserves a leading BOM before the title", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = `\uFEFF# Behavioral Profile\n\n${STALE_HEADER}\n\n- Keeps decisions short.\n`;
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile preserves code examples that mention Last updated", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
