@@ -90,7 +90,14 @@ async function startDaemonStub(): Promise<DaemonStub> {
 function optionsFor(port: number, namespaceBindings: SessionNamespaceBindingStore): DelegateRuntimeOptions {
   return {
     serviceId: "delegate-lifecycle-matrix",
-    target: { host: "127.0.0.1", port, authToken: "" },
+    target: {
+      host: "127.0.0.1",
+      port,
+      resolveAuthToken: () => ({
+        token: "",
+        source: "no configured token",
+      }),
+    },
     namespace: "",
     namespaceBindings,
     allowPromptInjection: true,
