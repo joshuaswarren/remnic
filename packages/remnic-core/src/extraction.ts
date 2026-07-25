@@ -106,10 +106,16 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function containsExtractionPlaceholder(value: unknown): boolean {
+  if (typeof value === "string") return EXTRACTION_RESPONSE_PLACEHOLDERS[value.trim()] === true;
+  if (Array.isArray(value)) return value.some(containsExtractionPlaceholder);
+  return isPlainRecord(value) && Object.values(value).some(containsExtractionPlaceholder);
+}
+
 function extractionText(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const text = value.trim();
-  return text.length > 0 && EXTRACTION_RESPONSE_PLACEHOLDERS[text] !== true ? text : undefined;
+  return text.length > 0 && !containsExtractionPlaceholder(text) ? text : undefined;
 }
 
 function extractionAttributes(value: unknown): Record<string, string> | undefined {
@@ -317,8 +323,10 @@ export class ExtractionEngine {
   private normalizeExtractionResultPayload(parsed: any): ExtractionResult {
     const entities: ExtractedEntityResult[] = Array.isArray(parsed?.entities)
       ? parsed.entities
-          .map((candidate: unknown) => this.normalizeEntityUpdate(candidate))
-          .filter((entity: ExtractedEntityResult) => entity.name.length > 0)
+          .map((candidate: unknown): ExtractedEntityResult | undefined => this.normalizeEntityUpdate(candidate))
+          .filter((entity: ExtractedEntityResult | undefined): entity is ExtractedEntityResult => (
+            entity !== undefined && entity.name.length > 0
+          ))
       : [];
 
     const facts = Array.isArray(parsed?.facts)
@@ -326,12 +334,24 @@ export class ExtractionEngine {
           .map((candidate: unknown) => {
             const fact = isPlainRecord(candidate) ? candidate : {};
             const category = typeof fact.category === "string" ? fact.category.trim() : "fact";
-            const reasoningTrace = isPlainRecord(fact.reasoningTrace)
+            const reasoningTraceInput = isPlainRecord(fact.reasoningTrace)
               ? fact.reasoningTrace
               : isPlainRecord(fact.reasoning_trace)
                 ? fact.reasoning_trace
                 : undefined;
             if (!isMemoryCategory(category)) return undefined;
+            const procedureSteps = Array.isArray(fact.procedureSteps)
+              ? normalizeProcedureSteps(fact.procedureSteps)
+              : undefined;
+            const reasoningTrace = reasoningTraceInput
+              ? normalizeReasoningTrace(reasoningTraceInput) ?? undefined
+              : undefined;
+            if (
+              containsExtractionPlaceholder(procedureSteps) ||
+              containsExtractionPlaceholder(reasoningTrace)
+            ) {
+              return undefined;
+            }
             return {
               category,
               content: extractionText(fact.content) ?? extractionText(fact.text) ?? "",
@@ -347,12 +367,8 @@ export class ExtractionEngine {
               scope:
                 fact.scope === "global" || fact.scope === "project" ? fact.scope : undefined,
               structuredAttributes: extractionAttributes(fact.structuredAttributes),
-              procedureSteps: Array.isArray(fact.procedureSteps)
-                ? normalizeProcedureSteps(fact.procedureSteps)
-                : undefined,
-              reasoningTrace: reasoningTrace
-                ? normalizeReasoningTrace(reasoningTrace) ?? undefined
-                : undefined,
+              procedureSteps,
+              reasoningTrace,
               quote: extractionText(fact.quote),
               eventTime: extractionText(fact.eventTime) ?? extractionText(fact.event_time),
             };
@@ -411,7 +427,7 @@ export class ExtractionEngine {
     };
   }
 
-  private normalizeEntityUpdate(entity: unknown): ExtractedEntityResult {
+  private normalizeEntityUpdate(entity: unknown): ExtractedEntityResult | undefined {
     const record = isPlainRecord(entity) ? entity : {};
     const rawUpdates = isPlainRecord(record.updates) ? record.updates : undefined;
     const normalizedTexts = (value: unknown): string[] =>
@@ -454,13 +470,16 @@ export class ExtractionEngine {
       return [{ key, title, facts }];
     });
 
+    const rawType = record.type ?? rawUpdates?.type;
+    const type = rawType === undefined ? "other" : extractionEntityType(rawType);
+    if (type === undefined) return undefined;
     return {
       name:
         extractionText(record.name) ??
         extractionText(record.entityId) ??
         extractionText(rawUpdates?.name) ??
         "",
-      type: extractionEntityType(record.type) ?? extractionEntityType(rawUpdates?.type) ?? "other",
+      type,
       facts: [...directFacts, ...updateFacts, ...scalarUpdateFacts],
       structuredSections: structuredSections.length > 0 ? structuredSections : undefined,
       promptedByQuestion: extractionText(record.promptedByQuestion) ?? extractionText(rawUpdates?.promptedByQuestion),
@@ -627,8 +646,10 @@ export class ExtractionEngine {
       )
       .filter((update) => update.length > 0);
     const entityUpdates = (Array.isArray(result.entityUpdates) ? result.entityUpdates : [])
-      .map((entity: any) => this.normalizeEntityUpdate(entity))
-      .filter((entity: ExtractedEntityResult) => entity.name.length > 0);
+      .map((entity: unknown): ExtractedEntityResult | undefined => this.normalizeEntityUpdate(entity))
+      .filter((entity: ExtractedEntityResult | undefined): entity is ExtractedEntityResult => (
+        entity !== undefined && entity.name.length > 0
+      ));
     return { items, profileUpdates, entityUpdates };
   }
 

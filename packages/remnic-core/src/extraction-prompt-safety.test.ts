@@ -43,6 +43,29 @@ const STRUCTURAL_PLACEHOLDER_EXTRACTION = {
     content: SOURCE_TURN.content,
     confidence: 0.95,
     tags: ["theme"],
+  },
+  {
+    category: "procedure",
+    content: SOURCE_TURN.content,
+    confidence: 0.95,
+    tags: ["theme"],
+    procedureSteps: [
+      { order: 1, intent: "<step>" },
+      { order: 2, intent: "<step>" },
+    ],
+  },
+  {
+    category: "reasoning_trace",
+    content: SOURCE_TURN.content,
+    confidence: 0.95,
+    tags: ["theme"],
+    reasoningTrace: {
+      steps: [
+        { order: 1, description: "<step>" },
+        { order: 2, description: "<step>" },
+      ],
+      finalAnswer: "<answer>",
+    },
   }],
   profileUpdates: ["<source-grounded profile update>"],
   entities: [{
@@ -50,6 +73,11 @@ const STRUCTURAL_PLACEHOLDER_EXTRACTION = {
     type: "<entity-type>",
     facts: ["<source-grounded statement>"],
     promptedByQuestion: "<optional source-grounded question>",
+  },
+  {
+    name: "Moonlight",
+    type: "<entity-type>",
+    facts: [SOURCE_TURN.content],
   }],
   questions: [{
     question: "<source-grounded unresolved question>",
