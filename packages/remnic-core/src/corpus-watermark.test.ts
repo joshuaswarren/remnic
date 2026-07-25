@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 /**
@@ -524,7 +524,9 @@ test("finding round-5: an unreadable NESTED category dir propagates (partial cen
       if (enforced) {
         assert.deepEqual(watermarks, [], "an unreadable category dir omits the namespace, not a partial count");
       } else {
-        assert.ok(watermarks.length <= 1, "perms bypassed (superuser): the scan simply succeeds without crashing");
+        // perms bypassed (superuser): the scan succeeds and counts the readable hot file.
+        assert.equal(watermarks.length, 1);
+        assert.equal(watermarks[0]?.memoryFileCount, 1);
       }
     } finally {
       await chmod(lockedDir, 0o755); // restore so rm() can clean up
@@ -543,7 +545,7 @@ test("computeNamespaceWatermark: retries when a corpus-mutation sentinel changes
     let racesLeft = 1; // a single racing write during the first attempt, then stable
     let collectCalls = 0;
     const storage: CorpusStorage = {
-      dir: memoryDir, // a real, readable dir so the access() pre-check passes
+      dir: memoryDir, // a real dir for the watermark baseDir
       getCorpusScanVersion: async () => String(scanVersion),
       collectActiveMemoryPaths: async () => {
         collectCalls += 1;
@@ -695,6 +697,60 @@ test("finding A: with a cache, /health probes never re-run the corpus scan withi
     const warm = await computeServiceCorpusWatermarks(host, { cache });
     assert.equal(warm.length, 1, "the warmed probe serves the cached watermark");
     assert.equal(scans, 1, "the path-collector runs once across the two probes");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── finding round-6: calendar validation + freshness-stat propagation ─────────
+
+test("finding round-6: an impossible date-shaped dir is bucketed unpartitioned, not as a dated partition", () => {
+  const baseDir = path.join(os.tmpdir(), "mem-fixture");
+  const census = buildPartitionCensus(
+    [
+      path.join(baseDir, "facts/2026-03-08/a.md"),
+      path.join(baseDir, "facts/2026-99-99/b.md"), // date-shaped but not a real calendar day
+    ],
+    baseDir,
+  );
+  assert.equal(census.get("hot:facts/2026-03-08"), 1);
+  assert.equal(census.get(`hot:${UNPARTITIONED_BUCKET}`), 1, "the impossible date falls back to unpartitioned");
+  assert.equal(census.get("hot:facts/2026-99-99"), undefined, "an impossible date is never a dated bucket");
+});
+
+test("finding round-6: an impossible date-shaped dir never becomes newestPartition", async () => {
+  const paths = ["/mem/facts/2026-03-08/a.md", "/mem/facts/2026-99-99/b.md"];
+  const watermark = await computeCorpusWatermark({ namespace: "global", paths, baseDir: "/mem" });
+  assert.equal(watermark.newestPartition, "2026-03-08", "the impossible date is not promoted above the valid partition");
+  assert.equal(watermark.memoryFileCount, 2, "but both files still count in the census");
+});
+
+test("finding round-6: a non-ENOENT stat failure in the freshness loop propagates (not published as stale)", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    await writeMemory(memoryDir, "facts/2026-03-08/a.md");
+    const { paths, baseDir } = await scanHot(memoryDir);
+    const partitionDir = path.join(memoryDir, "facts", "2026-03-08");
+    await chmod(partitionDir, 0o000); // make stat() on the file (traverse its parent) fail
+    let enforced = false;
+    try {
+      await stat(paths[0]); // probe the exact op the freshness loop performs
+    } catch {
+      enforced = true;
+    }
+    try {
+      if (enforced) {
+        await assert.rejects(
+          () => computeCorpusWatermark({ namespace: "global", paths, baseDir }),
+          "a backend stat failure propagates instead of publishing a stale/null freshness",
+        );
+      } else {
+        const watermark = await computeCorpusWatermark({ namespace: "global", paths, baseDir });
+        assert.equal(watermark.memoryFileCount, 1, "perms bypassed (superuser): the scan simply succeeds");
+      }
+    } finally {
+      await chmod(partitionDir, 0o755); // restore so rm() can clean up
+    }
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

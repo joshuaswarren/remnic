@@ -72,6 +72,20 @@ const DAY_PARTITION_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** Cold-tier root segment (relative to a namespace base dir): `<baseDir>/cold/...`. */
 const COLD_TIER_DIR = "cold";
 
+/**
+ * True when `token` is not just `YYYY-MM-DD`-shaped but a REAL calendar day.
+ * The regex alone accepts impossible dates (e.g. `2026-99-99`) that would then
+ * sort lexically above every valid partition and corrupt `newestPartition`
+ * (issue #2156 round-6); round-tripping through a UTC Date rejects month/day
+ * overflow. A malformed dir falls back to the unpartitioned bucket.
+ */
+function isRealCalendarDay(token: string): boolean {
+  if (!DAY_PARTITION_RE.test(token)) return false;
+  const [year, month, day] = token.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
 interface ParsedPath {
   readonly bucket: string;
   readonly date: string | null;
@@ -88,7 +102,7 @@ function parsePartition(baseDir: string, filePath: string): ParsedPath {
   // collide (they must diverge the digest, not fold together).
   const tier: CorpusTier = parts[0] === COLD_TIER_DIR ? "cold" : "hot";
   const categoryParts = tier === "cold" ? parts.slice(1) : parts;
-  if (categoryParts.length >= 2 && DAY_PARTITION_RE.test(categoryParts[1])) {
+  if (categoryParts.length >= 2 && isRealCalendarDay(categoryParts[1])) {
     return { bucket: `${tier}:${categoryParts[0]}/${categoryParts[1]}`, date: categoryParts[1], tier };
   }
   return { bucket: `${tier}:${UNPARTITIONED_BUCKET}`, date: null, tier };
@@ -164,8 +178,12 @@ export async function computeCorpusWatermark(input: {
       try {
         const st = await stat(paths[i]);
         if (st.mtimeMs > maxMtimeMs) maxMtimeMs = st.mtimeMs;
-      } catch {
-        // File vanished between scan and stat — skip it, never fail the probe.
+      } catch (err) {
+        // A file vanishing between scan and stat (ENOENT) is an expected race —
+        // skip it. A backend read failure (EACCES/EIO/…) means the corpus is
+        // unreadable: propagate so the namespace is omitted, not published with
+        // a stale/null freshness (issue #2156 round-6).
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       }
     }
     if (maxMtimeMs > Number.NEGATIVE_INFINITY) {
@@ -310,7 +328,15 @@ export async function resolveCorpusNamespaceRoots(options: {
   };
   for (const entry of ordered) add(entry.namespace, entry.rootDir);
   for (const record of catalogRecords) {
-    if (typeof record.namespace === "string" && record.namespace.length > 0 && typeof record.storageDir === "string") {
+    // Guard an empty storageDir defensively: a "" root would be scanned relative
+    // to the process CWD. (The catalog sanitizer already drops empty roots, so
+    // this is belt-and-suspenders against a partial/tampered record.)
+    if (
+      typeof record.namespace === "string" &&
+      record.namespace.length > 0 &&
+      typeof record.storageDir === "string" &&
+      record.storageDir.length > 0
+    ) {
       add(record.namespace, record.storageDir);
     }
   }
