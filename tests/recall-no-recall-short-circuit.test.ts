@@ -567,7 +567,7 @@ test("recall does not fall back to archive when hot memory is empty", async () =
   assert.doesNotMatch(context, /burst limiter failed/i);
 });
 
-test("archive-only cold fallback does not track an injected memory", async () => {
+test("archive-only cold fallback skips ranking and injection", async () => {
   const memoryDir = tmpDir("engram-long-term-pipeline");
   await mkdir(path.join(memoryDir, "archive", "2026-02-23"), { recursive: true });
 
@@ -619,6 +619,7 @@ test("archive-only cold fallback does not track an injected memory", async () =>
   );
 
   assert.doesNotMatch(context, /Long-Term Memories \(Fallback\)/);
+  assert.equal(boostCalled, 0);
   assert.deepEqual(tracked, []);
   assert.deepEqual(recalled, []);
 });
