@@ -248,7 +248,10 @@ function updateHtmlBlockDepth(
       depth += 1;
     }
   }
-  return depth > 0 ? { ...htmlBlock, depth } : null;
+  if (depth > 0) return { ...htmlBlock, depth };
+  return htmlBlock.endsAtBlankLine
+    ? { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 }
+    : null;
 }
 
 function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBlock | null {
@@ -444,9 +447,17 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
   const headerIndexes = findProfileHeaderIndexes(lines);
 
   if (headerIndexes.length > 0) {
-    lines[headerIndexes[0]!].content = header;
-    for (let index = headerIndexes.length - 1; index > 0; index -= 1) {
-      lines.splice(headerIndexes[index]!, 1);
+    const firstHeaderIndex = headerIndexes[0];
+    if (firstHeaderIndex === undefined) return renderProfileLines(lines);
+    const canonicalIndex =
+      titleIndex >= 0
+        ? headerIndexes.find((index) => index > titleIndex) ?? firstHeaderIndex
+        : firstHeaderIndex;
+    lines[canonicalIndex].content = header;
+    for (let index = headerIndexes.length - 1; index >= 0; index -= 1) {
+      const headerIndex = headerIndexes[index];
+      if (headerIndex === undefined || headerIndex === canonicalIndex) continue;
+      lines.splice(headerIndex, 1);
     }
     return renderProfileLines(lines);
   }

@@ -413,6 +413,62 @@ test("writeProfile preserves timestamp-shaped generic HTML blocks", async (t) =>
   }
 });
 
+test("writeProfile keeps inline HTML blocks opaque until a blank line", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<div>example</div>",
+        STALE_HEADER,
+        "",
+        "- Keeps inline HTML opaque.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\n<div>example</div>", `\n\n${FRESH_HEADER}\n\n<div>example</div>`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile keeps the post-title header when duplicate headers exist", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const preTitleHeader = "*Last updated: 2023-01-02T03:04:05.000Z*";
+      const profile = [
+        preTitleHeader,
+        "",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps the canonical header after the title.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      const updated = await storage.readProfile();
+      assert.equal((updated.match(/^\*Last updated: .*$/gm) ?? []).length, 1);
+      assert.equal(updated.includes(preTitleHeader), false);
+      assert.ok(updated.includes(`# Behavioral Profile\n\n${FRESH_HEADER}`));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile removes duplicate stale headers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
