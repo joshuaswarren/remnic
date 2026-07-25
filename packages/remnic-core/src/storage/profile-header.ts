@@ -284,7 +284,9 @@ function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBl
   const blockTag = findHtmlBlockTag(normalizedLine, HTML_BLOCK_TAGS);
   if (blockTag) {
     const completeTag = findCompleteHtmlTag(trimmedLine);
-    if (completeTag?.isSelfClosing) return null;
+    if (completeTag?.isSelfClosing) {
+      return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
+    }
     return { endMarker: `</${blockTag}>`, endsAtBlankLine: true, tagName: blockTag, depth: 1 };
   }
   const genericTag = findCompleteHtmlTag(trimmedLine);
@@ -340,13 +342,14 @@ function visitProfileMetadataLines(
   let openHtmlBlock: HtmlBlock | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]?.content ?? "";
+    const parserLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
     if (index <= frontmatterEnd) continue;
-    const fence = getFenceMarker(line);
+    const fence = getFenceMarker(parserLine);
     if (openFence) {
       if (fence && isClosingFence(fence, openFence)) openFence = null;
       continue;
     }
-    const trimmedLine = line.trimStart();
+    const trimmedLine = parserLine.trimStart();
     const normalizedLine = trimmedLine.toLowerCase();
     if (openHtmlBlock) {
       if (openHtmlBlock.endsAtBlankLine && normalizedLine === "") {
@@ -362,7 +365,7 @@ function visitProfileMetadataLines(
       }
       continue;
     }
-    if (isIndentedCodeLine(line)) continue;
+    if (isIndentedCodeLine(parserLine)) continue;
     if (fence) {
       openFence = fence;
       continue;

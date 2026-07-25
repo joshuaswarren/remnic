@@ -669,6 +669,28 @@ test("writeProfile preserves a leading BOM before the title", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile preserves a BOM-prefixed fenced example", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "\uFEFF```markdown",
+        "# Literal example",
+        "```",
+        "",
+        "- Keeps fenced content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), `\uFEFF${FRESH_HEADER}\n\n${profile.slice(1)}`);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile preserves timestamp-shaped indented code", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
@@ -844,6 +866,32 @@ test("writeProfile preserves timestamp-shaped generic HTML blocks", async (t) =>
           profile.replace(`\n\n${tagLine}`, `\n\n${FRESH_HEADER}\n\n${tagLine}`),
         );
       }
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile keeps self-closing built-in HTML blocks opaque", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<div/>",
+        "*Last updated: literal example*",
+        "",
+        "- Keeps self-closing HTML opaque.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\n<div/>", `\n\n${FRESH_HEADER}\n\n<div/>`),
+      );
     });
   } finally {
     t.mock.timers.reset();
