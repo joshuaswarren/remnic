@@ -5,7 +5,7 @@ import type { Orchestrator } from "./orchestrator.js";
 import { log } from "./logger.js";
 import { isSafeRouteNamespace } from "./routing/engine.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
-import { normalizeExplicitCaptureContent } from "./storage.js";
+import { normalizeExplicitCaptureContent } from "./storage/tombstone-blocked-capture-index.js";
 import type { CaptureMode, MemoryCategory, MemoryLifecycleEvent, PluginConfig } from "./types.js";
 
 export type ExplicitCaptureInput = {

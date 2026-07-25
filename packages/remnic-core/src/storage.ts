@@ -181,6 +181,7 @@ import {
   CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS,
   type ContentHashIndexLockOptions,
 } from "./storage/content-hash-index.js";
+import { TombstoneBlockedCaptureIndexHost, type TombstoneBlockedCaptureIndexOptions } from "./storage/tombstone-blocked-capture-index.js";
 export { ContentHashIndex, FactHashIndexNotAuthoritativeError };
 export type { ContentHashIndexLockOptions };
 export {
@@ -298,40 +299,6 @@ function assertMemoryWorthCounter(field: "mw_success" | "mw_fail", value: number
   if (value < 0) {
     throw new Error(`${field} must be >= 0, got ${value}`);
   }
-}
-
-/**
- * Normalize the content identity used by explicit-capture duplicate checks.
- * This deliberately matches the capture path's historical comparison rather
- * than the punctuation-stripping fact-hash index: the index is only an
- * optimization, while this key gates whether a durable row needs inspection.
- */
-export function normalizeExplicitCaptureContent(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * Build the targeted identity for a tombstone-blocked explicit-capture row.
- * Each field is normalized and length-prefixed so the punctuation-stripping
- * content-hash index cannot collapse tuple boundaries or distinct providers.
- */
-export function buildExplicitCaptureDedupKey(
-  content: string,
-  category: string,
-  sourceConnector: string | undefined,
-): string {
-  const encode = (label: string, value: string): string => {
-    const normalized = normalizeContent(value);
-    return `${label} ${normalized.length} ${normalized}`;
-  };
-  return [
-    encode("category", category),
-    encode("connector", sourceConnector?.trim() ?? ""),
-    encode("content", normalizeExplicitCaptureContent(content)),
-  ].join(" ");
 }
 
 function normalizeMemoryWriteTimestamp(field: string, value: string | undefined): string | undefined {
@@ -1865,7 +1832,7 @@ export type SealedWriteExtras = Omit<
   | "sourceConnector"
 >;
 
-export class StorageManager {
+export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
   private artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null = null;
   /** Read by storage/entity-store.ts (decomposition), hence not `private`. */
@@ -2007,16 +1974,6 @@ export class StorageManager {
    * `removeFactOnlyHashForMemory`). In-memory only; never persisted.
    */
   private factOnlyHashes: Set<string> = new Set();
-  /**
-   * Targeted identities for tombstone-blocked explicit-capture rows. The
-   * active fact index intentionally excludes blocked rows, so explicit
-   * duplicate detection uses this separate index to preserve the authoritative
-   * active-hash miss fast path.
-   */
-  private tombstoneBlockedCaptureHashIndex: ContentHashIndex | null = null;
-  private tombstoneBlockedCaptureHashIndexLoadPromise: Promise<ContentHashIndex> | null = null;
-  private tombstoneBlockedCaptureHashIndexRefreshPromise: Promise<ContentHashIndex> | null = null;
-  private tombstoneBlockedCaptureHashIndexAuthoritative = false;
   /** Optional lock/retry tuning for the fact-hash index cross-process lock (PR #2016; tests inject tight budgets). */
   factHashIndexLockOptions: ContentHashIndexLockOptions = {};
   private readonly secureAppendChains = new Map<string, Promise<void>>();
@@ -2348,7 +2305,7 @@ export class StorageManager {
      */
     hotMemoriesCacheEnabledOverride?: boolean,
   ) {
-    this.hotMemoriesCacheEnabled =
+    super(); this.hotMemoriesCacheEnabled =
       hotMemoriesCacheEnabledOverride ??
       StorageManager.hotMemoriesCacheDefaultByDir.get(baseDir) ??
       StorageManager.hotMemoriesCacheDefault;
@@ -3020,15 +2977,6 @@ export class StorageManager {
       this.factHashIndexLockOptions,
     );
   }
-  private createTombstoneBlockedCaptureHashIndex(): ContentHashIndex {
-    return new ContentHashIndex(
-      path.join(this.stateDir, "tombstone-blocked-capture"),
-      () => this._secureStoreKey,
-      () => this.resolveWriteKey(),
-      this.baseDir,
-      this.factHashIndexLockOptions,
-    );
-  }
 
   private async appendStorageSecureFile(filePath: string, content: string): Promise<void> {
     const previous = this.secureAppendChains.get(filePath) ?? Promise.resolve();
@@ -3315,156 +3263,12 @@ export class StorageManager {
     });
     return await store.rebuild(retired);
   }
-
-  private tombstoneBlockedCaptureHashIndexPath(): string {
-    return path.join(this.stateDir, "tombstone-blocked-capture", "fact-hashes.txt");
+  protected tombstoneBlockedCaptureIndexOptions(): TombstoneBlockedCaptureIndexOptions {
+    return {
+      stateDir: this.stateDir, memoryDir: this.baseDir, secureStoreKeyProvider: () => this._secureStoreKey, secureStoreWriteKeyProvider: () => this.resolveWriteKey(),
+      lockOptions: () => this.factHashIndexLockOptions, readAllMemories: () => this.readAllMemories(), readAllColdMemories: () => this.readAllColdMemories(),
+    };
   }
-
-  private isTombstoneBlockedCapture(memory: MemoryFile): boolean {
-    return memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
-  }
-
-  private async rebuildTombstoneBlockedCaptureHashIndex(index: ContentHashIndex): Promise<boolean> {
-    return await index.rebuildUnderLock(async () => {
-      index.clear();
-      const existing = [
-        ...(await this.readAllMemories()),
-        ...(await this.readAllColdMemories()),
-      ];
-      for (const memory of existing) {
-        if (!this.isTombstoneBlockedCapture(memory)) continue;
-        index.add(
-          buildExplicitCaptureDedupKey(
-            memory.content,
-            memory.frontmatter.category,
-            memory.frontmatter.sourceConnector,
-          ),
-        );
-      }
-    });
-  }
-
-  private async getTombstoneBlockedCaptureHashIndex(): Promise<ContentHashIndex> {
-    if (this.tombstoneBlockedCaptureHashIndex) {
-      return this.tombstoneBlockedCaptureHashIndex;
-    }
-    if (!this.tombstoneBlockedCaptureHashIndexLoadPromise) {
-      const index = this.createTombstoneBlockedCaptureHashIndex();
-      this.tombstoneBlockedCaptureHashIndexLoadPromise = (async () => {
-        await index.load();
-        let persisted = true;
-        try {
-          await stat(this.tombstoneBlockedCaptureHashIndexPath());
-        } catch (err) {
-          if (isErrnoCode(err, "ENOENT")) persisted = false;
-          else throw err;
-        }
-        if (!persisted) {
-          // The first deployment needs to recover rows written before this
-          // targeted index existed. Later processes load the durable index and
-          // avoid a corpus scan on every novel explicit capture.
-          const maxAttempts =
-            this.factHashIndexLockOptions.retryMaxAttempts ?? FACT_HASH_INDEX_REBUILD_MAX_ATTEMPTS;
-          const baseMs =
-            this.factHashIndexLockOptions.retryBaseMs ?? FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS;
-          let rebuilt = false;
-          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-            rebuilt = await this.rebuildTombstoneBlockedCaptureHashIndex(index);
-            if (rebuilt || attempt === maxAttempts - 1) break;
-            const wait = Math.min(baseMs * 2 ** attempt, CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS);
-            await new Promise<void>((resolve) => setTimeout(resolve, wait));
-          }
-          if (!rebuilt) {
-            throw new Error("tombstone-blocked capture index rebuild lock unavailable");
-          }
-        }
-        this.tombstoneBlockedCaptureHashIndexAuthoritative = true;
-        this.tombstoneBlockedCaptureHashIndex = index;
-        return index;
-      })().catch((err) => {
-        this.tombstoneBlockedCaptureHashIndexLoadPromise = null;
-        throw err;
-      });
-    }
-    return this.tombstoneBlockedCaptureHashIndexLoadPromise;
-  }
-  private async reloadTombstoneBlockedCaptureHashIndex(): Promise<ContentHashIndex> {
-    if (!this.tombstoneBlockedCaptureHashIndexRefreshPromise) {
-      this.tombstoneBlockedCaptureHashIndexRefreshPromise = (async () => {
-        this.tombstoneBlockedCaptureHashIndex = null;
-        this.tombstoneBlockedCaptureHashIndexLoadPromise = null;
-        return await this.getTombstoneBlockedCaptureHashIndex();
-      })().finally(() => {
-        this.tombstoneBlockedCaptureHashIndexRefreshPromise = null;
-      });
-    }
-    return this.tombstoneBlockedCaptureHashIndexRefreshPromise;
-  }
-
-
-  /**
-   * Answer whether a pending tombstone-blocked row can match an explicit
-   * capture identity without scanning the memory corpus.
-   */
-  async hasTombstoneBlockedExplicitCapture(
-    content: string,
-    category: string,
-    sourceConnector?: string,
-  ): Promise<boolean> {
-    const index = await this.getTombstoneBlockedCaptureHashIndex();
-    if (await index.isDiskFingerprintCurrent()) {
-      return index.has(buildExplicitCaptureDedupKey(content, category, sourceConnector));
-    }
-    const refreshedIndex = await this.reloadTombstoneBlockedCaptureHashIndex();
-    return refreshedIndex.has(buildExplicitCaptureDedupKey(content, category, sourceConnector));
-  }
-
-  async isTombstoneBlockedExplicitCaptureIndexAuthoritative(): Promise<boolean> {
-    const index = await this.getTombstoneBlockedCaptureHashIndex();
-    if (!(await index.isDiskFingerprintCurrent())) {
-      await this.reloadTombstoneBlockedCaptureHashIndex();
-    }
-    return this.tombstoneBlockedCaptureHashIndexAuthoritative;
-  }
-
-  private async addTombstoneBlockedCaptureToIndex(memory: MemoryFile): Promise<void> {
-    if (!this.isTombstoneBlockedCapture(memory)) return;
-    const index = await this.getTombstoneBlockedCaptureHashIndex();
-    index.add(
-      buildExplicitCaptureDedupKey(
-        memory.content,
-        memory.frontmatter.category,
-        memory.frontmatter.sourceConnector,
-      ),
-    );
-    await index.saveMergingWithDisk();
-    await index.flushReconcileRetry();
-  }
-
-  private async syncTombstoneBlockedCaptureIndex(
-    before: MemoryFile,
-    after: MemoryFile,
-  ): Promise<void> {
-    const beforeBlocked = this.isTombstoneBlockedCapture(before);
-    const afterBlocked = this.isTombstoneBlockedCapture(after);
-    if (!beforeBlocked && !afterBlocked) return;
-    const beforeKey = buildExplicitCaptureDedupKey(
-      before.content,
-      before.frontmatter.category,
-      before.frontmatter.sourceConnector,
-    );
-    const afterKey = buildExplicitCaptureDedupKey(
-      after.content,
-      after.frontmatter.category,
-      after.frontmatter.sourceConnector,
-    );
-    if (beforeBlocked && afterBlocked && beforeKey === afterKey) return;
-    const index = await this.getTombstoneBlockedCaptureHashIndex();
-    // Rebuild instead of removing one hash in place: multiple blocked rows
-    // may share an identity, and a set cannot represent their reference count.
-    await this.rebuildTombstoneBlockedCaptureHashIndex(index);
-  }
-
   private async getFactHashIndex(): Promise<ContentHashIndex> {
     if (this.factHashIndex) {
       return this.factHashIndex;
@@ -3484,7 +3288,6 @@ export class StorageManager {
     }
     return this.factHashIndexLoadPromise;
   }
-
   /**
    * Return the fact-hash index after ensuring it is authoritative — i.e. rebuilt
    * from the durable fact corpus (issue #1909 review round 12). This is the ONE
@@ -3500,7 +3303,6 @@ export class StorageManager {
     }
     return this.getFactHashIndex();
   }
-
   /**
    * Return the shared fact-hash index instance, corpus-rebuilt under the lock
    * when the lock is free. Unlike {@link getAuthoritativeFactHashIndex} this
@@ -3514,7 +3316,6 @@ export class StorageManager {
     await this.ensureFactHashIndexAuthoritative();
     return this.getFactHashIndex();
   }
-
   private async ensureFactHashIndexAuthoritative(): Promise<boolean> {
     if (this.factHashIndexAuthoritative === true) {
       // PR #2016 review: authority is NOT permanent. A peer process can advance
@@ -3534,7 +3335,6 @@ export class StorageManager {
     if (this.factHashIndexAuthoritativePromise) {
       return this.factHashIndexAuthoritativePromise;
     }
-
     this.factHashIndexAuthoritative = false;
     this.factHashIndexAuthoritativePromise = (async () => {
       // Round 11: ALWAYS rebuild the fact-hash index from the durable corpus on
@@ -3580,7 +3380,6 @@ export class StorageManager {
     });
     return this.factHashIndexAuthoritativePromise;
   }
-
   /**
    * Repopulate `factHashIndex` in memory from the durable HOT+COLD corpus. Runs
    * WHILE the per-index cross-process lock is held (see
@@ -3646,7 +3445,6 @@ export class StorageManager {
       );
     }
   }
-
   /**
    * The content-hash the corpus rebuild registers for `memory`, or null when the
    * body carries a citation from an unknown/custom template that cannot be
@@ -4086,21 +3884,7 @@ export class StorageManager {
         ...(options.supersedes ? [options.supersedes] : []),
         ...(options.lineage ?? []).filter(Boolean),
       ],
-    });
-    if (tombstoneBlocked) {
-      try {
-        await this.addTombstoneBlockedCaptureToIndex({
-          path: filePath,
-          frontmatter: fm,
-          content: sanitized.text,
-        });
-      } catch (err) {
-        this.tombstoneBlockedCaptureHashIndexAuthoritative = false;
-        // The durable memory remains visible even if the optimization index
-        // cannot be updated; the duplicate path fails open to a corpus scan.
-        log.warn(`storage.writeMemory completed but failed to update tombstone-blocked capture index: ${err}`);
-      }
-    }
+    }); if (tombstoneBlocked) await this.getTombstoneBlockedCaptureIndex().addWrittenMemory(filePath, fm, sanitized.text);
     if (category === "fact" && !tombstoneBlocked) {
       // Rule 44 (#1579): a tombstone-blocked fact MUST NOT be registered as an
       // active dedup/index entry — otherwise the block is invisible to dedup
@@ -5319,18 +5103,7 @@ export class StorageManager {
     try {
       await unlink(memory.path);
       markProjectedMemoryPathInvalid(this.baseDir, id);
-      this.invalidateAllMemoriesCache();
-      if (this.tombstoneBlockedCaptureHashIndex) {
-        try {
-          const rebuilt = await this.rebuildTombstoneBlockedCaptureHashIndex(
-            this.tombstoneBlockedCaptureHashIndex,
-          );
-          this.tombstoneBlockedCaptureHashIndexAuthoritative = rebuilt;
-        } catch (err) {
-          this.tombstoneBlockedCaptureHashIndexAuthoritative = false;
-          log.warn(`storage.invalidateMemory completed but failed to update tombstone-blocked capture index: ${err}`);
-        }
-      }
+      this.invalidateAllMemoriesCache(); await this.rebuildTombstoneBlockedCaptureAfterInvalidation();
       this.bumpMemoryStatusVersion();
       log.debug(`invalidated memory ${id}`);
       return true;
@@ -5379,17 +5152,7 @@ export class StorageManager {
         ...(updated.supersedes ? [updated.supersedes] : []),
         ...(updated.lineage ?? []).filter(Boolean),
       ],
-    });
-    try {
-      await this.syncTombstoneBlockedCaptureIndex(memory, {
-        path: memory.path,
-        frontmatter: updated,
-        content: sanitized.text,
-      });
-    } catch (err) {
-      this.tombstoneBlockedCaptureHashIndexAuthoritative = false;
-      log.warn(`storage.updateMemory completed but failed to update tombstone-blocked capture index: ${err}`);
-    }
+    }); await this.getTombstoneBlockedCaptureIndex().syncUpdatedMemory(memory, updated, sanitized.text);
     log.debug(`updated memory ${id}`);
     return true;
   }
@@ -5426,16 +5189,7 @@ export class StorageManager {
       });
     } catch (err) {
       log.warn(`storage.writeMemoryFrontmatter completed but failed to update fact hash index: ${err}`);
-    }
-    try {
-      await this.syncTombstoneBlockedCaptureIndex(memory, {
-        ...memory,
-        frontmatter: updated,
-      });
-    } catch (err) {
-      this.tombstoneBlockedCaptureHashIndexAuthoritative = false;
-      log.warn(`storage.writeMemoryFrontmatter completed but failed to update tombstone-blocked capture index: ${err}`);
-    }
+    } await this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(memory, updated);
     await this.appendGeneratedMemoryLifecycleEventFailOpen(
       "storage.writeMemoryFrontmatter",
       {
