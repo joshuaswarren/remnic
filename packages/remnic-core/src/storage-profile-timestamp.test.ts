@@ -765,6 +765,35 @@ test("writeProfile preserves timestamp-shaped raw HTML blocks", async (t) => {
   }
 });
 
+test("writeProfile preserves timestamp-shaped generic HTML blocks", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      for (const tagLine of ["</custom-widget>", "<custom-widget />"]) {
+        const profile = [
+          "# Behavioral Profile",
+          "",
+          tagLine,
+          STALE_HEADER,
+          "",
+          "- Keeps custom HTML opaque.",
+          "",
+        ].join("\n");
+
+        await storage.writeProfile(profile);
+
+        assert.equal(
+          await storage.readProfile(),
+          profile.replace(`\n\n${tagLine}`, `\n\n${FRESH_HEADER}\n\n${tagLine}`),
+        );
+      }
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile preserves timestamp-shaped HTML comments", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

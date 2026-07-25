@@ -285,9 +285,11 @@ function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBl
     return { endMarker: `</${blockTag}>`, endsAtBlankLine: true, tagName: blockTag, depth: 1 };
   }
   const genericTag = findCompleteHtmlTag(trimmedLine);
-  return genericTag && !genericTag.isClosing && !genericTag.isSelfClosing
-    ? { endMarker: `</${genericTag.name}>`, endsAtBlankLine: true, tagName: genericTag.name, depth: 1 }
-    : null;
+  if (!genericTag) return null;
+  if (genericTag.isClosing || genericTag.isSelfClosing) {
+    return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
+  }
+  return { endMarker: `</${genericTag.name}>`, endsAtBlankLine: true, tagName: genericTag.name, depth: 1 };
 }
 
 
