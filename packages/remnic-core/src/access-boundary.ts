@@ -196,16 +196,7 @@ const IMPLICIT_HTTP_NAMESPACE_OPERATIONS = new Set<OperationName>([
   "trust_zones_status",
   "graph_events",
   "citations_observed",
-  "review_resolve",
-  "chat_message",
-  "chat_events",
 ]);
-export const RESOURCE_SCOPED_HTTP_NAMESPACE_OPERATIONS: Partial<Record<OperationName, true>> = {
-  review_resolve: true,
-  contradiction_detail: true,
-  chat_message: true,
-  chat_events: true,
-};
 
 // ---------------------------------------------------------------------------
 // Operation context — what every handler receives

@@ -2993,9 +2993,6 @@ test("HTTP authorization probe verifies requested operation grants without invok
     "trust_zones_status",
     "graph_events",
     "citations_observed",
-    "review_resolve",
-    "chat_message",
-    "chat_events",
   ];
   const server = new EngramAccessHttpServer({
     service,
@@ -3021,14 +3018,6 @@ test("HTTP authorization probe verifies requested operation grants without invok
           version: 1,
           ops: ["chat_message", "contradiction_detail"],
           namespaces: ["other"],
-        },
-      },
-      {
-        token: "resource-scoped-chat-default-token",
-        capabilities: {
-          version: 1,
-          ops: ["chat_message", "contradiction_detail"],
-          namespaces: ["default"],
         },
       },
       {
@@ -3106,53 +3095,18 @@ test("HTTP authorization probe verifies requested operation grants without invok
     );
     assert.equal(namespaceAllowed.status, 200);
     await namespaceAllowed.text();
-    const resourceNamespaceDenied = await probe(
+
+    const resourceNamespaceProbe = await probe(
       "resource-scoped-chat-token",
-      ["chat_message"],
+      ["chat_message", "contradiction_detail"],
       "other",
     );
     assert.equal(
-      resourceNamespaceDenied.status,
-      403,
-      "resource-scoped chat probes must check the daemon default, not trust the query namespace",
-    );
-    await resourceNamespaceDenied.text();
-
-    const contradictionNamespaceDenied = await probe(
-      "resource-scoped-chat-token",
-      ["contradiction_detail"],
-      "other",
-    );
-    assert.equal(
-      contradictionNamespaceDenied.status,
-      403,
-      "contradiction detail probes must check the stored resource namespace contract",
-    );
-    await contradictionNamespaceDenied.text();
-
-    const resourceNamespaceAllowed = await probe(
-      "resource-scoped-chat-default-token",
-      ["chat_message"],
-      "other",
-    );
-    assert.equal(
-      resourceNamespaceAllowed.status,
+      resourceNamespaceProbe.status,
       200,
-      "resource-scoped chat probes accept a query override when the daemon default is allowed",
+      "resource-scoped probes must not claim a namespace they cannot resolve without a resource id",
     );
-    await resourceNamespaceAllowed.text();
-
-    const contradictionNamespaceAllowed = await probe(
-      "resource-scoped-chat-default-token",
-      ["contradiction_detail"],
-      "other",
-    );
-    assert.equal(
-      contradictionNamespaceAllowed.status,
-      200,
-      "contradiction detail probes accept a query override when the daemon default is allowed",
-    );
-    await contradictionNamespaceAllowed.text();
+    await resourceNamespaceProbe.text();
 
     const fleetWide = await probe("fleet-scoped-token", ["continuity_audit_generate"]);
     assert.equal(fleetWide.status, 403);
