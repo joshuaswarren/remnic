@@ -3622,6 +3622,7 @@ export class StorageManager {
       serializeEntityFile: (entity) => serializeEntityFile(entity, this.entitySchemas),
       serializeMemoryWithEntityRef: (memory, entityRef) =>
         `${serializeFrontmatter({ ...memory.frontmatter, entityRef })}\n\n${memory.content}\n`,
+      readMemoryByPath: this.readMemoryByPath.bind(this),
       readAllMemories: this.readAllMemories.bind(this),
       readAllColdMemories: this.readAllColdMemories.bind(this),
       readArchivedMemories: this.readArchivedMemories.bind(this),

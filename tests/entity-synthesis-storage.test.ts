@@ -266,6 +266,61 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
   }
 });
 
+test("ensureDirectories preserves memory updates made after migration discovery", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-memory-race-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const canonical = normalizeEntityName(name, type);
+    const legacyCanonical = "project-";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+    );
+    const day = new Date().toISOString().slice(0, 10);
+    const memoryPath = path.join(dir, "facts", day, "migration-race.md");
+    await mkdir(path.dirname(memoryPath), { recursive: true });
+    await writeFile(
+      memoryPath,
+      [
+        "---",
+        "id: migration-race",
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        `entityRef: ${legacyCanonical}`,
+        "---",
+        "",
+        "Original content.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+
+    const upgraded = new StorageManager(dir);
+    const staleSnapshot = await upgraded.readAllMemories();
+    assert.equal(staleSnapshot.length, 1);
+    const currentContent = await readFile(memoryPath, "utf-8");
+    await writeFile(memoryPath, `${currentContent}Concurrent content update.\n`, "utf-8");
+    const originalReadAll = upgraded.readAllMemories.bind(upgraded);
+    (upgraded as unknown as { readAllMemories: () => Promise<unknown> }).readAllMemories = async () => staleSnapshot;
+    try {
+      await upgraded.ensureDirectories();
+    } finally {
+      (upgraded as unknown as { readAllMemories: typeof originalReadAll }).readAllMemories = originalReadAll;
+    }
+
+    const migratedContent = await readFile(memoryPath, "utf-8");
+    assert.match(migratedContent, new RegExp(`entityRef: ${canonical}`));
+    assert.match(migratedContent, /Concurrent content update/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories resumes a journaled legacy entity migration", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-legacy-unicode-recovery-"));
   try {

@@ -36,6 +36,7 @@ export interface EntityCanonicalIdMigrationDependencies {
   parseEntityFile(content: string): EntityFile;
   serializeEntityFile(entity: EntityFile): string;
   serializeMemoryWithEntityRef(memory: MemoryFile, entityRef: string): string;
+  readMemoryByPath(filePath: string): Promise<MemoryFile | null>;
   readAllMemories(): Promise<MemoryFile[]>;
   readAllColdMemories(): Promise<MemoryFile[]>;
   readArchivedMemories(): Promise<MemoryFile[]>;
@@ -155,15 +156,24 @@ async function rewriteReferences(
     const canonicalId = previousEntityRef ? mappings[previousEntityRef] : undefined;
     if (!previousEntityRef || !canonicalId) continue;
     if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
-    const memoryEncrypted = await deps.isEncryptedStorageFile(memory.path);
-    await deps.snapshotBeforeWrite(memory.path, "write");
+    const latestMemory = await deps.readMemoryByPath(memory.path);
+    if (!latestMemory) continue;
+    const latestPreviousEntityRef = latestMemory.frontmatter.entityRef;
+    const latestCanonicalId = latestPreviousEntityRef ? mappings[latestPreviousEntityRef] : undefined;
+    if (!latestPreviousEntityRef || !latestCanonicalId) continue;
+    const memoryEncrypted = await deps.isEncryptedStorageFile(latestMemory.path);
+    await deps.snapshotBeforeWrite(latestMemory.path, "write");
     await deps.writeStorageSecureFile(
-      memory.path,
-      deps.serializeMemoryWithEntityRef(memory, canonicalId),
+      latestMemory.path,
+      deps.serializeMemoryWithEntityRef(latestMemory, latestCanonicalId),
       memoryEncrypted,
     );
-    await deps.rewriteProjectedMemoryEntityReference(memory.frontmatter.id, previousEntityRef, canonicalId);
-    rewroteColdMemory ||= memory.path.includes(`${path.sep}cold${path.sep}`);
+    await deps.rewriteProjectedMemoryEntityReference(
+      latestMemory.frontmatter.id,
+      latestPreviousEntityRef,
+      latestCanonicalId,
+    );
+    rewroteColdMemory ||= latestMemory.path.includes(`${path.sep}cold${path.sep}`);
   }
   return { rewroteColdMemory };
 }
