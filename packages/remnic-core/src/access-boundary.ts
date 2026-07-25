@@ -202,6 +202,7 @@ const IMPLICIT_HTTP_NAMESPACE_OPERATIONS = new Set<OperationName>([
 ]);
 export const RESOURCE_SCOPED_HTTP_NAMESPACE_OPERATIONS: Partial<Record<OperationName, true>> = {
   review_resolve: true,
+  contradiction_detail: true,
   chat_message: true,
   chat_events: true,
 };

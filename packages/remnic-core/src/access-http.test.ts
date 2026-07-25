@@ -3019,7 +3019,7 @@ test("HTTP authorization probe verifies requested operation grants without invok
         token: "resource-scoped-chat-token",
         capabilities: {
           version: 1,
-          ops: ["chat_message"],
+          ops: ["chat_message", "contradiction_detail"],
           namespaces: ["other"],
         },
       },
@@ -3027,7 +3027,7 @@ test("HTTP authorization probe verifies requested operation grants without invok
         token: "resource-scoped-chat-default-token",
         capabilities: {
           version: 1,
-          ops: ["chat_message"],
+          ops: ["chat_message", "contradiction_detail"],
           namespaces: ["default"],
         },
       },
@@ -3118,6 +3118,18 @@ test("HTTP authorization probe verifies requested operation grants without invok
     );
     await resourceNamespaceDenied.text();
 
+    const contradictionNamespaceDenied = await probe(
+      "resource-scoped-chat-token",
+      ["contradiction_detail"],
+      "other",
+    );
+    assert.equal(
+      contradictionNamespaceDenied.status,
+      403,
+      "contradiction detail probes must check the stored resource namespace contract",
+    );
+    await contradictionNamespaceDenied.text();
+
     const resourceNamespaceAllowed = await probe(
       "resource-scoped-chat-default-token",
       ["chat_message"],
@@ -3129,6 +3141,18 @@ test("HTTP authorization probe verifies requested operation grants without invok
       "resource-scoped chat probes accept a query override when the daemon default is allowed",
     );
     await resourceNamespaceAllowed.text();
+
+    const contradictionNamespaceAllowed = await probe(
+      "resource-scoped-chat-default-token",
+      ["contradiction_detail"],
+      "other",
+    );
+    assert.equal(
+      contradictionNamespaceAllowed.status,
+      200,
+      "contradiction detail probes accept a query override when the daemon default is allowed",
+    );
+    await contradictionNamespaceAllowed.text();
 
     const fleetWide = await probe("fleet-scoped-token", ["continuity_audit_generate"]);
     assert.equal(fleetWide.status, 403);
