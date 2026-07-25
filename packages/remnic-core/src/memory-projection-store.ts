@@ -523,6 +523,71 @@ export function markProjectedMemoryPathInvalid(memoryDir: string, memoryId: stri
   );
 }
 
+function rewriteProjectedEntityReferenceRows(
+  memoryDir: string,
+  entries: ReadonlyArray<readonly [string, string]>,
+  memoryId?: string,
+): void {
+  const validEntries = entries.filter(
+    ([previousEntityRef, nextEntityRef]) =>
+      previousEntityRef.length > 0 && nextEntityRef.length > 0 && previousEntityRef !== nextEntityRef,
+  );
+  if (validEntries.length === 0) return;
+
+  let db: BetterSqlite3Database | null = null;
+  try {
+    db = openBetterSqlite3(getMemoryProjectionPath(memoryDir), { fileMustExist: true });
+    const updateCurrent = db.prepare(
+      memoryId
+        ? "UPDATE memory_current SET entity_ref = ? WHERE memory_id = ? AND entity_ref = ?"
+        : "UPDATE memory_current SET entity_ref = ? WHERE entity_ref = ?",
+    );
+    const updateMentions = db.prepare(
+      memoryId
+        ? `
+          UPDATE memory_entity_mentions
+          SET entity_ref = ?
+          WHERE memory_id = ? AND entity_ref = ? AND mention_source = 'frontmatter.entityRef'
+        `
+        : `
+          UPDATE memory_entity_mentions
+          SET entity_ref = ?
+          WHERE entity_ref = ? AND mention_source = 'frontmatter.entityRef'
+        `,
+    );
+    const rewrite = db.transaction(() => {
+      for (const [previousEntityRef, nextEntityRef] of validEntries) {
+        const params = memoryId
+          ? [nextEntityRef, memoryId, previousEntityRef]
+          : [nextEntityRef, previousEntityRef];
+        updateCurrent.run(...params);
+        updateMentions.run(...params);
+      }
+    });
+    rewrite();
+  } catch {
+    // Projection updates must never block the canonical filesystem mutation.
+  } finally {
+    db?.close();
+  }
+}
+
+export function rewriteProjectedMemoryEntityReference(
+  memoryDir: string,
+  memoryId: string,
+  previousEntityRef: string,
+  nextEntityRef: string,
+): void {
+  rewriteProjectedEntityReferenceRows(memoryDir, [[previousEntityRef, nextEntityRef]], memoryId);
+}
+
+export function rewriteProjectedEntityReferences(
+  memoryDir: string,
+  replacements: Readonly<Record<string, string>>,
+): void {
+  rewriteProjectedEntityReferenceRows(memoryDir, Object.entries(replacements));
+}
+
 export function updateProjectedMemoryPath(
   memoryDir: string,
   memoryId: string,

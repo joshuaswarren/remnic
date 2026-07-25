@@ -35,6 +35,8 @@ export interface EntityCanonicalIdMigrationDependencies {
   readAllMemories(): Promise<MemoryFile[]>;
   readAllColdMemories(): Promise<MemoryFile[]>;
   readArchivedMemories(): Promise<MemoryFile[]>;
+  rewriteProjectedEntityReferences(mappings: Readonly<Record<string, string>>): void;
+  rewriteProjectedMemoryEntityReference(memoryId: string, previousEntityRef: string, nextEntityRef: string): void;
   invalidateKnowledgeIndexCache(): void;
   invalidateAllMemoriesCache(): void;
   invalidateColdMemoriesCache(): void;
@@ -133,11 +135,13 @@ async function rewriteReferences(
     const memoryPath = path.resolve(memory.path);
     if (seenPaths.has(memoryPath)) continue;
     seenPaths.add(memoryPath);
-    const canonicalId = memory.frontmatter.entityRef ? mappings[memory.frontmatter.entityRef] : undefined;
-    if (!canonicalId) continue;
+    const previousEntityRef = memory.frontmatter.entityRef;
+    const canonicalId = previousEntityRef ? mappings[previousEntityRef] : undefined;
+    if (!previousEntityRef || !canonicalId) continue;
     if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
     await deps.snapshotBeforeWrite(memory.path, "write");
     await deps.writeStorageSecureFile(memory.path, deps.serializeMemoryWithEntityRef(memory, canonicalId));
+    deps.rewriteProjectedMemoryEntityReference(memory.frontmatter.id, previousEntityRef, canonicalId);
     rewroteColdMemory ||= memory.path.includes(`${path.sep}cold${path.sep}`);
   }
   return { rewroteColdMemory };
@@ -229,6 +233,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
 
       await rewriteRelationshipTargets(deps, state.mappings, () => lock.refresh());
       const { rewroteColdMemory } = await rewriteReferences(deps, state.mappings, () => lock.refresh());
+      deps.rewriteProjectedEntityReferences(state.mappings);
       deps.invalidateKnowledgeIndexCache();
       deps.invalidateAllMemoriesCache();
       if (rewroteColdMemory) deps.invalidateColdMemoriesCache();

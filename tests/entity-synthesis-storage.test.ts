@@ -13,6 +13,11 @@ import {
 } from "../packages/remnic-core/src/storage.js";
 import { parseConfig } from "../packages/remnic-core/src/config.js";
 import { writeMaybeEncryptedFile } from "../packages/remnic-core/src/secure-store/secure-fs.js";
+import { rebuildMemoryProjection } from "../packages/remnic-core/src/maintenance/rebuild-memory-projection.js";
+import {
+  readProjectedEntityMentions,
+  readProjectedMemoryState,
+} from "../packages/remnic-core/src/memory-projection-store.js";
 
 test("writeEntity appends timeline evidence and marks older synthesis as stale", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-synthesis-storage-"));
@@ -130,6 +135,17 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
       ),
     ]);
     await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+    await rebuildMemoryProjection({
+      memoryDir: dir,
+      dryRun: false,
+      now: new Date("2026-07-25T00:00:00.000Z"),
+    });
+    assert.equal(readProjectedMemoryState(dir, "legacy-unicode-entity")?.entityRef, legacyCanonical);
+    assert.deepEqual(
+      readProjectedEntityMentions(dir)?.map((mention) => mention.entityRef),
+      [legacyCanonical, legacyCanonical, legacyCanonical],
+    );
+
 
     const upgraded = new StorageManager(dir);
     await upgraded.ensureDirectories();
@@ -147,6 +163,18 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
     assert.deepEqual(
       (await upgraded.readArchivedMemories()).map((memory) => memory.frontmatter.entityRef),
       [canonical],
+    );
+    assert.deepEqual(
+      [
+        readProjectedMemoryState(dir, "legacy-unicode-entity"),
+        readProjectedMemoryState(dir, "legacy-unicode-entity-cold"),
+        readProjectedMemoryState(dir, "legacy-unicode-entity-archive"),
+      ].map((memory) => memory?.entityRef),
+      [canonical, canonical, canonical],
+    );
+    assert.deepEqual(
+      readProjectedEntityMentions(dir)?.map((mention) => mention.entityRef),
+      [canonical, canonical, canonical],
     );
     assert.equal(await upgraded.writeEntity(name, type, ["New entity fact."]), canonical);
     assert.deepEqual(

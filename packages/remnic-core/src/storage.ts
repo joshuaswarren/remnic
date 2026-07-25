@@ -189,6 +189,8 @@ import {
   type ProjectedMemoryBrowseOptions,
   type ProjectedMemoryBrowsePage,
   markProjectedMemoryPathInvalid,
+  rewriteProjectedEntityReferences,
+  rewriteProjectedMemoryEntityReference,
   readProjectedMemoryState,
   readProjectedMemoryBrowse,
   readProjectedGovernanceRecord,
@@ -3619,6 +3621,15 @@ export class StorageManager {
       readAllMemories: this.readAllMemories.bind(this),
       readAllColdMemories: this.readAllColdMemories.bind(this),
       readArchivedMemories: this.readArchivedMemories.bind(this),
+      rewriteProjectedEntityReferences: (mappings) =>
+        rewriteProjectedEntityReferences(this.baseDir, mappings),
+      rewriteProjectedMemoryEntityReference: (memoryId, previousEntityRef, nextEntityRef) =>
+        rewriteProjectedMemoryEntityReference(
+          this.baseDir,
+          memoryId,
+          previousEntityRef,
+          nextEntityRef,
+        ),
       invalidateKnowledgeIndexCache: this.invalidateKnowledgeIndexCache.bind(this),
       invalidateAllMemoriesCache: this.invalidateAllMemoriesCache.bind(this),
       invalidateColdMemoriesCache: this.invalidateColdMemoriesCache.bind(this),
