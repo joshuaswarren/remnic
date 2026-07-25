@@ -539,3 +539,55 @@ test("inline capture processor deduplicates tombstone review captures after rest
   assert.equal(probe.envelopes.length, 1);
   assert.equal(probe.lifecycleEvents.length, 1);
 });
+
+test("inline capture queues safe unsupported namespaces through the authorized review scope", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const result = await probe.processor.process({
+    captureMode: "hybrid",
+    reviewNamespace: "default",
+    reviewNamespacePreResolved: true,
+    content: [
+      "<memory_note>",
+      "content: A safe but unconfigured namespace must remain reviewable.",
+      "category: fact",
+      "namespace: unconfigured-inline",
+      "</memory_note>",
+    ].join("\n"),
+  });
+
+  assert.equal(result.queued, 1);
+  assert.equal(probe.envelopes.length, 1);
+  assert.match(probe.envelopes[0]?.content ?? "", /Requested namespace: unconfigured-inline/);
+  assert.ok(probe.requestedNamespaces.every((namespace) => namespace === "default"));
+});
+
+test("inline capture scopes unsupported namespace review replay to the authorized review namespace", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const request = {
+    captureMode: "hybrid" as const,
+    content: [
+      "<memory_note>",
+      "content: A safe unsupported namespace needs an isolated review replay.",
+      "category: fact",
+      "namespace: unconfigured-inline",
+      "</memory_note>",
+    ].join("\n"),
+  };
+
+  const first = await probe.processor.process({
+    ...request,
+    reviewNamespace: "review-one",
+    reviewNamespacePreResolved: true,
+  });
+  const second = await probe.processor.process({
+    ...request,
+    reviewNamespace: "review-two",
+    reviewNamespacePreResolved: true,
+  });
+
+  assert.equal(first.queued, 1);
+  assert.equal(second.processed, 1);
+  assert.equal(second.duplicates, 1);
+  assert.ok(probe.requestedNamespaces.includes("review-one"));
+  assert.ok(probe.requestedNamespaces.includes("review-two"));
+});

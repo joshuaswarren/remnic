@@ -2140,15 +2140,23 @@ const pluginDefinition = {
       content: string,
       messageKeys: readonly string[] | null | undefined,
       fallbackDedupeKeys: readonly (string | null)[] = [],
+      sessionKey = "default",
     ) {
       const dedupeKeys = new Set(messageKeys ?? []);
       for (const key of fallbackDedupeKeys) {
         if (key) dedupeKeys.add(key);
       }
+      const reviewNamespace =
+        typeof orchestrator.resolveSelfNamespace === "function"
+          ? orchestrator.resolveSelfNamespace(sessionKey)
+          : undefined;
       return inlineCaptureProcessor.process({
         captureMode: orchestrator.config.captureMode,
         content,
         dedupeKeys: [...dedupeKeys],
+        ...(reviewNamespace
+          ? { reviewNamespace, reviewNamespacePreResolved: true }
+          : {}),
       });
     }
 
@@ -4062,6 +4070,7 @@ const pluginDefinition = {
             cleaned,
             inboundMessageKeys,
             [inlineCaptureContentFingerprint, sparseInlineCaptureContentFingerprint],
+            sessionKey,
           );
           const transcriptContent = inlineCapture.content;
           if (
@@ -4262,6 +4271,7 @@ const pluginDefinition = {
               cleaned,
               messageDedupeKeys,
               [inlineCaptureContentFingerprint, sparseInlineCaptureContentFingerprint],
+              sessionKey,
             );
             const stripped = inlineCapture.content;
             const inlineCaptureWasHandled =

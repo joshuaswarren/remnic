@@ -552,20 +552,28 @@ async function findQueuedExplicitCaptureDuplicate(
   return match?.frontmatter.id ?? null;
 }
 
+export type ExplicitCaptureReviewQueueOptions = {
+  /** A server-authorized namespace resolved from the authenticated session. */
+  resolvedNamespace?: string;
+};
+
 export async function queueExplicitCaptureForReview(
   orchestrator: Orchestrator,
   input: ExplicitCaptureInput,
   source: ExplicitCaptureSource,
   error: unknown,
+  options: ExplicitCaptureReviewQueueOptions = {},
 ): Promise<{ id: string; duplicateOf?: string }> {
   const reason = sanitizeReviewText(normalizeExplicitCaptureError(error), "explicit capture failed");
   const requestedNamespace = asTrimmed(input.namespace);
+  const resolvedNamespace = asTrimmed(options.resolvedNamespace);
   // A caller-pre-authorized namespace (e.g. a session-owned project overlay
   // from the access service) routes directly; otherwise apply the static
   // policy allow-list guard (#1434).
-  const queueNamespace = (input as { namespacePreResolved?: boolean }).namespacePreResolved
-    ? requestedNamespace
-    : resolveExplicitCaptureReviewNamespace(orchestrator, requestedNamespace);
+  const queueNamespace = resolvedNamespace ??
+    ((input as { namespacePreResolved?: boolean }).namespacePreResolved
+      ? requestedNamespace
+      : resolveExplicitCaptureReviewNamespace(orchestrator, requestedNamespace));
   const content = buildExplicitCaptureReviewContent(input, reason);
   const duplicateOf = await findQueuedExplicitCaptureDuplicate(orchestrator, queueNamespace, content, input.sourceConnector);
   if (duplicateOf) {
@@ -646,6 +654,8 @@ export interface InlineExplicitCaptureProcessRequest {
   dedupeKeys?: readonly string[];
   namespace?: string;
   namespacePreResolved?: boolean;
+  reviewNamespace?: string;
+  reviewNamespacePreResolved?: boolean;
   sourceConnector?: string;
 }
 
@@ -684,6 +694,7 @@ export class InlineExplicitCaptureProcessor {
     dedupeKeys: readonly string[] | undefined,
     input: ExplicitCaptureInput,
     namespacePreResolved: boolean,
+    fallbackReviewNamespace?: string,
   ): string[] {
     let effectiveNamespace = asTrimmed(input.namespace);
     if (!namespacePreResolved) {
@@ -693,7 +704,7 @@ export class InlineExplicitCaptureProcessor {
           effectiveNamespace,
         );
       } catch {
-        effectiveNamespace = asTrimmed(input.namespace);
+        effectiveNamespace = asTrimmed(fallbackReviewNamespace) ?? asTrimmed(input.namespace);
       }
     }
     const namespaceScope =
@@ -720,6 +731,15 @@ export class InlineExplicitCaptureProcessor {
     ];
   }
 
+  private isNamespacePolicyAuthorized(namespace: string | undefined): boolean {
+    try {
+      resolveExplicitCaptureNamespace(this.orchestrator, namespace);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private remember(keys: readonly string[]): void {
     for (const key of keys) {
       if (this.observedKeys.has(key)) continue;
@@ -738,6 +758,9 @@ export class InlineExplicitCaptureProcessor {
     }
     if (request.namespacePreResolved === true && !asTrimmed(request.namespace)) {
       throw new Error("namespacePreResolved requires a resolved namespace");
+    }
+    if (request.reviewNamespacePreResolved === true && !asTrimmed(request.reviewNamespace)) {
+      throw new Error("reviewNamespacePreResolved requires a resolved namespace");
     }
 
     const notes = parseInlineExplicitCaptureCandidates(request.content);
@@ -760,6 +783,9 @@ export class InlineExplicitCaptureProcessor {
         request.dedupeKeys,
         input,
         request.namespacePreResolved === true,
+        request.reviewNamespacePreResolved === true
+          ? request.reviewNamespace
+          : undefined,
       );
       if (dedupeKeys.some((key) => this.observedKeys.has(key))) continue;
 
@@ -780,14 +806,21 @@ export class InlineExplicitCaptureProcessor {
         }
       } catch (error) {
         const queueInput = request.namespacePreResolved === true
-          ? Object.assign(input, { namespacePreResolved: true })
+          ? { ...input, namespacePreResolved: true }
           : input;
+        const reviewNamespace =
+          request.reviewNamespacePreResolved === true &&
+          request.namespacePreResolved !== true &&
+          !this.isNamespacePolicyAuthorized(input.namespace)
+            ? request.reviewNamespace
+            : undefined;
         try {
           const review = await queueExplicitCaptureForReview(
             this.orchestrator,
             queueInput,
             "inline",
             error,
+            reviewNamespace ? { resolvedNamespace: reviewNamespace } : undefined,
           );
           this.remember(dedupeKeys);
           processed += 1;

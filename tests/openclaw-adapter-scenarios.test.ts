@@ -568,6 +568,122 @@ test("scenario: message_received persists inline explicit captures without agent
   );
 });
 
+test("scenario: message_received preserves configured inline namespace routing", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      await messageReceived(
+        {
+          content: [
+            "Remember the configured namespace request.",
+            "<memory_note>",
+            "content: This configured shared namespace should persist directly.",
+            "category: fact",
+            "namespace: shared",
+            "</memory_note>",
+          ].join("\n"),
+          messageId: "msg-inline-configured-namespace",
+        },
+        { sessionKey: "alice:configured-namespace-session" },
+      );
+      await messageReceived(
+        {
+          content: [
+            "Remember the configured namespace review request.",
+            "<memory_note>",
+            "content: This configured shared namespace review should retain its scope.",
+            "category: fact",
+            "confidence: invalid",
+            "namespace: shared",
+            "</memory_note>",
+          ].join("\n"),
+          messageId: "msg-inline-configured-namespace-review",
+        },
+        { sessionKey: "alice:configured-namespace-review-session" },
+      );
+
+      const sharedStorage = await orchestrator.getStorage("shared");
+      const aliceStorage = await orchestrator.getStorage("alice");
+      const sharedMemories = await sharedStorage.readAllMemories();
+      const aliceMemories = await aliceStorage.readAllMemories();
+      const sharedText = sharedMemories.map((memory: { content: string }) => memory.content).join("\n");
+      const aliceText = aliceMemories.map((memory: { content: string }) => memory.content).join("\n");
+      assert.match(sharedText, /configured shared namespace should persist directly/);
+      assert.match(sharedText, /Explicit capture queued for review/);
+      assert.match(sharedText, /configured shared namespace review should retain its scope/);
+      assert.doesNotMatch(aliceText, /configured shared namespace should persist directly/);
+      assert.doesNotMatch(aliceText, /configured shared namespace review should retain its scope/);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+        sharedNamespace: "shared",
+        principalFromSessionKeyMode: "prefix",
+        principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+        namespacePolicies: [
+          { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+          { name: "shared", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+        ],
+      },
+    },
+  );
+});
+
+test("scenario: unsupported inline namespace replay stays isolated by session principal", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const note = [
+        "Remember the isolated namespace review.",
+        "<memory_note>",
+        "content: The same unsupported namespace review must reach each principal.",
+        "category: fact",
+        "namespace: unconfigured-inline",
+        "</memory_note>",
+      ].join("\n");
+
+      await messageReceived(
+        { content: note, messageId: "msg-inline-alice-unconfigured" },
+        { sessionKey: "alice:unconfigured-namespace-session" },
+      );
+      await messageReceived(
+        { content: note, messageId: "msg-inline-bob-unconfigured" },
+        { sessionKey: "bob:unconfigured-namespace-session" },
+      );
+
+      const aliceStorage = await orchestrator.getStorage("alice");
+      const bobStorage = await orchestrator.getStorage("bob");
+      const aliceMemories = await aliceStorage.readAllMemories();
+      const bobMemories = await bobStorage.readAllMemories();
+      const aliceText = aliceMemories.map((memory: { content: string }) => memory.content).join("\n");
+      const bobText = bobMemories.map((memory: { content: string }) => memory.content).join("\n");
+      assert.equal(aliceMemories.length, 1);
+      assert.equal(bobMemories.length, 1);
+      assert.match(aliceText, /same unsupported namespace review must reach each principal/);
+      assert.match(bobText, /same unsupported namespace review must reach each principal/);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+        sharedNamespace: "shared",
+        principalFromSessionKeyMode: "prefix",
+        principalFromSessionKeyRules: [
+          { match: "alice:", principal: "alice" },
+          { match: "bob:", principal: "bob" },
+        ],
+        namespacePolicies: [
+          { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+          { name: "bob", readPrincipals: ["bob"], writePrincipals: ["bob"] },
+        ],
+      },
+    },
+  );
+});
+
 test("scenario: message_received persists sparse inline explicit captures without agent_end", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir, orchestrator }) => {
