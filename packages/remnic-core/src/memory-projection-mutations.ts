@@ -1,0 +1,102 @@
+import { existsSync } from "node:fs";
+import { getMemoryProjectionPath } from "./memory-projection-store.js";
+import { type BetterSqlite3Database, openBetterSqlite3 } from "./runtime/better-sqlite.js";
+
+const PROJECTION_WRITE_BUSY_TIMEOUT_MS = 100;
+const PROJECTION_WRITE_RETRY_COUNT = 4;
+const PROJECTION_WRITE_RETRY_DELAY_MS = 100;
+
+function isSqliteBusyError(error: unknown): boolean {
+  const messages: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== null && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof Error) messages.push(current.message);
+    if (!("cause" in current)) break;
+    current = current.cause;
+  }
+  const lower = messages.join("\n").toLowerCase();
+  return lower.includes("database is locked") || lower.includes("sqlite_busy");
+}
+
+async function rewriteProjectedEntityReferenceRows(
+  memoryDir: string,
+  entries: ReadonlyArray<readonly [string, string]>,
+  memoryId?: string,
+): Promise<void> {
+  const validEntries = entries.filter(
+    ([previousEntityRef, nextEntityRef]) =>
+      previousEntityRef.length > 0 && nextEntityRef.length > 0 && previousEntityRef !== nextEntityRef,
+  );
+  if (validEntries.length === 0) return;
+
+  const projectionPath = getMemoryProjectionPath(memoryDir);
+  if (!existsSync(projectionPath)) return;
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt < PROJECTION_WRITE_RETRY_COUNT; attempt += 1) {
+    let db: BetterSqlite3Database | null = null;
+    try {
+      db = openBetterSqlite3(projectionPath, { fileMustExist: true });
+      db.pragma(`busy_timeout = ${PROJECTION_WRITE_BUSY_TIMEOUT_MS}`);
+      const updateCurrent = db.prepare(
+        memoryId
+          ? "UPDATE memory_current SET entity_ref = ? WHERE memory_id = ? AND entity_ref = ?"
+          : "UPDATE memory_current SET entity_ref = ? WHERE entity_ref = ?",
+      );
+      const updateMentions = db.prepare(
+        memoryId
+          ? `
+            UPDATE memory_entity_mentions
+            SET entity_ref = ?
+            WHERE memory_id = ? AND entity_ref = ? AND mention_source = 'frontmatter.entityRef'
+          `
+          : `
+            UPDATE memory_entity_mentions
+            SET entity_ref = ?
+            WHERE entity_ref = ? AND mention_source = 'frontmatter.entityRef'
+          `,
+      );
+      const rewrite = db.transaction(() => {
+        for (const [previousEntityRef, nextEntityRef] of validEntries) {
+          const params = memoryId
+            ? [nextEntityRef, memoryId, previousEntityRef]
+            : [nextEntityRef, previousEntityRef];
+          updateCurrent.run(...params);
+          updateMentions.run(...params);
+        }
+      });
+      rewrite();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isSqliteBusyError(error) || attempt === PROJECTION_WRITE_RETRY_COUNT - 1) {
+        throw error;
+      }
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, PROJECTION_WRITE_RETRY_DELAY_MS);
+      await promise;
+    } finally {
+      db?.close();
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Projection rewrite failed.");
+}
+
+export async function rewriteProjectedMemoryEntityReference(
+  memoryDir: string,
+  memoryId: string,
+  previousEntityRef: string,
+  nextEntityRef: string,
+): Promise<void> {
+  await rewriteProjectedEntityReferenceRows(memoryDir, [[previousEntityRef, nextEntityRef]], memoryId);
+}
+
+export async function rewriteProjectedEntityReferences(
+  memoryDir: string,
+  replacements: Readonly<Record<string, string>>,
+): Promise<void> {
+  await rewriteProjectedEntityReferenceRows(memoryDir, Object.entries(replacements));
+}

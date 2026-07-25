@@ -189,14 +189,16 @@ import {
   type ProjectedMemoryBrowseOptions,
   type ProjectedMemoryBrowsePage,
   markProjectedMemoryPathInvalid,
-  rewriteProjectedEntityReferences,
-  rewriteProjectedMemoryEntityReference,
   readProjectedMemoryState,
   readProjectedMemoryBrowse,
   readProjectedGovernanceRecord,
   readProjectedMemoryTimeline,
   updateProjectedMemoryPath,
 } from "./memory-projection-store.js";
+import {
+  rewriteProjectedEntityReferences,
+  rewriteProjectedMemoryEntityReference,
+} from "./memory-projection-mutations.js";
 import {
   inferMemoryStatus,
   isArchivedMemoryPath,

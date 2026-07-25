@@ -3,6 +3,7 @@ import { access, readFile, readdir, rename, unlink, writeFile } from "node:fs/pr
 import path from "node:path";
 import { z } from "zod";
 import { normalizeLegacyEntityName } from "../entity-id-normalization.js";
+import { computeSupersessionKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { EntityFile, MemoryFile } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
@@ -35,8 +36,12 @@ export interface EntityCanonicalIdMigrationDependencies {
   readAllMemories(): Promise<MemoryFile[]>;
   readAllColdMemories(): Promise<MemoryFile[]>;
   readArchivedMemories(): Promise<MemoryFile[]>;
-  rewriteProjectedEntityReferences(mappings: Readonly<Record<string, string>>): void;
-  rewriteProjectedMemoryEntityReference(memoryId: string, previousEntityRef: string, nextEntityRef: string): void;
+  rewriteProjectedEntityReferences(mappings: Readonly<Record<string, string>>): Promise<void>;
+  rewriteProjectedMemoryEntityReference(
+    memoryId: string,
+    previousEntityRef: string,
+    nextEntityRef: string,
+  ): Promise<void>;
   invalidateKnowledgeIndexCache(): void;
   invalidateAllMemoriesCache(): void;
   invalidateColdMemoriesCache(): void;
@@ -141,10 +146,72 @@ async function rewriteReferences(
     if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
     await deps.snapshotBeforeWrite(memory.path, "write");
     await deps.writeStorageSecureFile(memory.path, deps.serializeMemoryWithEntityRef(memory, canonicalId));
-    deps.rewriteProjectedMemoryEntityReference(memory.frontmatter.id, previousEntityRef, canonicalId);
+    await deps.rewriteProjectedMemoryEntityReference(memory.frontmatter.id, previousEntityRef, canonicalId);
     rewroteColdMemory ||= memory.path.includes(`${path.sep}cold${path.sep}`);
   }
   return { rewroteColdMemory };
+}
+
+function rewriteTombstoneLine(
+  line: string,
+  mappings: Readonly<Record<string, string>>,
+): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return line;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return line;
+
+  const tombstone = parsed as Record<string, unknown>;
+  let changed = false;
+  if (typeof tombstone.entityRef === "string") {
+    const canonicalId = mappings[tombstone.entityRef];
+    if (canonicalId) {
+      tombstone.entityRef = canonicalId;
+      changed = true;
+    }
+  }
+  if (typeof tombstone.supersessionKey === "string") {
+    const separator = tombstone.supersessionKey.indexOf("::");
+    const normalizedLegacyId = separator < 0 ? "" : tombstone.supersessionKey.slice(0, separator);
+    const mapping = Object.entries(mappings).find(
+      ([legacyId]) => normalizeSupersessionKey(legacyId) === normalizedLegacyId,
+    );
+    if (mapping) {
+      const canonicalKey = computeSupersessionKey(mapping[1], tombstone.supersessionKey.slice(separator + 2));
+      if (canonicalKey) {
+        tombstone.supersessionKey = canonicalKey;
+        changed = true;
+      }
+    }
+  }
+  return changed ? JSON.stringify(tombstone) : line;
+}
+
+async function rewriteTombstoneReferences(
+  deps: EntityCanonicalIdMigrationDependencies,
+  mappings: Readonly<Record<string, string>>,
+  refreshLock: () => Promise<boolean>,
+): Promise<void> {
+  const tombstonePath = path.join(deps.stateDir, "tombstones.jsonl");
+  if (!(await fileExists(tombstonePath))) return;
+
+  const original = await deps.readStorageSecureFile(tombstonePath);
+  let changed = false;
+  const rewritten = original
+    .split("\n")
+    .map((line) => {
+      const next = rewriteTombstoneLine(line, mappings);
+      changed ||= next !== line;
+      return next;
+    })
+    .join("\n");
+  if (!changed) return;
+  if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
+  await deps.snapshotBeforeWrite(tombstonePath, "write");
+  await deps.writeStorageSecureFile(tombstonePath, rewritten);
 }
 
 async function rewriteRelationshipTargets(
@@ -233,7 +300,8 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
 
       await rewriteRelationshipTargets(deps, state.mappings, () => lock.refresh());
       const { rewroteColdMemory } = await rewriteReferences(deps, state.mappings, () => lock.refresh());
-      deps.rewriteProjectedEntityReferences(state.mappings);
+      await rewriteTombstoneReferences(deps, state.mappings, () => lock.refresh());
+      await deps.rewriteProjectedEntityReferences(state.mappings);
       deps.invalidateKnowledgeIndexCache();
       deps.invalidateAllMemoriesCache();
       if (rewroteColdMemory) deps.invalidateColdMemoriesCache();

@@ -15,9 +15,12 @@ import { parseConfig } from "../packages/remnic-core/src/config.js";
 import { writeMaybeEncryptedFile } from "../packages/remnic-core/src/secure-store/secure-fs.js";
 import { rebuildMemoryProjection } from "../packages/remnic-core/src/maintenance/rebuild-memory-projection.js";
 import {
+  getMemoryProjectionPath,
   readProjectedEntityMentions,
   readProjectedMemoryState,
 } from "../packages/remnic-core/src/memory-projection-store.js";
+import { openBetterSqlite3 } from "../packages/remnic-core/src/runtime/better-sqlite.js";
+import { computeSupersessionKey } from "../packages/remnic-core/src/temporal-supersession.js";
 
 test("writeEntity appends timeline evidence and marks older synthesis as stale", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-synthesis-storage-"));
@@ -134,6 +137,23 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
         "utf-8",
       ),
     ]);
+    const legacySupersessionKey = computeSupersessionKey(legacyCanonical, "status");
+    assert.ok(legacySupersessionKey);
+    seed.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "test",
+    });
+    await seed.appendTombstone({
+      reason: "supersession",
+      createdBy: "supersession",
+      sourceMemoryId: "legacy-unicode-entity",
+      rawContent: "Moonlight has an obsolete status.",
+      entityRef: legacyCanonical,
+      supersessionKey: legacySupersessionKey,
+    });
+
     await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
     await rebuildMemoryProjection({
       memoryDir: dir,
@@ -148,7 +168,23 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
 
 
     const upgraded = new StorageManager(dir);
-    await upgraded.ensureDirectories();
+    const projectionLock = openBetterSqlite3(getMemoryProjectionPath(dir), { fileMustExist: true });
+    projectionLock.pragma("busy_timeout = 0");
+    projectionLock.exec("BEGIN IMMEDIATE");
+    let projectionLockReleased = false;
+    const releaseProjectionLock = () => {
+      if (projectionLockReleased) return;
+      projectionLockReleased = true;
+      projectionLock.exec("ROLLBACK");
+      projectionLock.close();
+    };
+    const releaseImmediate = setImmediate(releaseProjectionLock);
+    try {
+      await upgraded.ensureDirectories();
+    } finally {
+      clearImmediate(releaseImmediate);
+      releaseProjectionLock();
+    }
 
     assert.match(await upgraded.readEntity(canonical), /# 月光/);
     assert.equal(await upgraded.readEntity(legacyCanonical), "");
@@ -176,6 +212,30 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
       readProjectedEntityMentions(dir)?.map((mention) => mention.entityRef),
       [canonical, canonical, canonical],
     );
+    const migratedTombstone = JSON.parse(
+      (await readFile(path.join(dir, "state", "tombstones.jsonl"), "utf-8")).trim(),
+    ) as { entityRef?: string; supersessionKey?: string };
+    assert.equal(migratedTombstone.entityRef, canonical);
+    assert.equal(migratedTombstone.supersessionKey, computeSupersessionKey(canonical, "status"));
+    upgraded.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "test",
+    });
+    const { id: blockedId, tombstoneBlocked } = await upgraded.writeMemory(
+      "fact",
+      "Moonlight has a new status.",
+      {
+        source: "extraction",
+        entityRef: canonical,
+        structuredAttributes: { status: "new" },
+      },
+    );
+    assert.equal(tombstoneBlocked, true);
+    const blocked = (await upgraded.readAllMemories()).find((memory) => memory.frontmatter.id === blockedId);
+    assert.equal(blocked?.frontmatter.status, "pending_review");
+    assert.equal(blocked?.frontmatter.tombstoneBlockTier, "keyed");
     assert.equal(await upgraded.writeEntity(name, type, ["New entity fact."]), canonical);
     assert.deepEqual(
       parseEntityFile(await upgraded.readEntity(relatedCanonical)).relationships,

@@ -92,6 +92,7 @@ function uniqueStrings(values: string[]): string[] {
 
 const UNICODE_WORD_OR_NUMBER_RE = /[\p{L}\p{N}]/u;
 const JAPANESE_PARTICLE_RE = /^[のはがをにへともやかでだ]$/u;
+const JAPANESE_MULTI_CHARACTER_PARTICLES = ["って"] as const;
 const KOREAN_PARTICLES = [
   "에서", "에게", "한테", "으로", "까지", "부터", "보다", "처럼", "같이",
   "이나", "라도", "밖에", "마다", "조차", "이랑", "하고", "은", "는",
@@ -135,6 +136,7 @@ function isUnicodePhraseBoundary(character: string, suffix: string = ""): boolea
     character.length === 0 ||
     !UNICODE_WORD_OR_NUMBER_RE.test(character) ||
     JAPANESE_PARTICLE_RE.test(character) ||
+    JAPANESE_MULTI_CHARACTER_PARTICLES.some((particle) => suffix.startsWith(particle)) ||
     isKoreanParticleBoundary(suffix)
   );
 }

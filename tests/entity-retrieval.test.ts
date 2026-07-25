@@ -169,7 +169,7 @@ test("entity retrieval resolves non-ASCII canonical and alias mentions without p
     }),
   ]);
 
-  for (const query of ["月光の検証コードは何ですか？", "月影の検証コードは何ですか？"]) {
+  for (const query of ["月光の検証コードは何ですか？", "月影の検証コードは何ですか？", "月光って何？"]) {
     const section = await buildSection(config, storage, query);
     assert.ok(section, `expected an entity hint section for ${query}`);
     assert.match(section!, /target: 月光 \(project\)/);
