@@ -286,6 +286,9 @@ function explicitSessionNamespaceFrom(
     const session = (agent as Record<string, unknown>).session;
     if (typeof session !== "object" || session === null) continue;
     const namespace = (session as Record<string, unknown>).namespace;
+    if (namespace !== undefined && typeof namespace !== "string") {
+      throw new Error("delegate session namespace metadata must be a string");
+    }
     return { namespace: typeof namespace === "string" ? namespace.trim() || undefined : undefined };
   }
   return undefined;
@@ -565,8 +568,8 @@ export function registerDelegateRuntime(
     event: Record<string, unknown>,
     ctx: Record<string, unknown>,
   ): Promise<boolean> => {
-    const sessionKey = lifecycleSessionKeyFrom(event, ctx);
     try {
+      const sessionKey = lifecycleSessionKeyFrom(event, ctx);
       const namespaces = await lifecycleSessionNamespacesFrom(
         sessionKey,
         event,
@@ -594,7 +597,7 @@ export function registerDelegateRuntime(
       log.warn(`delegate flush failed: ${String(err)}`);
       return false;
     }
-    return flushed;
+
   };
   api.on("before_compaction", flushHandler);
   if (options.flushOnResetEnabled) {

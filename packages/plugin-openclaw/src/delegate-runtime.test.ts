@@ -484,6 +484,39 @@ test("delegate ignores unkeyed runtime metadata when resolving an ended session 
   }
 });
 
+test("delegate rejects malformed namespace metadata without defaulting", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: true }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const ctx = {
+      sessionKey: "malformed-session",
+      runtime: { agent: { session: { namespace: 42 } } },
+    };
+
+    assert.equal(await invoke(api, "before_prompt_build", { prompt: "recall malformed scope" }, ctx), undefined);
+    assert.equal(
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: "capture malformed scope metadata" },
+            { role: "assistant", content: "do not route this turn" },
+          ],
+        },
+        ctx,
+      ),
+      undefined,
+    );
+    assert.equal(await invoke(api, "before_compaction", {}, ctx), false);
+    assert.equal(stub.calls.length, 0);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate retains a proven namespace binding for a sparse ended-session flush", async () => {
   const stub = await startDaemonStub(() => ({ accepted: true }));
   try {

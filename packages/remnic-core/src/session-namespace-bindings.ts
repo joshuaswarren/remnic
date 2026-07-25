@@ -155,10 +155,15 @@ export function createFileSessionNamespaceBindingStore(filePath: string): Sessio
         const bindings = await readBindingFile(filePath);
         const entry = bindings.entries[key];
         if (entry === undefined) return [];
+        const namespaces = [...entry.namespaces];
         entry.updatedAt = new Date().toISOString();
         bindings.entries = pruneBindingEntries(bindings.entries, key);
-        await writeBindingFile(filePath, bindings);
-        return [...(bindings.entries[key]?.namespaces ?? [])];
+        try {
+          await writeBindingFile(filePath, bindings);
+        } catch {
+          return namespaces;
+        }
+        return namespaces;
       });
     },
     async remember(sessionKey: string, namespace: string): Promise<void> {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -138,6 +138,21 @@ test("session namespace bindings refresh a sparse active binding", async () => {
     };
     assert.ok(Date.parse(persisted.entries["active-session"].updatedAt) > Date.parse(updatedAt));
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("session namespace bindings return known scope when timestamp refresh fails", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
+  const filePath = path.join(directory, "session-namespace-bindings.json");
+  try {
+    const store = createFileSessionNamespaceBindingStore(filePath);
+    await store.remember("refresh-failure-session", "team-known");
+    await chmod(directory, 0o555);
+
+    assert.deepEqual(await store.namespacesFor("refresh-failure-session"), ["team-known"]);
+  } finally {
+    await chmod(directory, 0o700);
     await rm(directory, { recursive: true, force: true });
   }
 });
