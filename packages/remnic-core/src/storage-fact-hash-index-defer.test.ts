@@ -1583,3 +1583,145 @@ test("offline sync mutation rebuilds a loaded tombstone-blocked index", async ()
     );
   });
 });
+
+test("pre-load blocked index invalidation rebuilds a persisted index", async () => {
+  await withMemoryDir(async (dir) => {
+    const content = "A pre-load invalidation must refresh blocked capture identity.";
+    const before: MemoryFile = {
+      path: path.join(dir, "facts", "blocked.md"),
+      frontmatter: {
+        id: "preload-blocked",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "pending_review",
+        blockedBy: "preload-tombstone",
+        sourceConnector: "provider-a",
+      },
+      content,
+    };
+    const after: MemoryFile = {
+      ...before,
+      frontmatter: {
+        ...before.frontmatter,
+        sourceConnector: "provider-b",
+      },
+    };
+    const memories = [before];
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 2, retryBaseMs: 1 }),
+      readAllMemories: async () => memories,
+      readAllColdMemories: async () => [],
+    };
+
+    const initial = new TombstoneBlockedCaptureIndex(options);
+    await initial.add(before);
+    memories[0] = after;
+
+    const restarted = new TombstoneBlockedCaptureIndex(options);
+    await restarted.rebuildIfLoaded();
+    assert.equal(await restarted.has(content, "fact", "provider-a"), false);
+    assert.equal(await restarted.has(content, "fact", "provider-b"), true);
+  });
+});
+
+test("abandoned pending blocked-index markers rebuild and are reaped", async () => {
+  await withMemoryDir(async (dir) => {
+    const content = "An abandoned blocked-index writer must not suppress dedupe forever.";
+    const memory: MemoryFile = {
+      path: path.join(dir, "facts", "abandoned.md"),
+      frontmatter: {
+        id: "abandoned-blocked",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "pending_review",
+        blockedBy: "abandoned-tombstone",
+        sourceConnector: "provider-a",
+      },
+      content,
+    };
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 2, retryBaseMs: 1 }),
+      readAllMemories: async () => [memory],
+      readAllColdMemories: async () => [],
+    };
+    const markerDir = path.join(dir, "tombstone-blocked-capture", "rebuild-required");
+    await mkdir(markerDir, { recursive: true });
+    await writeFile(
+      path.join(markerDir, "abandoned-writer"),
+      `${JSON.stringify({
+        state: "pending",
+        pid: 999_999_999,
+        ownerId: "abandoned-writer",
+        createdAt: Date.now() - 120_000,
+      })}\n`,
+      "utf8",
+    );
+
+    const index = new TombstoneBlockedCaptureIndex(options);
+    assert.equal(await index.has(content, "fact", "provider-a"), true);
+    assert.deepEqual(await readdir(markerDir), []);
+  });
+});
+
+test("explicit capture write lock serializes concurrent operations", async () => {
+  await withMemoryDir(async (dir) => {
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 2, retryBaseMs: 1 }),
+      readAllMemories: async () => [],
+      readAllColdMemories: async () => [],
+    };
+    const index = new TombstoneBlockedCaptureIndex(options);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let releaseFirst!: () => void;
+    const firstRelease = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstEntered!: () => void;
+    const firstEnteredSignal = new Promise<void>((resolve) => {
+      firstEntered = resolve;
+    });
+    const first = index.withCaptureWriteLock(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      firstEntered();
+      await firstRelease;
+      inFlight -= 1;
+    });
+    await firstEnteredSignal;
+    const queued = Promise.all(
+      Array.from({ length: 3 }, () =>
+        index.withCaptureWriteLock(async () => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          inFlight -= 1;
+        }),
+      ),
+    );
+    releaseFirst();
+    await Promise.all([first, queued]);
+    assert.equal(maxInFlight, 1);
+  });
+});

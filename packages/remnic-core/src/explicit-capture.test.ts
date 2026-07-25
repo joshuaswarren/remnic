@@ -76,6 +76,7 @@ function createInlineCaptureProcessorProbe(
   }> = [];
   let readAllCalls = 0;
   let nextId = 1;
+  let writeTail = Promise.resolve();
   const storage = {
     readAllMemories: async () => {
       readAllCalls += 1;
@@ -106,6 +107,19 @@ function createInlineCaptureProcessorProbe(
         content: envelope.content,
       });
       return { id, tombstoneBlocked: options.tombstoneBlocked === true };
+    },
+    withTombstoneBlockedCaptureWriteLock: async <T>(operation: () => Promise<T>): Promise<T> => {
+      const previous = writeTail;
+      let release!: () => void;
+      writeTail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
     },
     ...(options.authoritativeFactHashMiss
       ? {
@@ -208,7 +222,7 @@ test("inline capture processor persists an authorized inline note once and strip
   assert.equal(probe.envelopes.length, 1);
   assert.equal(probe.envelopes[0]?.source, "explicit-inline");
   assert.equal(probe.envelopes[0]?.sourceConnector, "openclaw");
-  assert.deepEqual(probe.requestedNamespaces, ["principal-project", "principal-project"]);
+  assert.deepEqual(probe.requestedNamespaces, ["principal-project"]);
   assert.deepEqual(probe.maintenanceReasons, ["inline.memory_note"]);
   assert.equal(probe.lifecycleEvents[0]?.eventType, "explicit_capture_accepted");
   assert.equal(probe.lifecycleEvents[0]?.actor, "inline.memory_note");
@@ -239,6 +253,23 @@ test("inline capture processor serializes overlapping duplicate deliveries", asy
   assert.equal(probe.envelopes.length, 1);
   assert.equal(probe.lifecycleEvents.length, 1);
   assert.deepEqual(probe.maintenanceReasons, ["inline.memory_note"]);
+});
+
+test("persistExplicitCapture serializes duplicate checks across concurrent calls", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const candidate = {
+    content: "Concurrent persistence must produce one durable capture.",
+    category: "fact" as const,
+    confidence: 0.9,
+    tags: [],
+  };
+  const [first, second] = await Promise.all([
+    persistExplicitCapture(probe.orchestrator, candidate, "memory_store"),
+    persistExplicitCapture(probe.orchestrator, candidate, "memory_store"),
+  ]);
+  assert.equal(Number(first.duplicateOf !== undefined) + Number(second.duplicateOf !== undefined), 1);
+  assert.equal(probe.envelopes.length, 1);
+  assert.equal(probe.lifecycleEvents.length, 1);
 });
 
 test("inline capture processor hashes the effective authorized input for replay dedupe", async () => {

@@ -7,6 +7,7 @@ import { isSafeRouteNamespace } from "./routing/engine.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import { normalizeExplicitCaptureContent } from "./storage/tombstone-blocked-capture-index.js";
 import type { CaptureMode, MemoryCategory, MemoryLifecycleEvent, PluginConfig } from "./types.js";
+import type { StorageManager } from "./storage.js";
 
 export type ExplicitCaptureInput = {
   content: string;
@@ -397,8 +398,9 @@ async function findDuplicateExplicitCapture(
   orchestrator: Orchestrator,
   resolvedNamespace: string | undefined,
   candidate: ValidExplicitCapture,
+  storageOverride?: StorageManager,
 ): Promise<{ id: string; tombstoneBlocked: boolean } | null> {
-  const storage = await orchestrator.getStorage(resolvedNamespace);
+  const storage = storageOverride ?? await orchestrator.getStorage(resolvedNamespace);
   // Tombstone-blocked rows are absent from the active fact hash index. An
   // authoritative miss can therefore skip the corpus scan only after the
   // targeted blocked-row index reports a miss and remains authoritative.
@@ -498,23 +500,25 @@ async function findDuplicateExplicitCapture(
       }
     : null;
 }
-
-export async function persistExplicitCapture(
+async function persistExplicitCaptureUnlocked(
   orchestrator: Orchestrator,
   candidate: ValidExplicitCapture,
   source: ExplicitCaptureSource,
+  resolvedNamespace: string | undefined,
+  storage: StorageManager,
 ): Promise<{ id: string; duplicateOf?: string; tombstoneBlocked?: boolean }> {
-  const resolvedNamespace = candidate.namespacePreResolved
-    ? asTrimmed(candidate.namespace)
-    : resolveExplicitCaptureNamespace(orchestrator, candidate.namespace);
-  const duplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate);
+  const duplicate = await findDuplicateExplicitCapture(
+    orchestrator,
+    resolvedNamespace,
+    candidate,
+    storage,
+  );
   if (duplicate) {
     return duplicate.tombstoneBlocked
       ? { id: duplicate.id, duplicateOf: duplicate.id, tombstoneBlocked: true }
       : { id: duplicate.id, duplicateOf: duplicate.id };
   }
 
-  const storage = await orchestrator.getStorage(resolvedNamespace);
   // #1645 (review thread yG-): surface the tombstone block so callers
   // (memory_store tool, access-service HTTP/MCP) can report the capture as
   // queued for review instead of a successfully stored active memory.
@@ -549,6 +553,21 @@ export async function persistExplicitCapture(
   await storage.appendMemoryLifecycleEvents([event]);
 
   return { id, tombstoneBlocked };
+}
+
+export async function persistExplicitCapture(
+  orchestrator: Orchestrator,
+  candidate: ValidExplicitCapture,
+  source: ExplicitCaptureSource,
+): Promise<{ id: string; duplicateOf?: string; tombstoneBlocked?: boolean }> {
+  const resolvedNamespace = candidate.namespacePreResolved
+    ? asTrimmed(candidate.namespace)
+    : resolveExplicitCaptureNamespace(orchestrator, candidate.namespace);
+  const storage = await orchestrator.getStorage(resolvedNamespace);
+  const persist = () =>
+    persistExplicitCaptureUnlocked(orchestrator, candidate, source, resolvedNamespace, storage);
+  if (typeof storage.withTombstoneBlockedCaptureWriteLock !== "function") return await persist();
+  return await storage.withTombstoneBlockedCaptureWriteLock(persist);
 }
 
 function buildExplicitCaptureReviewContent(input: ExplicitCaptureInput, reason: string): string {
