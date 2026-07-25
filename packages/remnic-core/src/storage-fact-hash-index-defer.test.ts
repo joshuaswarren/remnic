@@ -1505,6 +1505,24 @@ test("blocked rewrites reserve markers before durable mutation index hooks", asy
   });
 });
 
+test("blocked chunk writes enter the targeted dedupe index", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const content = "A blocked chunk must remain visible to explicit-capture dedupe.";
+    await storage.writeChunk("chunk-parent", 0, 1, "fact", content, {
+      status: "pending_review",
+      blockedBy: "tombstone-chunk",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      true,
+      "blocked chunk content must be indexed with its connector identity",
+    );
+  });
+});
+
 test("offline sync mutation rebuilds a loaded tombstone-blocked index", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);

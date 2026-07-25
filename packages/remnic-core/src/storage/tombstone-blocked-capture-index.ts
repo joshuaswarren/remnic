@@ -144,6 +144,11 @@ export class TombstoneBlockedCaptureIndex {
     return (await this.getRebuildMarkers()).length > 0;
   }
 
+
+  private async setAuthoritative(rebuilt: boolean): Promise<void> {
+    this.authoritative =
+      rebuilt && !(await this.getRebuildMarkers()).some((marker) => !marker.committed);
+  }
   private isBlocked(memory: MemoryFile): boolean {
     return memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
   }
@@ -202,7 +207,7 @@ export class TombstoneBlockedCaptureIndex {
           }
           await this.clearRebuildRequired(committedRebuildMarkers);
         }
-        this.authoritative = true;
+        await this.setAuthoritative(true);
         this.index = index;
         return index;
       })().catch((err) => {
@@ -296,7 +301,7 @@ export class TombstoneBlockedCaptureIndex {
       return;
     }
     await this.clearRebuildRequired([marker]);
-    this.authoritative = true;
+    await this.setAuthoritative(true);
   }
 
   /** Rebuild the loaded index after a blocked row changes or is removed. */
@@ -311,7 +316,7 @@ export class TombstoneBlockedCaptureIndex {
         rebuildMarker,
       ]);
     }
-    this.authoritative = rebuilt;
+    await this.setAuthoritative(rebuilt);
   }
 
   /** Rebuild when either side of a write is blocked and its identity changed. */
@@ -346,7 +351,7 @@ export class TombstoneBlockedCaptureIndex {
         marker,
       ]);
     }
-    this.authoritative = rebuilt;
+    await this.setAuthoritative(rebuilt);
   }
 
 

@@ -6788,10 +6788,26 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
 
+    const tombstoneRebuildMarker =
+      options.status === "pending_review" && Boolean(options.blockedBy)
+        ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
+        : undefined;
+
     await this.writeStorageSecureFile(filePath, fileContent);
+    if (tombstoneRebuildMarker) {
+      await this.getTombstoneBlockedCaptureIndex().commitWrite(tombstoneRebuildMarker);
+    }
     // Keep the version-keyed hot-memories cache coherent with the new chunk
     // file (issue #1902) — same single-file patch path writeMemory uses.
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
+    if (tombstoneRebuildMarker) {
+      await this.getTombstoneBlockedCaptureIndex().addWrittenMemory(
+        filePath,
+        fm,
+        sanitized.text,
+        tombstoneRebuildMarker,
+      );
+    }
     log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
     return id;
   }
