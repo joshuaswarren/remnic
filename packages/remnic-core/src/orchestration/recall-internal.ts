@@ -4161,10 +4161,7 @@ export class RecallInternalCoordinator {
         memoryResults = memoryResults.filter((r) =>
           recallNamespaces.includes(r.namespace ?? this.deps.namespaceFromPath(r.path)));
       }
-      // Dedicated surfaces are never generic recall.
-      memoryResults = memoryResults.filter(
-        (r) => !isGenericRecallExcludedPath(r.path, this.deps.config, "qmd"),
-      );
+      memoryResults = memoryResults.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config, "qmd"));
 
       const isFullModeGraphAssist =
         graphCaps.multiGraphMemory &&
@@ -4295,9 +4292,7 @@ export class RecallInternalCoordinator {
           }
         }
       }
-      memoryResults = memoryResults.filter(
-        (result) => !isGenericRecallExcludedPath(result.path, this.deps.config, "qmd"),
-      );
+      memoryResults = memoryResults.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config, "qmd"));
 
       // Apply mandatory recall safety filters before deadline-bound scoring
       // enrichment. If scoring times out, we must fall back to this filtered
