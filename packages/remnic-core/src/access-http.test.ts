@@ -2992,6 +2992,15 @@ test("HTTP authorization probe verifies requested operation grants without invok
         capabilities: { version: 1, ops: ["recall", "observe", "lcm_compaction_flush"] },
       },
       { token: "recall-only-token", capabilities: { version: 1, ops: ["recall"] } },
+      { token: "observe-only-token", capabilities: { version: 1, ops: ["observe"] } },
+      {
+        token: "fleet-scoped-token",
+        capabilities: {
+          version: 1,
+          ops: ["continuity_audit_generate"],
+          namespaces: ["default"],
+        },
+      },
     ],
     adminConsoleEnabled: false,
   });
@@ -3005,18 +3014,42 @@ test("HTTP authorization probe verifies requested operation grants without invok
   };
   const delegateOperations = ["recall", "observe", "lcm_compaction_flush"];
   try {
-    const authorized = await probe("delegate-token", delegateOperations);
+    const authorized = await probe("delegate-token", [...delegateOperations, "recall"]);
     assert.equal(authorized.status, 200);
+    assert.equal(authorized.headers.get("cache-control"), "no-store");
     assert.deepEqual(await authorized.json(), { authorized: true, operations: delegateOperations });
 
+    const alternateGrant = await probe("observe-only-token", ["namespace_writable"]);
+    assert.equal(alternateGrant.status, 200);
+    await alternateGrant.text();
+
+    const fleetWide = await probe("fleet-scoped-token", ["continuity_audit_generate"]);
+    assert.equal(fleetWide.status, 403);
+    assert.equal(fleetWide.headers.get("cache-control"), "no-store");
+    await fleetWide.text();
+
+    const denied = await probe("recall-only-token", delegateOperations);
     assert.equal(
-      (await probe("recall-only-token", delegateOperations)).status,
+      denied.status,
       403,
       "a token missing any requested operation is rejected without running it",
     );
-    assert.equal((await probe("wrong-token", delegateOperations)).status, 401);
-    assert.equal((await probe("delegate-token", [])).status, 400);
-    assert.equal((await probe("delegate-token", ["not_an_operation"])).status, 400);
+    assert.equal(denied.headers.get("cache-control"), "no-store");
+    await denied.text();
+
+    const wrongToken = await probe("wrong-token", delegateOperations);
+    assert.equal(wrongToken.status, 401);
+    await wrongToken.text();
+
+    const empty = await probe("delegate-token", []);
+    assert.equal(empty.status, 400);
+    assert.equal(empty.headers.get("cache-control"), "no-store");
+    await empty.text();
+
+    const unknown = await probe("delegate-token", ["not_an_operation"]);
+    assert.equal(unknown.status, 400);
+    assert.equal(unknown.headers.get("cache-control"), "no-store");
+    await unknown.text();
   } finally {
     await server.stop();
   }

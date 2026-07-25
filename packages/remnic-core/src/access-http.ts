@@ -891,6 +891,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/authorization") {
+      res.setHeader("cache-control", "no-store");
       this.respondJson(
         res,
         200,

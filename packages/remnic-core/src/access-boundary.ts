@@ -16,12 +16,9 @@
  */
 
 import { z } from "zod";
-import { EngramAccessForbiddenError } from "./access-errors.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import {
-  assertFleetWideOperationAllowed,
-  assertOperationAllowed,
-  capabilityAllowsOp,
+  assertOperationAuthorizationAllowed,
   tokenCapabilityStore,
 } from "./access-token-capabilities.js";
 import { expandTildePath } from "./utils/path.js";
@@ -423,33 +420,7 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
       if (!parseResult.success) {
         throw new EngramAccessInputError(formatZodIssues(parseResult.error));
       }
-      // Per-token capability enforcement (issue #1837): when the presenting
-      // token carries an ops allow-list, reject operations not in it. The
-      // capability record is carried via AsyncLocalStorage, set once per
-      // authorized HTTP/MCP request; absent (CLI/tests/direct callers) ⇒
-      // unrestricted. Default-deny ONLY when an ops axis is present — legacy
-      // tokens (absent record) and explicit-unrestricted new tokens are
-      // unaffected.
-      // When the op declares alternate grant ops, permit any of them (so the
-      // batch/MCP path matches an HTTP transport that relaxes the same op);
-      // otherwise the token must carry the op's own name. Unrestricted/legacy
-      // tokens pass either way (capabilityAllowsOp is true when no ops axis).
-      if (spec.allowedByOps && spec.allowedByOps.length > 0) {
-        const store = tokenCapabilityStore.getStore();
-        if (!spec.allowedByOps.some((op) => capabilityAllowsOp(store, op))) {
-          throw new EngramAccessForbiddenError(`token is not permitted to call operation: ${spec.name}`);
-        }
-      } else {
-        assertOperationAllowed(tokenCapabilityStore.getStore(), spec.name);
-      }
-      // Fleet-wide / global maintenance ops (issue #1850 round 10): these run
-      // across all namespaces with no `namespace` arg, so the tools/call
-      // effective-namespace gate never fires. A namespace-SCOPED token must not
-      // trigger cross-namespace maintenance — fail closed BEFORE the handler so
-      // a denial never leaks a partial mutation. No-op for unrestricted/legacy.
-      if (spec.fleetWide) {
-        assertFleetWideOperationAllowed(tokenCapabilityStore.getStore());
-      }
+      assertOperationAuthorizationAllowed(tokenCapabilityStore.getStore(), spec);
       return spec.handler(parseResult.data, ctx);
     },
   };

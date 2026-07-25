@@ -1,6 +1,9 @@
-import { type OperationName, OPERATION_NAMES } from "./access-boundary.js";
-import { EngramAccessForbiddenError, EngramAccessInputError } from "./access-errors.js";
-import { capabilityAllowsOp, type TokenCapabilities } from "./access-token-capabilities.js";
+import { getOperation, type OperationName, OPERATION_NAMES } from "./access-boundary.js";
+import { EngramAccessInputError } from "./access-errors.js";
+import {
+  assertOperationAuthorizationAllowed,
+  type TokenCapabilities,
+} from "./access-token-capabilities.js";
 
 export interface AuthorizationProbeResponse {
   readonly authorized: true;
@@ -29,9 +32,11 @@ export function probeOperationAuthorization(
   }
 
   for (const operation of operations) {
-    if (!capabilityAllowsOp(capabilities, operation)) {
-      throw new EngramAccessForbiddenError(`token is not permitted to call operation: ${operation}`);
+    const boundOperation = getOperation(operation);
+    if (!boundOperation) {
+      throw new Error(`authorization probe operation is not registered: ${operation}`);
     }
+    assertOperationAuthorizationAllowed(capabilities, boundOperation.spec);
   }
 
   return { authorized: true, operations };
