@@ -671,20 +671,30 @@ export function registerDelegateRuntime(
           remainingTimeout(),
         );
       if (namespaces.length <= 1 || (await supportsBatchFlush(remainingTimeout()))) {
-        const response =
-          namespaces.length > 1
-            ? await postJson(
-                target,
-                options.serviceId,
-                "/engram/v1/lcm/compaction/flush",
-                {
-                  sessionKey,
-                  namespaces: namespaces.map((sessionNamespace) => sessionNamespace ?? ""),
-                },
-                remainingTimeout(),
-              )
-            : await flushNamespace(namespaces[0]);
-        return response?.flushed !== false;
+        if (namespaces.length <= 1) {
+          const response = await flushNamespace(namespaces[0]);
+          return response?.flushed !== false;
+        }
+        try {
+          const response = await postJson(
+            target,
+            options.serviceId,
+            "/engram/v1/lcm/compaction/flush",
+            {
+              sessionKey,
+              namespaces: namespaces.map((sessionNamespace) => sessionNamespace ?? ""),
+            },
+            remainingTimeout(),
+          );
+          if (response === null || response.flushed === false) {
+            cachedBatchFlushSupport = undefined;
+            return false;
+          }
+          return true;
+        } catch (err) {
+          cachedBatchFlushSupport = undefined;
+          throw err;
+        }
       }
       const outcomes = await Promise.allSettled(namespaces.map(flushNamespace));
       return outcomes.every(

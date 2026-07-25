@@ -92,10 +92,12 @@ async function startDaemonStub(
           ? Promise.resolve(capabilityResponse)
           : pathname === "/engram/v1/capabilities" && options.batchFlush !== false
             ? Promise.resolve({ status: 200, body: { lcmCompactionFlushBatch: true } })
-            : Promise.resolve(respond(pathname, body)).then((response) => ({
-                status: 200,
-                body: response,
-              }));
+            : Promise.resolve()
+                .then(() => respond(pathname, body))
+                .then((response) => ({
+                  status: 200,
+                  body: response,
+                }));
       void responsePromise
         .then(({ status, body: response }) => {
           if (res.destroyed) return;
@@ -859,6 +861,49 @@ test("delegate retries a transient batch capability probe", async () => {
       ["team-first", "team-second"],
     );
     assert.deepEqual(flushes.at(-1)?.body.namespaces, ["team-first", "team-second"]);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate invalidates cached batch support after a failed batch flush", async () => {
+  let batchAttempts = 0;
+  const stub = await startDaemonStub((pathname) => {
+    if (pathname === "/engram/v1/lcm/compaction/flush" && batchAttempts++ === 0) {
+      throw new Error("transient batch failure");
+    }
+    return { flushed: true };
+  });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const sessionKey = "failed-batch-session";
+
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} session namespace` },
+            { role: "assistant", content: "the namespace is bound" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+
+    assert.equal(await invoke(api, "before_compaction", { sessionKey }), false);
+    await invoke(api, "before_reset", { sessionKey });
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/capabilities").length,
+      2,
+    );
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.equal(flushes.length, 2);
+    assert.deepEqual(flushes[0]?.body.namespaces, ["team-first", "team-second"]);
+    assert.deepEqual(flushes[1]?.body.namespaces, ["team-first", "team-second"]);
   } finally {
     await stub.close();
   }
