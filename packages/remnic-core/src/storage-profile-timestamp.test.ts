@@ -897,6 +897,62 @@ test("writeProfile keeps self-closing raw HTML blocks opaque", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile keeps raw HTML closing substrings inside content", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<pre>",
+        "literal </pre> remains content",
+        "*Last updated: literal example*",
+        "</pre>",
+        "",
+        "- Keeps raw HTML content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\n<pre>", `\n\n${FRESH_HEADER}\n\n<pre>`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile keeps HTML closing marker substrings inside content", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<!--",
+        "literal --> remains content",
+        "*Last updated: literal example*",
+        "-->",
+        "",
+        "- Keeps HTML comment content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\n<!--", `\n\n${FRESH_HEADER}\n\n<!--`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile preserves timestamp-shaped generic HTML blocks", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });

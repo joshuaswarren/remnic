@@ -335,6 +335,13 @@ function findFrontmatterEnd(lines: ProfileLine[]): number {
   return -1;
 }
 
+function hasHtmlBlockEndMarker(line: string, endMarker: string): boolean {
+  const markerIndex = line.indexOf(endMarker);
+  if (markerIndex < 0) return false;
+  if (endMarker.startsWith("</")) return line.slice(0, markerIndex).trim() === "";
+  return line.slice(markerIndex + endMarker.length).trim() === "";
+}
+
 function visitProfileMetadataLines(
   lines: ProfileLine[],
   visit: (line: string, index: number) => void,
@@ -362,7 +369,10 @@ function visitProfileMetadataLines(
         openHtmlBlock = updateHtmlBlockDepth(openHtmlBlock, normalizedLine, false);
         continue;
       }
-      if (openHtmlBlock.endMarker && normalizedLine.includes(openHtmlBlock.endMarker)) {
+      if (
+        openHtmlBlock.endMarker &&
+        hasHtmlBlockEndMarker(normalizedLine, openHtmlBlock.endMarker)
+      ) {
         openHtmlBlock = null;
       }
       continue;
@@ -376,7 +386,7 @@ function visitProfileMetadataLines(
     if (htmlBlock) {
       openHtmlBlock = htmlBlock.tagName
         ? updateHtmlBlockDepth(htmlBlock, normalizedLine, true)
-        : htmlBlock.endMarker && normalizedLine.includes(htmlBlock.endMarker)
+        : htmlBlock.endMarker && hasHtmlBlockEndMarker(normalizedLine, htmlBlock.endMarker)
           ? null
           : htmlBlock;
       continue;
