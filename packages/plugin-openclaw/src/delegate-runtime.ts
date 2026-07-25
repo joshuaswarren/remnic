@@ -800,20 +800,12 @@ function createDelegateNamespaceBindingStore(
       if (previous.length === 0) return current;
       const merged = mergeNamespaceHistory(current, previous);
       const hasMissingLegacy = previous.some((remembered) => !current.includes(remembered));
-      for (const remembered of previous) {
-        if (current.includes(remembered)) continue;
-        try {
+      if (!hasMissingLegacy) return current;
+      try {
+        for (const remembered of merged) {
           await primary.remember(sessionKey, remembered);
-        } catch {
-          break;
         }
-      }
-      const currentNamespace = current[current.length - 1];
-      if (hasMissingLegacy && currentNamespace !== undefined) {
-        try {
-          await primary.remember(sessionKey, currentNamespace);
-        } catch {
-        }
+      } catch {
       }
       return merged;
     },

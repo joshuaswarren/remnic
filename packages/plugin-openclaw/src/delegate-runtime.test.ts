@@ -1073,15 +1073,16 @@ test("delegate ignores a corrupt legacy binding file when canonical scope is ava
   }
 });
 
-test("delegate keeps the canonical current namespace last during legacy history merge", async () => {
+test("delegate restores full canonical history during legacy migration", async () => {
   const stub = await startDaemonStub(() => ({ flushed: true }));
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-bindings-"));
   const priorMode = process.env.REMNIC_BRIDGE_MODE;
   const priorHost = process.env.REMNIC_HOST;
   const priorPort = process.env.REMNIC_PORT;
   const sessionKey = "legacy-recency-session";
-  const current = Array.from({ length: 64 }, (_unused, index) => `team-current-${index}`);
-  const legacy = Array.from({ length: 64 }, (_unused, index) => `team-legacy-${index}`);
+  const current = Array.from({ length: 40 }, (_unused, index) => `team-current-${index}`);
+  const legacy = Array.from({ length: 40 }, (_unused, index) => `team-legacy-${index}`);
+  const expected = [...legacy.slice(-24), ...current];
   try {
     const primaryPath = path.join(
       memoryDir,
@@ -1149,11 +1150,11 @@ test("delegate keeps the canonical current namespace last during legacy history 
     await invoke(api, "session_end", { sessionKey });
     const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
     assert.ok(flush);
-    assert.deepEqual(flush.body.namespaces, current);
+    assert.deepEqual(flush.body.namespaces, expected);
     const persisted = JSON.parse(fs.readFileSync(primaryPath, "utf8")) as {
       entries: Record<string, { namespaces: string[] }>;
     };
-    assert.equal(persisted.entries[encodeURIComponent(sessionKey)].namespaces.at(-1), "team-current-63");
+    assert.deepEqual(persisted.entries[encodeURIComponent(sessionKey)].namespaces, expected);
   } finally {
     if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorMode;
