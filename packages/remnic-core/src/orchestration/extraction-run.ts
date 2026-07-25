@@ -682,7 +682,6 @@ export class ExtractionRunCoordinator {
     const belowUserTurnThreshold = !skipUserTurnThreshold && userTurns.length < this.config.extractionMinUserTurns;
     if ((!skipCharThreshold && belowCharThreshold) || belowUserTurnThreshold) {
       log.debug(`skipping extraction: below threshold (totalChars=${totalChars}, userTurns=${userTurns.length})`);
-      await clearBuffer();
       // Passive correction capture runs even when extraction is skipped for
       // being below the char/user-turn threshold (review: "skipped extraction
       // skips capture"). A short correction like "stop using Vim" is under
@@ -723,6 +722,7 @@ export class ExtractionRunCoordinator {
           isLiveSession: clearBufferAfterExtraction,
         });
       }
+      await clearBuffer();
       return {
         status: "skipped",
         reason: "below_threshold",
@@ -1143,13 +1143,17 @@ export class ExtractionRunCoordinator {
     // Runs AFTER persistence + buffer clear so a capture failure never blocks
     // the extraction return. `clearBufferAfterExtraction` gates live-session
     // auto-apply (replay/import → queue-only).
-    await runPassiveCapture(normalizedTurns as BufferTurn[], {
-      sessionKey,
-      principal,
-      namespace: selfNamespace,
-      bufferKey,
-      isLiveSession: clearBufferAfterExtraction,
-    });
+    try {
+      await runPassiveCapture(normalizedTurns as BufferTurn[], {
+        sessionKey,
+        principal,
+        namespace: selfNamespace,
+        bufferKey,
+        isLiveSession: clearBufferAfterExtraction,
+      });
+    } catch (captureErr) {
+      log.debug("runExtraction: post-persist passive correction capture failed (non-fatal)", captureErr);
+    }
 
     // Build memory box from this extraction (v8.0 Phase 2A)
     // Topics are derived from the current extraction's facts and entities only —
