@@ -872,6 +872,98 @@ test("delegate runtime reloads a rotated daemon token without re-registering hoo
   }
 });
 
+test("delegate daemon auth failures log one sanitized error per route and status", async (t) => {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  initLogger(
+    {
+      info() {},
+      warn(message) {
+        warnings.push(message);
+      },
+      error(message) {
+        errors.push(message);
+      },
+    },
+    false,
+    { timestamps: false },
+  );
+  t.after(() => resetLogger());
+
+  let status: 401 | 403 = 401;
+  const paths: string[] = [];
+  const server = http.createServer((req, res) => {
+    paths.push(req.url ?? "");
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "unauthorized" }));
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const target: DelegateRuntimeOptions["target"] = {
+    host: "127.0.0.1",
+    port: address.port,
+    resolveAuthToken: () => ({
+      token: "test-token",
+      source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    }),
+  };
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(address.port, {
+      target,
+      serviceId: "auth-logging-test",
+    }));
+
+    const recallEvent = { prompt: "what did we decide about the rollout?" };
+    await invoke(api, "before_prompt_build", recallEvent, { sessionKey: "auth" });
+    await invoke(api, "before_prompt_build", recallEvent, { sessionKey: "auth" });
+
+    status = 403;
+    await invoke(api, "before_prompt_build", recallEvent, { sessionKey: "auth" });
+    await invoke(api, "before_prompt_build", recallEvent, { sessionKey: "auth" });
+    const observeEvent = {
+      success: true,
+      messages: [
+        { role: "user", content: "captured question" },
+        { role: "assistant", content: "captured answer" },
+      ],
+    };
+    await invoke(api, "agent_end", observeEvent, { sessionKey: "auth" });
+    await invoke(api, "agent_end", observeEvent, { sessionKey: "auth" });
+    const secondApi = recordingApi();
+    registerDelegateRuntime(secondApi, optionsFor(address.port, {
+      target: { ...target },
+      serviceId: "auth-logging-test",
+    }));
+    await invoke(secondApi, "before_prompt_build", recallEvent, { sessionKey: "auth" });
+
+    await invoke(api, "before_compaction", {}, { sessionKey: "auth" });
+    await invoke(api, "before_compaction", {}, { sessionKey: "auth" });
+
+    assert.deepEqual(new Set(paths), new Set([
+      "/engram/v1/recall",
+      "/engram/v1/observe",
+      "/engram/v1/lcm/compaction/flush",
+    ]));
+    assert.equal(errors.length, 4, "each route/status pair emits one error");
+    assert.equal(warnings.length, 0, "auth failures replace generic degradation warnings");
+    assert.equal(errors.filter((message) => message.includes("(401;")).length, 1);
+    assert.equal(errors.filter((message) => message.includes("(403;")).length, 3);
+    for (const message of errors) {
+      assert.match(message, /token source: OPENCLAW_REMNIC_ACCESS_TOKEN/);
+      assert.doesNotMatch(message, /test-token/);
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()),
+    );
+  }
+});
+
 test("delegate authorization probe reports grant, rejection, and network failure without exposing credentials", async () => {
   let responseStatus = 200;
   const receivedAuthorization: Array<string | undefined> = [];
