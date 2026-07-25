@@ -199,6 +199,7 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "POST", pathname: "/engram/v1/observe", operation: "observe" },
   { method: "POST", pathname: "/engram/v1/lcm/search", operation: "lcm_search" },
   { method: "POST", pathname: "/engram/v1/lcm/compaction/flush", operation: "lcm_compaction_flush" },
+  { method: "POST", pathname: "/engram/v1/extraction/flush", operation: "extraction_force_flush" },
   { method: "POST", pathname: "/engram/v1/lcm/compaction/record", operation: "lcm_compaction_record" },
   { method: "GET", pathname: "/engram/v1/lcm/status", operation: "lcm_status" },
   { method: "GET", pathname: "/engram/v1/relay/missions/:id", operation: "relay_mission_read" },

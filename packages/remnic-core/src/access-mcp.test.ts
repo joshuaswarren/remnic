@@ -850,12 +850,48 @@ test("MCP LCM compaction flush dispatches sanitized args to the access service",
     makeToolRequest("remnic.lcm_compaction_flush", {
       sessionKey: "pi:session",
       namespace: "work",
+      cwd: "/workspace/project",
+      projectTag: "Acme/Webshop",
     }),
   );
 
   assert.deepEqual(received, {
     sessionKey: "pi:session",
     namespace: "work",
+    cwd: "/workspace/project",
+    projectTag: "Acme/Webshop",
+    authenticatedPrincipal: undefined,
+  });
+  assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
+});
+
+test("MCP extraction force-flush dispatches scope and deadline to the access service", async () => {
+  let received: Record<string, unknown> | undefined;
+  const service = {
+    ...makeMockService(),
+    extractionForceFlush: async (args: Record<string, unknown>) => {
+      received = args;
+      return { flushed: true, sessionKey: "pi:session", namespace: "work", effectiveNamespace: "work" };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest(
+    makeToolRequest("remnic.extraction_force_flush", {
+      sessionKey: "pi:session",
+      namespace: "work",
+      cwd: "/workspace/project",
+      projectTag: "Acme/Webshop",
+      deadlineMs: 1_900_000_000_000,
+    }),
+  );
+
+  assert.deepEqual(received, {
+    sessionKey: "pi:session",
+    namespace: "work",
+    cwd: "/workspace/project",
+    projectTag: "Acme/Webshop",
+    deadlineMs: 1_900_000_000_000,
     authenticatedPrincipal: undefined,
   });
   assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);

@@ -55,6 +55,20 @@ interface ParityProbe {
     writeNamespaceOverride?: string;
     principalOverride?: string;
   }>;
+  lcmEngine: { enabled: boolean };
+  extractionForceFlushCalls: ExtractionForceFlushCall[];
+}
+
+interface ExtractionForceFlushCall {
+  sessionKey: string;
+  options: {
+    reason: string;
+    bufferKey?: string;
+    extractionDeadlineMs?: number;
+    abortSignal?: AbortSignal;
+    writeNamespaceOverride?: string;
+    principalOverride?: string;
+  };
 }
 
 /**
@@ -72,6 +86,7 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
   const searchSessionIds: Array<string | undefined> = [];
   const searchSessionPrefixes: Array<string | undefined> = [];
   const extractionCalls: ParityProbe["extractionCalls"] = [];
+  const extractionForceFlushCalls: ExtractionForceFlushCall[] = [];
 
   const config = {
     namespacesEnabled: true,
@@ -96,6 +111,35 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
     ...overrides,
   } as unknown as PluginConfig;
 
+  const lcmEngine = {
+    enabled: true,
+    enqueueObserveMessages: (sessionKey: string) => {
+      lcmWriteKeys.push(sessionKey);
+    },
+    waitForSessionObserveIdle: async (_sessionKey: string) => {},
+    preCompactionFlush: async (sessionKey: string) => {
+      compactionFlushKeys.push(sessionKey);
+    },
+    recordCompaction: async (
+      sessionKey: string,
+      _before: number,
+      _after: number,
+    ) => {
+      compactionRecordKeys.push(sessionKey);
+    },
+    searchContextFull: async (
+      _query: string,
+      _limit: number,
+      sessionId?: string,
+      sessionPrefix?: string,
+    ) => {
+      searchSessionIds.push(sessionId);
+      searchSessionPrefixes.push(sessionPrefix);
+      return [];
+    },
+  };
+
+
   const orch = {
     config,
     getCodingContextForSession: (sk: string | undefined) =>
@@ -110,35 +154,7 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
       Orchestrator.prototype.resolvePrincipal.call(orch, sk),
     resolveSelfNamespace: (sk?: string) =>
       Orchestrator.prototype.resolveSelfNamespace.call(orch, sk),
-    lcmEngine: {
-      enabled: true,
-      enqueueObserveMessages: (sessionKey: string) => {
-        lcmWriteKeys.push(sessionKey);
-      },
-      waitForSessionObserveIdle: async (_sessionKey: string) => {},
-      preCompactionFlush: async (sessionKey: string) => {
-        compactionFlushKeys.push(sessionKey);
-      },
-      recordCompaction: async (
-        sessionKey: string,
-        _before: number,
-        _after: number,
-      ) => {
-        compactionRecordKeys.push(sessionKey);
-      },
-      searchContextFull: async (
-        _query: string,
-        _limit: number,
-        sessionId?: string,
-        sessionPrefix?: string,
-      ) => {
-        searchSessionIds.push(sessionId);
-        searchSessionPrefixes.push(sessionPrefix);
-        return [];
-      },
-    },
-    // Capture extraction routing/identity so the provenance-principal tests can
-    // assert what `observe` threads into `ingestReplayBatch`.
+    lcmEngine,
     ingestReplayBatch: async (
       turns: Array<{ sessionKey: string }>,
       options: { writeNamespaceOverride?: string; principalOverride?: string } = {},
@@ -148,6 +164,12 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
         writeNamespaceOverride: options.writeNamespaceOverride,
         principalOverride: options.principalOverride,
       });
+    },
+    flushSession: async (
+      sessionKey: string,
+      options: ExtractionForceFlushCall["options"],
+    ) => {
+      extractionForceFlushCalls.push({ sessionKey, options });
     },
   } as unknown as Orchestrator;
 
@@ -160,6 +182,8 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
     searchSessionIds,
     searchSessionPrefixes,
     extractionCalls,
+    lcmEngine,
+    extractionForceFlushCalls,
   };
 }
 
@@ -337,6 +361,38 @@ test("#1505 thread 2 (c) projectTag: observe LCM write key == recall reader key 
   });
   assert.equal(probe.compactionFlushKeys[0], expectedKey, "flush key");
   assert.equal(probe.compactionRecordKeys[0], expectedKey, "record key");
+});
+
+test("#2128: extraction force-flush uses observe's scoped target even when LCM is disabled", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const deadlineMs = Date.now() + 10_000;
+  const abortController = new AbortController();
+  probe.lcmEngine.enabled = false;
+
+  const response = await service.extractionForceFlush({
+    sessionKey: "pi-geek:force-flush",
+    projectTag: "Acme/Webshop",
+    deadlineMs,
+    abortSignal: abortController.signal,
+    authenticatedPrincipal: "pi-geek",
+  });
+
+  const expectedNamespace = combineNamespaces(
+    "pi-geek",
+    projectNamespaceName(projectTagProjectId("Acme/Webshop")),
+  );
+  assert.equal(response.flushed, true);
+  assert.equal(response.effectiveNamespace, expectedNamespace);
+  assert.equal(probe.extractionForceFlushCalls.length, 1);
+  const [call] = probe.extractionForceFlushCalls;
+  assert.equal(call.sessionKey, "pi-geek:force-flush");
+  assert.equal(call.options.reason, "access_force_flush");
+  assert.equal(call.options.bufferKey, "pi-geek:force-flush");
+  assert.equal(call.options.extractionDeadlineMs, deadlineMs);
+  assert.equal(call.options.abortSignal, abortController.signal);
+  assert.equal(call.options.writeNamespaceOverride, expectedNamespace);
+  assert.equal(call.options.principalOverride, "pi-geek");
 });
 
 test("#1505 thread 2 (b) cwd git repo: observe LCM write key == recall reader key == compaction keys", async () => {
