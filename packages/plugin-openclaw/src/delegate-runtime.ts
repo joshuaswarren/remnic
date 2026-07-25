@@ -20,8 +20,12 @@
  * SQLite contention).
  */
 
-import { log } from "@remnic/core/logger";
 import path from "node:path";
+import {
+  type RecallContextComposition,
+  renderMemoryContextPrompt,
+} from "@remnic/core";
+import { log } from "@remnic/core/logger";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
   checkDaemonHealthSync,
@@ -139,7 +143,6 @@ export async function probeDelegateAuthorization(
   }
   return { state: "unavailable", tokenSource: auth.source };
 }
-
 async function postJson(
   target: DelegateDaemonTarget,
   pathname: string,
@@ -217,6 +220,25 @@ function withNamespace(
   return namespace.length > 0 ? { ...body, namespace } : body;
 }
 
+function readContextComposition(
+  response: Record<string, unknown>,
+  fallbackContext: string,
+): RecallContextComposition {
+  const candidate = response.contextComposition;
+  if (
+    typeof candidate !== "object" ||
+    candidate === null ||
+    !("context" in candidate) ||
+    typeof candidate.context !== "string"
+  ) {
+    return { context: fallbackContext };
+  }
+  if ("footer" in candidate && typeof candidate.footer === "string") {
+    return { context: candidate.context, footer: candidate.footer };
+  }
+  return { context: candidate.context };
+}
+
 /**
  * Register the delegate runtime against a healthy daemon.
  *
@@ -286,19 +308,17 @@ export function registerDelegateRuntime(
         if (typeof rawContext !== "string" || rawContext.trim().length === 0) {
           return undefined;
         }
-        // Mirror the embedded recallBudgetChars trim — including the visible
-        // trim marker — so delegate mode cannot exceed the configured
-        // injection budget (0 never reaches here; it disables the handler).
-        const context =
-          rawContext.length > options.recallBudgetChars
-            ? rawContext.slice(0, options.recallBudgetChars) + "\n\n...(memory context trimmed)"
-            : rawContext;
-        const prompt = `${MEMORY_CONTEXT_HEADER}\n\n${context}`;
+        const rendered = renderMemoryContextPrompt({
+          ...readContextComposition(response ?? {}, rawContext),
+          maxChars: options.recallBudgetChars,
+        });
+        if (!rendered) return undefined;
+        const prompt = rendered.prompt;
         if (useSectionBuilder) {
           // Section-builder hosts inject through the registered builder; the
           // hook only pre-computes. Returning injection fields here too would
           // double-inject.
-          promptLinesBySession.set(sessionKey, prompt.split("\n"));
+          promptLinesBySession.set(sessionKey, rendered.lines);
           return undefined;
         }
         // Embedded parity: before_prompt_build consumes ONLY
