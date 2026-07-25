@@ -80,6 +80,113 @@ const GROUNDING_STOPWORDS: Record<string, true> = {
   your: true,
 };
 
+const GROUNDING_NEGATION_TOKENS = new Set([
+  "no",
+  "not",
+  "never",
+  "without",
+  "neither",
+  "nor",
+  "none",
+  "cannot",
+  "cant",
+  "can't",
+  "don't",
+  "doesn't",
+  "didn't",
+  "isn't",
+  "aren't",
+  "wasn't",
+  "weren't",
+  "won't",
+  "wouldn't",
+  "couldn't",
+  "shouldn't",
+  "haven't",
+  "hasn't",
+  "hadn't",
+]);
+
+const GROUNDING_AUXILIARY_TOKENS = new Set([
+  "am",
+  "are",
+  "be",
+  "been",
+  "being",
+  "can",
+  "could",
+  "did",
+  "do",
+  "does",
+  "had",
+  "has",
+  "have",
+  "is",
+  "was",
+  "were",
+  "will",
+  "would",
+  "should",
+]);
+
+function tokenSequence(text: string): string[] {
+  return text.normalize("NFKC").toLocaleLowerCase().match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu)
+    ?.map((token) => token.replaceAll("’", "'"))
+    ?? [];
+}
+
+function isNegationCue(token: string): boolean {
+  return GROUNDING_NEGATION_TOKENS.has(token) || token.endsWith("n't");
+}
+
+function isAttachedNegatedAuxiliary(token: string): boolean {
+  return token.endsWith("n't")
+    || token === "cannot"
+    || token === "cant"
+    || token === "can't";
+}
+
+function isNegatedAt(tokens: ReadonlyArray<string>, index: number): boolean {
+  const previousStart = Math.max(0, index - 3);
+  for (let i = previousStart; i < index; i += 1) {
+    if (isNegationCue(tokens[i])) return true;
+  }
+
+  if (tokens[index - 1] === "than" && tokens[index - 2] === "rather") return true;
+  if (tokens[index - 1] === "of" && tokens[index - 2] === "instead") return true;
+
+  const next = tokens[index + 1];
+  if (next !== undefined && isAttachedNegatedAuxiliary(next)) return true;
+  const nextNext = tokens[index + 2];
+  return next !== undefined
+    && nextNext !== undefined
+    && GROUNDING_AUXILIARY_TOKENS.has(next)
+    && isNegationCue(nextNext);
+}
+
+function hasContradictoryPolarity(candidate: string, source: string): boolean {
+  const candidateTokens = tokenSequence(candidate);
+  const sourceTokens = tokenSequence(source);
+  const sourcePositions = new Map<string, number[]>();
+  sourceTokens.forEach((token, index) => {
+    const key = stemToken(token);
+    const positions = sourcePositions.get(key);
+    if (positions) positions.push(index);
+    else sourcePositions.set(key, [index]);
+  });
+
+  for (const [candidateIndex, token] of candidateTokens.entries()) {
+    if (GROUNDING_STOPWORDS[token] === true) continue;
+    const positions = sourcePositions.get(stemToken(token));
+    if (!positions || positions.length === 0) continue;
+    const sourceIndex = positions[positions.length - 1];
+    if (isNegatedAt(candidateTokens, candidateIndex) !== isNegatedAt(sourceTokens, sourceIndex)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const GROUNDING_MIN_SHARED_TOKENS = 2;
 const GROUNDING_MIN_COVERAGE = 0.5;
 
@@ -119,6 +226,7 @@ function isSourceGrounded(candidate: string, source: string): boolean {
   const sourceText = normalizeForExactMatch(source);
   if (candidateText.length === 0 || sourceText.length === 0) return false;
   if (sourceText.includes(candidateText)) return true;
+  if (hasContradictoryPolarity(candidateText, sourceText)) return false;
   return hasGroundedTokenCoverage(candidateText, sourceText);
 }
 

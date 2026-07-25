@@ -130,6 +130,7 @@ Access-layer safety notes:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `extractionDedupeEnabled` | `true` | Skip extraction if the same buffer was already extracted recently |
+| `extractionSourceGroundingEnabled` | `true` | Keep extracted facts, profile updates, and questions only when supported by observed source turns; disable to preserve legacy behavior |
 | `extractionDedupeWindowMs` | `300000` | Dedup window in milliseconds (default 5 minutes) |
 | `extractionMinChars` | `40` | Minimum buffer character count to trigger extraction |
 | `extractionMinUserTurns` | `1` | Minimum user turns in buffer before extraction |

@@ -907,6 +907,11 @@ test("parseConfig validates localLlmMaxContext as a usable context window", () =
     );
   }
 });
+test("parseConfig extractionSourceGroundingEnabled defaults on and accepts string false", () => {
+  assert.equal(parseConfig({}).extractionSourceGroundingEnabled, true);
+  assert.equal(parseConfig({ extractionSourceGroundingEnabled: "false" }).extractionSourceGroundingEnabled, false);
+});
+
 test("parseConfig extractionTelemetryPrefilterEnabled defaults on and accepts string false", () => {
   assert.equal(parseConfig({}).extractionTelemetryPrefilterEnabled, true);
   assert.equal(parseConfig({ extractionTelemetryPrefilterEnabled: "false" }).extractionTelemetryPrefilterEnabled, false);

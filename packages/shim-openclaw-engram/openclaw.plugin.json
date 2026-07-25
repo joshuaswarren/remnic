@@ -2111,6 +2111,11 @@
         "default": true,
         "description": "Enable deduplication of near-identical extraction batches within a time window."
       },
+      "extractionSourceGroundingEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Keep extracted facts, profile updates, and questions only when supported by observed source turns. Disable to preserve legacy extraction behavior."
+      },
       "extractionDedupeWindowMs": {
         "type": "number",
         "default": 300000,
