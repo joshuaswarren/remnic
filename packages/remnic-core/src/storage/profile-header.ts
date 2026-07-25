@@ -285,7 +285,8 @@ function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBl
   const rawTag = findHtmlBlockTag(normalizedLine, RAW_HTML_BLOCK_TAGS);
   if (rawTag) {
     const completeTag = findCompleteHtmlTag(trimmedLine);
-    if (completeTag?.isSelfClosing) {
+    if (!completeTag) return null;
+    if (completeTag.isSelfClosing) {
       return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
     }
     const endMarker = `</${rawTag}>`;
@@ -315,7 +316,8 @@ function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBl
   const blockTag = findHtmlBlockTag(normalizedLine, HTML_BLOCK_TAGS);
   if (blockTag) {
     const completeTag = findCompleteHtmlTag(trimmedLine);
-    if (completeTag?.isSelfClosing) {
+    if (!completeTag) return null;
+    if (completeTag.isSelfClosing) {
       return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
     }
     return { endMarker: `</${blockTag}>`, endsAtBlankLine: true, tagName: blockTag, depth: 1 };

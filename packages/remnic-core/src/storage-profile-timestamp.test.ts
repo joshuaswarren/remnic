@@ -300,6 +300,28 @@ test("writeProfile rejects malformed HTML attributes before the profile title", 
     t.mock.timers.reset();
   }
 });
+test("writeProfile rejects malformed built-in HTML attributes before the profile title", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "<div / nope>",
+        "# Behavioral Profile",
+        STALE_HEADER,
+        "",
+        "- Keeps malformed built-in tag-shaped text as prose.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile recognizes block quotes as metadata boundaries", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
