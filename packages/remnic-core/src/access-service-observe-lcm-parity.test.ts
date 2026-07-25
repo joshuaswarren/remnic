@@ -450,6 +450,33 @@ test("#2128: an abort while attaching single-store context never starts the buff
   assert.equal(probe.extractionForceFlushCalls.length, 0);
 });
 
+test("#2128: abort after scoped-plan context seeding clears the temporary binding", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "pi-geek:abort-after-scope";
+  const abortController = new AbortController();
+  const originalSetCodingContext = probe.orch.setCodingContextForSession.bind(probe.orch);
+  (probe.orch as unknown as {
+    setCodingContextForSession(sessionKey: string, context: CodingContext | null): void;
+  }).setCodingContextForSession = (key, context) => {
+    originalSetCodingContext(key, context);
+    if (context !== null) abortController.abort(new Error("scope-plan abort"));
+  };
+
+  await assert.rejects(
+    () =>
+      service.extractionForceFlush({
+        sessionKey,
+        projectTag: "Acme/Webshop",
+        authenticatedPrincipal: "pi-geek",
+        abortSignal: abortController.signal,
+      }),
+    /extraction force-flush aborted/,
+  );
+  assert.equal(probe.orch.getCodingContextForSession(sessionKey), null);
+  assert.equal(probe.extractionForceFlushCalls.length, 0);
+});
+
 test("#2128: a deadline that elapses while attaching single-store context never starts the buffer drain", async () => {
   const probe = makeParityProbe({ namespacesEnabled: false });
   const service = new EngramAccessService(probe.orch);

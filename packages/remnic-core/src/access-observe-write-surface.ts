@@ -874,40 +874,61 @@ export class AccessObserveWriteSurface {
       throw new Error("extraction force-flush deadline exceeded before scope resolution");
     }
 
-    const scope = await this.deps.resolveMemoryScopePlan(request);
-    throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-    if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-      throw new Error("extraction force-flush deadline exceeded before buffer drain");
-    }
-
-    await this.deps.maybeAttachCodingContext(request.sessionKey, {
-      cwd: request.cwd,
-      projectTag: request.projectTag,
-    });
-    throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-    if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-      throw new Error("extraction force-flush deadline exceeded before buffer drain");
-    }
-    await this.deps.orchestrator.flushSession(request.sessionKey, {
-      reason: "access_force_flush",
-      abortSignal: request.abortSignal,
-      extractionDeadlineMs: request.deadlineMs,
-      writeNamespaceOverride:
-        resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true
-          ? scope.writeNamespace
-          : undefined,
-      principalOverride:
-        typeof scope.principal === "string" && scope.principal.length > 0
-          ? scope.principal
-          : undefined,
-    });
-
-    return {
-      flushed: true,
-      sessionKey: request.sessionKey,
-      namespace: this.deps.legacyResponseNamespaceForScope(scope),
-      effectiveNamespace: scope.writeNamespace,
+    const previousCodingContext = this.deps.orchestrator.getCodingContextForSession(request.sessionKey);
+    let seededCodingContext: unknown = null;
+    const captureSeededCodingContext = (): void => {
+      if (previousCodingContext !== null || seededCodingContext !== null) return;
+      const currentCodingContext = this.deps.orchestrator.getCodingContextForSession(request.sessionKey);
+      if (currentCodingContext !== null) seededCodingContext = currentCodingContext;
     };
+    const clearSeededCodingContext = (): void => {
+      if (previousCodingContext !== null || seededCodingContext === null) return;
+      if (this.deps.orchestrator.getCodingContextForSession(request.sessionKey) === seededCodingContext) {
+        this.deps.orchestrator.setCodingContextForSession(request.sessionKey, null);
+      }
+    };
+
+    try {
+      const scope = await this.deps.resolveMemoryScopePlan(request);
+      captureSeededCodingContext();
+      throwIfAborted(request.abortSignal, "extraction force-flush aborted");
+      if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
+        throw new Error("extraction force-flush deadline exceeded before buffer drain");
+      }
+
+      await this.deps.maybeAttachCodingContext(request.sessionKey, {
+        cwd: request.cwd,
+        projectTag: request.projectTag,
+      });
+      captureSeededCodingContext();
+      throwIfAborted(request.abortSignal, "extraction force-flush aborted");
+      if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
+        throw new Error("extraction force-flush deadline exceeded before buffer drain");
+      }
+      await this.deps.orchestrator.flushSession(request.sessionKey, {
+        reason: "access_force_flush",
+        abortSignal: request.abortSignal,
+        extractionDeadlineMs: request.deadlineMs,
+        writeNamespaceOverride:
+          resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true
+            ? scope.writeNamespace
+            : undefined,
+        principalOverride:
+          typeof scope.principal === "string" && scope.principal.length > 0
+            ? scope.principal
+            : undefined,
+      });
+
+      return {
+        flushed: true,
+        sessionKey: request.sessionKey,
+        namespace: this.deps.legacyResponseNamespaceForScope(scope),
+        effectiveNamespace: scope.writeNamespace,
+      };
+    } catch (error) {
+      clearSeededCodingContext();
+      throw error;
+    }
   }
 
   async workTask(request: {
