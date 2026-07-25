@@ -337,6 +337,10 @@ export async function fetchPeerWatermarks(
     return { kind: "unreachable", reason: "token_error" };
   }
   const base = peer.url.replace(/\/+$/, "");
+  // ONE deadline for the whole peer, not one per prefix: a preferred path that
+  // 404s just under the limit would otherwise hand the legacy fallback a fresh
+  // full budget and double the documented per-peer bound (round 5, codex P2).
+  const deadline = Date.now() + options.timeoutMs;
 
   for (let i = 0; i < HEALTH_PATHS.length; i += 1) {
     const path = HEALTH_PATHS[i];
@@ -345,7 +349,7 @@ export async function fetchPeerWatermarks(
     try {
       response = await doFetch(`${base}${path}`, {
         headers: token ? { authorization: `Bearer ${token}` } : undefined,
-        signal: AbortSignal.timeout(options.timeoutMs),
+        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
       });
     } catch (error) {
       // A network error means the host is unreachable regardless of path — no
@@ -509,11 +513,22 @@ export function filterReplicaReportByCaps(
     const namespaces = peer.namespaces.filter((delta) => capabilityAllowsNamespace(caps ?? undefined, delta.namespace));
     const divergedNamespaceCount = namespaces.filter((delta) => delta.diverged).length;
     const hasAmbiguousLocalOnly = namespaces.some((delta) => delta.presence === "local_only");
-    const state = divergedNamespaceCount > 0 ? "diverged" : hasAmbiguousLocalOnly ? "unknown" : "converged";
+    // A census-level `unknown` is NOT namespace-scoped: it says the local set
+    // was partial, which no amount of capability filtering can make safe. Never
+    // recompute it back to `converged` (round 5, cursor).
+    const censusUnknown = peer.state === "unknown" && peer.reason === "local_census_incomplete";
+    const state = censusUnknown
+      ? "unknown"
+      : divergedNamespaceCount > 0
+        ? "diverged"
+        : hasAmbiguousLocalOnly
+          ? "unknown"
+          : "converged";
     const filtered: ReplicaPeerReport = { ...peer, namespaces, divergedNamespaceCount, state };
     // The comparison-`unknown` reason is generic (no namespace name); keep it
     // only while the visible state stays unknown, else drop the stale reason.
-    if (state === "unknown") filtered.reason = "namespace_scope_unverifiable";
+    if (censusUnknown) filtered.reason = "local_census_incomplete";
+    else if (state === "unknown") filtered.reason = "namespace_scope_unverifiable";
     else delete filtered.reason;
     return filtered;
   });

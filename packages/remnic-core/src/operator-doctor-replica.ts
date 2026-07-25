@@ -27,7 +27,7 @@ import type { CorpusStorage, CorpusWatermark } from "./corpus-watermark.js";
 import { corpusWatermarksFromCheck, summarizeCorpusWatermark } from "./operator-doctor-corpus.js";
 import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
 import { type FetchLike, type ReplicaPeerReport, pollReplicaPeers } from "./replica-divergence.js";
-import type { ReplicaPeersConfig } from "./replica-peers-config.js";
+import { resolveReplicaPeersConfig, type ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import type { PluginConfig } from "./types.js";
 
@@ -57,10 +57,14 @@ function formatPeerLine(peer: ReplicaPeerReport): string {
 }
 
 export async function summarizeReplicaDivergence(
-  replicaConfig: ReplicaPeersConfig,
+  rawConfig: ReplicaPeersConfig | undefined,
   localWatermarks: readonly CorpusWatermark[],
   options: SummarizeReplicaDivergenceOptions = {},
 ): Promise<OperatorDoctorCheck> {
+  // A host adapter or hand-built PluginConfig can omit the block entirely;
+  // normalize through the same read-boundary resolver /health uses so doctor
+  // degrades to disabled instead of aborting the whole run (round 5, codex P2).
+  const replicaConfig = resolveReplicaPeersConfig(rawConfig);
   if (!replicaConfig.enabled) {
     return {
       key: "replica_divergence",

@@ -767,3 +767,63 @@ test("round 4 (codex P2): a present null peer token is rejected, not silently un
   });
   assert.equal(omitted.peers[0]?.token, undefined);
 });
+
+test("round 5 (cursor/codex): a capability filter cannot clear a census-level unknown", () => {
+  // The cap filter recomputes a peer's state from its VISIBLE deltas. A
+  // census-level unknown says the LOCAL set was partial, which no amount of
+  // namespace filtering makes safe — it must survive the recompute.
+  const report: ReplicaDivergenceStatus = {
+    enabled: true,
+    pending: false,
+    censusComplete: false,
+    polledAt: "2026-03-08T00:00:00.000Z",
+    peers: [
+      {
+        peer: "127.0.0.1:4318",
+        state: "unknown",
+        reason: "local_census_incomplete",
+        polledAt: "2026-03-08T00:00:00.000Z",
+        divergedNamespaceCount: 0,
+        namespaces: [
+          { namespace: "default", presence: "both", fileCountDelta: 0, writeAgeDeltaMs: 0, digestMatch: true, diverged: false, reasons: [] },
+          { namespace: "team-secret", presence: "both", fileCountDelta: 0, writeAgeDeltaMs: 0, digestMatch: true, diverged: false, reasons: [] },
+        ],
+      },
+    ],
+  };
+  const filtered = filterReplicaReportByCaps(report, { namespaces: ["default"] } as never);
+  assert.equal(filtered.peers[0]?.state, "unknown", "an incomplete census must not be filtered into converged");
+  assert.equal(filtered.peers[0]?.reason, "local_census_incomplete", "and its reason must survive");
+  assert.equal(filtered.peers[0]?.namespaces.length, 1, "hidden namespaces are still filtered out");
+});
+
+test("round 5 (codex P2): the dual-prefix fallback shares one per-peer deadline", async () => {
+  // A preferred path that 404s just under the limit used to hand the legacy
+  // fallback a fresh full budget, doubling the documented per-peer bound.
+  const budgets: number[] = [];
+  const fetchImpl: FetchLike = async (url, init) => {
+    // Record how much budget each attempt was granted.
+    const signal = init?.signal as (AbortSignal & { _remaining?: number }) | undefined;
+    budgets.push(Date.now());
+    void signal;
+    if (String(url).includes("/remnic/v1/")) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return { ok: false, status: 404, json: async () => ({}) };
+    }
+    return { ok: true, status: 200, json: async () => ({ corpus: [watermark("default")] }) };
+  };
+  const started = Date.now();
+  const status = await pollReplicaPeers({
+    config: parseReplicaPeersConfig({
+      replicaPeers: { enabled: true, requestTimeoutMs: 300, peers: [{ url: "http://127.0.0.1:4318" }] },
+    }),
+    localWatermarks: [watermark("default")],
+    fetchImpl,
+  });
+  assert.equal(budgets.length, 2, "both prefixes were attempted");
+  assert.equal(status.peers[0]?.state, "converged", "the legacy prefix still succeeds within the shared budget");
+  assert.ok(
+    Date.now() - started < 600,
+    "the peer must stay inside ~one requestTimeoutMs, not two",
+  );
+});
