@@ -30,15 +30,7 @@ import { probeQmdAvailability } from "./qmd-availability-probe.js";
 import { EngramAccessService } from "./access-service.js";
 import { EngramAccessHttpServer } from "./access-http.js";
 
-import {
-  hasInlineExplicitCaptureMarkup,
-  parseInlineExplicitCaptureNotes,
-  persistExplicitCapture,
-  queueExplicitCaptureForReview,
-  shouldProcessInlineExplicitCapture,
-  stripInlineExplicitCaptureNotes,
-  validateExplicitCaptureInput,
-} from "./explicit-capture.js";
+import { InlineExplicitCaptureProcessor } from "./explicit-capture.js";
 import path from "node:path";
 import os from "node:os";
 import { createOpikExporter } from "./opik-exporter.js";
@@ -967,7 +959,6 @@ type OpenClawEmbeddingAdapter = {
 };
 
 const MAX_OBSERVED_INBOUND_MESSAGE_IDS = 1024;
-const MAX_OBSERVED_INLINE_EXPLICIT_CAPTURE_KEYS = 1024;
 
 function requireOpenClawSdkSubpath<T>(subpath: string): T | null {
   try {
@@ -2041,8 +2032,9 @@ const pluginDefinition = {
     const pendingSparseInboundContentFingerprintOrder: string[] = [];
     const inboundReplyMetadataByMessageKey = new Map<string, OpenClawTranscriptMetadata>();
     const inboundReplyMetadataKeyOrder: string[] = [];
-    const observedInlineExplicitCaptureKeys = new Set<string>();
-    const observedInlineExplicitCaptureKeyOrder: string[] = [];
+    const inlineCaptureProcessor = new InlineExplicitCaptureProcessor(orchestrator, {
+      sourceConnector: "openclaw",
+    });
     let codexCompactionModeLogged = false;
 
     function rememberObservedInboundMessageId(messageKey: string): void {
@@ -2140,82 +2132,15 @@ const pluginDefinition = {
       return null;
     }
 
-    function rememberObservedInlineExplicitCaptureKey(noteKey: string): void {
-      if (!observedInlineExplicitCaptureKeys.has(noteKey)) {
-        observedInlineExplicitCaptureKeys.add(noteKey);
-        observedInlineExplicitCaptureKeyOrder.push(noteKey);
-      }
-      while (
-        observedInlineExplicitCaptureKeyOrder.length >
-        MAX_OBSERVED_INLINE_EXPLICIT_CAPTURE_KEYS
-      ) {
-        const expired = observedInlineExplicitCaptureKeyOrder.shift();
-        if (expired) observedInlineExplicitCaptureKeys.delete(expired);
-      }
-    }
-
-    function buildInlineExplicitCaptureDedupeKey(
-      messageKey: string | null | undefined,
-      note: ReturnType<typeof parseInlineExplicitCaptureNotes>[number],
-    ): string | null {
-      if (!messageKey) return null;
-      return `${messageKey}:inline-memory-note:${createHash("sha256")
-        .update(JSON.stringify(note))
-        .digest("hex")}`;
-    }
-
-    async function processInlineExplicitCaptureNotes(
-      notes: ReturnType<typeof parseInlineExplicitCaptureNotes>,
+    async function processInlineExplicitCapture(
+      content: string,
       messageKeys: readonly string[] | null | undefined,
-    ): Promise<number> {
-      let processed = 0;
-      for (const note of notes) {
-        const noteKeys = (messageKeys ?? [])
-          .map((messageKey) => buildInlineExplicitCaptureDedupeKey(messageKey, note))
-          .filter((noteKey): noteKey is string => typeof noteKey === "string");
-        if (
-          noteKeys.length > 0 &&
-          noteKeys.some((noteKey) => observedInlineExplicitCaptureKeys.has(noteKey))
-        ) {
-          continue;
-        }
-        try {
-          await persistExplicitCapture(
-            orchestrator,
-            { ...validateExplicitCaptureInput(note), sourceConnector: "openclaw" },
-            "inline",
-          );
-          orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
-          for (const noteKey of noteKeys) {
-            rememberObservedInlineExplicitCaptureKey(noteKey);
-          }
-          processed += 1;
-        } catch (error) {
-          try {
-            const queued = await queueExplicitCaptureForReview(
-              orchestrator,
-              { ...note, sourceConnector: "openclaw" },
-              "inline",
-              error,
-            );
-            orchestrator.requestQmdMaintenanceForTool(
-              "inline.memory_note.review",
-            );
-            for (const noteKey of noteKeys) {
-              rememberObservedInlineExplicitCaptureKey(noteKey);
-            }
-            processed += 1;
-            log.warn(
-              `explicit inline capture queued for review: ${queued.id}${queued.duplicateOf ? ` (duplicate of ${queued.duplicateOf})` : ""}`,
-            );
-          } catch (queueError) {
-            log.warn(
-              `explicit inline capture rejected: ${error}; review queue fallback failed: ${queueError}`,
-            );
-          }
-        }
-      }
-      return processed;
+    ) {
+      return inlineCaptureProcessor.process({
+        captureMode: orchestrator.config.captureMode,
+        content,
+        dedupeKeys: messageKeys ?? [],
+      });
     }
 
     function resolveStoredCodexThreadId(sessionKey: string): string | null {
@@ -4095,16 +4020,11 @@ const pluginDefinition = {
             ? eventDate.toISOString()
             : new Date().toISOString();
           const cleaned = cleanOpenClawUserMessage(content);
-          const inlineCaptureEnabled = shouldProcessInlineExplicitCapture(
-            orchestrator.config,
+          const inlineCapture = await processInlineExplicitCapture(
+            cleaned,
+            inboundMessageKeys,
           );
-          const explicitNotes = inlineCaptureEnabled
-            ? parseInlineExplicitCaptureNotes(cleaned)
-            : [];
-          const transcriptContent =
-            inlineCaptureEnabled && hasInlineExplicitCaptureMarkup(cleaned)
-              ? stripInlineExplicitCaptureNotes(cleaned)
-              : cleaned;
+          const transcriptContent = inlineCapture.content;
           const inboundContentFingerprint = buildOpenClawInboundContentFingerprint(
             transcriptContent,
             event,
@@ -4122,21 +4042,7 @@ const pluginDefinition = {
           ) {
             return;
           }
-          const inlineCaptureDedupeKeys =
-            inboundMessageKeys.length > 0
-              ? inboundMessageKeys
-              : inboundContentFingerprint
-                ? [inboundContentFingerprint]
-                : sparseInboundContentFingerprint
-                  ? [sparseInboundContentFingerprint]
-                : [];
-          const processedExplicitNotes =
-            explicitNotes.length > 0
-              ? await processInlineExplicitCaptureNotes(
-                  explicitNotes,
-                  inlineCaptureDedupeKeys,
-                )
-              : 0;
+          const processedExplicitNotes = inlineCapture.processed;
           if (!orchestrator.config.transcriptEnabled || transcriptContent.length === 0) {
             rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             if (processedExplicitNotes > 0) {
@@ -4294,26 +4200,20 @@ const pluginDefinition = {
             const content = extractTextContent(msg);
             if (content.length < 10) continue;
 
-            // Clean system metadata from user messages
             const cleaned =
               role === "user" ? cleanOpenClawUserMessage(content) : content;
-            const inlineCaptureEnabled = shouldProcessInlineExplicitCapture(
-              orchestrator.config,
+            const messageDedupeKeys = getOpenClawMessageDedupeKeys(msg, event, ctx, sessionKey);
+            const inlineCapture = await processInlineExplicitCapture(
+              cleaned,
+              messageDedupeKeys,
             );
-            const explicitNotes = inlineCaptureEnabled
-              ? parseInlineExplicitCaptureNotes(cleaned)
-              : [];
-            const stripped =
-              inlineCaptureEnabled && hasInlineExplicitCaptureMarkup(cleaned)
-                ? stripInlineExplicitCaptureNotes(cleaned)
-                : cleaned;
+            const stripped = inlineCapture.content;
             const messageMetadata = buildOpenClawMessageMetadata(
               msg,
               event,
               ctx,
               cfg,
             );
-            const messageDedupeKeys = getOpenClawMessageDedupeKeys(msg, event, ctx, sessionKey);
             const messageContentFingerprint = buildOpenClawInboundContentFingerprint(
               stripped,
               msg,
@@ -4344,19 +4244,6 @@ const pluginDefinition = {
                 sparseInboundAlreadyCaptured ||
                 (messageContentFingerprint !== null &&
                   observedInboundContentFingerprints.has(messageContentFingerprint)));
-            const inlineCaptureDedupeKeys =
-              messageDedupeKeys.length > 0
-                ? messageDedupeKeys
-                : messageContentFingerprint
-                  ? [messageContentFingerprint]
-                  : sparseMessageContentFingerprint
-                    ? [sparseMessageContentFingerprint]
-                  : [];
-
-            await processInlineExplicitCaptureNotes(
-              explicitNotes,
-              inlineCaptureDedupeKeys,
-            );
 
             // Append to transcript
             if (

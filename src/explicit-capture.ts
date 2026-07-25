@@ -1,4 +1,5 @@
 export {
+  InlineExplicitCaptureProcessor,
   hasInlineExplicitCaptureMarkup,
   parseInlineExplicitCaptureNotes,
   persistExplicitCapture,

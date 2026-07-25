@@ -1,7 +1,8 @@
 import { composeMemoryEnvelope, TAG_LIMITS } from "./write-envelope.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Orchestrator } from "./orchestrator.js";
+import { log } from "./logger.js";
 import { isSafeRouteNamespace } from "./routing/engine.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import { ContentHashIndex } from "./storage.js";
@@ -631,4 +632,128 @@ export function shouldSkipImplicitExtraction(cfg: Pick<PluginConfig, "captureMod
 
 export function shouldProcessInlineExplicitCapture(cfg: Pick<PluginConfig, "captureMode">): boolean {
   return cfg.captureMode !== "implicit";
+}
+
+export interface InlineExplicitCaptureProcessRequest {
+  content: string;
+  captureMode: CaptureMode;
+  dedupeKeys?: readonly string[];
+  namespace?: string;
+  namespacePreResolved?: boolean;
+  sourceConnector?: string;
+}
+
+export interface InlineExplicitCaptureProcessResult {
+  content: string;
+  processed: number;
+  accepted: number;
+  queued: number;
+  duplicates: number;
+}
+
+export interface InlineExplicitCaptureProcessorOptions {
+  sourceConnector?: string;
+  maxDedupeKeys?: number;
+}
+
+export class InlineExplicitCaptureProcessor {
+  private readonly observedKeys = new Set<string>();
+  private readonly observedKeyOrder: string[] = [];
+  private readonly maxDedupeKeys: number;
+
+  constructor(
+    private readonly orchestrator: Orchestrator,
+    private readonly options: InlineExplicitCaptureProcessorOptions = {},
+  ) {
+    this.maxDedupeKeys = Math.max(1, Math.floor(options.maxDedupeKeys ?? 1024));
+  }
+
+  private buildDedupeKeys(
+    dedupeKeys: readonly string[] | undefined,
+    note: ExplicitCaptureInput,
+  ): string[] {
+    const noteHash = createHash("sha256").update(JSON.stringify(note)).digest("hex");
+    return (dedupeKeys ?? [])
+      .map((key) => asTrimmed(key))
+      .filter((key): key is string => key !== undefined)
+      .map((key) => `${key}:inline-memory-note:${noteHash}`);
+  }
+
+  private remember(keys: readonly string[]): void {
+    for (const key of keys) {
+      if (this.observedKeys.has(key)) continue;
+      this.observedKeys.add(key);
+      this.observedKeyOrder.push(key);
+    }
+    while (this.observedKeyOrder.length > this.maxDedupeKeys) {
+      const expired = this.observedKeyOrder.shift();
+      if (expired) this.observedKeys.delete(expired);
+    }
+  }
+
+  async process(request: InlineExplicitCaptureProcessRequest): Promise<InlineExplicitCaptureProcessResult> {
+    if (!shouldProcessInlineExplicitCapture({ captureMode: request.captureMode })) {
+      return { content: request.content, processed: 0, accepted: 0, queued: 0, duplicates: 0 };
+    }
+
+    const notes = parseInlineExplicitCaptureNotes(request.content);
+    const content = hasInlineExplicitCaptureMarkup(request.content)
+      ? stripInlineExplicitCaptureNotes(request.content)
+      : request.content;
+    const sourceConnector = asTrimmed(request.sourceConnector) ?? asTrimmed(this.options.sourceConnector);
+    let processed = 0;
+    let accepted = 0;
+    let queued = 0;
+    let duplicates = 0;
+
+    for (const note of notes) {
+      const dedupeKeys = this.buildDedupeKeys(request.dedupeKeys, note);
+      if (dedupeKeys.some((key) => this.observedKeys.has(key))) continue;
+
+      const input: ExplicitCaptureInput = {
+        ...note,
+        ...(request.namespace !== undefined ? { namespace: request.namespace } : {}),
+        ...(sourceConnector ? { sourceConnector } : {}),
+      };
+      try {
+        const candidate = validateExplicitCaptureInput(input);
+        if (request.namespacePreResolved === true) candidate.namespacePreResolved = true;
+        const persisted = await persistExplicitCapture(this.orchestrator, candidate, "inline");
+        this.remember(dedupeKeys);
+        processed += 1;
+        if (persisted.duplicateOf) {
+          duplicates += 1;
+        } else {
+          accepted += 1;
+          this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
+        }
+      } catch (error) {
+        const queueInput = request.namespacePreResolved === true
+          ? Object.assign(input, { namespacePreResolved: true })
+          : input;
+        try {
+          const review = await queueExplicitCaptureForReview(
+            this.orchestrator,
+            queueInput,
+            "inline",
+            error,
+          );
+          this.remember(dedupeKeys);
+          processed += 1;
+          if (review.duplicateOf) {
+            duplicates += 1;
+          } else {
+            queued += 1;
+            this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note.review");
+          }
+        } catch (queueError) {
+          log.warn(
+            `explicit inline capture rejected: ${normalizeExplicitCaptureError(error)}; review queue fallback failed: ${normalizeExplicitCaptureError(queueError)}`,
+          );
+        }
+      }
+    }
+
+    return { content, processed, accepted, queued, duplicates };
+  }
 }
