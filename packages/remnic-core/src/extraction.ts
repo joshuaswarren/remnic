@@ -52,6 +52,37 @@ type ExtractedEntityResult = ExtractionResult["entities"][number];
 type ExtractedRelationshipResult = NonNullable<ExtractionResult["relationships"]>[number];
 
 const PROACTIVE_MIN_CONFIDENCE = 0.8;
+const EXTRACTION_RESPONSE_SHAPE = `{
+  "facts": [{
+    "category": "<category>",
+    "content": "<source-grounded statement>",
+    "confidence": 0.0,
+    "tags": ["<tag>"],
+    "entityRef": "<optional normalized-name>",
+    "promptedByQuestion": "<optional source-grounded question>",
+    "quote": "<optional exact contiguous source span>",
+    "scope": "<optional project-or-global>",
+    "structuredAttributes": {"<key>": "<value>"},
+    "procedureSteps": [{"order": 1, "intent": "<step>"}, {"order": 2, "intent": "<step>"}],
+    "reasoningTrace": {
+      "steps": [{"order": 1, "description": "<step>"}, {"order": 2, "description": "<step>"}],
+      "finalAnswer": "<answer>",
+      "observedOutcome": "<optional outcome>"
+    },
+    "eventTime": "<optional source temporal expression>"
+  }],
+  "entities": [{
+    "name": "<normalized-name>",
+    "type": "<entity-type>",
+    "facts": ["<source-grounded statement>"],
+    "promptedByQuestion": "<optional source-grounded question>",
+    "structuredSections": [{"key": "<section-key>", "title": "<section-title>", "facts": ["<source-grounded statement>"]}]
+  }],
+  "profileUpdates": ["<source-grounded profile update>"],
+  "questions": [{"question": "<source-grounded unresolved question>", "context": "<source-grounded context>", "priority": 0.0}],
+  "identityReflection": "<conversation-grounded agent reflection>",
+  "relationships": [{"source": "<normalized-name>", "target": "<normalized-name>", "label": "<source-grounded relationship>"}]
+}`;
 const CONSOLIDATION_RESPONSE_SCHEMA = `{
   "items": [
     {
@@ -1384,90 +1415,36 @@ export class ExtractionEngine {
 
     const localPrompt = `You are a memory extraction system. Extract durable, reusable memories from this conversation.
 
-Memory categories — use the MOST SPECIFIC category that fits:
-- fact: Objective information about the world
-- preference: User likes, dislikes, or stylistic choices
-- correction: User correcting a mistake (highest priority)
-- entity: People, projects, tools, companies (use canonical hyphenated names like "my-project")
-- decision: Choices made with rationale
-- relationship: How entities relate (e.g., "Alice manages Bob")
-- principle: Durable rules or operating beliefs (e.g., "never use X API")
-- commitment: Promises, obligations, deadlines
-- moment: Emotionally significant events
-- skill: Demonstrated capabilities
-- rule: Explicit operational rules or constraints
-- procedure: Repeatable workflows — use when the user describes a multi-step play (≥2 ordered steps). Put the human-readable trigger/context in "content" (e.g. "When you deploy…") and list steps in "procedureSteps" as [{"order":1,"intent":"…"}, …] mirroring the gateway extraction schema.
-- reasoning_trace: Stored solution chains — use when the user narrates HOW they solved a specific problem step-by-step ("here's how I figured out…", "the debugging went like this…"). Put a short title in "content" (e.g. "How I debugged the staging latency spike") and the chain in "reasoningTrace": {"steps":[{"order":1,"description":"…"}, …], "finalAnswer":"…", "observedOutcome":"…" (optional)}. Require ≥2 ordered steps and a finalAnswer. Do NOT use for ordinary decisions (prefer "decision") or reusable workflows (prefer "procedure").
+Use the most specific category:
+- fact: objective information
+- preference: a durable preference or style
+- correction: a correction of a prior mistake
+- entity: a durable person, project, tool, company, or place
+- decision: a choice with rationale
+- relationship: a durable link between two entities
+- principle: a reusable rule or operating belief
+${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? "- rule: an explicit causal rule or constraint\n" : ""}- commitment: a promise, obligation, or deadline
+- moment: a significant milestone
+- skill: a demonstrated capability
+- procedure: an explicit reusable workflow with ordered procedureSteps
+- reasoning_trace: Stored solution chains — an explicitly narrated solution path with reasoningTrace. Use {"category": "reasoning_trace", "reasoningTrace": {"steps": [...], "finalAnswer": "..."}} only when the conversation provides the chain.
 
-IMPORTANT: Do NOT label everything as "fact". Use "decision" for architectural choices, "commitment" for deadlines/promises, "principle" for reusable rules, "correction" for when the user rejects a suggestion, etc.
-
-=== DO NOT EXTRACT (negative examples) ===
-These are operational noise - skip them:
-- "The user has a cron job that runs every 30 minutes" (scheduled task descriptions)
-- "The user encountered error XYZ at 3:45 PM" (temporary error states)
-- "The file is located at /path/to/project/file" (transient file paths)
-- "The system is using 4GB of memory" (current resource usage)
-- "The user ran the 'git status' command" (individual command executions)
-- "The conversation took place on Tuesday" (session metadata)
-- "The agent read the file at /path/to/file.txt" (agent's own actions)
-- "The user's OpenClaw automation posts to #channel on failures" (automation behavior descriptions)
-- "The user stores state in /path/to/state.json" (implementation details)
-- "The X-watch automation has been stalled for 58 hours" (system status updates)
-- "The user processed 5 batch files and extracted insights" (processing summaries)
-- "The user has a cron job that runs a Checkpoint Loop every 2 hours" (automation schedules)
-- "The user runs a Morning Surprise cron job daily at 7:30 AM" (automation schedules)
-- "The user runs an X Bookmarks → Insights pipeline hourly at :13" (automation schedules)
-- "The user's system mines X/Twitter mentions for ideas every 10a/2p/6p" (automation schedules)
-- "The user runs a Health Insights cron job weekday mornings" (automation schedules)
-- "The system monitors the showcase page every 12 hours" (system monitoring configurations)
-
-=== DO EXTRACT (positive examples) ===
-These are durable insights - capture them:
-- "The user prefers dark mode interfaces and finds light mode uncomfortable" (preference)
-- "The user works primarily with TypeScript and avoids Python for frontend code" (long-term fact)
-- "The user's side project 'alpha-trader' uses a custom algorithm for arbitrage" (entity + detail)
-- "The user corrected that PostgreSQL 15 is required, not version 14" (correction)
-- "The user never commits code without running tests first" (principle)
-- "The user has a meeting with the design team every Friday at 2pm" (commitment)
-
-=== Rules ===
-- Extract only NEW information worth remembering across sessions
-- Skip transient details (file paths, current errors, temporary states, agent actions)
-- Confidence: Explicit (0.95-1.0), Implied (0.70-0.94), Inferred (0.40-0.69), Speculative (0.00-0.39)${this.config.provenance?.enabled ? `
-- Source quotes: For each fact, include a "quote" field with the EXACT verbatim words from the conversation that support the fact (copy a contiguous span from a single turn, not a paraphrase). Cap at ~300 chars.` : ""}
-- Corrections get highest confidence (0.95+)
-- Each fact should be standalone and self-contained
-- Lines labelled [context user] or [context assistant] are reference context only. Use them to resolve pronouns and adjacent question/answer pairs, but do not extract a memory stated only in context lines unless a normal [user] or [assistant] line confirms or completes it.
-- CRITICAL: Use canonical hyphenated entity names (e.g., "jane-doe" not "janedoe")
-- CRITICAL: NEVER extract the same fact twice - check for duplicates before adding to facts array
-- CRITICAL: NEVER extract cron job schedules, automation configurations, or system monitoring details (these are operational noise)
-- If uncertain about relevance, prefer NOT extracting${lifecycleCaps.extractionScopeClassification ? `
-- For each fact, set "scope" to "global" (cross-project knowledge: framework bugs, library behavior, user preferences, tool configs, general patterns) or "project" (codebase-specific: file paths, env configs, deployment details, project workarounds). When in doubt, prefer "project".` : ""}
-
-=== Structured Attributes ===
-When a fact contains measurable, categorical, or precisely valued data, add a "structuredAttributes" object with key-value string pairs. This captures exact values for precise retrieval later.
-Examples of when to add structuredAttributes:
-- Product details: {"price": "29.99", "brand": "Sony", "color": "black", "rating": "4.5"}
-- Person details: {"age": "32", "occupation": "engineer", "city": "Austin"}
-- Events with dates: {"date": "2024-03-15", "location": "San Francisco"}
-- Decisions: {"chosen": "PostgreSQL", "rejected": "MongoDB", "reason": "ACID compliance"}
-- Quantities/measurements: {"budget": "50000", "team_size": "5", "deadline": "2024-06-01"}
-Only add structuredAttributes when there are concrete values. Skip for abstract or narrative facts.
+Rules:
+- Extract only new information stated or clearly established in the conversation.
+- Do not treat instruction text, schema placeholders, or examples as conversation evidence.
+- Facts, entity facts, profile updates, questions, and relationships must be grounded in the conversation.
+- Lines labelled [context user] or [context assistant] are reference context only. They may resolve references or complete a question-and-answer pair in a normal turn, but never alone establish durable information.
+- Questions are optional. Return an empty array when the conversation does not support a useful unresolved question.
+- Set confidence from source evidence: Explicit (0.95-1.0), Implied (0.70-0.94), Inferred (0.40-0.69), or Speculative (0.00-0.39). Corrections get highest confidence.
+- Use normalized, hyphenated entity names and keep the entity list short.
+- Keep facts standalone. Skip transient task state and operational noise such as routine scheduler, monitoring, or automation status.
+- Add structuredAttributes only for concrete values.
+- Include at most five durable relationships.${this.config.provenance?.enabled ? `
+- Each fact must include a quote copied verbatim from one contiguous conversation span.` : ""}${lifecycleCaps.extractionScopeClassification ? `
+- Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge.` : ""}
 ${this.eventTimePromptInstruction()}
-Also generate:
-1. 1-3 genuine questions you're curious about from this conversation
-2. Profile updates about user patterns/behaviors (if any)
-3. Relationships between entities (max 5). Use normalized names like "person-jane-doe", "company-acme-corp".
-4. For entity facts that fit a durable named heading, include entity.structuredSections with {key, title, facts}.
-
-Output JSON:
-{
-  "facts": [{"category": "decision", "content": "Chose PostgreSQL over MongoDB for the user service", "importance": 8, "confidence": 0.9, "scope": "project", "structuredAttributes": {"chosen": "PostgreSQL", "rejected": "MongoDB"}}, {"category": "procedure", "content": "When you cut a hotfix release, follow the checklist", "importance": 8, "confidence": 0.9, "scope": "project", "procedureSteps": [{"order": 1, "intent": "Branch from main and cherry-pick the fix"}, {"order": 2, "intent": "Run CI and tag the release"}]}, {"category": "reasoning_trace", "content": "How I debugged the staging latency spike", "importance": 7, "confidence": 0.9, "scope": "project", "reasoningTrace": {"steps": [{"order": 1, "description": "Checked CPU/memory dashboards — both were flat"}, {"order": 2, "description": "Ran a traceroute and saw retries against the cache tier"}, {"order": 3, "description": "Tailed cache-tier logs and spotted eviction storms"}], "finalAnswer": "Root cause was an undersized eviction policy on the session cache", "observedOutcome": "Increased cache size, p95 returned to baseline within 10 minutes"}}, {"category": "commitment", "content": "Must ship v2.0 API by end of March", "importance": 10, "confidence": 1.0, "scope": "project", "structuredAttributes": {"deadline": "end of March", "deliverable": "v2.0 API"}}, {"category": "fact", "content": "The store backend uses Redis for session caching", "importance": 6, "confidence": 0.95, "scope": "project", "entityRef": "project-acme-store"}, {"category": "principle", "content": "Always run migrations in a transaction to avoid partial schema updates", "importance": 8, "confidence": 0.9, "scope": "global"}],
-  "entities": [{"name": "person-jane-doe", "type": "person", "facts": ["Works at Acme Corp", "Prefers Python over JavaScript"], "structuredSections": [{"key": "beliefs", "title": "Beliefs", "facts": ["Python is a better fit than JavaScript for backend work."]}]}, {"name": "project-acme-store", "type": "project", "facts": ["Built with Next.js", "Deployed on Vercel"]}],
-  "profileUpdates": ["User prefers dark mode in all editors"],
-  "questions": [{"question": "Which cloud provider hosts the staging environment?", "context": "Came up during deployment discussion", "priority": 0.5}],
-  "relationships": [{"source": "person-jane-doe", "target": "company-acme-corp", "label": "works at"}]
-}
+Return only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:
+${EXTRACTION_RESPONSE_SHAPE}
 
 Conversation:
 ${truncatedConversation}`;
@@ -1554,14 +1531,7 @@ ${truncatedConversation}`;
           role: "system",
           content:
             this.buildExtractionInstructions(existingEntities) +
-            `\n\nRespond with valid JSON matching this schema:
-{
-  "facts": [{"category": "decision", "content": "Chose React over Vue for the dashboard rewrite", "importance": 8, "confidence": 0.9, "tags": ["frontend"], "scope": "project", "structuredAttributes": {"chosen": "React", "rejected": "Vue"}}, {"category": "fact", "content": "The API gateway uses rate limiting at 1000 req/min", "importance": 6, "confidence": 0.95, "tags": ["infra"], "scope": "project", "entityRef": "project-dashboard", "structuredAttributes": {"rate_limit": "1000 req/min"}}, {"category": "reasoning_trace", "content": "How I chose the dashboard rewrite framework", "confidence": 0.9, "tags": ["frontend"], "scope": "project", "reasoningTrace": {"steps": [{"order": 1, "description": "Listed constraints: SSR needed, team mostly JS"}, {"order": 2, "description": "Ran a spike in Vue 3 — worked, but ecosystem felt thin for our needs"}, {"order": 3, "description": "Ran the same spike in React — integrated faster with Next.js"}], "finalAnswer": "Picked React with Next.js for SSR + ecosystem fit"}}],
-  "entities": [{"name": "person-sarah-chen", "type": "person", "facts": ["Leads the backend team", "Joined from Google in 2024"], "structuredSections": [{"key": "beliefs", "title": "Beliefs", "facts": ["Small teams should own whole systems."]}]}, {"name": "project-dashboard", "type": "project", "facts": ["React-based admin panel", "Deployed on AWS ECS"]}],
-  "profileUpdates": ["User prefers TypeScript over plain JavaScript"],
-  "questions": [{"question": "What database does the analytics service use?", "context": "Came up during discussion of migration plan", "priority": 0.5}],
-  "relationships": [{"source": "person-sarah-chen", "target": "project-dashboard", "label": "leads development of"}]
-}`,
+            `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${EXTRACTION_RESPONSE_SHAPE}`,
         },
         { role: "user", content: conversation },
       ],
@@ -1668,15 +1638,7 @@ ${truncatedConversation}`;
   private eventTimePromptInstruction(): string {
     if (!this.config.temporalBiTemporal) return "";
     return `
-=== Event Time (bi-temporal) ===
-When a fact has an explicit temporal anchor — a date, month, season, or relative time expression stating WHEN the fact became (or stopped being) true — capture it verbatim in an "eventTime" field on that fact. Examples:
-- "We moved offices in March" → "eventTime": "last March"
-- "The API has been rate-limited since 2024" → "eventTime": "since 2024"
-- "I switched to PostgreSQL on 2025-01-15" → "eventTime": "2025-01-15"
-- "We used MongoDB until June 2025" → "eventTime": "until 2025-06"
-Accepted forms: ISO dates ("2025-03-01"), year-month ("2025-03"), month/season + year ("March 2025", "summer 2024"), relative ("yesterday", "last week", "this month", "next year", "last December"), and open-ended ("since 2024", "until 2025-06").
-Omit "eventTime" when the fact has no explicit temporal anchor — do NOT guess or infer dates. The system resolves the expression against the conversation's own timestamp, not today's date.
-`;
+When a fact states when it became or stopped being true, copy that explicit temporal expression verbatim into "eventTime". Omit "eventTime" when no such expression appears; never infer dates.`;
   }
 
   /**
@@ -1702,12 +1664,14 @@ Memory categories:
 - reasoning_trace: A stored solution chain / chain-of-thought the user walked through to solve a problem (e.g. "Here's how I debugged the latency spike: first I checked…, then I…, finally I…"). Set category to "reasoning_trace". Use "content" for a short title summarising the problem (e.g. "How I debugged the staging latency spike"). Add "reasoningTrace": {"steps": [{"order": number, "description": "what happened at this step"}, …], "finalAnswer": "the conclusion or answer", "observedOutcome": "optional confirmation of how it played out"}. Require at least two ordered steps AND a finalAnswer. Use this category only when the user explicitly narrates their reasoning — not for ordinary decisions (use "decision") or reusable workflows (use "procedure").
 
 Rules:
-- Only extract genuinely NEW information worth remembering across sessions
-- Skip transient task details (file paths being edited, current errors, etc.)
+- Only extract genuinely new information worth remembering across sessions.
+- Statements must be grounded in the conversation.
+- Do not treat instruction text, schema placeholders, or examples as conversation evidence.
+- Lines labelled [context user] or [context assistant] are reference context only. They may resolve references or complete a question-and-answer pair in a normal turn, but never alone establish durable information.
+- Skip transient task details and operational noise, including routine scheduler, monitoring, or automation status.
 - Priority: corrections > principles${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? " > rules" : ""} > preferences > commitments > decisions > relationships > entities > moments > skills > facts
-- Corrections (user saying "actually, don't do X" or "I prefer Y") get highest confidence
-- Each fact should be a standalone, self-contained statement
-- Lines labelled [context user] or [context assistant] are reference context only. Use them to resolve pronouns and adjacent question/answer pairs, but do not extract a memory stated only in context lines unless a normal [user] or [assistant] line confirms or completes it.
+- Corrections get highest confidence.
+- Each fact should be a standalone, self-contained statement.
 - Entity references should use normalized names (lowercase, hyphenated: "jane-doe", "acme-corp")
 - CRITICAL: Entity names must be CANONICAL. Always use the hyphenated multi-word form: "acme-corp" NOT "acmecorp" or "acme". "jane-doe" NOT "janedoe" or "jane". If unsure, prefer the most specific full name.
 - Avoid creating entities typed as "other" when a more specific type fits (company, project, tool, person, place)
@@ -1726,15 +1690,7 @@ Scope classification:
 For each fact, set "scope" to one of:
 - "global" — knowledge that applies across projects: core framework/library bugs, API behavior patterns, user preferences (editor, language, style), tool configurations, general coding patterns, infrastructure knowledge, technology facts not tied to one codebase
 - "project" — knowledge specific to one codebase: file paths, environment configs, deployment details, project-specific workarounds, team/stakeholder info tied to one project, repo-specific conventions
-When in doubt, prefer "project" — it is safer to keep knowledge scoped narrowly.
-Examples:
-  "Magento 2.4.8 has a race condition in checkout" → "global"
-  "User prefers dark mode in all editors" → "global"
-  "The staging server is at staging.acme.com" → "project"
-  "The deploy script lives at scripts/deploy.sh" → "project"
-  "PostgreSQL 15 requires the uuid-ossp extension for gen_random_uuid()" → "global"
-  "The acme-store repo uses a custom Webpack config for SSR" → "project"` : ""}
-
+When in doubt, prefer "project" — it is safer to keep knowledge scoped narrowly.` : ""}
 Entity creation rules (STRICT):
 - Only create entities for DURABLE things: real people, companies, products, tools, ongoing projects
 - NEVER create entities for transient items: individual PRs, branches, Jira tickets, meetings, agent task IDs, log files, database tables, cron job runs, sessions
@@ -1755,14 +1711,9 @@ Also extract relationships between entities mentioned in the conversation.
 - Only include clear, durable relationships (e.g., "works at", "created", "manages", "uses")
 - Use normalized entity names (e.g., "person-jane-doe", "company-acme-corp")
 
-Also generate 1-3 genuine questions you're curious about based on this conversation. These should be things you'd actually want answers to in future sessions — not prompts, but real curiosity.
+Questions are optional. Include only source-grounded unresolved questions that would be useful in future sessions; otherwise return an empty array.
 
-Finally, write a brief identity reflection about the AGENT who had this conversation (not about you, the extraction system). Based on what the agent said and did in the conversation:
-- What communication patterns did the agent show? (e.g., proactive vs reactive, verbose vs concise)
-- Did the agent handle the user's needs well or miss something?
-- What behavioral tendencies are visible? (e.g., cautious, creative, thorough, impatient)
-- What could the agent improve next time?
-Do NOT write about the extraction process itself. Do NOT say things like "I extracted durable facts" — that's about YOUR job, not the agent's behavior.`;
+Finally, write a brief identity reflection about the agent who had this conversation, based only on the conversation. Do not write about the extraction process.`;
   }
 
   async consolidate(

@@ -287,7 +287,7 @@ export const ExtractionResultSchema = z.object({
   questions: z
     .array(ExtractedQuestionSchema)
     .describe(
-      "1-3 genuine questions you're curious about from this conversation. These should be things you'd actually want to know the answer to in future sessions.",
+      "Zero to three source-grounded questions useful in future sessions. Return an empty array when the conversation supports none.",
     ),
   identityReflection: z
     .string()
