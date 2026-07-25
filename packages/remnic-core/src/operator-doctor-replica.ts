@@ -55,7 +55,7 @@ export async function summarizeReplicaDivergence(
       key: "replica_divergence",
       status: "ok",
       summary: "Replica divergence detection is disabled.",
-      details: { enabled: false, polledAt: null, peers: [] },
+      details: { enabled: false, pending: false, polledAt: null, peers: [] },
     };
   }
   if (replicaConfig.peers.length === 0) {
@@ -63,7 +63,7 @@ export async function summarizeReplicaDivergence(
       key: "replica_divergence",
       status: "ok",
       summary: "Replica divergence detection is enabled, but no peers are configured.",
-      details: { enabled: true, polledAt: null, peers: [] },
+      details: { enabled: true, pending: false, polledAt: null, peers: [] },
     };
   }
 

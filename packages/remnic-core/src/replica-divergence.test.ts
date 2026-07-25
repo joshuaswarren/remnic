@@ -205,17 +205,32 @@ test("compareReplicaWatermarks: stale peer watermark (age delta beyond threshold
   assert.ok(result.namespaces[0]?.reasons.some((reason) => reason.startsWith("write_age_delta_ms=")));
 });
 
-test("compareReplicaWatermarks: a namespace on only one side is reported, not skipped", () => {
+test("compareReplicaWatermarks: a one-sided namespace is reported; local_only advisory, peer_only diverges", () => {
   const local = [watermark("default"), watermark("team-a")];
   const peer = [watermark("default"), watermark("team-b")];
   const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
-  assert.equal(result.state, "diverged");
   const byNamespace = new Map(result.namespaces.map((delta) => [delta.namespace, delta]));
+  // local_only is advisory (a namespace-restricted peer token may hide it): reported, not diverged.
   assert.equal(byNamespace.get("team-a")?.presence, "local_only");
-  assert.equal(byNamespace.get("team-a")?.diverged, true);
+  assert.equal(byNamespace.get("team-a")?.diverged, false);
+  // peer_only is a real divergence — the peer holds a namespace we lack.
   assert.equal(byNamespace.get("team-b")?.presence, "peer_only");
   assert.equal(byNamespace.get("team-b")?.diverged, true);
   assert.equal(byNamespace.get("default")?.diverged, false);
+  assert.equal(result.state, "diverged", "peer_only still diverges the peer");
+});
+
+test("compareReplicaWatermarks: a namespace-restricted peer token does not cause false divergence (review round 1)", () => {
+  // The peer bearer is namespace-scoped so its /health returns only `default`;
+  // our local set still has both. local_only must NOT flip the peer to diverged.
+  const local = [watermark("default", { digest: "d" }), watermark("team-a", { digest: "d" })];
+  const peer = [watermark("default", { digest: "d" })];
+  const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
+  assert.equal(result.state, "converged", "a hidden local namespace is advisory, not divergence");
+  assert.equal(result.divergedNamespaceCount, 0);
+  const teamA = result.namespaces.find((delta) => delta.namespace === "team-a");
+  assert.equal(teamA?.presence, "local_only");
+  assert.equal(teamA?.diverged, false);
 });
 
 test("compareReplicaWatermarks: real watermarks with equal count but different day distribution diverge", async () => {
@@ -370,6 +385,65 @@ test("pollReplicaPeers: the peer token is sent as a Bearer header but never leak
   }
 });
 
+test("pollReplicaPeers: a corpus with a malformed entry is unknown, not converged (review round 1)", async () => {
+  const peer = await startPeer((req, res) => {
+    if (new URL(req.url ?? "/", "http://127.0.0.1").pathname === "/engram/v1/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, corpus: [watermark("default"), {}] }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  try {
+    const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: peer.url }] } });
+    const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")] });
+    assert.equal(report.peers[0]?.state, "unknown");
+    assert.equal(report.peers[0]?.reason, "malformed_corpus");
+    assert.notEqual(report.peers[0]?.state, "converged");
+  } finally {
+    await peer.close();
+  }
+});
+
+test("pollReplicaPeers: a SecretRef token with no resolver degrades to unreachable, never throws (review round 1)", async () => {
+  const peer = await startPeer(corpusHandler([watermark("default")]));
+  try {
+    const config = parseReplicaPeersConfig({
+      replicaPeers: { enabled: true, peers: [{ url: peer.url, token: { source: "exec", provider: "kc_peer" } }] },
+    });
+    // Resolving the SecretRef throws (no resolver); the whole poll must NOT reject.
+    const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")] });
+    assert.equal(report.peers[0]?.state, "unreachable");
+    assert.equal(report.peers[0]?.reason, "token_error");
+    assert.notEqual(report.peers[0]?.state, "converged");
+    assert.equal(peer.requests.length, 0, "no request is sent when the token cannot be resolved");
+  } finally {
+    await peer.close();
+  }
+});
+
+test("pollReplicaPeers: a provided resolveSecretRef resolves a SecretRef token and sends it as Bearer (review round 1)", async () => {
+  const peer = await startPeer(corpusHandler([watermark("default")]));
+  try {
+    const config = parseReplicaPeersConfig({
+      replicaPeers: { enabled: true, peers: [{ url: peer.url, token: { source: "exec", provider: "kc_peer" } }] },
+    });
+    const report = await pollReplicaPeers({
+      config,
+      localWatermarks: [watermark("default")],
+      resolveSecretRef: async () => "RESOLVED-PEER-BEARER",
+    });
+    assert.equal(report.peers[0]?.state, "converged");
+    assert.ok(
+      peer.requests.some((request) => request.authorization === "Bearer RESOLVED-PEER-BEARER"),
+      "the host-resolved SecretRef token is sent to the peer",
+    );
+  } finally {
+    await peer.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Capability filtering (issue #2156 finding B parity)
 // ---------------------------------------------------------------------------
@@ -382,6 +456,7 @@ function reportWithNamespaces(): ReplicaDivergenceStatus {
   );
   return {
     enabled: true,
+    pending: false,
     polledAt: "2026-03-08T00:00:00.000Z",
     peers: [{ peer: "127.0.0.1:4318", state: comparison.state, polledAt: "2026-03-08T00:00:00.000Z", namespaces: comparison.namespaces, divergedNamespaceCount: comparison.divergedNamespaceCount }],
   };
@@ -406,6 +481,7 @@ test("filterReplicaReportByCaps: an unrestricted token sees the full report", ()
 test("filterReplicaReportByCaps: an unreachable peer's state is preserved for a restricted token", () => {
   const report: ReplicaDivergenceStatus = {
     enabled: true,
+    pending: false,
     polledAt: "2026-03-08T00:00:00.000Z",
     peers: [{ peer: "127.0.0.1:4318", state: "unreachable", polledAt: "2026-03-08T00:00:00.000Z", namespaces: [], divergedNamespaceCount: 0, reason: "timeout" }],
   };
@@ -482,4 +558,26 @@ test("ReplicaDivergenceMonitor: applies capability filtering at read time", asyn
   const restricted = monitor.getReport({ config, computeLocalWatermarks, caps: { version: 1, namespaces: ["default"] } });
   assert.deepEqual(restricted.peers[0]?.namespaces.map((delta) => delta.namespace), ["default"]);
   assert.equal(restricted.peers[0]?.state, "converged", "the hidden team-secret divergence must not leak");
+});
+
+test("ReplicaDivergenceMonitor: warming state is distinguishable from no-peers configured (review round 1)", async () => {
+  const fetchImpl: FetchLike = async () => ({ ok: true, status: 200, json: async () => ({ corpus: [watermark("default")] }) });
+  const computeLocalWatermarks = async () => [watermark("default")];
+  const monitor = new ReplicaDivergenceMonitor({ fetchImpl });
+  const withPeers = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } });
+  const noPeers = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [] } });
+
+  // Enabled + peers but no completed poll yet -> pending:true (in-progress/failed).
+  const warming = monitor.getReport({ config: withPeers, computeLocalWatermarks });
+  assert.equal(warming.pending, true);
+  assert.equal(warming.peers.length, 0);
+
+  // Enabled but no peers configured -> pending:false, distinct from warming.
+  assert.equal(monitor.getReport({ config: noPeers, computeLocalWatermarks }).pending, false);
+
+  // After the poll completes -> pending:false with the real report.
+  await monitor.whenIdle();
+  const polled = monitor.getReport({ config: withPeers, computeLocalWatermarks });
+  assert.equal(polled.pending, false);
+  assert.equal(polled.peers[0]?.state, "converged");
 });

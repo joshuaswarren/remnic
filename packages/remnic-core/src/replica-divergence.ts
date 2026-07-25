@@ -82,6 +82,14 @@ export interface ReplicaPeerReport {
 
 export interface ReplicaDivergenceStatus {
   enabled: boolean;
+  /**
+   * True when the feature is enabled with peers configured but no poll has
+   * completed yet (warming, or a persistently failing local-watermark scan).
+   * Distinguishes that in-progress/failed state from the "enabled but no peers
+   * configured" case, which reports `pending: false` with an empty `peers` list
+   * (review round 1).
+   */
+  pending: boolean;
   /** ISO timestamp of the last completed poll cycle, or null when never polled / disabled. */
   polledAt: string | null;
   peers: ReplicaPeerReport[];
@@ -126,6 +134,12 @@ export function compareReplicaWatermarks(
     const localWatermark = byLocal.get(namespace);
     const peerWatermark = byPeer.get(namespace);
 
+    // A namespace present locally but absent from the peer's RESPONSE is
+    // advisory, not divergence: a namespace-restricted peer token intentionally
+    // hides namespaces it cannot see, so treating local_only as diverged would
+    // report permanent false divergence against a scoped token (review round 1).
+    // It is still reported so an operator with an unrestricted peer token can
+    // act on it; peer_only below stays divergence (the peer holds data we lack).
     if (localWatermark && !peerWatermark) {
       return {
         namespace,
@@ -137,8 +151,8 @@ export function compareReplicaWatermarks(
         peerNewestWriteAt: null,
         writeAgeDeltaMs: null,
         digestMatch: null,
-        diverged: true,
-        reasons: ["namespace_absent_on_peer"],
+        diverged: false,
+        reasons: ["namespace_absent_from_peer_response"],
       };
     }
     if (!localWatermark && peerWatermark) {
@@ -262,7 +276,14 @@ export async function fetchPeerWatermarks(
   options: FetchPeerOptions,
 ): Promise<PeerFetchOutcome> {
   const doFetch = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
-  const token = await resolveAgentAccessAuthToken(peer.token, { resolveSecretRef: options.resolveSecretRef });
+  let token: string | undefined;
+  try {
+    token = await resolveAgentAccessAuthToken(peer.token, { resolveSecretRef: options.resolveSecretRef });
+  } catch {
+    // A SecretRef token with no resolver (or a resolver failure) must degrade to
+    // a per-peer failure, never throw and abort the whole poll (review round 1).
+    return { kind: "unreachable", reason: "token_error" };
+  }
   const base = peer.url.replace(/\/+$/, "");
 
   for (let i = 0; i < HEALTH_PATHS.length; i += 1) {
@@ -291,9 +312,16 @@ export async function fetchPeerWatermarks(
     if (!body || typeof body !== "object" || !("corpus" in body) || !Array.isArray(body.corpus)) {
       return { kind: "unknown", reason: "missing_corpus" };
     }
+    // If any entry is malformed the peer's telemetry is unusable: report
+    // `unknown` rather than silently shrinking to a smaller (or empty) corpus
+    // that could read as converged or false divergence (review round 1). An
+    // empty array is a valid empty corpus and stays `ok`.
     const corpus = body.corpus
       .map(coerceCorpusWatermark)
       .filter((watermark): watermark is CorpusWatermark => watermark !== null);
+    if (corpus.length !== body.corpus.length) {
+      return { kind: "unknown", reason: "malformed_corpus" };
+    }
     return { kind: "ok", corpus };
   }
   return { kind: "unreachable", reason: "http_404" };
@@ -340,7 +368,7 @@ export interface PollReplicaPeersOptions {
 export async function pollReplicaPeers(options: PollReplicaPeersOptions): Promise<ReplicaDivergenceStatus> {
   const { config, localWatermarks } = options;
   if (!config.enabled || config.peers.length === 0) {
-    return { enabled: config.enabled, polledAt: null, peers: [] };
+    return { enabled: config.enabled, pending: false, polledAt: null, peers: [] };
   }
   const polledAt = (options.now ?? new Date()).toISOString();
   const thresholds = {
@@ -353,26 +381,31 @@ export async function pollReplicaPeers(options: PollReplicaPeersOptions): Promis
     options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_PEER_FETCHES,
     async (peer): Promise<ReplicaPeerReport> => {
       const label = redactPeerUrl(peer.url);
-      const outcome = await fetchPeerWatermarks(peer, {
-        timeoutMs: config.requestTimeoutMs,
-        resolveSecretRef: options.resolveSecretRef,
-        fetchImpl: options.fetchImpl,
-      });
-      if (outcome.kind !== "ok") {
-        return { peer: label, state: outcome.kind, polledAt, namespaces: [], divergedNamespaceCount: 0, reason: outcome.reason };
+      try {
+        const outcome = await fetchPeerWatermarks(peer, {
+          timeoutMs: config.requestTimeoutMs,
+          resolveSecretRef: options.resolveSecretRef,
+          fetchImpl: options.fetchImpl,
+        });
+        if (outcome.kind !== "ok") {
+          return { peer: label, state: outcome.kind, polledAt, namespaces: [], divergedNamespaceCount: 0, reason: outcome.reason };
+        }
+        const comparison = compareReplicaWatermarks(localWatermarks, outcome.corpus, thresholds);
+        return {
+          peer: label,
+          state: comparison.state,
+          polledAt,
+          namespaces: comparison.namespaces,
+          divergedNamespaceCount: comparison.divergedNamespaceCount,
+        };
+      } catch {
+        // Defense in depth: no per-peer error may reject the whole poll (§22).
+        return { peer: label, state: "unreachable", polledAt, namespaces: [], divergedNamespaceCount: 0, reason: "error" };
       }
-      const comparison = compareReplicaWatermarks(localWatermarks, outcome.corpus, thresholds);
-      return {
-        peer: label,
-        state: comparison.state,
-        polledAt,
-        namespaces: comparison.namespaces,
-        divergedNamespaceCount: comparison.divergedNamespaceCount,
-      };
     },
   );
 
-  const report: ReplicaDivergenceStatus = { enabled: true, polledAt, peers };
+  const report: ReplicaDivergenceStatus = { enabled: true, pending: false, polledAt, peers };
   logDivergence(options.log, report);
   return report;
 }
@@ -457,12 +490,13 @@ export class ReplicaDivergenceMonitor {
     caps?: TokenCapabilities | null;
   }): ReplicaDivergenceStatus {
     const { config } = input;
-    if (!config.enabled) return { enabled: false, polledAt: null, peers: [] };
-    if (config.peers.length === 0) return { enabled: true, polledAt: null, peers: [] };
+    if (!config.enabled) return { enabled: false, pending: false, polledAt: null, peers: [] };
+    if (config.peers.length === 0) return { enabled: true, pending: false, polledAt: null, peers: [] };
     const fresh = this.cached !== undefined && this.clock() < this.cached.expiresAt;
     if (!fresh) this.refresh(config, input.computeLocalWatermarks);
-    const base = this.cached?.report ?? { enabled: true, polledAt: null, peers: [] };
-    return filterReplicaReportByCaps(base, input.caps ?? null);
+    if (this.cached) return filterReplicaReportByCaps(this.cached.report, input.caps ?? null);
+    // Enabled with peers but no completed poll yet — distinct from "no peers".
+    return { enabled: true, pending: true, polledAt: null, peers: [] };
   }
 
   private refresh(config: ReplicaPeersConfig, computeLocalWatermarks: () => Promise<CorpusWatermark[]>): void {

@@ -123,6 +123,7 @@ test("health reports replica divergence disabled by default (no peers -> behaves
     const health = await service.health();
 
     assert.equal(health.replica.enabled, false);
+    assert.equal(health.replica.pending, false);
     assert.equal(health.replica.polledAt, null);
     assert.equal(health.replica.peers.length, 0);
   } finally {

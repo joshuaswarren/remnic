@@ -21,6 +21,7 @@ import { resolveNamespaceCapabilities,
   resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 import { CorpusWatermarkCache, computeServiceCorpusWatermarks } from "./corpus-watermark.js";
 import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
+import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import type {
   EngramAccessHealthResponse,
   EngramAccessQmdCollectionState,
@@ -1275,7 +1276,7 @@ export class EngramAccessService {
   private readonly budget: CrossNamespaceBudget;
   private readonly auditAdapter: AccessAuditAdapter | null;
   private readonly corpusWatermarkCache = new CorpusWatermarkCache();
-  private readonly replicaDivergenceMonitor = new ReplicaDivergenceMonitor();
+  private readonly replicaDivergenceMonitor: ReplicaDivergenceMonitor;
 
   /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessObserveWriteSurface: AccessObserveWriteSurface | undefined;
@@ -1338,8 +1339,13 @@ export class EngramAccessService {
   }
   private readonly extractionLivenessWarn = new ExtractionLivenessWarnThrottle();
 
-  constructor(private readonly orchestrator: Orchestrator) {
+  constructor(private readonly orchestrator: Orchestrator, options: { resolveSecretRef?: ResolveSecretRefFn | null } = {}) {
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
+    // Peer SecretRef tokens resolve at poll time through the host resolver, the
+    // same indirection as agentAccessHttp.authToken (review round 1). Absent a
+    // resolver, string/${ENV} tokens still work and a SecretRef degrades to a
+    // per-peer `unreachable` (never a throw).
+    this.replicaDivergenceMonitor = new ReplicaDivergenceMonitor({ resolveSecretRef: options.resolveSecretRef });
     const accessCaps = resolveAccessSetupCapabilities(orchestrator.config); // #1566 Cluster B
     this.budget = new CrossNamespaceBudget({
       enabled: accessCaps.recallCrossNamespaceBudget,

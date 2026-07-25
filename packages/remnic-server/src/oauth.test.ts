@@ -88,7 +88,7 @@ const serviceStub = {
       watermarkScope: "root-store",
     },
     corpus: [],
-    replica: { enabled: false, polledAt: null, peers: [] },
+    replica: { enabled: false, pending: false, polledAt: null, peers: [] },
   }),
 } satisfies Pick<EngramAccessService, "health">;
 
