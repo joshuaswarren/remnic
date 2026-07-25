@@ -5,16 +5,29 @@
  * that `summarizeExtractionLiveness` warns only when a non-empty buffer's
  * last-successful-extraction watermark is stale or absent.
  */
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { StorageManager } from "../src/storage.js";
-import { runOperatorDoctor, type OperatorToolkitOrchestrator } from "../src/operator-toolkit.js";
-import { summarizeExtractionLiveness, type ExtractionBufferSource } from "../src/extraction-liveness.js";
+import {
+  runOperatorDoctor,
+  summarizeExtractionLiveness,
+  type ExtractionBufferSource,
+  type OperatorToolkitOrchestrator,
+} from "../src/operator-toolkit.js";
 import type { PluginConfig } from "../src/types.js";
+
+const createdFixtureRoots: string[] = [];
+afterEach(async () => {
+  // Clean every temp fixture root created during a test (coderabbit review):
+  // makeFixture() must not leave global filesystem state behind.
+  for (const root of createdFixtureRoots.splice(0)) {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 async function makeFixture(
   opts: { overrides?: Record<string, unknown>; buffer?: ExtractionBufferSource } = {},
@@ -27,6 +40,7 @@ async function makeFixture(
   orchestrator: OperatorToolkitOrchestrator;
 }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-extraction-liveness-doctor-"));
+  createdFixtureRoots.push(root);
   const memoryDir = path.join(root, "memory");
   const workspaceDir = path.join(root, "workspace");
   await mkdir(memoryDir, { recursive: true });
@@ -171,6 +185,28 @@ test("summarizeExtractionLiveness: warns naming the read failure when the buffer
   assert.match(check.summary, /unreadable/);
   assert.match(check.summary, /buffer file corrupt/);
   const details = check.details as { degraded: boolean; degradedReason: string | null };
+  assert.equal(details.degraded, true);
+});
+
+test("summarizeExtractionLiveness: warns naming the watermark read failure when loadMeta throws (§22)", async () => {
+  const fixture = await makeFixture({ overrides: { extractionLiveness: { staleWindowMs: 3_600_000 } } });
+  const throwingStorage = {
+    loadMeta: async () => {
+      throw new Error("meta.json unreadable");
+    },
+  };
+  // Empty buffer: proves the meta-read failure alone drives the degradation.
+  const emptyBuffer: ExtractionBufferSource = {
+    async getBufferSnapshot() {
+      return { bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null };
+    },
+  };
+  const check = await summarizeExtractionLiveness(fixture.config, throwingStorage, emptyBuffer);
+  assert.notEqual(check.status, "ok", "an unreadable watermark is not a healthy pipeline");
+  assert.equal(check.status, "warn");
+  assert.match(check.summary, /watermark unreadable/);
+  assert.match(check.summary, /meta\.json unreadable/);
+  const details = check.details as { degraded: boolean };
   assert.equal(details.degraded, true);
 });
 

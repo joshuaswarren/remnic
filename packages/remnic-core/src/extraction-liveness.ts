@@ -20,7 +20,7 @@
  */
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 import { log } from "./logger.js";
-import type { OperatorDoctorCheck } from "./operator-toolkit.js";
+import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
 import type { MetaState, PluginConfig } from "./types.js";
 
 /** Default staleness window: 24h. A watermark older than this with a non-empty buffer is degraded. */
@@ -149,9 +149,12 @@ export function formatAgeMs(ms: number): string {
 }
 
 /**
- * Pure liveness verdict. Degraded when the feature is enabled AND either the
- * buffer read failed (a pipeline fault, §22) OR the buffer is non-empty and the
- * last-successful-extraction watermark is absent or stale.
+ * Pure liveness verdict. Degraded when the feature is enabled AND any of: the
+ * last-extraction watermark could not be READ (a storage fault, §22), the buffer
+ * read failed (a pipeline fault, §22), or the buffer is non-empty and the
+ * watermark is absent or stale. Each cause yields a DISTINCT reason so an
+ * operator can tell a meta-read failure from a buffer-read failure from a
+ * pipeline that has genuinely never extracted.
  *
  * Staleness uses a half-open freshness window (§23): an extraction is fresh
  * while its age is in `[0, staleWindowMs)`, so an age of EXACTLY `staleWindowMs`
@@ -163,21 +166,26 @@ export function evaluateExtractionLiveness(input: {
   lastExtractionAt: string | null;
   snapshot: ExtractionBufferSnapshot;
   nowMs: number;
+  metaReadFailed?: boolean;
+  metaReadError?: string;
 }): ExtractionLivenessStatus {
   const { config, lastExtractionAt, snapshot, nowMs } = input;
   const lastMs = lastExtractionAt !== null ? Date.parse(lastExtractionAt) : Number.NaN;
   const hasWatermark = Number.isFinite(lastMs);
   const stale = !hasWatermark || nowMs - lastMs >= config.staleWindowMs;
   const hasBacklog = snapshot.bufferedSessionCount > 0;
-  // An unreadable buffer is a pipeline fault, not an empty queue (§22): a
-  // storage/pipeline outage must not read as healthy just because the failed
-  // read produced a zero-backlog snapshot.
+  // A watermark or buffer that cannot be READ is a fault, not an empty queue
+  // (§22): a storage/pipeline outage must not read as healthy, and must stay
+  // distinct from a pipeline that has genuinely never extracted.
+  const metaReadFailed = input.metaReadFailed === true;
   const readFailed = snapshot.readFailed === true;
-  const degraded = config.enabled && (readFailed || (hasBacklog && stale));
+  const degraded = config.enabled && (metaReadFailed || readFailed || (hasBacklog && stale));
 
   let degradedReason: string | null = null;
   if (degraded) {
-    if (readFailed) {
+    if (metaReadFailed) {
+      degradedReason = `extraction watermark unreadable: ${input.metaReadError ?? "meta read failed"}`;
+    } else if (readFailed) {
       degradedReason = `extraction buffer unreadable: ${snapshot.readError ?? "buffer snapshot read failed"}`;
     } else {
       const watermark = hasWatermark
@@ -228,8 +236,9 @@ async function readBufferSnapshot(
 
 /**
  * Gather the liveness status from a meta store (last-extraction watermark) and
- * an optional buffer (backlog). Every failure path degrades gracefully to a
- * well-formed, non-degraded status rather than throwing.
+ * an optional buffer (backlog). A read failure on EITHER side is captured and
+ * surfaced as a DEGRADED status with a distinct reason (§22) rather than being
+ * swallowed into a healthy-looking verdict; no failure path throws.
  */
 export async function gatherExtractionLivenessStatus(input: {
   config: ExtractionLivenessConfig;
@@ -239,13 +248,18 @@ export async function gatherExtractionLivenessStatus(input: {
 }): Promise<ExtractionLivenessStatus> {
   const { config, storage, buffer, nowMs } = input;
   let lastExtractionAt: string | null = null;
+  let metaReadFailed = false;
+  let metaReadError: string | undefined;
   try {
     lastExtractionAt = (await storage.loadMeta()).lastExtractionAt ?? null;
-  } catch {
-    lastExtractionAt = null;
+  } catch (err) {
+    // A swallowed loadMeta() failure that reads as "never extracted" is the
+    // exact §22 conflation this feature exists to kill — surface it explicitly.
+    metaReadFailed = true;
+    metaReadError = err instanceof Error ? err.message : String(err);
   }
   const snapshot = await readBufferSnapshot(buffer);
-  return evaluateExtractionLiveness({ config, lastExtractionAt, snapshot, nowMs });
+  return evaluateExtractionLiveness({ config, lastExtractionAt, snapshot, nowMs, metaReadFailed, metaReadError });
 }
 
 /**
@@ -337,27 +351,44 @@ export async function summarizeExtractionLiveness(
   };
 }
 
+/** Meta fields the `remnic stats` view renders directly, beyond the liveness watermark. */
+type ExtractionStatsMeta = Pick<MetaState, "extractionCount" | "lastExtractionAt" | "lastConsolidationAt">;
+
 /**
  * Lines for `remnic stats`: extraction watermark, buffer backlog, and the
- * liveness verdict so dashboards can alert on a stalled pipeline.
+ * liveness verdict so dashboards can alert on a stalled pipeline. The meta
+ * watermark is loaded HERE (not by the caller) so a meta-read failure surfaces
+ * as an explicit DEGRADED verdict plus "unavailable" counts (§22) instead of
+ * crashing the whole `stats` command.
  */
 export async function renderExtractionLivenessStats(
-  orchestrator: ExtractionLivenessOrchestratorLike,
-  meta: Pick<MetaState, "extractionCount" | "lastExtractionAt" | "lastConsolidationAt">,
+  orchestrator: ExtractionLivenessOrchestratorLike & { storage: { loadMeta(): Promise<ExtractionStatsMeta> } },
   nowMs: number = Date.now(),
 ): Promise<string[]> {
-  const status = await gatherExtractionLivenessStatus({
+  let meta: ExtractionStatsMeta | null = null;
+  let metaReadFailed = false;
+  let metaReadError: string | undefined;
+  try {
+    meta = await orchestrator.storage.loadMeta();
+  } catch (err) {
+    metaReadFailed = true;
+    metaReadError = err instanceof Error ? err.message : String(err);
+  }
+  const status = evaluateExtractionLiveness({
     config: orchestrator.config.extractionLiveness,
-    storage: { loadMeta: async () => ({ lastExtractionAt: meta.lastExtractionAt ?? null }) },
-    buffer: orchestrator.buffer,
+    lastExtractionAt: meta?.lastExtractionAt ?? null,
+    snapshot: await readBufferSnapshot(orchestrator.buffer),
     nowMs,
+    metaReadFailed,
+    metaReadError,
   });
   const oldestAge =
     status.oldestBufferedTurnAgeMs !== null ? formatAgeMs(status.oldestBufferedTurnAgeMs) : "n/a";
+  const unavailable = metaReadFailed ? "unavailable" : "never";
   return [
-    `Extractions: ${meta.extractionCount}`,
-    `Last extraction: ${meta.lastExtractionAt ?? "never"}`,
-    `Last consolidation: ${meta.lastConsolidationAt ?? "never"}`,
+    `Extractions: ${meta?.extractionCount ?? unavailable}`,
+    `Last extraction: ${meta?.lastExtractionAt ?? unavailable}`,
+    `Last consolidation: ${meta?.lastConsolidationAt ?? unavailable}`,
     `Buffered sessions: ${status.bufferedSessionCount} (${status.pendingTurnCount} turns pending)`,
     `Oldest buffered turn age: ${oldestAge}`,
     `Extraction liveness: ${status.degraded ? `DEGRADED — ${status.degradedReason}` : "ok"}`,

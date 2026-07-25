@@ -168,6 +168,48 @@ test("evaluate: an unreadable buffer degrades with a distinct reason, even with 
   assert.equal(disabled.degraded, false, "disabled gate suppresses even a read-failure degradation");
 });
 
+test("evaluate: an unreadable watermark degrades with a distinct reason, even with an empty buffer (§22)", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: null,
+    snapshot: snapshot(),
+    nowMs: NOW,
+    metaReadFailed: true,
+    metaReadError: "EIO: meta.json unreadable",
+  });
+  assert.equal(status.degraded, true, "an unreadable watermark is a storage fault, not never-extracted");
+  assert.match(status.degradedReason ?? "", /watermark unreadable/);
+  assert.match(status.degradedReason ?? "", /EIO: meta\.json unreadable/);
+
+  // The three fault classes carry distinct reasons (meta-read vs buffer-read vs never-extracted).
+  const bufferFail = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: new Date(NOW).toISOString(),
+    snapshot: snapshot({ readFailed: true, readError: "boom" }),
+    nowMs: NOW,
+  });
+  assert.match(bufferFail.degradedReason ?? "", /buffer unreadable/);
+
+  const neverExtracted = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: null,
+    snapshot: snapshot({ bufferedSessionCount: 1, pendingTurnCount: 1 }),
+    nowMs: NOW,
+  });
+  assert.match(neverExtracted.degradedReason ?? "", /no successful extraction on record/);
+
+  // A meta-read failure takes precedence over staleness when both would degrade.
+  const metaOverStale = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: null,
+    snapshot: snapshot({ bufferedSessionCount: 3, pendingTurnCount: 9 }),
+    nowMs: NOW,
+    metaReadFailed: true,
+    metaReadError: "boom",
+  });
+  assert.match(metaOverStale.degradedReason ?? "", /watermark unreadable/);
+});
+
 // ── SmartBuffer.getBufferSnapshot ────────────────────────────────────────────
 
 test("getBufferSnapshot: empty buffer reports zeros and a null oldest", async () => {
@@ -244,6 +286,9 @@ test("throttle: warns once per staleness window and again after it elapses; rese
 test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded verdict", async () => {
   const orchestrator = {
     config: { extractionLiveness: { enabled: true, staleWindowMs: WINDOW } },
+    storage: {
+      loadMeta: async () => ({ extractionCount: 7, lastExtractionAt: ancient, lastConsolidationAt: null }),
+    },
     buffer: {
       getBufferSnapshot: async (): Promise<ExtractionBufferSnapshot> => ({
         bufferedSessionCount: 2,
@@ -252,11 +297,7 @@ test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded ve
       }),
     },
   };
-  const lines = await renderExtractionLivenessStats(
-    orchestrator,
-    { extractionCount: 7, lastExtractionAt: ancient, lastConsolidationAt: null },
-    NOW,
-  );
+  const lines = await renderExtractionLivenessStats(orchestrator, NOW);
   assert.ok(lines.includes("Extractions: 7"), "reports extraction count");
   assert.ok(lines.includes("Buffered sessions: 2 (5 turns pending)"), "reports backlog");
   assert.ok(
@@ -268,20 +309,48 @@ test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded ve
 test("renderExtractionLivenessStats: reports DEGRADED when the buffer read fails (§22)", async () => {
   const orchestrator = {
     config: { extractionLiveness: { enabled: true, staleWindowMs: WINDOW } },
+    storage: {
+      loadMeta: async () => ({
+        extractionCount: 7,
+        lastExtractionAt: new Date(NOW).toISOString(),
+        lastConsolidationAt: null,
+      }),
+    },
     buffer: {
       getBufferSnapshot: async (): Promise<ExtractionBufferSnapshot> => {
         throw new Error("buffer file corrupt");
       },
     },
   };
-  const lines = await renderExtractionLivenessStats(
-    orchestrator,
-    { extractionCount: 7, lastExtractionAt: new Date(NOW).toISOString(), lastConsolidationAt: null },
-    NOW,
-  );
+  const lines = await renderExtractionLivenessStats(orchestrator, NOW);
   const verdict = lines.find((l) => l.startsWith("Extraction liveness:"));
   assert.ok(verdict, "emits a liveness verdict line");
   assert.match(verdict, /DEGRADED/);
   assert.match(verdict, /unreadable/);
   assert.match(verdict, /buffer file corrupt/);
+});
+
+test("renderExtractionLivenessStats: reports DEGRADED + unavailable counts when the meta read fails (§22)", async () => {
+  const orchestrator = {
+    config: { extractionLiveness: { enabled: true, staleWindowMs: WINDOW } },
+    storage: {
+      loadMeta: async () => {
+        throw new Error("meta.json corrupt");
+      },
+    },
+    buffer: {
+      // Empty buffer: proves a meta-read failure degrades even with nothing buffered.
+      getBufferSnapshot: async (): Promise<ExtractionBufferSnapshot> => ({
+        bufferedSessionCount: 0,
+        pendingTurnCount: 0,
+        oldestTurnTimestamp: null,
+      }),
+    },
+  };
+  const lines = await renderExtractionLivenessStats(orchestrator, NOW);
+  assert.ok(lines.includes("Extractions: unavailable"), "meta counts read as unavailable, not 0/never");
+  const verdict = lines.find((l) => l.startsWith("Extraction liveness:"));
+  assert.match(verdict ?? "", /DEGRADED/);
+  assert.match(verdict ?? "", /watermark unreadable/);
+  assert.match(verdict ?? "", /meta\.json corrupt/);
 });

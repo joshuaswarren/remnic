@@ -482,7 +482,11 @@ test("health surfaces extraction liveness as degraded when the buffer is non-emp
     assert.equal(health.extraction.bufferedSessionCount, 3);
     assert.equal(health.extraction.pendingTurnCount, 12);
     assert.equal(health.extraction.lastExtractionAt, oldTs);
-    assert.ok((health.extraction.oldestBufferedTurnAgeMs ?? -1) >= 0, "oldest buffered turn age is computed");
+    const oldestAge = health.extraction.oldestBufferedTurnAgeMs ?? -1;
+    assert.ok(
+      oldestAge >= 10_000 && oldestAge < 60_000,
+      `oldest buffered turn age reflects the ~10s offset, not merely non-negative (got ${oldestAge}ms)`,
+    );
     assert.ok(
       health.extraction.degradedReason !== null && health.extraction.degradedReason.length > 0,
       "degraded reason is populated",
@@ -623,6 +627,36 @@ test("health reports extraction liveness degraded when the buffer read fails (§
     assert.equal(health.extraction.degraded, true, "an unreadable buffer must not report a healthy pipeline");
     assert.match(health.extraction.degradedReason ?? "", /unreadable/);
     assert.match(health.extraction.degradedReason ?? "", /buffer file corrupt/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health reports extraction liveness degraded when the watermark (meta) read fails (§22)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-liveness-metafail-"));
+  try {
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 3_600_000 } });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      // Empty buffer: proves the meta-read failure alone drives the degradation.
+      buffer: {
+        getBufferSnapshot: async () => ({ bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null }),
+      },
+      storage: {
+        loadMeta: async () => {
+          throw new Error("meta.json unreadable");
+        },
+      },
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, true, "an unreadable watermark must not report a healthy pipeline");
+    assert.match(health.extraction.degradedReason ?? "", /watermark unreadable/);
+    assert.match(health.extraction.degradedReason ?? "", /meta\.json unreadable/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

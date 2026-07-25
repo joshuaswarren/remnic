@@ -4,6 +4,7 @@ import { access, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:
 import { lintWorkspaceFiles } from "./hygiene.js";
 import { parseConfig } from "./config.js";
 import { summarizeExtractionLiveness, type ExtractionBufferSource } from "./extraction-liveness.js";
+import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import { resolvePluginEntry } from "./plugin-entry-resolver.js";
 import {
@@ -228,13 +229,11 @@ export interface OperatorSetupReport {
   verificationCommands: string[];
 }
 
-export interface OperatorDoctorCheck {
-  key: string;
-  status: "ok" | "warn" | "error";
-  summary: string;
-  remediation?: string;
-  details?: unknown;
-}
+// `OperatorDoctorCheck` moved to `./operator-doctor-types.js` so summarizers avoid
+// pulling the operator-toolkit DTS graph (PR 2155); re-exported to keep the surface stable.
+export type { OperatorDoctorCheck };
+export { summarizeExtractionLiveness };
+export type { ExtractionBufferSource };
 
 export interface OperatorConfigReviewFinding {
   key: string;

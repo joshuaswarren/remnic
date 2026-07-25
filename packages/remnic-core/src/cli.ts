@@ -3654,7 +3654,6 @@ export function registerCli(
           // Ensure QMD is probed before checking availability
           await orchestrator.qmd.probe();
 
-          const meta = await orchestrator.storage.loadMeta();
           const memories = await orchestrator.storage.readAllMemories();
           const entities = await orchestrator.storage.readEntities();
           const profile = await orchestrator.storage.readProfile();
@@ -3663,7 +3662,7 @@ export function registerCli(
           console.log(`Total memories: ${memories.length}`);
           console.log(`Total entities: ${entities.length}`);
           console.log(`Profile size: ${profile.length} chars`);
-          for (const line of await renderExtractionLivenessStats(orchestrator, meta)) console.log(line);
+          for (const line of await renderExtractionLivenessStats(orchestrator)) console.log(line);
           console.log(`QMD: ${orchestrator.qmd.isAvailable() ? "available" : "not available"}`);
           for (const line of await renderQmdBacklogStatus(orchestrator.qmd, orchestrator.config.qmdEmbeddingBacklogThreshold)) console.log(line);
 
