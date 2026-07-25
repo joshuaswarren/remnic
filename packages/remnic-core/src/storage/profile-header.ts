@@ -1,28 +1,47 @@
-const LAST_UPDATED_HEADER = /^\s*(?:\*{1,2})?Last updated:\s*.*?(?:\*{1,2})?\s*$/i;
+const LAST_UPDATED_HEADER = /^\*Last updated: (.+)\*$/;
 const PROFILE_TITLE = /^#\s+/;
+
+function isCanonicalLastUpdatedHeader(line: string): boolean {
+  const timestamp = LAST_UPDATED_HEADER.exec(line)?.[1];
+  if (!timestamp) return false;
+  const time = Date.parse(timestamp);
+  return Number.isFinite(time) && new Date(time).toISOString() === timestamp;
+}
+
+function findProfileMetadataHeaderIndexes(lines: string[], start: number): number[] {
+  const indexes: number[] = [];
+  for (let index = start; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line === "") continue;
+    if (!isCanonicalLastUpdatedHeader(line)) break;
+    indexes.push(index);
+  }
+  return indexes;
+}
 
 export function renderProfileWithLastUpdated(content: string, updatedAt: string): string {
   const lineEnding = content.includes("\r\n") ? "\r\n" : "\n";
   const lines = content.split(/\r?\n/);
   const header = `*Last updated: ${updatedAt}*`;
-  let headerWritten = false;
-  const normalized = lines.flatMap((line) => {
-    if (!LAST_UPDATED_HEADER.test(line)) return [line];
-    if (headerWritten) return [];
-    headerWritten = true;
-    return [header];
-  });
+  const titleIndex = lines.findIndex((line) => PROFILE_TITLE.test(line));
+  const metadataStart = titleIndex < 0 ? 0 : titleIndex + 1;
+  const headerIndexes = findProfileMetadataHeaderIndexes(lines, metadataStart);
 
-  if (headerWritten) return normalized.join(lineEnding);
+  if (headerIndexes.length > 0) {
+    lines[headerIndexes[0]!] = header;
+    for (let index = headerIndexes.length - 1; index > 0; index -= 1) {
+      lines.splice(headerIndexes[index]!, 1);
+    }
+    return lines.join(lineEnding);
+  }
 
-  const titleIndex = normalized.findIndex((line) => PROFILE_TITLE.test(line));
-  if (titleIndex < 0) return [header, "", ...normalized].join(lineEnding);
+  if (titleIndex < 0) return [header, "", ...lines].join(lineEnding);
 
   const insertAt = titleIndex + 1;
-  if (normalized[insertAt] === "") {
-    normalized.splice(insertAt + 1, 0, header, "");
+  if (lines[insertAt] === "") {
+    lines.splice(insertAt + 1, 0, header, "");
   } else {
-    normalized.splice(insertAt, 0, "", header, "");
+    lines.splice(insertAt, 0, "", header, "");
   }
-  return normalized.join(lineEnding);
+  return lines.join(lineEnding);
 }

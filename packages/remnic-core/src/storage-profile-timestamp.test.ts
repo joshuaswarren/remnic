@@ -73,15 +73,43 @@ test("writeProfile removes duplicate stale headers", async (t) => {
         "",
         STALE_HEADER,
         "",
-        "- Keeps decisions short.",
-        "",
         "*Last updated: 2023-01-02T03:04:05.000Z*",
+        "",
+        "- Keeps decisions short.",
         "",
       ].join("\n"));
 
       const profile = await storage.readProfile();
       assert.deepEqual(profile.match(/^\*Last updated:.*\*$/gm), [FRESH_HEADER]);
       assert.match(profile, /- Keeps decisions short\./);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile preserves code examples that mention Last updated", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "## Notes",
+        "",
+        "    Last updated: database field",
+        "",
+        "- Uses markdown code examples.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\n## Notes", `\n\n${FRESH_HEADER}\n\n## Notes`),
+      );
     });
   } finally {
     t.mock.timers.reset();
