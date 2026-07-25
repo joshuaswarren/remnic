@@ -40,7 +40,6 @@ import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { capabilityAllowsNamespace, type TokenCapabilities } from "./access-token-capabilities.js";
-import { NamespaceCatalog } from "./namespaces/catalog.js";
 import { listNamespaces } from "./namespaces/migrate.js";
 import type { PluginConfig } from "./types.js";
 
@@ -289,28 +288,24 @@ export interface CorpusNamespaceRoot {
 /**
  * Resolve the namespace set the corpus census covers, shared by the `/health`
  * builder AND the `remnic doctor` corpus check (issue #2156 finding C) so the
- * two surfaces enumerate the SAME tenants and cannot drift. Config-driven
- * enumeration is authoritative because it still works when the namespace
- * catalog is opted out or not yet populated. The PERSISTED namespace catalog
- * (read from config, so both surfaces see it identically — not just the process
- * holding a live catalog) is unioned in, covering a catalog-registered tenant
- * whose directory does not exist yet. Deduped by resolved root so a
- * namespaces-disabled / flat-root deployment reports its single shared corpus
- * once, under the default-namespace label.
+ * two surfaces enumerate the SAME tenants — and, critically, resolve each
+ * namespace's ROOT the SAME way — and cannot drift. Enumeration is purely
+ * config-driven (`listNamespaces({ config })`): it discovers the default,
+ * shared, policy, and on-disk `namespaces/<ns>` tenants and resolves every root
+ * through the namespace storage router, exactly as the live daemon's
+ * `getStorage(namespace)` does. It still works when the namespace catalog is
+ * opted out. The catalog is deliberately NOT unioned in: a catalog-registered
+ * tenant with no directory has an empty corpus (nothing to fingerprint), and
+ * trusting `catalog.storageDir` here could make the doctor scan a different root
+ * than `/health` for the same namespace (issue #2156 round-8). Deduped by
+ * resolved root so a namespaces-disabled / flat-root deployment reports its
+ * single shared corpus once, under the default-namespace label.
  */
 export async function resolveCorpusNamespaceRoots(options: {
   config: PluginConfig;
 }): Promise<CorpusNamespaceRoot[]> {
   const { config } = options;
   const configDriven = await listNamespaces({ config });
-  let catalogRecords: ReadonlyArray<{ namespace: string; storageDir: string }> = [];
-  try {
-    // Returns [] when the catalog is opted out, leaving config-driven authoritative.
-    catalogRecords = await new NamespaceCatalog(config).listNamespaces();
-  } catch {
-    // Catalog unreadable — config-driven enumeration stands alone.
-  }
-
   // Default namespace first so it wins the representative label when several
   // configured names collapse onto one root (namespaces disabled → memoryDir).
   const ordered = [
@@ -320,25 +315,11 @@ export async function resolveCorpusNamespaceRoots(options: {
   const seenNamespaces = new Set<string>();
   const seenRoots = new Set<string>();
   const roots: CorpusNamespaceRoot[] = [];
-  const add = (namespace: string, rootDir: string): void => {
-    if (seenNamespaces.has(namespace) || seenRoots.has(rootDir)) return;
-    seenNamespaces.add(namespace);
-    seenRoots.add(rootDir);
-    roots.push({ namespace, rootDir });
-  };
-  for (const entry of ordered) add(entry.namespace, entry.rootDir);
-  for (const record of catalogRecords) {
-    // Guard an empty storageDir defensively: a "" root would be scanned relative
-    // to the process CWD. (The catalog sanitizer already drops empty roots, so
-    // this is belt-and-suspenders against a partial/tampered record.)
-    if (
-      typeof record.namespace === "string" &&
-      record.namespace.length > 0 &&
-      typeof record.storageDir === "string" &&
-      record.storageDir.length > 0
-    ) {
-      add(record.namespace, record.storageDir);
-    }
+  for (const entry of ordered) {
+    if (seenNamespaces.has(entry.namespace) || seenRoots.has(entry.rootDir)) continue;
+    seenNamespaces.add(entry.namespace);
+    seenRoots.add(entry.rootDir);
+    roots.push({ namespace: entry.namespace, rootDir: entry.rootDir });
   }
   if (roots.length === 0) {
     roots.push({ namespace: config.defaultNamespace, rootDir: config.memoryDir });
