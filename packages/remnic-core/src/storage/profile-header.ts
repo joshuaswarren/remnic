@@ -1,5 +1,5 @@
-const LAST_UPDATED_PREFIX = "*Last updated:";
-const PROFILE_TITLE = /^#\s+/;
+const LAST_UPDATED_HEADER = /^\*Last updated:[^*]*\*$/;
+const PROFILE_TITLE = /^ {0,3}#\s+/;
 const MARKDOWN_HEADING = /^#{1,6}\s+/;
 const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d+[.)])\s+/;
 const UTF8_BOM = "\uFEFF";
@@ -12,7 +12,7 @@ type FenceMarker = {
 
 function isLastUpdatedHeader(line: string): boolean {
   const content = (line.startsWith(UTF8_BOM) ? line.slice(1) : line).trimEnd();
-  return content.startsWith(LAST_UPDATED_PREFIX) && content.endsWith("*");
+  return LAST_UPDATED_HEADER.test(content);
 }
 
 function isIndentedCodeLine(line: string): boolean {
@@ -185,8 +185,7 @@ function findCompleteHtmlTag(line: string): HtmlTag | null {
   return null;
 }
 function isRawHtmlBlockTerminator(line: string): boolean {
-  const tag = findCompleteHtmlTag(line.trim());
-  return tag?.isClosing === true && RAW_HTML_BLOCK_TAGS.some((name) => name === tag.name);
+  return RAW_HTML_BLOCK_TAGS.some((name) => hasRawHtmlBlockEndMarker(line, `</${name}>`));
 }
 
 function findHtmlTags(line: string): HtmlTag[] {
@@ -344,13 +343,14 @@ function findFrontmatterEnd(lines: ProfileLine[]): number {
 }
 
 function hasHtmlBlockEndMarker(line: string, endMarker: string): boolean {
+  return line.includes(endMarker);
+}
+
+function hasRawHtmlBlockEndMarker(line: string, endMarker: string): boolean {
   const markerIndex = line.indexOf(endMarker);
   if (markerIndex < 0) return false;
-  const trailingContent = line.slice(markerIndex + endMarker.length).trim();
-  return (
-    trailingContent === "" ||
-    (trailingContent.startsWith("<") && findHtmlTags(trailingContent).length > 0)
-  );
+  if (markerIndex === 0) return true;
+  return !/\s/.test(line[markerIndex - 1] ?? "");
 }
 
 function visitProfileMetadataLines(
@@ -382,7 +382,9 @@ function visitProfileMetadataLines(
       }
       if (
         openHtmlBlock.endMarker &&
-        hasHtmlBlockEndMarker(normalizedLine, openHtmlBlock.endMarker)
+        (openHtmlBlock.endMarker.startsWith("</")
+          ? hasRawHtmlBlockEndMarker(normalizedLine, openHtmlBlock.endMarker)
+          : hasHtmlBlockEndMarker(normalizedLine, openHtmlBlock.endMarker))
       ) {
         openHtmlBlock = null;
       }

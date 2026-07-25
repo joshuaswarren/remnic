@@ -76,6 +76,98 @@ test("writeProfile handles a title-only profile without a trailing newline", asy
     t.mock.timers.reset();
   }
 });
+test("writeProfile preserves compound emphasis instead of replacing it", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const compoundHeader = "*Last updated: source value* and *status: active*";
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        compoundHeader,
+        "",
+        "- Keeps compound metadata.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          compoundHeader,
+          "",
+          "- Keeps compound metadata.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile recognizes an indented profile title", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "  # Behavioral Profile",
+        "",
+        "- Keeps the title boundary.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "  # Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- Keeps the title boundary.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile recognizes raw HTML terminators with trailing text", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<pre>",
+        "Literal preformatted content.",
+        "code</pre> trailing text",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after raw HTML.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile keeps an inserted header standalone", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
