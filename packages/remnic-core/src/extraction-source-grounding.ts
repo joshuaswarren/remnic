@@ -147,7 +147,7 @@ function isAttachedNegatedAuxiliary(token: string): boolean {
 }
 
 function isNegatedAt(tokens: ReadonlyArray<string>, index: number): boolean {
-  const previousStart = Math.max(0, index - 3);
+  const previousStart = Math.max(0, index - 2);
   for (let i = previousStart; i < index; i += 1) {
     if (isNegationCue(tokens[i])) return true;
   }
@@ -225,8 +225,8 @@ function isSourceGrounded(candidate: string, source: string): boolean {
   const candidateText = normalizeForExactMatch(candidate);
   const sourceText = normalizeForExactMatch(source);
   if (candidateText.length === 0 || sourceText.length === 0) return false;
-  if (sourceText.includes(candidateText)) return true;
   if (hasContradictoryPolarity(candidateText, sourceText)) return false;
+  if (sourceText.includes(candidateText)) return true;
   return hasGroundedTokenCoverage(candidateText, sourceText);
 }
 

@@ -97,6 +97,12 @@ test("contradictory source polarity is rejected instead of passing token overlap
           confidence: 0.9,
           tags: [],
         },
+        {
+          category: "fact",
+          content: "blue",
+          confidence: 0.9,
+          tags: [],
+        },
       ],
       profileUpdates: ["Moonlight's theme color is blue."],
       entities: [],
