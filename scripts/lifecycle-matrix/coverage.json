@@ -1,5 +1,5 @@
 {
-  "$comment": "Lifecycle scenario-matrix coverage manifest (issue #1993, umbrella #1988 phase 5, decisions A + C). `lifecycleManifest` is the set of lifecycle-critical path globs that trigger the `lifecycle-matrix` CI gate (gitignore-subset syntax, repo-root-relative, forward slashes). Each glob is one of three states: `coverage` (mapped to a registered LifecycleSubject in packages/remnic-core/src/testing/subjects \u2014 a touched covered path PASSES); `grandfathered` (warn-only, shrink-only ratchet: entries may be removed but the CI gate FAILS if the list grows); or unmapped (permitted in the manifest at load time, but a touched unmapped path FAILS the gate \u2014 this is the mechanism that forces a newly-added lifecycle path to gain a subject rather than silently escaping coverage). loadCoverageManifest() validates structure (coverage/grandfathered keys must exist in lifecycleManifest, no glob is both) but does not reject unmapped globs; the gate enforces coverage only for paths a PR actually touches. See packages/remnic-core/src/testing/lifecycle-matrix.ts.",
+  "$comment": "Lifecycle scenario-matrix coverage manifest. Lifecycle-critical paths trigger the lifecycle-matrix gate. Covered paths map to registered LifecycleSubject implementations in package testing subject directories; grandfathered paths warn only and form a shrink-only ratchet; unmapped touched paths fail.",
   "lifecycleManifest": [
     "src/orchestration/**",
     "src/orchestrator.ts",
@@ -12,6 +12,7 @@
     "packages/remnic-core/src/storage.ts",
     "packages/remnic-core/src/storage/**",
     "packages/remnic-core/src/session-toggles.ts",
+    "packages/remnic-core/src/session-namespace-bindings.ts",
     "packages/remnic-core/src/memory-cache.ts",
     "packages/remnic-core/src/lifecycle.ts",
     "packages/remnic-core/src/qmd-recall-cache.ts",
@@ -121,13 +122,15 @@
     "packages/remnic-core/src/maintenance/dreams-ledger.ts",
     "packages/remnic-core/src/maintenance/projection-support.ts",
     "packages/remnic-core/src/maintenance/rebuild-memory-projection.ts",
-    "packages/remnic-core/src/orchestration/projection-rebuild-schedule.ts"
+    "packages/remnic-core/src/orchestration/projection-rebuild-schedule.ts",
+    "packages/plugin-openclaw/src/delegate-runtime.ts"
   ],
   "coverage": {
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",
     "packages/remnic-core/src/buffer.ts": "extraction-lifecycle",
     "packages/remnic-core/src/storage.ts": "extraction-lifecycle",
     "packages/remnic-core/src/session-toggles.ts": "serialized-write-chain",
+    "packages/remnic-core/src/session-namespace-bindings.ts": "openclaw-delegate-runtime",
     "packages/remnic-core/src/orchestration/extraction-run.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-persist.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-persist-promotion.ts": "extraction-lifecycle",
@@ -147,7 +150,8 @@
     "packages/remnic-core/src/recall-qos.ts": "recall-budget",
     "packages/remnic-core/src/maintenance/projection-support.ts": "memory-projection",
     "packages/remnic-core/src/maintenance/rebuild-memory-projection.ts": "memory-projection",
-    "packages/remnic-core/src/orchestration/projection-rebuild-schedule.ts": "memory-projection"
+    "packages/remnic-core/src/orchestration/projection-rebuild-schedule.ts": "memory-projection",
+    "packages/plugin-openclaw/src/delegate-runtime.ts": "openclaw-delegate-runtime"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",

@@ -39,6 +39,7 @@ import {
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const realManifestPath = join(repoRoot, "scripts", "lifecycle-matrix", "coverage.json");
 const subjectsDir = join(repoRoot, "packages", "remnic-core", "src", "testing", "subjects");
+const pluginSubjectsDir = join(repoRoot, "packages", "plugin-openclaw", "src", "testing", "subjects");
 
 function loadReal() {
   return loadCoverageManifest(JSON.parse(readFileSync(realManifestPath, "utf8")));
@@ -52,10 +53,20 @@ test("the committed coverage.json is structurally valid", () => {
 
 test("every coverage subject name is a registered LifecycleSubject", () => {
   const manifest = loadReal();
-  const registered = registeredSubjectNames(subjectsDir);
+  const registered = registeredSubjectNames([subjectsDir, pluginSubjectsDir]);
   assert.ok(registered.includes("extraction-lifecycle"), "extraction-lifecycle must be registered");
   assert.ok(registered.includes("serialized-write-chain"), "serialized-write-chain must be registered");
   assert.deepEqual(unregisteredSubjects(manifest, registered), []);
+});
+
+test("registered lifecycle subjects include OpenClaw adapter scenarios", () => {
+  const registered = registeredSubjectNames([subjectsDir, pluginSubjectsDir]);
+  assert.ok(registered.includes("openclaw-delegate-runtime"));
+});
+
+test("session namespace bindings map to the delegate lifecycle subject", () => {
+  const manifest = loadReal();
+  assert.equal(manifest.coverage["packages/remnic-core/src/session-namespace-bindings.ts"], "openclaw-delegate-runtime");
 });
 
 test("a PR touching a mapped lifecycle path passes (orchestration/turn-ingestion.ts)", () => {

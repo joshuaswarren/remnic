@@ -7,6 +7,9 @@ export interface SessionNamespaceBindingStore {
   remember(sessionKey: string, namespace: string): Promise<void>;
 }
 
+export const SESSION_NAMESPACE_BINDING_MAX_ENTRIES = 1_000;
+export const SESSION_NAMESPACE_BINDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+
 interface NamespaceBindingEntry {
   namespaces: string[];
   updatedAt: string;
@@ -41,6 +44,27 @@ function addNamespace(namespaces: string[], namespace: string): string[] {
   return [...namespaces.filter((candidate) => candidate !== normalized), normalized];
 }
 
+function pruneBindingEntries(
+  entries: Record<string, NamespaceBindingEntry>,
+  protectedKey?: string
+): Record<string, NamespaceBindingEntry> {
+  const cutoff = Date.now() - SESSION_NAMESPACE_BINDING_MAX_AGE_MS;
+  const retained = Object.entries(entries)
+    .filter(([_key, entry]) => {
+      const updatedAt = Date.parse(entry.updatedAt);
+      return Number.isFinite(updatedAt) && updatedAt >= cutoff;
+    })
+    .sort(([leftKey, left], [rightKey, right]) => {
+      if (leftKey === protectedKey) return -1;
+      if (rightKey === protectedKey) return 1;
+      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+    })
+    .slice(0, SESSION_NAMESPACE_BINDING_MAX_ENTRIES);
+  const pruned = Object.create(null) as Record<string, NamespaceBindingEntry>;
+  for (const [key, entry] of retained) pruned[key] = entry;
+  return pruned;
+}
+
 function encodeSessionKey(sessionKey: string): string {
   return encodeURIComponent(sessionKey);
 }
@@ -61,7 +85,7 @@ async function readBindingFile(filePath: string): Promise<NamespaceBindingFile> 
       if (namespaces.length === 0) continue;
       entries[key] = { namespaces, updatedAt: entry.updatedAt };
     }
-    return { version: 1, entries };
+    return { version: 1, entries: pruneBindingEntries(entries) };
   } catch {
     return emptyBindingFile();
   }
@@ -91,7 +115,14 @@ export function createInMemorySessionNamespaceBindingStore(): SessionNamespaceBi
       return [...(entries.get(sessionKey) ?? [])];
     },
     async remember(sessionKey: string, namespace: string): Promise<void> {
-      entries.set(sessionKey, addNamespace(entries.get(sessionKey) ?? [], namespace));
+      const existing = entries.get(sessionKey) ?? [];
+      entries.delete(sessionKey);
+      entries.set(sessionKey, addNamespace(existing, namespace));
+      while (entries.size > SESSION_NAMESPACE_BINDING_MAX_ENTRIES) {
+        const oldest = entries.keys().next().value;
+        if (typeof oldest !== "string") break;
+        entries.delete(oldest);
+      }
     },
   };
 }
@@ -112,6 +143,7 @@ export function createFileSessionNamespaceBindingStore(filePath: string): Sessio
           namespaces: addNamespace(existing, namespace),
           updatedAt: new Date().toISOString(),
         };
+        bindings.entries = pruneBindingEntries(bindings.entries, key);
         await writeBindingFile(filePath, bindings);
       });
     },

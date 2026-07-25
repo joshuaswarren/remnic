@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createFileSessionNamespaceBindingStore } from "./session-namespace-bindings.js";
+import {
+  createFileSessionNamespaceBindingStore,
+  createInMemorySessionNamespaceBindingStore,
+} from "./session-namespace-bindings.js";
 
 test("session namespace bindings persist prototype-named session keys", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
@@ -49,4 +52,49 @@ test("session namespace bindings persist an explicit default scope", async () =>
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("session namespace bindings prune expired and overflowed persisted history", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
+  const filePath = path.join(directory, "session-namespace-bindings.json");
+  const now = Date.now();
+  const entries = Object.fromEntries(
+    Array.from({ length: 1_000 }, (_unused, index) => [
+      `session-${index}`,
+      {
+        namespaces: [`team-${index}`],
+        updatedAt: new Date(now - index).toISOString(),
+      },
+    ])
+  ) as Record<string, { namespaces: string[]; updatedAt: string }>;
+  entries["stale-session"] = {
+    namespaces: ["team-stale"],
+    updatedAt: new Date(now - 8 * 24 * 60 * 60 * 1_000).toISOString(),
+  };
+  try {
+    await writeFile(filePath, JSON.stringify({ version: 1, entries }), "utf8");
+    const store = createFileSessionNamespaceBindingStore(filePath);
+
+    assert.deepEqual(await store.namespacesFor("stale-session"), []);
+    await store.remember("current-session", "team-current");
+
+    const persisted = JSON.parse(await readFile(filePath, "utf8")) as {
+      entries: Record<string, { namespaces: string[] }>;
+    };
+    assert.equal(Object.keys(persisted.entries).length, 1_000);
+    assert.equal("stale-session" in persisted.entries, false);
+    assert.deepEqual(await store.namespacesFor("current-session"), ["team-current"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("in-memory session namespace bindings cap inactive routing history", async () => {
+  const store = createInMemorySessionNamespaceBindingStore();
+  for (let index = 0; index <= 1_000; index += 1) {
+    await store.remember(`session-${index}`, `team-${index}`);
+  }
+
+  assert.deepEqual(await store.namespacesFor("session-0"), []);
+  assert.deepEqual(await store.namespacesFor("session-1000"), ["team-1000"]);
 });
