@@ -152,3 +152,20 @@ test("runOperatorDoctor: includes the corpus_watermark check", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("summarizeCorpusWatermark: warns (not ok) when a namespace scan fails", async () => {
+  const { root, config } = await makeFixture();
+  try {
+    // A storage factory that fails every scan (e.g. an EACCES permission
+    // regression). The namespace is omitted, so the check must WARN — not
+    // certify ok, and not conflate the failure with an empty deployment.
+    const throwingFactory = (_dir: string): never => {
+      throw new Error("simulated backend read failure");
+    };
+    const check = await summarizeCorpusWatermark(config, throwingFactory);
+    assert.equal(check.status, "warn", "a scan failure must not be reported as ok");
+    assert.match(check.summary, /unavailable|unreadable|churning/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -17,6 +17,7 @@ import path from "node:path";
 import test from "node:test";
 import { parseConfig } from "./config.js";
 import {
+  type CorpusNamespaceRoot,
   type CorpusStorage,
   type CorpusWatermark,
   CorpusWatermarkCache,
@@ -691,12 +692,16 @@ test("finding A: with a cache, /health probes never re-run the corpus scan withi
     const host = { config, getStorage: (_namespace: string) => storage };
     const cache = new CorpusWatermarkCache();
 
-    const cold = await computeServiceCorpusWatermarks(host, { cache });
-    assert.deepEqual(cold, [], "the first probe never blocks on the scan (serves nothing, refreshes async)");
+    // Two stale-while-revalidate layers warm in turn (never blocking a probe):
+    // 1st probe resolves nothing (enumeration in flight); 2nd sees the roots and
+    // kicks off the corpus scan; 3rd serves the fully-warm watermark.
+    assert.deepEqual(await computeServiceCorpusWatermarks(host, { cache }), [], "probe 1 never blocks (enumeration async)");
+    await cache.whenIdle();
+    assert.deepEqual(await computeServiceCorpusWatermarks(host, { cache }), [], "probe 2 never blocks (corpus scan async)");
     await cache.whenIdle();
     const warm = await computeServiceCorpusWatermarks(host, { cache });
-    assert.equal(warm.length, 1, "the warmed probe serves the cached watermark");
-    assert.equal(scans, 1, "the path-collector runs once across the two probes");
+    assert.equal(warm.length, 1, "the fully-warmed probe serves the cached watermark");
+    assert.equal(scans, 1, "the path-collector runs exactly once across the probes");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -754,4 +759,22 @@ test("finding round-6: a non-ENOENT stat failure in the freshness loop propagate
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("finding round-7: namespace enumeration is cached (resolved once per TTL, served stale-while-revalidate)", async () => {
+  let now = 1_000;
+  const cache = new CorpusWatermarkCache({ ttlMs: 60_000, clock: () => now });
+  let resolveCalls = 0;
+  const resolve = async (): Promise<CorpusNamespaceRoot[]> => {
+    resolveCalls += 1;
+    return [{ namespace: "global", rootDir: "/mem" }];
+  };
+  assert.equal(cache.getResolvedRoots(resolve), undefined, "cold: nothing yet, enumerating in background");
+  await cache.whenIdle();
+  assert.equal(cache.getResolvedRoots(resolve)?.length, 1, "warm: served from cache");
+  assert.equal(resolveCalls, 1, "back-to-back probes do not re-enumerate");
+  now += 60_001;
+  cache.getResolvedRoots(resolve); // stale -> background refresh
+  await cache.whenIdle();
+  assert.equal(resolveCalls, 2, "re-enumerated once the TTL elapsed");
 });

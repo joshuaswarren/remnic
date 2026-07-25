@@ -371,6 +371,8 @@ export class CorpusWatermarkCache {
   private readonly inFlight = new Map<string, Promise<void>>();
   private readonly ttlMs: number;
   private readonly clock: () => number;
+  private rootsEntry: { value: CorpusNamespaceRoot[]; expiresAt: number } | undefined;
+  private rootsInFlight: Promise<void> | undefined;
 
   constructor(options: { ttlMs?: number; clock?: () => number } = {}) {
     this.ttlMs = options.ttlMs ?? WATERMARK_CACHE_TTL_MS;
@@ -399,9 +401,35 @@ export class CorpusWatermarkCache {
     this.inFlight.set(namespace, pending);
   }
 
+
+  /**
+   * Stale-while-revalidate the resolved namespace roots (issue #2156 round-7).
+   * Namespace enumeration (config scan + persisted-catalog parse) is O(tenants)
+   * filesystem work; without this it ran on every probe ahead of the watermark
+   * cache. NEVER awaits: returns the cached/stale roots (or undefined when cold)
+   * and single-flights a background refresh.
+   */
+  getResolvedRoots(compute: () => Promise<CorpusNamespaceRoot[]>): CorpusNamespaceRoot[] | undefined {
+    const fresh = this.rootsEntry !== undefined && this.clock() < this.rootsEntry.expiresAt;
+    if (!fresh && this.rootsInFlight === undefined) {
+      this.rootsInFlight = compute()
+        .then((value) => {
+          this.rootsEntry = { value, expiresAt: this.clock() + this.ttlMs };
+        })
+        .catch(() => {
+          // Enumeration failed: keep serving any stale roots; retry next probe.
+        })
+        .finally(() => {
+          this.rootsInFlight = undefined;
+        });
+    }
+    return this.rootsEntry?.value;
+  }
   /** Await all in-flight background refreshes (shutdown / deterministic tests). */
   async whenIdle(): Promise<void> {
-    await Promise.all([...this.inFlight.values()]);
+    const pending = [...this.inFlight.values()];
+    if (this.rootsInFlight) pending.push(this.rootsInFlight);
+    await Promise.all(pending);
   }
 }
 
@@ -435,12 +463,17 @@ export async function computeServiceCorpusWatermarks(
   host: CorpusWatermarkHost,
   options: ServiceCorpusWatermarkOptions = {},
 ): Promise<CorpusWatermark[]> {
-  let roots: CorpusNamespaceRoot[];
-  try {
-    roots = await resolveCorpusNamespaceRoots({ config: host.config });
-  } catch {
-    return [];
+  let roots: CorpusNamespaceRoot[] | undefined;
+  if (options.cache) {
+    roots = options.cache.getResolvedRoots(() => resolveCorpusNamespaceRoots({ config: host.config }));
+  } else {
+    try {
+      roots = await resolveCorpusNamespaceRoots({ config: host.config });
+    } catch {
+      return [];
+    }
   }
+  if (!roots) return []; // enumeration still warming (cold) — served on a later probe
   const visible = roots.filter((root) => capabilityAllowsNamespace(options.caps, root.namespace));
   const watermarks: CorpusWatermark[] = [];
   for (const { namespace } of visible) {
