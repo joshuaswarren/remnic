@@ -1,8 +1,9 @@
-const LAST_UPDATED_HEADER = /^\*Last updated: (.+)\*$/;
+const LAST_UPDATED_PREFIX = "*Last updated: ";
 const PROFILE_TITLE = /^#\s+/;
 
 function isCanonicalLastUpdatedHeader(line: string): boolean {
-  const timestamp = LAST_UPDATED_HEADER.exec(line)?.[1];
+  if (!line.startsWith(LAST_UPDATED_PREFIX) || !line.endsWith("*")) return false;
+  const timestamp = line.slice(LAST_UPDATED_PREFIX.length, -1);
   if (!timestamp) return false;
   const time = Date.parse(timestamp);
   return Number.isFinite(time) && new Date(time).toISOString() === timestamp;
