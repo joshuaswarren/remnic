@@ -69,14 +69,18 @@ export function filterRecallCandidates(
     resolveNamespace: (path: string) => string;
     limit: number;
     pathPolicy?: GenericRecallPathPolicy;
+    memoryRoot?: string;
   },
 ): QmdSearchResult[] {
+  const pathPolicy =
+    options.pathPolicy ??
+    (options.memoryRoot === undefined ? undefined : { memoryDir: options.memoryRoot });
   const scopedByNamespace = options.namespacesEnabled
     ? candidates.filter((r) =>
         options.recallNamespaces.includes(r.namespace ?? options.resolveNamespace(r.path)),
       )
     : candidates;
   return scopedByNamespace
-    .filter((r) => !isGenericRecallExcludedPath(r.path, options.pathPolicy))
+    .filter((r) => !isGenericRecallExcludedPath(r.path, pathPolicy))
     .slice(0, Math.max(0, options.limit));
 }

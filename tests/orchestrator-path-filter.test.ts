@@ -115,6 +115,25 @@ test("filterRecallCandidates applies namespace/artifact filters before final cap
   assert.equal(filtered[0]?.path, "/tmp/memory/ns-main/facts/2.md");
 });
 
+test("filterRecallCandidates preserves legacy memoryRoot root-aware filtering", () => {
+  const candidate = {
+    docid: "/mem/facts/proj/activity/2026-07-22.md",
+    path: "/mem/facts/proj/activity/2026-07-22.md",
+    snippet: "",
+    score: 0.99,
+  };
+
+  const filtered = filterRecallCandidates([candidate], {
+    namespacesEnabled: false,
+    recallNamespaces: [],
+    resolveNamespace: () => "",
+    limit: 1,
+    memoryRoot: "/mem",
+  });
+
+  assert.deepEqual(filtered, [candidate]);
+});
+
 test("computeQmdHybridFetchLimit overscans only when artifacts are enabled", () => {
   assert.equal(computeQmdHybridFetchLimit(8, false, 5), 8);
   assert.equal(computeQmdHybridFetchLimit(8, true, 5), 48);
