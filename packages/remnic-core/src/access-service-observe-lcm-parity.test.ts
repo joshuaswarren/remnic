@@ -423,6 +423,21 @@ test("#2128: extraction force-flush rejects a session owned by another principal
   );
   assert.equal(probe.extractionForceFlushCalls.length, 0);
 });
+
+test("#2128: explicit namespace force-flush does not bind unrelated project context", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "pi-geek:explicit-scope";
+
+  await service.extractionForceFlush({
+    sessionKey,
+    namespace: "pi-geek",
+    projectTag: "Acme/Webshop",
+    authenticatedPrincipal: "pi-geek",
+  });
+
+  assert.equal(probe.orch.getCodingContextForSession(sessionKey), null);
+});
 test("#2128: aborted or expired extraction force-flush never touches a buffer", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);

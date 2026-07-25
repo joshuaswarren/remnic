@@ -904,11 +904,13 @@ export class AccessObserveWriteSurface {
         throw new Error("extraction force-flush deadline exceeded before buffer drain");
       }
 
-      await this.deps.maybeAttachCodingContext(request.sessionKey, {
-        cwd: request.cwd,
-        projectTag: request.projectTag,
-      });
-      captureSeededCodingContext();
+      if (!request.namespace?.trim()) {
+        await this.deps.maybeAttachCodingContext(request.sessionKey, {
+          cwd: request.cwd,
+          projectTag: request.projectTag,
+        });
+        captureSeededCodingContext();
+      }
       throwIfAborted(request.abortSignal, "extraction force-flush aborted");
       if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
         throw new Error("extraction force-flush deadline exceeded before buffer drain");
