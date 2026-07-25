@@ -658,32 +658,6 @@ export interface InlineExplicitCaptureProcessorOptions {
 
 const DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT = 1024;
 
-function canonicalInlineCaptureDedupeInput(
-  input: ExplicitCaptureInput,
-  namespace: string,
-) {
-  const tags = Array.from(
-    new Set(
-      (input.tags ?? [])
-        .map((tag) => asTrimmed(tag))
-        .filter((tag): tag is string => tag !== undefined),
-    ),
-  ).sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
-  return {
-    content: normalizeCaptureContent(input.content),
-    category: asTrimmed(input.category) ?? "fact",
-    confidence: input.confidence ?? 0.95,
-    namespace,
-    tags,
-    entityRef: asTrimmed(input.entityRef) ?? "",
-    sourceConnector: asTrimmed(input.sourceConnector) ?? "",
-    ttl: asTrimmed(input.ttl) ?? "",
-    sourceReason: asTrimmed(input.sourceReason) ?? "",
-  };
-}
-
-
-
 export class InlineExplicitCaptureProcessor {
   private readonly observedKeys = new Set<string>();
   private readonly observedKeyOrder: string[] = [];
@@ -716,15 +690,21 @@ export class InlineExplicitCaptureProcessor {
         effectiveNamespace = asTrimmed(input.namespace);
       }
     }
-    const canonicalInput = canonicalInlineCaptureDedupeInput(
-      input,
-      effectiveNamespace ?? this.orchestrator.config.defaultNamespace,
-    );
-    const noteHash = createHash("sha256").update(JSON.stringify(canonicalInput)).digest("hex");
+    const namespaceScope =
+      effectiveNamespace ?? this.orchestrator.config.defaultNamespace;
+    const sourceConnectorScope = asTrimmed(input.sourceConnector) ?? "";
+    const noteHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          content: normalizeCaptureContent(input.content),
+          category: asTrimmed(input.category) ?? "fact",
+        }),
+      )
+      .digest("hex");
     const deliveryKeys = (dedupeKeys ?? [])
       .map((key) => asTrimmed(key))
       .filter((key): key is string => key !== undefined);
-    const identityPrefix = `${canonicalInput.namespace}\u0000${canonicalInput.sourceConnector}\u0000`;
+    const identityPrefix = `${namespaceScope}\u0000${sourceConnectorScope}\u0000`;
     const fallbackKey = `${identityPrefix}fallback:inline-memory-note:${noteHash}`;
     return [
       ...deliveryKeys.map(
