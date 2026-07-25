@@ -487,24 +487,29 @@ test("inline capture processor keeps canonical fallback identity across delivery
   assert.equal(probe.envelopes.length, 1);
 });
 
-test("inline capture processor queues complete notes that omit content", async () => {
-  const probe = createInlineCaptureProcessorProbe();
-  const result = await probe.processor.process({
-    captureMode: "hybrid",
-    content: [
-      "Keep this visible text.",
-      "<memory_note>",
-      "category: fact",
-      "</memory_note>",
-    ].join("\n"),
-  });
+test("inline capture processor queues complete notes with empty content", async () => {
+  for (const noteFields of [
+    ["category: fact"],
+    ["content: |", "category: fact"],
+  ]) {
+    const probe = createInlineCaptureProcessorProbe();
+    const result = await probe.processor.process({
+      captureMode: "hybrid",
+      content: [
+        "Keep this visible text.",
+        "<memory_note>",
+        ...noteFields,
+        "</memory_note>",
+      ].join("\n"),
+    });
 
-  assert.equal(result.content, "Keep this visible text.");
-  assert.equal(result.processed, 1);
-  assert.equal(result.queued, 1);
-  assert.equal(probe.envelopes.length, 1);
-  assert.match(probe.envelopes[0]?.content ?? "", /\[empty explicit capture\]/);
-  assert.equal(probe.lifecycleEvents[0]?.eventType, "explicit_capture_queued");
+    assert.equal(result.content, "Keep this visible text.");
+    assert.equal(result.processed, 1);
+    assert.equal(result.queued, 1);
+    assert.equal(probe.envelopes.length, 1);
+    assert.match(probe.envelopes[0]?.content ?? "", /\[empty explicit capture\]/);
+    assert.equal(probe.lifecycleEvents[0]?.eventType, "explicit_capture_queued");
+  }
 });
 
 test("inline capture processor deduplicates tombstone review captures after restart", async () => {
