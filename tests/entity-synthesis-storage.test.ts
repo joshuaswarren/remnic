@@ -19,6 +19,7 @@ import {
   writeMaybeEncryptedFile,
 } from "../packages/remnic-core/src/secure-store/secure-fs.js";
 import { rebuildMemoryProjection } from "../packages/remnic-core/src/maintenance/rebuild-memory-projection.js";
+import { rewriteProjectedMemoryEntityReference } from "../packages/remnic-core/src/memory-projection-mutations.js";
 import {
   getMemoryProjectionPath,
   readProjectedEntityMentions,
@@ -26,6 +27,14 @@ import {
 } from "../packages/remnic-core/src/memory-projection-store.js";
 import { openBetterSqlite3 } from "../packages/remnic-core/src/runtime/better-sqlite.js";
 import { computeSupersessionKey } from "../packages/remnic-core/src/temporal-supersession.js";
+import type { MemoryFile } from "../packages/remnic-core/src/types.js";
+
+test("projection memory rewrites reject an empty memory id", async () => {
+  await assert.rejects(
+    () => rewriteProjectedMemoryEntityReference("/tmp/remnic-projection-test", "", "legacy", "canonical"),
+    /memoryId must not be empty/,
+  );
+});
 
 test("writeEntity appends timeline evidence and marks older synthesis as stale", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-synthesis-storage-"));
@@ -575,6 +584,81 @@ test("ensureDirectories resumes a secure Entity migration after its canonical wr
   }
 });
 
+test("setSecureStoreKey resumes entity migration after a locked startup", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-unlock-migration-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const canonical = normalizeEntityName(name, type);
+    const legacyCanonical = "project-";
+    const key = Buffer.alloc(32, 0x70);
+    const seed = new StorageManager(dir);
+    seed.setSecureStoreKey(key, true);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
+    const entityContent = await seed.readEntity(canonical);
+    const legacyPath = path.join(dir, "entities", `${legacyCanonical}.md`);
+    const canonicalPath = path.join(dir, "entities", `${canonical}.md`);
+    await writeMaybeEncryptedFile(legacyPath, entityContent, key, {}, dir);
+    await rm(canonicalPath);
+    await seed.writeMemory("fact", "Legacy entity reference.", { entityRef: legacyCanonical });
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+
+    const upgraded = new StorageManager(dir);
+    upgraded.setSecureStoreRequired(true);
+    await upgraded.ensureDirectories();
+    await assert.rejects(readFile(canonicalPath), { code: "ENOENT" });
+
+    upgraded.setSecureStoreKey(key, false);
+    let migratedEntity = false;
+    let migratedMemories: MemoryFile[] = [];
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        migratedEntity = isEncryptedFile(await readFile(canonicalPath));
+      } catch {
+        migratedEntity = false;
+      }
+      migratedMemories = await upgraded.readAllMemories();
+      if (migratedEntity && migratedMemories.some((memory) => memory.frontmatter.entityRef === canonical)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(migratedEntity, true);
+    assert.deepEqual(migratedMemories.map((memory) => memory.frontmatter.entityRef), [canonical]);
+    await upgraded.ensureDirectories();
+    await assert.rejects(readFile(legacyPath), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories migrates legacy filenames after display-name normalization changes", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-mutable-display-name-"));
+  try {
+    const type = "project";
+    const originalName = "Café";
+    const currentName = "Cafe\u0301";
+    const canonical = normalizeEntityName(currentName, type);
+    const legacy = normalizeLegacyEntityName(originalName, type);
+    const seed = new StorageManager(dir);
+    assert.notEqual(canonical, legacy);
+    await seed.writeEntity(originalName, type, ["Original display name."]);
+    const originalPath = path.join(dir, "entities", `${canonical}.md`);
+    const legacyPath = path.join(dir, "entities", `${legacy}.md`);
+    await rename(originalPath, legacyPath);
+    const changedContent = (await readFile(legacyPath, "utf-8")).replace(`# ${originalName}`, `# ${currentName}`);
+    await writeFile(legacyPath, changedContent, "utf-8");
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+
+    const upgraded = new StorageManager(dir);
+    await upgraded.ensureDirectories();
+
+    assert.match(await upgraded.readEntity(canonical), new RegExp(`# ${currentName}`));
+    await assert.rejects(readFile(legacyPath), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories rejects duplicate canonical targets before migration", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-duplicate-canonical-target-"));
   try {
@@ -612,6 +696,32 @@ test("ensureDirectories rejects duplicate canonical targets before migration", a
       /# Cafe\u0301/,
     );
     await assert.rejects(() => readFile(path.join(dir, "entities", `${canonical}.md`), "utf-8"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories removes identical legacy content when canonical entity already exists", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-identical-canonical-target-"));
+  try {
+    const name = "Café";
+    const type = "project";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Canonical entity fact."]);
+    const canonical = normalizeEntityName(name, type);
+    const legacy = normalizeLegacyEntityName(name, type);
+    const canonicalPath = path.join(dir, "entities", `${canonical}.md`);
+    const legacyPath = path.join(dir, "entities", `${legacy}.md`);
+    const originalContent = await readFile(canonicalPath, "utf-8");
+    await writeFile(legacyPath, originalContent);
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
+
+    const migrating = new StorageManager(dir);
+    await migrating.ensureDirectories();
+
+    assert.equal(await readFile(canonicalPath, "utf-8"), originalContent);
+    await assert.rejects(() => readFile(legacyPath), { code: "ENOENT" });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

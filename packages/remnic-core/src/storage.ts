@@ -2110,6 +2110,16 @@ export class StorageManager {
     // Same rationale for the behavior-signals dedup key cache (issue #1909):
     // drop it on a key change so a re-encrypted/re-decrypted ledger is reloaded.
     this.behaviorSignalsKeyCache = null;
+    if (key !== null && this.directoriesInitialized) {
+      void this.migrateLegacyEntityCanonicalIds().catch((error: unknown) => {
+        log.warn(
+          `entity canonical-id migration after secure-store unlock failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    }
+
   }
 
   private getEntityCacheSecureStoreKey(): string {
@@ -3555,6 +3565,8 @@ export class StorageManager {
    */
   private userAliases: Record<string, string> = {};
   private entityCanonicalIdMigrationComplete = false;
+  private entityCanonicalIdMigrationInFlight: Promise<void> | null = null;
+  private directoriesInitialized = false;
 
   normalizeEntityName(raw: string, type: string): string {
     return this.entityStore.normalizeEntityName(raw, type);
@@ -3603,15 +3615,36 @@ export class StorageManager {
       // No aliases file — that's fine, use built-in only
       log.debug("no config/aliases.json found — using built-in aliases only");
     }
+
   }
 
-  private async migrateLegacyEntityCanonicalIds(): Promise<void> {
+  private migrateLegacyEntityCanonicalIds(): Promise<void> {
+    if (this.entityCanonicalIdMigrationComplete) return Promise.resolve();
+    if (this._secureStoreRequired && !this.isSecureStoreUnlocked()) return Promise.resolve();
+    if (this.entityCanonicalIdMigrationInFlight) return this.entityCanonicalIdMigrationInFlight;
+    const migration = this.runLegacyEntityCanonicalIdMigration();
+    this.entityCanonicalIdMigrationInFlight = migration;
+    void migration.then(
+      () => {
+        if (this.entityCanonicalIdMigrationInFlight === migration) {
+          this.entityCanonicalIdMigrationInFlight = null;
+        }
+      },
+      () => {
+        if (this.entityCanonicalIdMigrationInFlight === migration) {
+          this.entityCanonicalIdMigrationInFlight = null;
+        }
+      },
+    );
+    return migration;
+  }
+
+  private async runLegacyEntityCanonicalIdMigration(): Promise<void> {
     if (this.entityCanonicalIdMigrationComplete) return;
     if (this._secureStoreRequired && !this.isSecureStoreUnlocked()) return;
     await migrateLegacyEntityCanonicalIds({
       stateDir: this.stateDir,
       entitiesDir: this.entitiesDir,
-      entityAliases: this.userAliases,
       normalizeEntityName: this.normalizeEntityName.bind(this),
       resolveEntityFilePath: this.resolveEntityFilePath.bind(this),
       readStorageSecureFile: this.readStorageSecureFile.bind(this),
@@ -3672,6 +3705,7 @@ export class StorageManager {
     if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === 0) {
       this.bumpMemoryCorpusVersion();
     }
+    this.directoriesInitialized = true;
   }
 
   /**

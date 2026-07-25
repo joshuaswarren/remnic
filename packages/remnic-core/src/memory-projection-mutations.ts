@@ -25,6 +25,10 @@ async function rewriteProjectedEntityReferenceRows(
   entries: ReadonlyArray<readonly [string, string]>,
   memoryId?: string,
 ): Promise<void> {
+  if (memoryId !== undefined && memoryId.length === 0) {
+    throw new Error("Projection memoryId must not be empty.");
+  }
+  const scopedMemory = memoryId !== undefined;
   const validEntries = entries.filter(
     ([previousEntityRef, nextEntityRef]) =>
       previousEntityRef.length > 0 && nextEntityRef.length > 0 && previousEntityRef !== nextEntityRef,
@@ -41,12 +45,12 @@ async function rewriteProjectedEntityReferenceRows(
       db = openBetterSqlite3(projectionPath, { fileMustExist: true });
       db.pragma(`busy_timeout = ${PROJECTION_WRITE_BUSY_TIMEOUT_MS}`);
       const updateCurrent = db.prepare(
-        memoryId
+        scopedMemory
           ? "UPDATE memory_current SET entity_ref = ? WHERE memory_id = ? AND entity_ref = ?"
           : "UPDATE memory_current SET entity_ref = ? WHERE entity_ref = ?",
       );
       const updateMentions = db.prepare(
-        memoryId
+        scopedMemory
           ? `
             UPDATE memory_entity_mentions
             SET entity_ref = ?
@@ -60,7 +64,7 @@ async function rewriteProjectedEntityReferenceRows(
       );
       const rewrite = db.transaction(() => {
         for (const [previousEntityRef, nextEntityRef] of validEntries) {
-          const params = memoryId
+          const params = scopedMemory
             ? [nextEntityRef, memoryId, previousEntityRef]
             : [nextEntityRef, previousEntityRef];
           updateCurrent.run(...params);

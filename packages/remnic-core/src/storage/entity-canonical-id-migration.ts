@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { access, lstat, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { normalizeLegacyEntityName } from "../entity-id-normalization.js";
 import { computeSupersessionKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { EntityFile, MemoryFile } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -27,7 +26,6 @@ type EntityCanonicalIdMigrationState = z.infer<typeof EntityCanonicalIdMigration
 export interface EntityCanonicalIdMigrationDependencies {
   stateDir: string;
   entitiesDir: string;
-  entityAliases: Readonly<Record<string, string>>;
   normalizeEntityName(raw: string, type: string): string;
   resolveEntityFilePath(id: string): string | null;
   readStorageSecureFile(filePath: string): Promise<string>;
@@ -142,13 +140,18 @@ async function discoverMappings(deps: EntityCanonicalIdMigrationDependencies): P
     const legacyPath = deps.resolveEntityFilePath(legacyId);
     if (legacyPath === null) continue;
     const entity = deps.parseEntityFile(await deps.readStorageSecureFile(legacyPath));
-    const previousCanonicalId = normalizeLegacyEntityName(entity.name, entity.type, deps.entityAliases);
     const canonicalId = deps.normalizeEntityName(entity.name, entity.type);
-    if (legacyId !== previousCanonicalId || previousCanonicalId === canonicalId) continue;
+    if (legacyId === canonicalId) continue;
     const canonicalPath = deps.resolveEntityFilePath(canonicalId);
     if (canonicalPath === null) continue;
     if (await fileExists(canonicalPath)) {
-      throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
+      const [legacyContent, canonicalContent] = await Promise.all([
+        deps.readStorageSecureFile(legacyPath),
+        deps.readStorageSecureFile(canonicalPath),
+      ]);
+      if (legacyContent !== canonicalContent) {
+        throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
+      }
     }
     const previousOwner = canonicalOwners.get(canonicalId);
     if (previousOwner !== undefined && previousOwner !== legacyId) {
@@ -214,6 +217,7 @@ async function rewriteReferences(
 function rewriteTombstoneLine(
   line: string,
   mappings: Readonly<Record<string, string>>,
+  normalizedMappings: ReadonlyMap<string, string>,
 ): string {
   let parsed: unknown;
   try {
@@ -234,12 +238,11 @@ function rewriteTombstoneLine(
   }
   if (typeof tombstone.supersessionKey === "string") {
     const separator = tombstone.supersessionKey.indexOf("::");
-    const normalizedLegacyId = separator < 0 ? "" : tombstone.supersessionKey.slice(0, separator);
-    const mapping = Object.entries(mappings).find(
-      ([legacyId]) => normalizeSupersessionKey(legacyId) === normalizedLegacyId,
-    );
-    if (mapping) {
-      const canonicalKey = computeSupersessionKey(mapping[1], tombstone.supersessionKey.slice(separator + 2));
+    if (separator < 0) return changed ? JSON.stringify(tombstone) : line;
+    const normalizedLegacyId = normalizeSupersessionKey(tombstone.supersessionKey.slice(0, separator));
+    const canonicalId = normalizedMappings.get(normalizedLegacyId);
+    if (canonicalId) {
+      const canonicalKey = computeSupersessionKey(canonicalId, tombstone.supersessionKey.slice(separator + 2));
       if (canonicalKey) {
         tombstone.supersessionKey = canonicalKey;
         changed = true;
@@ -255,6 +258,13 @@ async function rewriteTombstoneReferences(
   refreshLock: () => Promise<boolean>
 ): Promise<void> {
   const tombstonePath = path.join(deps.stateDir, "tombstones.jsonl");
+  const normalizedMappings = new Map<string, string>();
+  for (const [legacyId, canonicalId] of Object.entries(mappings)) {
+    const normalizedLegacyId = normalizeSupersessionKey(legacyId);
+    if (normalizedLegacyId && !normalizedMappings.has(normalizedLegacyId)) {
+      normalizedMappings.set(normalizedLegacyId, canonicalId);
+    }
+  }
 
   await withHeldFileLock(
     path.join(deps.stateDir, "tombstones.lock"),
@@ -271,7 +281,7 @@ async function rewriteTombstoneReferences(
       const rewritten = original
         .split("\n")
         .map((line) => {
-          const next = rewriteTombstoneLine(line, mappings);
+          const next = rewriteTombstoneLine(line, mappings, normalizedMappings);
           changed ||= next !== line;
           return next;
         })
