@@ -17,6 +17,7 @@ import {
   type EngramAccessMemoryResponse,
   type EngramAccessWriteResponse,
 } from "./access-service.js";
+import { maybeHandleLifecycleFlush, type LifecycleFlushHttpDeps } from "./access-http-lifecycle-flush.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
@@ -1668,43 +1669,9 @@ export class EngramAccessHttpServer {
       this.respondJson(res, 200, response);
       return;
     }
-
-    if (
-      req.method === "POST" &&
-      (pathname === "/engram/v1/lcm/compaction/flush" || pathname === "/remnic/v1/lcm/compaction/flush")
-    ) {
-      this.enforceTokenOp("lcm_compaction_flush"); // boundary dispatch (issue #1525)
-      const body = await this.readValidatedBody(req, "lcmCompactionFlush");
-      await lcm.handleLcmCompactionFlushHttp({
-        body, service: this.service,
-        response: res, ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
-        recordWriteRateLimitHit: () => this.recordWriteRateLimitHit(req),
-        resolveNamespace: (namespace) => this.resolveNamespace(req, namespace), defaultNamespace: this.service.configRef?.defaultNamespace,
-        resolveRequestPrincipal: () => this.resolveRequestPrincipal(req), respondJson: this.respondJson.bind(this),
-      });
-      return;
-    }
-
-    if (
-      req.method === "POST" &&
-      (pathname === "/engram/v1/extraction/flush" || pathname === "/remnic/v1/extraction/flush")
-    ) {
-      this.enforceTokenOp("extraction_force_flush");
-      const body = await this.readValidatedBody(req, "extractionForceFlush");
-      this.ensureWriteRateLimitAvailable(req);
-      const response = await this.service.extractionForceFlush({
-        sessionKey: body.sessionKey,
-        namespace: this.resolveNamespace(req, body.namespace),
-        cwd: body.cwd,
-        projectTag: body.projectTag,
-        deadlineMs: body.deadlineMs,
-        authenticatedPrincipal: this.resolveRequestPrincipal(req),
-        abortSignal,
-      });
-      this.recordWriteRateLimitHit(req);
-      this.respondJson(res, 200, response);
-      return;
-    }
+    if (await maybeHandleLifecycleFlush(
+      this.lifecycleFlushDeps(req, res), req.method, pathname, abortSignal,
+    )) return;
 
     if (
       req.method === "POST" &&
@@ -3654,7 +3621,19 @@ export class EngramAccessHttpServer {
     if (raw === "false") return false;
     throw new EngramAccessInputError(`${name} header must be one of: true, false`);
   }
-
+  private lifecycleFlushDeps(req: IncomingMessage, res: ServerResponse): LifecycleFlushHttpDeps {
+    return {
+      service: this.service,
+      enforceTokenOp: (op) => this.enforceTokenOp(op),
+      readLcmCompactionFlush: () => this.readValidatedBody(req, "lcmCompactionFlush"),
+      readExtractionForceFlush: () => this.readValidatedBody(req, "extractionForceFlush"),
+      ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
+      resolveNamespace: (namespace) => this.resolveNamespace(req, namespace),
+      resolveRequestPrincipal: () => this.resolveRequestPrincipal(req),
+      recordWriteRateLimitHit: () => this.recordWriteRateLimitHit(req),
+      respondJson: (payload) => this.respondJson(res, 200, payload),
+    };
+  }
   private async readValidatedBody<S extends SchemaName>(
     req: IncomingMessage,
     schemaName: S,

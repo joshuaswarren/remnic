@@ -127,7 +127,7 @@ import { WorkspaceOpsCoordinator } from "./orchestration/workspace-ops.js";
 import { NamespaceReadFanoutCoordinator } from "./orchestration/namespace-read-fanout.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { RecallEntryCoordinator } from "./orchestration/recall-entry.js";
-import { SessionContextCoordinator } from "./orchestration/session-context.js";
+import { SessionContextCoordinator, type SessionFlushOptions } from "./orchestration/session-context.js";
 import { drainRecallWrites, trackRecallWrite } from "./orchestration/recall-background-writes.js";
 import { XrayCaptureQueue } from "./orchestration/xray-capture-queue.js";
 import {
@@ -2928,14 +2928,7 @@ export class Orchestrator {
 
   async flushSession(
     sessionKey: string,
-    options: {
-      reason: string;
-      abortSignal?: AbortSignal;
-      bufferKey?: string;
-      extractionDeadlineMs?: number;
-      writeNamespaceOverride?: string;
-      principalOverride?: string;
-    },
+    options: SessionFlushOptions,
   ): Promise<void> {
     return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
       selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),

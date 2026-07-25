@@ -294,7 +294,6 @@ import { AccessIdentityContinuitySurface } from "./access-identity-continuity-su
 import { selfDeps } from "./orchestration/self-deps.js";
 
 import { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
-import { throwIfAborted } from "./abort-error.js";
 // Re-exported so existing `import { … } from "./access-service.js"` callers keep
 // working after these classes moved to ./access-errors (issue #1888).
 export { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
@@ -4406,51 +4405,7 @@ export class EngramAccessService {
   async extractionForceFlush(
     request: EngramAccessExtractionForceFlushRequest,
   ): Promise<EngramAccessExtractionForceFlushResponse> {
-    if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
-      throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
-    }
-    if (
-      request.deadlineMs !== undefined &&
-      (!Number.isFinite(request.deadlineMs) || request.deadlineMs < 0)
-    ) {
-      throw new EngramAccessInputError("deadlineMs must be a finite non-negative number");
-    }
-    throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-    if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-      throw new Error("extraction force-flush deadline exceeded before scope resolution");
-    }
-
-    const scope = await this.resolveMemoryScopePlan(request);
-    throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-    if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-      throw new Error("extraction force-flush deadline exceeded before buffer drain");
-    }
-
-    await this.maybeAttachCodingContext(request.sessionKey, {
-      cwd: request.cwd,
-      projectTag: request.projectTag,
-    });
-    await this.orchestrator.flushSession(request.sessionKey, {
-      reason: "access_force_flush",
-      bufferKey: request.sessionKey,
-      abortSignal: request.abortSignal,
-      extractionDeadlineMs: request.deadlineMs,
-      writeNamespaceOverride:
-        resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true
-          ? scope.writeNamespace
-          : undefined,
-      principalOverride:
-        typeof scope.principal === "string" && scope.principal.length > 0
-          ? scope.principal
-          : undefined,
-    });
-
-    return {
-      flushed: true,
-      sessionKey: request.sessionKey,
-      namespace: this.legacyResponseNamespaceForScope(scope),
-      effectiveNamespace: scope.writeNamespace,
-    };
+    return this.accessObserveWriteSurface.extractionForceFlush(request);
   }
 
   async lcmCompactionRecord(
