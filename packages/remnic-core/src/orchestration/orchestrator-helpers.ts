@@ -619,6 +619,9 @@ export function isMeetingRecordPath(filePath: string): boolean {
 const ACTIVITY_DIGEST_TOPLEVEL = /^activity[\\/]\d{4}-\d{2}-\d{2}\.md$/i;
 /** The digest FILE shape anywhere in a path (root-unaware best-effort). */
 const ACTIVITY_DIGEST_ANYWHERE = /(?:^|[\\/])activity[\\/]\d{4}-\d{2}-\d{2}\.md$/i;
+/** Archive files are ineligible only at a storage root, never under a fact category. */
+const ARCHIVE_TOPLEVEL = /^archive(?:[\\/]|$)/i;
+const NAMESPACED_ARCHIVE_TOPLEVEL = /^namespaces[\\/][^\\/]+[\\/]archive(?:[\\/]|$)/i;
 
 /**
  * Activity day-digests live at `<memoryRoot>/activity/<YYYY-MM-DD>.md` — a
@@ -640,8 +643,21 @@ export function isActivityDigestPath(filePath: string, memoryRoot?: string): boo
 }
 
 /**
+ * Archive files at a memory root are administrative history, not generic recall.
+ * A namespace's `archive/` is likewise top-level for that namespace, while
+ * ordinary paths that merely contain an `archive` segment remain recallable.
+ */
+export function isTopLevelArchivePath(filePath: string, memoryRoot?: string): boolean {
+  const relative =
+    memoryRoot !== undefined && memoryRoot.length > 0
+      ? path.relative(memoryRoot, path.resolve(memoryRoot, filePath))
+      : filePath;
+  return ARCHIVE_TOPLEVEL.test(relative) || NAMESPACED_ARCHIVE_TOPLEVEL.test(relative);
+}
+
+/**
  * Paths that dedicated surfaces own and generic recall must never inject:
- * artifacts, activity digests (issue #1899), and meeting records (issue #1900).
+ * artifacts, activity digests, top-level archive files, and meeting records.
  * One predicate shared by every recall filter site so the exclusion cannot drift.
  * Explicit search paths (memory_search, activity search) do not apply this
  * filter, so those surfaces still read them.
@@ -650,6 +666,7 @@ export function isGenericRecallExcludedPath(filePath: string, memoryRoot?: strin
   return (
     isArtifactMemoryPath(filePath) ||
     isActivityDigestPath(filePath, memoryRoot) ||
+    isTopLevelArchivePath(filePath, memoryRoot) ||
     isMeetingRecordPath(filePath)
   );
 }
@@ -668,7 +685,7 @@ export function filterRecallCandidates(
     recallNamespaces: string[];
     resolveNamespace: (path: string) => string;
     limit: number;
-    /** Memory root for top-level activity-digest detection. */
+    /** Memory root for top-level dedicated-path detection. */
     memoryRoot?: string;
   },
 ): QmdSearchResult[] {
