@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  filterRecallCandidates,
   isArtifactMemoryPath,
   isMeetingRecordPath,
-  isGenericRecallExcludedPath,
 } from "../orchestration/orchestrator-helpers.js";
+import {
+  filterRecallCandidates,
+  isGenericRecallExcludedPath,
+} from "../orchestration/generic-recall-paths.js";
 import type { QmdSearchResult } from "../types.js";
 
 // Regression for issue #1900: meeting records live inside the QMD collection

@@ -498,7 +498,7 @@ test("recall aborts while waiting on the init gate", async () => {
   }
 });
 
-test("cold fallback abort stops before archive scanning", async () => {
+test("cold fallback abort stops before its query-aware step", async () => {
   const orchestrator = await makeOrchestrator("engram-cold-fallback-abort-", {
     qmdColdTierEnabled: true,
     qmdEnabled: true,
@@ -506,17 +506,17 @@ test("cold fallback abort stops before archive scanning", async () => {
   const callerAbortController = new AbortController();
   callerAbortController.abort();
 
-  let archiveReads = 0;
+  let queryAwareFallbackCalls = 0;
   (orchestrator as any).qmd = { isAvailable: () => true };
   (orchestrator as any).fetchQmdMemoryResultsWithArtifactTopUp = async () => [];
-  (orchestrator as any).readArchivedMemoriesForNamespaces = async () => {
-    archiveReads += 1;
+  (orchestrator as any).searchQueryAwareFallback = async () => {
+    queryAwareFallbackCalls += 1;
     return [];
   };
 
   await assert.rejects(
     (orchestrator as any).applyColdFallbackPipeline({
-      prompt: "archive abort test",
+      prompt: "fallback abort test",
       recallNamespaces: ["default"],
       recallResultLimit: 5,
       recallMode: "minimal",
@@ -524,7 +524,7 @@ test("cold fallback abort stops before archive scanning", async () => {
     }),
     (err: unknown) => err instanceof Error && err.name === "AbortError",
   );
-  assert.equal(archiveReads, 0);
+  assert.equal(queryAwareFallbackCalls, 0);
 });
 
 test("recallInternal aborts while phase-one preamble promises are still pending", async () => {
@@ -1106,26 +1106,26 @@ test("recallInternal keeps qmd safety reads deadline-bound when qmd settles duri
   assert.equal(typeof observedSafetyDeadlines[0], "number");
 });
 
-test("cold fallback deadline stops before cold QMD and archive scanning", async () => {
+test("cold fallback deadline stops before cold QMD and the query-aware fallback", async () => {
   const orchestrator = await makeOrchestrator("engram-cold-fallback-deadline-", {
     qmdColdTierEnabled: true,
     qmdEnabled: true,
   });
 
   let coldQmdReads = 0;
-  let archiveReads = 0;
+  let queryAwareFallbackCalls = 0;
   (orchestrator as any).qmd = { isAvailable: () => true };
   (orchestrator as any).fetchQmdMemoryResultsWithArtifactTopUp = async () => {
     coldQmdReads += 1;
     return [];
   };
-  (orchestrator as any).readArchivedMemoriesForNamespaces = async () => {
-    archiveReads += 1;
+  (orchestrator as any).searchQueryAwareFallback = async () => {
+    queryAwareFallbackCalls += 1;
     return [];
   };
 
   const results = await (orchestrator as any).applyColdFallbackPipeline({
-    prompt: "archive deadline test",
+    prompt: "fallback deadline test",
     recallNamespaces: ["default"],
     recallResultLimit: 5,
     recallMode: "minimal",
@@ -1134,7 +1134,7 @@ test("cold fallback deadline stops before cold QMD and archive scanning", async 
 
   assert.deepEqual(results, []);
   assert.equal(coldQmdReads, 0);
-  assert.equal(archiveReads, 0);
+  assert.equal(queryAwareFallbackCalls, 0);
 });
 
 test("cold fallback resolves QMD cold collection-prefixed result paths", async () => {
@@ -1157,7 +1157,7 @@ test("cold fallback resolves QMD cold collection-prefixed result paths", async (
     .join("/");
   const coldCollectionPath = `openclaw-engram-cold/${coldRelativePath}`;
 
-  let archiveReads = 0;
+  let queryAwareFallbackCalls = 0;
   (orchestrator as any).qmd = { isAvailable: () => true };
   (orchestrator as any).fetchQmdMemoryResultsWithArtifactTopUp = async () => [
     {
@@ -1167,8 +1167,8 @@ test("cold fallback resolves QMD cold collection-prefixed result paths", async (
       score: 0.91,
     },
   ];
-  (orchestrator as any).readArchivedMemoriesForNamespaces = async () => {
-    archiveReads += 1;
+  (orchestrator as any).searchQueryAwareFallback = async () => {
+    queryAwareFallbackCalls += 1;
     return [];
   };
 
@@ -1179,7 +1179,7 @@ test("cold fallback resolves QMD cold collection-prefixed result paths", async (
     recallMode: "minimal",
   });
 
-  assert.equal(archiveReads, 0);
+  assert.equal(queryAwareFallbackCalls, 0);
   assert.equal(results.length, 1);
   assert.equal(results[0].docid, hotMemory.frontmatter.id);
   assert.equal(results[0].path, coldCollectionPath);

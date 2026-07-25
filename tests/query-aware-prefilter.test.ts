@@ -810,7 +810,7 @@ test("resolvePromptTagPrefilterAsync fails open when the tag index is corrupt", 
   assert.equal(result.paths, null);
 });
 
-test("qmd-unavailable recall sends archived-only query-aware matches to cold fallback", async () => {
+test("qmd-unavailable recall never injects archive-only query-aware matches", async () => {
   const orchestrator = await makeOrchestrator("engram-query-aware-archive-only-", {
     qmdEnabled: false,
     embeddingFallbackEnabled: false,
@@ -830,9 +830,11 @@ test("qmd-unavailable recall sends archived-only query-aware matches to cold fal
   );
   await storage.archiveMemory(archivedMemory);
 
+  const archived = await storage.readArchivedMemories();
+  assert.ok(archived.some((memory: { frontmatter: { id: string } }) => memory.frontmatter.id === archivedId));
   const corpus = await Promise.all([
     storage.readAllMemories(),
-    (orchestrator as any).readArchivedMemoriesForNamespaces(["default"]),
+    storage.readArchivedMemories(),
   ]);
   await indexMemoriesBatch(
     orchestrator.config.memoryDir,
@@ -848,55 +850,8 @@ test("qmd-unavailable recall sends archived-only query-aware matches to cold fal
     "user:test:query-aware-archive-only",
   );
 
-  assert.match(context, /infra ops archived incident summary/i);
+  assert.doesNotMatch(context, /infra ops archived incident summary/i);
   assert.doesNotMatch(context, /recent unrelated launch note/i);
-});
-
-test("archive-scan cold fallback fills budget after excluding artifact paths", async () => {
-  const orchestrator = await makeOrchestrator("engram-query-aware-archive-artifacts-", {
-    qmdEnabled: false,
-    embeddingFallbackEnabled: false,
-  });
-  const storage = (orchestrator as any).storage;
-
-  await storage.writeArtifact("archived infra ops artifact one", {
-    tags: ["infra/ops"],
-    confidence: 0.9,
-    artifactType: "fact",
-  });
-  await storage.writeArtifact("archived infra ops artifact two", {
-    tags: ["infra/ops"],
-    confidence: 0.9,
-    artifactType: "fact",
-  });
-  const { id: archivedMemoryId } = await storage.writeMemory("fact", "archived infra ops memory result", {
-    tags: ["infra/ops"],
-    confidence: 0.9,
-  });
-
-  for (const memory of await storage.readAllMemories()) {
-    await storage.archiveMemory(memory);
-  }
-
-  const archivedMemories = await (orchestrator as any).readArchivedMemoriesForNamespaces(["default"]);
-  await indexMemoriesBatch(
-    orchestrator.config.memoryDir,
-    archivedMemories.map((memory: any) => ({
-      path: memory.path,
-      createdAt: memory.frontmatter.created,
-      tags: memory.frontmatter.tags ?? [],
-    })),
-  );
-
-  const results = await (orchestrator as any).searchLongTermArchiveFallback(
-    "What happened with infra ops?",
-    ["default"],
-    1,
-  );
-
-  assert.equal(results.length, 1);
-  assert.match(results[0]?.path ?? "", new RegExp(archivedMemoryId));
-  assert.doesNotMatch(results[0]?.path ?? "", /artifacts[\\/]/i);
 });
 
 test("recent-scan fallback preserves artifact isolation when query-aware indexing is inactive", async () => {

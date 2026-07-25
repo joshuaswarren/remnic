@@ -10,8 +10,8 @@ import {
 } from "../src/orchestrator.ts";
 import {
   isActivityDigestPath,
-  isGenericRecallExcludedPath,
 } from "../packages/remnic-core/src/orchestration/orchestrator-helpers.ts";
+import { isGenericRecallExcludedPath } from "../packages/remnic-core/src/orchestration/generic-recall-paths.ts";
 import type { MemoryFile } from "@remnic/core";
 
 test("isArtifactMemoryPath matches artifact directory paths", () => {
@@ -34,11 +34,53 @@ test("isActivityDigestPath matches only the digest file shape", () => {
   assert.equal(isActivityDigestPath("/tmp/memory/my-activity-note.md"), false);
 });
 
-test("isGenericRecallExcludedPath covers artifacts and activity digests only", () => {
+test("isGenericRecallExcludedPath covers artifacts, activity digests, and top-level archive content", () => {
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/artifacts/2026-02-21/a.md"), true);
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/activity/2026-07-22.md"), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/archive/2026-07-22/a.md", { memoryDir: "/mem" }), true);
+  assert.equal(isGenericRecallExcludedPath("archive/2026-07-22/a.md", { memoryDir: "/mem" }), true);
+  assert.equal(
+    isGenericRecallExcludedPath("/mem/namespaces/team/archive/2026-07-22/a.md", { memoryDir: "/mem" }),
+    true,
+  );
   assert.equal(isGenericRecallExcludedPath("/data/activity/remnic/facts/a.md"), false);
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/facts/a.md"), false);
+  assert.equal(
+    isGenericRecallExcludedPath("openclaw-engram/archive/2026-07-22/a.md", {
+      memoryDir: "/mem",
+      qmdCollection: "openclaw-engram",
+    }),
+    true,
+  );
+  assert.equal(
+    isGenericRecallExcludedPath("openclaw-engram/namespaces/team/archive/2026-07-22/a.md", {
+      memoryDir: "/mem",
+      qmdCollection: "openclaw-engram",
+    }),
+    true,
+  );
+});
+
+test("isGenericRecallExcludedPath normalizes QMD archive URIs", () => {
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "qmd://openclaw-engram/archive/2026-07-22/a.md",
+      { memoryDir: "/mem", qmdCollection: "openclaw-engram" },
+      "qmd",
+    ),
+    true,
+  );
+});
+
+test("isGenericRecallExcludedPath decodes percent-encoded QMD collections", () => {
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "qmd://team%20memory/archive/2026-07-22/a.md",
+      { memoryDir: "/mem", qmdCollection: "team memory" },
+      "qmd",
+    ),
+    true,
+  );
 });
 
 test("isActivityDigestPath is root-aware: only the top-level digest is excluded", () => {
@@ -54,12 +96,117 @@ test("isActivityDigestPath is root-aware: only the top-level digest is excluded"
   assert.equal(isActivityDigestPath("/data/activity/remnic/activity/2026-07-22.md", "/data/activity/remnic"), true);
 });
 
-test("isGenericRecallExcludedPath root-aware keeps nested activity-named facts recallable", () => {
+test("isGenericRecallExcludedPath root-aware keeps nested activity and archive-named facts recallable", () => {
   const root = "/mem";
-  assert.equal(isGenericRecallExcludedPath("/mem/artifacts/2026-02-21/a.md", root), true);
-  assert.equal(isGenericRecallExcludedPath("/mem/activity/2026-07-22.md", root), true);
-  assert.equal(isGenericRecallExcludedPath("/mem/facts/proj/activity/2026-07-22.md", root), false);
-  assert.equal(isGenericRecallExcludedPath("/mem/facts/a.md", root), false);
+  const policy = { memoryDir: root };
+  assert.equal(isGenericRecallExcludedPath("/mem/artifacts/2026-02-21/a.md", policy), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/activity/2026-07-22.md", policy), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/facts/proj/activity/2026-07-22.md", policy), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/facts/proj/archive/2026-07-22.md", policy), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/archive/facts/a.md", policy), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/team/facts/archive/a.md", policy), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/facts/a.md", policy), false);
+});
+
+test("category-named QMD collections preserve filesystem paths and exclude qualified archives", () => {
+  const policy = { memoryDir: "/mem", qmdCollection: "facts" };
+  assert.equal(
+    isGenericRecallExcludedPath("/mem/facts/archive/2026-07-22/a.md", policy),
+    false,
+  );
+  assert.equal(
+    isGenericRecallExcludedPath("facts/archive/2026-07-22/a.md", policy, "qmd"),
+    true,
+  );
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "facts/archive/2026-07-22/a.md",
+      { memoryDir: "/mem", qmdColdCollection: "facts" },
+      "qmd",
+    ),
+    true,
+  );
+});
+
+test("reserved collection names do not hide archive roots", () => {
+  assert.equal(
+    isGenericRecallExcludedPath("/mem/archive/2026-07-22/a.md", {
+      memoryDir: "/mem",
+      qmdCollection: "archive",
+    }),
+    true,
+  );
+  assert.equal(
+    isGenericRecallExcludedPath("/mem/namespaces/team/archive/2026-07-22/a.md", {
+      memoryDir: "/mem",
+      qmdCollection: "namespaces",
+    }),
+    true,
+  );
+});
+
+test("QMD source tags disambiguate reserved collection prefixes", () => {
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "archive/facts/a.md",
+      { qmdCollection: "archive" },
+      "qmd",
+    ),
+    false,
+  );
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "namespaces/namespaces/team/archive/2026-07-22/a.md",
+      { qmdCollection: "namespaces" },
+      "qmd",
+    ),
+    true,
+  );
+});
+
+test("archive path policy canonicalizes dot segments before classification", () => {
+  assert.equal(isGenericRecallExcludedPath("./archive/2026-07-22/a.md"), true);
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "facts/../archive/2026-07-22/a.md",
+      { qmdCollection: "facts" },
+      "qmd",
+    ),
+    true,
+  );
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "archive/../namespaces/team/archive/2026-07-22/a.md",
+      { qmdCollection: "archive" },
+      "qmd",
+    ),
+    true,
+  );
+});
+
+test("filterRecallCandidates marks collection-qualified paths as QMD results", () => {
+  const ordinary = {
+    docid: "archive/facts/a.md",
+    path: "archive/facts/a.md",
+    snippet: "",
+    score: 0.99,
+  };
+  const archived = {
+    docid: "archive/archive/2026-07-22/a.md",
+    path: "archive/archive/2026-07-22/a.md",
+    snippet: "",
+    score: 0.98,
+  };
+
+  const filtered = filterRecallCandidates([ordinary, archived], {
+    namespacesEnabled: false,
+    recallNamespaces: [],
+    resolveNamespace: () => "",
+    limit: 2,
+    pathPolicy: { qmdCollection: "archive" },
+  });
+
+  assert.deepEqual(filtered, [ordinary]);
 });
 
 test("filterRecallCandidates applies namespace/artifact filters before final cap", () => {
@@ -81,18 +228,44 @@ test("filterRecallCandidates applies namespace/artifact filters before final cap
   assert.equal(filtered[0]?.path, "/tmp/memory/ns-main/facts/2.md");
 });
 
+test("filterRecallCandidates preserves legacy memoryRoot root-aware filtering", () => {
+  const candidate = {
+    docid: "/mem/facts/proj/activity/2026-07-22.md",
+    path: "/mem/facts/proj/activity/2026-07-22.md",
+    snippet: "",
+    score: 0.99,
+  };
+
+  const filtered = filterRecallCandidates([candidate], {
+    namespacesEnabled: false,
+    recallNamespaces: [],
+    resolveNamespace: () => "",
+    limit: 1,
+    memoryRoot: "/mem",
+  });
+
+  assert.deepEqual(filtered, [candidate]);
+});
+
 test("computeQmdHybridFetchLimit overscans only when artifacts are enabled", () => {
   assert.equal(computeQmdHybridFetchLimit(8, false, 5), 8);
   assert.equal(computeQmdHybridFetchLimit(8, true, 5), 48);
   assert.equal(computeQmdHybridFetchLimit(0, true, 5), 0);
 });
 
-test("artifact filtering is applied before QMD cap", () => {
+test("generic path filtering is applied before QMD cap", () => {
   const qmdCandidates = [
-    { docid: "/tmp/memory/artifacts/2026-02-21/a.md", path: "/tmp/memory/artifacts/2026-02-21/a.md", snippet: "", score: 1.0 },
-    { docid: "/tmp/memory/artifacts/2026-02-21/b.md", path: "/tmp/memory/artifacts/2026-02-21/b.md", snippet: "", score: 0.99 },
-    { docid: "/tmp/memory/facts/3.md", path: "/tmp/memory/facts/3.md", snippet: "", score: 0.98 },
-    { docid: "/tmp/memory/facts/4.md", path: "/tmp/memory/facts/4.md", snippet: "", score: 0.97 },
+    { docid: "/tmp/memory/archive/2026-02-21/a.md", path: "/tmp/memory/archive/2026-02-21/a.md", snippet: "", score: 1.0 },
+    {
+      docid: "openclaw-engram/archive/2026-02-21/qualified.md",
+      path: "openclaw-engram/archive/2026-02-21/qualified.md",
+      snippet: "",
+      score: 1.0,
+    },
+    { docid: "/tmp/memory/artifacts/2026-02-21/a.md", path: "/tmp/memory/artifacts/2026-02-21/a.md", snippet: "", score: 0.99 },
+    { docid: "/tmp/memory/artifacts/2026-02-21/b.md", path: "/tmp/memory/artifacts/2026-02-21/b.md", snippet: "", score: 0.98 },
+    { docid: "/tmp/memory/facts/3.md", path: "/tmp/memory/facts/3.md", snippet: "", score: 0.97 },
+    { docid: "/tmp/memory/facts/4.md", path: "/tmp/memory/facts/4.md", snippet: "", score: 0.96 },
   ];
 
   const filtered = filterRecallCandidates(qmdCandidates, {
@@ -100,6 +273,7 @@ test("artifact filtering is applied before QMD cap", () => {
     recallNamespaces: [],
     resolveNamespace: () => "",
     limit: 2,
+    pathPolicy: { memoryDir: "/tmp/memory", qmdCollection: "openclaw-engram" },
   });
 
   assert.deepEqual(

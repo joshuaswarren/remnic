@@ -641,21 +641,6 @@ export function isActivityDigestPath(filePath: string, memoryRoot?: string): boo
   return ACTIVITY_DIGEST_ANYWHERE.test(filePath);
 }
 
-/**
- * Paths that dedicated surfaces own and generic recall must never inject:
- * artifacts, activity digests (issue #1899), and meeting records (issue #1900).
- * One predicate shared by every recall filter site so the exclusion cannot drift.
- * Explicit search paths (memory_search, activity search) do not apply this
- * filter, so those surfaces still read them.
- */
-export function isGenericRecallExcludedPath(filePath: string, memoryRoot?: string): boolean {
-  return (
-    isArtifactMemoryPath(filePath) ||
-    isActivityDigestPath(filePath, memoryRoot) ||
-    isMeetingRecordPath(filePath)
-  );
-}
-
 export function buildCompressionGuidelinesMarkdown(
   events: MemoryActionEvent[],
   generatedAtIso: string = new Date().toISOString(),
@@ -663,26 +648,6 @@ export function buildCompressionGuidelinesMarkdown(
   return buildCompressionGuidelinesMarkdownV2(events, generatedAtIso);
 }
 
-export function filterRecallCandidates(
-  candidates: QmdSearchResult[],
-  options: {
-    namespacesEnabled: boolean;
-    recallNamespaces: string[];
-    resolveNamespace: (path: string) => string;
-    limit: number;
-    /** Memory root for top-level activity-digest detection. */
-    memoryRoot?: string;
-  },
-): QmdSearchResult[] {
-  const scopedByNamespace = options.namespacesEnabled
-    ? candidates.filter((r) =>
-        options.recallNamespaces.includes(r.namespace ?? options.resolveNamespace(r.path)),
-      )
-    : candidates;
-  return scopedByNamespace
-    .filter((r) => !isGenericRecallExcludedPath(r.path, options.memoryRoot))
-    .slice(0, Math.max(0, options.limit));
-}
 
 export function applyQueryAwareCandidateFilter(
   candidates: QmdSearchResult[],
