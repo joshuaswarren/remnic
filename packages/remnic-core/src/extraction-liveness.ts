@@ -85,6 +85,14 @@ export interface ExtractionLivenessStatus {
   oldestBufferedTurnAgeMs: number | null;
   degraded: boolean;
   degradedReason: string | null;
+  /**
+   * Scope of the last-extraction watermark: `root-store` today (read from the
+   * daemon's default/root store only), `aggregate` once it is resolved across
+   * every namespace store (#2159). A monitor can alert on
+   * `watermarkScope !== "aggregate"` while namespaces are enabled instead of
+   * trusting a number that may be wrong in either direction.
+   */
+  watermarkScope: "root-store" | "aggregate";
 }
 
 interface ExtractionLivenessStorageLike {
@@ -182,6 +190,7 @@ export function evaluateExtractionLiveness(input: {
   nowMs: number;
   metaReadFailed?: boolean;
   metaReadError?: string;
+  watermarkScope?: "root-store" | "aggregate";
 }): ExtractionLivenessStatus {
   const { config, lastExtractionAt, snapshot, nowMs } = input;
   const lastMs = lastExtractionAt !== null ? Date.parse(lastExtractionAt) : Number.NaN;
@@ -221,6 +230,7 @@ export function evaluateExtractionLiveness(input: {
     oldestBufferedTurnAgeMs: ageMsFrom(snapshot.oldestTurnTimestamp, nowMs),
     degraded,
     degradedReason,
+    watermarkScope: input.watermarkScope ?? "root-store",
   };
 }
 
@@ -276,7 +286,17 @@ export async function gatherExtractionLivenessStatus(input: {
     metaReadError = err instanceof Error ? err.message : String(err);
   }
   const snapshot = await readBufferSnapshot(buffer);
-  return evaluateExtractionLiveness({ config, lastExtractionAt, snapshot, nowMs, metaReadFailed, metaReadError });
+  return evaluateExtractionLiveness({
+    config,
+    lastExtractionAt,
+    snapshot,
+    nowMs,
+    metaReadFailed,
+    metaReadError,
+    // Today the watermark comes from the root store only; #2159 flips this to
+    // "aggregate" when the resolver reads across every namespace store.
+    watermarkScope: "root-store",
+  });
 }
 
 /**
@@ -348,7 +368,11 @@ export async function summarizeExtractionLiveness(
     buffer,
     nowMs,
   });
-  const scopeNote = " Daemon-global (not namespace-scoped).";
+  const scopeNote =
+    ` Watermark scope: ${status.watermarkScope}` +
+    (status.watermarkScope === "root-store"
+      ? " (default-namespace only; multi-namespace aggregation tracked in #2159)."
+      : ".");
   const summary =
     (status.degraded
       ? `Extraction pipeline degraded: ${status.degradedReason}.`
@@ -408,6 +432,7 @@ export async function renderExtractionLivenessStats(
     `Last consolidation: ${meta?.lastConsolidationAt ?? unavailable}`,
     `Buffered sessions: ${status.bufferedSessionCount} (${status.pendingTurnCount} turns pending)`,
     `Oldest buffered turn age: ${oldestAge}`,
+    `Extraction watermark scope: ${status.watermarkScope}`,
     `Extraction liveness: ${status.degraded ? `DEGRADED — ${status.degradedReason}` : "ok"}`,
   ];
 }

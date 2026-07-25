@@ -284,6 +284,24 @@ test("getBufferSnapshot: empty entries are not counted as sessions", async () =>
   assert.equal(snap.pendingTurnCount, 1);
 });
 
+test("evaluate: emits watermarkScope, defaulting to root-store and honoring an explicit scope", () => {
+  const rootScoped = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: null,
+    snapshot: snapshot(),
+    nowMs: NOW,
+  });
+  assert.equal(rootScoped.watermarkScope, "root-store", "defaults to root-store today (#2159)");
+  const aggregate = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: null,
+    snapshot: snapshot(),
+    nowMs: NOW,
+    watermarkScope: "aggregate",
+  });
+  assert.equal(aggregate.watermarkScope, "aggregate", "threads an explicit scope for #2159");
+});
+
 // ── ExtractionLivenessWarnThrottle ───────────────────────────────────────────
 
 test("throttle: warns once per staleness window and again after it elapses; resets on recovery", () => {
@@ -294,6 +312,7 @@ test("throttle: warns once per staleness window and again after it elapses; rese
     oldestBufferedTurnAgeMs: null,
     degraded: true,
     degradedReason: "stalled",
+    watermarkScope: "root-store",
   };
   const healthy: ExtractionLivenessStatus = { ...degraded, degraded: false, degradedReason: null };
   const t = new ExtractionLivenessWarnThrottle();
@@ -324,6 +343,7 @@ test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded ve
   const lines = await renderExtractionLivenessStats(orchestrator, NOW);
   assert.ok(lines.includes("Extractions: 7"), "reports extraction count");
   assert.ok(lines.includes("Buffered sessions: 2 (5 turns pending)"), "reports backlog");
+  assert.ok(lines.includes("Extraction watermark scope: root-store"), "reports the watermark scope");
   assert.ok(
     lines.some((l) => l.startsWith("Extraction liveness: DEGRADED")),
     "reports a degraded verdict when the watermark is stale",
