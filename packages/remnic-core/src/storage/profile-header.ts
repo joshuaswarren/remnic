@@ -3,6 +3,7 @@ const PROFILE_TITLE = /^ {0,3}#\s+/;
 const MARKDOWN_HEADING = /^#{1,6}\s+/;
 const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d+[.)])\s+/;
 const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
+const MARKDOWN_BLOCK_QUOTE = /^>/;
 const UTF8_BOM = "\uFEFF";
 
 type FenceMarker = {
@@ -453,6 +454,7 @@ function isMetadataBoundary(line: string): boolean {
     MARKDOWN_HEADING.test(line) ||
     MARKDOWN_LIST_ITEM.test(line) ||
     MARKDOWN_THEMATIC_BREAK.test(line) ||
+    MARKDOWN_BLOCK_QUOTE.test(line) ||
     isLastUpdatedHeader(line) ||
     getFenceMarker(line) !== null ||
     isRawHtmlBlockTerminator(line)
@@ -476,7 +478,8 @@ function isStandaloneMetadataLine(
     index === 0 || index === frontmatterEnd + 1 || previousMetadataBoundary;
   const endsBlock = index === lines.length - 1 || nextMetadataBoundary;
   const compactHeaderAfterTitle = isProfileTitleLine(lines, index - 1, previousWithoutBom);
-  return startsBlock && (endsBlock || compactHeaderAfterTitle);
+  const compactHeaderAfterHeader = isLastUpdatedHeader(previousWithoutBom);
+  return startsBlock && (endsBlock || compactHeaderAfterTitle || compactHeaderAfterHeader);
 }
 
 function findProfileHeaderIndexes(lines: ProfileLine[]): number[] {
