@@ -1427,7 +1427,7 @@ ${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? "- rule
 - moment: a significant milestone
 - skill: a demonstrated capability
 - procedure: an explicit reusable workflow with ordered procedureSteps
-- reasoning_trace: an explicitly narrated solution path with reasoningTrace
+- reasoning_trace: Stored solution chains — an explicitly narrated solution path with reasoningTrace. Use {"category": "reasoning_trace", "reasoningTrace": {"steps": [...], "finalAnswer": "..."}} only when the conversation provides the chain.
 
 Rules:
 - Extract only new information stated or clearly established in the conversation.
