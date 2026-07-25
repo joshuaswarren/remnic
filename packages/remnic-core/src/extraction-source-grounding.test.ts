@@ -84,7 +84,7 @@ function assertGroundedResult(result: ExtractionResult): void {
     result.profileUpdates,
     ["The user corrected Moonlight's theme color to green."],
   );
-  assert.deepEqual(result.questions, [MODEL_RESULT.questions[0]]);
+  assert.deepEqual(result.questions, []);
 }
 
 test("contradictory source polarity is rejected instead of passing token overlap", () => {
@@ -174,6 +174,64 @@ test("local extraction drops unsupported facts, profile updates, and questions b
   const result = await engine.extract([OBSERVED_TURN, CONTEXT_ONLY_TURN]);
 
   assertGroundedResult(result);
+});
+
+test("extraction uses context-only turns to resolve asserted target references", async () => {
+  const engine = fixtureEngine({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+  });
+  Object.assign(engine, {
+    localLlm: {
+      async chatCompletion() {
+        return {
+          content: JSON.stringify({
+            facts: [
+              {
+                category: "fact",
+                content: "The database uses PostgreSQL.",
+                confidence: 0.9,
+                tags: [],
+              },
+              {
+                category: "fact",
+                content: "The user prefers dark mode in all editors.",
+                confidence: 0.9,
+                tags: [],
+              },
+            ],
+            profileUpdates: [],
+            entities: [],
+            questions: [],
+          }),
+        };
+      },
+    },
+    modelRegistry: {
+      calculateContextSizes: () => ({
+        maxInputChars: 8_000,
+        maxOutputTokens: 1_000,
+        description: "fixture",
+      }),
+    },
+  });
+
+  const result = await engine.extract([
+    {
+      role: "user",
+      content: "Should the database use PostgreSQL?",
+      timestamp: "2026-07-25T12:00:00.000Z",
+      extractionContextOnly: true,
+    },
+    {
+      role: "user",
+      content: "Yes, use that.",
+      timestamp: "2026-07-25T12:00:01.000Z",
+    },
+  ]);
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["The database uses PostgreSQL."]);
 });
 
 test("source grounding can be disabled for legacy extraction behavior", async () => {
@@ -450,6 +508,11 @@ test("grounding matches normalized entity identifiers", () => {
           type: "company",
           facts: ["Acme Corp uses PostgreSQL."],
         },
+        {
+          name: "art",
+          type: "project",
+          facts: ["Cart is shipped."],
+        },
       ],
       relationships: [
         {
@@ -458,9 +521,10 @@ test("grounding matches normalized entity identifiers", () => {
           label: "uses",
         },
       ],
+
       questions: [],
     },
-    "Acme Corp uses PostgreSQL.",
+    "Acme Corp uses PostgreSQL. Cart is shipped.",
   );
 
   assert.deepEqual(result.entities.map((entity) => entity.name), ["acme-corp"]);
@@ -471,6 +535,122 @@ test("grounding matches normalized entity identifiers", () => {
       label: "uses",
     },
   ]);
+});
+
+test("grounding does not treat questions or hypotheticals as factual evidence", () => {
+  const questionResult = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "Alice is the CEO at Acme.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: ["Alice is the CEO at Acme."],
+      entities: [],
+      questions: [{ question: "Is Alice the CEO at Acme?", context: "", priority: 0.5 }],
+    },
+    "Is Alice the CEO at Acme?",
+    "Is Alice the CEO at Acme?",
+  );
+  assert.deepEqual(questionResult.facts, []);
+  assert.deepEqual(questionResult.profileUpdates, []);
+  assert.deepEqual(questionResult.questions, [
+    { question: "Is Alice the CEO at Acme?", context: "", priority: 0.5 },
+  ]);
+
+  const answeredResult = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{ question: "Does Alice work at Acme?", context: "", priority: 0.5 }],
+    },
+    "Alice works at Acme.",
+  );
+  assert.deepEqual(answeredResult.questions, []);
+
+  const hypotheticalResult = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "Alice is the CEO at Acme.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "If Alice were the CEO at Acme, we could proceed.",
+  );
+  assert.deepEqual(hypotheticalResult.facts, []);
+});
+
+test("grounding preserves exact dotted identifiers", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "The package is com.example.platform.billing.service.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "The package is com.example.platform.billing.service.",
+  );
+
+  assert.equal(result.facts.length, 1);
+});
+
+test("grounding joins context questions to asserted target turns", () => {
+  const source = "Should the database use PostgreSQL? Yes, use that.";
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "The database uses PostgreSQL.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    source,
+    "Yes, use that.",
+  );
+  assert.equal(result.facts.length, 1);
+
+  const unsupported = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "The database uses PostgreSQL.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    source,
+    "I do not know.",
+  );
+  assert.deepEqual(unsupported.facts, []);
 });
 
 test("proactive extraction grounds before delinearization", async () => {
