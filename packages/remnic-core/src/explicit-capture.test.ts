@@ -67,12 +67,20 @@ function createInlineCaptureProcessorProbe(
   const maintenanceReasons: string[] = [];
   const requestedNamespaces: Array<string | undefined> = [];
   const memories: StoredMemory[] = [];
+  const blockedIndexArguments: Array<{
+    content: string;
+    category: string;
+    sourceConnector?: string;
+  }> = [];
   let readAllCalls = 0;
   let nextId = 1;
   const storage = {
     readAllMemories: async () => {
       readAllCalls += 1;
-      return memories;
+      return memories.map((memory) => ({
+        ...memory,
+        frontmatter: { ...memory.frontmatter },
+      }));
     },
     writeSealedMemory: async (envelope: SealedMemoryEnvelope) => {
       const id = `memory-${nextId++}`;
@@ -99,8 +107,14 @@ function createInlineCaptureProcessorProbe(
       : {}),
     ...(options.tombstoneBlockedCaptureIndexHit !== undefined
       ? {
-          hasTombstoneBlockedExplicitCapture: async () =>
-            options.tombstoneBlockedCaptureIndexHit === true,
+          hasTombstoneBlockedExplicitCapture: async (
+            content: string,
+            category: string,
+            sourceConnector?: string,
+          ) => {
+            blockedIndexArguments.push({ content, category, sourceConnector });
+            return options.tombstoneBlockedCaptureIndexHit === true;
+          },
         }
       : {}),
     appendMemoryLifecycleEvents: async (events: Array<{ eventType: string; actor: string }>) => {
@@ -138,6 +152,7 @@ function createInlineCaptureProcessorProbe(
     maintenanceReasons,
     memories,
     readAllCalls: () => readAllCalls,
+    blockedIndexArguments: () => blockedIndexArguments,
     orchestrator,
     processor: new InlineExplicitCaptureProcessor(orchestrator, { sourceConnector: "openclaw" }),
     requestedNamespaces,
@@ -198,6 +213,8 @@ test("inline capture processor serializes overlapping duplicate deliveries", asy
 
   assert.equal(first.processed + second.processed, 1);
   assert.equal(first.accepted + second.accepted, 1);
+  assert.equal(first.duplicates + second.duplicates, 1);
+  assert.equal(first.queued + second.queued, 0);
   assert.equal(probe.envelopes.length, 1);
   assert.equal(probe.lifecycleEvents.length, 1);
   assert.deepEqual(probe.maintenanceReasons, ["inline.memory_note"]);
@@ -743,6 +760,11 @@ test("explicit capture keeps the authoritative fact-hash miss fast path", async 
   const result = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
 
   assert.equal(result.duplicateOf, undefined);
+  assert.deepEqual(probe.blockedIndexArguments(), [{
+    content: candidate.content,
+    category: "fact",
+    sourceConnector: undefined,
+  }]);
   assert.equal(probe.envelopes.length, 1);
   assert.equal(probe.readAllCalls(), 0);
 });

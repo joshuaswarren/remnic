@@ -315,19 +315,23 @@ export function normalizeExplicitCaptureContent(value: string): string {
 
 /**
  * Build the targeted identity for a tombstone-blocked explicit-capture row.
- * Category and connector stay in the key because content alone is not a
- * duplicate across categories or providers.
+ * Each field is normalized and length-prefixed so the punctuation-stripping
+ * content-hash index cannot collapse tuple boundaries or distinct providers.
  */
 export function buildExplicitCaptureDedupKey(
   content: string,
   category: string,
   sourceConnector: string | undefined,
 ): string {
+  const encode = (label: string, value: string): string => {
+    const normalized = normalizeContent(value);
+    return `${label} ${normalized.length} ${normalized}`;
+  };
   return [
-    category,
-    sourceConnector?.trim() ?? "",
-    normalizeExplicitCaptureContent(content),
-  ].join("\u0000");
+    encode("category", category),
+    encode("connector", sourceConnector?.trim() ?? ""),
+    encode("content", normalizeExplicitCaptureContent(content)),
+  ].join(" ");
 }
 
 function normalizeMemoryWriteTimestamp(field: string, value: string | undefined): string | undefined {
@@ -2011,6 +2015,7 @@ export class StorageManager {
    */
   private tombstoneBlockedCaptureHashIndex: ContentHashIndex | null = null;
   private tombstoneBlockedCaptureHashIndexLoadPromise: Promise<ContentHashIndex> | null = null;
+  private tombstoneBlockedCaptureHashIndexRefreshPromise: Promise<ContentHashIndex> | null = null;
   /** Optional lock/retry tuning for the fact-hash index cross-process lock (PR #2016; tests inject tight budgets). */
   factHashIndexLockOptions: ContentHashIndexLockOptions = {};
   private readonly secureAppendChains = new Map<string, Promise<void>>();
@@ -3318,8 +3323,8 @@ export class StorageManager {
     return memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
   }
 
-  private async rebuildTombstoneBlockedCaptureHashIndex(index: ContentHashIndex): Promise<void> {
-    await index.rebuildUnderLock(async () => {
+  private async rebuildTombstoneBlockedCaptureHashIndex(index: ContentHashIndex): Promise<boolean> {
+    return await index.rebuildUnderLock(async () => {
       index.clear();
       const existing = [
         ...(await this.readAllMemories()),
@@ -3357,7 +3362,20 @@ export class StorageManager {
           // The first deployment needs to recover rows written before this
           // targeted index existed. Later processes load the durable index and
           // avoid a corpus scan on every novel explicit capture.
-          await this.rebuildTombstoneBlockedCaptureHashIndex(index);
+          const maxAttempts =
+            this.factHashIndexLockOptions.retryMaxAttempts ?? FACT_HASH_INDEX_REBUILD_MAX_ATTEMPTS;
+          const baseMs =
+            this.factHashIndexLockOptions.retryBaseMs ?? FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS;
+          let rebuilt = false;
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            rebuilt = await this.rebuildTombstoneBlockedCaptureHashIndex(index);
+            if (rebuilt || attempt === maxAttempts - 1) break;
+            const wait = Math.min(baseMs * 2 ** attempt, CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS);
+            await new Promise<void>((resolve) => setTimeout(resolve, wait));
+          }
+          if (!rebuilt) {
+            throw new Error("tombstone-blocked capture index rebuild lock unavailable");
+          }
         }
         this.tombstoneBlockedCaptureHashIndex = index;
         return index;
@@ -3368,6 +3386,19 @@ export class StorageManager {
     }
     return this.tombstoneBlockedCaptureHashIndexLoadPromise;
   }
+  private async reloadTombstoneBlockedCaptureHashIndex(): Promise<ContentHashIndex> {
+    if (!this.tombstoneBlockedCaptureHashIndexRefreshPromise) {
+      this.tombstoneBlockedCaptureHashIndexRefreshPromise = (async () => {
+        this.tombstoneBlockedCaptureHashIndex = null;
+        this.tombstoneBlockedCaptureHashIndexLoadPromise = null;
+        return await this.getTombstoneBlockedCaptureHashIndex();
+      })().finally(() => {
+        this.tombstoneBlockedCaptureHashIndexRefreshPromise = null;
+      });
+    }
+    return this.tombstoneBlockedCaptureHashIndexRefreshPromise;
+  }
+
 
   /**
    * Answer whether a pending tombstone-blocked row can match an explicit
@@ -3379,7 +3410,11 @@ export class StorageManager {
     sourceConnector?: string,
   ): Promise<boolean> {
     const index = await this.getTombstoneBlockedCaptureHashIndex();
-    return index.has(buildExplicitCaptureDedupKey(content, category, sourceConnector));
+    if (await index.isDiskFingerprintCurrent()) {
+      return index.has(buildExplicitCaptureDedupKey(content, category, sourceConnector));
+    }
+    const refreshedIndex = await this.reloadTombstoneBlockedCaptureHashIndex();
+    return refreshedIndex.has(buildExplicitCaptureDedupKey(content, category, sourceConnector));
   }
 
   private async addTombstoneBlockedCaptureToIndex(memory: MemoryFile): Promise<void> {
@@ -5272,6 +5307,8 @@ export class StorageManager {
 
     try {
       await unlink(memory.path);
+      markProjectedMemoryPathInvalid(this.baseDir, id);
+      this.invalidateAllMemoriesCache();
       if (this.tombstoneBlockedCaptureHashIndex) {
         try {
           await this.rebuildTombstoneBlockedCaptureHashIndex(this.tombstoneBlockedCaptureHashIndex);
@@ -5279,8 +5316,6 @@ export class StorageManager {
           log.warn(`storage.invalidateMemory completed but failed to update tombstone-blocked capture index: ${err}`);
         }
       }
-      markProjectedMemoryPathInvalid(this.baseDir, id);
-      this.invalidateAllMemoriesCache();
       this.bumpMemoryStatusVersion();
       log.debug(`invalidated memory ${id}`);
       return true;

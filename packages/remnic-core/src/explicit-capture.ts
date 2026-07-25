@@ -833,7 +833,7 @@ export class InlineExplicitCaptureProcessor {
         replayKeys.some((key) => this.observedKeys.has(key))
         || this.observedKeys.has(validationFailureKey)
       ) {
-        return { processed: 0, accepted: 0, queued: 0, duplicates: 0 };
+        return { processed: 0, accepted: 0, queued: 0, duplicates: 1 };
       }
 
       let validationSucceeded = false;
