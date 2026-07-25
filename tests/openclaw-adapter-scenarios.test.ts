@@ -831,7 +831,9 @@ test("scenario: failed inline capture retries after transcript delivery succeeds
       await messageReceived(event, { sessionKey: "inline-retry-session" });
 
       assert.equal(writeAttempts, 3);
-      assert.match(readAllText(memoryDir), /inline capture must retry after its first write failure/);
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal((transcriptText.match(/retryable visible transcript turn/g) ?? []).length, 1);
+      assert.doesNotMatch(transcriptText, /<memory_note>/);
       assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
     },
     {
