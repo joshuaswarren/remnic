@@ -320,6 +320,9 @@ export class SessionContextCoordinator {
       reason: string;
       abortSignal?: AbortSignal;
       bufferKey?: string;
+      extractionDeadlineMs?: number;
+      writeNamespaceOverride?: string;
+      principalOverride?: string;
     },
   ): Promise<void> {
     // Force any pending debounced buffer save to land durably BEFORE we read
@@ -371,6 +374,9 @@ export class SessionContextCoordinator {
             skipDedupeCheck: true,
             forceExtractionAttempt: true,
             abortSignal: options.abortSignal,
+            extractionDeadlineMs: options.extractionDeadlineMs,
+            writeNamespaceOverride: options.writeNamespaceOverride,
+            principalOverride: options.principalOverride,
             onTaskSettled: (error) => (error ? reject(error) : resolve()),
           })
           .catch(reject);
