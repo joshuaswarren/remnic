@@ -215,6 +215,29 @@ test("writeProfile preserves case-sensitive CDATA block detection", async (t) =>
     t.mock.timers.reset();
   }
 });
+test("writeProfile recognizes thematic breaks as metadata boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "***",
+        STALE_HEADER,
+        "",
+        "- Keeps thematic-break metadata compact.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile keeps an inserted header standalone", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

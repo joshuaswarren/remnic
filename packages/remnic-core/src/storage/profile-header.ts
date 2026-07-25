@@ -2,6 +2,7 @@ const LAST_UPDATED_HEADER = /^\*Last updated:[^*]*\*$/;
 const PROFILE_TITLE = /^ {0,3}#\s+/;
 const MARKDOWN_HEADING = /^#{1,6}\s+/;
 const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d+[.)])\s+/;
+const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const UTF8_BOM = "\uFEFF";
 
 type FenceMarker = {
@@ -431,6 +432,7 @@ function isMetadataBoundary(line: string): boolean {
     line === "" ||
     MARKDOWN_HEADING.test(line) ||
     MARKDOWN_LIST_ITEM.test(line) ||
+    MARKDOWN_THEMATIC_BREAK.test(line) ||
     isLastUpdatedHeader(line) ||
     getFenceMarker(line) !== null ||
     isRawHtmlBlockTerminator(line)
