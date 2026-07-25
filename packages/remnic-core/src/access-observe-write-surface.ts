@@ -872,7 +872,7 @@ export class AccessObserveWriteSurface {
     }
     throwIfAborted(request.abortSignal, "extraction force-flush aborted");
     if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-      throw new Error("extraction force-flush deadline exceeded before scope resolution");
+      throw new EngramAccessInputError("extraction force-flush deadline exceeded before scope resolution");
     }
     if (resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true) {
       const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
@@ -901,7 +901,7 @@ export class AccessObserveWriteSurface {
       captureSeededCodingContext();
       throwIfAborted(request.abortSignal, "extraction force-flush aborted");
       if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-        throw new Error("extraction force-flush deadline exceeded before buffer drain");
+        throw new EngramAccessInputError("extraction force-flush deadline exceeded before buffer drain");
       }
 
       if (!request.namespace?.trim()) {
@@ -913,11 +913,12 @@ export class AccessObserveWriteSurface {
       }
       throwIfAborted(request.abortSignal, "extraction force-flush aborted");
       if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-        throw new Error("extraction force-flush deadline exceeded before buffer drain");
+        throw new EngramAccessInputError("extraction force-flush deadline exceeded before buffer drain");
       }
       await this.deps.orchestrator.flushSession(request.sessionKey, {
         reason: "access_force_flush",
         abortSignal: request.abortSignal,
+        failOnExtractionFailure: true,
         extractionDeadlineMs: request.deadlineMs,
         writeNamespaceOverride:
           resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true

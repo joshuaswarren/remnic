@@ -87,7 +87,7 @@ interface Harness {
   storageForNs: (ns: string) => Promise<StorageManager>;
   newCoordinator: () => ExtractionRunCoordinator;
   engineCalls: () => number;
-  setRespond: (fn: (turns: BufferTurn[]) => ExtractionResult) => void;
+  setRespond: (fn: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult>) => void;
   recordedProcessedCount: () => number;
   run: (
     coord: ExtractionRunCoordinator,
@@ -123,7 +123,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   await buffer.load();
 
   let engineCalls = 0;
-  let respond: (turns: BufferTurn[]) => ExtractionResult = () => successResult();
+  let respond: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult> = () => successResult();
   let recordedProcessedCount = 0;
   let passiveCapture: { principal?: string; namespace?: string } | null = null;
 
@@ -217,6 +217,27 @@ test("context-only extraction honors scoped principal and namespace overrides", 
       principal: "alice",
       namespace: "alice-project",
     });
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("runExtraction aborts an in-flight provider when its deadline expires", async () => {
+  const harness = await makeHarness();
+  try {
+    const coordinator = harness.newCoordinator();
+    harness.setRespond(() => new Promise<ExtractionResult>(() => {}));
+
+    await assert.rejects(
+      coordinator.runExtraction(makeTurns("deadline"), {
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+        clearBufferAfterExtraction: false,
+        bufferKey: "deadline",
+        deadlineMs: Date.now() + 40,
+      }),
+      /extraction aborted \(during_extract\)/,
+    );
   } finally {
     await harness.cleanup();
   }

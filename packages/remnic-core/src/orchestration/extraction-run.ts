@@ -779,11 +779,39 @@ export class ExtractionRunCoordinator {
 
     // Pass existing entity names so the LLM can reuse them instead of inventing variants
     const existingEntities = await storage.listEntityNames();
-    const result = await raceRecallAbort(
-      this.deps.getExtraction().extract(normalizedTurns, existingEntities),
-      options.abortSignal,
-      "extraction aborted (during_extract)"
-    );
+    const extractionDeadlineController =
+      typeof deadlineMs === "number" && Number.isFinite(deadlineMs)
+        ? new AbortController()
+        : undefined;
+    const extractionAbortSignal = extractionDeadlineController
+      ? options.abortSignal
+        ? AbortSignal.any([options.abortSignal, extractionDeadlineController.signal])
+        : extractionDeadlineController.signal
+      : options.abortSignal;
+    let extractionDeadlineTimer: NodeJS.Timeout | undefined;
+    if (extractionDeadlineController && typeof deadlineMs === "number") {
+      const remainingMs = deadlineMs - Date.now();
+      if (remainingMs <= 0) {
+        extractionDeadlineController.abort();
+      } else {
+        extractionDeadlineTimer = setTimeout(() => {
+          extractionDeadlineController.abort();
+        }, remainingMs);
+      }
+    }
+    let result: ExtractionResult;
+    try {
+      result = await raceRecallAbort(
+        this.deps.getExtraction().extract(normalizedTurns, existingEntities),
+        extractionAbortSignal,
+        "extraction aborted (during_extract)",
+      );
+    } finally {
+      if (extractionDeadlineTimer) {
+        clearTimeout(extractionDeadlineTimer);
+        extractionDeadlineTimer = undefined;
+      }
+    }
     throwIfDeadlineExceeded("before_persist");
     throwIfAborted("before_persist");
 

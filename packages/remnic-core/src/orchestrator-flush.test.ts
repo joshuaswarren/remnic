@@ -43,6 +43,7 @@ interface ScopedFlushTestDouble {
       bufferKey?: string;
       extractionDeadlineMs?: number;
       writeNamespaceOverride?: string;
+      failOnExtractionFailure?: boolean;
       principalOverride?: string;
     },
   ): Promise<void>;
@@ -71,7 +72,10 @@ test("flushSession queues extraction for the targeted buffered session", async (
     (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
   };
 
-  await orchestrator.flushSession("thread-a", { reason: "before_reset" });
+  await orchestrator.flushSession("thread-a", {
+    reason: "access_force_flush",
+    failOnExtractionFailure: true,
+  });
 
   assert.ok(queued);
   const queuedCall = queued as {
@@ -83,6 +87,7 @@ test("flushSession queues extraction for the targeted buffered session", async (
   assert.equal(queuedCall.reason, "trigger_mode");
   assert.equal(queuedCall.options?.clearBufferAfterExtraction, true);
   assert.equal(queuedCall.options?.skipDedupeCheck, true);
+  assert.equal(queuedCall.options?.failOnExtractionFailure, true);
   assert.equal(queuedCall.options?.abortSignal, undefined);
 });
 
@@ -206,6 +211,7 @@ test("flushSession waits for queued extraction task completion", async () => {
 
   assert.equal(flushSettled, true);
 });
+
 
 test("flushSession flushes the pending debounced buffer save before extraction, so keep_buffering turns survive a failed/timed-out extraction (issue #1909, PR #2016)", async () => {
   // Regression: in steady-state debounced buffering a `keep_buffering` turn only

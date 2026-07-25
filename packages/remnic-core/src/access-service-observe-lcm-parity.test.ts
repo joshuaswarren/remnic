@@ -29,7 +29,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { EngramAccessService } from "./access-service.js";
+import { EngramAccessInputError, EngramAccessService } from "./access-service.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
 import {
@@ -64,6 +64,7 @@ interface ExtractionForceFlushCall {
   options: {
     reason: string;
     extractionDeadlineMs?: number;
+    failOnExtractionFailure?: boolean;
     abortSignal?: AbortSignal;
     writeNamespaceOverride?: string;
     principalOverride?: string;
@@ -393,6 +394,7 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
     "force-flush must let the orchestrator discover all session buffer keys",
   );
   assert.equal(call.options.extractionDeadlineMs, deadlineMs);
+  assert.equal(call.options.failOnExtractionFailure, true);
   assert.equal(call.options.abortSignal, abortController.signal);
   assert.equal(call.options.writeNamespaceOverride, expectedNamespace);
   assert.equal(call.options.principalOverride, "pi-geek");
@@ -460,7 +462,9 @@ test("#2128: aborted or expired extraction force-flush never touches a buffer", 
         authenticatedPrincipal: "pi-geek",
         deadlineMs: Date.now() - 1,
       }),
-    /extraction force-flush deadline exceeded before scope resolution/,
+    (error: unknown) =>
+      error instanceof EngramAccessInputError &&
+      error.message === "extraction force-flush deadline exceeded before scope resolution",
   );
   assert.equal(probe.extractionForceFlushCalls.length, 0);
 });

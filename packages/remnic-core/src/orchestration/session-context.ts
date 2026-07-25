@@ -88,6 +88,7 @@ export interface SessionFlushOptions {
   bufferKey?: string;
   extractionDeadlineMs?: number;
   writeNamespaceOverride?: string;
+  failOnExtractionFailure?: boolean;
   principalOverride?: string;
 }
 
@@ -374,6 +375,7 @@ export class SessionContextCoordinator {
             bufferKey,
             clearBufferAfterExtraction: true,
             skipDedupeCheck: true,
+            failOnExtractionFailure: options.failOnExtractionFailure === true,
             forceExtractionAttempt: true,
             abortSignal: options.abortSignal,
             extractionDeadlineMs: options.extractionDeadlineMs,
