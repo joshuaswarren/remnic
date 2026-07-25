@@ -58,7 +58,7 @@ import {
   type QueryAwarePrefilter,
 } from "../orchestrator.js";
 import { isActivityDigestPath } from "./orchestrator-helpers.js";
-import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
+import { isGenericRecallExcludedPath, isTopLevelArchivePath } from "./generic-recall-paths.js";
 
 export interface RecallSearchPipelineDeps {
   applyMemoryWorthRerank(
@@ -545,10 +545,14 @@ export class RecallSearchPipelineCoordinator {
       lastHybridTopUpSkippedReason = undefined;
       let mergedResults = primaryResults;
       const primaryRecallableCount = primaryResults.filter(recallable).length;
+      const primaryIncludesArchivePath = primaryResults.some((result) =>
+        isTopLevelArchivePath(result.path, this.deps.config, "qmd"),
+      );
 
       // Backfill with hybrid results when the recallable primary page underfills.
       if (
         primaryRecallableCount < qmdFetchLimit &&
+        (primaryResults.length < qmdFetchLimit || primaryIncludesArchivePath) &&
         (!qmdRecallBudgetEnabled ||
           Date.now() - startedAtMs < qmdRecallBudgetMs)
       ) {
