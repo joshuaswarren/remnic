@@ -493,9 +493,9 @@ test("MCP tools/list matches the catalog exactly (no untracked handlers)", async
  * patterns from the source and compares against HTTP_ROUTES so a new
  * service-invoking route cannot land without a catalog entry.
  *
- * Infrastructure routes (health, admin console, UI assets, MCP delegate) are
- * excluded — they carry no user-validated request envelope. (Adapters was
- * migrated into the catalog in issue #1850 round 5.)
+ * Infrastructure routes (health, auth capability probes, admin console, UI
+ * assets, MCP delegate) are excluded — they do not invoke an access-service
+ * method. (Adapters was migrated into the catalog in issue #1850 round 5.)
  */
 test("HTTP handler source routes match the catalog (static completeness)", () => {
   const httpSource = readFileSync(
@@ -534,6 +534,7 @@ test("HTTP handler source routes match the catalog (static completeness)", () =>
 
   const INFRA = [
     /^\/engram\/v1\/health$/,
+    /^\/engram\/v1\/authorization$/,
     /^\/engram\/v1\/admin\//,
     /^\/engram\/ui/,
     /^\/mcp$/,

@@ -2978,3 +2978,46 @@ test("HTTP meetings get returns 400 (not 500) for a malformed percent-encoded id
     await server.stop();
   }
 });
+
+test("HTTP authorization probe verifies requested operation grants without invoking operations (issue #2129)", async () => {
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-http-authorization-probe", defaultNamespace: "default" }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      {
+        token: "delegate-token",
+        capabilities: { version: 1, ops: ["recall", "observe", "lcm_compaction_flush"] },
+      },
+      { token: "recall-only-token", capabilities: { version: 1, ops: ["recall"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const probe = (token: string, operations: string[]) => {
+    const query = new URLSearchParams();
+    for (const operation of operations) query.append("op", operation);
+    return fetch(`http://127.0.0.1:${status.port}/engram/v1/authorization?${query}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  };
+  const delegateOperations = ["recall", "observe", "lcm_compaction_flush"];
+  try {
+    const authorized = await probe("delegate-token", delegateOperations);
+    assert.equal(authorized.status, 200);
+    assert.deepEqual(await authorized.json(), { authorized: true, operations: delegateOperations });
+
+    assert.equal(
+      (await probe("recall-only-token", delegateOperations)).status,
+      403,
+      "a token missing any requested operation is rejected without running it",
+    );
+    assert.equal((await probe("wrong-token", delegateOperations)).status, 401);
+    assert.equal((await probe("delegate-token", [])).status, 400);
+    assert.equal((await probe("delegate-token", ["not_an_operation"])).status, 400);
+  } finally {
+    await server.stop();
+  }
+});
