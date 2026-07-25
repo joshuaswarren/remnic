@@ -367,9 +367,15 @@ export async function computeServiceCorpusWatermarks(
     const visible = roots.filter((root) => capabilityAllowsNamespace(options.caps, root.namespace));
     const watermarks: CorpusWatermark[] = [];
     for (const { namespace } of visible) {
-      const compute = async (): Promise<CorpusWatermark> =>
-        computeNamespaceWatermark(namespace, await host.getStorage(namespace), options.now);
-      watermarks.push(options.cache ? await options.cache.get(namespace, compute) : await compute());
+      try {
+        const compute = async (): Promise<CorpusWatermark> =>
+          computeNamespaceWatermark(namespace, await host.getStorage(namespace), options.now);
+        watermarks.push(options.cache ? await options.cache.get(namespace, compute) : await compute());
+      } catch {
+        // One tenant's storage/scan failed — omit just that namespace, matching
+        // computeCorpusWatermarks' per-namespace degrade. Never blank the whole
+        // payload because a single bad namespace threw.
+      }
     }
     return watermarks;
   } catch {

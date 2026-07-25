@@ -485,3 +485,24 @@ test("finding A: with a cache, two /health probes trigger ONE corpus scan", asyn
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("computeServiceCorpusWatermarks: one failing namespace is omitted, not the whole payload (per-namespace degrade)", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    await writeMemory(memoryDir, "namespaces/team-a/facts/2026-03-08/x.md");
+    const config = serviceConfig(memoryDir, { namespacesEnabled: true, defaultNamespace: "global" });
+    const host = {
+      config,
+      getStorage: (namespace: string) => {
+        if (namespace === "team-a") throw new Error("storage unavailable for this tenant");
+        return fakeStorage(`/mem/${namespace}`, [`/mem/${namespace}/facts/2026-03-08/x.md`]);
+      },
+    };
+    const names = (await computeServiceCorpusWatermarks(host)).map((w) => w.namespace);
+    assert.ok(names.includes("global"), "a healthy namespace is still reported");
+    assert.ok(!names.includes("team-a"), "the failing namespace is omitted");
+    assert.ok(names.length >= 1, "a single bad namespace must not blank the whole corpus payload");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
