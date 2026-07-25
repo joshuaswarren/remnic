@@ -47,8 +47,9 @@ function assertSafeExtractionPrompt(prompt: string): void {
 }
 
 function assertStructuralResponseShape(prompt: string): void {
-  assert.match(prompt, /"procedureSteps"/);
-  assert.match(prompt, /"reasoningTrace"/);
+  assert.match(prompt, /"structuredSections"/);
+  assert.match(prompt, /"procedureSteps": \[\{"order": 0, "intent": "<step>"\}, \{"order": 1, "intent": "<step>"\}\]/);
+  assert.match(prompt, /"reasoningTrace":\s*\{\s*"steps": \[\{"order": 0, "description": "<step>"\}, \{"order": 1, "description": "<step>"\}\]/s);
   assert.match(prompt, /"quote"/);
   assert.match(prompt, /"scope"/);
   assert.match(prompt, /"eventTime"/);

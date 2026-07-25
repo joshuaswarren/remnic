@@ -63,11 +63,21 @@ const EXTRACTION_RESPONSE_SHAPE = `{
     "quote": "<optional exact contiguous source span>",
     "scope": "<optional project-or-global>",
     "structuredAttributes": {"<key>": "<value>"},
-    "procedureSteps": [{"order": 0, "intent": "<step>"}],
-    "reasoningTrace": {"steps": [{"order": 0, "description": "<step>"}], "finalAnswer": "<answer>"},
+    "procedureSteps": [{"order": 0, "intent": "<step>"}, {"order": 1, "intent": "<step>"}],
+    "reasoningTrace": {
+      "steps": [{"order": 0, "description": "<step>"}, {"order": 1, "description": "<step>"}],
+      "finalAnswer": "<answer>",
+      "observedOutcome": "<optional outcome>"
+    },
     "eventTime": "<optional source temporal expression>"
   }],
-  "entities": [{"name": "<normalized-name>", "type": "<entity-type>", "facts": ["<source-grounded statement>"]}],
+  "entities": [{
+    "name": "<normalized-name>",
+    "type": "<entity-type>",
+    "facts": ["<source-grounded statement>"],
+    "promptedByQuestion": "<optional source-grounded question>",
+    "structuredSections": [{"key": "<section-key>", "title": "<section-title>", "facts": ["<source-grounded statement>"]}]
+  }],
   "profileUpdates": ["<source-grounded profile update>"],
   "questions": [{"question": "<source-grounded unresolved question>", "context": "<source-grounded context>", "priority": 0.0}],
   "identityReflection": "<conversation-grounded agent reflection>",
