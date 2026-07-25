@@ -875,6 +875,9 @@ export class SmartBuffer {
                 : new Date().toISOString(),
           };
           if (typeof t.sessionKey === "string") copy.sessionKey = t.sessionKey;
+          if (typeof t.sessionOwnerPrincipal === "string") {
+            copy.sessionOwnerPrincipal = t.sessionOwnerPrincipal;
+          }
           if (typeof t.logicalSessionKey === "string") {
             copy.logicalSessionKey = t.logicalSessionKey;
           }

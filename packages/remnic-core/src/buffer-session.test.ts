@@ -254,6 +254,20 @@ test("SmartBuffer shared-buffer clear distinguishes duplicate turns by owner", a
   assert.deepEqual(buffer.getTurns("provider-thread"), [bobTurn]);
 });
 
+test("SmartBuffer preserves owner identity in deferred turns", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const aliceTurn = { ...makeTurn("opaque-session", "deferred memory"), sessionOwnerPrincipal: "alice" };
+
+  await buffer.retainDeferredTurns("provider-thread", [aliceTurn]);
+
+  assert.deepEqual(buffer.getRetainedDeferredTurns("provider-thread"), [aliceTurn]);
+});
+
 test("SmartBuffer clearAfterExtraction chooses the longest queued snapshot overlap", async () => {
   const storage = new FakeStorage({
     turns: [],
