@@ -658,6 +658,7 @@ export class ExtractionEngine {
     conversation: string,
     base: ExtractionResult,
     groundingSource: string,
+    messageTimestamp?: Date,
   ): Promise<ExtractionResult> {
     if (!resolvePipelineProcessingCapabilities(this.config).proactiveExtraction) return base;
     const maxAdditional = Math.max(0, Math.floor(this.config.maxProactiveQuestionsPerExtraction));
@@ -673,8 +674,9 @@ export class ExtractionEngine {
         maxAdditional,
       );
       const groundedAdditions = this.applySourceGrounding(proactiveAdditions, groundingSource);
-      if (!this.hasExtractionOutputs(groundedAdditions)) return base;
-      return this.mergeProactiveExtractionPass(base, groundedAdditions, maxAdditional);
+      const sanitizedAdditions = this.sanitizeExtractionResult(groundedAdditions, messageTimestamp);
+      if (!this.hasExtractionOutputs(sanitizedAdditions)) return base;
+      return this.mergeProactiveExtractionPass(base, sanitizedAdditions, maxAdditional);
     } catch (err) {
       log.debug(`proactive extraction question pass failed (ignored): ${err}`);
       return base;
@@ -878,7 +880,7 @@ export class ExtractionEngine {
         if (localResponse?.content) {
           const parsed = this.parseProactiveExtractionResultFromText(localResponse.content.trim());
           if (parsed) {
-            return this.sanitizeExtractionResult(parsed);
+            return parsed;
           }
         }
         if (!this.config.localLlmFallback) {
@@ -909,12 +911,10 @@ export class ExtractionEngine {
     if (!fallbackResult) {
       return { facts: [], profileUpdates: [], entities: [], questions: [] };
     }
-    return this.sanitizeExtractionResult(
-      this.normalizeExtractionResultPayload({
-        ...fallbackResult,
-        questions: [],
-      }),
-    );
+    return this.normalizeExtractionResultPayload({
+      ...fallbackResult,
+      questions: [],
+    });
   }
 
   private mergeProactiveExtractionPass(
@@ -1240,7 +1240,7 @@ export class ExtractionEngine {
           log.debug(`extraction: used local LLM — ${localResult.facts.length} facts, ${localResult.entities.length} entities`);
           const grounded = this.applySourceGrounding(localResult, groundingSource);
           const sanitized = this.sanitizeExtractionResult(grounded, messageTimestamp);
-          const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized, groundingSource);
+          const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized, groundingSource, messageTimestamp);
           return this.finalizeExtractionResult(finalResult, boundedTurns);
         }
         // Local failed, fall back if allowed
@@ -1288,7 +1288,7 @@ export class ExtractionEngine {
           log.debug(`extraction: used direct client (${this.config.model}) — ${directResult.facts.length} facts, ${directResult.entities.length} entities`);
           const grounded = this.applySourceGrounding(directResult, groundingSource);
           const sanitized = this.sanitizeExtractionResult(grounded, messageTimestamp);
-          const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized, groundingSource);
+          const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized, groundingSource, messageTimestamp);
           return this.finalizeExtractionResult(finalResult, boundedTurns);
         }
         // Emit error event so Opik sees the direct client failure before fallback.
@@ -1374,7 +1374,7 @@ export class ExtractionEngine {
         const normalized = this.normalizeExtractionResultPayload(result);
         const grounded = this.applySourceGrounding(normalized, groundingSource);
         const sanitized = this.sanitizeExtractionResult(grounded, messageTimestamp);
-        const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized, groundingSource);
+        const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized, groundingSource, messageTimestamp);
         return this.finalizeExtractionResult(finalResult, boundedTurns);
       }
 

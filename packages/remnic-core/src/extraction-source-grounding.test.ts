@@ -239,3 +239,201 @@ test("gateway extraction applies source grounding to the same output contract", 
 
   assertGroundedResult(result);
 });
+test("grounding matches the relevant repeated source occurrence", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "Blue is supported for accents.",
+          confidence: 0.9,
+          tags: [],
+        },
+        {
+          category: "fact",
+          content: "Blue is supported for backgrounds.",
+          confidence: 0.9,
+          tags: [],
+        },
+        {
+          category: "fact",
+          content: "Blue is not supported for backgrounds.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Blue is supported for accents. Blue is not supported for backgrounds.",
+  );
+
+  assert.deepEqual(
+    result.facts.map((fact) => fact.content),
+    ["Blue is supported for accents.", "Blue is not supported for backgrounds."],
+  );
+});
+
+test("grounding filters unsupported durable fact fields and nested entity facts", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "The deployment finished yesterday.",
+          confidence: 0.9,
+          tags: [],
+          structuredAttributes: {
+            status: "complete",
+            provider: "unknown-cloud",
+          },
+          eventTime: "yesterday",
+        },
+        {
+          category: "procedure",
+          content: "How to deploy staging",
+          confidence: 0.9,
+          tags: [],
+          procedureSteps: [
+            {
+              order: 1,
+              intent: "first run tests",
+              expectedOutcome: "tests pass",
+              toolCall: { kind: "shell", signature: "run-tests" },
+            },
+            {
+              order: 2,
+              intent: "invent a secret deployment step",
+            },
+          ],
+        },
+        {
+          category: "reasoning_trace",
+          content: "How I debugged latency",
+          confidence: 0.9,
+          tags: [],
+          reasoningTrace: {
+            steps: [
+              { order: 1, description: "first inspect logs" },
+              { order: 2, description: "then compare traces" },
+            ],
+            finalAnswer: "increase timeout",
+            observedOutcome: "the service recovered",
+          },
+        },
+      ],
+      profileUpdates: [],
+      entities: [
+        {
+          name: "Moonlight",
+          type: "project",
+          facts: ["Moonlight's theme color is green.", "Moonlight has a secret plan."],
+          structuredSections: [
+            {
+              key: "appearance",
+              title: "Appearance",
+              facts: ["Moonlight's theme color is green.", "Moonlight runs on Mars."],
+            },
+          ],
+        },
+      ],
+      questions: [],
+    },
+    [
+      "The deployment finished yesterday; its status is complete.",
+      "To deploy staging, first run tests, then deploy the service. Tests pass. The shell command is run-tests.",
+      "How I debugged latency: first inspect logs, then compare traces. The answer is increase timeout.",
+      "Moonlight's theme color is green.",
+    ].join(" "),
+  );
+
+  assert.deepEqual(result.facts[0]?.structuredAttributes, { status: "complete" });
+  assert.equal(result.facts[0]?.eventTime, "yesterday");
+  assert.deepEqual(result.facts[1]?.procedureSteps, [
+    {
+      order: 1,
+      intent: "first run tests",
+      expectedOutcome: "tests pass",
+      toolCall: { kind: "shell", signature: "run-tests" },
+    },
+  ]);
+  assert.deepEqual(result.facts[2]?.reasoningTrace, {
+    steps: [
+      { order: 1, description: "first inspect logs" },
+      { order: 2, description: "then compare traces" },
+    ],
+    finalAnswer: "increase timeout",
+  });
+  assert.deepEqual(result.entities, [
+    {
+      name: "Moonlight",
+      type: "project",
+      facts: ["Moonlight's theme color is green."],
+      structuredSections: [
+        {
+          key: "appearance",
+          title: "Appearance",
+          facts: ["Moonlight's theme color is green."],
+        },
+      ],
+    },
+  ]);
+});
+
+test("proactive extraction grounds before delinearization", async () => {
+  const engine = fixtureEngine({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+    proactiveExtractionEnabled: true,
+    maxProactiveQuestionsPerExtraction: 1,
+  });
+  Object.assign(engine, {
+    localLlm: {
+      async chatCompletion(messages: Array<{ role: string; content: string }>) {
+        const prompt = messages[1]?.content ?? "";
+        if (prompt.startsWith("You are doing a proactive second-pass")) {
+          return {
+            content: JSON.stringify({
+              questions: [{ question: "When did the deployment finish?", context: "", priority: 0.5 }],
+            }),
+          };
+        }
+        if (prompt.startsWith("You are answering proactive memory follow-up questions")) {
+          return {
+            content: JSON.stringify({
+              facts: [
+                {
+                  category: "fact",
+                  content: "The deployment finished yesterday.",
+                  confidence: 0.95,
+                  tags: [],
+                },
+              ],
+              profileUpdates: [],
+              entities: [],
+              relationships: [],
+            }),
+          };
+        }
+        return { content: JSON.stringify({ facts: [], profileUpdates: [], entities: [], questions: [] }) };
+      },
+      isBackgroundLaneContended: () => false,
+    },
+    modelRegistry: {
+      calculateContextSizes: () => ({
+        maxInputChars: 8_000,
+        maxOutputTokens: 1_000,
+        description: "fixture",
+      }),
+    },
+  });
+
+  const result = await engine.extract([{
+    ...OBSERVED_TURN,
+    content: "The deployment finished yesterday.",
+  }]);
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["The deployment finished on 2026-07-24."]);
+});
