@@ -27,6 +27,7 @@ import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./gra
 import { parseQmdExplain } from "../qmd.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import type { RecallXrayServedBy } from "../recall-xray.js";
+import type { RecallContextComposition } from "../recall-context-composition.js";
 import { type BufferTurn, type MemoryActionEvent, type MemoryFile, type MemoryFrontmatter, type MemoryIntent, type PluginConfig, type QmdSearchResult, type RecallPlanMode, confidenceTier } from "../types.js";
 import { categoryDirName } from "../utils/category-dir.js";
 import { parseFlexibleIsoTimestamp } from "../utils/iso-timestamp.js";
@@ -256,6 +257,7 @@ export interface RecallInvocationOptions {
    * absent, so existing timing consumers are unaffected.
    */
   queueWaitMs?: number;
+  onContextComposition?: (composition: RecallContextComposition) => void | PromiseLike<void>;
 }
 
 export type QueryAwarePrefilter = {

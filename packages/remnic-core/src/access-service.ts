@@ -170,6 +170,7 @@ import {
   type ScopeInspection,
 } from "./admin/admin-surfaces.js";
 import type { LastRecallSnapshot } from "./recall-state.js";
+import type { RecallContextComposition } from "./recall-context-composition.js";
 import type {
   GraphRecallSnapshot,
   IntentDebugSnapshot,
@@ -453,6 +454,8 @@ export interface EngramAccessRecallResponse {
   sessionKey?: string;
   namespace: string;
   context: string;
+  /** Request-local split used by adapters that must re-render a tighter prompt budget. */
+  contextComposition?: RecallContextComposition;
   count: number;
   memoryIds: string[];
   results: EngramAccessMemorySummary[];
