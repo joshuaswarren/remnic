@@ -395,6 +395,33 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
   assert.equal(call.options.principalOverride, "pi-geek");
 });
 
+test("#2128: aborted or expired extraction force-flush never touches a buffer", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const abortController = new AbortController();
+  abortController.abort();
+
+  await assert.rejects(
+    () =>
+      service.extractionForceFlush({
+        sessionKey: "pi-geek:aborted-flush",
+        authenticatedPrincipal: "pi-geek",
+        abortSignal: abortController.signal,
+      }),
+    /extraction force-flush aborted/,
+  );
+  await assert.rejects(
+    () =>
+      service.extractionForceFlush({
+        sessionKey: "pi-geek:expired-flush",
+        authenticatedPrincipal: "pi-geek",
+        deadlineMs: Date.now() - 1,
+      }),
+    /extraction force-flush deadline exceeded before scope resolution/,
+  );
+  assert.equal(probe.extractionForceFlushCalls.length, 0);
+});
+
 test("#1505 thread 2 (b) cwd git repo: observe LCM write key == recall reader key == compaction keys", async () => {
   const repoDir = mkdtempSync(join(tmpdir(), "remnic-lcm-parity-git-"));
   const git = (...args: string[]) =>
