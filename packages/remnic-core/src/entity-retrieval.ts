@@ -90,10 +90,29 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 }
 
+const UNICODE_WORD_OR_NUMBER_RE = /[\p{L}\p{N}]/u;
+const JAPANESE_PARTICLE_RE = /^[のはがをにへともやかでだ]$/u;
+
+function isUnicodePhraseBoundary(character: string): boolean {
+  return character.length === 0 || !UNICODE_WORD_OR_NUMBER_RE.test(character) || JAPANESE_PARTICLE_RE.test(character);
+}
+
 function containsPhrase(haystack: string, needle: string): boolean {
   if (!needle) return false;
-  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|\\b)${escaped}(\\b|$)`, "i").test(haystack);
+  if (/^[a-z0-9 ]+$/i.test(needle)) {
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|\\b)${escaped}(\\b|$)`, "i").test(haystack);
+  }
+  let offset = haystack.indexOf(needle);
+  while (offset >= 0) {
+    const before = haystack.slice(0, offset).at(-1) ?? "";
+    const after = haystack.slice(offset + needle.length, offset + needle.length + 1);
+    if (isUnicodePhraseBoundary(before) && isUnicodePhraseBoundary(after)) {
+      return true;
+    }
+    offset = haystack.indexOf(needle, offset + needle.length);
+  }
+  return false;
 }
 
 function compactLine(value: string, maxLength: number = 220): string {

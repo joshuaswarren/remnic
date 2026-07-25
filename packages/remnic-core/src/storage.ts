@@ -1103,7 +1103,7 @@ const BUILTIN_ALIASES: Record<string, string> = {
 
 /**
  * Normalize an entity name to a canonical form.
- * Strips non-alphanumeric chars, collapses hyphens, removes type prefix duplication.
+ * Strips non-letter/digit chars, collapses hyphens, removes type prefix duplication.
  * e.g. "My Project" → "my-project"
  *
  * Checks caller-provided user aliases first, then built-in aliases. Alias
@@ -1123,9 +1123,9 @@ export function normalizeEntityName(raw: string, type: string, aliases?: Readonl
     name = name.slice(typePrefix.length);
   }
 
-  // Replace non-alphanumeric with hyphens, collapse multiples, trim edges
+  // Replace non-letter/digit characters with hyphens, collapse multiples, trim edges.
   let normalized = name
-    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
 

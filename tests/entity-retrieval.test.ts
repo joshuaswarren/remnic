@@ -134,6 +134,50 @@ test("entity retrieval resolves explicit canonical and alias mentions in Japanes
   }
 });
 
+test("entity retrieval resolves non-ASCII canonical and alias mentions without prefix collisions", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-names");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const moonlight = await writeEntity(
+    storage,
+    "月光",
+    "project",
+    ["月光 is synthetic."],
+    "月光 is synthetic.",
+    ["月影"],
+  );
+  const moonlightCompany = await writeEntity(
+    storage,
+    "月光社",
+    "project",
+    ["月光社 is synthetic."],
+    "月光社 is synthetic.",
+  );
+  assert.notEqual(moonlight, moonlightCompany);
+  await Promise.all([
+    storage.writeMemory("fact", "月光の検証コードは Nebula-472 です。", {
+      entityRef: moonlight,
+      confidence: 1,
+    }),
+    storage.writeMemory("fact", "月光社の検証コードは Borealis-811 です。", {
+      entityRef: moonlightCompany,
+      confidence: 1,
+    }),
+  ]);
+
+  for (const query of ["月光の検証コードは何ですか？", "月影の検証コードは何ですか？"]) {
+    const section = await buildSection(config, storage, query);
+    assert.ok(section, `expected an entity hint section for ${query}`);
+    assert.match(section!, /target: 月光 \(project\)/);
+    assert.match(section!, /Nebula-472/);
+    assert.doesNotMatch(section!, /月光社|Borealis-811/);
+  }
+});
+
 test("entity retrieval keeps multiple explicit entities in Japanese direct questions separate", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-multiple");
   t.after(async () => {

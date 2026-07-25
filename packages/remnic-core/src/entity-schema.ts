@@ -45,7 +45,7 @@ const DEFAULT_ENTITY_SCHEMAS: Record<string, EntitySchemaDefinition> = {
 export function normalizeEntityText(value: string): string {
   return value
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 }
 
