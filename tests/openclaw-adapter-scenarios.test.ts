@@ -742,6 +742,62 @@ test("scenario: id-less inline captures do not duplicate tombstone review entrie
   );
 });
 
+test("scenario: inline markup changes do not duplicate the stripped transcript", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const visibleTurn = "Remember this shared visible transcript turn.";
+      const first = [
+        visibleTurn,
+        "<memory_note>",
+        "content: The first explicit detail must be captured.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+      const second = [
+        visibleTurn,
+        "<memory_note>",
+        "content: The second explicit detail must also be captured.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+
+      await messageReceived(
+        {
+          content: first,
+          messageId: "visible-dedupe-one",
+          runId: "visible-dedupe-run",
+          timestamp: 1_780_000_000_000,
+        },
+        { sessionKey: "visible-dedupe-session" },
+      );
+      await messageReceived(
+        {
+          content: second,
+          messageId: "visible-dedupe-two",
+          runId: "visible-dedupe-run",
+          timestamp: 1_780_000_000_000,
+        },
+        { sessionKey: "visible-dedupe-session" },
+      );
+
+      assert.deepEqual(maintenanceTools, ["inline.memory_note", "inline.memory_note"]);
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal((transcriptText.match(/shared visible transcript turn/g) ?? []).length, 1);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: inline capture dedupe matches sparse thread and run metadata", async () => {
   await withScenarioRegistration(
     async ({ capture, orchestrator }) => {
