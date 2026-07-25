@@ -106,6 +106,14 @@ const KOREAN_INTERROGATIVE_PREFIXES = [
 
 const HANGUL_RUN_RE = /^[\p{Script=Hangul}]+/u;
 
+const UNICODE_WORD_SEGMENTER =
+  typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "word" }) : null;
+
+function isIntlWordBoundary(source: string, index: number): boolean {
+  if (index <= 0 || index >= source.length) return true;
+  return UNICODE_WORD_SEGMENTER?.segment(source).containing(index)?.index === index;
+}
+
 function isKoreanUnspacedQuestionBoundary(suffix: string): boolean {
   return KOREAN_UNSPACED_QUESTION_PARTICLES.some((particle) =>
     suffix.startsWith(particle) &&
@@ -131,12 +139,18 @@ function isKoreanParticleBoundary(suffix: string): boolean {
   );
 }
 
-function isUnicodePhraseBoundary(character: string, suffix: string = ""): boolean {
+function isUnicodePhraseBoundary(
+  character: string,
+  suffix: string = "",
+  source: string = "",
+  boundaryIndex: number = -1,
+): boolean {
   return (
     character.length === 0 ||
     !UNICODE_WORD_OR_NUMBER_RE.test(character) ||
     JAPANESE_PARTICLE_RE.test(character) ||
     JAPANESE_MULTI_CHARACTER_PARTICLES.some((particle) => suffix.startsWith(particle)) ||
+    (boundaryIndex >= 0 && isIntlWordBoundary(source, boundaryIndex)) ||
     isKoreanParticleBoundary(suffix)
   );
 }
@@ -151,7 +165,10 @@ function containsPhrase(haystack: string, needle: string): boolean {
   while (offset >= 0) {
     const before = haystack.slice(0, offset).at(-1) ?? "";
     const after = haystack.slice(offset + needle.length);
-    if (isUnicodePhraseBoundary(before) && isUnicodePhraseBoundary(after.at(0) ?? "", after)) {
+    if (
+      isUnicodePhraseBoundary(before, "", haystack, offset) &&
+      isUnicodePhraseBoundary(after.at(0) ?? "", after, haystack, offset + needle.length)
+    ) {
       return true;
     }
     offset = haystack.indexOf(needle, offset + needle.length);

@@ -270,11 +270,17 @@ async function rewriteRelationshipTargets(
     });
     if (relationships.every((relationship, index) => relationship === entity.relationships[index])) continue;
     if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
+    const latestEntity = deps.parseEntityFile(await deps.readStorageSecureFile(entityPath));
+    const latestRelationships = latestEntity.relationships.map((relationship) => {
+      const target = mappings[relationship.target];
+      return target ? { ...relationship, target } : relationship;
+    });
+    if (latestRelationships.every((relationship, index) => relationship === latestEntity.relationships[index])) continue;
     const entityEncrypted = await deps.isEncryptedStorageFile(entityPath);
     await deps.snapshotBeforeWrite(entityPath, "write");
     await deps.writeStorageSecureFile(
       entityPath,
-      deps.serializeEntityFile({ ...entity, relationships }),
+      deps.serializeEntityFile({ ...latestEntity, relationships: latestRelationships }),
       entityEncrypted,
     );
     rewritten = true;

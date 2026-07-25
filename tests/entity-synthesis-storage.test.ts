@@ -321,6 +321,64 @@ test("ensureDirectories preserves memory updates made after migration discovery"
   }
 });
 
+test("ensureDirectories preserves relationships added after migration discovery", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-relationship-race-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const canonical = normalizeEntityName(name, type);
+    const legacyCanonical = "project-";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+    );
+    const relatedCanonical = await seed.writeEntity("Aurora", type, ["Aurora is synthetic."]);
+    await seed.addEntityRelationship(relatedCanonical, {
+      target: legacyCanonical,
+      label: "depends on",
+    });
+    const staleRelatedContent = await seed.readEntity(relatedCanonical);
+    await seed.addEntityRelationship(relatedCanonical, {
+      target: "project-sun",
+      label: "concurrent",
+    });
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+
+    const upgraded = new StorageManager(dir);
+    const relatedPath = path.join(dir, "entities", `${relatedCanonical}.md`);
+    type StorageReadInternals = {
+      readStorageSecureFile(filePath: string): Promise<string>;
+    };
+    const readInternals = upgraded as unknown as StorageReadInternals;
+    const originalRead = readInternals.readStorageSecureFile.bind(upgraded);
+    let relatedReads = 0;
+    readInternals.readStorageSecureFile = async (filePath) => {
+      const content = await originalRead(filePath);
+      if (filePath === relatedPath) {
+        relatedReads += 1;
+        if (relatedReads === 1) return staleRelatedContent;
+      }
+      return content;
+    };
+    try {
+      await upgraded.ensureDirectories();
+    } finally {
+      readInternals.readStorageSecureFile = originalRead;
+    }
+
+    assert.ok(relatedReads >= 2);
+    assert.deepEqual(parseEntityFile(await upgraded.readEntity(relatedCanonical)).relationships, [
+      { target: canonical, label: "depends on" },
+      { target: "project-sun", label: "concurrent" },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories resumes a journaled legacy entity migration", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-legacy-unicode-recovery-"));
   try {
@@ -497,6 +555,14 @@ test("normalizeEntityName canonicalizes Unicode composition", () => {
   assert.equal(
     normalizeEntityName("Café", "project"),
     normalizeEntityName("Cafe\u0301", "project"),
+  );
+});
+
+test("normalizeEntityName falls back to legacy alias keys", () => {
+  assert.equal(normalizeEntityName("Café", "project", { caf: "coffee" }), "project-coffee");
+  assert.equal(
+    normalizeEntityName("Café", "project", { "café": "espresso", caf: "coffee" }),
+    "project-espresso",
   );
 });
 

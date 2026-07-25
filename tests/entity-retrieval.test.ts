@@ -225,6 +225,22 @@ test("entity retrieval treats combining marks as Unicode word continuations", as
   assert.equal(marked, "project-कि");
 });
 
+test("entity retrieval uses script-aware boundaries for Thai mentions", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-thai-boundary");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  await writeEntity(storage, "กรุงเทพ", "place", ["Bangkok is synthetic."], "Bangkok summary.");
+
+  const section = await buildSection(config, storage, "กรุงเทพคืออะไร");
+  assert.ok(section);
+  assert.match(section!, /target: กรุงเทพ \(place\)/);
+  assert.match(section!, /Bangkok summary/);
+});
+
 test("entity retrieval treats canonically equivalent Unicode mentions as equal", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-unicode-normalization");
   t.after(async () => {

@@ -12,12 +12,27 @@ function normalizeEntityNameWithPattern(
 ): string {
   const rawStr = typeof raw === "string" ? raw : "";
   const typeStr = typeof type === "string" && type.trim().length > 0 ? type : "entity";
-  let name = normalizeUnicode ? rawStr.normalize("NFC").toLowerCase().trim() : rawStr.toLowerCase().trim();
   const typePrefix = `${typeStr.toLowerCase()}-`;
+  let name = normalizeUnicode ? rawStr.normalize("NFC").toLowerCase().trim() : rawStr.toLowerCase().trim();
   if (name.startsWith(typePrefix)) name = name.slice(typePrefix.length);
 
   let normalized = name.replace(pattern, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-  const userAlias = aliases !== undefined && Object.hasOwn(aliases, normalized) ? aliases[normalized] : undefined;
+  let legacyNormalized: string | undefined;
+  if (normalizeUnicode) {
+    let legacyName = rawStr.toLowerCase().trim();
+    if (legacyName.startsWith(typePrefix)) legacyName = legacyName.slice(typePrefix.length);
+    legacyNormalized = legacyName.replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  }
+  const unicodeAlias = aliases !== undefined && Object.hasOwn(aliases, normalized) ? aliases[normalized] : undefined;
+  const legacyAlias =
+    legacyNormalized !== undefined && legacyNormalized !== normalized && aliases !== undefined &&
+    Object.hasOwn(aliases, legacyNormalized)
+      ? aliases[legacyNormalized]
+      : undefined;
+  const userAlias =
+    typeof unicodeAlias === "string" && unicodeAlias.length > 0
+      ? unicodeAlias
+      : legacyAlias;
   if (typeof userAlias === "string" && userAlias.length > 0) {
     normalized = userAlias;
   } else if (Object.hasOwn(BUILTIN_ALIASES, normalized)) {
