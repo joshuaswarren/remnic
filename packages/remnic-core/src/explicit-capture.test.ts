@@ -152,6 +152,39 @@ test("inline capture processor persists an authorized inline note once and strip
   assert.equal(probe.lifecycleEvents[0]?.actor, "inline.memory_note");
 });
 
+test("inline capture processor hashes the effective authorized input for replay dedupe", async () => {
+  const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
+  const request = {
+    captureMode: "hybrid" as const,
+    dedupeKeys: ["authorized-delivery"],
+    namespace: "principal-project",
+    namespacePreResolved: true,
+  };
+  const first = await probe.processor.process({
+    ...request,
+    content: [
+      "<memory_note>",
+      "content: An authorized namespace must control replay identity.",
+      "category: fact",
+      "namespace: untrusted-inline-value",
+      "</memory_note>",
+    ].join("\n"),
+  });
+  const replay = await probe.processor.process({
+    ...request,
+    content: [
+      "<memory_note>",
+      "content: An authorized namespace must control replay identity.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+  });
+
+  assert.equal(first.queued, 1);
+  assert.equal(replay.processed, 0);
+  assert.equal(probe.envelopes.length, 1);
+});
+
 test("inline capture processor routes tombstone-blocked captures to review", async () => {
   const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
   const result = await probe.processor.process({
@@ -350,7 +383,7 @@ test("inline capture processor canonicalizes reordered note fields for replay de
     captureMode: "hybrid",
     content: [
       "<memory_note>",
-      "tags: release, capture",
+      "tags: capture, release",
       "category: fact",
       "content: Reordered note fields must share one replay identity.",
       "</memory_note>",

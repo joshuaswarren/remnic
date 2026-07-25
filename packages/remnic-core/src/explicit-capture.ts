@@ -658,6 +658,29 @@ export interface InlineExplicitCaptureProcessorOptions {
 
 const DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT = 1024;
 
+function canonicalInlineCaptureDedupeInput(input: ExplicitCaptureInput) {
+  const tags = Array.from(
+    new Set(
+      (input.tags ?? [])
+        .map((tag) => asTrimmed(tag))
+        .filter((tag): tag is string => tag !== undefined),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+  return {
+    content: asTrimmed(input.content) ?? "",
+    category: asTrimmed(input.category) ?? "fact",
+    confidence: input.confidence ?? 0.95,
+    namespace: asTrimmed(input.namespace) ?? "",
+    tags,
+    entityRef: asTrimmed(input.entityRef) ?? "",
+    sourceConnector: asTrimmed(input.sourceConnector) ?? "",
+    ttl: asTrimmed(input.ttl) ?? "",
+    sourceReason: asTrimmed(input.sourceReason) ?? "",
+  };
+}
+
+
+
 export class InlineExplicitCaptureProcessor {
   private readonly observedKeys = new Set<string>();
   private readonly observedKeyOrder: string[] = [];
@@ -676,21 +699,16 @@ export class InlineExplicitCaptureProcessor {
 
   private buildDedupeKeys(
     dedupeKeys: readonly string[] | undefined,
-    note: ExplicitCaptureInput,
-    namespace: string | undefined,
-    sourceConnector: string | undefined,
+    input: ExplicitCaptureInput,
   ): string[] {
-    const namespaceScope =
-      namespace === undefined ? asTrimmed(note.namespace) ?? "" : asTrimmed(namespace) ?? "";
-    const noteHash = createHash("sha256")
-      .update(JSON.stringify(Object.entries(note).sort(([left], [right]) => left.localeCompare(right))))
-      .digest("hex");
+    const canonicalInput = canonicalInlineCaptureDedupeInput(input);
+    const noteHash = createHash("sha256").update(JSON.stringify(canonicalInput)).digest("hex");
     return (dedupeKeys ?? [])
       .map((key) => asTrimmed(key))
       .filter((key): key is string => key !== undefined)
       .map(
         (key) =>
-          `${namespaceScope}\u0000${sourceConnector ?? ""}\u0000${key}:inline-memory-note:${noteHash}`,
+          `${canonicalInput.namespace}\u0000${canonicalInput.sourceConnector}\u0000${key}:inline-memory-note:${noteHash}`,
       );
   }
 
@@ -725,19 +743,14 @@ export class InlineExplicitCaptureProcessor {
     let duplicates = 0;
 
     for (const note of notes) {
-      const dedupeKeys = this.buildDedupeKeys(
-        request.dedupeKeys,
-        note,
-        request.namespace,
-        sourceConnector,
-      );
-      if (dedupeKeys.some((key) => this.observedKeys.has(key))) continue;
-
       const input: ExplicitCaptureInput = {
         ...note,
         ...(request.namespace !== undefined ? { namespace: request.namespace } : {}),
         ...(sourceConnector ? { sourceConnector } : {}),
       };
+      const dedupeKeys = this.buildDedupeKeys(request.dedupeKeys, input);
+      if (dedupeKeys.some((key) => this.observedKeys.has(key))) continue;
+
       try {
         const candidate = validateExplicitCaptureInput(input);
         if (request.namespacePreResolved === true) candidate.namespacePreResolved = true;
