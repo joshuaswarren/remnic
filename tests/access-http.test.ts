@@ -21,7 +21,7 @@ function createFakeService(): EngramAccessService {
       corpus: [
         {
           namespace: "global",
-          activeMemoryCount: 2,
+          memoryFileCount: 2,
           newestPartition: "2026-03-08",
           newestWriteAt: "2026-03-08T00:00:00.000Z",
           digest: "0000000000000000000000000000000000000000000000000000000000000000",
@@ -508,7 +508,7 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
     const health = (await healthRes.json()) as {
       ok: boolean;
       projectionAvailable: boolean;
-      corpus: Array<{ namespace: string; activeMemoryCount: number }>;
+      corpus: Array<{ namespace: string; memoryFileCount: number }>;
     };
     assert.equal(health.ok, true);
     assert.equal(health.projectionAvailable, true);

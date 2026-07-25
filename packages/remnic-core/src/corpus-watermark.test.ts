@@ -143,14 +143,14 @@ test("buildPartitionCensus buckets by <tier>:<category>/<day>; non-day paths lan
 test("computeCorpusWatermark: an empty corpus yields a stable digest, null timestamps, and does not throw", async () => {
   const empty = await computeCorpusWatermark({ namespace: "global", paths: [], baseDir: "/mem" });
   const emptyElsewhere = await computeCorpusWatermark({ namespace: "global", paths: [], baseDir: "/other" });
-  assert.equal(empty.activeMemoryCount, 0);
+  assert.equal(empty.memoryFileCount, 0);
   assert.equal(empty.newestPartition, null);
   assert.equal(empty.newestWriteAt, null);
   assert.equal(empty.digest, digestPartitionCensus(new Map<string, number>()));
   assert.equal(empty.digest, emptyElsewhere.digest);
 });
 
-test("computeCorpusWatermark: activeMemoryCount matches the files written by the fixture", async () => {
+test("computeCorpusWatermark: memoryFileCount matches the files written by the fixture", async () => {
   const memoryDir = await makeMemoryDir();
   try {
     await writeMemory(memoryDir, "facts/2026-03-08/a.md");
@@ -158,7 +158,7 @@ test("computeCorpusWatermark: activeMemoryCount matches the files written by the
     await writeMemory(memoryDir, "procedures/2026-03-09/c.md");
     const { paths, baseDir } = await scanHot(memoryDir);
     const watermark = await computeCorpusWatermark({ namespace: "global", paths, baseDir });
-    assert.equal(watermark.activeMemoryCount, 3);
+    assert.equal(watermark.memoryFileCount, 3);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -173,7 +173,7 @@ test("computeCorpusWatermark: a memory without a day dir is counted in the unpar
     const census = buildPartitionCensus(paths, baseDir);
     assert.equal(census.get(`hot:${UNPARTITIONED_BUCKET}`), 1);
     const watermark = await computeCorpusWatermark({ namespace: "global", paths, baseDir });
-    assert.equal(watermark.activeMemoryCount, 2);
+    assert.equal(watermark.memoryFileCount, 2);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -254,8 +254,8 @@ test("finding D: moving a memory from hot to cold changes the digest while the c
     const coldScan = await scanBothTiers(memoryDir);
     const coldWatermark = await computeCorpusWatermark({ namespace: "global", ...coldScan });
 
-    assert.equal(hotWatermark.activeMemoryCount, 1);
-    assert.equal(coldWatermark.activeMemoryCount, 1, "cold memories still count as active");
+    assert.equal(hotWatermark.memoryFileCount, 1);
+    assert.equal(coldWatermark.memoryFileCount, 1, "cold memories still count as active");
     assert.notEqual(
       hotWatermark.digest,
       coldWatermark.digest,
@@ -281,8 +281,8 @@ test("finding D: a replica missing a cold file diverges from one that has it", a
     const wmA = await computeCorpusWatermark({ namespace: "global", ...scanA });
     const wmB = await computeCorpusWatermark({ namespace: "global", ...scanB });
 
-    assert.equal(wmA.activeMemoryCount, 2);
-    assert.equal(wmB.activeMemoryCount, 1);
+    assert.equal(wmA.memoryFileCount, 2);
+    assert.equal(wmB.memoryFileCount, 1);
     assert.notEqual(wmA.digest, wmB.digest, "differing cold tiers must diverge the digest, not read as converged");
   } finally {
     await rm(dirA, { recursive: true, force: true });
@@ -305,7 +305,7 @@ test("finding D: cold files count in the census but never advance the newest-wri
     const watermark = await computeCorpusWatermark({ namespace: "global", ...scan });
     assert.equal(watermark.newestPartition, "2026-03-08", "newest partition is scoped to the hot tier");
     assert.equal(watermark.newestWriteAt, hotMtime.toISOString(), "freshness ignores the newer cold file");
-    assert.equal(watermark.activeMemoryCount, 2, "but the cold file still counts in the census");
+    assert.equal(watermark.memoryFileCount, 2, "but the cold file still counts in the census");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -342,7 +342,7 @@ test("computeServiceCorpusWatermarks: namespaces disabled -> single default-name
     const result = await computeServiceCorpusWatermarks(host);
     assert.equal(result.length, 1, "flat-root deployment reports its shared corpus once");
     assert.equal(result[0]?.namespace, "global");
-    assert.equal(result[0]?.activeMemoryCount, 2);
+    assert.equal(result[0]?.memoryFileCount, 2);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -422,7 +422,7 @@ test("finding A: the cache computes once for back-to-back calls and recomputes a
     computeCalls += 1;
     return {
       namespace: "global",
-      activeMemoryCount: 0,
+      memoryFileCount: 0,
       newestPartition: null,
       newestWriteAt: null,
       digest: "d",
@@ -449,7 +449,7 @@ test("finding A: concurrent probes for one namespace collapse to a single comput
     await gate;
     return {
       namespace: "global",
-      activeMemoryCount: 0,
+      memoryFileCount: 0,
       newestPartition: null,
       newestWriteAt: null,
       digest: "d",

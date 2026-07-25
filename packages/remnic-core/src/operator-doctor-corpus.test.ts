@@ -118,8 +118,8 @@ test("summarizeCorpusWatermark: reports an ok check with per-namespace count and
     const corpus = corpusOf(check);
     assert.equal(corpus.length, 1);
     assert.equal(corpus[0]?.namespace, "global");
-    assert.equal(corpus[0]?.activeMemoryCount, 3);
-    assert.match(check.summary, /global: 3 active/);
+    assert.equal(corpus[0]?.memoryFileCount, 3);
+    assert.match(check.summary, /global: 3 files/);
     assert.match(check.summary, /digest=[0-9a-f]{12}/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -133,7 +133,7 @@ test("summarizeCorpusWatermark: an empty corpus still resolves ok with a zero co
     assert.equal(check.status, "ok");
     const corpus = corpusOf(check);
     assert.equal(corpus.length, 1);
-    assert.equal(corpus[0]?.activeMemoryCount, 0);
+    assert.equal(corpus[0]?.memoryFileCount, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -147,7 +147,7 @@ test("runOperatorDoctor: includes the corpus_watermark check", async () => {
     const check = report.checks.find((c) => c.key === "corpus_watermark");
     assert.ok(check, "expected a corpus_watermark check");
     assert.equal(check?.status, "ok");
-    assert.equal(corpusOf(check)[0]?.activeMemoryCount, 1);
+    assert.equal(corpusOf(check)[0]?.memoryFileCount, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

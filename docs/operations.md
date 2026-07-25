@@ -172,9 +172,11 @@ an operator token sees the whole fleet.
 Each entry has:
 
 - `namespace` — the namespace the watermark covers.
-- `activeMemoryCount` — total active memory files across BOTH the hot and cold tiers, from a
-  cheap directory scan that does not parse frontmatter (cold memories stay reachable via cold
-  recall, so they count).
+- `memoryFileCount` — total memory FILES across BOTH the hot and cold tiers, from a cheap
+  directory scan that does not parse frontmatter. This is a file census, not a status-filtered
+  active count (reading each file's status would defeat the cheap probe), so an in-place status
+  change such as archive-in-place is not reflected here; cold memories stay reachable via cold
+  recall, so they count.
 - `newestPartition` — the newest `YYYY-MM-DD` day-partition seen in the HOT tier, or `null`
   when nothing is dated.
 - `newestWriteAt` — the maximum file mtime **within the newest hot partition only** (bounded

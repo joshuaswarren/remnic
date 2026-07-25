@@ -50,7 +50,7 @@ export async function summarizeCorpusWatermark(
 
   const lines = watermarks.map(
     (w) =>
-      `${w.namespace}: ${w.activeMemoryCount} active, newest=${w.newestWriteAt ?? "never"}, ` +
+      `${w.namespace}: ${w.memoryFileCount} files, newest=${w.newestWriteAt ?? "never"}, ` +
       `digest=${w.digest.slice(0, DIGEST_PREFIX_LENGTH)}`
   );
 

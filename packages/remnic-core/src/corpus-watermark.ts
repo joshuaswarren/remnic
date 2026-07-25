@@ -10,7 +10,7 @@
  * peer polling and divergence alerting are a follow-up.
  *
  * The digest is a CENSUS fingerprint (per day-partition file counts), NOT a
- * content hash — two daemons that agree on how many active memories live in
+ * content hash — two daemons that agree on how many memory FILES live in
  * each `<tier>:<category>/<day>` partition produce the same digest, so a
  * differing digest is a cheap divergence signal without reading or hashing file
  * bodies. Buckets are tier-aware (`hot:` / `cold:`): demoted memories stay
@@ -36,7 +36,13 @@ import type { PluginConfig } from "./types.js";
 
 export interface CorpusWatermark {
   namespace: string;
-  activeMemoryCount: number;
+  /**
+   * Count of memory files under the census scan roots (hot + cold). This is a
+   * FILE census, not a status-filtered active count: reading each file's
+   * frontmatter status would defeat the cheap-probe design, so an in-place
+   * status change (e.g. archived-in-place) is not reflected here.
+   */
+  memoryFileCount: number;
   /** Newest `YYYY-MM-DD` day-partition seen in the HOT tier, or null when none is dated. */
   newestPartition: string | null;
   /** ISO max mtime within the newest HOT partition, or null when it has no files. */
@@ -160,7 +166,7 @@ export async function computeCorpusWatermark(input: {
 
   return {
     namespace,
-    activeMemoryCount: paths.length,
+    memoryFileCount: paths.length,
     newestPartition,
     newestWriteAt,
     digest,
