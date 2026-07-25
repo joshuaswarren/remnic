@@ -360,6 +360,12 @@ export async function fetchPeerWatermarks(
     if (corpus.length !== body.corpus.length) {
       return { kind: "unknown", reason: "malformed_corpus" };
     }
+    // Duplicate namespace keys are malformed too: the comparison builds a Map,
+    // so a later entry silently wins and a mismatching watermark followed by a
+    // matching one would certify `converged` (round 3, codex P2).
+    if (new Set(corpus.map((watermark) => watermark.namespace)).size !== corpus.length) {
+      return { kind: "unknown", reason: "malformed_corpus" };
+    }
     return { kind: "ok", corpus };
   }
   return { kind: "unreachable", reason: "http_404" };

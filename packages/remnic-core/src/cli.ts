@@ -115,6 +115,7 @@ import {
   renderActionConfidenceText,
 } from "./action-confidence.js";
 import {
+  hostSecretRefResolver,
   loadHostSecretRefResolver,
   resolveAgentAccessAuthToken,
   type ResolveSecretRefFn,
@@ -6769,7 +6770,10 @@ export function registerCli(
           console.log("OK");
         });
 
-      const accessService = new EngramAccessService(orchestrator);
+      // /health's replica monitor resolves peer-token SecretRefs at poll time (#2149).
+      const accessService = new EngramAccessService(orchestrator, {
+        resolveSecretRef: hostSecretRefResolver(registerOptions),
+      });
       const accessCmd = cmd
         .command("access")
         .description("Manage Engram HTTP and MCP access surfaces");

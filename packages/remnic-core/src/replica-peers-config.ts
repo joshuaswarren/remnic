@@ -123,6 +123,21 @@ function parseReplicaPeer(value: unknown, index: number): ReplicaPeerConfig {
  * the other config-block parsers; coerces string booleans (§24) and rejects
  * invalid numbers/urls/shapes (§1/§39).
  */
+/**
+ * Strict boolean for the parse path: absent -> the default, present -> must be
+ * a recognized boolean token. A value like `1` must NOT silently reinterpret as
+ * `false`, which would leave monitoring off after an operator tried to enable
+ * it (round 3, codex P2). The lenient read-boundary resolver still defaults.
+ */
+function parseStrictBool(value: unknown, fallback: boolean, label: string): boolean {
+  if (value === undefined) return fallback;
+  const coerced = coerceBool(value);
+  if (coerced === undefined) {
+    throw new Error(`${label} must be a boolean (got ${JSON.stringify(value)})`);
+  }
+  return coerced;
+}
+
 export function parseReplicaPeersConfig(cfg: Record<string, unknown>): ReplicaPeersConfig {
   const raw = cfg.replicaPeers;
   if (raw !== undefined && (raw === null || typeof raw !== "object" || Array.isArray(raw))) {
@@ -134,7 +149,7 @@ export function parseReplicaPeersConfig(cfg: Record<string, unknown>): ReplicaPe
   }
   const peers = (block.peers ?? []).map(parseReplicaPeer);
   return {
-    enabled: coerceBool(block.enabled) ?? false,
+    enabled: parseStrictBool(block.enabled, false, "replicaPeers.enabled"),
     peers,
     pollIntervalMs: parseIntegerAtLeast(block.pollIntervalMs, 1, DEFAULT_POLL_INTERVAL_MS, "replicaPeers.pollIntervalMs"),
     requestTimeoutMs: parseIntegerAtLeast(block.requestTimeoutMs, 1, DEFAULT_REQUEST_TIMEOUT_MS, "replicaPeers.requestTimeoutMs"),

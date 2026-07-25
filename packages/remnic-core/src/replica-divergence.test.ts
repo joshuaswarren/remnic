@@ -678,3 +678,42 @@ test("round 2 (codex P2): semantically malformed peer watermarks read as unknown
     assert.notEqual(status.peers[0]?.state, "converged", `${label} must never be certified converged`);
   }
 });
+
+test("round 3 (codex P2): a peer repeating a namespace is malformed, not converged", async () => {
+  // compareReplicaWatermarks builds a Map, so a later duplicate silently wins:
+  // a mismatching watermark followed by a matching one would certify converged.
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      corpus: [
+        { ...watermark("default"), digest: "does-not-match", memoryFileCount: 9_999 },
+        watermark("default"),
+      ],
+    }),
+  });
+  const status = await pollReplicaPeers({
+    config: parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } }),
+    localWatermarks: [watermark("default")],
+    fetchImpl,
+  });
+  assert.equal(status.peers[0]?.state, "unknown", "a duplicated namespace must read as malformed");
+  assert.notEqual(status.peers[0]?.state, "converged", "the shadowed mismatch must not be certified healthy");
+  assert.equal(status.peers[0]?.reason, "malformed_corpus");
+});
+
+test("round 3 (codex P2): a present-but-invalid replicaPeers.enabled is rejected, not read as false", () => {
+  // `enabled: 1` used to coerce to undefined and fall back to false — silently
+  // leaving monitoring OFF after an operator tried to turn it on.
+  for (const bad of [1, 0, "yes-please", {}]) {
+    assert.throws(
+      () => parseReplicaPeersConfig({ replicaPeers: { enabled: bad, peers: [] } }),
+      /replicaPeers\.enabled must be a boolean/,
+      `enabled: ${JSON.stringify(bad)} must be rejected`,
+    );
+  }
+  // Recognized tokens and absence still work.
+  assert.equal(parseReplicaPeersConfig({ replicaPeers: { enabled: "false", peers: [] } }).enabled, false);
+  assert.equal(parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [] } }).enabled, true);
+  assert.equal(parseReplicaPeersConfig({ replicaPeers: { peers: [] } }).enabled, false, "absent -> default");
+});

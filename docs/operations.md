@@ -208,20 +208,25 @@ compares it against the local set, per namespace. Results appear in the `replica
 
 Per peer, the reported state is one of:
 
-- `converged` — every shared namespace agrees within the configured thresholds.
+- `converged` — every shared namespace agrees within the configured thresholds, and the peer
+  reported every namespace present locally.
 - `diverged` — at least one shared namespace differs beyond a threshold (a file-count delta
   above `maxFileCountDelta`, a newest-write age gap above `maxWatermarkAgeDeltaMs`, or a digest
-  mismatch — equal counts but different content/distribution, the split-brain case), or the
-  peer holds a namespace absent locally. A namespace present locally but ABSENT from the peer's
-  response is advisory, not divergence: a namespace-restricted peer token intentionally hides
-  namespaces it cannot see, so it is reported but never flips the verdict — use an unrestricted
-  (operator) peer token when you need to detect a namespace genuinely missing on a peer. The
-  concrete deltas are reported so an operator sees numbers, not just a verdict.
+  mismatch at EQUAL counts — same size, different content/distribution, the split-brain case), or
+  the peer holds a namespace absent locally. The concrete deltas are reported so an operator sees
+  numbers, not just a verdict.
 - `unreachable` — the peer timed out, refused the connection, returned a non-2xx status, or its
   token could not be resolved (a SecretRef with no host resolver reports `token_error`, never a
   crash — a single peer failure never aborts the poll).
-- `unknown` — the peer answered 2xx but the payload carried no usable `corpus` array (missing,
-  or containing malformed entries).
+- `unknown` — the comparison could not be certified either way. Two causes:
+  1. The peer answered 2xx but the payload carried no usable `corpus` array (missing, containing
+     malformed entries, or repeating a namespace).
+  2. A namespace present locally is ABSENT from the peer's response. This is genuinely
+     ambiguous: a namespace-restricted peer token hides namespaces it cannot see, and a peer
+     that has genuinely LOST the namespace omits it in exactly the same way. The evidence cannot
+     distinguish the two, so the peer is reported `unknown` rather than certified healthy — and
+     `remnic doctor` warns. **Use an unrestricted (operator) peer token** so this resolves: with
+     full visibility, a namespace missing on the peer is real and reports as divergence.
 
 `unreachable`/`unknown` are deliberately distinct from `converged`: a monitor must be able to
 tell "the peer agrees" from "we could not ask" (the same error-vs-empty distinction the corpus

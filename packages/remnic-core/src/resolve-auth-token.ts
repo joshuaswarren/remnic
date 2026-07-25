@@ -174,3 +174,12 @@ export async function loadHostSecretRefResolver(options: {
 }): Promise<ResolveSecretRefFn | null | undefined> {
   return options.resolveSecretRef ?? (options.loadResolveSecretRef ? await options.loadResolveSecretRef() : null);
 }
+
+/**
+ * Adapt a host's lazily-loaded SecretRef resolver into the eager
+ * `ResolveSecretRefFn` that `EngramAccessService` expects, so replica peer
+ * tokens resolve at poll time (issue #2149).
+ */
+export function hostSecretRefResolver(options: Parameters<typeof loadHostSecretRefResolver>[0]): ResolveSecretRefFn {
+  return (ref, context) => loadHostSecretRefResolver(options).then((resolve) => resolve?.(ref, context));
+}
