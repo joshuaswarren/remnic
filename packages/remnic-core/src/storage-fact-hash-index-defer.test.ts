@@ -1320,3 +1320,64 @@ test("token-specific blocked index markers survive peer interleaving and restart
     );
   });
 });
+
+test("tombstone blocked index sync failure persists a rebuild marker across restart", async () => {
+  await withMemoryDir(async (dir) => {
+    const before = {
+      path: path.join(dir, "facts", "before.md"),
+      frontmatter: {
+        id: "sync-before",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: ["review"],
+        status: "pending_review",
+        blockedBy: "tombstone-sync",
+        sourceConnector: "provider-a",
+      },
+      content: "A blocked capture changes provider identity during an unavailable index rebuild.",
+    } as MemoryFile;
+    const after = {
+      ...before,
+      path: path.join(dir, "facts", "after.md"),
+      frontmatter: {
+        ...before.frontmatter,
+        id: "sync-after",
+        sourceConnector: "provider-b",
+      },
+    };
+    const memories = [before];
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 1, retryBaseMs: 1 }),
+      readAllMemories: async () => memories,
+      readAllColdMemories: async () => [],
+    };
+    const index = new TombstoneBlockedCaptureIndex(options);
+    await index.add(before);
+    memories[0] = after;
+
+    const rebuildSpy = mock.method(ContentHashIndex.prototype, "rebuildUnderLock", async () => false);
+    try {
+      await index.sync(before, after);
+      assert.equal(
+        (await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required"))).length > 0,
+        true,
+        "a failed identity rebuild must leave durable rebuild intent",
+      );
+    } finally {
+      rebuildSpy.mock.restore();
+    }
+
+    const restarted = new TombstoneBlockedCaptureIndex(options);
+    assert.equal(await restarted.has(after.content, "fact", "provider-b"), true);
+    assert.equal(await restarted.has(before.content, "fact", "provider-a"), false);
+    assert.deepEqual(await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required")), []);
+  });
+});

@@ -273,8 +273,9 @@ export class TombstoneBlockedCaptureIndex {
   async rebuildIfLoaded(): Promise<void> {
     if (!this.index) return;
     const rebuildMarkers = await this.getRebuildMarkers();
+    const rebuildMarker = await this.markRebuildRequired();
     const rebuilt = await this.rebuild(this.index);
-    if (rebuilt) await this.clearRebuildRequired(rebuildMarkers);
+    if (rebuilt) await this.clearRebuildRequired([...rebuildMarkers, rebuildMarker]);
     this.authoritative = rebuilt;
   }
 
@@ -295,8 +296,9 @@ export class TombstoneBlockedCaptureIndex {
     );
     if (beforeBlocked && afterBlocked && beforeKey === afterKey) return;
     const rebuildMarkers = await this.getRebuildMarkers();
+    const rebuildMarker = await this.markRebuildRequired();
     const rebuilt = await this.rebuild(await this.getIndex());
-    if (rebuilt) await this.clearRebuildRequired(rebuildMarkers);
+    if (rebuilt) await this.clearRebuildRequired([...rebuildMarkers, rebuildMarker]);
     this.authoritative = rebuilt;
   }
 
