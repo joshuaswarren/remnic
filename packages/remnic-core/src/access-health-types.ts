@@ -10,6 +10,7 @@
  */
 import type { ExtractionLivenessStatus } from "./extraction-liveness.js";
 import type { CorpusWatermark } from "./corpus-watermark.js";
+import type { ReplicaDivergenceStatus } from "./replica-divergence.js";
 
 export interface EngramAccessHealthResponse {
   ok: true;
@@ -23,6 +24,7 @@ export interface EngramAccessHealthResponse {
   projectionAvailable: boolean;
   extraction: ExtractionLivenessStatus;
   corpus: CorpusWatermark[];
+  replica: ReplicaDivergenceStatus;
 }
 
 export type EngramAccessQmdCollectionState =

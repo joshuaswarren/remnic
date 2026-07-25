@@ -1,0 +1,485 @@
+import assert from "node:assert/strict";
+import { createServer, type RequestListener } from "node:http";
+import type { AddressInfo, Socket } from "node:net";
+import test from "node:test";
+
+import { computeCorpusWatermark, type CorpusWatermark } from "./corpus-watermark.js";
+import {
+  ReplicaDivergenceMonitor,
+  type FetchLike,
+  type ReplicaDivergenceStatus,
+  compareReplicaWatermarks,
+  filterReplicaReportByCaps,
+  pollReplicaPeers,
+  redactPeerUrl,
+} from "./replica-divergence.js";
+import { parseReplicaPeersConfig } from "./replica-peers-config.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const THRESHOLDS = { maxFileCountDelta: 100, maxWatermarkAgeDeltaMs: 900_000 } as const;
+
+function watermark(namespace: string, overrides: Partial<CorpusWatermark> = {}): CorpusWatermark {
+  return {
+    namespace,
+    memoryFileCount: 10,
+    newestPartition: "2026-03-08",
+    newestWriteAt: "2026-03-08T00:00:00.000Z",
+    digest: `digest-${namespace}`,
+    computedAt: "2026-03-08T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+interface Peer {
+  url: string;
+  port: number;
+  requests: { pathname: string; authorization: string | undefined }[];
+  close: () => Promise<void>;
+}
+
+async function startPeer(handler: RequestListener): Promise<Peer> {
+  const requests: Peer["requests"] = [];
+  const sockets = new Set<Socket>();
+  const server = createServer((req, res) => {
+    requests.push({ pathname: new URL(req.url ?? "/", "http://127.0.0.1").pathname, authorization: req.headers.authorization });
+    handler(req, res);
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    port: address.port,
+    requests,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+/** A `/health`-style handler that serves `corpus` under the given path (default engram prefix). */
+function corpusHandler(corpus: CorpusWatermark[], servedPath = "/engram/v1/health"): RequestListener {
+  return (req, res) => {
+    const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+    if (pathname === servedPath) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, corpus }));
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "not_found" }));
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Config parsing (§1/§17/§24/§39)
+// ---------------------------------------------------------------------------
+
+test("parseReplicaPeersConfig: defaults are opt-out and match the documented values", () => {
+  const config = parseReplicaPeersConfig({});
+  assert.equal(config.enabled, false);
+  assert.equal(config.peers.length, 0);
+  assert.equal(config.pollIntervalMs, 300_000);
+  assert.equal(config.requestTimeoutMs, 10_000);
+  assert.equal(config.maxFileCountDelta, 100);
+  assert.equal(config.maxWatermarkAgeDeltaMs, 900_000);
+});
+
+test("parseReplicaPeersConfig: string \"false\"/\"0\" are falsy (§24 CLI/JSON string coercion)", () => {
+  assert.equal(parseReplicaPeersConfig({ replicaPeers: { enabled: "false" } }).enabled, false);
+  assert.equal(parseReplicaPeersConfig({ replicaPeers: { enabled: "0" } }).enabled, false);
+  assert.equal(parseReplicaPeersConfig({ replicaPeers: { enabled: "true" } }).enabled, true);
+  assert.equal(parseReplicaPeersConfig({ replicaPeers: { enabled: "1" } }).enabled, true);
+});
+
+test("parseReplicaPeersConfig: string numbers coerce; interval floors are honored", () => {
+  const config = parseReplicaPeersConfig({
+    replicaPeers: { pollIntervalMs: "60000", requestTimeoutMs: "5000", maxFileCountDelta: "0" },
+  });
+  assert.equal(config.pollIntervalMs, 60_000);
+  assert.equal(config.requestTimeoutMs, 5_000);
+  assert.equal(config.maxFileCountDelta, 0, "0 is a valid strictest threshold (schema minimum 0, code accepts 0)");
+});
+
+test("parseReplicaPeersConfig: valid peers parse with url + token", () => {
+  const config = parseReplicaPeersConfig({
+    replicaPeers: { enabled: true, peers: [{ url: "https://backup.example:4318", token: "tok" }] },
+  });
+  assert.equal(config.peers.length, 1);
+  assert.equal(config.peers[0]?.url, "https://backup.example:4318");
+  assert.equal(config.peers[0]?.token, "tok");
+});
+
+test("parseReplicaPeersConfig: rejects invalid inputs instead of silently defaulting (§39)", () => {
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { peers: [{ url: "not a url" }] } }), /valid URL/);
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { peers: [{ url: "ftp://host" }] } }), /http\(s\)/);
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { peers: "nope" } }), /must be an array/);
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { peers: [42] } }), /must be an object/);
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { peers: [{}] } }), /url must be a non-empty string/);
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { peers: [{ url: "http://h", token: 5 }] } }), /token must be/);
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: [] }), /must be a plain object/);
+});
+
+test("parseReplicaPeersConfig: rejects fractional / non-positive intervals (§1/§17)", () => {
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { pollIntervalMs: 1.5 } }), /integer/);
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { pollIntervalMs: 0 } }), /greater than or equal to 1/);
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { requestTimeoutMs: -5 } }), /greater than or equal to 1/);
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { maxFileCountDelta: -1 } }), /greater than or equal to 0/);
+  assert.throws(() => parseReplicaPeersConfig({ replicaPeers: { maxWatermarkAgeDeltaMs: 2.5 } }), /integer/);
+});
+
+test("parseReplicaPeersConfig: ${ENV} expansion in url and token, throws on unset", () => {
+  process.env.REPLICA_TEST_HOST = "backup.example:4318";
+  process.env.REPLICA_TEST_TOKEN = "env-token";
+  try {
+    const config = parseReplicaPeersConfig({
+      replicaPeers: { peers: [{ url: "https://${REPLICA_TEST_HOST}", token: "${REPLICA_TEST_TOKEN}" }] },
+    });
+    assert.equal(config.peers[0]?.url, "https://backup.example:4318");
+    assert.equal(config.peers[0]?.token, "env-token");
+    assert.throws(
+      () => parseReplicaPeersConfig({ replicaPeers: { peers: [{ url: "https://${REPLICA_TEST_UNSET_VAR}" }] } }),
+      /is not set/,
+    );
+  } finally {
+    delete process.env.REPLICA_TEST_HOST;
+    delete process.env.REPLICA_TEST_TOKEN;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// compareReplicaWatermarks (pure)
+// ---------------------------------------------------------------------------
+
+test("compareReplicaWatermarks: identical corpora converge", () => {
+  const local = [watermark("default")];
+  const peer = [watermark("default")];
+  const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
+  assert.equal(result.state, "converged");
+  assert.equal(result.divergedNamespaceCount, 0);
+  assert.equal(result.namespaces[0]?.digestMatch, true);
+});
+
+test("compareReplicaWatermarks: file-count delta beyond threshold diverges and reports the delta", () => {
+  const local = [watermark("default", { memoryFileCount: 190_000, digest: "d" })];
+  const peer = [watermark("default", { memoryFileCount: 340_000, digest: "d" })];
+  const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
+  assert.equal(result.state, "diverged");
+  const delta = result.namespaces[0];
+  assert.equal(delta?.fileCountDelta, 150_000);
+  assert.ok(delta?.reasons.includes("file_count_delta=150000"));
+});
+
+test("compareReplicaWatermarks: file-count delta within threshold stays converged", () => {
+  const local = [watermark("default", { memoryFileCount: 100, digest: "d" })];
+  const peer = [watermark("default", { memoryFileCount: 150, digest: "d" })];
+  const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
+  assert.equal(result.state, "converged", "delta 50 is within maxFileCountDelta 100");
+});
+
+test("compareReplicaWatermarks: equal counts but DIFFERENT digest diverges (split-brain)", () => {
+  const local = [watermark("default", { memoryFileCount: 500, digest: "aaa" })];
+  const peer = [watermark("default", { memoryFileCount: 500, digest: "bbb" })];
+  const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
+  assert.equal(result.state, "diverged", "same size, different content must be caught by the digest");
+  assert.equal(result.namespaces[0]?.digestMatch, false);
+  assert.ok(result.namespaces[0]?.reasons.includes("digest_mismatch"));
+});
+
+test("compareReplicaWatermarks: stale peer watermark (age delta beyond threshold) diverges", () => {
+  const local = [watermark("default", { newestWriteAt: "2026-03-08T12:00:00.000Z", digest: "d", memoryFileCount: 10 })];
+  const peer = [watermark("default", { newestWriteAt: "2026-03-08T00:00:00.000Z", digest: "d", memoryFileCount: 10 })];
+  const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
+  assert.equal(result.state, "diverged");
+  assert.equal(result.namespaces[0]?.writeAgeDeltaMs, 12 * 3_600_000);
+  assert.ok(result.namespaces[0]?.reasons.some((reason) => reason.startsWith("write_age_delta_ms=")));
+});
+
+test("compareReplicaWatermarks: a namespace on only one side is reported, not skipped", () => {
+  const local = [watermark("default"), watermark("team-a")];
+  const peer = [watermark("default"), watermark("team-b")];
+  const result = compareReplicaWatermarks(local, peer, THRESHOLDS);
+  assert.equal(result.state, "diverged");
+  const byNamespace = new Map(result.namespaces.map((delta) => [delta.namespace, delta]));
+  assert.equal(byNamespace.get("team-a")?.presence, "local_only");
+  assert.equal(byNamespace.get("team-a")?.diverged, true);
+  assert.equal(byNamespace.get("team-b")?.presence, "peer_only");
+  assert.equal(byNamespace.get("team-b")?.diverged, true);
+  assert.equal(byNamespace.get("default")?.diverged, false);
+});
+
+test("compareReplicaWatermarks: real watermarks with equal count but different day distribution diverge", async () => {
+  const baseDir = "/tmp/replica-fixture";
+  const localPaths = ["facts/2026-03-01/a.md", "facts/2026-03-01/b.md"].map((rel) => `${baseDir}/${rel}`);
+  const peerPaths = ["facts/2026-03-01/a.md", "facts/2026-03-02/b.md"].map((rel) => `${baseDir}/${rel}`);
+  const now = new Date("2026-03-08T00:00:00.000Z");
+  const local = await computeCorpusWatermark({ namespace: "default", paths: localPaths, baseDir, now });
+  const peer = await computeCorpusWatermark({ namespace: "default", paths: peerPaths, baseDir, now });
+  assert.equal(local.memoryFileCount, peer.memoryFileCount, "both have 2 files");
+  assert.notEqual(local.digest, peer.digest, "different day distribution changes the census digest");
+  const result = compareReplicaWatermarks([local], [peer], THRESHOLDS);
+  assert.equal(result.state, "diverged");
+  assert.equal(result.namespaces[0]?.digestMatch, false);
+});
+
+// ---------------------------------------------------------------------------
+// fetchPeerWatermarks / pollReplicaPeers (real HTTP peer on 127.0.0.1)
+// ---------------------------------------------------------------------------
+
+test("pollReplicaPeers: converged peer over the legacy engram prefix (remnic 404 -> engram fallback)", async () => {
+  const peer = await startPeer(corpusHandler([watermark("default")], "/engram/v1/health"));
+  try {
+    const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: peer.url }] } });
+    const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")] });
+    assert.equal(report.peers.length, 1);
+    assert.equal(report.peers[0]?.state, "converged");
+    const paths = peer.requests.map((request) => request.pathname);
+    assert.ok(paths.includes("/remnic/v1/health"), "tries the remnic prefix first");
+    assert.ok(paths.includes("/engram/v1/health"), "falls back to the legacy engram prefix on 404");
+  } finally {
+    await peer.close();
+  }
+});
+
+test("pollReplicaPeers: prefers the remnic prefix and does not fall back when it answers", async () => {
+  const peer = await startPeer(corpusHandler([watermark("default")], "/remnic/v1/health"));
+  try {
+    const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: peer.url }] } });
+    const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")] });
+    assert.equal(report.peers[0]?.state, "converged");
+    const paths = peer.requests.map((request) => request.pathname);
+    assert.deepEqual(paths, ["/remnic/v1/health"], "engram is never requested once remnic answers");
+  } finally {
+    await peer.close();
+  }
+});
+
+test("pollReplicaPeers: file-count divergence end to end reports concrete deltas", async () => {
+  const peer = await startPeer(corpusHandler([watermark("default", { memoryFileCount: 340_000, digest: "x" })]));
+  try {
+    const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: peer.url }] } });
+    const report = await pollReplicaPeers({
+      config,
+      localWatermarks: [watermark("default", { memoryFileCount: 190_000, digest: "x" })],
+    });
+    assert.equal(report.peers[0]?.state, "diverged");
+    assert.equal(report.peers[0]?.namespaces[0]?.fileCountDelta, 150_000);
+  } finally {
+    await peer.close();
+  }
+});
+
+test("pollReplicaPeers: a 500 is reported unreachable and is NOT conflated with converged (§22)", async () => {
+  const peer = await startPeer((_req, res) => {
+    res.writeHead(500);
+    res.end("boom");
+  });
+  try {
+    const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: peer.url }] } });
+    const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")] });
+    assert.equal(report.peers[0]?.state, "unreachable");
+    assert.notEqual(report.peers[0]?.state, "converged");
+    assert.equal(report.peers[0]?.reason, "http_500");
+  } finally {
+    await peer.close();
+  }
+});
+
+test("pollReplicaPeers: a connection refused is unreachable, never converged (§22)", async () => {
+  // Bind then close to get a port that is deterministically refused.
+  const dead = await startPeer(corpusHandler([watermark("default")]));
+  const url = dead.url;
+  await dead.close();
+  const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url }] } });
+  const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")] });
+  assert.equal(report.peers[0]?.state, "unreachable");
+  assert.notEqual(report.peers[0]?.state, "converged");
+});
+
+test("pollReplicaPeers: a stalled peer times out to unreachable, never converged (§22)", async () => {
+  const peer = await startPeer(() => {
+    // Never respond — the client's bounded timeout must abort.
+  });
+  try {
+    const config = parseReplicaPeersConfig({
+      replicaPeers: { enabled: true, requestTimeoutMs: 100, peers: [{ url: peer.url }] },
+    });
+    const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")] });
+    assert.equal(report.peers[0]?.state, "unreachable");
+    assert.notEqual(report.peers[0]?.state, "converged");
+    assert.equal(report.peers[0]?.reason, "timeout");
+  } finally {
+    await peer.close();
+  }
+});
+
+test("pollReplicaPeers: a 2xx payload without corpus is unknown, not converged (§22)", async () => {
+  const peer = await startPeer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, extraction: {} })); // no `corpus`
+  });
+  try {
+    const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: peer.url }] } });
+    const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")] });
+    assert.equal(report.peers[0]?.state, "unknown");
+    assert.notEqual(report.peers[0]?.state, "converged");
+    assert.equal(report.peers[0]?.reason, "missing_corpus");
+  } finally {
+    await peer.close();
+  }
+});
+
+test("pollReplicaPeers: disabled config performs NO network I/O (peer receives zero requests)", async () => {
+  const peer = await startPeer(corpusHandler([watermark("default")]));
+  try {
+    const config = parseReplicaPeersConfig({ replicaPeers: { enabled: false, peers: [{ url: peer.url }] } });
+    const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")] });
+    assert.equal(report.enabled, false);
+    assert.equal(report.polledAt, null);
+    assert.equal(peer.requests.length, 0, "a disabled monitor must never touch the network");
+  } finally {
+    await peer.close();
+  }
+});
+
+test("pollReplicaPeers: the peer token is sent as a Bearer header but never leaks to the report or logs", async () => {
+  const secret = "SUPER-SECRET-PEER-TOKEN";
+  const peer = await startPeer(corpusHandler([watermark("default", { digest: "different", memoryFileCount: 999_999 })]));
+  const logs: string[] = [];
+  try {
+    const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: peer.url, token: secret }] } });
+    const report = await pollReplicaPeers({ config, localWatermarks: [watermark("default")], log: (line) => logs.push(line) });
+    const authHeaders = peer.requests.map((request) => request.authorization);
+    assert.ok(authHeaders.includes(`Bearer ${secret}`), "the token IS sent (so the leak check is not vacuous)");
+    assert.ok(!JSON.stringify(report).includes(secret), "the token must not appear in the report payload");
+    assert.equal(report.peers[0]?.state, "diverged", "the peer diverged, so a warn line is emitted");
+    assert.ok(logs.length > 0, "a divergence is logged");
+    assert.ok(!logs.some((line) => line.includes(secret)), "the token must not appear in any log line");
+  } finally {
+    await peer.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Capability filtering (issue #2156 finding B parity)
+// ---------------------------------------------------------------------------
+
+function reportWithNamespaces(): ReplicaDivergenceStatus {
+  const comparison = compareReplicaWatermarks(
+    [watermark("default", { digest: "a" }), watermark("team-secret", { digest: "a" })],
+    [watermark("default", { digest: "a" }), watermark("team-secret", { digest: "b" })], // team-secret diverges
+    THRESHOLDS,
+  );
+  return {
+    enabled: true,
+    polledAt: "2026-03-08T00:00:00.000Z",
+    peers: [{ peer: "127.0.0.1:4318", state: comparison.state, polledAt: "2026-03-08T00:00:00.000Z", namespaces: comparison.namespaces, divergedNamespaceCount: comparison.divergedNamespaceCount }],
+  };
+}
+
+test("filterReplicaReportByCaps: a namespace-restricted token cannot see other namespaces' divergence", () => {
+  const report = reportWithNamespaces();
+  const restricted = filterReplicaReportByCaps(report, { version: 1, namespaces: ["default"] });
+  const visibleNamespaces = restricted.peers[0]?.namespaces.map((delta) => delta.namespace) ?? [];
+  assert.deepEqual(visibleNamespaces, ["default"], "only the permitted namespace is visible");
+  assert.equal(restricted.peers[0]?.state, "converged", "divergence in a hidden namespace must not leak as a diverged verdict");
+  assert.equal(restricted.peers[0]?.divergedNamespaceCount, 0);
+});
+
+test("filterReplicaReportByCaps: an unrestricted token sees the full report", () => {
+  const report = reportWithNamespaces();
+  const full = filterReplicaReportByCaps(report, { version: 1 });
+  assert.equal(full.peers[0]?.namespaces.length, 2);
+  assert.equal(full.peers[0]?.state, "diverged");
+});
+
+test("filterReplicaReportByCaps: an unreachable peer's state is preserved for a restricted token", () => {
+  const report: ReplicaDivergenceStatus = {
+    enabled: true,
+    polledAt: "2026-03-08T00:00:00.000Z",
+    peers: [{ peer: "127.0.0.1:4318", state: "unreachable", polledAt: "2026-03-08T00:00:00.000Z", namespaces: [], divergedNamespaceCount: 0, reason: "timeout" }],
+  };
+  const restricted = filterReplicaReportByCaps(report, { version: 1, namespaces: ["default"] });
+  assert.equal(restricted.peers[0]?.state, "unreachable", "reachability is not namespace data and must survive filtering");
+  assert.equal(restricted.peers[0]?.reason, "timeout");
+});
+
+// ---------------------------------------------------------------------------
+// redaction
+// ---------------------------------------------------------------------------
+
+test("redactPeerUrl: strips userinfo, path, and query so an embedded credential cannot leak", () => {
+  assert.equal(redactPeerUrl("https://user:s3cr3t@host.example:4318/health?token=abc"), "host.example:4318");
+  assert.equal(redactPeerUrl("http://127.0.0.1:9999"), "127.0.0.1:9999");
+  assert.ok(!redactPeerUrl("https://user:s3cr3t@host.example:4318/x").includes("s3cr3t"));
+});
+
+// ---------------------------------------------------------------------------
+// ReplicaDivergenceMonitor (SWR / single-flight)
+// ---------------------------------------------------------------------------
+
+test("ReplicaDivergenceMonitor: disabled config never polls and reports disabled", () => {
+  let computed = 0;
+  const monitor = new ReplicaDivergenceMonitor();
+  const config = parseReplicaPeersConfig({ replicaPeers: { enabled: false, peers: [{ url: "http://127.0.0.1:1" }] } });
+  const report = monitor.getReport({ config, computeLocalWatermarks: async () => { computed += 1; return []; } });
+  assert.equal(report.enabled, false);
+  assert.equal(computed, 0, "a disabled monitor never computes local watermarks or polls");
+});
+
+test("ReplicaDivergenceMonitor: stale-while-revalidate serves cached state and single-flights the poll", async () => {
+  let clock = 1_000;
+  const fetchImpl: FetchLike = async () => ({ ok: true, status: 200, json: async () => ({ corpus: [watermark("default", { memoryFileCount: 999, digest: "z" })] }) });
+  let computeCalls = 0;
+  const computeLocalWatermarks = async () => {
+    computeCalls += 1;
+    return [watermark("default", { memoryFileCount: 1, digest: "a" })];
+  };
+  const monitor = new ReplicaDivergenceMonitor({ clock: () => clock, fetchImpl });
+  const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, pollIntervalMs: 60_000, peers: [{ url: "http://127.0.0.1:4318" }] } });
+
+  // First probe is cold: returns a never-polled placeholder and triggers a background poll.
+  const cold = monitor.getReport({ config, computeLocalWatermarks });
+  assert.equal(cold.polledAt, null);
+  await monitor.whenIdle();
+
+  // Second probe (within TTL) serves the completed report without re-polling.
+  const warm = monitor.getReport({ config, computeLocalWatermarks });
+  assert.equal(warm.peers[0]?.state, "diverged");
+  assert.equal(computeCalls, 1, "single-flight: exactly one poll within the TTL");
+  monitor.getReport({ config, computeLocalWatermarks });
+  await monitor.whenIdle();
+  assert.equal(computeCalls, 1, "still one — the cached report is fresh");
+
+  // After the TTL elapses, a probe triggers a refresh.
+  clock += 60_001;
+  monitor.getReport({ config, computeLocalWatermarks });
+  await monitor.whenIdle();
+  assert.equal(computeCalls, 2, "a probe past the poll interval re-polls");
+});
+
+test("ReplicaDivergenceMonitor: applies capability filtering at read time", async () => {
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ corpus: [watermark("default", { digest: "a" }), watermark("team-secret", { digest: "b" })] }),
+  });
+  const computeLocalWatermarks = async () => [watermark("default", { digest: "a" }), watermark("team-secret", { digest: "a" })];
+  const monitor = new ReplicaDivergenceMonitor({ fetchImpl });
+  const config = parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } });
+  monitor.getReport({ config, computeLocalWatermarks });
+  await monitor.whenIdle();
+  const restricted = monitor.getReport({ config, computeLocalWatermarks, caps: { version: 1, namespaces: ["default"] } });
+  assert.deepEqual(restricted.peers[0]?.namespaces.map((delta) => delta.namespace), ["default"]);
+  assert.equal(restricted.peers[0]?.state, "converged", "the hidden team-secret divergence must not leak");
+});

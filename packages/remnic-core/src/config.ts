@@ -38,6 +38,7 @@ import { expandTildePath } from "./utils/path.js";
 import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
+import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
   parseQmdChunkStrategy,
@@ -2335,6 +2336,7 @@ export function parseConfig(
     dreamsPhases,
     procedural,
     extractionLiveness: parseExtractionLivenessConfig(cfg),
+    replicaPeers: parseReplicaPeersConfig(cfg),
     wearables,
     meetings,
     activity,
@@ -2349,7 +2351,6 @@ export function parseConfig(
     codexCompat,
     codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
     chat: parseChatConfig(cfg.chat),
-     // Hourly summaries
     hourlySummariesEnabled: cfg.hourlySummariesEnabled !== false, // default: true
     daySummaryEnabled: cfg.daySummaryEnabled !== false, // default: true
     hourlySummaryCronAutoRegister: cfg.hourlySummaryCronAutoRegister === true,

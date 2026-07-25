@@ -20,6 +20,7 @@ import { resolveNamespaceCapabilities,
   resolveQmdCapabilities,
   resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 import { CorpusWatermarkCache, computeServiceCorpusWatermarks } from "./corpus-watermark.js";
+import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
 import type {
   EngramAccessHealthResponse,
   EngramAccessQmdCollectionState,
@@ -1274,6 +1275,7 @@ export class EngramAccessService {
   private readonly budget: CrossNamespaceBudget;
   private readonly auditAdapter: AccessAuditAdapter | null;
   private readonly corpusWatermarkCache = new CorpusWatermarkCache();
+  private readonly replicaDivergenceMonitor = new ReplicaDivergenceMonitor();
 
   /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessObserveWriteSurface: AccessObserveWriteSurface | undefined;
@@ -2455,6 +2457,11 @@ export class EngramAccessService {
       extraction,
       corpus: await computeServiceCorpusWatermarks(this.orchestrator, {
         cache: this.corpusWatermarkCache, caps: tokenCapabilityStore.getStore() }),
+      replica: this.replicaDivergenceMonitor.getReport({
+        config: this.orchestrator.config.replicaPeers,
+        computeLocalWatermarks: () => computeServiceCorpusWatermarks(this.orchestrator, {}),
+        caps: tokenCapabilityStore.getStore(),
+      }),
     };
   }
 

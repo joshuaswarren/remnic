@@ -57,7 +57,8 @@ import type {
 } from "./types.js";
 import { reportBufferSurpriseDistribution } from "./buffer-surprise-report.js";
 import { readJudgeVerdictStats } from "./extraction-judge-telemetry.js";
-import { summarizeCorpusWatermark } from "./operator-doctor-corpus.js";
+import { corpusWatermarksFromCheck, summarizeCorpusWatermark } from "./operator-doctor-corpus.js";
+import { summarizeReplicaDivergence } from "./operator-doctor-replica.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
@@ -1496,11 +1497,11 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   // Shows hot/cold counts, per-status breakdown, and forgotten-memory count.
   // Informational only — never errors, never blocks doctor from returning ok.
   checks.push(await summarizeTierDistribution(options.orchestrator.storage));
-
   checks.push(await summarizeDreamsPhases(config, storage));
   checks.push(await summarizeExtractionLiveness(config, storage, options.orchestrator.buffer));
-  checks.push(await summarizeCorpusWatermark(config, (dir) => new StorageManager(dir))); // corpus watermark #2149
-
+  const watermarkCheck = await summarizeCorpusWatermark(config, (dir) => new StorageManager(dir)); // corpus watermark #2149
+  checks.push(watermarkCheck);
+  checks.push(await summarizeReplicaDivergence(config.replicaPeers, corpusWatermarksFromCheck(watermarkCheck))); // replica #2149
   // Security mitigation status (issue #565).
   // Reports whether the cross-namespace budget and anomaly detection
   // mitigations are enabled and surfaces config values for operator review.

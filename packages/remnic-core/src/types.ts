@@ -3,6 +3,7 @@ import type { MeetingsConfig } from "./meetings/types.js";
 import type { ActivityConfig } from "./activity/types.js";
 import type { WearablesConfig } from "./wearables/types.js";
 import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
+import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 export type TriggerMode = "smart" | "every_n" | "time_based";
@@ -1208,9 +1209,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   dreamsPhases: DreamsPhasesConfig;
   procedural: ProceduralConfig;
   extractionLiveness: ExtractionLivenessConfig;
-  /** Claim-level provenance spans (#1575); see `ProvenanceConfig` for defaults.
-   * PR 1 parses + persists only; extraction wiring lands in PR 2.
-   */
+  replicaPeers: ReplicaPeersConfig;
+  /** Claim-level provenance spans (#1575); see `ProvenanceConfig` for defaults. */
   provenance: ProvenanceConfig;
   /**
    * Wearable transcript ingestion (Limitless / Bee / Omi connectors).

@@ -191,12 +191,42 @@ Each entry has:
   bounded 60-second cache, so `computedAt` also lets a consumer see how stale the census is;
   routine readiness/HA polling never triggers a full corpus rescan per request.
 
-This ships detection only: fetching configured replica peers' watermarks and
-health-flagging count or watermark-age divergence beyond a threshold is a
-follow-up, so the `corpus_watermark` doctor check does not yet compare peers. It
-does, however, report `warn` when a namespace cannot be scanned (unreadable or
-churning corpus) or enumeration fails — a scan failure omits that namespace, so
-the check surfaces it rather than certifying a partial fleet as `ok`.
+The `corpus_watermark` doctor check does not itself compare peers — that is the
+job of the separate `replica_divergence` check described below. It reports `warn`
+when a namespace cannot be scanned (unreadable or churning corpus) or enumeration
+fails — a scan failure omits that namespace, so the check surfaces it rather than
+certifying a partial fleet as `ok`.
+
+### Replica divergence detection (issue #2149)
+
+A daemon configured with `replicaPeers` (see [config-reference.md](config-reference.md))
+polls each peer's authenticated `/health` corpus watermark on the configured interval and
+compares it against the local set, per namespace. Results appear in the `replica` block of
+`GET /engram/v1/health` (filtered to the presenting token's namespaces, exactly like
+`corpus`) and in the `remnic doctor` `replica_divergence` check. The poller prefers
+`GET /remnic/v1/health` and falls back to the legacy `GET /engram/v1/health`.
+
+Per peer, the reported state is one of:
+
+- `converged` — every shared namespace agrees within the configured thresholds.
+- `diverged` — at least one namespace differs beyond a threshold: a file-count delta above
+  `maxFileCountDelta`, a newest-write age gap above `maxWatermarkAgeDeltaMs`, a digest
+  mismatch (equal counts but different content/distribution — the split-brain case), or a
+  namespace present on only one side. The concrete deltas are reported so an operator sees
+  numbers, not just a verdict.
+- `unreachable` — the peer timed out, refused the connection, or returned a non-2xx status.
+- `unknown` — the peer answered 2xx but the payload carried no usable `corpus` array.
+
+`unreachable`/`unknown` are deliberately distinct from `converged`: a monitor must be able to
+tell "the peer agrees" from "we could not ask" (the same error-vs-empty distinction the
+corpus check draws for scan failures). Peer tokens are resolved like `agentAccessHttp.authToken`
+and are never logged or included in any payload; a peer is identified only by its redacted
+`host:port`.
+
+**Detection is deliberately separate from reconciliation.** This surface only reports drift;
+making a diverged pair converge is tracked in issue #2150. Polling is stale-while-revalidate:
+a probe reads the last completed poll with its timestamp and never blocks on peer I/O, so a
+health check stays cheap.
 
 ## Compression Guideline Optimizer Tool
 

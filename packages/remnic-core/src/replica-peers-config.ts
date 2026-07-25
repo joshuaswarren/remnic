@@ -1,0 +1,149 @@
+/**
+ * `replicaPeers` config surface (issue #2149) — types + parser.
+ *
+ * Deliberately split out of replica-divergence.ts as a LIGHT module: it imports
+ * no heavy modules (no corpus-watermark, no access-token-capabilities). PluginConfig
+ * carries `replicaPeers: ReplicaPeersConfig`, so types.ts imports ReplicaPeersConfig
+ * from HERE. If that type instead lived in replica-divergence.ts (which pulls in the
+ * corpus census graph), then types.ts -> replica-divergence.ts -> corpus-watermark.ts
+ * -> types.ts would form a heavy import cycle that rollup-plugin-dts re-expands across
+ * every PluginConfig-inlining entry, OOMing the default-heap DTS worker (the issue
+ * #1562 heap cliff). Keeping the config surface corpus-free severs that cycle.
+ */
+
+import { coerceBool, coerceNumber } from "./connectors/coerce.js";
+import { isAgentAccessSecretRef } from "./resolve-auth-token.js";
+import type { AgentAccessAuthToken } from "./types.js";
+
+const DEFAULT_POLL_INTERVAL_MS = 300_000; // 5 min
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_MAX_FILE_COUNT_DELTA = 100;
+const DEFAULT_MAX_WATERMARK_AGE_DELTA_MS = 900_000; // 15 min
+
+export interface ReplicaPeerConfig {
+  /** Base URL of the peer's agent-access HTTP server (http/https). */
+  url: string;
+  /**
+   * Bearer token for the peer's authenticated `/health`. A literal string
+   * (env-expanded) or an unresolved SecretRef preserved verbatim and resolved
+   * at poll time — mirrors `agentAccessHttp.authToken` exactly.
+   */
+  token?: AgentAccessAuthToken;
+}
+
+export interface ReplicaPeersConfig {
+  /** Master gate. Default false — a daemon with no peers behaves exactly as before. */
+  enabled: boolean;
+  /** Peers to poll. Default []. */
+  peers: ReplicaPeerConfig[];
+  /** How often a peer is re-polled (SWR TTL), ms. Default 5 min. */
+  pollIntervalMs: number;
+  /** Per-peer request timeout, ms. Default 10s. */
+  requestTimeoutMs: number;
+  /** File-count delta (per namespace) beyond which a peer is flagged diverged. Default 100. */
+  maxFileCountDelta: number;
+  /** Newest-write timestamp gap (per namespace) beyond which a peer is flagged diverged, ms. Default 15 min. */
+  maxWatermarkAgeDeltaMs: number;
+}
+
+/**
+ * Expand `${ENV_VAR}` placeholders in a config string, matching config.ts's
+ * `resolveEnvVars` semantics (throw on unset var / malformed placeholder).
+ * Inlined rather than imported because config.ts imports THIS module for
+ * `parseReplicaPeersConfig`, so importing back would be circular — the same
+ * reason extraction-liveness.ts inlines its numeric validation.
+ */
+function expandEnvValue(value: string): string {
+  const resolved = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
+    const envValue = process.env[name];
+    if (envValue === undefined || envValue === "") {
+      throw new Error(`replicaPeers: environment variable ${name} is not set`);
+    }
+    return envValue;
+  });
+  const remaining = resolved.match(/\$\{[^}]*\}/);
+  if (remaining) {
+    throw new Error(`replicaPeers: malformed environment variable placeholder: ${remaining[0]}`);
+  }
+  return resolved;
+}
+
+/**
+ * An absent key falls back to the default; any PRESENT value (including an
+ * explicit `null`) must coerce to an integer `>= min`, else THROW. A fractional
+ * or out-of-range value is rejected, never floored/reinterpreted (§1/§17/§39).
+ */
+function parseIntegerAtLeast(value: unknown, min: number, dflt: number, label: string): number {
+  if (value === undefined) return dflt;
+  const coerced = coerceNumber(value);
+  if (coerced === undefined || !Number.isFinite(coerced) || !Number.isInteger(coerced) || coerced < min) {
+    throw new Error(`${label} must be an integer greater than or equal to ${min}; got ${JSON.stringify(value)}`);
+  }
+  return coerced;
+}
+
+function asRecord(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function parseReplicaPeerToken(raw: unknown, index: number): AgentAccessAuthToken | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    return trimmed.length === 0 ? undefined : expandEnvValue(trimmed);
+  }
+  if (isAgentAccessSecretRef(raw)) return raw;
+  throw new Error(`replicaPeers.peers[${index}].token must be a string or a SecretRef object`);
+}
+
+function parseReplicaPeer(value: unknown, index: number): ReplicaPeerConfig {
+  const record = asRecord(value, `replicaPeers.peers[${index}]`);
+  if (typeof record.url !== "string" || record.url.trim().length === 0) {
+    throw new Error(`replicaPeers.peers[${index}].url must be a non-empty string`);
+  }
+  const url = expandEnvValue(record.url.trim());
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`replicaPeers.peers[${index}].url is not a valid URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`replicaPeers.peers[${index}].url must be an http(s) URL (got ${parsed.protocol})`);
+  }
+  const token = parseReplicaPeerToken(record.token, index);
+  return token === undefined ? { url } : { url, token };
+}
+
+/**
+ * Parse the `replicaPeers` config block. Mirrors the nested-block validation of
+ * the other config-block parsers; coerces string booleans (§24) and rejects
+ * invalid numbers/urls/shapes (§1/§39).
+ */
+export function parseReplicaPeersConfig(cfg: Record<string, unknown>): ReplicaPeersConfig {
+  const raw = cfg.replicaPeers;
+  if (raw !== undefined && (raw === null || typeof raw !== "object" || Array.isArray(raw))) {
+    throw new Error(`replicaPeers must be a plain object (got ${JSON.stringify(raw)})`);
+  }
+  const block = (raw ?? {}) as Record<string, unknown>;
+  if (block.peers !== undefined && !Array.isArray(block.peers)) {
+    throw new Error(`replicaPeers.peers must be an array (got ${JSON.stringify(block.peers)})`);
+  }
+  const peers = (block.peers ?? []).map(parseReplicaPeer);
+  return {
+    enabled: coerceBool(block.enabled) ?? false,
+    peers,
+    pollIntervalMs: parseIntegerAtLeast(block.pollIntervalMs, 1, DEFAULT_POLL_INTERVAL_MS, "replicaPeers.pollIntervalMs"),
+    requestTimeoutMs: parseIntegerAtLeast(block.requestTimeoutMs, 1, DEFAULT_REQUEST_TIMEOUT_MS, "replicaPeers.requestTimeoutMs"),
+    maxFileCountDelta: parseIntegerAtLeast(block.maxFileCountDelta, 0, DEFAULT_MAX_FILE_COUNT_DELTA, "replicaPeers.maxFileCountDelta"),
+    maxWatermarkAgeDeltaMs: parseIntegerAtLeast(
+      block.maxWatermarkAgeDeltaMs,
+      0,
+      DEFAULT_MAX_WATERMARK_AGE_DELTA_MS,
+      "replicaPeers.maxWatermarkAgeDeltaMs",
+    ),
+  };
+}

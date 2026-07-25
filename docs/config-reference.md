@@ -1161,6 +1161,23 @@ The `extraction` block includes a `watermarkScope` field (`root-store` today, `a
 | `extractionLiveness.enabled` | `true` | Master gate. Set to `false` (or `"0"`/`"no"`/`"off"`) to stop reporting the pipeline degraded on `/health`, in `remnic doctor`, and in `remnic stats`. |
 | `extractionLiveness.staleWindowMs` | `86400000` | How stale the last-successful-extraction watermark may get (ms) before a **non-empty** buffer flags the pipeline degraded. Default `86400000` (24h). An empty buffer is never degraded. Must be a positive integer of milliseconds; a fractional or non-positive value is rejected rather than floored. |
 
+## Replica divergence detection (issue #2149)
+
+A daemon configured with peer URLs polls each peer's authenticated `/health` corpus watermark on an interval and flags per-namespace drift (file-count delta, newest-write age delta, digest mismatch) on `/health` (the `replica` block) and in the `remnic doctor` `replica_divergence` check. Disabled by default; a daemon with no peers behaves exactly as before. An unreachable, timed-out, or non-2xx peer is reported as a distinct `unreachable`/`unknown` state, never conflated with `converged`. Detection only — reconciliation is tracked in issue #2150.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `replicaPeers.enabled` | `false` | Master gate. Set to `true` to poll peers; when `false` (or `"0"`/`"no"`/`"off"`) no peer is contacted. |
+| `replicaPeers.peers` | `[]` | Array of peer endpoints to poll. Must be an array; a non-array is rejected at parse time. |
+| `replicaPeers.peers.url` | `(required)` | Base URL of the peer's agent-access HTTP server (http or https, `${ENV_VAR}` expansion supported). A non-http(s) or unparseable URL is rejected at parse time. The poller prefers `GET /remnic/v1/health` and falls back to the legacy `GET /engram/v1/health`. |
+| `replicaPeers.peers.token` | `(unset)` | Bearer token for the peer's authenticated `/health`. A literal string (with `${ENV_VAR}` expansion) or — under OpenClaw — a SecretRef object such as `{"source":"exec",...}` resolved at poll time via the gateway secret resolver, exactly like `agentAccessHttp.authToken` (its `replicaPeers.peers.token.source` field selects the resolver). Never logged and never echoed into any report, `/health`, or doctor payload. |
+| `replicaPeers.pollIntervalMs` | `300000` | How often each peer is re-polled (stale-while-revalidate TTL), in ms. Positive integer; a fractional or non-positive value is rejected rather than floored. Default `300000` (5 min). |
+| `replicaPeers.requestTimeoutMs` | `10000` | Per-peer HTTP request timeout, in ms. Positive integer. Default `10000` (10s). |
+| `replicaPeers.maxFileCountDelta` | `100` | Per-namespace memory-file-count difference beyond which a peer is flagged diverged. `0` flags any difference. Default `100`. |
+| `replicaPeers.maxWatermarkAgeDeltaMs` | `900000` | Per-namespace newest-write timestamp gap (ms) beyond which a peer is flagged diverged. `0` flags any gap. Default `900000` (15 min). |
+
+Polling never runs inline on the health request path: a probe reads the last completed poll (with its timestamp) and a stale entry triggers a bounded background refresh (the corpus-watermark stale-while-revalidate idiom). The `replica` block on `/health` is filtered to the presenting token's namespace capabilities, so a namespace-restricted token never learns about namespaces it cannot see.
+
 ## Pattern reinforcement (issue #687)
 
 Cross-session pattern detection: clusters memories by normalized content, reinforces recurring primitives with `reinforcement_count` + `last_reinforced_at`, and optionally boosts their recall score. Narrative overview: [pattern-reinforcement.md](pattern-reinforcement.md).

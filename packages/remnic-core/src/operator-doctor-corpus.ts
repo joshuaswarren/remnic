@@ -93,3 +93,18 @@ export async function summarizeCorpusWatermark(
     details: { corpus: watermarks },
   };
 }
+
+/**
+ * Extract the watermark array this check stores under `details.corpus` (issue
+ * #2149). The replica-divergence doctor check reuses the local watermark set
+ * computed here rather than rescanning the corpus, and consumes it through this
+ * helper so the `details.corpus` shape stays owned by the module that produces it.
+ */
+export function corpusWatermarksFromCheck(check: OperatorDoctorCheck): CorpusWatermark[] {
+  const details = check.details;
+  if (!details || typeof details !== "object" || !("corpus" in details) || !Array.isArray(details.corpus)) {
+    return [];
+  }
+  // This check always stores a CorpusWatermark[] under `corpus` (guarded above).
+  return details.corpus as CorpusWatermark[];
+}
