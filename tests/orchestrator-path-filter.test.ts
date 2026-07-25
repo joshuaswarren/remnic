@@ -113,6 +113,50 @@ test("reserved collection names do not hide archive roots", () => {
   );
 });
 
+test("QMD source tags disambiguate reserved collection prefixes", () => {
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "archive/facts/a.md",
+      { qmdCollection: "archive" },
+      "qmd",
+    ),
+    false,
+  );
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "namespaces/namespaces/team/archive/2026-07-22/a.md",
+      { qmdCollection: "namespaces" },
+      "qmd",
+    ),
+    true,
+  );
+});
+
+test("filterRecallCandidates marks collection-qualified paths as QMD results", () => {
+  const ordinary = {
+    docid: "archive/facts/a.md",
+    path: "archive/facts/a.md",
+    snippet: "",
+    score: 0.99,
+  };
+  const archived = {
+    docid: "archive/archive/2026-07-22/a.md",
+    path: "archive/archive/2026-07-22/a.md",
+    snippet: "",
+    score: 0.98,
+  };
+
+  const filtered = filterRecallCandidates([ordinary, archived], {
+    namespacesEnabled: false,
+    recallNamespaces: [],
+    resolveNamespace: () => "",
+    limit: 2,
+    pathPolicy: { qmdCollection: "archive" },
+  });
+
+  assert.deepEqual(filtered, [ordinary]);
+});
+
 test("filterRecallCandidates applies namespace/artifact filters before final cap", () => {
   const candidates = [
     { docid: "/tmp/memory/artifacts/2026-02-21/a.md", path: "/tmp/memory/artifacts/2026-02-21/a.md", snippet: "", score: 0.99 },

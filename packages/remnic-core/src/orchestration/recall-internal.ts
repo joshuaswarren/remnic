@@ -4162,7 +4162,9 @@ export class RecallInternalCoordinator {
           recallNamespaces.includes(r.namespace ?? this.deps.namespaceFromPath(r.path)));
       }
       // Dedicated surfaces are never generic recall.
-      memoryResults = memoryResults.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config));
+      memoryResults = memoryResults.filter(
+        (r) => !isGenericRecallExcludedPath(r.path, this.deps.config, "qmd"),
+      );
 
       const isFullModeGraphAssist =
         graphCaps.multiGraphMemory &&

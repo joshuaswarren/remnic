@@ -427,7 +427,7 @@ export class RecallSearchPipelineCoordinator {
         )
       : [];
     // Drop generic-recall-excluded records before the fetchLimit cap so they can't starve valid memories (#1995).
-    const recallable = (r: QmdSearchResult) => !isGenericRecallExcludedPath(r.path, this.deps.config);
+    const recallable = (r: QmdSearchResult) => !isGenericRecallExcludedPath(r.path, this.deps.config, "qmd");
 
     let fetchLimit = Math.max(qmdFetchLimit, qmdHybridFetchLimit);
     const maxFetchLimit = Math.min(
@@ -696,7 +696,7 @@ export class RecallSearchPipelineCoordinator {
             { allowArchived: true },
           )
         : []
-    ).filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config));
+    ).filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config, "qmd"));
     return scopedSeedResults.slice(0, cappedLimit);
   }
 
@@ -945,7 +945,7 @@ export class RecallSearchPipelineCoordinator {
       results = scopedResults;
     }
     // Dedicated-surface isolation keeps generic recall out of artifacts, activity digests, and archives.
-    results = results.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config));
+    results = results.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config, "qmd"));
     if (results.length === 0) return [];
 
     const isFullModeGraphAssist =

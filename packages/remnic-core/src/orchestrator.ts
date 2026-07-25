@@ -2483,7 +2483,7 @@ export class Orchestrator {
     if (!paths) return null;
     const scoped = new Set<string>();
     for (const memoryPath of paths) {
-      if (!memoryPath || isGenericRecallExcludedPath(memoryPath, this.config)) continue;
+      if (!memoryPath || isGenericRecallExcludedPath(memoryPath, this.config, "qmd")) continue;
       if (
         resolveNamespaceCapabilities(this.config).namespaces &&
         !recallNamespaces.includes(this.namespaceFromPath(memoryPath))
