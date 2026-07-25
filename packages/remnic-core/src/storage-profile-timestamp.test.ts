@@ -548,6 +548,31 @@ test("writeProfile preserves timestamp-shaped prose continuations", async (t) =>
     t.mock.timers.reset();
   }
 });
+test("writeProfile refreshes compact title metadata", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        STALE_HEADER,
+        "*Last updated: 2023-01-02T03:04:05.000Z*",
+        "",
+        "- Keeps compact metadata.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        `# Behavioral Profile\n${FRESH_HEADER}\n\n- Keeps compact metadata.\n`,
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile recognizes whitespace-only metadata gaps", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
@@ -866,6 +891,31 @@ test("writeProfile preserves timestamp-shaped raw HTML blocks", async (t) => {
           profile.replace(`\n\n<${tag}>`, `\n\n${FRESH_HEADER}\n\n<${tag}>`),
         );
       }
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile closes same-line raw HTML blocks", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<pre>inline </pre>",
+        "# Notes",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after inline code.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
     });
   } finally {
     t.mock.timers.reset();

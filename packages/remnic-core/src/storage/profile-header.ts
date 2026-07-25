@@ -261,7 +261,9 @@ function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBl
     if (completeTag?.isSelfClosing) {
       return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
     }
-    return { endMarker: `</${rawTag}>`, endsAtBlankLine: false, tagName: null, depth: 0 };
+    const endMarker = `</${rawTag}>`;
+    if (hasHtmlBlockEndMarker(normalizedLine, endMarker)) return null;
+    return { endMarker, endsAtBlankLine: false, tagName: null, depth: 0 };
   }
   if (normalizedLine.startsWith("<!--")) {
     return { endMarker: "-->", endsAtBlankLine: false, tagName: null, depth: 0 };
@@ -338,8 +340,25 @@ function findFrontmatterEnd(lines: ProfileLine[]): number {
 function hasHtmlBlockEndMarker(line: string, endMarker: string): boolean {
   const markerIndex = line.indexOf(endMarker);
   if (markerIndex < 0) return false;
-  if (endMarker.startsWith("</")) return line.slice(0, markerIndex).trim() === "";
-  return line.slice(markerIndex + endMarker.length).trim() === "";
+  if (!endMarker.startsWith("</")) {
+    return line.slice(markerIndex + endMarker.length).trim() === "";
+  }
+  if (line.slice(0, markerIndex).trim() === "") return true;
+  const tagName = endMarker.slice(2, -1);
+  const openingPrefix = `<${tagName}`;
+  const trimmedLine = line.trimStart();
+  const boundary = trimmedLine[tagName.length + 1];
+  const validOpeningBoundary =
+    boundary === undefined ||
+    boundary === ">" ||
+    boundary === "/" ||
+    boundary === " " ||
+    boundary === "\t";
+  return (
+    trimmedLine.startsWith(openingPrefix) &&
+    validOpeningBoundary &&
+    line.slice(markerIndex + endMarker.length).trim() === ""
+  );
 }
 
 function visitProfileMetadataLines(
@@ -412,8 +431,17 @@ function isStandaloneMetadataLine(
 ): boolean {
   const previousLine = lines[index - 1]?.content.trim() ?? "";
   const nextLine = lines[index + 1]?.content.trim() ?? "";
-  const startsBlock = index === 0 || index === frontmatterEnd + 1 || previousLine === "";
-  const endsBlock = index === lines.length - 1 || nextLine === "";
+  const previousWithoutBom = previousLine.startsWith(UTF8_BOM)
+    ? previousLine.slice(1)
+    : previousLine;
+  const previousMetadataBoundary =
+    previousLine === "" ||
+    PROFILE_TITLE.test(previousWithoutBom) ||
+    isLastUpdatedHeader(previousLine);
+  const nextMetadataBoundary = nextLine === "" || isLastUpdatedHeader(nextLine);
+  const startsBlock =
+    index === 0 || index === frontmatterEnd + 1 || previousMetadataBoundary;
+  const endsBlock = index === lines.length - 1 || nextMetadataBoundary;
   return startsBlock && endsBlock;
 }
 
