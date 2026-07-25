@@ -51,6 +51,7 @@ type EntityMentionIndexEntry = {
 type EntityMentionIndex = {
   version: number;
   updatedAt: string;
+  entityStatusVersion?: number;
   entities: EntityMentionIndexEntry[];
 };
 
@@ -383,6 +384,31 @@ async function readEntityIndexState(storage: StorageManager): Promise<EntityMent
   }
 }
 
+
+async function readCurrentPersistedEntityIndex(
+  storage: StorageManager,
+  config: PluginConfig,
+  recallNamespaces?: string[],
+  namespaceStorage?: (namespace: string) => Promise<StorageManager>,
+): Promise<EntityMentionIndex | null> {
+  if (
+    config.nativeKnowledge?.enabled ||
+    (
+      resolveNamespaceCapabilities(config).namespaces &&
+      namespaceStorage &&
+      recallNamespaces &&
+      recallNamespaces.length > 0
+    )
+  ) {
+    return null;
+  }
+  const index = await readEntityIndexState(storage);
+  if (!index || index.entityStatusVersion !== storage.getMemoryStatusVersion()) {
+    return null;
+  }
+  return index;
+}
+
 async function writeEntityIndexState(storage: StorageManager, index: EntityMentionIndex): Promise<void> {
   const statePath = entityIndexStatePath(storage);
   await mkdir(path.dirname(statePath), { recursive: true });
@@ -545,6 +571,7 @@ async function buildEntityMentionIndex(
       previousIndex && previousEntities === nextEntities
         ? previousIndex.updatedAt
         : new Date().toISOString(),
+    entityStatusVersion: shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined,
     entities: sortedEntities,
   };
   if (shouldPersistIndex) {
@@ -578,18 +605,21 @@ function resolveExplicitCandidates(
 const EXPLICIT_ENTITY_MENTION_SCORE = 9;
 
 function resolveLanguageIndependentExplicitCandidates(
+  index: EntityMentionIndex,
   candidates: EntityCandidate[],
 ): EntityCandidate[] {
   const exactCandidates = candidates.filter((candidate) => (
     candidate.score >= EXPLICIT_ENTITY_MENTION_SCORE
   ));
   const canonicalIdsByAlias = new Map<string, Set<string>>();
-  for (const candidate of exactCandidates) {
-    const alias = normalizeEntityText(candidate.alias);
-    if (!alias) continue;
-    const canonicalIds = canonicalIdsByAlias.get(alias) ?? new Set<string>();
-    canonicalIds.add(candidate.entry.canonicalId);
-    canonicalIdsByAlias.set(alias, canonicalIds);
+  for (const entry of index.entities) {
+    for (const alias of uniqueStrings([entry.name, ...entry.aliases])) {
+      const normalizedAlias = normalizeEntityText(alias);
+      if (!normalizedAlias) continue;
+      const canonicalIds = canonicalIdsByAlias.get(normalizedAlias) ?? new Set<string>();
+      canonicalIds.add(entry.canonicalId);
+      canonicalIdsByAlias.set(normalizedAlias, canonicalIds);
+    }
   }
   return exactCandidates.filter((candidate) => {
     const alias = normalizeEntityText(candidate.alias);
@@ -848,19 +878,34 @@ function formatEntityHintSection(
 
 export async function buildEntityRecallSection(options: BuildEntityRecallSectionOptions): Promise<string | null> {
   const prefixedMode = detectEntityQueryMode(options.query);
-
+  const persistedIndex = prefixedMode
+    ? null
+    : await readCurrentPersistedEntityIndex(
+      options.storage,
+      options.config,
+      options.recallNamespaces,
+      options.namespaceStorage,
+    );
+  if (
+    !prefixedMode &&
+    persistedIndex &&
+    resolveLanguageIndependentExplicitCandidates(
+      persistedIndex,
+      resolveExplicitCandidates(persistedIndex, options.query),
+    ).length === 0
+  ) {
+    return null;
+  }
   const index = await buildEntityMentionIndex(
     options.storage,
     options.config,
     options.recallNamespaces,
     options.namespaceStorage,
   );
-  if (index.entities.length === 0) return null;
-
   const explicitCandidates = resolveExplicitCandidates(index, options.query);
   const queryCandidates = prefixedMode
     ? explicitCandidates
-    : resolveLanguageIndependentExplicitCandidates(explicitCandidates);
+    : resolveLanguageIndependentExplicitCandidates(index, explicitCandidates);
   const mode = prefixedMode ?? (queryCandidates.length > 0 ? "direct" : null);
   if (!mode) return null;
 

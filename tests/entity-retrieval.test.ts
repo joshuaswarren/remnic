@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { buildEntityRecallSection, entityIndexVersion, readRecentEntityTranscriptEntries } from "../src/entity-retrieval.js";
 import { Orchestrator } from "../src/orchestrator.js";
@@ -99,8 +99,14 @@ test("entity retrieval builds answer hints and persists a mention index", async 
   assert.ok(index.entities.some((entry: { canonicalId: string }) => entry.canonicalId === canonical));
 });
 
-test("entity retrieval resolves explicit canonical and alias mentions in Japanese direct questions", async () => {
-  const { config, storage } = await buildHarness("engram-entity-japanese-direct");
+test("entity retrieval resolves explicit canonical and alias mentions in Japanese direct questions", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-direct");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
   const canonical = await writeEntity(
     storage,
     "Moonlight",
@@ -128,8 +134,14 @@ test("entity retrieval resolves explicit canonical and alias mentions in Japanes
   }
 });
 
-test("entity retrieval keeps multiple explicit entities in Japanese direct questions separate", async () => {
-  const { config, storage } = await buildHarness("engram-entity-japanese-multiple");
+test("entity retrieval keeps multiple explicit entities in Japanese direct questions separate", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-multiple");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
   const moonlight = await writeEntity(
     storage,
     "Moonlight",
@@ -168,8 +180,14 @@ test("entity retrieval keeps multiple explicit entities in Japanese direct quest
   assert.match(section!, /Borealis-811/);
 });
 
-test("entity retrieval does not resolve an ambiguous alias in Japanese direct questions", async () => {
-  const { config, storage } = await buildHarness("engram-entity-japanese-ambiguous");
+test("entity retrieval does not resolve an ambiguous alias in Japanese direct questions", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-ambiguous");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
   const moonlight = await writeEntity(
     storage,
     "Moonlight",
@@ -200,6 +218,147 @@ test("entity retrieval does not resolve an ambiguous alias in Japanese direct qu
   const section = await buildSection(config, storage, "Beaconの検証コードは何ですか？");
 
   assert.equal(section, null);
+});
+
+test("entity retrieval excludes an ambiguous alias beside a canonical Japanese mention", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-mixed-ambiguous");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const moonlight = await writeEntity(
+    storage,
+    "Moonlight",
+    "project",
+    ["Moonlight is synthetic."],
+    "Moonlight is synthetic.",
+    ["Beacon"],
+  );
+  const aurora = await writeEntity(
+    storage,
+    "Aurora",
+    "project",
+    ["Aurora is synthetic."],
+    "Aurora is synthetic.",
+    ["Beacon"],
+  );
+  await Promise.all([
+    storage.writeMemory("fact", "Moonlightの検証コードは Nebula-472 です。", {
+      entityRef: moonlight,
+      confidence: 1,
+    }),
+    storage.writeMemory("fact", "Auroraの検証コードは Borealis-811 です。", {
+      entityRef: aurora,
+      confidence: 1,
+    }),
+  ]);
+
+  const section = await buildSection(config, storage, "MoonlightとBeaconの検証コードは何ですか？");
+
+  assert.ok(section);
+  assert.match(section!, /target: Moonlight \(project\)/);
+  assert.match(section!, /Nebula-472/);
+  assert.doesNotMatch(section!, /target: Aurora \(project\)|Borealis-811/);
+});
+
+test("entity retrieval skips corpus assembly for unrelated Japanese queries with a fresh persisted index", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-unrelated");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  await writeEntity(
+    storage,
+    "Moonlight",
+    "project",
+    ["Moonlight is synthetic."],
+    "Moonlight is synthetic.",
+  );
+  await buildSection(config, storage, "What do we know about Moonlight?");
+
+  const originalReadAllEntityFiles = storage.readAllEntityFiles.bind(storage);
+  const originalReadAllMemories = storage.readAllMemories.bind(storage);
+  let entityReadCalls = 0;
+  let memoryReadCalls = 0;
+  storage.readAllEntityFiles = async () => {
+    entityReadCalls += 1;
+    return originalReadAllEntityFiles();
+  };
+  storage.readAllMemories = async () => {
+    memoryReadCalls += 1;
+    return originalReadAllMemories();
+  };
+  t.after(() => {
+    storage.readAllEntityFiles = originalReadAllEntityFiles;
+    storage.readAllMemories = originalReadAllMemories;
+  });
+
+  const section = await buildSection(config, storage, "関係のない質問ですか？");
+
+  assert.equal(section, null);
+  assert.equal(entityReadCalls, 0);
+  assert.equal(memoryReadCalls, 0);
+});
+
+test("entity retrieval refreshes a persisted index after an entity-linked Fact changes", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-refresh");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const canonical = await writeEntity(
+    storage,
+    "Moonlight",
+    "project",
+    ["Moonlight is synthetic."],
+    "Moonlight is synthetic.",
+  );
+  await buildSection(config, storage, "What do we know about Moonlight?");
+  await storage.writeMemory(
+    "fact",
+    "Moonlightの検証コードは Nebula-472 です。",
+    { entityRef: canonical, confidence: 1 },
+  );
+
+  const section = await buildSection(config, storage, "Moonlightの検証コードは何ですか？");
+
+  assert.ok(section);
+  assert.match(section!, /Nebula-472/);
+});
+
+test("entity retrieval refreshes a persisted index after an Entity gains an alias", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-alias-refresh");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const canonical = await writeEntity(
+    storage,
+    "Moonlight",
+    "project",
+    ["Moonlight is synthetic."],
+    "Moonlight is synthetic.",
+  );
+  await storage.writeMemory(
+    "fact",
+    "Moonlightの検証コードは Nebula-472 です。",
+    { entityRef: canonical, confidence: 1 },
+  );
+  await buildSection(config, storage, "What do we know about Moonlight?");
+  await storage.addEntityAlias(canonical, "Lunar Beacon");
+
+  const section = await buildSection(config, storage, "Lunar Beaconの検証コードは何ですか？");
+
+  assert.ok(section);
+  assert.match(section!, /Nebula-472/);
 });
 
 test("entity retrieval reads entity hints from allowed secondary namespaces only", async () => {
@@ -658,6 +817,7 @@ test("entity retrieval prioritizes parseable timeline timestamps over malformed 
       },
     ],
     readAllMemories: async () => [],
+    getMemoryStatusVersion: () => 1,
   } as unknown as StorageManager;
 
   const section = await buildSection(config, storage, "What happened with Alice Example?");

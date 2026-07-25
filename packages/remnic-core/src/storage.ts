@@ -6154,6 +6154,7 @@ export class StorageManager {
     entity.updated = new Date().toISOString();
     await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
     this.invalidateKnowledgeIndexCache();
+    this.bumpMemoryStatusVersion();
   }
 
   async updateEntitySynthesis(
