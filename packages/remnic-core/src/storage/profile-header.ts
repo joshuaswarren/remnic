@@ -370,6 +370,15 @@ function hasHtmlBlockEndMarker(line: string, endMarker: string): boolean {
   return line.includes(endMarker);
 }
 
+function isHtmlBlockTerminator(line: string): boolean {
+  return (
+    isRawHtmlBlockTerminator(line) ||
+    line.endsWith("-->") ||
+    line.endsWith("?>") ||
+    line.endsWith("]]>")
+  );
+}
+
 function hasRawHtmlBlockEndMarker(line: string, endMarker: string): boolean {
   const markerIndex = line.indexOf(endMarker);
   if (markerIndex < 0) return false;
@@ -432,13 +441,26 @@ function visitProfileMetadataLines(
   }
 }
 
+function isNestedListTitle(lines: ProfileLine[], index: number, indentation: number): boolean {
+  for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+    const previousLine = lines[previousIndex]?.content ?? "";
+    if (previousLine.trim() === "") continue;
+    const previousIndentation = previousLine.length - previousLine.trimStart().length;
+    if (previousIndentation >= indentation) continue;
+    return MARKDOWN_LIST_ITEM.test(previousLine.trimStart());
+  }
+  return false;
+}
+
 function isProfileTitleLine(lines: ProfileLine[], index: number, line: string): boolean {
   const titleLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
   if (!PROFILE_TITLE.test(titleLine)) return false;
   const indentation = titleLine.length - titleLine.trimStart().length;
   if (indentation === 0 || index === 0) return true;
   const previousLine = lines[index - 1]?.content.trim() ?? "";
-  return previousLine === "" || previousLine === "---" || previousLine === "...";
+  return previousLine === ""
+    ? !isNestedListTitle(lines, index, indentation)
+    : previousLine === "---" || previousLine === "...";
 }
 
 function findProfileTitleIndex(lines: ProfileLine[]): number {
@@ -459,7 +481,7 @@ function isMetadataBoundary(line: string): boolean {
     MARKDOWN_BLOCK_QUOTE.test(line) ||
     isLastUpdatedHeader(line) ||
     getFenceMarker(line) !== null ||
-    isRawHtmlBlockTerminator(line)
+    isHtmlBlockTerminator(line)
   );
 }
 

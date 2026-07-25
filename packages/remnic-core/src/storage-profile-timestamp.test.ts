@@ -278,6 +278,27 @@ test("writeProfile does not use nested list headings as the profile title", asyn
     t.mock.timers.reset();
   }
 });
+test("writeProfile does not use loose-list headings as the profile title", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "- List item",
+        "",
+        "  # Nested heading",
+        "  Nested body text.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), `${FRESH_HEADER}\n\n${profile}`);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile rejects malformed HTML attributes before the profile title", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -888,6 +909,39 @@ test("writeProfile recognizes raw HTML terminators as metadata boundaries", asyn
   }
 });
 
+test("writeProfile recognizes comment, instruction, and CDATA terminators as boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const blocks = [
+        ["<!--", "Comment content.", "-->"],
+        ["<?instruction", "Instruction content.", "?>"],
+        ["<![CDATA[", "CDATA content.", "]]>"],
+      ];
+
+      for (const [opening, body, closing] of blocks) {
+        const profile = [
+          "# Behavioral Profile",
+          "",
+          opening,
+          body,
+          closing,
+          STALE_HEADER,
+          "",
+          "- Keeps metadata after HTML blocks.",
+          "",
+        ].join("\n");
+
+        await storage.writeProfile(profile);
+
+        assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+      }
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile removes duplicate stale headers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
