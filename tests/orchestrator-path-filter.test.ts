@@ -10,8 +10,8 @@ import {
 } from "../src/orchestrator.ts";
 import {
   isActivityDigestPath,
-  isGenericRecallExcludedPath,
 } from "../packages/remnic-core/src/orchestration/orchestrator-helpers.ts";
+import { isGenericRecallExcludedPath } from "../packages/remnic-core/src/orchestration/generic-recall-paths.ts";
 import type { MemoryFile } from "@remnic/core";
 
 test("isArtifactMemoryPath matches artifact directory paths", () => {
@@ -37,25 +37,26 @@ test("isActivityDigestPath matches only the digest file shape", () => {
 test("isGenericRecallExcludedPath covers artifacts, activity digests, and top-level archive content", () => {
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/artifacts/2026-02-21/a.md"), true);
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/activity/2026-07-22.md"), true);
-  assert.equal(isGenericRecallExcludedPath("/mem/archive/2026-07-22/a.md", "/mem"), true);
-  assert.equal(isGenericRecallExcludedPath("archive/2026-07-22/a.md", "/mem"), true);
-  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/team/archive/2026-07-22/a.md", "/mem"), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/archive/2026-07-22/a.md", { memoryDir: "/mem" }), true);
+  assert.equal(isGenericRecallExcludedPath("archive/2026-07-22/a.md", { memoryDir: "/mem" }), true);
+  assert.equal(
+    isGenericRecallExcludedPath("/mem/namespaces/team/archive/2026-07-22/a.md", { memoryDir: "/mem" }),
+    true,
+  );
   assert.equal(isGenericRecallExcludedPath("/data/activity/remnic/facts/a.md"), false);
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/facts/a.md"), false);
   assert.equal(
-    isGenericRecallExcludedPath(
-      "openclaw-engram/archive/2026-07-22/a.md",
-      "/mem",
-      "openclaw-engram",
-    ),
+    isGenericRecallExcludedPath("openclaw-engram/archive/2026-07-22/a.md", {
+      memoryDir: "/mem",
+      qmdCollection: "openclaw-engram",
+    }),
     true,
   );
   assert.equal(
-    isGenericRecallExcludedPath(
-      "openclaw-engram/namespaces/team/archive/2026-07-22/a.md",
-      "/mem",
-      "openclaw-engram",
-    ),
+    isGenericRecallExcludedPath("openclaw-engram/namespaces/team/archive/2026-07-22/a.md", {
+      memoryDir: "/mem",
+      qmdCollection: "openclaw-engram",
+    }),
     true,
   );
 });
@@ -75,13 +76,14 @@ test("isActivityDigestPath is root-aware: only the top-level digest is excluded"
 
 test("isGenericRecallExcludedPath root-aware keeps nested activity and archive-named facts recallable", () => {
   const root = "/mem";
-  assert.equal(isGenericRecallExcludedPath("/mem/artifacts/2026-02-21/a.md", root), true);
-  assert.equal(isGenericRecallExcludedPath("/mem/activity/2026-07-22.md", root), true);
-  assert.equal(isGenericRecallExcludedPath("/mem/facts/proj/activity/2026-07-22.md", root), false);
-  assert.equal(isGenericRecallExcludedPath("/mem/facts/proj/archive/2026-07-22.md", root), false);
-  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/archive/facts/a.md", root), false);
-  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/team/facts/archive/a.md", root), false);
-  assert.equal(isGenericRecallExcludedPath("/mem/facts/a.md", root), false);
+  const policy = { memoryDir: root };
+  assert.equal(isGenericRecallExcludedPath("/mem/artifacts/2026-02-21/a.md", policy), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/activity/2026-07-22.md", policy), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/facts/proj/activity/2026-07-22.md", policy), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/facts/proj/archive/2026-07-22.md", policy), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/archive/facts/a.md", policy), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/team/facts/archive/a.md", policy), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/facts/a.md", policy), false);
 });
 
 test("filterRecallCandidates applies namespace/artifact filters before final cap", () => {
@@ -129,8 +131,7 @@ test("generic path filtering is applied before QMD cap", () => {
     recallNamespaces: [],
     resolveNamespace: () => "",
     limit: 2,
-    memoryRoot: "/tmp/memory",
-    qmdCollection: "openclaw-engram",
+    pathPolicy: { memoryDir: "/tmp/memory", qmdCollection: "openclaw-engram" },
   });
 
   assert.deepEqual(

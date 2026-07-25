@@ -639,60 +639,6 @@ export function isActivityDigestPath(filePath: string, memoryRoot?: string): boo
   return ACTIVITY_DIGEST_ANYWHERE.test(filePath);
 }
 
-function stripQmdCollectionPrefix(
-  relativePath: string,
-  qmdCollection?: string,
-  qmdColdCollection?: string,
-): string {
-  const normalized = relativePath.replace(/\\/g, "/");
-  const slashIndex = normalized.indexOf("/");
-  if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return relativePath;
-
-  const prefix = normalized.slice(0, slashIndex);
-  const isCollectionPrefix = [qmdCollection, qmdColdCollection].some(
-    (collection) =>
-      typeof collection === "string" &&
-      collection.length > 0 &&
-      (prefix === collection || prefix.startsWith(`${collection}--`)),
-  );
-  return isCollectionPrefix ? normalized.slice(slashIndex + 1) : relativePath;
-}
-
-export function isTopLevelArchivePath(
-  filePath: string,
-  memoryRoot?: string,
-  qmdCollection?: string,
-  qmdColdCollection?: string,
-): boolean {
-  const relative = memoryRoot
-    ? path.relative(memoryRoot, path.resolve(memoryRoot, filePath))
-    : filePath;
-  return /^(?:archive|namespaces[\\/][^\\/]+[\\/]archive)(?:[\\/]|$)/i.test(
-    stripQmdCollectionPrefix(relative, qmdCollection, qmdColdCollection),
-  );
-}
-
-/**
- * Paths that dedicated surfaces own and generic recall must never inject:
- * artifacts, activity digests, top-level archive files, and meeting records.
- * One predicate shared by every recall filter site so the exclusion cannot drift.
- * Explicit search paths (memory_search, activity search) do not apply this
- * filter, so those surfaces still read them.
- */
-export function isGenericRecallExcludedPath(
-  filePath: string,
-  memoryRoot?: string,
-  qmdCollection?: string,
-  qmdColdCollection?: string,
-): boolean {
-  return (
-    isArtifactMemoryPath(filePath) ||
-    isActivityDigestPath(filePath, memoryRoot) ||
-    isTopLevelArchivePath(filePath, memoryRoot, qmdCollection, qmdColdCollection) ||
-    isMeetingRecordPath(filePath)
-  );
-}
-
 export function buildCompressionGuidelinesMarkdown(
   events: MemoryActionEvent[],
   generatedAtIso: string = new Date().toISOString(),
@@ -700,36 +646,6 @@ export function buildCompressionGuidelinesMarkdown(
   return buildCompressionGuidelinesMarkdownV2(events, generatedAtIso);
 }
 
-export function filterRecallCandidates(
-  candidates: QmdSearchResult[],
-  options: {
-    namespacesEnabled: boolean;
-    recallNamespaces: string[];
-    resolveNamespace: (path: string) => string;
-    limit: number;
-    /** Memory root for top-level dedicated-path detection. */
-    memoryRoot?: string;
-    /** QMD collection names whose result-path prefixes need root normalization. */
-    qmdCollection?: string;
-    qmdColdCollection?: string;
-  },
-): QmdSearchResult[] {
-  const scopedByNamespace = options.namespacesEnabled
-    ? candidates.filter((r) =>
-        options.recallNamespaces.includes(r.namespace ?? options.resolveNamespace(r.path)),
-      )
-    : candidates;
-  return scopedByNamespace
-    .filter((r) =>
-      !isGenericRecallExcludedPath(
-        r.path,
-        options.memoryRoot,
-        options.qmdCollection,
-        options.qmdColdCollection,
-      ),
-    )
-    .slice(0, Math.max(0, options.limit));
-}
 
 export function applyQueryAwareCandidateFilter(
   candidates: QmdSearchResult[],

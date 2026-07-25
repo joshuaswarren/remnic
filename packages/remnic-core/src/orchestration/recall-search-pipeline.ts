@@ -57,7 +57,8 @@ import {
   type QmdRecallSnapshot,
   type QueryAwarePrefilter,
 } from "../orchestrator.js";
-import { isActivityDigestPath, isGenericRecallExcludedPath } from "./orchestrator-helpers.js";
+import { isActivityDigestPath } from "./orchestrator-helpers.js";
+import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
 
 export interface RecallSearchPipelineDeps {
   applyMemoryWorthRerank(
@@ -426,13 +427,7 @@ export class RecallSearchPipelineCoordinator {
         )
       : [];
     // Drop generic-recall-excluded records before the fetchLimit cap so they can't starve valid memories (#1995).
-    const recallable = (r: QmdSearchResult) =>
-      !isGenericRecallExcludedPath(
-        r.path,
-        this.deps.config.memoryDir,
-        this.deps.config.qmdCollection,
-        this.deps.config.qmdColdCollection,
-      );
+    const recallable = (r: QmdSearchResult) => !isGenericRecallExcludedPath(r.path, this.deps.config);
 
     let fetchLimit = Math.max(qmdFetchLimit, qmdHybridFetchLimit);
     const maxFetchLimit = Math.min(
@@ -473,9 +468,7 @@ export class RecallSearchPipelineCoordinator {
       recallNamespaces: options.recallNamespaces,
       resolveNamespace: options.resolveNamespace,
       limit: qmdFetchLimit,
-      memoryRoot: this.deps.config.memoryDir,
-      qmdCollection: this.deps.config.qmdCollection,
-      qmdColdCollection: this.deps.config.qmdColdCollection,
+      pathPolicy: this.deps.config,
     });
     const emitDebugSnapshot = async (
       results: QmdSearchResult[],
@@ -620,9 +613,7 @@ export class RecallSearchPipelineCoordinator {
         recallNamespaces: options.recallNamespaces,
         resolveNamespace: options.resolveNamespace,
         limit: fetchLimit,
-        memoryRoot: this.deps.config.memoryDir,
-        qmdCollection: this.deps.config.qmdCollection,
-        qmdColdCollection: this.deps.config.qmdColdCollection,
+        pathPolicy: this.deps.config,
       });
 
       if (filteredResults.length >= qmdFetchLimit) {
@@ -705,15 +696,7 @@ export class RecallSearchPipelineCoordinator {
             { allowArchived: true },
           )
         : []
-    ).filter(
-      (result) =>
-        !isGenericRecallExcludedPath(
-          result.path,
-          this.deps.config.memoryDir,
-          this.deps.config.qmdCollection,
-          this.deps.config.qmdColdCollection,
-        ),
-    );
+    ).filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config));
     return scopedSeedResults.slice(0, cappedLimit);
   }
 
@@ -962,15 +945,7 @@ export class RecallSearchPipelineCoordinator {
       results = scopedResults;
     }
     // Dedicated-surface isolation keeps generic recall out of artifacts, activity digests, and archives.
-    results = results.filter(
-      (r) =>
-        !isGenericRecallExcludedPath(
-          r.path,
-          this.deps.config.memoryDir,
-          this.deps.config.qmdCollection,
-          this.deps.config.qmdColdCollection,
-        ),
-    );
+    results = results.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config));
     if (results.length === 0) return [];
 
     const isFullModeGraphAssist =

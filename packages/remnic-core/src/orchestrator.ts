@@ -134,11 +134,11 @@ import {
   computeSemanticDedupScope,
   qmdCollectionNamespaceFromPrefix as computeQmdCollectionNamespaceFromPrefix,
 } from "./orchestration/orchestrator-namespace-scope.js";
+import { isGenericRecallExcludedPath } from "./orchestration/generic-recall-paths.js";
 import {
   abortRecallError,
   buildCompressionGuidelinesMarkdown,
   buildQmdIntentHint,
-  isGenericRecallExcludedPath,
   mergeArtifactRecallCandidates,
   tokenizeRecallQuery,
   type BulkImportBatchIngestResult,
@@ -163,7 +163,6 @@ export {
   computeQmdHybridFetchLimit,
   defaultWorkspaceDir,
   filterHourlySummaryMarkdownForLocalDay,
-  filterRecallCandidates,
   formatDateInTimeZone,
   isArtifactMemoryPath,
   lifecycleRecallScoreAdjustment,
@@ -198,6 +197,7 @@ export {
   type RecallInvocationOptions,
   type RecallModeDecision,
 } from "./orchestration/orchestrator-helpers.js";
+export { filterRecallCandidates } from "./orchestration/generic-recall-paths.js";
 
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
 import {
@@ -2483,17 +2483,7 @@ export class Orchestrator {
     if (!paths) return null;
     const scoped = new Set<string>();
     for (const memoryPath of paths) {
-      if (
-        !memoryPath ||
-        isGenericRecallExcludedPath(
-          memoryPath,
-          this.config.memoryDir,
-          this.config.qmdCollection,
-          this.config.qmdColdCollection,
-        )
-      ) {
-        continue;
-      }
+      if (!memoryPath || isGenericRecallExcludedPath(memoryPath, this.config)) continue;
       if (
         resolveNamespaceCapabilities(this.config).namespaces &&
         !recallNamespaces.includes(this.namespaceFromPath(memoryPath))

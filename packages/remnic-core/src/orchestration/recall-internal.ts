@@ -96,7 +96,7 @@ import {
   type QueryAwarePrefilter,
   type RecallInvocationOptions,
 } from "../orchestrator.js";
-import { isGenericRecallExcludedPath } from "./orchestrator-helpers.js";
+import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
 
 import type {
   RecallSectionAppendOptions,
@@ -4162,15 +4162,7 @@ export class RecallInternalCoordinator {
           recallNamespaces.includes(r.namespace ?? this.deps.namespaceFromPath(r.path)));
       }
       // Dedicated surfaces are never generic recall.
-      memoryResults = memoryResults.filter(
-        (r) =>
-          !isGenericRecallExcludedPath(
-            r.path,
-            this.deps.config.memoryDir,
-            this.deps.config.qmdCollection,
-            this.deps.config.qmdColdCollection,
-          ),
-      );
+      memoryResults = memoryResults.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config));
 
       const isFullModeGraphAssist =
         graphCaps.multiGraphMemory &&
@@ -4558,9 +4550,7 @@ export class RecallInternalCoordinator {
                 recallNamespaces,
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 limit: embeddingFetchLimit,
-                memoryRoot: this.deps.config.memoryDir,
-                qmdCollection: this.deps.config.qmdCollection,
-                qmdColdCollection: this.deps.config.qmdColdCollection,
+                pathPolicy: this.deps.config,
               },
             );
             const boostedScoped = await this.deps.boostSearchResults(
@@ -4758,9 +4748,7 @@ export class RecallInternalCoordinator {
                 recallNamespaces,
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 limit: embeddingFetchLimit,
-                memoryRoot: this.deps.config.memoryDir,
-                qmdCollection: this.deps.config.qmdCollection,
-                qmdColdCollection: this.deps.config.qmdColdCollection,
+                pathPolicy: this.deps.config,
               },
             );
             const boostedScoped = await this.deps.boostSearchResults(
@@ -4883,7 +4871,7 @@ export class RecallInternalCoordinator {
             typeof asOfMs === "number" && Number.isFinite(asOfMs);
           const activeMemories = memories.filter(
             (m) => {
-              if (isGenericRecallExcludedPath(m.path, this.deps.config.memoryDir)) return false;
+              if (isGenericRecallExcludedPath(m.path, this.deps.config)) return false;
               const status = m.frontmatter.status;
               if (!status || status === "active") return true;
               if (status === "superseded") {
