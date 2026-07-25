@@ -40,38 +40,72 @@ function isClosingFence(fence: FenceMarker, openFence: FenceMarker): boolean {
   );
 }
 
-function findFrontmatterEnd(lines: string[]): number {
-  const firstLine = lines[0]?.startsWith(UTF8_BOM) ? lines[0].slice(1) : lines[0];
+const RAW_HTML_BLOCK_TAGS = ["pre", "textarea", "script", "style", "xmp"] as const;
+
+type ProfileLine = {
+  content: string;
+  ending: string;
+};
+
+function parseProfileLines(content: string): ProfileLine[] {
+  const segments = content.split(/(\r\n|\n)/);
+  const lines: ProfileLine[] = [];
+  for (let index = 0; index < segments.length; index += 2) {
+    lines.push({
+      content: segments[index] ?? "",
+      ending: segments[index + 1] ?? "",
+    });
+  }
+  return lines;
+}
+
+function renderProfileLines(lines: ProfileLine[]): string {
+  let rendered = "";
+  for (const line of lines) {
+    rendered += line.content + line.ending;
+  }
+  return rendered;
+}
+
+function findFrontmatterEnd(lines: ProfileLine[]): number {
+  const firstLine = lines[0]?.content.startsWith(UTF8_BOM) ? lines[0].content.slice(1) : lines[0]?.content;
   if (firstLine !== "---") return -1;
   for (let index = 1; index < lines.length; index += 1) {
-    const line = lines[index]?.trimEnd();
+    const line = lines[index]?.content.trimEnd();
     if (line === "---" || line === "...") return index;
   }
   return -1;
 }
 
-function visitOutsideFencedBlocks(
-  lines: string[],
+function visitProfileMetadataLines(
+  lines: ProfileLine[],
   visit: (line: string, index: number) => void,
 ): void {
   const frontmatterEnd = findFrontmatterEnd(lines);
   let openFence: FenceMarker | null = null;
-  let openHtmlPre = false;
+  let openHtmlBlock: string | null = null;
   let openHtmlComment = false;
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
+    const line = lines[index]?.content ?? "";
     if (index <= frontmatterEnd || isIndentedCodeLine(line)) continue;
     const normalizedLine = line.trimStart().toLowerCase();
-    const closesHtmlPre = normalizedLine.includes("</pre>");
-    if (openHtmlPre) {
-      if (closesHtmlPre) openHtmlPre = false;
+    if (openHtmlBlock) {
+      if (normalizedLine.includes(`</${openHtmlBlock}>`)) openHtmlBlock = null;
       continue;
     }
-    const startsHtmlPre =
-      normalizedLine.startsWith("<pre") &&
-      (normalizedLine[4] === ">" || normalizedLine[4] === " " || normalizedLine[4] === "\t");
-    if (startsHtmlPre) {
-      openHtmlPre = !closesHtmlPre;
+    let rawHtmlBlock: string | null = null;
+    for (const tag of RAW_HTML_BLOCK_TAGS) {
+      const nextCharacter = normalizedLine[tag.length + 1];
+      if (
+        normalizedLine.startsWith(`<${tag}`) &&
+        (nextCharacter === ">" || nextCharacter === " " || nextCharacter === "\t")
+      ) {
+        rawHtmlBlock = tag;
+        break;
+      }
+    }
+    if (rawHtmlBlock) {
+      openHtmlBlock = normalizedLine.includes(`</${rawHtmlBlock}>`) ? null : rawHtmlBlock;
       continue;
     }
     const startsHtmlComment = normalizedLine.startsWith("<!--");
@@ -97,9 +131,9 @@ function visitOutsideFencedBlocks(
   }
 }
 
-function findProfileTitleIndex(lines: string[]): number {
+function findProfileTitleIndex(lines: ProfileLine[]): number {
   let titleIndex = -1;
-  visitOutsideFencedBlocks(lines, (line, index) => {
+  visitProfileMetadataLines(lines, (line, index) => {
     if (titleIndex >= 0) return;
     const titleLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
     if (PROFILE_TITLE.test(titleLine)) titleIndex = index;
@@ -107,53 +141,72 @@ function findProfileTitleIndex(lines: string[]): number {
   return titleIndex;
 }
 
-function findProfileHeaderIndexes(lines: string[]): number[] {
+function findProfileHeaderIndexes(lines: ProfileLine[]): number[] {
   const indexes: number[] = [];
-  visitOutsideFencedBlocks(lines, (line, index) => {
+  visitProfileMetadataLines(lines, (line, index) => {
     if (isLastUpdatedHeader(line)) indexes.push(index);
   });
   return indexes;
 }
 
-function insertHeaderAfter(lines: string[], index: number, header: string): void {
+function insertHeaderAfter(lines: ProfileLine[], index: number, header: string): void {
   const insertAt = index + 1;
-  if (lines[insertAt]?.trim() === "") {
-    lines.splice(insertAt + 1, 0, header, "");
+  const ending = lines[index]?.ending || lines[insertAt]?.ending || "\n";
+  if (lines[insertAt]?.content.trim() === "") {
+    lines.splice(
+      insertAt + 1,
+      0,
+      { content: header, ending },
+      { content: "", ending },
+    );
   } else {
-    lines.splice(insertAt, 0, "", header, "");
+    lines.splice(
+      insertAt,
+      0,
+      { content: "", ending },
+      { content: header, ending },
+    );
   }
 }
 
-function prependHeader(lines: string[], header: string, lineEnding: string): string {
+function prependHeader(lines: ProfileLine[], header: string): string {
   const frontmatterEnd = findFrontmatterEnd(lines);
   if (frontmatterEnd >= 0) {
     insertHeaderAfter(lines, frontmatterEnd, header);
-    return lines.join(lineEnding);
+    return renderProfileLines(lines);
   }
-  if (lines[0]?.startsWith(UTF8_BOM)) {
-    lines[0] = lines[0].slice(1);
-    return [`${UTF8_BOM}${header}`, "", ...lines].join(lineEnding);
+  const ending = lines[0]?.ending || "\n";
+  if (lines[0]?.content.startsWith(UTF8_BOM)) {
+    lines[0].content = lines[0].content.slice(1);
+    lines.unshift(
+      { content: `${UTF8_BOM}${header}`, ending },
+      { content: "", ending },
+    );
+    return renderProfileLines(lines);
   }
-  return [header, "", ...lines].join(lineEnding);
+  lines.unshift(
+    { content: header, ending },
+    { content: "", ending },
+  );
+  return renderProfileLines(lines);
 }
 
 export function renderProfileWithLastUpdated(content: string, updatedAt: string): string {
-  const lineEnding = content.includes("\r\n") ? "\r\n" : "\n";
-  const lines = content.split(/\r?\n/);
+  const lines = parseProfileLines(content);
   const header = `*Last updated: ${updatedAt}*`;
   const titleIndex = findProfileTitleIndex(lines);
   const headerIndexes = findProfileHeaderIndexes(lines);
 
   if (headerIndexes.length > 0) {
-    lines[headerIndexes[0]!] = header;
+    lines[headerIndexes[0]!].content = header;
     for (let index = headerIndexes.length - 1; index > 0; index -= 1) {
       lines.splice(headerIndexes[index]!, 1);
     }
-    return lines.join(lineEnding);
+    return renderProfileLines(lines);
   }
 
-  if (titleIndex < 0) return prependHeader(lines, header, lineEnding);
+  if (titleIndex < 0) return prependHeader(lines, header);
 
   insertHeaderAfter(lines, titleIndex, header);
-  return lines.join(lineEnding);
+  return renderProfileLines(lines);
 }

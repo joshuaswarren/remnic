@@ -80,6 +80,22 @@ test("writeProfile preserves CRLF line endings", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile preserves mixed existing line endings", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = `# Behavioral Profile\r\n\n${STALE_HEADER}\r\n\n- Keeps original separators.\r\n`;
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 
 test("writeProfile removes duplicate stale headers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
@@ -403,6 +419,36 @@ test("writeProfile preserves timestamp-shaped HTML preformatted code", async (t)
     t.mock.timers.reset();
   }
 });
+test("writeProfile preserves timestamp-shaped raw HTML blocks", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      for (const tag of ["textarea", "script", "style", "xmp"]) {
+        const profile = [
+          "# Behavioral Profile",
+          "",
+          `<${tag}>`,
+          "*Last updated: literal example*",
+          `</${tag}>`,
+          "",
+          "- Keeps code examples.",
+          "",
+        ].join("\n");
+
+        await storage.writeProfile(profile);
+
+        assert.equal(
+          await storage.readProfile(),
+          profile.replace(`\n\n<${tag}>`, `\n\n${FRESH_HEADER}\n\n<${tag}>`),
+        );
+      }
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile preserves timestamp-shaped HTML comments", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
