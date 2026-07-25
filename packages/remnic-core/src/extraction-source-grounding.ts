@@ -486,13 +486,24 @@ function isUnknownAnswerSentence(sentence: string): boolean {
     .test(sentence);
 }
 
+function isBareYesNoAnswer(sentence: string): boolean {
+  return /^(?:yes|no)[.!]?$/iu.test(sentence.trim());
+}
+
 function isQuestionAnsweredBySource(question: string, source: string): boolean {
   const questionTokens = tokenize(question);
   if (questionTokens.size === 0) return false;
   const isYesNoQuestion = /^(?:is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had)\b/iu
     .test(question.trim());
-  return sourceSentences(source).some((sentence) => {
+  const sentences = sourceSentences(source);
+  return sentences.some((sentence, index) => {
     if (isInterrogativeSourceSentence(sentence)) return false;
+    if (isBareYesNoAnswer(sentence)) {
+      const precedingSentence = sentences[index - 1];
+      return precedingSentence !== undefined
+        && isInterrogativeSourceSentence(precedingSentence)
+        && groundedTokenScore(question, precedingSentence) === 1;
+    }
     if (isUnknownAnswerSentence(sentence)) return false;
     const score = groundedTokenScore(question, sentence);
     if (score !== 1) return false;

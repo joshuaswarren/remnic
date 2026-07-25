@@ -593,6 +593,17 @@ test("grounding does not treat questions or hypotheticals as factual evidence", 
   );
   assert.deepEqual(answeredResult.questions, []);
 
+  const bareAnswerResult = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{ question: "Does Alice work at Acme?", context: "", priority: 0.5 }],
+    },
+    "Does Alice work at Acme?\nYes.",
+  );
+  assert.deepEqual(bareAnswerResult.questions, []);
+
   const partialOverlapResult = filterExtractionResultBySource(
     {
       facts: [],
