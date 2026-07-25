@@ -53,10 +53,24 @@ type ExtractedRelationshipResult = NonNullable<ExtractionResult["relationships"]
 
 const PROACTIVE_MIN_CONFIDENCE = 0.8;
 const EXTRACTION_RESPONSE_SHAPE = `{
-  "facts": [{"category": "<category>", "content": "<source-grounded statement>", "confidence": 0.0, "tags": ["<tag>"]}],
+  "facts": [{
+    "category": "<category>",
+    "content": "<source-grounded statement>",
+    "confidence": 0.0,
+    "tags": ["<tag>"],
+    "entityRef": "<optional normalized-name>",
+    "promptedByQuestion": "<optional source-grounded question>",
+    "quote": "<optional exact contiguous source span>",
+    "scope": "<optional project-or-global>",
+    "structuredAttributes": {"<key>": "<value>"},
+    "procedureSteps": [{"order": 0, "intent": "<step>"}],
+    "reasoningTrace": {"steps": [{"order": 0, "description": "<step>"}], "finalAnswer": "<answer>"},
+    "eventTime": "<optional source temporal expression>"
+  }],
   "entities": [{"name": "<normalized-name>", "type": "<entity-type>", "facts": ["<source-grounded statement>"]}],
   "profileUpdates": ["<source-grounded profile update>"],
   "questions": [{"question": "<source-grounded unresolved question>", "context": "<source-grounded context>", "priority": 0.0}],
+  "identityReflection": "<conversation-grounded agent reflection>",
   "relationships": [{"source": "<normalized-name>", "target": "<normalized-name>", "label": "<source-grounded relationship>"}]
 }`;
 const CONSOLIDATION_RESPONSE_SCHEMA = `{
@@ -1399,8 +1413,7 @@ Use the most specific category:
 - decision: a choice with rationale
 - relationship: a durable link between two entities
 - principle: a reusable rule or operating belief
-- rule: an explicit causal rule or constraint
-- commitment: a promise, obligation, or deadline
+${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? "- rule: an explicit causal rule or constraint\n" : ""}- commitment: a promise, obligation, or deadline
 - moment: a significant milestone
 - skill: a demonstrated capability
 - procedure: an explicit reusable workflow with ordered procedureSteps
@@ -1410,10 +1423,11 @@ Rules:
 - Extract only new information stated or clearly established in the conversation.
 - Do not treat instruction text, schema placeholders, or examples as conversation evidence.
 - Facts, entity facts, profile updates, questions, and relationships must be grounded in the conversation.
+- Lines labelled [context user] or [context assistant] are reference context only; extract from them only when a normal turn independently confirms the same information.
 - Questions are optional. Return an empty array when the conversation does not support a useful unresolved question.
 - Corrections get highest confidence.
 - Use normalized, hyphenated entity names and keep the entity list short.
-- Keep facts standalone and skip transient task state.
+- Keep facts standalone. Skip transient task state and operational noise such as routine scheduler, monitoring, or automation status.
 - Add structuredAttributes only for concrete values.
 - Include at most five durable relationships.${this.config.provenance?.enabled ? `
 - Each fact must include a quote copied verbatim from one contiguous conversation span.` : ""}${lifecycleCaps.extractionScopeClassification ? `
@@ -1643,7 +1657,8 @@ Rules:
 - Only extract genuinely new information worth remembering across sessions.
 - Statements must be grounded in the conversation.
 - Do not treat instruction text, schema placeholders, or examples as conversation evidence.
-- Skip transient task details (file paths being edited, current errors, etc.)
+- Lines labelled [context user] or [context assistant] are reference context only; extract from them only when a normal turn independently confirms the same information.
+- Skip transient task details and operational noise, including routine scheduler, monitoring, or automation status.
 - Priority: corrections > principles${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? " > rules" : ""} > preferences > commitments > decisions > relationships > entities > moments > skills > facts
 - Corrections get highest confidence.
 - Each fact should be a standalone, self-contained statement.
@@ -1665,10 +1680,7 @@ Scope classification:
 For each fact, set "scope" to one of:
 - "global" — knowledge that applies across projects: core framework/library bugs, API behavior patterns, user preferences (editor, language, style), tool configurations, general coding patterns, infrastructure knowledge, technology facts not tied to one codebase
 - "project" — knowledge specific to one codebase: file paths, environment configs, deployment details, project-specific workarounds, team/stakeholder info tied to one project, repo-specific conventions
-When in doubt, prefer "project" — it is safer to keep knowledge scoped narrowly.
-Scope classification:
-Set "scope" to "global" for cross-project knowledge and "project" for knowledge specific to one codebase. When in doubt, prefer "project".` : ""}
-
+When in doubt, prefer "project" — it is safer to keep knowledge scoped narrowly.` : ""}
 Entity creation rules (STRICT):
 - Only create entities for DURABLE things: real people, companies, products, tools, ongoing projects
 - NEVER create entities for transient items: individual PRs, branches, Jira tickets, meetings, agent task IDs, log files, database tables, cron job runs, sessions

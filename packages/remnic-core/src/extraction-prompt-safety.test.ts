@@ -40,8 +40,19 @@ type DirectClientFixture = {
 function assertSafeExtractionPrompt(prompt: string): void {
   assert.match(prompt, /Questions are optional/i);
   assert.match(prompt, /return an empty array/i);
+  assert.match(prompt, /\[context user\].*reference context only|reference context only.*\[context user\]/is);
+  assert.match(prompt, /operational noise/i);
   assert.doesNotMatch(prompt, /dark mode|cloud provider|staging environment/i);
   assert.doesNotMatch(prompt, /React over Vue|rate limiting at 1000/i);
+}
+
+function assertStructuralResponseShape(prompt: string): void {
+  assert.match(prompt, /"procedureSteps"/);
+  assert.match(prompt, /"reasoningTrace"/);
+  assert.match(prompt, /"quote"/);
+  assert.match(prompt, /"scope"/);
+  assert.match(prompt, /"eventTime"/);
+  assert.match(prompt, /"identityReflection"/);
 }
 
 test("local extraction prompt uses placeholders and accepts an empty question list", async () => {
@@ -68,7 +79,8 @@ test("local extraction prompt uses placeholders and accepts an empty question li
 
   assert.deepEqual(result.questions, []);
   assertSafeExtractionPrompt(prompt);
-  assert.match(prompt, /^- rule: an explicit causal rule or constraint$/m);
+  assertStructuralResponseShape(prompt);
+  assert.doesNotMatch(prompt, /^- rule:/m);
 });
 
 test("gateway extraction prompt uses placeholders and accepts an empty question list", async () => {
@@ -108,6 +120,7 @@ test("direct extraction prompt uses placeholders and accepts an empty question l
   const result = await engine.extract([SOURCE_TURN]);
 
   assert.deepEqual(result.questions, []);
+  assertStructuralResponseShape(prompt);
   assertSafeExtractionPrompt(prompt);
 });
 
