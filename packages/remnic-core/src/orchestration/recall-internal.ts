@@ -4161,8 +4161,16 @@ export class RecallInternalCoordinator {
         memoryResults = memoryResults.filter((r) =>
           recallNamespaces.includes(r.namespace ?? this.deps.namespaceFromPath(r.path)));
       }
-      // Artifacts + activity digests are dedicated surfaces, never generic recall.
-      memoryResults = memoryResults.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir));
+      // Dedicated surfaces are never generic recall.
+      memoryResults = memoryResults.filter(
+        (r) =>
+          !isGenericRecallExcludedPath(
+            r.path,
+            this.deps.config.memoryDir,
+            this.deps.config.qmdCollection,
+            this.deps.config.qmdColdCollection,
+          ),
+      );
 
       const isFullModeGraphAssist =
         graphCaps.multiGraphMemory &&
@@ -4551,6 +4559,8 @@ export class RecallInternalCoordinator {
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 limit: embeddingFetchLimit,
                 memoryRoot: this.deps.config.memoryDir,
+                qmdCollection: this.deps.config.qmdCollection,
+                qmdColdCollection: this.deps.config.qmdColdCollection,
               },
             );
             const boostedScoped = await this.deps.boostSearchResults(
@@ -4749,6 +4759,8 @@ export class RecallInternalCoordinator {
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 limit: embeddingFetchLimit,
                 memoryRoot: this.deps.config.memoryDir,
+                qmdCollection: this.deps.config.qmdCollection,
+                qmdColdCollection: this.deps.config.qmdColdCollection,
               },
             );
             const boostedScoped = await this.deps.boostSearchResults(

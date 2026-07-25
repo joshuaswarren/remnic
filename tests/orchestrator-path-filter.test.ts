@@ -42,6 +42,22 @@ test("isGenericRecallExcludedPath covers artifacts, activity digests, and top-le
   assert.equal(isGenericRecallExcludedPath("/mem/namespaces/team/archive/2026-07-22/a.md", "/mem"), true);
   assert.equal(isGenericRecallExcludedPath("/data/activity/remnic/facts/a.md"), false);
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/facts/a.md"), false);
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "openclaw-engram/archive/2026-07-22/a.md",
+      "/mem",
+      "openclaw-engram",
+    ),
+    true,
+  );
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "openclaw-engram/namespaces/team/archive/2026-07-22/a.md",
+      "/mem",
+      "openclaw-engram",
+    ),
+    true,
+  );
 });
 
 test("isActivityDigestPath is root-aware: only the top-level digest is excluded", () => {
@@ -96,6 +112,12 @@ test("computeQmdHybridFetchLimit overscans only when artifacts are enabled", () 
 test("generic path filtering is applied before QMD cap", () => {
   const qmdCandidates = [
     { docid: "/tmp/memory/archive/2026-02-21/a.md", path: "/tmp/memory/archive/2026-02-21/a.md", snippet: "", score: 1.0 },
+    {
+      docid: "openclaw-engram/archive/2026-02-21/qualified.md",
+      path: "openclaw-engram/archive/2026-02-21/qualified.md",
+      snippet: "",
+      score: 1.0,
+    },
     { docid: "/tmp/memory/artifacts/2026-02-21/a.md", path: "/tmp/memory/artifacts/2026-02-21/a.md", snippet: "", score: 0.99 },
     { docid: "/tmp/memory/artifacts/2026-02-21/b.md", path: "/tmp/memory/artifacts/2026-02-21/b.md", snippet: "", score: 0.98 },
     { docid: "/tmp/memory/facts/3.md", path: "/tmp/memory/facts/3.md", snippet: "", score: 0.97 },
@@ -108,6 +130,7 @@ test("generic path filtering is applied before QMD cap", () => {
     resolveNamespace: () => "",
     limit: 2,
     memoryRoot: "/tmp/memory",
+    qmdCollection: "openclaw-engram",
   });
 
   assert.deepEqual(

@@ -28,7 +28,6 @@ import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import { NegativeExampleStore } from "../negative.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
-import { getDefaultArchiveScoring, memoryFileToScoreItem } from "../recall/archive-scoring.js";
 import { RelevanceStore } from "../relevance.js";
 import { RerankCache, rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import type { SearchBackend, SearchDegradation, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
@@ -55,7 +54,6 @@ import {
   computeQmdHybridFetchLimit,
   filterRecallCandidates,
   throwIfRecallAborted,
-  tokenizeRecallQuery,
   type QmdRecallSnapshot,
   type QueryAwarePrefilter,
 } from "../orchestrator.js";
@@ -422,19 +420,19 @@ export class RecallSearchPipelineCoordinator {
       ? await this.deps.searchScopedMemoryCandidates(
           queryAwarePrefilter.candidatePaths,
           prompt,
-          // Overfetch the FULL scoped candidate set BEFORE the generic-recall
-          // exclusion `filterRecallCandidates` applies below (L464). Capping to
-          // `qmdFetchLimit` here lets excluded paths (artifacts, activity digests,
-          // meeting records) consume the caller's budget and drop legitimate hits
-          // with no refill — the hot-path mirror of the archive-fallback fix. The
-          // candidate set is an already-bounded prefilter, so its size is the
-          // natural ceiling; the post-exclusion cap is applied by filterRecallCandidates.
+          // Exclude dedicated surfaces before capping the bounded prefilter set.
           queryAwarePrefilter.candidatePaths.size,
           { allowArchived: options.collection !== undefined },
         )
       : [];
     // Drop generic-recall-excluded records before the fetchLimit cap so they can't starve valid memories (#1995).
-    const recallable = (r: QmdSearchResult) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir);
+    const recallable = (r: QmdSearchResult) =>
+      !isGenericRecallExcludedPath(
+        r.path,
+        this.deps.config.memoryDir,
+        this.deps.config.qmdCollection,
+        this.deps.config.qmdColdCollection,
+      );
 
     let fetchLimit = Math.max(qmdFetchLimit, qmdHybridFetchLimit);
     const maxFetchLimit = Math.min(
@@ -476,6 +474,8 @@ export class RecallSearchPipelineCoordinator {
       resolveNamespace: options.resolveNamespace,
       limit: qmdFetchLimit,
       memoryRoot: this.deps.config.memoryDir,
+      qmdCollection: this.deps.config.qmdCollection,
+      qmdColdCollection: this.deps.config.qmdColdCollection,
     });
     const emitDebugSnapshot = async (
       results: QmdSearchResult[],
@@ -621,6 +621,8 @@ export class RecallSearchPipelineCoordinator {
         resolveNamespace: options.resolveNamespace,
         limit: fetchLimit,
         memoryRoot: this.deps.config.memoryDir,
+        qmdCollection: this.deps.config.qmdCollection,
+        qmdColdCollection: this.deps.config.qmdColdCollection,
       });
 
       if (filteredResults.length >= qmdFetchLimit) {
@@ -679,20 +681,19 @@ export class RecallSearchPipelineCoordinator {
   }
 
   /**
-   * Long-term fallback retrieval.
-   * Searches archived memories only, and is invoked only when hot recall returns zero hits.
+   * Cold fallback retains qualifying query-aware candidates. Archive records
+   * belong to dedicated surfaces and never re-enter generic recall.
    */
   async searchLongTermArchiveFallback(
     prompt: string,
-    recallNamespaces: string[],
+    _recallNamespaces: string[],
     limit: number,
     queryAwarePrefilter?: QueryAwarePrefilter,
     abortSignal?: AbortSignal,
   ): Promise<QmdSearchResult[]> {
     throwIfRecallAborted(abortSignal);
     const cappedLimit = Math.max(0, limit);
-    if (cappedLimit === 0) return [];
-    if (queryAwarePrefilter?.candidatePaths?.size === 0) return [];
+    if (cappedLimit === 0 || queryAwarePrefilter?.candidatePaths?.size === 0) return [];
 
     const candidatePaths = queryAwarePrefilter?.candidatePaths;
     const scopedSeedResults = (
@@ -700,57 +701,20 @@ export class RecallSearchPipelineCoordinator {
         ? await this.deps.searchScopedMemoryCandidates(
             candidatePaths,
             prompt,
-            // Overfetch the FULL scoped candidate set BEFORE the generic-recall
-            // exclusion below. Capping to `cappedLimit` first lets excluded paths
-            // (artifacts, activity digests, meeting records) consume the caller's
-            // budget and drop legitimate hits with no refill — e.g. a prefilter of
-            // [meetingRecord, facts/a.md] at limit 1 would return nothing. The
-            // candidate set is an already-bounded prefilter, so its size is the
-            // natural ceiling; the post-exclusion cap is applied below.
             candidatePaths.size,
             { allowArchived: true },
           )
         : []
-    ).filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config.memoryDir));
-    // Non-recallable seed paths (artifacts, activity digests, meeting records) are
-    // excluded above AFTER an unconstrained candidate fetch, so the cap here counts
-    // only recallable seeds — and EVERY early-return / direct-caller path below
-    // returns already-filtered, budget-honoring seeds.
-    if (scopedSeedResults.length >= cappedLimit) {
-      return scopedSeedResults.slice(0, cappedLimit);
-    }
-
-    const tokens = Array.from(new Set(tokenizeRecallQuery(prompt)));
-    if (tokens.length === 0) return scopedSeedResults;
-
-    throwIfRecallAborted(abortSignal);
-    const archivedMemories =
-      await this.deps.readArchivedMemoriesForNamespaces(recallNamespaces);
-    if (archivedMemories.length === 0) return scopedSeedResults;
-
-    // Issue #1674: off-load the CPU-bound archive-scoring loop to a
-    // worker_threads pool so concurrent recall requests run on separate
-    // cores instead of serializing on the main JS thread. The pure scoring
-    // function is identical to the old inline loop — only the execution
-    // context changed. Aborts are checked at the boundaries (before submit
-    // and after result); the worker's work is bounded by the file count.
-    throwIfRecallAborted(abortSignal);
-    const scoring = getDefaultArchiveScoring();
-    const scoredResults = await scoring.score(archivedMemories.map(memoryFileToScoreItem), tokens, abortSignal);
-    throwIfRecallAborted(abortSignal);
-    const scored: QmdSearchResult[] = scoredResults.map((r) => ({
-      docid: r.docid,
-      path: r.path,
-      score: r.score,
-      snippet: r.snippet,
-    }));
-
-    return dedupeResultsByNamespace(
-      [...scopedSeedResults, ...scored],
-      this.deps.namespaceFromPath,
-      cappedLimit,
-      { filter: (result) => !isGenericRecallExcludedPath(result.path, this.deps.config.memoryDir) },
+    ).filter(
+      (result) =>
+        !isGenericRecallExcludedPath(
+          result.path,
+          this.deps.config.memoryDir,
+          this.deps.config.qmdCollection,
+          this.deps.config.qmdColdCollection,
+        ),
     );
+    return scopedSeedResults.slice(0, cappedLimit);
   }
 
   async applyColdFallbackPipeline(options: {
@@ -997,9 +961,16 @@ export class RecallSearchPipelineCoordinator {
       }
       results = scopedResults;
     }
-    // Dedicated-surface isolation: generic recall must exclude artifacts and
-    // activity digests (both remain readable via explicit search).
-    results = results.filter((r) => !isGenericRecallExcludedPath(r.path, this.deps.config.memoryDir));
+    // Dedicated-surface isolation keeps generic recall out of artifacts, activity digests, and archives.
+    results = results.filter(
+      (r) =>
+        !isGenericRecallExcludedPath(
+          r.path,
+          this.deps.config.memoryDir,
+          this.deps.config.qmdCollection,
+          this.deps.config.qmdColdCollection,
+        ),
+    );
     if (results.length === 0) return [];
 
     const isFullModeGraphAssist =

@@ -639,11 +639,37 @@ export function isActivityDigestPath(filePath: string, memoryRoot?: string): boo
   return ACTIVITY_DIGEST_ANYWHERE.test(filePath);
 }
 
-export function isTopLevelArchivePath(filePath: string, memoryRoot?: string): boolean {
+function stripQmdCollectionPrefix(
+  relativePath: string,
+  qmdCollection?: string,
+  qmdColdCollection?: string,
+): string {
+  const normalized = relativePath.replace(/\\/g, "/");
+  const slashIndex = normalized.indexOf("/");
+  if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return relativePath;
+
+  const prefix = normalized.slice(0, slashIndex);
+  const isCollectionPrefix = [qmdCollection, qmdColdCollection].some(
+    (collection) =>
+      typeof collection === "string" &&
+      collection.length > 0 &&
+      (prefix === collection || prefix.startsWith(`${collection}--`)),
+  );
+  return isCollectionPrefix ? normalized.slice(slashIndex + 1) : relativePath;
+}
+
+export function isTopLevelArchivePath(
+  filePath: string,
+  memoryRoot?: string,
+  qmdCollection?: string,
+  qmdColdCollection?: string,
+): boolean {
   const relative = memoryRoot
     ? path.relative(memoryRoot, path.resolve(memoryRoot, filePath))
     : filePath;
-  return /^(?:archive|namespaces[\\/][^\\/]+[\\/]archive)(?:[\\/]|$)/i.test(relative);
+  return /^(?:archive|namespaces[\\/][^\\/]+[\\/]archive)(?:[\\/]|$)/i.test(
+    stripQmdCollectionPrefix(relative, qmdCollection, qmdColdCollection),
+  );
 }
 
 /**
@@ -653,11 +679,16 @@ export function isTopLevelArchivePath(filePath: string, memoryRoot?: string): bo
  * Explicit search paths (memory_search, activity search) do not apply this
  * filter, so those surfaces still read them.
  */
-export function isGenericRecallExcludedPath(filePath: string, memoryRoot?: string): boolean {
+export function isGenericRecallExcludedPath(
+  filePath: string,
+  memoryRoot?: string,
+  qmdCollection?: string,
+  qmdColdCollection?: string,
+): boolean {
   return (
     isArtifactMemoryPath(filePath) ||
     isActivityDigestPath(filePath, memoryRoot) ||
-    isTopLevelArchivePath(filePath, memoryRoot) ||
+    isTopLevelArchivePath(filePath, memoryRoot, qmdCollection, qmdColdCollection) ||
     isMeetingRecordPath(filePath)
   );
 }
@@ -678,6 +709,9 @@ export function filterRecallCandidates(
     limit: number;
     /** Memory root for top-level dedicated-path detection. */
     memoryRoot?: string;
+    /** QMD collection names whose result-path prefixes need root normalization. */
+    qmdCollection?: string;
+    qmdColdCollection?: string;
   },
 ): QmdSearchResult[] {
   const scopedByNamespace = options.namespacesEnabled
@@ -686,7 +720,14 @@ export function filterRecallCandidates(
       )
     : candidates;
   return scopedByNamespace
-    .filter((r) => !isGenericRecallExcludedPath(r.path, options.memoryRoot))
+    .filter((r) =>
+      !isGenericRecallExcludedPath(
+        r.path,
+        options.memoryRoot,
+        options.qmdCollection,
+        options.qmdColdCollection,
+      ),
+    )
     .slice(0, Math.max(0, options.limit));
 }
 

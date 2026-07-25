@@ -78,9 +78,16 @@ function scopedCandidatesStub(
     seed.filter((r) => candidatePaths.has(r.path)).slice(0, Math.max(0, limit));
 }
 
-function fallbackCoordinator(seed: QmdSearchResult[], archived: MemoryFile[]): RecallSearchPipelineCoordinator {
+function fallbackCoordinator(
+  seed: QmdSearchResult[],
+  archived: MemoryFile[],
+  onArchiveRead: () => void = () => undefined,
+): RecallSearchPipelineCoordinator {
   const readArchivedMemoriesForNamespaces: RecallSearchPipelineDeps["readArchivedMemoriesForNamespaces"] =
-    async () => archived;
+    async () => {
+      onArchiveRead();
+      return archived;
+    };
   const namespaceFromPath: RecallSearchPipelineDeps["namespaceFromPath"] = () => "default";
   const deps = {
     searchScopedMemoryCandidates: scopedCandidatesStub(seed),
@@ -157,6 +164,18 @@ test("finding 1 — overfetches scoped seeds before exclusion so a capped fetch 
     ["facts/a.md"],
     "an excluded-first seed must not starve the result of a recallable hit at the cap",
   );
+});
+
+test("archive fallback skips the obsolete archive scan after policy exclusion", async () => {
+  let archiveReadCount = 0;
+  const coordinator = fallbackCoordinator([], [memory("archive/old.md", "archived")], () => {
+    archiveReadCount += 1;
+  });
+
+  const out = await coordinator.searchLongTermArchiveFallback("quarterly", ["default"], 1);
+
+  assert.deepEqual(out, []);
+  assert.equal(archiveReadCount, 0);
 });
 
 function hotSeedCoordinator(seed: QmdSearchResult[]): RecallSearchPipelineCoordinator {
