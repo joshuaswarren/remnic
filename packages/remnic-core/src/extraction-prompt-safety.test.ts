@@ -3,20 +3,25 @@ import test from "node:test";
 
 import { parseConfig } from "./config.js";
 import { ExtractionEngine } from "./extraction.js";
-import type { BufferTurn } from "./types.js";
 import { ExtractionResultSchema } from "./schemas.js";
-
-const EMPTY_EXTRACTION = {
-  facts: [],
-  profileUpdates: [],
-  entities: [],
-  questions: [],
-};
+import type { BufferTurn, ExtractionResult } from "./types.js";
 
 const SOURCE_TURN: BufferTurn = {
   role: "user",
   content: "Moonlight's theme color is green, not blue.",
   timestamp: "2026-07-25T12:00:00.000Z",
+};
+
+const SOURCE_GROUNDED_EXTRACTION = {
+  facts: [{
+    category: "fact",
+    content: SOURCE_TURN.content,
+    confidence: 0.95,
+    tags: ["theme"],
+  }],
+  profileUpdates: [],
+  entities: [],
+  questions: [],
 };
 
 type ChatMessage = { role: string; content: string };
@@ -58,18 +63,26 @@ function assertStructuralResponseShape(prompt: string): void {
   assert.match(prompt, /"identityReflection"/);
 }
 
+function assertSourceGroundedResult(result: ExtractionResult): void {
+  assert.equal(result.facts[0]?.content, SOURCE_TURN.content);
+  assert.equal(result.facts[0]?.category, "fact");
+  assert.deepEqual(result.questions, []);
+}
+
 test("local extraction prompt uses placeholders and accepts an empty question list", async () => {
   const engine = new ExtractionEngine(parseConfig({
     localLlmEnabled: true,
     localLlmModel: "fixture-local",
     localLlmFallback: false,
   }));
+  let calls = 0;
   let prompt = "";
 
   const localLlm: LocalLlmFixture = {
     async chatCompletion(messages: ChatMessage[]) {
+      calls += 1;
       prompt = messages[1]?.content ?? "";
-      return { content: JSON.stringify(EMPTY_EXTRACTION) };
+      return { content: JSON.stringify(SOURCE_GROUNDED_EXTRACTION) };
     },
   };
   const modelRegistry = {
@@ -80,7 +93,8 @@ test("local extraction prompt uses placeholders and accepts an empty question li
 
   const result = await engine.extract([SOURCE_TURN]);
 
-  assert.deepEqual(result.questions, []);
+  assert.equal(calls, 1);
+  assertSourceGroundedResult(result);
   assertSafeExtractionPrompt(prompt);
   assertStructuralResponseShape(prompt);
   assert.doesNotMatch(prompt, /^- rule:/m);
@@ -88,32 +102,37 @@ test("local extraction prompt uses placeholders and accepts an empty question li
 
 test("gateway extraction prompt uses placeholders and accepts an empty question list", async () => {
   const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
+  let calls = 0;
   let prompt = "";
 
   const fallbackLlm: GatewayFixture = {
     async parseWithSchemaDetailed(messages: ChatMessage[]) {
+      calls += 1;
       prompt = messages[0]?.content ?? "";
-      return { modelUsed: "fixture-gateway", result: EMPTY_EXTRACTION };
+      return { modelUsed: "fixture-gateway", result: SOURCE_GROUNDED_EXTRACTION };
     },
   };
   assert.equal(Reflect.set(engine, "fallbackLlm", fallbackLlm), true);
 
   const result = await engine.extract([SOURCE_TURN]);
 
-  assert.deepEqual(result.questions, []);
+  assert.equal(calls, 1);
+  assertSourceGroundedResult(result);
   assertSafeExtractionPrompt(prompt);
 });
 
 test("direct extraction prompt uses placeholders and accepts an empty question list", async () => {
   const engine = new ExtractionEngine(parseConfig({ openaiApiKey: "fixture-key" }));
+  let calls = 0;
   let prompt = "";
 
   const client: DirectClientFixture = {
     chat: {
       completions: {
         async create(request: { messages: ChatMessage[] }) {
+          calls += 1;
           prompt = request.messages[0]?.content ?? "";
-          return { choices: [{ message: { content: JSON.stringify(EMPTY_EXTRACTION) } }] };
+          return { choices: [{ message: { content: JSON.stringify(SOURCE_GROUNDED_EXTRACTION) } }] };
         },
       },
     },
@@ -122,14 +141,16 @@ test("direct extraction prompt uses placeholders and accepts an empty question l
 
   const result = await engine.extract([SOURCE_TURN]);
 
-  assert.deepEqual(result.questions, []);
+  assert.equal(calls, 1);
+  assertSourceGroundedResult(result);
   assertStructuralResponseShape(prompt);
   assertSafeExtractionPrompt(prompt);
 });
 
 test("extraction schema permits empty optional question output", () => {
-  const parsed = ExtractionResultSchema.safeParse(EMPTY_EXTRACTION);
+  const parsed = ExtractionResultSchema.safeParse(SOURCE_GROUNDED_EXTRACTION);
 
   assert.equal(parsed.success, true);
+  assert.deepEqual(parsed.data?.questions, []);
   assert.match(ExtractionResultSchema.shape.questions.description ?? "", /zero to three/i);
 });
