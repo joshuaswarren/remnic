@@ -40,6 +40,7 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
+import { filterExtractionResultBySource } from "./extraction-source-grounding.js";
 import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
@@ -1133,6 +1134,21 @@ export class ExtractionEngine {
     return { ...result, facts };
   }
 
+  private finalizeExtractionResult(
+    result: ExtractionResult,
+    sourceText: string,
+    turns: ReadonlyArray<{
+      content: string;
+      sessionKey?: string;
+      logicalSessionKey?: string;
+      timestamp: string;
+      turnFingerprint?: string;
+    }>,
+  ): ExtractionResult {
+    const grounded = filterExtractionResultBySource(result, sourceText);
+    return this.attachProvenanceToResult(grounded, turns);
+  }
+
   async extract(turns: BufferTurn[], existingEntities?: string[]): Promise<ExtractionResult> {
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
 
@@ -1157,6 +1173,11 @@ export class ExtractionEngine {
           t.extractionContextOnly === true ? `context ${t.role}` : t.role;
         return `[${roleLabel}] ${t.content}`;
       })
+      .join("\n\n");
+
+    const groundingSource = boundedTurns
+      .filter((turn) => turn.extractionContextOnly !== true)
+      .map((turn) => turn.content)
       .join("\n\n");
     if (conversation.trim().length === 0) {
       log.debug("extraction skipped — conversation only contained non-memory work-layer context");
@@ -1214,7 +1235,7 @@ export class ExtractionEngine {
           log.debug(`extraction: used local LLM — ${localResult.facts.length} facts, ${localResult.entities.length} entities`);
           const sanitized = this.sanitizeExtractionResult(localResult, messageTimestamp);
           const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized);
-          return this.attachProvenanceToResult(finalResult, boundedTurns);
+          return this.finalizeExtractionResult(finalResult, groundingSource, boundedTurns);
         }
         // Local failed, fall back if allowed
         if (!this.config.localLlmFallback) {
@@ -1261,7 +1282,7 @@ export class ExtractionEngine {
           log.debug(`extraction: used direct client (${this.config.model}) — ${directResult.facts.length} facts, ${directResult.entities.length} entities`);
           const sanitized = this.sanitizeExtractionResult(directResult, messageTimestamp);
           const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized);
-          return this.attachProvenanceToResult(finalResult, boundedTurns);
+          return this.finalizeExtractionResult(finalResult, groundingSource, boundedTurns);
         }
         // Emit error event so Opik sees the direct client failure before fallback.
         // Wrapped in try/catch so a subscriber error doesn't break the fallback path.
@@ -1346,7 +1367,7 @@ export class ExtractionEngine {
         const normalized = this.normalizeExtractionResultPayload(result);
         const sanitized = this.sanitizeExtractionResult(normalized, messageTimestamp);
         const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized);
-        return this.attachProvenanceToResult(finalResult, boundedTurns);
+        return this.finalizeExtractionResult(finalResult, groundingSource, boundedTurns);
       }
 
       this.emit({
