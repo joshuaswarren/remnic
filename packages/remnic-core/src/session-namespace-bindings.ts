@@ -92,24 +92,20 @@ async function readBindingFile(filePath: string): Promise<NamespaceBindingFile> 
     if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return emptyBindingFile();
     throw err;
   }
-  try {
-    const parsed = JSON.parse(raw) as Partial<NamespaceBindingFile>;
-    if (!parsed || typeof parsed !== "object" || !parsed.entries || typeof parsed.entries !== "object") {
-      return emptyBindingFile();
-    }
-    const entries = Object.create(null) as Record<string, NamespaceBindingEntry>;
-    for (const [key, value] of Object.entries(parsed.entries)) {
-      if (!value || typeof value !== "object") continue;
-      const entry = value as Partial<NamespaceBindingEntry>;
-      if (typeof entry.updatedAt !== "string") continue;
-      const namespaces = normalizeNamespaces(entry.namespaces);
-      if (namespaces.length === 0) continue;
-      entries[key] = { namespaces, updatedAt: entry.updatedAt };
-    }
-    return { version: 1, entries: pruneBindingEntries(entries) };
-  } catch {
+  const parsed = JSON.parse(raw) as Partial<NamespaceBindingFile>;
+  if (!parsed || typeof parsed !== "object" || !parsed.entries || typeof parsed.entries !== "object") {
     return emptyBindingFile();
   }
+  const entries = Object.create(null) as Record<string, NamespaceBindingEntry>;
+  for (const [key, value] of Object.entries(parsed.entries)) {
+    if (!value || typeof value !== "object") continue;
+    const entry = value as Partial<NamespaceBindingEntry>;
+    if (typeof entry.updatedAt !== "string") continue;
+    const namespaces = normalizeNamespaces(entry.namespaces);
+    if (namespaces.length === 0) continue;
+    entries[key] = { namespaces, updatedAt: entry.updatedAt };
+  }
+  return { version: 1, entries: pruneBindingEntries(entries) };
 }
 
 async function writeBindingFile(filePath: string, bindings: NamespaceBindingFile): Promise<void> {

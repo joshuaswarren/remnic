@@ -38,6 +38,10 @@ import {
   type DaemonAuthToken,
 } from "./bridge.js";
 import {
+  REMNIC_OPENCLAW_LEGACY_PLUGIN_ID,
+  REMNIC_OPENCLAW_PLUGIN_ID,
+} from "./plugin-id.js";
+import {
   extractLastTurn,
   extractTextContent,
 } from "./transcript-turns.js";
@@ -100,6 +104,7 @@ export interface DelegateHookApi {
 }
 
 const MEMORY_CONTEXT_HEADER = "## Memory Context (Remnic)";
+const DELEGATE_NAMESPACE_MAX_LENGTH = 256;
 
 const DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS = [
   "recall",
@@ -299,12 +304,7 @@ async function rememberedNamespacesFor(
   sessionKey: string,
   namespaceBindings: SessionNamespaceBindingStore,
 ): Promise<string[]> {
-  try {
-    return await namespaceBindings.namespacesFor(sessionKey);
-  } catch (err) {
-    log.warn(`delegate namespace binding lookup failed: ${String(err)}`);
-    return [];
-  }
+  return namespaceBindings.namespacesFor(sessionKey);
 }
 
 async function rememberNamespace(
@@ -312,6 +312,11 @@ async function rememberNamespace(
   namespace: string,
   namespaceBindings: SessionNamespaceBindingStore,
 ): Promise<void> {
+  if (namespace.length > DELEGATE_NAMESPACE_MAX_LENGTH) {
+    throw new Error(
+      `delegate session namespace exceeds the daemon limit of ${DELEGATE_NAMESPACE_MAX_LENGTH} characters`,
+    );
+  }
   try {
     await namespaceBindings.remember(sessionKey, namespace);
   } catch (err) {
@@ -582,22 +587,19 @@ export function registerDelegateRuntime(
         namespace,
         namespaceBindings,
       );
-      let flushed = true;
-      for (const sessionNamespace of namespaces) {
-        try {
-          await postJson(
-            target,
-            options.serviceId,
-            "/engram/v1/lcm/compaction/flush",
-            withNamespace(sessionNamespace, { sessionKey }),
-            options.flushTimeoutMs,
-          );
-        } catch (err) {
-          log.warn(`delegate flush failed: ${String(err)}`);
-          flushed = false;
-        }
-      }
-      return flushed;
+      const response = await postJson(
+        target,
+        options.serviceId,
+        "/engram/v1/lcm/compaction/flush",
+        namespaces.length > 1
+          ? {
+              sessionKey,
+              namespaces: namespaces.map((sessionNamespace) => sessionNamespace ?? ""),
+            }
+          : withNamespace(namespaces[0], { sessionKey }),
+        options.flushTimeoutMs,
+      );
+      return response?.flushed !== false;
     } catch (err) {
       log.warn(`delegate flush failed: ${String(err)}`);
       return false;
@@ -658,6 +660,35 @@ function activeDelegateAuthorizationOperations(
   return options.allowPromptInjection && options.recallBudgetChars !== 0
     ? DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS
     : DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS.slice(1);
+}
+function createDelegateNamespaceBindingStore(
+  memoryDir: string,
+  serviceId: string,
+): SessionNamespaceBindingStore {
+  const bindingPath = (pluginId: string): string =>
+    path.join(memoryDir, "state", "plugins", pluginId, "session-namespace-bindings.json");
+  const primary = createFileSessionNamespaceBindingStore(bindingPath(serviceId));
+  if (serviceId !== REMNIC_OPENCLAW_PLUGIN_ID) return primary;
+
+  const legacy = createFileSessionNamespaceBindingStore(
+    bindingPath(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID),
+  );
+  return {
+    async namespacesFor(sessionKey: string): Promise<string[]> {
+      const current = await primary.namespacesFor(sessionKey);
+      return current.length > 0 ? current : legacy.namespacesFor(sessionKey);
+    },
+    async remember(sessionKey: string, namespace: string): Promise<void> {
+      const current = await primary.namespacesFor(sessionKey);
+      if (current.length === 0) {
+        const previous = await legacy.namespacesFor(sessionKey);
+        for (const remembered of previous) {
+          await primary.remember(sessionKey, remembered);
+        }
+      }
+      await primary.remember(sessionKey, namespace);
+    },
+  };
 }
 
 // Mirrors the embedded runtime's per-api hook dedup (globalThis HOOK_APIS
@@ -769,15 +800,7 @@ export function maybeRegisterDelegateRuntime(
     serviceId: options.serviceId,
     target,
     namespace: "",
-    namespaceBindings: createFileSessionNamespaceBindingStore(
-      path.join(
-        options.memoryDir,
-        "state",
-        "plugins",
-        options.serviceId,
-        "session-namespace-bindings.json",
-      ),
-    ),
+    namespaceBindings: createDelegateNamespaceBindingStore(options.memoryDir, options.serviceId),
     allowPromptInjection: options.allowPromptInjection,
     passive: options.passive,
     gateHeartbeatTurns: options.gateHeartbeatTurns,

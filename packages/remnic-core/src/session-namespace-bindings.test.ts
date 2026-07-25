@@ -24,6 +24,20 @@ test("session namespace bindings persist prototype-named session keys", async ()
     await rm(directory, { recursive: true, force: true });
   }
 });
+test("session namespace bindings propagate malformed-file reads without overwriting them", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
+  const filePath = path.join(directory, "session-namespace-bindings.json");
+  try {
+    await writeFile(filePath, "{", "utf8");
+    const store = createFileSessionNamespaceBindingStore(filePath);
+
+    await assert.rejects(() => store.namespacesFor("malformed-session"), SyntaxError);
+    await assert.rejects(() => store.remember("malformed-session", "team-known"), SyntaxError);
+    assert.equal(await readFile(filePath, "utf8"), "{");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("session namespace bindings retain concurrent scope observations", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));

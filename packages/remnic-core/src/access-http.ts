@@ -1675,13 +1675,43 @@ export class EngramAccessHttpServer {
       this.enforceTokenOp("lcm_compaction_flush"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "lcmCompactionFlush");
       this.ensureWriteRateLimitAvailable(req);
-      const response = await this.service.lcmCompactionFlush({
-        sessionKey: body.sessionKey,
-        namespace: this.resolveNamespace(req, body.namespace),
-        authenticatedPrincipal: this.resolveRequestPrincipal(req),
-      });
+      const requestedNamespaces = body.namespaces;
+      if (requestedNamespaces === undefined) {
+        const response = await this.service.lcmCompactionFlush({
+          sessionKey: body.sessionKey,
+          namespace: this.resolveNamespace(req, body.namespace),
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        });
+        this.recordWriteRateLimitHit(req);
+        this.respondJson(res, 200, response);
+        return;
+      }
+
+      const outcomes = await Promise.allSettled(
+        requestedNamespaces.map(async (requestedNamespace) =>
+          this.service.lcmCompactionFlush({
+            sessionKey: body.sessionKey,
+            namespace: this.resolveNamespace(req, requestedNamespace),
+            authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          }),
+        ),
+      );
       this.recordWriteRateLimitHit(req);
-      this.respondJson(res, 200, response);
+      this.respondJson(res, 200, {
+        enabled: outcomes.every(
+          (outcome) => outcome.status === "fulfilled" && outcome.value.enabled !== false,
+        ),
+        flushed: outcomes.every(
+          (outcome) => outcome.status === "fulfilled" && outcome.value.flushed !== false,
+        ),
+        sessionKey: body.sessionKey,
+        namespaces: requestedNamespaces,
+        results: outcomes.map((outcome, index) =>
+          outcome.status === "fulfilled"
+            ? { status: "fulfilled", namespace: requestedNamespaces[index], result: outcome.value }
+            : { status: "rejected", namespace: requestedNamespaces[index] },
+        ),
+      });
       return;
     }
 

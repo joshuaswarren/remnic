@@ -715,22 +715,20 @@ test("delegate flushes every namespace observed before a session rebind", async 
     await invoke(api, "session_end", { sessionKey });
 
     const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
-    assert.deepEqual(
-      flushes.map((call) => call.body.namespace).sort(),
-      ["team-first", "team-second"],
-    );
+    assert.equal(flushes.length, 1);
+    assert.deepEqual(flushes[0]?.body.namespaces, ["team-first", "team-second"]);
   } finally {
     await stub.close();
   }
 });
 
-test("delegate flushes rebound namespaces concurrently within one hook deadline", async () => {
+test("delegate batches rebound namespace flushes within one hook deadline", async () => {
   const pendingFlushes: Array<() => void> = [];
   const stub = await startDaemonStub((pathname) => {
     if (pathname !== "/engram/v1/lcm/compaction/flush") return { accepted: true };
     return new Promise<Record<string, unknown>>((resolve) => {
       pendingFlushes.push(() => resolve({ flushed: true }));
-      if (pendingFlushes.length === 2) {
+      if (pendingFlushes.length === 1) {
         for (const flush of pendingFlushes) flush();
       }
     });
@@ -757,10 +755,8 @@ test("delegate flushes rebound namespaces concurrently within one hook deadline"
 
     assert.equal(await invoke(api, "before_compaction", { sessionKey }), true);
     const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
-    assert.deepEqual(
-      flushes.map((call) => call.body.namespace).sort(),
-      ["team-first", "team-second"],
-    );
+    assert.equal(flushes.length, 1);
+    assert.deepEqual(flushes[0]?.body.namespaces, ["team-first", "team-second"]);
   } finally {
     for (const flush of pendingFlushes.splice(0)) flush();
     await stub.close();

@@ -334,6 +334,11 @@ export const lcmSearchRequestSchema = z.object({
 export const lcmCompactionFlushRequestSchema = z.object({
   sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
   namespace: namespaceSchema,
+  /**
+   * Optional multi-namespace flush used by delegate lifecycle replay. The
+   * server handles the whole list as one quota-counted write.
+   */
+  namespaces: z.array(z.string().trim().max(256)).min(1).max(64).optional(),
 });
 
 export const lcmCompactionRecordRequestSchema = z.object({
