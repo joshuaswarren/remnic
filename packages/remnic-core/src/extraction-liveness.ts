@@ -327,17 +327,19 @@ export class ExtractionLivenessWarnThrottle {
 /**
  * Normalize the `extractionLiveness` block at the read boundary. `parseConfig`
  * always populates it, but a host adapter, an older persisted config, or a
- * hand-built `PluginConfig` can hand us an absent or partially-populated block -
- * and every liveness surface (/health, doctor, stats) must degrade to the
- * documented default (enabled, 24h window) rather than throw. A present but
- * non-integer or non-positive `staleWindowMs` also falls back to the default.
+ * hand-built `PluginConfig` can hand us an absent, partial, or loosely-typed
+ * block - and every liveness surface (/health, doctor, stats) must degrade to
+ * the documented default (enabled, 24h window) rather than throw. `enabled` is
+ * coerced with the same string-boolean rules as `parseExtractionLivenessConfig`
+ * (§24: `"false"`/`"0"` read as falsy); a present but non-integer or non-positive
+ * `staleWindowMs` falls back to the default.
  */
 export function resolveExtractionLivenessConfig(
-  block: Partial<ExtractionLivenessConfig> | undefined,
+  block: { enabled?: unknown; staleWindowMs?: unknown } | undefined,
 ): ExtractionLivenessConfig {
   const staleWindowMs = block?.staleWindowMs;
   return {
-    enabled: block?.enabled ?? true,
+    enabled: coerceBool(block?.enabled) ?? true,
     staleWindowMs:
       typeof staleWindowMs === "number" && Number.isInteger(staleWindowMs) && staleWindowMs >= 1
         ? staleWindowMs

@@ -439,6 +439,10 @@ test("resolveExtractionLivenessConfig: absent or partial block defaults to enabl
   // A present-but-invalid window (0/fractional) falls back rather than making every backlog instantly stale.
   assert.equal(resolveExtractionLivenessConfig({ staleWindowMs: 0 }).staleWindowMs, 86_400_000);
   assert.equal(resolveExtractionLivenessConfig({ staleWindowMs: 1.9 }).staleWindowMs, 86_400_000);
+  // enabled is coerced like parseExtractionLivenessConfig: string opt-outs read as falsy (#2155 review).
+  assert.equal(resolveExtractionLivenessConfig({ enabled: "false" }).enabled, false, 'string "false" disables');
+  assert.equal(resolveExtractionLivenessConfig({ enabled: "0" }).enabled, false, 'string "0" disables');
+  assert.equal(resolveExtractionLivenessConfig({ enabled: "true" }).enabled, true, 'string "true" enables');
 });
 
 test("summarizeExtractionLiveness: no throw when the extractionLiveness block is absent or partial (host/legacy config)", async () => {
