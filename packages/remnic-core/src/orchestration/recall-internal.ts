@@ -49,12 +49,8 @@ import { ProfilingCollector } from "../profiling.js";
 import { buildQmdRecallCacheKey, getCachedQmdRecall, setCachedQmdRecall } from "../qmd-recall-cache.js";
 import { MEMORY_ID_PATTERN } from "../recall-handles.js";
 import {
-  boundRecallContextComposition,
-  composeRecallContext,
-  contextBudgetForFooter,
-  formatCuriosityFooter,
-  selectCuriosityQuestion,
-  type RecallContextComposition,
+  boundRecallContextComposition, composeRecallContext, contextBudgetForFooter,
+  formatCuriosityFooter, selectCuriosityQuestion,
 } from "../recall-context-composition.js";
 import { createRecallSectionMetricRecorder } from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
@@ -4413,7 +4409,6 @@ export class RecallInternalCoordinator {
           success: !trustFellBack,
         });
       }
-
       // Synapse-inspired confidence gate: check scores BEFORE slicing so
       // reranking doesn't affect which score the gate evaluates.
       //
@@ -4453,7 +4448,6 @@ export class RecallInternalCoordinator {
           confidenceGateRejected = true;
         }
       }
-
       // Diversify via MMR over the full candidate pool *before* truncating to
       // the final recall limit. Running MMR after the slice would be unable
       // to promote diverse candidates sitting just below the cutoff.
@@ -4464,7 +4458,6 @@ export class RecallInternalCoordinator {
         retrievalQuery,
         caps,
       );
-
       // E-Mem-inspired memory reconstruction: fill gaps for referenced entities
       if (resolveRecallEnhancementCapabilities(this.deps.config).memoryReconstruction && memoryResults.length > 0) {
         try {
@@ -4507,7 +4500,6 @@ export class RecallInternalCoordinator {
           log.warn("recall: memory reconstruction failed (non-fatal)", err);
         }
       }
-
       if (memoryResults.length > 0) {
         if (shouldPersistGraphSnapshot) {
           graphSnapshotFinalResults = this.deps.buildGraphRecallRankedResults(
@@ -4697,7 +4689,6 @@ export class RecallInternalCoordinator {
         }
         }
       }
-
       if (globalResults.length > 0) {
         this.deps.appendRecallSection(
           sectionBuckets,
@@ -4705,7 +4696,6 @@ export class RecallInternalCoordinator {
           this.deps.formatQmdResults("Workspace Context", globalResults, sessionKey, recallTrustByPath),
         );
       }
-
       recordRecallSectionMetric({
         section: "qmdPost",
         priority: "enrichment",
@@ -4714,7 +4704,6 @@ export class RecallInternalCoordinator {
         source: "fresh",
         success: true,
       });
-
       // If the user is pushing back ("that's not right", "why did you say that"),
       // gently suggest an explicit workflow to inspect what was recalled and record feedback.
       // IMPORTANT: this is suggestion-only; never auto-mark negatives.
@@ -5034,7 +5023,6 @@ export class RecallInternalCoordinator {
                 success: !trustFellBack,
               });
             }
-
             if (recent.length > 0) {
               if (shouldPersistGraphSnapshot) {
                 graphSnapshotFinalResults = this.deps.buildGraphRecallRankedResults(
@@ -5163,7 +5151,6 @@ export class RecallInternalCoordinator {
         }
       }
       }
-
       if (isDisagreementPrompt(prompt)) {
         this.deps.appendRecallSection(
           sectionBuckets,
@@ -5182,7 +5169,6 @@ export class RecallInternalCoordinator {
         );
       }
     }
-
     const phase2AfterQmdMs = Date.now() - recallStart;
     if (shouldPersistGraphSnapshot) {
       if (!graphSnapshotStatus) {
@@ -5219,7 +5205,6 @@ export class RecallInternalCoordinator {
       storage: profileStorage,
       snapshot: buildIntentDebugSnapshot(),
     });
-
     // 2.5. Compression guideline recall section (v8.11 Task 5)
     if (
       this.deps.isRecallSectionEnabled(
@@ -5237,7 +5222,6 @@ export class RecallInternalCoordinator {
         );
       }
     }
-
     // 3. Transcript/summaries/conversation/compounding are fetched in parallel above,
     // then assembled here according to recallPipeline order.
     if (transcriptSection) {
@@ -5272,32 +5256,22 @@ export class RecallInternalCoordinator {
         compoundingSection,
       );
     }
-
-    let curiosityFooter: string | undefined;
-    let curiosityQuestionSelected = false;
-    let curiosityFooterTruncated = false;
-    if (
-      this.deps.config.injectQuestions &&
+    let curiosityFooter: string | undefined, curiosityQuestionSelected = false, curiosityFooterTruncated = false;
+    const topQuestion = this.deps.config.injectQuestions &&
       this.deps.isRecallSectionEnabled("questions", true)
-    ) {
-      const questions = await profileStorage.readQuestions({
-        unresolvedOnly: true,
-      });
-      const topQuestion = selectCuriosityQuestion(questions);
-      if (topQuestion) {
-        curiosityQuestionSelected = true;
-        const formattedFooter = formatCuriosityFooter(topQuestion);
-        const questionMaxChars = this.deps.getRecallSectionMaxChars("questions");
-        if (questionMaxChars !== 0) {
-          curiosityFooter =
-            typeof questionMaxChars === "number"
-              ? this.deps.truncateRecallSectionToBudget(formattedFooter, questionMaxChars)
-              : formattedFooter;
-          curiosityFooterTruncated = curiosityFooter.length < formattedFooter.length;
-        }
+      ? selectCuriosityQuestion(await profileStorage.readQuestions({ unresolvedOnly: true }))
+      : undefined;
+    if (topQuestion) {
+      curiosityQuestionSelected = true;
+      const formattedFooter = formatCuriosityFooter(topQuestion);
+      const questionMaxChars = this.deps.getRecallSectionMaxChars("questions");
+      if (questionMaxChars !== 0) {
+        curiosityFooter = typeof questionMaxChars === "number"
+          ? this.deps.truncateRecallSectionToBudget(formattedFooter, questionMaxChars)
+          : formattedFooter;
+        curiosityFooterTruncated = curiosityFooter.length < formattedFooter.length;
       }
     }
-
     const phase2QuestionsDoneMs = Date.now() - recallStart;
     const finalizedQueryAwarePrefilter = await queryAwarePrefilterPromise;
     const phase2QapDoneMs = Date.now() - recallStart;
@@ -5311,7 +5285,6 @@ export class RecallInternalCoordinator {
       ).length;
       timings.queryAware = `${timings.queryAware};helped=${helpedCount}`;
     }
-
     // --- Timing summary ---
     timings.total = `${Date.now() - recallStart}ms`;
     this.deps.profiler.endSpan("assembly", profileTraceId);
@@ -5330,13 +5303,9 @@ export class RecallInternalCoordinator {
       recallPlan: timings.recallPlan,
       queryPolicy: timings.queryPolicy,
     });
-
-    const recallBudgetChars = this.deps.getRecallBudgetChars(
-      options.budgetCharsOverride,
-    );
+    const recallBudgetChars = this.deps.getRecallBudgetChars(options.budgetCharsOverride);
     const assembledRecall = this.deps.assembleRecallSections(
-      sectionBuckets,
-      contextBudgetForFooter(recallBudgetChars, curiosityFooter),
+      sectionBuckets, contextBudgetForFooter(recallBudgetChars, curiosityFooter),
     );
     recalledMemoryIds = assembledRecall.includedMemoryIds;
     recalledMemoryPaths = assembledRecall.includedMemoryPaths;
@@ -5347,43 +5316,31 @@ export class RecallInternalCoordinator {
       assembledRecall.includedMemoryPaths,
       assembledRecall.includedMemoryNamespaces,
     );
-    const recalledContext =
-      assembledRecall.sections.length === 0
-        ? ""
-        : assembledRecall.sections.join("\n\n---\n\n");
-    const composition: RecallContextComposition = boundRecallContextComposition({
-      context: recalledContext,
-      footer: curiosityFooter,
-      maxChars: recallBudgetChars,
+    const recalledContext = assembledRecall.sections.join("\n\n---\n\n");
+    const composition = boundRecallContextComposition({
+      context: recalledContext, footer: curiosityFooter, maxChars: recallBudgetChars,
     });
     const context = composeRecallContext(composition);
     try {
       const observerResult = options.onContextComposition?.(composition);
       if (observerResult && typeof observerResult.then === "function") {
-        void Promise.resolve(observerResult).catch((err) => {
-          log.warn("recall: context composition observer rejected", err);
-        });
+        void Promise.resolve(observerResult).catch((err) => log.warn(
+          "recall: context composition observer rejected", err,
+        ));
       }
     } catch (err) {
       log.warn("recall: context composition observer failed open", err);
     }
-    const compositionTruncated =
-      context.length <
-      composeRecallContext({ context: recalledContext, footer: curiosityFooter }).length;
+    const compositionTruncated = context.length < composeRecallContext({
+      context: recalledContext, footer: curiosityFooter,
+    }).length;
     const includedSections = [...assembledRecall.includedIds];
     const omittedSections = [...assembledRecall.omittedIds];
-    if (composition.footer) {
-      if (!includedSections.includes("questions")) includedSections.push("questions");
-    } else if (curiosityQuestionSelected) {
-      if (!omittedSections.includes("questions")) omittedSections.push("questions");
-    }
-    const sourcesUsed = this.deps.collectLastRecallSources(
-      sectionBuckets,
-      recallSource,
-    );
-    if (composition.footer && !sourcesUsed.includes("questions")) {
-      sourcesUsed.push("questions");
-    }
+    if (composition.footer && !includedSections.includes("questions")) includedSections.push("questions");
+    else if (!composition.footer && curiosityQuestionSelected && !omittedSections.includes("questions"))
+      omittedSections.push("questions");
+    const sourcesUsed = this.deps.collectLastRecallSources(sectionBuckets, recallSource);
+    if (composition.footer && !sourcesUsed.includes("questions")) sourcesUsed.push("questions");
     const budgetsApplied = this.deps.buildLastRecallBudgetSummary({
       requestedTopK,
       recallResultLimit,
@@ -5398,7 +5355,6 @@ export class RecallInternalCoordinator {
       includedMemoryNamespaces: assembledRecall.includedMemoryNamespaces,
       omittedMemoryIds: assembledRecall.omittedMemoryIds,
     });
-
     // X-ray capture (issue #570 PR 1).  Only fires when the caller
     // explicitly opts in via `xrayCapture: true`.  No behavior change
     // when the flag is absent — this branch and the setter both
