@@ -343,6 +343,9 @@ export class SessionContextCoordinator {
     // Without this, a force-drain could queue extraction with
     // clearBufferAfterExtraction on turns that never reached disk; if extraction
     // then failed and the host exited, the turn was lost.
+    // Explicit buffer keys bypass discovery, so a restarted process must load
+    // persisted entries before it reads that key.
+    await this.deps.buffer.load();
     if (typeof this.deps.buffer.flushPendingSave === "function") {
       await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
     }

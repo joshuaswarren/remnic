@@ -58,6 +58,7 @@ test("flushSession queues extraction for the targeted buffered session", async (
   } | null = null;
 
   orchestrator.buffer = {
+    async load() {},
     getTurns(bufferKey: string) {
       return bufferKey === "thread-a" ? turns : [];
     },
@@ -91,6 +92,7 @@ test("flushSession is a no-op when the targeted buffer is empty", async () => {
   let queued = false;
 
   orchestrator.buffer = {
+    async load() {},
     getTurns() {
       return [];
     },
@@ -110,6 +112,7 @@ test("flushSession forwards abort signals into the queued extraction", async () 
   let queuedOptions: Record<string, unknown> | undefined;
 
   orchestrator.buffer = {
+    async load() {},
     getTurns() {
       return [makeTurn("thread-a", "remember alpha")];
     },
@@ -138,6 +141,7 @@ test("flushSession preserves scoped force-drain routing and deadline options", a
   let queuedOptions: Record<string, unknown> | undefined;
 
   orchestrator.buffer = {
+    async load() {},
     getTurns(bufferKey: string) {
       return bufferKey === "logical-session" ? [makeTurn("session-z", "remember gamma")] : [];
     },
@@ -177,6 +181,7 @@ test("flushSession waits for queued extraction task completion", async () => {
   let flushSettled = false;
 
   orchestrator.buffer = {
+    async load() {},
     getTurns() {
       return [makeTurn("thread-a", "remember alpha")];
     },
@@ -734,6 +739,7 @@ test("flushSession honors an explicit bufferKey override", async () => {
   let queuedBufferKey: string | undefined;
 
   orchestrator.buffer = {
+    async load() {},
     async findBufferKeysForSession() {
       throw new Error("flushSession should not discover buffer keys when one is provided");
     },
@@ -765,6 +771,7 @@ test("flushSession falls back to a discovered logical buffer key for the session
   let queuedBufferKey: string | undefined;
 
   orchestrator.buffer = {
+    async load() {},
     async findBufferKeysForSession(sessionKey: string) {
       return sessionKey === "session-z"
         ? ["codex-thread:thread-11::principal:cli"]
@@ -797,6 +804,7 @@ test("flushSession drains every discovered buffer for the session", async () => 
   const queuedBufferKeys: string[] = [];
 
   orchestrator.buffer = {
+    async load() {},
     async findBufferKeysForSession(sessionKey: string) {
       return sessionKey === "session-z"
         ? ["session-z", "codex-thread:thread-11::principal:cli"]
