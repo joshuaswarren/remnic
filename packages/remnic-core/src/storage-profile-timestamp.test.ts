@@ -403,6 +403,34 @@ test("writeProfile preserves timestamp-shaped HTML preformatted code", async (t)
     t.mock.timers.reset();
   }
 });
+test("writeProfile preserves timestamp-shaped HTML comments", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "<!--",
+        "# example",
+        "*Last updated: literal example*",
+        "-->",
+        "",
+        "# Behavioral Profile",
+        "",
+        "- Keeps comments.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("# Behavioral Profile\n\n", `# Behavioral Profile\n\n${FRESH_HEADER}\n\n`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile preserves code examples that mention Last updated", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });

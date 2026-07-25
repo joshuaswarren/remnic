@@ -57,6 +57,7 @@ function visitOutsideFencedBlocks(
   const frontmatterEnd = findFrontmatterEnd(lines);
   let openFence: FenceMarker | null = null;
   let openHtmlPre = false;
+  let openHtmlComment = false;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     if (index <= frontmatterEnd || isIndentedCodeLine(line)) continue;
@@ -71,6 +72,16 @@ function visitOutsideFencedBlocks(
       (normalizedLine[4] === ">" || normalizedLine[4] === " " || normalizedLine[4] === "\t");
     if (startsHtmlPre) {
       openHtmlPre = !closesHtmlPre;
+      continue;
+    }
+    const startsHtmlComment = normalizedLine.startsWith("<!--");
+    const closesHtmlComment = normalizedLine.includes("-->");
+    if (openHtmlComment) {
+      if (closesHtmlComment) openHtmlComment = false;
+      continue;
+    }
+    if (startsHtmlComment) {
+      openHtmlComment = !closesHtmlComment;
       continue;
     }
     const fence = getFenceMarker(line);
