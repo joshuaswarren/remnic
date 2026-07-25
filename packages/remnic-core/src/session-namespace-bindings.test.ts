@@ -39,6 +39,21 @@ test("session namespace bindings propagate malformed-file reads without overwrit
   }
 });
 
+test("session namespace bindings reject structurally invalid files without overwriting them", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
+  const filePath = path.join(directory, "session-namespace-bindings.json");
+  try {
+    await writeFile(filePath, JSON.stringify({ entries: null }), "utf8");
+    const store = createFileSessionNamespaceBindingStore(filePath);
+
+    await assert.rejects(() => store.namespacesFor("invalid-structure-session"), /invalid structure/);
+    await assert.rejects(() => store.remember("invalid-structure-session", "team-known"), /invalid structure/);
+    assert.equal(await readFile(filePath, "utf8"), JSON.stringify({ entries: null }));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("session namespace bindings retain concurrent scope observations", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
   const filePath = path.join(directory, "session-namespace-bindings.json");

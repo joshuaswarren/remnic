@@ -93,8 +93,15 @@ async function readBindingFile(filePath: string): Promise<NamespaceBindingFile> 
     throw err;
   }
   const parsed = JSON.parse(raw) as Partial<NamespaceBindingFile>;
-  if (!parsed || typeof parsed !== "object" || !parsed.entries || typeof parsed.entries !== "object") {
-    return emptyBindingFile();
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    !parsed.entries ||
+    typeof parsed.entries !== "object" ||
+    Array.isArray(parsed.entries)
+  ) {
+    throw new Error("session namespace binding file has invalid structure");
   }
   const entries = Object.create(null) as Record<string, NamespaceBindingEntry>;
   for (const [key, value] of Object.entries(parsed.entries)) {

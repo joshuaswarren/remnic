@@ -367,7 +367,7 @@ test("delegate flush uses the ended session namespace after a session rebinding"
   }
 });
 
-test("delegate flush retains an explicit namespace when binding persistence fails", async () => {
+test("delegate fails closed when binding persistence fails", async () => {
   const stub = await startDaemonStub(() => ({ flushed: true }));
   try {
     const api = recordingApi();
@@ -388,9 +388,11 @@ test("delegate flush retains an explicit namespace when binding persistence fail
       runtime: { agent: { session: { namespace: "team-explicit" } } },
     });
 
-    const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
-    assert.ok(flush);
-    assert.equal(flush.body.namespace, "team-explicit");
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush").length,
+      0,
+      "an explicit namespace must not be sent when its binding cannot be retained",
+    );
   } finally {
     await stub.close();
   }

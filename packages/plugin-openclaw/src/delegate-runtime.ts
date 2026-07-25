@@ -321,6 +321,7 @@ async function rememberNamespace(
     await namespaceBindings.remember(sessionKey, namespace);
   } catch (err) {
     log.warn(`delegate namespace binding persistence failed: ${String(err)}`);
+    throw err;
   }
 }
 
