@@ -5,7 +5,7 @@ import type { Orchestrator } from "./orchestrator.js";
 import { log } from "./logger.js";
 import { isSafeRouteNamespace } from "./routing/engine.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
-import { ContentHashIndex } from "./storage.js";
+import { normalizeExplicitCaptureContent } from "./storage.js";
 import type { CaptureMode, MemoryCategory, MemoryLifecycleEvent, PluginConfig } from "./types.js";
 
 export type ExplicitCaptureInput = {
@@ -106,13 +106,6 @@ function explicitCaptureActor(source: ExplicitCaptureSource): string {
 function asTrimmed(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
-}
-
-function normalizeCaptureContent(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function redactSecrets(value: string): string {
@@ -406,8 +399,11 @@ async function findDuplicateExplicitCapture(
   candidate: ValidExplicitCapture,
 ): Promise<{ id: string; tombstoneBlocked: boolean } | null> {
   const storage = await orchestrator.getStorage(resolvedNamespace);
-  // Tombstone-blocked rows are absent from the active fact hash index.
+  // Tombstone-blocked rows are absent from the active fact hash index. An
+  // authoritative miss can therefore skip the corpus scan only after the
+  // targeted blocked-row index also reports a miss.
   let activeFactHashMayMatch = true;
+  let authoritativeFactHashMiss = false;
   if (
     candidate.category === "fact"
     && typeof storage.hasFactContentHash === "function"
@@ -420,14 +416,34 @@ async function findDuplicateExplicitCapture(
             ? await storage.isFactContentHashAuthoritative()
             : false;
         activeFactHashMayMatch = !authoritative;
+        authoritativeFactHashMiss = authoritative;
       }
     } catch (err) {
-      // Fail open: hash index is only an optimization, so fall back to the full corpus scan.
+      // Fail open: hash indexes are only an optimization, so fall back to the
+      // full corpus scan when either index cannot answer.
       void err;
     }
   }
+  if (authoritativeFactHashMiss) {
+    const hasBlockedIndex = storage.hasTombstoneBlockedExplicitCapture;
+    if (typeof hasBlockedIndex === "function") {
+      try {
+        const hasBlocked = await hasBlockedIndex.call(
+          storage,
+          candidate.content,
+          candidate.category,
+          candidate.sourceConnector,
+        );
+        if (!hasBlocked) return null;
+      } catch (err) {
+        // Fail open: an unavailable targeted index must not hide a durable
+        // pending-review duplicate.
+        void err;
+      }
+    }
+  }
   const existing = await storage.readAllMemories();
-  const normalizedCandidate = normalizeCaptureContent(candidate.content);
+  const normalizedCandidate = normalizeExplicitCaptureContent(candidate.content);
   const match = existing.find((memory) => {
     const status = memory.frontmatter.status ?? "active";
     if (
@@ -437,7 +453,7 @@ async function findDuplicateExplicitCapture(
       return false;
     }
     if (memory.frontmatter.category !== candidate.category) return false;
-    if (normalizeCaptureContent(memory.content) !== normalizedCandidate) return false;
+    if (normalizeExplicitCaptureContent(memory.content) !== normalizedCandidate) return false;
     // Connector-aware dedup: same content from different connectors is NOT
     // a duplicate. Operator (undefined) and connector-tagged memories are
     // always distinct. Normalize empty strings to undefined.
@@ -546,12 +562,12 @@ async function findQueuedExplicitCaptureDuplicate(
 ): Promise<string | null> {
   const storage = await orchestrator.getStorage(namespace);
   const existing = await storage.readAllMemories();
-  const normalized = normalizeCaptureContent(content);
+  const normalized = normalizeExplicitCaptureContent(content);
   const match = existing.find((memory) => {
     const status = memory.frontmatter.status ?? "active";
     if (status !== "pending_review") return false;
     if (!(memory.frontmatter.tags ?? []).includes("queued-review")) return false;
-    if (normalizeCaptureContent(memory.content) !== normalized) return false;
+    if (normalizeExplicitCaptureContent(memory.content) !== normalized) return false;
     const existingConnector = memory.frontmatter.sourceConnector?.trim() || undefined;
     const newConnector = sourceConnector?.trim() || undefined;
     if (existingConnector !== newConnector) return false;
@@ -735,7 +751,7 @@ export class InlineExplicitCaptureProcessor {
     const noteHash = createHash("sha256")
       .update(
         JSON.stringify({
-          content: normalizeCaptureContent(input.content),
+          content: normalizeExplicitCaptureContent(input.content),
           category: asTrimmed(input.category) ?? "fact",
         }),
       )

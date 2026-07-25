@@ -56,16 +56,24 @@ type StoredMemory = {
   content: string;
 };
 function createInlineCaptureProcessorProbe(
-  options: { tombstoneBlocked?: boolean; authoritativeFactHashMiss?: boolean } = {},
+  options: {
+    tombstoneBlocked?: boolean;
+    authoritativeFactHashMiss?: boolean;
+    tombstoneBlockedCaptureIndexHit?: boolean;
+  } = {},
 ) {
   const envelopes: SealedMemoryEnvelope[] = [];
   const lifecycleEvents: Array<{ eventType: string; actor: string }> = [];
   const maintenanceReasons: string[] = [];
   const requestedNamespaces: Array<string | undefined> = [];
   const memories: StoredMemory[] = [];
+  let readAllCalls = 0;
   let nextId = 1;
   const storage = {
-    readAllMemories: async () => memories,
+    readAllMemories: async () => {
+      readAllCalls += 1;
+      return memories;
+    },
     writeSealedMemory: async (envelope: SealedMemoryEnvelope) => {
       const id = `memory-${nextId++}`;
       envelopes.push(envelope);
@@ -87,6 +95,12 @@ function createInlineCaptureProcessorProbe(
       ? {
           hasFactContentHash: async () => false,
           isFactContentHashAuthoritative: () => true,
+        }
+      : {}),
+    ...(options.tombstoneBlockedCaptureIndexHit !== undefined
+      ? {
+          hasTombstoneBlockedExplicitCapture: async () =>
+            options.tombstoneBlockedCaptureIndexHit === true,
         }
       : {}),
     appendMemoryLifecycleEvents: async (events: Array<{ eventType: string; actor: string }>) => {
@@ -123,6 +137,7 @@ function createInlineCaptureProcessorProbe(
     lifecycleEvents,
     maintenanceReasons,
     memories,
+    readAllCalls: () => readAllCalls,
     orchestrator,
     processor: new InlineExplicitCaptureProcessor(orchestrator, { sourceConnector: "openclaw" }),
     requestedNamespaces,
@@ -713,4 +728,21 @@ test("explicit capture preserves tombstone-blocked status for duplicate pending 
   assert.equal(duplicate.duplicateOf, first.id);
   assert.equal(duplicate.tombstoneBlocked, true);
   assert.equal(probe.envelopes.length, 1);
+});
+
+test("explicit capture keeps the authoritative fact-hash miss fast path", async () => {
+  const probe = createInlineCaptureProcessorProbe({
+    authoritativeFactHashMiss: true,
+    tombstoneBlockedCaptureIndexHit: false,
+  });
+  const candidate = validateExplicitCaptureInput({
+    content: "A novel fact should not scan the corpus after an indexed miss.",
+    category: "fact",
+  });
+
+  const result = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
+
+  assert.equal(result.duplicateOf, undefined);
+  assert.equal(probe.envelopes.length, 1);
+  assert.equal(probe.readAllCalls(), 0);
 });
