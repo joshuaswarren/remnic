@@ -7,6 +7,7 @@ import type { SealedMemoryEnvelope } from "./write-envelope.js";
 import {
   InlineExplicitCaptureProcessor,
   parseInlineExplicitCaptureNotes,
+  persistExplicitCapture,
   validateExplicitCaptureInput,
 } from "./explicit-capture.js";
 
@@ -646,4 +647,45 @@ test("inline capture processes a corrected sibling after queuing invalid metadat
   assert.equal(result.queued, 1);
   assert.equal(result.accepted, 1);
   assert.equal(probe.envelopes.length, 2);
+});
+
+test("inline capture deduplicates an invalid review replay", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const request = {
+    captureMode: "hybrid" as const,
+    dedupeKeys: ["invalid-review-delivery"],
+    content: [
+      "<memory_note>",
+      "content: An invalid review replay should queue only once.",
+      "category: fact",
+      "confidence: invalid",
+      "</memory_note>",
+    ].join("\n"),
+  };
+
+  const first = await probe.processor.process(request);
+  const replay = await probe.processor.process(request);
+
+  assert.equal(first.queued, 1);
+  assert.equal(replay.processed, 0);
+  assert.equal(probe.envelopes.length, 1);
+});
+
+test("explicit capture preserves tombstone-blocked status for duplicate pending review rows", async () => {
+  const probe = createInlineCaptureProcessorProbe({
+    tombstoneBlocked: true,
+    authoritativeFactHashMiss: true,
+  });
+  const candidate = validateExplicitCaptureInput({
+    content: "A duplicate pending review capture must remain queued.",
+    category: "fact",
+  });
+
+  const first = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
+  const duplicate = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
+
+  assert.equal(first.tombstoneBlocked, true);
+  assert.equal(duplicate.duplicateOf, first.id);
+  assert.equal(duplicate.tombstoneBlocked, true);
+  assert.equal(probe.envelopes.length, 1);
 });

@@ -404,7 +404,7 @@ async function findDuplicateExplicitCapture(
   orchestrator: Orchestrator,
   resolvedNamespace: string | undefined,
   candidate: ValidExplicitCapture,
-): Promise<string | null> {
+): Promise<{ id: string; tombstoneBlocked: boolean } | null> {
   const storage = await orchestrator.getStorage(resolvedNamespace);
   // Tombstone-blocked rows are absent from the active fact hash index.
   let activeFactHashMayMatch = true;
@@ -446,7 +446,13 @@ async function findDuplicateExplicitCapture(
     if (existingConnector !== newConnector) return false;
     return true;
   });
-  return match?.frontmatter.id ?? null;
+  return match
+    ? {
+        id: match.frontmatter.id,
+        tombstoneBlocked:
+          match.frontmatter.status === "pending_review" && Boolean(match.frontmatter.blockedBy),
+      }
+    : null;
 }
 
 export async function persistExplicitCapture(
@@ -457,9 +463,11 @@ export async function persistExplicitCapture(
   const resolvedNamespace = candidate.namespacePreResolved
     ? asTrimmed(candidate.namespace)
     : resolveExplicitCaptureNamespace(orchestrator, candidate.namespace);
-  const duplicateOf = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate);
-  if (duplicateOf) {
-    return { id: duplicateOf, duplicateOf };
+  const duplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate);
+  if (duplicate) {
+    return duplicate.tombstoneBlocked
+      ? { id: duplicate.id, duplicateOf: duplicate.id, tombstoneBlocked: true }
+      : { id: duplicate.id, duplicateOf: duplicate.id };
   }
 
   const storage = await orchestrator.getStorage(resolvedNamespace);
@@ -695,7 +703,7 @@ export class InlineExplicitCaptureProcessor {
     input: ExplicitCaptureInput,
     namespacePreResolved: boolean,
     fallbackReviewNamespace?: string,
-  ): string[] {
+  ): { replayKeys: string[]; validationFailureKey: string } {
     let effectiveNamespace = asTrimmed(input.namespace);
     if (!namespacePreResolved) {
       try {
@@ -718,17 +726,46 @@ export class InlineExplicitCaptureProcessor {
         }),
       )
       .digest("hex");
+    const validationTags = Array.from(
+      new Set(
+        (input.tags ?? [])
+          .map((tag) => asTrimmed(tag))
+          .filter((tag): tag is string => tag !== undefined),
+      ),
+    ).sort();
+    const validationHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          content: asTrimmed(input.content) ?? "",
+          category: asTrimmed(input.category) ?? "fact",
+          confidence:
+            input.confidence === undefined
+              ? "default"
+              : Number.isFinite(input.confidence)
+                ? input.confidence
+                : "invalid",
+          namespace: asTrimmed(input.namespace),
+          tags: validationTags,
+          entityRef: asTrimmed(input.entityRef),
+          sourceReason: asTrimmed(input.sourceReason),
+          ttl: asTrimmed(input.ttl),
+        }),
+      )
+      .digest("hex");
     const deliveryKeys = (dedupeKeys ?? [])
       .map((key) => asTrimmed(key))
       .filter((key): key is string => key !== undefined);
     const identityPrefix = `${namespaceScope}\u0000${sourceConnectorScope}\u0000`;
     const fallbackKey = `${identityPrefix}fallback:inline-memory-note:${noteHash}`;
-    return [
-      ...deliveryKeys.map(
-        (key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`,
-      ),
-      fallbackKey,
-    ];
+    return {
+      replayKeys: [
+        ...deliveryKeys.map(
+          (key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`,
+        ),
+        fallbackKey,
+      ],
+      validationFailureKey: `${identityPrefix}validation:inline-memory-note:${validationHash}`,
+    };
   }
 
   private isNamespacePolicyAuthorized(namespace: string | undefined): boolean {
@@ -779,7 +816,7 @@ export class InlineExplicitCaptureProcessor {
         ...(request.namespace !== undefined ? { namespace: request.namespace } : {}),
         ...(sourceConnector ? { sourceConnector } : {}),
       };
-      const dedupeKeys = this.buildDedupeKeys(
+      const { replayKeys, validationFailureKey } = this.buildDedupeKeys(
         request.dedupeKeys,
         input,
         request.namespacePreResolved === true,
@@ -787,13 +824,18 @@ export class InlineExplicitCaptureProcessor {
           ? request.reviewNamespace
           : undefined,
       );
-      if (dedupeKeys.some((key) => this.observedKeys.has(key))) continue;
+      if (
+        replayKeys.some((key) => this.observedKeys.has(key))
+        || this.observedKeys.has(validationFailureKey)
+      ) continue;
 
+      let validationSucceeded = false;
       try {
         const candidate = validateExplicitCaptureInput(input);
         if (request.namespacePreResolved === true) candidate.namespacePreResolved = true;
+        validationSucceeded = true;
         const persisted = await persistExplicitCapture(this.orchestrator, candidate, "inline");
-        this.remember(dedupeKeys);
+        this.remember(replayKeys);
         processed += 1;
         if (persisted.duplicateOf) {
           duplicates += 1;
@@ -822,6 +864,7 @@ export class InlineExplicitCaptureProcessor {
             error,
             reviewNamespace ? { resolvedNamespace: reviewNamespace } : undefined,
           );
+          this.remember(validationSucceeded ? replayKeys : [validationFailureKey]);
           processed += 1;
           if (review.duplicateOf) {
             duplicates += 1;
