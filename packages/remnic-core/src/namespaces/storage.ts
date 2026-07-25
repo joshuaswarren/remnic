@@ -284,6 +284,7 @@ export class NamespaceStorageRouter {
       root = await this.defaultNamespaceRoot();
       const cached = this.cache.get(ns);
       if (cached && cached.dir === root) {
+        await this.applySecureStoreConfig(cached);
         this.notifyResolved(ns, root);
         return cached;
       }
@@ -291,6 +292,7 @@ export class NamespaceStorageRouter {
       const cached = this.cache.get(ns);
       root = await this.namespaceRoot(ns);
       if (cached && cached.dir === root) {
+        await this.applySecureStoreConfig(cached);
         this.notifyResolved(ns, root);
         return cached;
       }

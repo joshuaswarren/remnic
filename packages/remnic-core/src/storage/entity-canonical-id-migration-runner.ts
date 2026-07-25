@@ -8,8 +8,9 @@ export class EntityCanonicalIdMigrationRunner {
     private readonly runMigration: () => Promise<void>,
   ) {}
 
-  public markDirectoriesInitialized(): void {
+  public async markDirectoriesInitialized(): Promise<void> {
     this.directoriesInitialized = true;
+    await this.ensure();
   }
 
   public ensure(): Promise<void> {

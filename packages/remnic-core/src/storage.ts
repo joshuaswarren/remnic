@@ -3668,7 +3668,7 @@ export class StorageManager {
     if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === 0) {
       this.bumpMemoryCorpusVersion();
     }
-    this.entityCanonicalIdMigration.markDirectoriesInitialized();
+    await this.entityCanonicalIdMigration.markDirectoriesInitialized();
   }
 
   /**
