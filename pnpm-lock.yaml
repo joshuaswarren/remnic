@@ -605,6 +605,9 @@ importers:
       openai:
         specifier: ^6.0.0
         version: 6.45.0(zod@3.25.76)
+      undici:
+        specifier: ^6.27.0
+        version: 6.27.0
       zod:
         specifier: ^3.24.0
         version: 3.25.76
