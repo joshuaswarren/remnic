@@ -63,9 +63,9 @@ const EXTRACTION_RESPONSE_SHAPE = `{
     "quote": "<optional exact contiguous source span>",
     "scope": "<optional project-or-global>",
     "structuredAttributes": {"<key>": "<value>"},
-    "procedureSteps": [{"order": 0, "intent": "<step>"}, {"order": 1, "intent": "<step>"}],
+    "procedureSteps": [{"order": 1, "intent": "<step>"}, {"order": 2, "intent": "<step>"}],
     "reasoningTrace": {
-      "steps": [{"order": 0, "description": "<step>"}, {"order": 1, "description": "<step>"}],
+      "steps": [{"order": 1, "description": "<step>"}, {"order": 2, "description": "<step>"}],
       "finalAnswer": "<answer>",
       "observedOutcome": "<optional outcome>"
     },
