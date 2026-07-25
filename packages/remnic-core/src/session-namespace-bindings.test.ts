@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -296,6 +296,25 @@ test("session namespace bindings cap each session's namespace history", async ()
     );
     assert.deepEqual(await fileStore.namespacesFor("rebound-session"), expected);
     assert.deepEqual(await memoryStore.namespacesFor("rebound-session"), expected);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("session namespace bindings clean temporary files after atomic write failure", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
+  const filePath = path.join(directory, "session-namespace-bindings.json");
+  const store = createFileSessionNamespaceBindingStore(filePath, {
+    renameBindingFile: async () => {
+      throw new Error("forced atomic rename failure");
+    },
+  });
+  try {
+    await assert.rejects(
+      () => store.remember("atomic-failure-session", "team-known"),
+      /forced atomic rename failure/,
+    );
+    assert.deepEqual(await readdir(directory), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

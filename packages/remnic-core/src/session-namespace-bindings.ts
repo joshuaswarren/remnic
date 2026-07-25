@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface SessionNamespaceBindingStore {
@@ -167,11 +167,20 @@ async function readBindingFile(filePath: string): Promise<NamespaceBindingFile> 
   return { version: 1, entries: pruneBindingEntries(entries) };
 }
 
-async function writeBindingFile(filePath: string, bindings: NamespaceBindingFile): Promise<void> {
+async function writeBindingFile(
+  filePath: string,
+  bindings: NamespaceBindingFile,
+  renameFile: typeof rename = rename,
+): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
-  await writeFile(temporaryPath, JSON.stringify(bindings, null, 2), "utf8");
-  await rename(temporaryPath, filePath);
+  try {
+    await writeFile(temporaryPath, JSON.stringify(bindings, null, 2), "utf8");
+    await renameFile(temporaryPath, filePath);
+  } catch (err) {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw err;
+  }
 }
 
 async function queueFileWrite<TResult>(
@@ -215,9 +224,12 @@ export function createInMemorySessionNamespaceBindingStore(): SessionNamespaceBi
 
 export function createFileSessionNamespaceBindingStore(
   filePath: string,
-  options: { writeBindingFile?: BindingFileWriter } = {},
+  options: { writeBindingFile?: BindingFileWriter; renameBindingFile?: typeof rename } = {},
 ): SessionNamespaceBindingStore {
-  const write = options.writeBindingFile ?? writeBindingFile;
+  const write =
+    options.writeBindingFile ??
+    ((targetPath: string, bindings: NamespaceBindingFile) =>
+      writeBindingFile(targetPath, bindings, options.renameBindingFile));
   return {
     async namespacesFor(sessionKey: string): Promise<string[]> {
       const key = encodeSessionKey(sessionKey);

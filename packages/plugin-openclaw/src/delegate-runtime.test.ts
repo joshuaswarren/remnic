@@ -1073,7 +1073,7 @@ test("delegate ignores a corrupt legacy binding file when canonical scope is ava
   }
 });
 
-test("delegate restores full canonical history during legacy migration", async () => {
+test("delegate restores full canonical history during explicit legacy migration", async () => {
   const stub = await startDaemonStub(() => ({ flushed: true }));
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-bindings-"));
   const priorMode = process.env.REMNIC_BRIDGE_MODE;
@@ -1082,7 +1082,7 @@ test("delegate restores full canonical history during legacy migration", async (
   const sessionKey = "legacy-recency-session";
   const current = Array.from({ length: 40 }, (_unused, index) => `team-current-${index}`);
   const legacy = Array.from({ length: 40 }, (_unused, index) => `team-legacy-${index}`);
-  const expected = [...legacy.slice(-24), ...current];
+  const expected = [...legacy.slice(-23), ...current, "team-explicit"];
   try {
     const primaryPath = path.join(
       memoryDir,
@@ -1147,6 +1147,18 @@ test("delegate restores full canonical history during legacy migration", async (
       true,
     );
 
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the explicit migration namespace" },
+          { role: "assistant", content: "the explicit namespace is bound" },
+        ],
+      },
+      { sessionKey, runtime: { agent: { session: { namespace: "team-explicit" } } } },
+    );
     await invoke(api, "session_end", { sessionKey });
     const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
     assert.ok(flush);

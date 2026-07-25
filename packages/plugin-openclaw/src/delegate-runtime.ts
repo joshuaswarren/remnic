@@ -812,10 +812,14 @@ function createDelegateNamespaceBindingStore(
     async remember(sessionKey: string, namespace: string): Promise<void> {
       const current = await primary.namespacesFor(sessionKey);
       const previous = await readLegacyNamespaces(sessionKey, current);
-      for (const remembered of previous) {
-        if (!current.includes(remembered)) await primary.remember(sessionKey, remembered);
+      if (previous.length === 0) {
+        await primary.remember(sessionKey, namespace);
+        return;
       }
-      await primary.remember(sessionKey, namespace);
+      const merged = mergeNamespaceHistory([...current, namespace], previous);
+      for (const remembered of merged) {
+        await primary.remember(sessionKey, remembered);
+      }
     },
   };
 }
