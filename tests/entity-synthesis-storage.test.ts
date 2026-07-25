@@ -820,6 +820,14 @@ test("ensureDirectories preserves entities whose legacy and canonical paths shar
     const legacy = normalizeLegacyEntityName(name, type);
     const canonicalPath = path.join(dir, "entities", `${canonical}.md`);
     const legacyPath = path.join(dir, "entities", `${legacy}.md`);
+    const memory = await seed.writeMemory("fact", "Legacy entity memory.", { entityRef: legacy });
+    const memoryPath = path.join(
+      dir,
+      "facts",
+      new Date().toISOString().slice(0, 10),
+      `${memory.id}.md`,
+    );
+    assert.match(await readFile(memoryPath, "utf-8"), new RegExp(`entityRef: ${legacy}\n`));
     await link(canonicalPath, legacyPath);
     await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
 
@@ -827,6 +835,12 @@ test("ensureDirectories preserves entities whose legacy and canonical paths shar
 
     assert.match(await readFile(canonicalPath, "utf-8"), /# Café/);
     assert.match(await readFile(legacyPath, "utf-8"), /# Café/);
+    assert.match(await readFile(memoryPath, "utf-8"), new RegExp(`entityRef: ${canonical}\n`));
+    const migrationState = JSON.parse(
+      await readFile(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), "utf-8"),
+    ) as { complete?: unknown; mappings?: Record<string, string> };
+    assert.equal(migrationState.complete, true);
+    assert.equal(migrationState.mappings?.[legacy], canonical);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

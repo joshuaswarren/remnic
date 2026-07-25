@@ -141,7 +141,10 @@ async function readSafeEntityEntries(entitiesDir: string): Promise<string[]> {
   return entries;
 }
 
-async function discoverMappings(deps: EntityCanonicalIdMigrationDependencies): Promise<Record<string, string>> {
+async function discoverMappings(
+  deps: EntityCanonicalIdMigrationDependencies,
+  knownMappings: Readonly<Record<string, string>> = {},
+): Promise<Record<string, string>> {
   const mappings: Record<string, string> = {};
   const canonicalOwners = new Map<string, string>();
   const entityEntries = await readSafeEntityEntries(deps.entitiesDir);
@@ -166,7 +169,11 @@ async function discoverMappings(deps: EntityCanonicalIdMigrationDependencies): P
     const canonicalPath = deps.resolveEntityFilePath(canonicalId);
     if (canonicalPath === null) continue;
     const canonicalExists = await fileExists(canonicalPath);
-    if (canonicalExists && await sameFileIdentity(legacyPath, canonicalPath)) continue;
+    if (
+      canonicalExists
+      && await sameFileIdentity(legacyPath, canonicalPath)
+      && knownMappings[legacyId] === canonicalId
+    ) continue;
     if (canonicalExists) {
       const canonicalContent = await deps.readStorageSecureFile(canonicalPath);
       if (entityContent !== canonicalContent) {
@@ -403,7 +410,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
       }
       for (let migrationPass = 0; migrationPass < ENTITY_MAPPING_RESCAN_MAX_PASSES; migrationPass += 1) {
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
-        const discoveredBefore = await discoverMappings(deps);
+        const discoveredBefore = await discoverMappings(deps, state.mappings);
         const mergedBefore = mergeDiscoveredMappings(state.mappings, discoveredBefore);
         if (state.complete && Object.keys(discoveredBefore).length === 0) return;
         if (
@@ -416,7 +423,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
         }
         if (Object.keys(state.mappings).length === 0) {
           if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
-          const discoveredAfter = await discoverMappings(deps);
+          const discoveredAfter = await discoverMappings(deps, state.mappings);
           if (Object.keys(discoveredAfter).length === 0) {
             await writeState(deps, { ...state, complete: true });
             return;
@@ -491,7 +498,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
         deps.bumpMemoryStatusVersion();
 
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
-        const discoveredAfter = await discoverMappings(deps);
+        const discoveredAfter = await discoverMappings(deps, state.mappings);
         if (Object.keys(discoveredAfter).length === 0) {
           await writeState(deps, { ...state, complete: true });
           return;
