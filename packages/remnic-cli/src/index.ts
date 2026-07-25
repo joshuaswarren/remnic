@@ -8925,13 +8925,13 @@ export async function runOfflineSyncOnce(options: {
   await drainOfflineSyncImpressions(options.memoryDir, options);
   await drainPendingLifecycleForOfflineSync(
     options.memoryDir,
-    (ledgerPath) =>
-      createOfflineStorageForPath(
+    async (ledgerPath) =>
+      (await createOfflineStorageForPath(
         options.memoryDir,
         ledgerPath,
         offlineStorage,
         options.secureStoreEncryptOnWrite ?? true,
-      ).drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
+      )).drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
   );
   const currentSnapshotForPush = await buildOfflineSyncSnapshotFromBase({
     root: options.memoryDir,
@@ -9725,13 +9725,13 @@ Environment fallbacks:
     await drainOfflineSyncImpressions(memoryDir, impressionRotation);
     await drainPendingLifecycleForOfflineSync(
       memoryDir,
-      (ledgerPath) =>
-        createOfflineStorageForPath(
+      async (ledgerPath) =>
+        (await createOfflineStorageForPath(
           memoryDir,
           ledgerPath,
           configuredStorage,
           config.secureStoreEncryptOnWrite ?? true,
-        ).drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
+        )).drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
     );
     const summary = await summarizeOfflineSyncPendingChanges({
       root: memoryDir,

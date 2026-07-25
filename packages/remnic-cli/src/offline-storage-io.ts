@@ -74,12 +74,12 @@ export async function createConfiguredOfflineStorage(
   }
   return { storage, secureStoreKey, secureStoreRequired };
 }
-export function createOfflineStorageForPath(
+export async function createOfflineStorageForPath(
   memoryDir: string,
   filePath: string,
   configured: ConfiguredOfflineStorage,
   secureStoreEncryptOnWrite: boolean,
-): StorageManager {
+): Promise<StorageManager> {
   const memoryRoot = path.resolve(memoryDir);
   const stateDir = path.dirname(filePath);
   if (path.basename(stateDir) !== "state" || path.basename(filePath) !== "memory-lifecycle-ledger.jsonl") {
@@ -94,7 +94,7 @@ export function createOfflineStorageForPath(
     storage.setSecureStoreRequired(true);
   }
   if (configured.secureStoreKey) {
-    storage.setSecureStoreKey(configured.secureStoreKey, secureStoreEncryptOnWrite);
+    await storage.setSecureStoreKey(configured.secureStoreKey, secureStoreEncryptOnWrite);
   }
   return storage;
 }
