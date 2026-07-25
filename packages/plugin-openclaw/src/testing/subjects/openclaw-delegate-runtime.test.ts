@@ -64,7 +64,13 @@ async function startDaemonStub(): Promise<DaemonStub> {
       }
       calls.push({ pathname: req.url ?? "", body });
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify(req.url === "/engram/v1/recall" ? { context: "remembered" } : {}));
+      const response =
+        req.url === "/engram/v1/recall"
+          ? { context: "remembered" }
+          : req.url === "/engram/v1/capabilities"
+            ? { lcmCompactionFlushBatch: true }
+            : {};
+      res.end(JSON.stringify(response));
     });
   });
   const listening = Promise.withResolvers<void>();
@@ -273,7 +279,10 @@ const subject: LifecycleSubject<DelegateLifecycleState> = {
         assert.equal("namespace" in (recallCalls[0]?.body ?? {}), false);
         return;
       case "provider-rebinding":
-        assert.deepEqual(flushCalls.map((call) => call.body.namespaces), [["team-first", "team-second"]]);
+        assert.deepEqual(
+          flushCalls.map((call) => call.body.namespaces),
+          [["team-first", "team-second"]],
+        );
         return;
       case "restart-reload-recovery":
         assert.equal(recallCalls.at(-1)?.body.namespace, "team-persisted");

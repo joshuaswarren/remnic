@@ -201,12 +201,16 @@ async function postJson(
     ? (parsed as Record<string, unknown>)
     : null;
 }
+interface DelegateJsonResponse {
+  status: number;
+  body: Record<string, unknown> | null;
+}
 async function getJson(
   target: DelegateDaemonTarget,
   serviceId: string,
   pathname: string,
   timeoutMs: number,
-): Promise<Record<string, unknown> | null> {
+): Promise<DelegateJsonResponse> {
   const headers: Record<string, string> = {};
   const auth = target.resolveAuthToken();
   if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
@@ -219,15 +223,19 @@ async function getJson(
       const status = res.status === 401 ? 401 : 403;
       await res.body?.cancel();
       reportDaemonAuthorizationFailure(serviceId, pathname, status, auth.source);
-      return null;
+      return { status: res.status, body: null };
     }
     await res.body?.cancel();
-    return null;
+    return { status: res.status, body: null };
   }
   const parsed: unknown = await res.json().catch(() => null);
-  return typeof parsed === "object" && parsed !== null
-    ? (parsed as Record<string, unknown>)
-    : null;
+  return {
+    status: res.status,
+    body:
+      typeof parsed === "object" && parsed !== null
+        ? (parsed as Record<string, unknown>)
+        : null,
+  };
 }
 
 function sessionKeyFrom(
@@ -600,16 +608,39 @@ export function registerDelegateRuntime(
     }
   });
 
+  let cachedBatchFlushSupport: boolean | undefined;
   let supportsBatchFlushPromise: Promise<boolean> | undefined;
   const supportsBatchFlush = (timeoutMs: number): Promise<boolean> => {
-    supportsBatchFlushPromise ??= getJson(
+    if (cachedBatchFlushSupport !== undefined) {
+      return Promise.resolve(cachedBatchFlushSupport);
+    }
+    if (supportsBatchFlushPromise !== undefined) return supportsBatchFlushPromise;
+    const probe = getJson(
       target,
       options.serviceId,
       "/engram/v1/capabilities",
       timeoutMs,
     )
-      .then((response) => response?.lcmCompactionFlushBatch === true)
+      .then((response) => {
+        const isSuccessfulResponse = response.status >= 200 && response.status < 300;
+        if (isSuccessfulResponse && response.body !== null) {
+          cachedBatchFlushSupport = response.body.lcmCompactionFlushBatch === true;
+          return cachedBatchFlushSupport;
+        }
+        if (
+          response.status === 204 ||
+          response.status === 404 ||
+          response.status === 405 ||
+          response.status === 501
+        ) {
+          cachedBatchFlushSupport = false;
+        }
+        return false;
+      })
       .catch(() => false);
+    supportsBatchFlushPromise = probe.finally(() => {
+      supportsBatchFlushPromise = undefined;
+    });
     return supportsBatchFlushPromise;
   };
   const flushHandler = async (
@@ -732,11 +763,15 @@ function createDelegateNamespaceBindingStore(
   const legacy = createFileSessionNamespaceBindingStore(
     bindingPath(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID),
   );
-  const readLegacyNamespaces = async (sessionKey: string): Promise<string[]> => {
+  const readLegacyNamespaces = async (
+    sessionKey: string,
+    current: string[],
+  ): Promise<string[]> => {
     try {
       return await legacy.namespacesFor(sessionKey);
-    } catch {
-      return [];
+    } catch (err) {
+      if (current.length > 0) return [];
+      throw err;
     }
   };
   const mergeNamespaceHistory = (current: string[], previous: string[]): string[] => {
@@ -751,7 +786,7 @@ function createDelegateNamespaceBindingStore(
   return {
     async namespacesFor(sessionKey: string): Promise<string[]> {
       const current = await primary.namespacesFor(sessionKey);
-      const previous = await readLegacyNamespaces(sessionKey);
+      const previous = await readLegacyNamespaces(sessionKey, current);
       if (previous.length === 0) return current;
       const merged = mergeNamespaceHistory(current, previous);
       const hasMissingLegacy = previous.some((remembered) => !current.includes(remembered));
@@ -774,7 +809,7 @@ function createDelegateNamespaceBindingStore(
     },
     async remember(sessionKey: string, namespace: string): Promise<void> {
       const current = await primary.namespacesFor(sessionKey);
-      const previous = await readLegacyNamespaces(sessionKey);
+      const previous = await readLegacyNamespaces(sessionKey, current);
       for (const remembered of previous) {
         if (!current.includes(remembered)) await primary.remember(sessionKey, remembered);
       }

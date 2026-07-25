@@ -62,9 +62,13 @@ async function startDaemonStub(
     pathname: string,
     body: Record<string, unknown>,
   ) => Record<string, unknown> | Promise<Record<string, unknown>>,
-  options: { batchFlush?: boolean } = {},
+  options: {
+    batchFlush?: boolean;
+    capabilityResponses?: Array<{ status: number; body: Record<string, unknown> }>;
+  } = {},
 ): Promise<DaemonStub> {
   const calls: RecordedCall[] = [];
+  let capabilityResponseIndex = 0;
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (chunk: Buffer) => {
@@ -79,13 +83,23 @@ async function startDaemonStub(
         // empty/non-JSON bodies stay {}
       }
       calls.push({ pathname, body });
+      const capabilityResponse =
+        pathname === "/engram/v1/capabilities"
+          ? options.capabilityResponses?.[capabilityResponseIndex++]
+          : undefined;
       const responsePromise =
-        pathname === "/engram/v1/capabilities" && options.batchFlush !== false
-          ? Promise.resolve({ lcmCompactionFlushBatch: true })
-          : Promise.resolve(respond(pathname, body));
+        pathname === "/engram/v1/capabilities" && capabilityResponse !== undefined
+          ? Promise.resolve(capabilityResponse)
+          : pathname === "/engram/v1/capabilities" && options.batchFlush !== false
+            ? Promise.resolve({ status: 200, body: { lcmCompactionFlushBatch: true } })
+            : Promise.resolve(respond(pathname, body)).then((response) => ({
+                status: 200,
+                body: response,
+              }));
       void responsePromise
-        .then((response) => {
+        .then(({ status, body: response }) => {
           if (res.destroyed) return;
+          res.statusCode = status;
           res.setHeader("content-type", "application/json");
           res.end(JSON.stringify(response));
         })
@@ -804,6 +818,52 @@ test("delegate falls back to singular flushes when batch capability is unavailab
   }
 });
 
+test("delegate retries a transient batch capability probe", async () => {
+  const stub = await startDaemonStub(
+    () => ({ flushed: true }),
+    {
+      capabilityResponses: [
+        { status: 503, body: {} },
+        { status: 200, body: { lcmCompactionFlushBatch: true } },
+      ],
+    },
+  );
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const sessionKey = "transient-capability-session";
+
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} session namespace` },
+            { role: "assistant", content: "the namespace is bound" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+
+    await invoke(api, "before_compaction", { sessionKey });
+    await invoke(api, "before_reset", { sessionKey });
+
+    const capabilityCalls = stub.calls.filter((call) => call.pathname === "/engram/v1/capabilities");
+    assert.equal(capabilityCalls.length, 2);
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.deepEqual(
+      flushes.slice(0, 2).map((call) => call.body.namespace).sort(),
+      ["team-first", "team-second"],
+    );
+    assert.deepEqual(flushes.at(-1)?.body.namespaces, ["team-first", "team-second"]);
+  } finally {
+    await stub.close();
+  }
+});
+
 
 test("delegate reloads a persisted namespace binding after its daemon host configuration changes", async () => {
   const stub = await startDaemonStub(() => ({ accepted: true }));
@@ -947,6 +1007,15 @@ test("delegate ignores a corrupt legacy binding file when canonical scope is ava
     const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
     assert.ok(flush);
     assert.equal(flush.body.namespace, "team-canonical");
+    const flushCount = stub.calls.filter(
+      (call) => call.pathname === "/engram/v1/lcm/compaction/flush",
+    ).length;
+    fs.rmSync(primaryPath);
+    await invoke(api, "before_reset", { sessionKey: "missing-canonical-session" });
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush").length,
+      flushCount,
+    );
   } finally {
     if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorMode;
