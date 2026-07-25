@@ -40,7 +40,7 @@ import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation, type OperationName } from "./access-boundary.js";
 import { authorizationProbeNamespaces, probeOperationAuthorization } from "./access-authorization-probe.js";
 import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
-import { handleLcmCompactionFlushHttp } from "./access-http-lcm-compaction.js";
+import * as lcm from "./access-http-lcm-compaction.js";
 import {
   assertOperationAllowed,
   capabilityAllowsOp,
@@ -890,11 +890,7 @@ export class EngramAccessHttpServer {
       this.respondJson(res, 200, await this.service.health());
       return;
     }
-    if (req.method === "GET" && pathname === "/engram/v1/capabilities") {
-      this.respondJson(res, 200, { lcmCompactionFlushBatch: true });
-      return;
-    }
-
+    if (req.method === "GET" && pathname === "/engram/v1/capabilities") return lcm.respondLcmCompactionCapabilitiesHttp(res);
     if (req.method === "GET" && pathname === "/engram/v1/authorization") {
       res.setHeader("cache-control", "no-store");
       const probe = probeOperationAuthorization(tokenCapabilityStore.getStore(), parsed.searchParams.getAll("op"));
@@ -1679,7 +1675,7 @@ export class EngramAccessHttpServer {
     ) {
       this.enforceTokenOp("lcm_compaction_flush"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "lcmCompactionFlush");
-      await handleLcmCompactionFlushHttp({
+      await lcm.handleLcmCompactionFlushHttp({
         body, service: this.service,
         response: res, ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
         recordWriteRateLimitHit: () => this.recordWriteRateLimitHit(req),

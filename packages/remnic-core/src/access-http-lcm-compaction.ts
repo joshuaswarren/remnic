@@ -17,6 +17,12 @@ export interface LcmCompactionFlushHttpOptions {
   respondJson: JsonResponder;
 }
 
+export function respondLcmCompactionCapabilitiesHttp(response: ServerResponse): void {
+  response.statusCode = 200;
+  response.setHeader("content-type", "application/json; charset=utf-8");
+  response.end(JSON.stringify({ lcmCompactionFlushBatch: true }, null, 2));
+}
+
 export async function handleLcmCompactionFlushHttp({
   body,
   service,
