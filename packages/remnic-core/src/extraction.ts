@@ -1318,37 +1318,8 @@ export class ExtractionEngine {
         log.debug(
           `extracted ${result.facts.length} facts, ${result.entities.length} entities, ${(result.questions ?? []).length} questions via fallback (${detailed.modelUsed})`,
         );
-        // Zod schema accepts snake_case aliases (final_answer / observed_outcome)
-        // alongside camelCase for gateway-tolerance, but the downstream
-        // ExtractedFact contract only exposes camelCase. Collapse each fact's
-        // reasoningTrace through normalizeReasoningTrace before passing it on so
-        // gateway output matches the shape local/direct-client paths produce.
-        const normalizedFacts = result.facts.map((f: any) => {
-          if (!f) return f;
-          // Gateway tolerance: collapse snake_case event_time → camelCase
-          // eventTime so the gateway path matches the local/direct/proactive
-          // normalization (#1578 r3 — cursor bugbot).
-          const eventTime =
-            typeof f.eventTime === "string" && f.eventTime.trim().length > 0
-              ? f.eventTime.trim()
-              : typeof f.event_time === "string" && f.event_time.trim().length > 0
-                ? f.event_time.trim()
-                : undefined;
-          if (!f.reasoningTrace && eventTime === undefined) return f;
-          return {
-            ...f,
-            ...(f.reasoningTrace
-              ? { reasoningTrace: normalizeReasoningTrace(f.reasoningTrace) ?? undefined }
-              : {}),
-            ...(eventTime !== undefined ? { eventTime } : {}),
-          };
-        });
-        const sanitized = this.sanitizeExtractionResult({
-          ...result,
-          facts: normalizedFacts,
-          questions: result.questions ?? [],
-          identityReflection: result.identityReflection ?? undefined,
-        } as ExtractionResult, messageTimestamp);
+        const normalized = this.normalizeExtractionResultPayload(result);
+        const sanitized = this.sanitizeExtractionResult(normalized, messageTimestamp);
         const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized);
         return this.attachProvenanceToResult(finalResult, boundedTurns);
       }

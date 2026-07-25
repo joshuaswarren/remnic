@@ -53,6 +53,18 @@ const STRUCTURAL_PLACEHOLDER_EXTRACTION = {
   }],
 };
 
+const GATEWAY_PLACEHOLDER_EXTRACTION = {
+  ...STRUCTURAL_PLACEHOLDER_EXTRACTION,
+  facts: [{
+    ...STRUCTURAL_PLACEHOLDER_EXTRACTION.facts[0],
+    category: "fact",
+  }],
+  entities: [{
+    ...STRUCTURAL_PLACEHOLDER_EXTRACTION.entities[0],
+    type: "other",
+  }],
+};
+
 type ChatMessage = { role: string; content: string };
 
 type LocalLlmFixture = {
@@ -145,6 +157,25 @@ test("local extraction discards literal structural placeholders", async () => {
   };
   assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
   assert.equal(Reflect.set(engine, "modelRegistry", modelRegistry), true);
+
+  const result = await engine.extract([SOURCE_TURN]);
+
+  assert.deepEqual(result.facts, []);
+  assert.deepEqual(result.profileUpdates, []);
+  assert.deepEqual(result.entities, []);
+  assert.deepEqual(result.questions, []);
+  assert.deepEqual(result.relationships, []);
+  assert.equal(result.identityReflection, undefined);
+});
+
+test("gateway extraction discards literal structural placeholders", async () => {
+  const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
+  const fallbackLlm: GatewayFixture = {
+    async parseWithSchemaDetailed() {
+      return { modelUsed: "fixture-gateway", result: GATEWAY_PLACEHOLDER_EXTRACTION };
+    },
+  };
+  assert.equal(Reflect.set(engine, "fallbackLlm", fallbackLlm), true);
 
   const result = await engine.extract([SOURCE_TURN]);
 
