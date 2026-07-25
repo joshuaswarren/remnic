@@ -28,7 +28,7 @@ import { analyzeGraphHealth, type GraphHealthReport } from "./graph.js";
 import { resolveAccessSetupCapabilities,
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
-  resolveQmdCapabilities,
+  resolveQmdCapabilities, resolveIndexingCapabilities,
   resolveEvalCapabilities, resolvePresentationCapabilities, resolveConsolidationCapabilities } from "./capabilities.js";
 import {
   analyzeSessionIntegrity,
@@ -55,8 +55,7 @@ import type {
 } from "./types.js";
 import { reportBufferSurpriseDistribution } from "./buffer-surprise-report.js";
 import { readJudgeVerdictStats } from "./extraction-judge-telemetry.js";
-import { resolveIndexingCapabilities } from "./capabilities.js";
-
+import { summarizeCorpusWatermark } from "./operator-doctor-corpus.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
@@ -1501,6 +1500,7 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   // Surfaces per-phase: enabled status, cadence, threshold values, and the
   // best-available last-run timestamp for each of the three pipeline phases.
   checks.push(await summarizeDreamsPhases(config, storage));
+  checks.push(await summarizeCorpusWatermark(config, (dir) => new StorageManager(dir))); // corpus watermark #2149
 
   // Security mitigation status (issue #565).
   // Reports whether the cross-namespace budget and anomaly detection

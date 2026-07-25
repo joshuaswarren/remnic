@@ -4643,8 +4643,33 @@ export class StorageManager {
     return Math.max(1, Math.floor(batchSize));
   }
 
-  private async collectActiveMemoryPaths(): Promise<string[]> {
-    return this.memoryReadStore.collectActiveMemoryPaths();
+  /**
+   * Public cheap active-memory path scan (issue #2149 corpus watermark). Lists
+   * active memory file paths without parsing frontmatter — safe on a 100k+
+   * corpus, unlike readAllMemories().
+   */
+  async collectActiveMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
+    return this.memoryReadStore.collectActiveMemoryPaths(options);
+  }
+
+  /**
+   * Public cheap cold-tier path scan (issue #2156 finding D corpus census).
+   * Lists demoted-but-reachable memory paths under `cold/` without parsing
+   * frontmatter, so the divergence watermark counts the cold tier too.
+   */
+  async collectColdMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
+    return this.memoryReadStore.collectColdMemoryPaths(options);
+  }
+
+  /**
+   * Combined hot+cold corpus-mutation sentinel (issue #2156). Changes whenever
+   * EITHER tier is written, so a divergence census can bracket its hot/cold scan
+   * and detect a tier migration (write-cold-then-unlink-hot) racing the walkers,
+   * then retry for a consistent snapshot instead of caching a transient
+   * double-count or miss.
+   */
+  getCorpusScanVersion(): string {
+    return `${this.getMemoryCorpusVersion()}:${this.readColdWriteVersion()}`;
   }
 
   private async readParsedMemoriesFromPaths(filePaths: string[], batchSize?: number): Promise<MemoryFile[]> {

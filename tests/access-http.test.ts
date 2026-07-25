@@ -18,6 +18,16 @@ function createFakeService(): EngramAccessService {
       qmdEnabled: true,
       nativeKnowledgeEnabled: false,
       projectionAvailable: true,
+      corpus: [
+        {
+          namespace: "global",
+          memoryFileCount: 2,
+          newestPartition: "2026-03-08",
+          newestWriteAt: "2026-03-08T00:00:00.000Z",
+          digest: "0000000000000000000000000000000000000000000000000000000000000000",
+          computedAt: "2026-03-08T00:00:00.000Z",
+        },
+      ],
     }),
     recall: async ({ query, sessionKey }: Parameters<EngramAccessService["recall"]>[0]) => ({
       query,
@@ -495,9 +505,15 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
 
     const healthRes = await fetch(`${base}/engram/v1/health`, { headers });
     assert.equal(healthRes.status, 200);
-    const health = (await healthRes.json()) as { ok: boolean; projectionAvailable: boolean };
+    const health = (await healthRes.json()) as {
+      ok: boolean;
+      projectionAvailable: boolean;
+      corpus: Array<{ namespace: string; memoryFileCount: number }>;
+    };
     assert.equal(health.ok, true);
     assert.equal(health.projectionAvailable, true);
+    assert.equal(health.corpus.length, 1);
+    assert.equal(health.corpus[0]?.namespace, "global");
 
     const recallRes = await fetch(`${base}/engram/v1/recall`, {
       method: "POST",

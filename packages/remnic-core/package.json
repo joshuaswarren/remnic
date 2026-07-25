@@ -495,6 +495,16 @@
       "remnic-source": "./src/commitment-ledger.ts",
       "import": "./dist/commitment-ledger.js"
     },
+    "./corpus-watermark": {
+      "types": "./dist/corpus-watermark.d.ts",
+      "remnic-source": "./src/corpus-watermark.ts",
+      "import": "./dist/corpus-watermark.js"
+    },
+    "./corpus-watermark.js": {
+      "types": "./dist/corpus-watermark.d.ts",
+      "remnic-source": "./src/corpus-watermark.ts",
+      "import": "./dist/corpus-watermark.js"
+    },
     "./compat/checks": {
       "types": "./dist/compat/checks.d.ts",
       "remnic-source": "./src/compat/checks.ts",
