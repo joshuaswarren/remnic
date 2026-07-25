@@ -6133,9 +6133,6 @@ export class StorageManager {
     this.invalidateKnowledgeIndexCache();
   }
 
-  /**
-   * Add an alias to an entity file. Deduplicates.
-   */
   async addEntityAlias(name: string, alias: string): Promise<void> {
     const filePath = path.join(this.entitiesDir, `${name}.md`);
     let entity: EntityFile;
