@@ -325,6 +325,27 @@ export class ExtractionLivenessWarnThrottle {
 }
 
 /**
+ * Normalize the `extractionLiveness` block at the read boundary. `parseConfig`
+ * always populates it, but a host adapter, an older persisted config, or a
+ * hand-built `PluginConfig` can hand us an absent or partially-populated block -
+ * and every liveness surface (/health, doctor, stats) must degrade to the
+ * documented default (enabled, 24h window) rather than throw. A present but
+ * non-integer or non-positive `staleWindowMs` also falls back to the default.
+ */
+export function resolveExtractionLivenessConfig(
+  block: Partial<ExtractionLivenessConfig> | undefined,
+): ExtractionLivenessConfig {
+  const staleWindowMs = block?.staleWindowMs;
+  return {
+    enabled: block?.enabled ?? true,
+    staleWindowMs:
+      typeof staleWindowMs === "number" && Number.isInteger(staleWindowMs) && staleWindowMs >= 1
+        ? staleWindowMs
+        : DEFAULT_STALE_WINDOW_MS,
+  };
+}
+
+/**
  * Compute the liveness status for the authenticated `/health` payload and emit
  * the throttled aggregated WARN.
  *
@@ -340,7 +361,7 @@ export async function computeExtractionLivenessStatus(
   throttle?: ExtractionLivenessWarnThrottle,
   nowMs: number = Date.now(),
 ): Promise<ExtractionLivenessStatus> {
-  const config = orchestrator.config.extractionLiveness;
+  const config = resolveExtractionLivenessConfig(orchestrator.config.extractionLiveness);
   const status = await gatherExtractionLivenessStatus({
     config,
     storage: orchestrator.storage,
@@ -361,7 +382,7 @@ export async function summarizeExtractionLiveness(
   buffer?: ExtractionBufferSource,
   nowMs: number = Date.now(),
 ): Promise<OperatorDoctorCheck> {
-  const livenessConfig = config.extractionLiveness;
+  const livenessConfig = resolveExtractionLivenessConfig(config.extractionLiveness);
   const status = await gatherExtractionLivenessStatus({
     config: livenessConfig,
     storage,
@@ -416,7 +437,7 @@ export async function renderExtractionLivenessStats(
     metaReadError = err instanceof Error ? err.message : String(err);
   }
   const status = evaluateExtractionLiveness({
-    config: orchestrator.config.extractionLiveness,
+    config: resolveExtractionLivenessConfig(orchestrator.config.extractionLiveness),
     lastExtractionAt: meta?.lastExtractionAt ?? null,
     snapshot: await readBufferSnapshot(orchestrator.buffer),
     nowMs,

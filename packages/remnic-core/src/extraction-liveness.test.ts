@@ -8,6 +8,8 @@ import {
   evaluateExtractionLiveness,
   parseExtractionLivenessConfig,
   renderExtractionLivenessStats,
+  resolveExtractionLivenessConfig,
+  summarizeExtractionLiveness,
   type ExtractionBufferSnapshot,
   type ExtractionLivenessStatus,
 } from "./extraction-liveness.js";
@@ -422,4 +424,32 @@ test("renderExtractionLivenessStats: reports DEGRADED + unavailable counts when 
   assert.match(verdict ?? "", /DEGRADED/);
   assert.match(verdict ?? "", /watermark unreadable/);
   assert.match(verdict ?? "", /meta\.json corrupt/);
+});
+
+test("resolveExtractionLivenessConfig: absent or partial block defaults to enabled/24h (read-boundary robustness)", () => {
+  const DEFAULT = { enabled: true, staleWindowMs: 86_400_000 };
+  assert.deepEqual(resolveExtractionLivenessConfig(undefined), DEFAULT, "absent block -> documented default");
+  assert.deepEqual(resolveExtractionLivenessConfig({}), DEFAULT, "partial {} -> documented default");
+  assert.deepEqual(
+    resolveExtractionLivenessConfig({ enabled: false }),
+    { enabled: false, staleWindowMs: 86_400_000 },
+    "explicit enabled honored; missing window defaults",
+  );
+  assert.deepEqual(resolveExtractionLivenessConfig({ staleWindowMs: 5000 }), { enabled: true, staleWindowMs: 5000 });
+  // A present-but-invalid window (0/fractional) falls back rather than making every backlog instantly stale.
+  assert.equal(resolveExtractionLivenessConfig({ staleWindowMs: 0 }).staleWindowMs, 86_400_000);
+  assert.equal(resolveExtractionLivenessConfig({ staleWindowMs: 1.9 }).staleWindowMs, 86_400_000);
+});
+
+test("summarizeExtractionLiveness: no throw when the extractionLiveness block is absent or partial (host/legacy config)", async () => {
+  const storage = { loadMeta: async () => ({ lastExtractionAt: null }) };
+  // A PluginConfig built directly (host adapter / older persisted config) can omit
+  // the block or leave it partial; every liveness surface must return a sane status
+  // rather than crash (#2155 review).
+  for (const config of [{}, { extractionLiveness: {} }, { extractionLiveness: { enabled: true } }]) {
+    const check = await summarizeExtractionLiveness(config as never, storage);
+    assert.equal(check.key, "extraction_liveness");
+    assert.ok(check.status === "ok" || check.status === "warn", `sane status for ${JSON.stringify(config)}`);
+    assert.ok(!check.summary.includes("liveness check disabled"), "missing/partial block reads as enabled default");
+  }
 });
