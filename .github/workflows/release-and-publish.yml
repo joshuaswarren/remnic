@@ -543,10 +543,15 @@ jobs:
           # plugins) must ship so end users can install only what they need
           # — see the à-la-carte invariant in CLAUDE.md / AGENTS.md.
           mapfile -t PUBLISH_ORDER < "${RUNNER_TEMP}/remnic-publish-order.txt"
-          # New packages that npm rejects with E404 on their FIRST publish
-          # (trusted publishing not yet provisioned for the name) must not
+          # Packages that npm rejects with E404 on publish (PUT) must not
           # strand every package after them in topological order — that
           # left @remnic/cli and friends lagging whole release trains.
+          # E404 means this automation identity may not publish the name,
+          # whether the name is brand new (cannot create it) or already
+          # exists (no write permission — npm returns 404, not 403, so
+          # package existence is not leaked). Both are the same operator-
+          # actionable provisioning gap, so the branch is keyed on the
+          # error class, NOT on whether the name happens to exist yet.
           # They are collected, surfaced loudly, and skipped; everything
           # else still publishes. Any other publish failure remains fatal.
           UNPROVISIONED=()
@@ -563,10 +568,6 @@ jobs:
             fi
             pkg_name="$(node -p "require('./$pkg_json').name")"
             pkg_version="$(node -p "require('./$pkg_json').version")"
-            pkg_exists="false"
-            if npm view "${pkg_name}" version >/dev/null 2>&1; then
-              pkg_exists="true"
-            fi
             if npm view "${pkg_name}@${pkg_version}" version >/dev/null 2>&1; then
               echo "::notice::${pkg_name}@${pkg_version} already published; skipping."
               continue
@@ -580,8 +581,8 @@ jobs:
             else
               publish_status=$?
               cat "$publish_log"
-              if [ "$pkg_exists" != "true" ] && grep -q "npm error code E404" "$publish_log"; then
-                echo "::warning::${pkg_name}@${pkg_version} is not provisioned for first-time npm publish from this automation. Set up trusted publishing for this package name, then rerun the release workflow (already-published packages are skipped automatically). Continuing with the remaining packages."
+              if grep -q "npm error code E404" "$publish_log"; then
+                echo "::warning::This automation identity is not provisioned to publish ${pkg_name}@${pkg_version} to npm (E404 on publish — the name is either not yet created or grants this identity no write access). Set up trusted publishing for this package name, then rerun the release workflow (already-published packages are skipped automatically). Continuing with the remaining packages."
                 UNPROVISIONED+=("${pkg_name}@${pkg_version}")
                 rm -f "$publish_log"
                 continue
@@ -592,7 +593,7 @@ jobs:
           done
           if [ "${#UNPROVISIONED[@]}" -gt 0 ]; then
             {
-              echo "## Unprovisioned first-time packages (not published)"
+              echo "## Unprovisioned packages (not published)"
               echo ""
               echo "Provision npm trusted publishing for each name, then rerun this workflow:"
               echo ""
