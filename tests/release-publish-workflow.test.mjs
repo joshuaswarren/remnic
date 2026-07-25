@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 // Contract tests for the workspace-publish step of the release workflow.
 //
@@ -16,7 +18,13 @@ import test from "node:test";
 // alone, non-E404 failures stay fatal, and unprovisioned names still fail the
 // run loudly (pattern 38).
 
-const workflow = readFileSync(".github/workflows/release-and-publish.yml", "utf8");
+// Resolve from this module, not the caller's CWD, so the test still runs when
+// invoked by absolute path from another directory (IDEs, targeted runners).
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const workflow = readFileSync(
+  path.join(repoRoot, ".github/workflows/release-and-publish.yml"),
+  "utf8",
+);
 
 // Scope assertions to the publish loop rather than the whole file.
 function step(name) {
