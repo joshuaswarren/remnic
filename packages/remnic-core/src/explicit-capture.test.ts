@@ -163,6 +163,31 @@ test("inline capture processor persists an authorized inline note once and strip
   assert.equal(probe.lifecycleEvents[0]?.actor, "inline.memory_note");
 });
 
+test("inline capture processor serializes overlapping duplicate deliveries", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const request = {
+    captureMode: "hybrid" as const,
+    content: [
+      "<memory_note>",
+      "content: Overlapping deliveries must persist one inline capture.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+    dedupeKeys: ["overlapping-delivery"],
+  };
+
+  const [first, second] = await Promise.all([
+    probe.processor.process(request),
+    probe.processor.process(request),
+  ]);
+
+  assert.equal(first.processed + second.processed, 1);
+  assert.equal(first.accepted + second.accepted, 1);
+  assert.equal(probe.envelopes.length, 1);
+  assert.equal(probe.lifecycleEvents.length, 1);
+  assert.deepEqual(probe.maintenanceReasons, ["inline.memory_note"]);
+});
+
 test("inline capture processor hashes the effective authorized input for replay dedupe", async () => {
   const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
   const request = {

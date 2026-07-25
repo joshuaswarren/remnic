@@ -686,6 +686,7 @@ export class InlineExplicitCaptureProcessor {
   private readonly observedKeys = new Set<string>();
   private readonly observedKeyOrder: string[] = [];
   private readonly maxDedupeKeys: number;
+  private processingTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly orchestrator: Orchestrator,
@@ -696,6 +697,19 @@ export class InlineExplicitCaptureProcessor {
       Number.isFinite(requestedLimit) && requestedLimit > 0
         ? Math.max(1, Math.floor(requestedLimit))
         : DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT;
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.processingTail;
+    let release!: () => void;
+    this.processingTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return previous.then(operation).finally(release);
+  }
+
+  async process(request: InlineExplicitCaptureProcessRequest): Promise<InlineExplicitCaptureProcessResult> {
+    return this.enqueue(() => this.processInternal(request));
   }
 
   private buildDedupeKeys(
@@ -789,7 +803,7 @@ export class InlineExplicitCaptureProcessor {
     }
   }
 
-  async process(request: InlineExplicitCaptureProcessRequest): Promise<InlineExplicitCaptureProcessResult> {
+  private async processInternal(request: InlineExplicitCaptureProcessRequest): Promise<InlineExplicitCaptureProcessResult> {
     if (!shouldProcessInlineExplicitCapture({ captureMode: request.captureMode })) {
       return { content: request.content, processed: 0, accepted: 0, queued: 0, duplicates: 0 };
     }
