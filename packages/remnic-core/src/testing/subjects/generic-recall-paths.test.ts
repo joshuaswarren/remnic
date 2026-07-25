@@ -89,11 +89,7 @@ const subject: LifecycleSubject<GenericRecallPathState> = {
   },
 
   async exercise(state): Promise<void> {
-    state.recalled = await state.orchestrator.recall(
-      "candidate",
-      undefined,
-      { recallMode: "full" },
-    );
+    state.recalled = await state.orchestrator.recall("candidate");
   },
 
   async invariants(state): Promise<void> {
