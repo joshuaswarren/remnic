@@ -379,11 +379,15 @@ export class SessionContextCoordinator {
           ? options.principalOverride.trim()
           : undefined;
       const turnsForSession = scopedOwnership
-        ? turns.filter(
-            (turn) =>
-              turn.sessionKey === sessionKey &&
-              (ownerPrincipal === undefined || turn.sessionOwnerPrincipal === ownerPrincipal),
-          )
+        ? turns.filter((turn) => {
+            if (turn.sessionKey !== sessionKey) return false;
+            if (ownerPrincipal === undefined) return true;
+            if (turn.sessionOwnerPrincipal === ownerPrincipal) return true;
+            return (
+              turn.sessionOwnerPrincipal === undefined &&
+              resolvePrincipal(turn.sessionKey, this.deps.config) === ownerPrincipal
+            );
+          })
         : turns;
       if (turnsForSession.length === 0) continue;
       await new Promise<void>((resolve, reject) => {

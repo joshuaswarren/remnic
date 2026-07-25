@@ -935,6 +935,45 @@ test("flushSession honors persisted ownership for opaque sessions", async () => 
   assert.deepEqual(queuedTurns, [ownedTurn]);
 });
 
+test("flushSession preserves unstamped turns for a principal-keyed session", async () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+  });
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  const unstampedTurn = makeTurn("alice:chat", "remember host-hook turn");
+  let queuedTurns: BufferTurn[] = [];
+
+  orchestrator.buffer = {
+    async findBufferKeysForSession() {
+      return ["codex-thread:shared"];
+    },
+    getTurns() {
+      return [unstampedTurn];
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queuedTurns = turns;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("alice:chat", {
+    reason: "access_force_flush",
+    writeNamespaceOverride: "alice-project",
+    principalOverride: "alice",
+  });
+
+  assert.deepEqual(queuedTurns, [unstampedTurn]);
+});
+
 test("runExtraction skips active scope profile writes when no layer is writable", async () => {
   const config = parseConfig({
     namespacesEnabled: true,
