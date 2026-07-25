@@ -46,6 +46,7 @@ Two infrastructure routes carry no request envelope and sit outside the op-gated
 **Observe and LCM**
 
 - `POST /engram/v1/observe` — feed conversation messages into the LCM archive and extraction pipeline
+- `POST /engram/v1/extraction/flush` — force-drain buffered extraction for one scoped session
 - `POST /engram/v1/lcm/search` — full-text search over LCM-archived conversations
 - `POST /engram/v1/lcm/compaction/flush` — drain pending LCM observations before a host compaction
 - `POST /engram/v1/lcm/compaction/record` — record a completed host compaction checkpoint
@@ -249,6 +250,8 @@ Request fields:
 
 - `sessionKey` (string, required) — conversation session identifier
 - `namespace` (string, optional) — target namespace
+- `cwd` (string, optional) — working directory used for project scope resolution
+- `projectTag` (string, optional) — project tag used for project scope resolution
 
 Response (HTTP 200):
 
@@ -257,6 +260,25 @@ Response (HTTP 200):
 - `sessionKey` — echo of the session key
 - `namespace` — resolved namespace
 - `reason` (optional) — present when LCM is disabled
+
+#### `POST /engram/v1/extraction/flush`
+
+Force-drain SmartBuffer extraction for a session. This route works when LCM is disabled.
+
+Request fields:
+
+- `sessionKey` (string, required) — conversation session identifier
+- `namespace` (string, optional) — target namespace
+- `cwd` (string, optional) — working directory used for project scope resolution
+- `projectTag` (string, optional) — project tag used for project scope resolution
+- `deadlineMs` (number, optional) — absolute deadline in Unix milliseconds
+
+Response (HTTP 200):
+
+- `flushed` — whether the force-flush completed
+- `sessionKey` — echo of the session key
+- `namespace` — legacy resolved namespace
+- `effectiveNamespace` — scoped write namespace used for extraction
 
 #### `POST /engram/v1/lcm/compaction/record`
 
