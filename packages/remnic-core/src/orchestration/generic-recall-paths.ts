@@ -13,6 +13,20 @@ export interface GenericRecallPathPolicy {
   readonly qmdColdCollection?: string;
 }
 
+const RESERVED_GENERIC_RECALL_ROOTS: Record<string, true> = Object.fromEntries(
+  ["archive", "namespaces", ...ALL_CATEGORY_DIRS].map((directory) => [directory, true]),
+);
+
+function isQmdCollectionPrefix(prefix: string, collection: string | undefined): boolean {
+  return (
+    typeof collection === "string" &&
+    collection.length > 0 &&
+    ((prefix === collection && !Object.hasOwn(RESERVED_GENERIC_RECALL_ROOTS, prefix)) ||
+      prefix.startsWith(`${collection}--`))
+  );
+}
+
+
 function stripQmdCollectionPrefix(
   relativePath: string,
   policy: GenericRecallPathPolicy,
@@ -22,16 +36,8 @@ function stripQmdCollectionPrefix(
   if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return relativePath;
 
   const prefix = normalized.slice(0, slashIndex);
-  const matchesHotCollection =
-    typeof policy.qmdCollection === "string" &&
-    policy.qmdCollection.length > 0 &&
-    ((prefix === policy.qmdCollection && !ALL_CATEGORY_DIRS.includes(prefix)) ||
-      prefix.startsWith(`${policy.qmdCollection}--`));
-  const matchesColdCollection =
-    typeof policy.qmdColdCollection === "string" &&
-    policy.qmdColdCollection.length > 0 &&
-    ((prefix === policy.qmdColdCollection && !ALL_CATEGORY_DIRS.includes(prefix)) ||
-      prefix.startsWith(`${policy.qmdColdCollection}--`));
+  const matchesHotCollection = isQmdCollectionPrefix(prefix, policy.qmdCollection);
+  const matchesColdCollection = isQmdCollectionPrefix(prefix, policy.qmdColdCollection);
   return matchesHotCollection || matchesColdCollection
     ? normalized.slice(slashIndex + 1)
     : relativePath;
