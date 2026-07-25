@@ -578,10 +578,18 @@ export class ExtractionRunCoordinator {
       // Context-only turns may still contain corrections (review: "context-only
       // turns skip capture"). Scan normalizedTurns before clearing the buffer.
       if (normalizedTurns.length > 0) {
+        const capturePrincipal =
+          typeof options.principalOverride === "string" && options.principalOverride.length > 0
+            ? options.principalOverride
+            : resolvePrincipal(sessionKey, this.config);
+        const captureNamespace =
+          typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
+            ? options.writeNamespaceOverride
+            : this.deps.resolveSelfNamespace(sessionKey);
         await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
           sessionKey,
-          principal: resolvePrincipal(sessionKey, this.config),
-          namespace: this.deps.resolveSelfNamespace(sessionKey),
+          principal: capturePrincipal,
+          namespace: captureNamespace,
           bufferKey,
           isLiveSession: clearBufferAfterExtraction,
         });

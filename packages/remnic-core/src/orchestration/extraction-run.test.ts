@@ -95,6 +95,7 @@ interface Harness {
     opts?: { force?: boolean; failClosed?: boolean; writeNamespaceOverride?: string },
   ) => Promise<{ status: string; reason?: string }>;
   cleanup: () => Promise<void>;
+  passiveCapture: () => { principal?: string; namespace?: string } | null;
 }
 
 async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Harness> {
@@ -124,6 +125,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   let engineCalls = 0;
   let respond: (turns: BufferTurn[]) => ExtractionResult = () => successResult();
   let recordedProcessedCount = 0;
+  let passiveCapture: { principal?: string; namespace?: string } | null = null;
 
   const makeDeps = (): ExtractionRunCoordinatorDeps => ({
     config,
@@ -142,7 +144,9 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
       updateThreadTitle: async (..._args: Parameters<ThreadingManager["updateThreadTitle"]>) => {},
     }),
     persistExtraction: async () => ({ persistedIds: ["memory-1"], memoryPathById: new Map() }),
-    maybeCapturePassiveCorrections: async () => {},
+    maybeCapturePassiveCorrections: async (_turns, options) => {
+      passiveCapture = { principal: options.principal, namespace: options.namespace };
+    },
     resolveSelfNamespace: () => "default",
     getCodingContextForSession: () => null,
     applyCodingNamespaceOverlay: () => "default",
@@ -166,6 +170,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
       respond = fn;
     },
     recordedProcessedCount: () => recordedProcessedCount,
+    passiveCapture: () => passiveCapture,
     run: async (coord, content, opts = {}) => {
       const result = await coord.runExtraction(makeTurns(content), {
         skipCharThreshold: true,
@@ -184,6 +189,38 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     },
   };
 }
+
+test("context-only extraction honors scoped principal and namespace overrides", async () => {
+  const harness = await makeHarness();
+  try {
+    const coordinator = harness.newCoordinator();
+    const result = await coordinator.runExtraction(
+      [
+        {
+          role: "user",
+          content: "Please use the blue dashboard.",
+          timestamp: "2026-07-15T00:00:00Z",
+          sessionKey: "opaque-session",
+          extractionContextOnly: true,
+        },
+      ],
+      {
+        bufferKey: "opaque-session",
+        clearBufferAfterExtraction: false,
+        principalOverride: "alice",
+        writeNamespaceOverride: "alice-project",
+      },
+    );
+
+    assert.equal(result.reason, "empty_normalized_turns");
+    assert.deepEqual(harness.passiveCapture(), {
+      principal: "alice",
+      namespace: "alice-project",
+    });
+  } finally {
+    await harness.cleanup();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Backoff math (pure)

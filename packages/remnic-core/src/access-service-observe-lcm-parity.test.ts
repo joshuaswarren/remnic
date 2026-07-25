@@ -398,6 +398,31 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
   assert.equal(call.options.principalOverride, "pi-geek");
 });
 
+
+test("#2128: extraction force-flush rejects a session owned by another principal", async () => {
+  const probe = makeParityProbe({
+    ...withSelfPolicyPrefix("pi-geek"),
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: "victim", readPrincipals: ["victim"], writePrincipals: ["victim"] },
+    ],
+    principalFromSessionKeyRules: [
+      { match: "pi-geek:", principal: "pi-geek" },
+      { match: "victim:", principal: "victim" },
+    ],
+  });
+  const service = new EngramAccessService(probe.orch);
+
+  await assert.rejects(
+    () =>
+      service.extractionForceFlush({
+        sessionKey: "victim:private-session",
+        authenticatedPrincipal: "pi-geek",
+      }),
+    /sessionKey is not owned by authenticated principal/,
+  );
+  assert.equal(probe.extractionForceFlushCalls.length, 0);
+});
 test("#2128: aborted or expired extraction force-flush never touches a buffer", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);

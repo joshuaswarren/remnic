@@ -11,7 +11,25 @@
  */
 
 import { createHash } from "node:crypto";
-import { buildAccessWriteRequestFingerprint } from "./write-envelope.js";
+import { throwIfAborted } from "./abort-error.js";
+import {
+  type CodingScopedWriteInput,
+  ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
+  type EngramAccessBriefingRequest,
+  type EngramAccessBriefingResponse,
+  type EngramAccessExtractionForceFlushRequest,
+  type EngramAccessExtractionForceFlushResponse,
+  EngramAccessInputError,
+  type EngramAccessMemoryStoreRequest,
+  type EngramAccessObserveRequest,
+  type EngramAccessObserveResponse,
+  type EngramAccessQmdCollectionState,
+  type EngramAccessQmdHealthResponse,
+  type EngramAccessSuggestionSubmitRequest,
+  type EngramAccessWriteResponse,
+  type MemoryScopePlan,
+  NamespaceNotWritableError,
+} from "./access-service.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
   resolveCompressionCapabilities,
@@ -25,7 +43,7 @@ import {
   queueExplicitCaptureForReview,
 } from "./explicit-capture.js";
 import { log } from "./logger.js";
-import { throwIfAborted } from "./abort-error.js";
+import { resolvePrincipal } from "./namespaces/principal.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import type { Orchestrator } from "./orchestrator.js";
 import { displayErrorDetail } from "./runtime/better-sqlite.js";
@@ -33,25 +51,8 @@ import type { MemoryActionOutcome, MemoryActionType } from "./types.js";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "./work/board.js";
 import { wrapWorkLayerContext } from "./work/boundary.js";
 import { WorkStorage } from "./work/storage.js";
-import { WriteQuarantineStore, type QuarantineOperation } from "./write-quarantine.js";
-import {
-  ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
-  EngramAccessInputError,
-  NamespaceNotWritableError,
-  type CodingScopedWriteInput,
-  type EngramAccessBriefingRequest,
-  type EngramAccessBriefingResponse,
-  type EngramAccessExtractionForceFlushRequest,
-  type EngramAccessExtractionForceFlushResponse,
-  type EngramAccessMemoryStoreRequest,
-  type EngramAccessObserveRequest,
-  type EngramAccessObserveResponse,
-  type EngramAccessQmdCollectionState,
-  type EngramAccessQmdHealthResponse,
-  type EngramAccessSuggestionSubmitRequest,
-  type EngramAccessWriteResponse,
-  type MemoryScopePlan,
-} from "./access-service.js";
+import { buildAccessWriteRequestFingerprint } from "./write-envelope.js";
+import { type QuarantineOperation, WriteQuarantineStore } from "./write-quarantine.js";
 
 export interface AccessObserveWriteSurfaceDeps {
   attachCodingContextAfterScopedWrite(
@@ -872,6 +873,13 @@ export class AccessObserveWriteSurface {
     throwIfAborted(request.abortSignal, "extraction force-flush aborted");
     if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
       throw new Error("extraction force-flush deadline exceeded before scope resolution");
+    }
+    if (resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true) {
+      const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
+      const sessionPrincipal = resolvePrincipal(request.sessionKey, this.deps.orchestrator.config);
+      if (!authenticatedPrincipal || sessionPrincipal !== authenticatedPrincipal) {
+        throw new EngramAccessInputError("sessionKey is not owned by authenticated principal");
+      }
     }
 
     const previousCodingContext = this.deps.orchestrator.getCodingContextForSession(request.sessionKey);
