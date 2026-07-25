@@ -16,8 +16,8 @@ function findProfileTitleIndex(lines: string[]): number {
       inFence = !inFence;
       continue;
     }
-    if (inFence || trimmed === "") continue;
-    return PROFILE_TITLE.test(line) ? index : -1;
+    if (inFence) continue;
+    if (PROFILE_TITLE.test(line)) return index;
   }
   return -1;
 }
