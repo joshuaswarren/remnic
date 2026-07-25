@@ -5358,7 +5358,12 @@ export class RecallInternalCoordinator {
     });
     const context = composeRecallContext(composition);
     try {
-      options.onContextComposition?.(composition);
+      const observerResult = options.onContextComposition?.(composition);
+      if (observerResult && typeof observerResult.then === "function") {
+        void Promise.resolve(observerResult).catch((err) => {
+          log.warn("recall: context composition observer rejected", err);
+        });
+      }
     } catch (err) {
       log.warn("recall: context composition observer failed open", err);
     }

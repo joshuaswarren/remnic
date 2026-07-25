@@ -261,8 +261,11 @@ export interface RecallInvocationOptions {
    * Receives the bounded, request-local split between recall body and an
    * optional enrichment footer. Transport surfaces use it to serialize the
    * footer without reading storage or relying on a session-global snapshot.
+   * A returned thenable is observed without delaying the recall result.
    */
-  onContextComposition?: (composition: RecallContextComposition) => void;
+  onContextComposition?: (
+    composition: RecallContextComposition,
+  ) => void | PromiseLike<void>;
 }
 
 export type QueryAwarePrefilter = {

@@ -271,3 +271,31 @@ test("questions section maxChars zero suppresses the curiosity footer", async ()
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("an async composition observer rejection cannot become unhandled", async () => {
+  const { orchestrator, memoryDir } = await makeOrchestrator(true);
+  let unhandled = false;
+  const onUnhandledRejection = () => {
+    unhandled = true;
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+  try {
+    await orchestrator.storage.writeQuestion(
+      "Which deployment decision needs an owner?",
+      "The rollout is waiting for an owner.",
+      1,
+    );
+
+    await orchestrator.recall("Which deployment decision matters?", "async-observer-session", {
+      onContextComposition: async () => {
+        throw new Error("async observer failed");
+      },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(unhandled, false);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
