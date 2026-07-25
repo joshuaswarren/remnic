@@ -127,7 +127,7 @@
     "packages/remnic-core/src/orchestrator.ts": "extraction-lifecycle",
     "packages/remnic-core/src/buffer.ts": "extraction-lifecycle",
     "packages/remnic-core/src/storage.ts": "extraction-lifecycle",
-    "packages/remnic-core/src/storage/profile-header.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/storage/profile-header.ts": "profile-header-write",
     "packages/remnic-core/src/session-toggles.ts": "serialized-write-chain",
     "packages/remnic-core/src/orchestration/extraction-run.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-persist.ts": "extraction-lifecycle",

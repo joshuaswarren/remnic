@@ -170,6 +170,115 @@ test("writeProfile preserves timestamp-shaped ordinary HTML blocks", async (t) =
   }
 });
 
+test("writeProfile preserves timestamp-shaped nested list content", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "  *Last updated: literal example*",
+        "",
+        "- Keeps list content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "  *Last updated: literal example*",
+          "",
+          "- Keeps list content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile ends a one-line HTML declaration before finding the title", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "<!DOCTYPE html>",
+        "# Behavioral Profile",
+        "",
+        "- Keeps declaration content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "<!DOCTYPE html>",
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- Keeps declaration content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile keeps nested same-name HTML blocks opaque", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<div>",
+        "<div></div>",
+        "*Last updated: literal example*",
+        "</div>",
+        "",
+        "- Keeps nested HTML.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "<div>",
+          "<div></div>",
+          "*Last updated: literal example*",
+          "</div>",
+          "",
+          "- Keeps nested HTML.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile ignores invalid backtick fence openers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

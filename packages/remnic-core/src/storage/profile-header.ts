@@ -9,8 +9,8 @@ type FenceMarker = {
 };
 
 function isLastUpdatedHeader(line: string): boolean {
-  const trimmed = line.trim();
-  return trimmed.startsWith(LAST_UPDATED_PREFIX) && trimmed.endsWith("*");
+  const content = line.trimEnd();
+  return content.startsWith(LAST_UPDATED_PREFIX) && content.endsWith("*");
 }
 
 function isIndentedCodeLine(line: string): boolean {
@@ -109,6 +109,8 @@ const HTML_BLOCK_TAGS = [
 type HtmlBlock = {
   endMarker: string | null;
   endsAtBlankLine: boolean;
+  tagName: string | null;
+  depth: number;
 };
 
 function findHtmlBlockTag(line: string, tags: readonly string[]): string | null {
@@ -131,6 +133,7 @@ function findHtmlBlockTag(line: string, tags: readonly string[]): string | null 
 type HtmlTag = {
   name: string;
   isClosing: boolean;
+  isSelfClosing: boolean;
 };
 
 function isAsciiLetter(character: string): boolean {
@@ -168,20 +171,102 @@ function findCompleteHtmlTag(line: string): HtmlTag | null {
       quote = character;
       continue;
     }
-    if (character === "<") return null;
     if (character === ">" && line.slice(index + 1).trim() === "") {
-      return { name, isClosing };
+      const tagBody = line.slice(nameStart, index).trimEnd();
+      return {
+        name,
+        isClosing,
+        isSelfClosing: !isClosing && tagBody.endsWith("/"),
+      };
     }
   }
   return null;
 }
 
+function findHtmlTags(line: string): HtmlTag[] {
+  const tags: HtmlTag[] = [];
+  let index = 0;
+  while (index < line.length) {
+    if (line[index] !== "<") {
+      index += 1;
+      continue;
+    }
+
+    let cursor = index + 1;
+    const isClosing = line[cursor] === "/";
+    if (isClosing) cursor += 1;
+    const nameStart = cursor;
+    if (!isAsciiLetter(line[cursor] ?? "")) {
+      index += 1;
+      continue;
+    }
+    while (isHtmlTagNameCharacter(line[cursor] ?? "")) cursor += 1;
+    const name = line.slice(nameStart, cursor).toLowerCase();
+    let quote: string | null = null;
+    for (; cursor < line.length; cursor += 1) {
+      const character = line[cursor] ?? "";
+      if (quote) {
+        if (character === quote) quote = null;
+        continue;
+      }
+      if (character === "\"" || character === "'") {
+        quote = character;
+        continue;
+      }
+      if (character !== ">") continue;
+      const tagBody = line.slice(nameStart, cursor).trimEnd();
+      tags.push({
+        name,
+        isClosing,
+        isSelfClosing: !isClosing && tagBody.endsWith("/"),
+      });
+      index = cursor + 1;
+      break;
+    }
+    if (cursor >= line.length) break;
+  }
+  return tags;
+}
+
+function updateHtmlBlockDepth(
+  htmlBlock: HtmlBlock,
+  line: string,
+  skipFirstOpening: boolean,
+): HtmlBlock | null {
+  if (!htmlBlock.tagName) return htmlBlock;
+  let depth = htmlBlock.depth;
+  let skippedFirstOpening = !skipFirstOpening;
+  for (const tag of findHtmlTags(line)) {
+    if (tag.name !== htmlBlock.tagName) continue;
+    if (tag.isClosing) {
+      depth -= 1;
+    } else if (!tag.isSelfClosing) {
+      if (!skippedFirstOpening) {
+        skippedFirstOpening = true;
+        continue;
+      }
+      depth += 1;
+    }
+  }
+  return depth > 0 ? { ...htmlBlock, depth } : null;
+}
+
 function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBlock | null {
   const rawTag = findHtmlBlockTag(normalizedLine, RAW_HTML_BLOCK_TAGS);
-  if (rawTag) return { endMarker: `</${rawTag}>`, endsAtBlankLine: false };
-  if (normalizedLine.startsWith("<!--")) return { endMarker: "-->", endsAtBlankLine: false };
-  if (normalizedLine.startsWith("<?")) return { endMarker: "?>", endsAtBlankLine: false };
-  if (normalizedLine.startsWith("<![cdata[")) return { endMarker: "]]>", endsAtBlankLine: false };
+  if (rawTag) {
+    const completeTag = findCompleteHtmlTag(trimmedLine);
+    if (completeTag?.isSelfClosing) return null;
+    return { endMarker: `</${rawTag}>`, endsAtBlankLine: false, tagName: null, depth: 0 };
+  }
+  if (normalizedLine.startsWith("<!--")) {
+    return { endMarker: "-->", endsAtBlankLine: false, tagName: null, depth: 0 };
+  }
+  if (normalizedLine.startsWith("<?")) {
+    return { endMarker: "?>", endsAtBlankLine: false, tagName: null, depth: 0 };
+  }
+  if (normalizedLine.startsWith("<![cdata[")) {
+    return { endMarker: "]]>", endsAtBlankLine: false, tagName: null, depth: 0 };
+  }
   const declarationFirst = trimmedLine[2];
   if (
     trimmedLine.startsWith("<!") &&
@@ -189,15 +274,22 @@ function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBl
     declarationFirst >= "A" &&
     declarationFirst <= "Z"
   ) {
-    return { endMarker: null, endsAtBlankLine: true };
+    return trimmedLine.trimEnd().endsWith(">")
+      ? null
+      : { endMarker: ">", endsAtBlankLine: false, tagName: null, depth: 0 };
   }
   const blockTag = findHtmlBlockTag(normalizedLine, HTML_BLOCK_TAGS);
-  if (blockTag) return { endMarker: `</${blockTag}>`, endsAtBlankLine: true };
+  if (blockTag) {
+    const completeTag = findCompleteHtmlTag(trimmedLine);
+    if (completeTag?.isSelfClosing) return null;
+    return { endMarker: `</${blockTag}>`, endsAtBlankLine: true, tagName: blockTag, depth: 1 };
+  }
   const genericTag = findCompleteHtmlTag(trimmedLine);
-  return genericTag
-    ? { endMarker: genericTag.isClosing ? null : `</${genericTag.name}>`, endsAtBlankLine: true }
+  return genericTag && !genericTag.isClosing && !genericTag.isSelfClosing
+    ? { endMarker: `</${genericTag.name}>`, endsAtBlankLine: true, tagName: genericTag.name, depth: 1 }
     : null;
 }
+
 
 type ProfileLine = {
   content: string;
@@ -252,10 +344,15 @@ function visitProfileMetadataLines(
     const trimmedLine = line.trimStart();
     const normalizedLine = trimmedLine.toLowerCase();
     if (openHtmlBlock) {
-      if (
-        (openHtmlBlock.endMarker && normalizedLine.includes(openHtmlBlock.endMarker)) ||
-        (openHtmlBlock.endsAtBlankLine && normalizedLine === "")
-      ) {
+      if (openHtmlBlock.endsAtBlankLine && normalizedLine === "") {
+        openHtmlBlock = null;
+        continue;
+      }
+      if (openHtmlBlock.tagName) {
+        openHtmlBlock = updateHtmlBlockDepth(openHtmlBlock, normalizedLine, false);
+        continue;
+      }
+      if (openHtmlBlock.endMarker && normalizedLine.includes(openHtmlBlock.endMarker)) {
         openHtmlBlock = null;
       }
       continue;
@@ -267,8 +364,11 @@ function visitProfileMetadataLines(
     }
     const htmlBlock = findHtmlBlockStart(normalizedLine, trimmedLine);
     if (htmlBlock) {
-      openHtmlBlock =
-        htmlBlock.endMarker && normalizedLine.includes(htmlBlock.endMarker) ? null : htmlBlock;
+      openHtmlBlock = htmlBlock.tagName
+        ? updateHtmlBlockDepth(htmlBlock, normalizedLine, true)
+        : htmlBlock.endMarker && normalizedLine.includes(htmlBlock.endMarker)
+          ? null
+          : htmlBlock;
       continue;
     }
     visit(line, index);
