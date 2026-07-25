@@ -3016,6 +3016,22 @@ test("HTTP authorization probe verifies requested operation grants without invok
         },
       },
       {
+        token: "resource-scoped-chat-token",
+        capabilities: {
+          version: 1,
+          ops: ["chat_message"],
+          namespaces: ["other"],
+        },
+      },
+      {
+        token: "resource-scoped-chat-default-token",
+        capabilities: {
+          version: 1,
+          ops: ["chat_message"],
+          namespaces: ["default"],
+        },
+      },
+      {
         token: "namespace-scoped-adapters-token",
         capabilities: {
           version: 1,
@@ -3090,6 +3106,29 @@ test("HTTP authorization probe verifies requested operation grants without invok
     );
     assert.equal(namespaceAllowed.status, 200);
     await namespaceAllowed.text();
+    const resourceNamespaceDenied = await probe(
+      "resource-scoped-chat-token",
+      ["chat_message"],
+      "other",
+    );
+    assert.equal(
+      resourceNamespaceDenied.status,
+      403,
+      "resource-scoped chat probes must check the daemon default, not trust the query namespace",
+    );
+    await resourceNamespaceDenied.text();
+
+    const resourceNamespaceAllowed = await probe(
+      "resource-scoped-chat-default-token",
+      ["chat_message"],
+      "other",
+    );
+    assert.equal(
+      resourceNamespaceAllowed.status,
+      200,
+      "resource-scoped chat probes accept a query override when the daemon default is allowed",
+    );
+    await resourceNamespaceAllowed.text();
 
     const fleetWide = await probe("fleet-scoped-token", ["continuity_audit_generate"]);
     assert.equal(fleetWide.status, 403);

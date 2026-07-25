@@ -200,6 +200,11 @@ const IMPLICIT_HTTP_NAMESPACE_OPERATIONS = new Set<OperationName>([
   "chat_message",
   "chat_events",
 ]);
+export const RESOURCE_SCOPED_HTTP_NAMESPACE_OPERATIONS: Partial<Record<OperationName, true>> = {
+  review_resolve: true,
+  chat_message: true,
+  chat_events: true,
+};
 
 // ---------------------------------------------------------------------------
 // Operation context — what every handler receives
