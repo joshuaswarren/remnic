@@ -169,3 +169,105 @@ test("access recall returns the configured curiosity footer in its server respon
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("a throwing composition observer cannot discard the recall result", async () => {
+  const { orchestrator, memoryDir } = await makeOrchestrator(true);
+  try {
+    await orchestrator.storage.writeQuestion(
+      "Which deployment decision needs an owner?",
+      "The rollout is waiting for an owner.",
+      1,
+    );
+
+    const recalled = await orchestrator.recall("Which deployment decision matters?", "observer-session", {
+      onContextComposition: () => {
+        throw new Error("observer failed");
+      },
+    });
+
+    assert.match(recalled, /Which deployment decision needs an owner\?/);
+  } finally {
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("questions section maxChars bounds the curiosity footer and reports it in recall metadata", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-curiosity-section-cap-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      openaiApiKey: "test-key",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      injectQuestions: true,
+      recallPipeline: [{ id: "questions", enabled: true, maxChars: 40 }],
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      recallPlannerEnabled: false,
+      sharedContextEnabled: false,
+    }),
+  );
+  await orchestrator.initialize();
+  try {
+    await orchestrator.storage.writeQuestion(
+      "Which deployment decision needs an owner?",
+      "The rollout is waiting for an owner.",
+      1,
+    );
+
+    let composition: RecallContextComposition | undefined;
+    const recalled = await orchestrator.recall("Which deployment decision matters?", "section-cap-session", {
+      onContextComposition: (value: RecallContextComposition) => {
+        composition = value;
+      },
+    });
+    const footer = composition?.footer ?? "";
+    const snapshot = orchestrator.getLastRecall("section-cap-session");
+
+    assert.ok(footer.length > 0);
+    assert.ok(footer.length <= 40);
+    assert.match(recalled, /\.\.\.\(memory context trimmed\)$/);
+    assert.ok(snapshot?.sourcesUsed?.includes("questions"));
+    assert.ok(snapshot?.budgetsApplied?.includedSections?.includes("questions"));
+  } finally {
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("questions section maxChars zero suppresses the curiosity footer", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-curiosity-section-disabled-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      openaiApiKey: "test-key",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      injectQuestions: true,
+      recallPipeline: [{ id: "questions", enabled: true, maxChars: 0 }],
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      recallPlannerEnabled: false,
+      sharedContextEnabled: false,
+    }),
+  );
+  await orchestrator.initialize();
+  try {
+    await orchestrator.storage.writeQuestion(
+      "Which deployment decision needs an owner?",
+      "The rollout is waiting for an owner.",
+      1,
+    );
+
+    let composition: RecallContextComposition | undefined;
+    const recalled = await orchestrator.recall("Which deployment decision matters?", "section-zero-session", {
+      onContextComposition: (value: RecallContextComposition) => {
+        composition = value;
+      },
+    });
+
+    assert.equal(composition?.footer, undefined);
+    assert.doesNotMatch(recalled, /## Open Question/);
+  } finally {
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

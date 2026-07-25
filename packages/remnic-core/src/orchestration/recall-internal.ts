@@ -5274,6 +5274,8 @@ export class RecallInternalCoordinator {
     }
 
     let curiosityFooter: string | undefined;
+    let curiosityQuestionSelected = false;
+    let curiosityFooterTruncated = false;
     if (
       this.deps.config.injectQuestions &&
       this.deps.isRecallSectionEnabled("questions", true)
@@ -5283,7 +5285,16 @@ export class RecallInternalCoordinator {
       });
       const topQuestion = selectCuriosityQuestion(questions);
       if (topQuestion) {
-        curiosityFooter = formatCuriosityFooter(topQuestion);
+        curiosityQuestionSelected = true;
+        const formattedFooter = formatCuriosityFooter(topQuestion);
+        const questionMaxChars = this.deps.getRecallSectionMaxChars("questions");
+        if (questionMaxChars !== 0) {
+          curiosityFooter =
+            typeof questionMaxChars === "number"
+              ? this.deps.truncateRecallSectionToBudget(formattedFooter, questionMaxChars)
+              : formattedFooter;
+          curiosityFooterTruncated = curiosityFooter.length < formattedFooter.length;
+        }
       }
     }
 
@@ -5346,23 +5357,37 @@ export class RecallInternalCoordinator {
       maxChars: recallBudgetChars,
     });
     const context = composeRecallContext(composition);
-    options.onContextComposition?.(composition);
+    try {
+      options.onContextComposition?.(composition);
+    } catch (err) {
+      log.warn("recall: context composition observer failed open", err);
+    }
     const compositionTruncated =
       context.length <
       composeRecallContext({ context: recalledContext, footer: curiosityFooter }).length;
+    const includedSections = [...assembledRecall.includedIds];
+    const omittedSections = [...assembledRecall.omittedIds];
+    if (composition.footer) {
+      if (!includedSections.includes("questions")) includedSections.push("questions");
+    } else if (curiosityQuestionSelected) {
+      if (!omittedSections.includes("questions")) omittedSections.push("questions");
+    }
     const sourcesUsed = this.deps.collectLastRecallSources(
       sectionBuckets,
       recallSource,
     );
+    if (composition.footer && !sourcesUsed.includes("questions")) {
+      sourcesUsed.push("questions");
+    }
     const budgetsApplied = this.deps.buildLastRecallBudgetSummary({
       requestedTopK,
       recallResultLimit,
       qmdFetchLimit,
       qmdHybridFetchLimit,
       finalContextChars: context.length,
-      truncated: assembledRecall.truncated || compositionTruncated,
-      includedSections: assembledRecall.includedIds,
-      omittedSections: assembledRecall.omittedIds,
+      truncated: assembledRecall.truncated || compositionTruncated || curiosityFooterTruncated,
+      includedSections,
+      omittedSections,
       includedMemoryIds: assembledRecall.includedMemoryIds,
       includedMemoryPaths: assembledRecall.includedMemoryPaths,
       includedMemoryNamespaces: assembledRecall.includedMemoryNamespaces,
