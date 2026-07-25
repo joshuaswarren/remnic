@@ -670,7 +670,7 @@ export class InlineExplicitCaptureProcessor {
     const requestedLimit = options.maxDedupeKeys ?? DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT;
     this.maxDedupeKeys =
       Number.isFinite(requestedLimit) && requestedLimit > 0
-        ? Math.floor(requestedLimit)
+        ? Math.max(1, Math.floor(requestedLimit))
         : DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT;
   }
 

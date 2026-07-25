@@ -2135,11 +2135,16 @@ const pluginDefinition = {
     async function processInlineExplicitCapture(
       content: string,
       messageKeys: readonly string[] | null | undefined,
+      fallbackDedupeKeys: readonly (string | null)[] = [],
     ) {
+      const dedupeKeys = new Set(messageKeys ?? []);
+      for (const key of fallbackDedupeKeys) {
+        if (key) dedupeKeys.add(key);
+      }
       return inlineCaptureProcessor.process({
         captureMode: orchestrator.config.captureMode,
         content,
-        dedupeKeys: messageKeys ?? [],
+        dedupeKeys: [...dedupeKeys],
       });
     }
 
@@ -4020,20 +4025,15 @@ const pluginDefinition = {
             ? eventDate.toISOString()
             : new Date().toISOString();
           const cleaned = cleanOpenClawUserMessage(content);
-          const inlineCapture = await processInlineExplicitCapture(
-            cleaned,
-            inboundMessageKeys,
-          );
-          const transcriptContent = inlineCapture.content;
           const inboundContentFingerprint = buildOpenClawInboundContentFingerprint(
-            transcriptContent,
+            cleaned,
             event,
             event,
             ctx,
             sessionKey,
           );
           const sparseInboundContentFingerprint = buildOpenClawSparseInboundContentFingerprint(
-            transcriptContent,
+            cleaned,
             sessionKey,
           );
           if (
@@ -4042,6 +4042,12 @@ const pluginDefinition = {
           ) {
             return;
           }
+          const inlineCapture = await processInlineExplicitCapture(
+            cleaned,
+            inboundMessageKeys,
+            [inboundContentFingerprint, sparseInboundContentFingerprint],
+          );
+          const transcriptContent = inlineCapture.content;
           const processedExplicitNotes = inlineCapture.processed;
           if (!orchestrator.config.transcriptEnabled || transcriptContent.length === 0) {
             rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
@@ -4203,9 +4209,19 @@ const pluginDefinition = {
             const cleaned =
               role === "user" ? cleanOpenClawUserMessage(content) : content;
             const messageDedupeKeys = getOpenClawMessageDedupeKeys(msg, event, ctx, sessionKey);
+            const messageContentFingerprint = buildOpenClawInboundContentFingerprint(
+              cleaned,
+              msg,
+              event,
+              ctx,
+              sessionKey,
+            );
+            const sparseMessageContentFingerprint =
+              buildOpenClawSparseInboundContentFingerprint(cleaned, sessionKey);
             const inlineCapture = await processInlineExplicitCapture(
               cleaned,
               messageDedupeKeys,
+              [messageContentFingerprint, sparseMessageContentFingerprint],
             );
             const stripped = inlineCapture.content;
             const messageMetadata = buildOpenClawMessageMetadata(
@@ -4214,15 +4230,6 @@ const pluginDefinition = {
               ctx,
               cfg,
             );
-            const messageContentFingerprint = buildOpenClawInboundContentFingerprint(
-              stripped,
-              msg,
-              event,
-              ctx,
-              sessionKey,
-            );
-            const sparseMessageContentFingerprint =
-              buildOpenClawSparseInboundContentFingerprint(stripped, sessionKey);
             const cachedReplyHintMetadata =
               role === "user" && cfg.openclawReplyMetadataExtractionHintsEnabled
                 ? getInboundReplyMetadata(messageDedupeKeys)

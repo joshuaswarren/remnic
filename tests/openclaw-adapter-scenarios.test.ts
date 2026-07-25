@@ -694,6 +694,54 @@ test("scenario: message_received inline captures are not duplicated by agent_end
   );
 });
 
+test("scenario: id-less inline captures do not duplicate tombstone review entries at agent_end", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const storage = await orchestrator.getStorage();
+      const writeSealedMemory = storage.writeSealedMemory.bind(storage);
+      storage.writeSealedMemory = async (...args: Parameters<typeof writeSealedMemory>) => {
+        const result = await writeSealedMemory(...args);
+        const memory = await storage.getMemoryById(result.id);
+        if (memory) await storage.writeMemoryFrontmatter(memory, { status: "pending_review" });
+        return { ...result, tombstoneBlocked: true };
+      };
+      const content = [
+        "Remember the id-less tombstone capture.",
+        "<memory_note>",
+        "content: This pending review capture must only be written once.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+
+      await messageReceived({ content }, { sessionKey: "inline-tombstone-idless" });
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            { role: "user", content },
+            { role: "assistant", content: "I will remember that." },
+          ],
+        },
+        { sessionKey: "inline-tombstone-idless" },
+      );
+
+      assert.deepEqual(maintenanceTools, ["inline.memory_note.review"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: false,
+      },
+    },
+  );
+});
+
 test("scenario: inline capture dedupe matches sparse thread and run metadata", async () => {
   await withScenarioRegistration(
     async ({ capture, orchestrator }) => {

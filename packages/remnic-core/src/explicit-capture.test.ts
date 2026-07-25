@@ -263,3 +263,25 @@ test("inline capture processor bounds non-finite dedupe limits", async () => {
   });
   assert.equal(replay.processed, 1);
 });
+
+test("inline capture processor keeps a replay key for fractional dedupe limits", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const processor = new InlineExplicitCaptureProcessor(probe.orchestrator, {
+    maxDedupeKeys: 0.5,
+    sourceConnector: "openclaw",
+  });
+  const request = {
+    captureMode: "hybrid" as const,
+    content: [
+      "<memory_note>",
+      "content: A fractional dedupe limit must retain this replay key.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+    dedupeKeys: ["fractional-limit-message"],
+  };
+
+  await processor.process(request);
+  const replay = await processor.process(request);
+  assert.equal(replay.processed, 0);
+});
