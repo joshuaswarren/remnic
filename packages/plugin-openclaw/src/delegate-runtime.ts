@@ -201,6 +201,16 @@ function sessionKeyFrom(
   return "default";
 }
 
+function lifecycleSessionKeyFrom(
+  event: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+): string {
+  const fromEvent = event?.sessionKey;
+  return typeof fromEvent === "string" && fromEvent.length > 0
+    ? fromEvent
+    : sessionKeyFrom(event, ctx);
+}
+
 function recallQueryFrom(event: Record<string, unknown>): string {
   // Mirrors the embedded recall hook: prefer event.prompt, but when it is
   // missing or shorter than 5 chars, scan event.messages backward for the most
@@ -248,6 +258,7 @@ function sessionNamespaceFrom(
   event: Record<string, unknown>,
   ctx: Record<string, unknown>,
   fallback: string,
+  boundNamespaces: Map<string, string>,
 ): string | undefined {
   const eventSessionKey = typeof event.sessionKey === "string" ? event.sessionKey : undefined;
   const ctxSessionKey = typeof ctx.sessionKey === "string" ? ctx.sessionKey : undefined;
@@ -267,11 +278,16 @@ function sessionNamespaceFrom(
     const session = (agent as Record<string, unknown>).session;
     if (typeof session !== "object" || session === null) continue;
     const namespace = (session as Record<string, unknown>).namespace;
-    if (typeof namespace === "string" && namespace.trim().length > 0) {
-      return namespace.trim();
+    if (typeof namespace !== "string") continue;
+    const resolved = namespace.trim();
+    if (resolved) {
+      boundNamespaces.set(sessionKey, resolved);
+      return resolved;
     }
+    boundNamespaces.delete(sessionKey);
+    return fallback.trim() || undefined;
   }
-  return fallback.trim() || undefined;
+  return boundNamespaces.get(sessionKey) ?? (fallback.trim() || undefined);
 }
 
 function readContextComposition(
@@ -312,6 +328,7 @@ export function registerDelegateRuntime(
     );
     return;
   }
+  const boundNamespaces = new Map<string, string>();
 
   // Embedded zero-limit contract: recallBudgetChars === 0 disables injection.
   if (options.allowPromptInjection && options.recallBudgetChars !== 0) {
@@ -350,7 +367,7 @@ export function registerDelegateRuntime(
           target,
           options.serviceId,
           "/engram/v1/recall",
-          withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace), {
+          withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace, boundNamespaces), {
             query,
             sessionKey,
             mode: "auto",
@@ -454,7 +471,7 @@ export function registerDelegateRuntime(
         target,
         options.serviceId,
         "/engram/v1/observe",
-        withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace), {
+        withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace, boundNamespaces), {
           sessionKey,
           messages: turn,
           ...(cwd ? { cwd } : {}),
@@ -471,19 +488,13 @@ export function registerDelegateRuntime(
     event: Record<string, unknown>,
     ctx: Record<string, unknown>,
   ): Promise<void> => {
-    // Embedded parity: lifecycle events name the ENDED/RESET session on the
-    // event; the ambient ctx may already point at the successor session.
-    const fromEvent = event?.sessionKey;
-    const sessionKey =
-      typeof fromEvent === "string" && fromEvent.length > 0
-        ? fromEvent
-        : sessionKeyFrom(event, ctx);
+    const sessionKey = lifecycleSessionKeyFrom(event, ctx);
     try {
       await postJson(
         target,
         options.serviceId,
         "/engram/v1/lcm/compaction/flush",
-        withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace), { sessionKey }),
+        withNamespace(sessionNamespaceFrom(sessionKey, event, ctx, namespace, boundNamespaces), { sessionKey }),
         options.flushTimeoutMs,
       );
     } catch (err) {
@@ -492,8 +503,16 @@ export function registerDelegateRuntime(
   };
   api.on("before_compaction", flushHandler);
   if (options.flushOnResetEnabled) {
-    api.on("before_reset", flushHandler);
-    api.on("session_end", flushHandler);
+    const flushEndedSession = async (
+      event: Record<string, unknown>,
+      ctx: Record<string, unknown>,
+    ): Promise<void> => {
+      const sessionKey = lifecycleSessionKeyFrom(event, ctx);
+      await flushHandler(event, ctx);
+      boundNamespaces.delete(sessionKey);
+    };
+    api.on("before_reset", flushEndedSession);
+    api.on("session_end", flushEndedSession);
   }
 
   log.info(

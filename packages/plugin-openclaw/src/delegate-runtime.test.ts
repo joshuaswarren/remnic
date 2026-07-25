@@ -371,6 +371,47 @@ test("delegate ignores unkeyed runtime metadata when resolving an ended session 
   }
 });
 
+test("delegate retains a proven namespace binding for a sparse ended-session flush", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: true }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const endedContext = {
+      sessionKey: "ended-session",
+      runtime: { agent: { session: { namespace: "team-ended" } } },
+    };
+
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the ended session namespace" },
+          { role: "assistant", content: "the namespace is bound" },
+        ],
+      },
+      endedContext,
+    );
+    await invoke(
+      api,
+      "before_reset",
+      { sessionKey: "ended-session" },
+      {
+        sessionKey: "successor-session",
+        runtime: { agent: { session: { namespace: "team-successor" } } },
+      },
+    );
+
+    const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush);
+    assert.equal(flush.body.sessionKey, "ended-session");
+    assert.equal(flush.body.namespace, "team-ended");
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate passive mode registers no hooks", async () => {
   const api = recordingApi();
   registerDelegateRuntime(api, optionsFor(1, { passive: true }));
