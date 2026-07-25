@@ -2935,6 +2935,9 @@ export class Orchestrator {
       reason: string;
       abortSignal?: AbortSignal;
       bufferKey?: string;
+      extractionDeadlineMs?: number;
+      writeNamespaceOverride?: string;
+      principalOverride?: string;
     },
   ): Promise<void> {
     return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
