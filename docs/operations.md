@@ -191,9 +191,12 @@ Each entry has:
   bounded 60-second cache, so `computedAt` also lets a consumer see how stale the census is;
   routine readiness/HA polling never triggers a full corpus rescan per request.
 
-This ships detection only. Fetching configured replica peers' watermarks and
-health-flagging count or watermark-age divergence beyond a threshold is a follow-up; today
-the `corpus_watermark` doctor check always reports `ok`.
+This ships detection only: fetching configured replica peers' watermarks and
+health-flagging count or watermark-age divergence beyond a threshold is a
+follow-up, so the `corpus_watermark` doctor check does not yet compare peers. It
+does, however, report `warn` when a namespace cannot be scanned (unreadable or
+churning corpus) or enumeration fails — a scan failure omits that namespace, so
+the check surfaces it rather than certifying a partial fleet as `ok`.
 
 ## Compression Guideline Optimizer Tool
 

@@ -778,3 +778,25 @@ test("finding round-7: namespace enumeration is cached (resolved once per TTL, s
   await cache.whenIdle();
   assert.equal(resolveCalls, 2, "re-enumerated once the TTL elapsed");
 });
+
+test("finding round-9: background refresh scans are bounded to maxConcurrentRefreshes", async () => {
+  const cache = new CorpusWatermarkCache({ maxConcurrentRefreshes: 2 });
+  let active = 0;
+  let peak = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const compute = async (): Promise<CorpusWatermark> => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await gate;
+    active -= 1;
+    return sampleWatermark();
+  };
+  for (const namespace of ["a", "b", "c", "d", "e"]) cache.get(namespace, compute);
+  release();
+  await cache.whenIdle();
+  assert.ok(peak >= 1, "at least one scan ran");
+  assert.ok(peak <= 2, `peak concurrent scans ${peak} must not exceed the cap (2), even with 5 cold namespaces`);
+});

@@ -338,6 +338,15 @@ export async function resolveCorpusNamespaceRoots(options: {
 export const WATERMARK_CACHE_TTL_MS = 60_000;
 
 /**
+ * Cap on concurrent background corpus scans. A probe that finds many namespaces
+ * cold/expired would otherwise fan out one recursive hot/cold walk PER namespace
+ * at once, a periodic unbounded filesystem-work burst that can starve recall and
+ * storage (issue #2156 round-9). Excess refreshes queue and start as slots free;
+ * single-flight still dedupes duplicate requests for the same namespace.
+ */
+const MAX_CONCURRENT_WATERMARK_REFRESHES = 4;
+
+/**
  * Instance-scoped (AGENTS.md pattern 5 — never a bare module global)
  * stale-while-revalidate cache in front of the per-namespace corpus scan.
  * {@link get} NEVER awaits the scan: it returns the freshest already-computed
@@ -354,10 +363,14 @@ export class CorpusWatermarkCache {
   private readonly clock: () => number;
   private rootsEntry: { value: CorpusNamespaceRoot[]; expiresAt: number } | undefined;
   private rootsInFlight: Promise<void> | undefined;
+  private readonly queued = new Map<string, () => void>();
+  private activeRefreshes = 0;
+  private readonly maxConcurrentRefreshes: number;
 
-  constructor(options: { ttlMs?: number; clock?: () => number } = {}) {
+  constructor(options: { ttlMs?: number; clock?: () => number; maxConcurrentRefreshes?: number } = {}) {
     this.ttlMs = options.ttlMs ?? WATERMARK_CACHE_TTL_MS;
     this.clock = options.clock ?? Date.now;
+    this.maxConcurrentRefreshes = Math.max(1, options.maxConcurrentRefreshes ?? MAX_CONCURRENT_WATERMARK_REFRESHES);
   }
 
   get(namespace: string, compute: () => Promise<CorpusWatermark>): CorpusWatermark | undefined {
@@ -368,18 +381,40 @@ export class CorpusWatermarkCache {
   }
 
   private refresh(namespace: string, compute: () => Promise<CorpusWatermark>): void {
-    if (this.inFlight.has(namespace)) return; // single-flight: one background scan per namespace
-    const pending = compute()
-      .then((value) => {
-        this.entries.set(namespace, { value, expiresAt: this.clock() + this.ttlMs });
-      })
-      .catch(() => {
-        // Failed/unreadable scan: never cache it; keep serving any stale value.
-      })
-      .finally(() => {
-        this.inFlight.delete(namespace);
-      });
-    this.inFlight.set(namespace, pending);
+    // Single-flight + not-already-queued: one background scan per namespace.
+    if (this.inFlight.has(namespace) || this.queued.has(namespace)) return;
+    const run = (): void => {
+      this.activeRefreshes += 1;
+      const pending = compute()
+        .then((value) => {
+          this.entries.set(namespace, { value, expiresAt: this.clock() + this.ttlMs });
+        })
+        .catch(() => {
+          // Failed/unreadable scan: never cache it; keep serving any stale value.
+        })
+        .finally(() => {
+          this.inFlight.delete(namespace);
+          this.activeRefreshes -= 1;
+          this.drainQueue();
+        });
+      this.inFlight.set(namespace, pending);
+    };
+    // Bound the concurrent fan-out: run now if a slot is free, else queue.
+    if (this.activeRefreshes < this.maxConcurrentRefreshes) {
+      run();
+    } else {
+      this.queued.set(namespace, run);
+    }
+  }
+
+  private drainQueue(): void {
+    while (this.activeRefreshes < this.maxConcurrentRefreshes && this.queued.size > 0) {
+      const next = this.queued.entries().next().value;
+      if (!next) break;
+      const [namespace, run] = next;
+      this.queued.delete(namespace);
+      run();
+    }
   }
 
 
@@ -406,11 +441,19 @@ export class CorpusWatermarkCache {
     }
     return this.rootsEntry?.value;
   }
-  /** Await all in-flight background refreshes (shutdown / deterministic tests). */
+  /** Await every background refresh — in-flight AND queued (issue #2156 round-9) —
+   *  plus any roots refresh (shutdown / deterministic tests). */
   async whenIdle(): Promise<void> {
-    const pending = [...this.inFlight.values()];
-    if (this.rootsInFlight) pending.push(this.rootsInFlight);
-    await Promise.all(pending);
+    while (this.inFlight.size > 0 || this.rootsInFlight !== undefined || this.queued.size > 0) {
+      const pending: Promise<unknown>[] = [...this.inFlight.values()];
+      if (this.rootsInFlight) pending.push(this.rootsInFlight);
+      if (pending.length === 0) {
+        this.drainQueue(); // queued work with no running peer — start it
+        await Promise.resolve();
+        continue;
+      }
+      await Promise.all(pending);
+    }
   }
 }
 
