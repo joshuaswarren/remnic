@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import http from "node:http";
+import { initLogger, resetLogger } from "@remnic/core/logger";
 
 import {
   maybeRegisterDelegateRuntime,
+  probeDelegateAuthorization,
   registerDelegateRuntime,
   type DelegateRuntimeOptions,
 } from "./delegate-runtime.js";
 import { resolveBridgeMode } from "./bridge.js";
 
-type HookHandler = (
-  event: Record<string, unknown>,
-  ctx: Record<string, unknown>,
-) => unknown;
+type HookHandler = (event: Record<string, unknown>, ctx: Record<string, unknown>) => unknown;
 
 interface RecordedCall {
   pathname: string;
@@ -46,9 +45,7 @@ function recordingApi(): RecordingApi {
   };
 }
 
-async function startDaemonStub(
-  respond: (pathname: string) => Record<string, unknown>,
-): Promise<DaemonStub> {
+async function startDaemonStub(respond: (pathname: string) => Record<string, unknown>): Promise<DaemonStub> {
   const calls: RecordedCall[] = [];
   const server = http.createServer((req, res) => {
     let raw = "";
@@ -96,7 +93,14 @@ async function startDaemonStub(
 function optionsFor(port: number, overrides: Partial<DelegateRuntimeOptions> = {}): DelegateRuntimeOptions {
   return {
     serviceId: "openclaw-remnic",
-    target: { host: "127.0.0.1", port, authToken: "test-token" },
+    target: {
+      host: "127.0.0.1",
+      port,
+      resolveAuthToken: () => ({
+        token: "test-token",
+        source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+      }),
+    },
     namespace: "",
     allowPromptInjection: true,
     passive: false,
@@ -118,7 +122,7 @@ async function invoke(
   api: RecordingApi,
   hook: string,
   event: Record<string, unknown>,
-  ctx: Record<string, unknown> = {},
+  ctx: Record<string, unknown> = {}
 ): Promise<unknown> {
   const list = api.handlers.get(hook);
   assert.ok(list && list.length === 1, `exactly one handler registered for ${hook}`);
@@ -135,7 +139,7 @@ test("delegate recall injects daemon context under the memory header", async () 
       api,
       "before_prompt_build",
       { prompt: "what did we decide about the rollout?" },
-      { sessionKey: "session-a" },
+      { sessionKey: "session-a" }
     )) as Record<string, unknown>;
 
     assert.ok(result, "recall handler returns an injection");
@@ -144,7 +148,7 @@ test("delegate recall injects daemon context under the memory header", async () 
     assert.equal(
       result.prependContext,
       undefined,
-      "before_prompt_build returns only prependSystemContext (dual keys could double-inject)",
+      "before_prompt_build returns only prependSystemContext (dual keys could double-inject)"
     );
 
     const recall = stub.calls.find((call) => call.pathname === "/engram/v1/recall");
@@ -168,7 +172,7 @@ test("delegate recall degrades to no injection when the daemon fails", async () 
     api,
     "before_agent_start",
     { prompt: "anything at all here" },
-    { sessionKey: "session-b" },
+    { sessionKey: "session-b" }
   );
   assert.equal(result, undefined, "daemon failure must not break the agent turn");
 });
@@ -192,7 +196,7 @@ test("delegate agent_end observes exactly the last turn's textual messages", asy
           { role: "assistant", content: [{ type: "text", text: "new answer" }] },
         ],
       },
-      { sessionKey: "session-c" },
+      { sessionKey: "session-c" }
     );
 
     const observe = stub.calls.find((call) => call.pathname === "/engram/v1/observe");
@@ -204,7 +208,7 @@ test("delegate agent_end observes exactly the last turn's textual messages", asy
         { role: "user", content: "new question" },
         { role: "assistant", content: "new answer" },
       ],
-      "only the last user/assistant turn is observed, tool noise dropped",
+      "only the last user/assistant turn is observed, tool noise dropped"
     );
   } finally {
     await stub.close();
@@ -221,13 +225,11 @@ test("delegate flush fires on compaction, reset, and session end", async () => {
     await invoke(api, "before_reset", { sessionKey: "s2" }, {});
     await invoke(api, "session_end", {}, { sessionKey: "s3" });
 
-    const flushes = stub.calls.filter(
-      (call) => call.pathname === "/engram/v1/lcm/compaction/flush",
-    );
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
     assert.deepEqual(
       flushes.map((call) => call.body.sessionKey),
       ["s1", "s2", "s3"],
-      "each lifecycle boundary flushes its own session",
+      "each lifecycle boundary flushes its own session"
     );
   } finally {
     await stub.close();
@@ -256,11 +258,7 @@ test("resolveBridgeMode is explicit-only: config delegate activates, absence sta
     assert.equal(resolveBridgeMode("embedded").mode, "embedded");
     assert.equal(resolveBridgeMode("delegate").mode, "delegate");
     process.env.REMNIC_BRIDGE_MODE = "embedded";
-    assert.equal(
-      resolveBridgeMode("delegate").mode,
-      "embedded",
-      "env override outranks config",
-    );
+    assert.equal(resolveBridgeMode("delegate").mode, "embedded", "env override outranks config");
     Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     assert.equal(resolveBridgeMode("embedded").mode, "embedded");
     assert.equal(resolveBridgeMode("").mode, "embedded");
@@ -270,7 +268,7 @@ test("resolveBridgeMode is explicit-only: config delegate activates, absence sta
     assert.throws(
       () => resolveBridgeMode("embedded"),
       /Invalid REMNIC_BRIDGE_MODE env override/,
-      "an invalid env override is rejected, not silently ignored",
+      "an invalid env override is rejected, not silently ignored"
     );
   } finally {
     if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
@@ -291,12 +289,12 @@ test("delegate observe skips heartbeat-triggered turns when gated", async () => 
         trigger: "heartbeat",
         messages: [{ role: "user", content: "heartbeat chatter" }],
       },
-      { sessionKey: "hb" },
+      { sessionKey: "hb" }
     );
     assert.equal(
       stub.calls.filter((call) => call.pathname === "/engram/v1/observe").length,
       0,
-      "heartbeat turns must not be observed when the gate is on",
+      "heartbeat turns must not be observed when the gate is on"
     );
   } finally {
     await stub.close();
@@ -312,13 +310,13 @@ test("delegate recall trims injected context to recallBudgetChars", async () => 
       api,
       "before_prompt_build",
       { prompt: "long enough query" },
-      { sessionKey: "budget" },
+      { sessionKey: "budget" }
     )) as Record<string, unknown>;
     const injected = String(result.prependSystemContext);
     const marker = "\n\n...(memory context trimmed)";
     assert.ok(
       injected.length <= 100 + "## Memory Context (Remnic)\n\n".length + marker.length,
-      `injection stays within budget (+header +marker): got ${injected.length}`,
+      `injection stays within budget (+header +marker): got ${injected.length}`
     );
     assert.match(injected, /x{100}/, "trim retains the leading 100 budget chars of context");
     assert.ok(injected.endsWith(marker), "embedded-parity trim marker appended");
@@ -349,7 +347,7 @@ test("delegate uses the section builder on hosts that expose it (no hook injecti
       api,
       "before_prompt_build",
       { prompt: "query for the section path" },
-      { sessionKey: "sect" },
+      { sessionKey: "sect" }
     );
     assert.equal(result, undefined, "hook must not inject when the builder owns injection");
     const lines = builder({ sessionKey: "sect" });
@@ -391,22 +389,10 @@ test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", as
       const second = maybeRegisterDelegateRuntime(api, opts, healthDeps);
       assert.equal(first, true, "first registration handles delegate");
       assert.equal(second, true, "second call still reports delegate handled");
-      assert.equal(
-        api.handlers.get("agent_end")?.length ?? 0,
-        1,
-        "hooks are bound exactly once per api object",
-      );
-      const legacy = maybeRegisterDelegateRuntime(
-        api,
-        { ...opts, serviceId: "openclaw-engram" },
-        healthDeps,
-      );
+      assert.equal(api.handlers.get("agent_end")?.length ?? 0, 1, "hooks are bound exactly once per api object");
+      const legacy = maybeRegisterDelegateRuntime(api, { ...opts, serviceId: "openclaw-engram" }, healthDeps);
       assert.equal(legacy, true, "legacy service registers on the same api");
-      assert.equal(
-        api.handlers.get("agent_end")?.length ?? 0,
-        2,
-        "dedupe is scoped per serviceId, not per api object",
-      );
+      assert.equal(api.handlers.get("agent_end")?.length ?? 0, 2, "dedupe is scoped per serviceId, not per api object");
     } finally {
       if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
       else process.env.REMNIC_BRIDGE_MODE = priorEnv;
@@ -443,25 +429,25 @@ test("delegate recall skips sessions whose memory toggle is disabled", async () 
       api,
       optionsFor(stub.port, {
         resolveSessionDisabled: async (sessionKey: string) => sessionKey === "muted",
-      }),
+      })
     );
     const muted = await invoke(
       api,
       "before_prompt_build",
       { prompt: "query in a muted session" },
-      { sessionKey: "muted" },
+      { sessionKey: "muted" }
     );
     assert.equal(muted, undefined, "disabled session gets no injection");
     assert.equal(
       stub.calls.filter((call) => call.pathname === "/engram/v1/recall").length,
       0,
-      "daemon recall is not even attempted for a disabled session",
+      "daemon recall is not even attempted for a disabled session"
     );
     const active = (await invoke(
       api,
       "before_prompt_build",
       { prompt: "query in an active session" },
-      { sessionKey: "active" },
+      { sessionKey: "active" }
     )) as Record<string, unknown>;
     assert.ok(active, "other sessions still recall normally");
   } finally {
@@ -477,7 +463,7 @@ test("delegate observe cleans user envelopes but not assistant text", async () =
       api,
       optionsFor(stub.port, {
         cleanUserMessage: (text: string) => text.replace(/^\[channel\] /, ""),
-      }),
+      })
     );
     await invoke(
       api,
@@ -489,7 +475,7 @@ test("delegate observe cleans user envelopes but not assistant text", async () =
           { role: "assistant", content: "[channel] stays verbatim" },
         ],
       },
-      { sessionKey: "clean" },
+      { sessionKey: "clean" }
     );
     const observe = stub.calls.find((call) => call.pathname === "/engram/v1/observe");
     assert.ok(observe, "observe was sent");
@@ -510,19 +496,19 @@ test("delegate recall honors the cron-skip policy", async () => {
       api,
       optionsFor(stub.port, {
         shouldSkipRecall: (sessionKey: string) => sessionKey.includes(":cron:"),
-      }),
+      })
     );
     const cron = await invoke(
       api,
       "before_prompt_build",
       { prompt: "cron background query" },
-      { sessionKey: "agent:cron:nighly" },
+      { sessionKey: "agent:cron:nighly" }
     );
     assert.equal(cron, undefined, "cron session gets no recall");
     assert.equal(
       stub.calls.filter((call) => call.pathname === "/engram/v1/recall").length,
       0,
-      "daemon recall never attempted for a cron session",
+      "daemon recall never attempted for a cron session"
     );
   } finally {
     await stub.close();
@@ -564,11 +550,7 @@ test("maybeRegister stays embedded after a daemon-down fallback (no stacking)", 
     // (embedded hooks from the fallback are still bound — switching would stack).
     let second = maybeRegisterDelegateRuntime(api, opts, { checkHealth: () => true });
     assert.equal(second, false, "stays embedded to avoid stacking memory paths");
-    assert.equal(
-      api.handlers.size,
-      0,
-      "no delegate hooks bound after a prior embedded fallback",
-    );
+    assert.equal(api.handlers.size, 0, "no delegate hooks bound after a prior embedded fallback");
   } finally {
     if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorEnv;
@@ -596,7 +578,7 @@ test("delegate recall degrades to no injection on a daemon HTTP error response",
       api,
       "before_prompt_build",
       { prompt: "long enough query text" },
-      { sessionKey: "http-500" },
+      { sessionKey: "http-500" }
     );
     assert.equal(result, undefined, "HTTP 500 from the daemon must not break the turn");
   } finally {
@@ -615,17 +597,12 @@ test("delegate recall prefers the hook-scoped workspace dir over registration cw
       api,
       "before_prompt_build",
       { prompt: "project scoped query" },
-      { sessionKey: "scoped", workspaceDir: "/hook/project" },
+      { sessionKey: "scoped", workspaceDir: "/hook/project" }
     );
     const recall = stub.calls.find((call) => call.pathname === "/engram/v1/recall");
     assert.ok(recall, "recall sent");
     assert.equal(recall.body.cwd, "/hook/project", "hook ctx workspaceDir wins");
-    await invoke(
-      api,
-      "before_prompt_build",
-      { prompt: "another scoped query" },
-      { sessionKey: "fallback" },
-    );
+    await invoke(api, "before_prompt_build", { prompt: "another scoped query" }, { sessionKey: "fallback" });
     const second = stub.calls.filter((call) => call.pathname === "/engram/v1/recall")[1];
     assert.equal(second?.body.cwd, "/registration/base", "falls back to registration cwd");
   } finally {
@@ -704,13 +681,19 @@ test("delegate observe drops sub-10-char noise turns (embedded parity)", async (
     await invoke(
       api,
       "agent_end",
-      { success: true, messages: [{ role: "user", content: "ok" }, { role: "assistant", content: "yes" }] },
-      { sessionKey: "noise" },
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "ok" },
+          { role: "assistant", content: "yes" },
+        ],
+      },
+      { sessionKey: "noise" }
     );
     assert.equal(
       stub.calls.filter((call) => call.pathname === "/engram/v1/observe").length,
       0,
-      "all-noise turn is not observed",
+      "all-noise turn is not observed"
     );
   } finally {
     await stub.close();
@@ -743,11 +726,186 @@ test("maybeRegister: an embedded-mode registration blocks a later delegate flip 
     assert.equal(
       maybeRegisterDelegateRuntime(api, opts, healthDeps),
       false,
-      "a reload flipping to delegate on the same api stays embedded (no stacking)",
+      "a reload flipping to delegate on the same api stays embedded (no stacking)"
     );
     assert.equal(api.handlers.size, 0, "no delegate hooks bound");
   } finally {
     if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorEnv;
   }
+});
+
+test("delegate runtime reloads a rotated daemon token without re-registering hooks", async () => {
+  let currentToken = "expired-token";
+  const receivedAuthorization: Array<string | undefined> = [];
+  const server = http.createServer((req, res) => {
+    receivedAuthorization.push(req.headers.authorization);
+    res.setHeader("content-type", "application/json");
+    if (req.headers.authorization !== "Bearer accepted-token") {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    res.end(JSON.stringify({ context: "recovered context" }));
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const target: DelegateRuntimeOptions["target"] = {
+    host: "127.0.0.1",
+    port: address.port,
+    resolveAuthToken: () => ({
+      token: currentToken,
+      source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    }),
+  };
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(address.port, { target }));
+
+    const first = await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the durable release?" },
+      { sessionKey: "rotation" }
+    );
+    assert.equal(first, undefined, "the expired token receives no injected context");
+
+    currentToken = "accepted-token";
+    const second = await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the durable release?" },
+      { sessionKey: "rotation" }
+    );
+    assert.match(String((second as Record<string, unknown>)?.prependSystemContext), /recovered context/);
+    assert.deepEqual(receivedAuthorization, ["Bearer expired-token", "Bearer accepted-token"]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test("delegate authorization probe reports grant, rejection, and network failure without exposing credentials", async () => {
+  let responseStatus = 200;
+  const receivedAuthorization: Array<string | undefined> = [];
+  const server = http.createServer((req, res) => {
+    assert.equal(req.method, "GET");
+    assert.match(String(req.url), /\/engram\/v1\/authorization\?op=recall&op=observe&op=lcm_compaction_flush/);
+    receivedAuthorization.push(req.headers.authorization);
+    res.writeHead(responseStatus, { "content-type": "application/json" });
+    res.end(JSON.stringify({ authorized: responseStatus === 200 }));
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const target = {
+    host: "127.0.0.1",
+    port: address.port,
+    resolveAuthToken: () => ({
+      token: "test-preflight-token",
+      source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    }),
+  } as unknown as DelegateRuntimeOptions["target"];
+  try {
+    assert.deepEqual(await probeDelegateAuthorization(target), {
+      state: "authorized",
+      tokenSource: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    });
+
+    responseStatus = 403;
+    assert.deepEqual(await probeDelegateAuthorization(target), {
+      state: "unauthorized",
+      status: 403,
+      tokenSource: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    });
+    assert.deepEqual(receivedAuthorization, ["Bearer test-preflight-token", "Bearer test-preflight-token"]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  const unavailable = await probeDelegateAuthorization({
+    host: "127.0.0.1",
+    port: 1,
+    resolveAuthToken: () => ({
+      token: "test-preflight-token",
+      source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    }),
+  } as unknown as DelegateRuntimeOptions["target"]);
+  assert.deepEqual(unavailable, {
+    state: "unavailable",
+    tokenSource: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+  });
+});
+
+test("delegate activation warns once on rejected authorization but keeps its memory hooks", async (t) => {
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorToken = process.env.OPENCLAW_REMNIC_ACCESS_TOKEN;
+  const warnings: string[] = [];
+  initLogger(
+    {
+      info() {},
+      warn(message) {
+        warnings.push(message);
+      },
+      error() {},
+    },
+    false,
+    { timestamps: false }
+  );
+  t.after(() => {
+    resetLogger();
+    if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorToken === undefined) Reflect.deleteProperty(process.env, "OPENCLAW_REMNIC_ACCESS_TOKEN");
+    else process.env.OPENCLAW_REMNIC_ACCESS_TOKEN = priorToken;
+  });
+  process.env.REMNIC_BRIDGE_MODE = "delegate";
+  process.env.OPENCLAW_REMNIC_ACCESS_TOKEN = "test-preflight-token";
+  const api = recordingApi();
+  const options = {
+    serviceId: "openclaw-remnic",
+    configBridgeMode: "delegate",
+    passive: false,
+    allowPromptInjection: true,
+    gateHeartbeatTurns: false,
+    recallBudgetChars: 8_000,
+    memoryDir: "/tmp/remnic-delegate-test-memory",
+    sessionTogglesEnabled: false,
+    respectBundledActiveMemoryToggle: false,
+    cleanUserMessage: (text: string) => text,
+    hookTimeoutMs: 5_000,
+    shouldSkipRecall: () => false,
+    flushOnResetEnabled: true,
+  };
+  let probeCalls = 0;
+  const deps = {
+    checkHealth: () => true,
+    probeAuthorization: async () => {
+      probeCalls += 1;
+      return {
+        state: "unauthorized" as const,
+        status: 403 as const,
+        tokenSource: "OPENCLAW_REMNIC_ACCESS_TOKEN" as const,
+      };
+    },
+  };
+  assert.equal(maybeRegisterDelegateRuntime(api, options, deps), true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.ok(api.handlers.has("agent_end"), "authorization preflight must not fall back to embedded");
+  assert.equal(probeCalls, 1);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /authorization preflight rejected/);
+  assert.match(warnings[0]!, /OPENCLAW_REMNIC_ACCESS_TOKEN/);
+  assert.doesNotMatch(warnings[0]!, /test-preflight-token/);
+
+  assert.equal(maybeRegisterDelegateRuntime(api, { ...options, serviceId: "openclaw-engram" }, deps), true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(probeCalls, 1, "one API emits one preflight warning");
+  assert.equal(warnings.length, 1);
 });

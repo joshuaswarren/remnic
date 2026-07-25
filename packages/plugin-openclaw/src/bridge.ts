@@ -21,6 +21,21 @@ export interface BridgeConfig {
   daemonPort: number;
 }
 
+export type DaemonAuthTokenSource =
+  | "OPENCLAW_REMNIC_ACCESS_TOKEN"
+  | "OPENCLAW_ENGRAM_ACCESS_TOKEN"
+  | "REMNIC_AUTH_TOKEN"
+  | "ENGRAM_AUTH_TOKEN"
+  | "remnic token store"
+  | "engram token store"
+  | "daemon configuration"
+  | "no configured token";
+
+export interface DaemonAuthToken {
+  readonly token: string;
+  readonly source: DaemonAuthTokenSource;
+}
+
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4318;
 const LEGACY_HEALTH_PATH = "/engram/v1/health";
@@ -146,12 +161,8 @@ function normalizeDaemonHost(value: string): string {
 }
 
 function coerceDaemonPort(value: unknown): number | undefined {
-  const parsed = typeof value === "string" && value.trim() !== ""
-    ? Number(value.trim())
-    : value;
-  return typeof parsed === "number" && Number.isInteger(parsed) && parsed > 0 && parsed <= 65535
-    ? parsed
-    : undefined;
+  const parsed = typeof value === "string" && value.trim() !== "" ? Number(value.trim()) : value;
+  return typeof parsed === "number" && Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : undefined;
 }
 
 export function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEALTH_TIMEOUT_MS): boolean {
@@ -168,7 +179,7 @@ export function checkDaemonHealthSync(host: string, port: number, timeoutMs = SY
         host,
         port,
         path: LEGACY_HEALTH_PATH,
-        token: loadDaemonAuthToken(),
+        token: loadDaemonAuth().token,
         timeoutMs,
         state,
       },
@@ -270,10 +281,7 @@ export function detectBridgeMode(): BridgeConfig {
 
   // Auto-detect: PID files are only hints, because PIDs can be stale or reused.
   // Delegate only after the configured Remnic endpoint proves it is healthy.
-  if (
-    (hasDaemonPidHint || shouldProbeDaemonHealth(daemonHost)) &&
-    checkDaemonHealthSync(daemonHost, daemonPort)
-  ) {
+  if ((hasDaemonPidHint || shouldProbeDaemonHealth(daemonHost)) && checkDaemonHealthSync(daemonHost, daemonPort)) {
     return {
       mode: "delegate",
       daemonHost,
@@ -304,21 +312,13 @@ export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
   if (envMode === "delegate" || envMode === "embedded") {
     mode = envMode;
   } else if (envMode !== undefined && envMode !== "") {
-    throw new Error(
-      `Invalid REMNIC_BRIDGE_MODE env override: ${envMode} (expected "embedded" or "delegate")`,
-    );
-  } else if (
-    configBridgeMode === undefined ||
-    configBridgeMode === "" ||
-    configBridgeMode === "embedded"
-  ) {
+    throw new Error(`Invalid REMNIC_BRIDGE_MODE env override: ${envMode} (expected "embedded" or "delegate")`);
+  } else if (configBridgeMode === undefined || configBridgeMode === "" || configBridgeMode === "embedded") {
     mode = "embedded";
   } else if (configBridgeMode === "delegate") {
     mode = "delegate";
   } else {
-    throw new Error(
-      `Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded" or "delegate")`,
-    );
+    throw new Error(`Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded" or "delegate")`);
   }
   return {
     mode,
@@ -328,56 +328,62 @@ export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
 }
 
 /**
- * Load the first valid daemon auth token from the standard token stores,
- * daemon config, or environment. Shared by the health preflight and the
- * delegate runtime (issue #2120).
+ * Load daemon credentials from the environment, standard token stores, or
+ * daemon configuration. Shared by health and delegate requests.
  */
-export function loadDaemonAuthToken(): string {
-  // Environment-provided tokens first: for delegate-mode daemon operations the
-  // operator must be able to pin a token authorized for recall/observe/lcm
-  // rather than inheriting whatever happens to be first in tokens.json
-  // (least-privilege stores can hold narrowly scoped tokens up front).
-  const envToken =
-    readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN") ??
-    readEnv("OPENCLAW_ENGRAM_ACCESS_TOKEN") ??
-    readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN");
-  if (envToken) return envToken;
-  const tokenPaths = [
-    path.join(resolveHomeDir(), ".remnic", "tokens.json"),
-    path.join(resolveHomeDir(), ".engram", "tokens.json"),
-  ];
-  for (const tokensPath of tokenPaths) {
-    if (!fs.existsSync(tokensPath)) continue;
+export function loadDaemonAuth(): DaemonAuthToken {
+  const environmentTokens = [
+    ["OPENCLAW_REMNIC_ACCESS_TOKEN", readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN")],
+    ["OPENCLAW_ENGRAM_ACCESS_TOKEN", readEnv("OPENCLAW_ENGRAM_ACCESS_TOKEN")],
+    ["REMNIC_AUTH_TOKEN", readEnv("REMNIC_AUTH_TOKEN")],
+    ["ENGRAM_AUTH_TOKEN", readEnv("ENGRAM_AUTH_TOKEN")],
+  ] as const;
+  for (const [source, token] of environmentTokens) {
+    if (token) return { token, source };
+  }
+
+  const tokenStores = [
+    { path: path.join(resolveHomeDir(), ".remnic", "tokens.json"), source: "remnic token store" },
+    { path: path.join(resolveHomeDir(), ".engram", "tokens.json"), source: "engram token store" },
+  ] as const;
+  for (const tokenStore of tokenStores) {
+    if (!fs.existsSync(tokenStore.path)) continue;
     try {
-      const store = JSON.parse(fs.readFileSync(tokensPath, "utf8"));
+      const store = JSON.parse(fs.readFileSync(tokenStore.path, "utf8"));
       const tokens = Array.isArray(store.tokens) ? store.tokens : [];
-      if (tokens.length > 0 && tokens[0].token) return tokens[0].token;
+      const firstToken = tokens[0]?.token;
+      if (typeof firstToken === "string" && firstToken.length > 0) {
+        return { token: firstToken, source: tokenStore.source };
+      }
       if (typeof store === "object" && store !== null) {
-        for (const val of Object.values(store)) {
+        for (const value of Object.values(store)) {
           if (
-            typeof val === "string" &&
-            val.length > 0 &&
-            (val.startsWith("remnic_") || val.startsWith("engram_"))
+            typeof value === "string" &&
+            value.length > 0 &&
+            (value.startsWith("remnic_") || value.startsWith("engram_"))
           ) {
-            return val;
+            return { token: value, source: tokenStore.source };
           }
         }
       }
     } catch {
-      // Ignore malformed token files and continue to the next candidate.
+      continue;
     }
   }
+
   try {
-    for (const p of configPathCandidates()) {
-      if (fs.existsSync(p)) {
-        const raw = JSON.parse(fs.readFileSync(p, "utf8"));
-        if (raw.server?.authToken) return raw.server.authToken;
+    for (const configPath of configPathCandidates()) {
+      if (!fs.existsSync(configPath)) continue;
+      const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      const token = raw.server?.authToken;
+      if (typeof token === "string" && token.length > 0) {
+        return { token, source: "daemon configuration" };
       }
     }
   } catch {
-    // ignore
+    return { token: "", source: "no configured token" };
   }
-  return "";
+  return { token: "", source: "no configured token" };
 }
 
 /**
@@ -387,7 +393,7 @@ export function loadDaemonAuthToken(): string {
 export async function checkDaemonHealth(host: string, port: number): Promise<boolean> {
   try {
     const { request } = await import("node:http");
-    const token = loadDaemonAuthToken();
+    const token = loadDaemonAuth().token;
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -397,7 +403,7 @@ export async function checkDaemonHealth(host: string, port: number): Promise<boo
         (res) => {
           resolve(res.statusCode === 200);
           res.resume();
-        },
+        }
       );
       req.on("error", () => resolve(false));
       req.on("timeout", () => {
