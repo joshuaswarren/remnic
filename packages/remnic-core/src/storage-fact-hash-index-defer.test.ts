@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { mock } from "node:test";
 
 import { ContentHashIndex, FactHashIndexNotAuthoritativeError, StorageManager } from "./storage.js";
+import { TombstoneBlockedCaptureIndex } from "./storage/tombstone-blocked-capture-index.js";
 import type { MemoryFile } from "./types.js";
 
 // Issue #1909 (Part B): writeMemory("fact") used to rewrite the whole
@@ -1196,5 +1197,126 @@ test("#2016 thread PRRT_kwDORJXyws6SEHvh: reactivation drains the deferred recon
       reconcileSpy.mock.restore();
       flushSpy.mock.restore();
     }
+  });
+});
+
+test("tombstone blocked index rebuilds after a failed publish survives restart", async () => {
+  await withMemoryDir(async (dir) => {
+    const blocked = {
+      path: path.join(dir, "facts", "blocked.md"),
+      frontmatter: {
+        id: "blocked-1",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: ["review"],
+        status: "pending_review",
+        blockedBy: "tombstone-1",
+      },
+      content: "A blocked capture must remain deduplicable after an index publish failure.",
+    } as MemoryFile;
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 1, retryBaseMs: 1 }),
+      readAllMemories: async () => [blocked],
+      readAllColdMemories: async () => [],
+    };
+    const index = new TombstoneBlockedCaptureIndex(options);
+    const saveSpy = mock.method(ContentHashIndex.prototype, "saveMergingWithDisk", async () => {});
+    try {
+      await index.add(blocked);
+      assert.equal(
+        existsSync(path.join(dir, "tombstone-blocked-capture", "rebuild-required")),
+        true,
+        "failed publish must leave a durable rebuild marker",
+      );
+    } finally {
+      saveSpy.mock.restore();
+    }
+
+    const restarted = new TombstoneBlockedCaptureIndex(options);
+    assert.equal(
+      await restarted.has(blocked.content, "fact"),
+      true,
+      "restart must rebuild from durable blocked rows instead of trusting stale index data",
+    );
+    assert.deepEqual(
+      await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required")),
+      [],
+      "successful rebuild clears the marker owned by the restarted index",
+    );
+  });
+});
+
+test("token-specific blocked index markers survive peer interleaving and restart", async () => {
+  await withMemoryDir(async (dir) => {
+    const blocked = {
+      path: path.join(dir, "facts", "blocked.md"),
+      frontmatter: {
+        id: "blocked-peer-1",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: ["review"],
+        status: "pending_review",
+        blockedBy: "tombstone-peer-1",
+      },
+      content: "A peer marker must survive another writer's successful index publish.",
+    } as MemoryFile;
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 1, retryBaseMs: 1 }),
+      readAllMemories: async () => [blocked],
+      readAllColdMemories: async () => [],
+    };
+    const writer = new TombstoneBlockedCaptureIndex(options);
+    const peer = new TombstoneBlockedCaptureIndex(options);
+    const peerInternals = peer as unknown as {
+      markRebuildRequired: () => Promise<string>;
+    };
+    const originalSave = ContentHashIndex.prototype.saveMergingWithDisk;
+    let peerMarkerWritten = false;
+    const saveSpy = mock.method(
+      ContentHashIndex.prototype,
+      "saveMergingWithDisk",
+      async function (this: ContentHashIndex) {
+        if (!peerMarkerWritten) {
+          peerMarkerWritten = true;
+          await peerInternals.markRebuildRequired();
+        }
+        return originalSave.call(this);
+      },
+    );
+    try {
+      await writer.add(blocked);
+      assert.equal(peerMarkerWritten, true);
+      assert.equal(
+        (await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required"))).length,
+        1,
+        "writer success must clear only its marker and preserve the peer marker",
+      );
+    } finally {
+      saveSpy.mock.restore();
+    }
+
+    const restarted = new TombstoneBlockedCaptureIndex(options);
+    assert.equal(await restarted.has(blocked.content, "fact"), true);
+    assert.deepEqual(
+      await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required")),
+      [],
+      "restart rebuild clears the peer marker after incorporating durable rows",
+    );
   });
 });

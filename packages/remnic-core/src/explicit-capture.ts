@@ -425,26 +425,43 @@ async function findDuplicateExplicitCapture(
     }
   }
   if (authoritativeFactHashMiss) {
-    const hasBlockedIndex = storage.hasTombstoneBlockedExplicitCapture;
-    if (typeof hasBlockedIndex === "function") {
+    const checkBlockedIndex = storage.checkTombstoneBlockedExplicitCapture;
+    if (typeof checkBlockedIndex === "function") {
       try {
-        const hasBlocked = await hasBlockedIndex.call(
+        const result = await checkBlockedIndex.call(
           storage,
           candidate.content,
           candidate.category,
           candidate.sourceConnector,
         );
-        if (!hasBlocked) {
-          const isIndexAuthoritative =
-            typeof storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative === "function"
-              ? await storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative()
-              : false;
-          if (isIndexAuthoritative) return null;
-        }
+        if (!result.has && result.authoritative) return null;
       } catch (err) {
         // Fail open: an unavailable targeted index must not hide a durable
         // pending-review duplicate.
         void err;
+      }
+    } else {
+      const hasBlockedIndex = storage.hasTombstoneBlockedExplicitCapture;
+      if (typeof hasBlockedIndex === "function") {
+        try {
+          const hasBlocked = await hasBlockedIndex.call(
+            storage,
+            candidate.content,
+            candidate.category,
+            candidate.sourceConnector,
+          );
+          if (!hasBlocked) {
+            const isIndexAuthoritative =
+              typeof storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative === "function"
+                ? await storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative()
+                : false;
+            if (isIndexAuthoritative) return null;
+          }
+        } catch (err) {
+          // Fail open: an unavailable targeted index must not hide a durable
+          // pending-review duplicate.
+          void err;
+        }
       }
     }
   }
@@ -705,6 +722,7 @@ export interface InlineExplicitCaptureProcessResult {
   accepted: number;
   queued: number;
   duplicates: number;
+  failed: number;
 }
 
 export interface InlineExplicitCaptureProcessorOptions {
@@ -841,7 +859,7 @@ export class InlineExplicitCaptureProcessor {
     replayKeys: readonly string[],
     validationFailureKey: string,
   ): Promise<
-    Pick<InlineExplicitCaptureProcessResult, "processed" | "accepted" | "queued" | "duplicates">
+    Pick<InlineExplicitCaptureProcessResult, "processed" | "accepted" | "queued" | "duplicates" | "failed">
   > {
     const serializationKey = replayKeys.at(-1) ?? validationFailureKey;
     return this.enqueue(serializationKey, async () => {
@@ -849,7 +867,7 @@ export class InlineExplicitCaptureProcessor {
         replayKeys.some((key) => this.observedKeys.has(key))
         || this.observedKeys.has(validationFailureKey)
       ) {
-        return { processed: 0, accepted: 0, queued: 0, duplicates: 1 };
+        return { processed: 0, accepted: 0, queued: 0, duplicates: 1, failed: 0 };
       }
 
       let validationSucceeded = false;
@@ -860,14 +878,14 @@ export class InlineExplicitCaptureProcessor {
         const persisted = await persistExplicitCapture(this.orchestrator, candidate, "inline");
         this.remember(replayKeys);
         if (persisted.duplicateOf) {
-          return { processed: 1, accepted: 0, queued: 0, duplicates: 1 };
+          return { processed: 1, accepted: 0, queued: 0, duplicates: 1, failed: 0 };
         }
         if (persisted.tombstoneBlocked) {
           this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note.review");
-          return { processed: 1, accepted: 0, queued: 1, duplicates: 0 };
+          return { processed: 1, accepted: 0, queued: 1, duplicates: 0, failed: 0 };
         }
         this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
-        return { processed: 1, accepted: 1, queued: 0, duplicates: 0 };
+        return { processed: 1, accepted: 1, queued: 0, duplicates: 0, failed: 0 };
       } catch (error) {
         const queueInput = request.namespacePreResolved === true
           ? { ...input, namespacePreResolved: true }
@@ -888,15 +906,15 @@ export class InlineExplicitCaptureProcessor {
           );
           this.remember(validationSucceeded ? replayKeys : [validationFailureKey]);
           if (review.duplicateOf) {
-            return { processed: 1, accepted: 0, queued: 0, duplicates: 1 };
+            return { processed: 1, accepted: 0, queued: 0, duplicates: 1, failed: 0 };
           }
           this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note.review");
-          return { processed: 1, accepted: 0, queued: 1, duplicates: 0 };
+          return { processed: 1, accepted: 0, queued: 1, duplicates: 0, failed: 0 };
         } catch (queueError) {
           log.warn(
             `explicit inline capture rejected: ${normalizeExplicitCaptureError(error)}; review queue fallback failed: ${normalizeExplicitCaptureError(queueError)}`,
           );
-          return { processed: 0, accepted: 0, queued: 0, duplicates: 0 };
+          return { processed: 0, accepted: 0, queued: 0, duplicates: 0, failed: 1 };
         }
       }
     });
@@ -904,7 +922,7 @@ export class InlineExplicitCaptureProcessor {
 
   async process(request: InlineExplicitCaptureProcessRequest): Promise<InlineExplicitCaptureProcessResult> {
     if (!shouldProcessInlineExplicitCapture({ captureMode: request.captureMode })) {
-      return { content: request.content, processed: 0, accepted: 0, queued: 0, duplicates: 0 };
+      return { content: request.content, processed: 0, accepted: 0, queued: 0, duplicates: 0, failed: 0 };
     }
     if (request.namespacePreResolved === true && !asTrimmed(request.namespace)) {
       throw new Error("namespacePreResolved requires a resolved namespace");
@@ -922,6 +940,7 @@ export class InlineExplicitCaptureProcessor {
     let accepted = 0;
     let queued = 0;
     let duplicates = 0;
+    let failed = 0;
 
     for (const note of notes) {
       const input: ExplicitCaptureInput = {
@@ -942,8 +961,9 @@ export class InlineExplicitCaptureProcessor {
       accepted += result.accepted;
       queued += result.queued;
       duplicates += result.duplicates;
+      failed += result.failed;
     }
 
-    return { content, processed, accepted, queued, duplicates };
+    return { content, processed, accepted, queued, duplicates, failed };
   }
 }

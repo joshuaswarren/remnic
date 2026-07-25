@@ -475,6 +475,11 @@ export class ContentHashIndex {
     return this.reconcileRetryTimer !== null;
   }
 
+  /** True while this index has in-memory changes not yet published to disk. */
+  get hasPendingChanges(): boolean {
+    return this.dirty;
+  }
+
   /**
    * Resolve once any armed background reconcile-save retry chain has settled —
    * either it published the deferred additions, or it exhausted its bounded

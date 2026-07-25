@@ -1,4 +1,5 @@
-import { stat } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import {
@@ -89,6 +90,44 @@ export class TombstoneBlockedCaptureIndex {
     return path.join(this.options.stateDir, "tombstone-blocked-capture", "fact-hashes.txt");
   }
 
+  private rebuildMarkerPath(): string {
+    return path.join(this.options.stateDir, "tombstone-blocked-capture", "rebuild-required");
+  }
+
+  private async getRebuildMarkers(): Promise<string[]> {
+    try {
+      const entries = await readdir(this.rebuildMarkerPath());
+      return entries.map((entry) => path.join(this.rebuildMarkerPath(), entry));
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return [];
+      throw err;
+    }
+  }
+
+  private async markRebuildRequired(): Promise<string> {
+    const markerDir = this.rebuildMarkerPath();
+    await mkdir(markerDir, { recursive: true });
+    const markerPath = path.join(markerDir, randomUUID());
+    await writeFile(markerPath, "rebuild\n", "utf8");
+    return markerPath;
+  }
+
+  private async clearRebuildRequired(markerPaths: readonly string[]): Promise<void> {
+    await Promise.all(
+      markerPaths.map(async (markerPath) => {
+        try {
+          await unlink(markerPath);
+        } catch (err) {
+          if (!isErrnoCode(err, "ENOENT")) throw err;
+        }
+      }),
+    );
+  }
+
+  private async hasRebuildRequired(): Promise<boolean> {
+    return (await this.getRebuildMarkers()).length > 0;
+  }
+
   private isBlocked(memory: MemoryFile): boolean {
     return memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
   }
@@ -119,9 +158,11 @@ export class TombstoneBlockedCaptureIndex {
       const index = this.createIndex();
       this.loadPromise = (async () => {
         await index.load();
+        const rebuildMarkers = await this.getRebuildMarkers();
         let persisted = true;
         try {
           await stat(this.indexPath());
+          if (rebuildMarkers.length > 0) persisted = false;
         } catch (err) {
           if (isErrnoCode(err, "ENOENT")) persisted = false;
           else throw err;
@@ -140,6 +181,7 @@ export class TombstoneBlockedCaptureIndex {
           if (!rebuilt) {
             throw new Error("tombstone-blocked capture index rebuild lock unavailable");
           }
+          await this.clearRebuildRequired(rebuildMarkers);
         }
         this.authoritative = true;
         this.index = index;
@@ -165,25 +207,50 @@ export class TombstoneBlockedCaptureIndex {
     return this.refreshPromise;
   }
 
+  /** Return blocked-row membership and authority from one index snapshot. */
+  async check(
+    content: string,
+    category: string,
+    sourceConnector?: string,
+  ): Promise<{ has: boolean; authoritative: boolean }> {
+    const key = buildExplicitCaptureDedupKey(content, category, sourceConnector);
+    let index = await this.getIndex();
+    if (
+      await this.hasRebuildRequired()
+      || !(await index.isDiskFingerprintCurrent())
+    ) {
+      index = await this.reload();
+    }
+    return { has: index.has(key), authoritative: this.authoritative };
+  }
+
   /** Return whether a blocked row matches this explicit-capture identity. */
   async has(content: string, category: string, sourceConnector?: string): Promise<boolean> {
-    const key = buildExplicitCaptureDedupKey(content, category, sourceConnector);
-    const index = await this.getIndex();
-    if (await index.isDiskFingerprintCurrent()) return index.has(key);
-    return (await this.reload()).has(key);
+    return (await this.check(content, category, sourceConnector)).has;
   }
 
   /** Return whether the in-memory index is safe to answer an authoritative miss. */
   async isAuthoritative(): Promise<boolean> {
     const index = await this.getIndex();
-    if (!(await index.isDiskFingerprintCurrent())) await this.reload();
+    if (
+      await this.hasRebuildRequired()
+      || !(await index.isDiskFingerprintCurrent())
+    ) {
+      await this.reload();
+    }
     return this.authoritative;
   }
 
   /** Add a newly persisted blocked row to the durable targeted index. */
   async add(memory: MemoryFile): Promise<void> {
     if (!this.isBlocked(memory)) return;
-    const index = await this.getIndex();
+    let index = await this.getIndex();
+    if (
+      await this.hasRebuildRequired()
+      || !(await index.isDiskFingerprintCurrent())
+    ) {
+      index = await this.reload();
+    }
     index.add(
       buildExplicitCaptureDedupKey(
         memory.content,
@@ -191,14 +258,24 @@ export class TombstoneBlockedCaptureIndex {
         memory.frontmatter.sourceConnector,
       ),
     );
+    const rebuildMarker = await this.markRebuildRequired();
     await index.saveMergingWithDisk();
     await index.flushReconcileRetry();
+    if (index.hasPendingChanges) {
+      this.markUntrusted();
+      return;
+    }
+    await this.clearRebuildRequired([rebuildMarker]);
+    this.authoritative = true;
   }
 
   /** Rebuild the loaded index after a blocked row changes or is removed. */
   async rebuildIfLoaded(): Promise<void> {
     if (!this.index) return;
-    this.authoritative = await this.rebuild(this.index);
+    const rebuildMarkers = await this.getRebuildMarkers();
+    const rebuilt = await this.rebuild(this.index);
+    if (rebuilt) await this.clearRebuildRequired(rebuildMarkers);
+    this.authoritative = rebuilt;
   }
 
   /** Rebuild when either side of a write is blocked and its identity changed. */
@@ -217,7 +294,10 @@ export class TombstoneBlockedCaptureIndex {
       after.frontmatter.sourceConnector,
     );
     if (beforeBlocked && afterBlocked && beforeKey === afterKey) return;
-    this.authoritative = await this.rebuild(await this.getIndex());
+    const rebuildMarkers = await this.getRebuildMarkers();
+    const rebuilt = await this.rebuild(await this.getIndex());
+    if (rebuilt) await this.clearRebuildRequired(rebuildMarkers);
+    this.authoritative = rebuilt;
   }
 
   markUntrusted(): void {
@@ -262,6 +342,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     return this.tombstoneBlockedCaptureIndex ??= new TombstoneBlockedCaptureIndex(
       this.tombstoneBlockedCaptureIndexOptions(),
     );
+  }
+
+  async checkTombstoneBlockedExplicitCapture(
+    ...args: [string, string, string?]
+  ): Promise<{ has: boolean; authoritative: boolean }> {
+    return this.getTombstoneBlockedCaptureIndex().check(...args);
   }
 
   async hasTombstoneBlockedExplicitCapture(...args: [string, string, string?]): Promise<boolean> {

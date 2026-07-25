@@ -60,6 +60,7 @@ function createInlineCaptureProcessorProbe(
     tombstoneBlocked?: boolean;
     authoritativeFactHashMiss?: boolean;
     tombstoneBlockedCaptureIndexHit?: boolean;
+    failWrites?: boolean;
   } = {},
 ) {
   const envelopes: SealedMemoryEnvelope[] = [];
@@ -89,6 +90,7 @@ function createInlineCaptureProcessorProbe(
         frontmatter: { ...memory.frontmatter },
       })),
     writeSealedMemory: async (envelope: SealedMemoryEnvelope) => {
+      if (options.failWrites) throw new Error("simulated sealed write failure");
       const id = `memory-${nextId++}`;
       envelopes.push(envelope);
       memories.push({
@@ -113,6 +115,17 @@ function createInlineCaptureProcessorProbe(
       : {}),
     ...(options.tombstoneBlockedCaptureIndexHit !== undefined
       ? {
+          checkTombstoneBlockedExplicitCapture: async (
+            content: string,
+            category: string,
+            sourceConnector?: string,
+          ) => {
+            blockedIndexArguments.push({ content, category, sourceConnector });
+            return {
+              has: options.tombstoneBlockedCaptureIndexHit === true,
+              authoritative: true,
+            };
+          },
           hasTombstoneBlockedExplicitCapture: async (
             content: string,
             category: string,
@@ -501,6 +514,26 @@ test("inline capture processor canonicalizes reordered note fields for replay de
   assert.equal(first.queued, 1);
   assert.equal(replay.processed, 0);
   assert.equal(probe.envelopes.length, 1);
+});
+
+test("inline capture processor reports failed review fallback without claiming capture handling", async () => {
+  const probe = createInlineCaptureProcessorProbe({ failWrites: true });
+  const result = await probe.processor.process({
+    captureMode: "hybrid",
+    content: [
+      "Keep this visible turn.",
+      "<memory_note>",
+      "content: This note must remain retryable after both writes fail.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+  });
+
+  assert.equal(result.processed, 0);
+  assert.equal(result.accepted, 0);
+  assert.equal(result.queued, 0);
+  assert.equal(result.failed, 1);
+  assert.equal(result.content, "Keep this visible turn.");
 });
 
 test("inline capture processor derives a replay key without delivery metadata", async () => {

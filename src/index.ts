@@ -4081,10 +4081,10 @@ const pluginDefinition = {
           }
           const processedExplicitNotes = inlineCapture.processed;
           const inlineCaptureWasHandled =
-            inlineCapture.processed > 0 || inlineCapture.content === cleaned;
+            inlineCapture.failed === 0 && (inlineCapture.processed > 0 || inlineCapture.content === cleaned);
           if (!orchestrator.config.transcriptEnabled || transcriptContent.length === 0) {
             rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
-            if (processedExplicitNotes > 0) {
+            if (processedExplicitNotes > 0 && inlineCapture.failed === 0) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
               rememberObservedInboundContentFingerprint(inlineCaptureContentFingerprint);
               rememberObservedInboundContentFingerprint(inboundContentFingerprint);
@@ -4275,7 +4275,7 @@ const pluginDefinition = {
             );
             const stripped = inlineCapture.content;
             const inlineCaptureWasHandled =
-              inlineCapture.processed > 0 || inlineCapture.content === cleaned;
+              inlineCapture.failed === 0 && (inlineCapture.processed > 0 || inlineCapture.content === cleaned);
             const messageMetadata = buildOpenClawMessageMetadata(
               msg,
               event,
