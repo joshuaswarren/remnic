@@ -210,8 +210,9 @@ export class TombstoneBlockedCaptureIndex {
     );
   }
 
-  private async hasRebuildRequired(): Promise<boolean> {
-    return (await this.getRebuildMarkers()).length > 0;
+  private async hasRebuildRequired(excludedMarkers: readonly string[] = []): Promise<boolean> {
+    const excluded = new Set(excludedMarkers);
+    return (await this.getRebuildMarkers()).some((marker) => !excluded.has(marker.path));
   }
 
 
@@ -382,7 +383,7 @@ export class TombstoneBlockedCaptureIndex {
     if (!this.isBlocked(memory)) return;
     let index = await this.getIndex();
     if (
-      await this.hasRebuildRequired()
+      await this.hasRebuildRequired(rebuildMarker ? [rebuildMarker] : [])
       || !(await index.isDiskFingerprintCurrent())
     ) {
       index = await this.reload();
@@ -540,12 +541,18 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     fileContent: string,
     updateIndex: (rebuildMarker?: string) => Promise<void>,
   ): Promise<void> {
-    const rebuildMarker = blocked
+    let rebuildMarker = blocked
       ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
       : undefined;
     await this.writeStorageSecureFile(pathname, fileContent);
     if (rebuildMarker) {
-      await this.getTombstoneBlockedCaptureIndex().commitWrite(rebuildMarker);
+      try {
+        await this.getTombstoneBlockedCaptureIndex().commitWrite(rebuildMarker);
+      } catch (err) {
+        this.getTombstoneBlockedCaptureIndex().markUntrusted();
+        log.warn(`storage.tombstoneBlocked committed write marker failed: ${err}`);
+        rebuildMarker = undefined;
+      }
     }
     await updateIndex(rebuildMarker);
   }

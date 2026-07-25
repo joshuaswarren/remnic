@@ -1725,3 +1725,86 @@ test("explicit capture write lock serializes concurrent operations", async () =>
     assert.equal(maxInFlight, 1);
   });
 });
+
+test("blocked writes stay successful when post-commit marker publication fails", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A durable blocked write must survive marker publication failure.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "marker-publication-failure",
+      rawContent: content,
+    });
+    const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
+    const commitSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "commitWrite",
+      async () => {
+        throw new Error("simulated marker publication failure");
+      },
+    );
+    try {
+      const result = await storage.writeMemory("fact", content, {
+        source: "test",
+        sourceConnector: "provider-a",
+      });
+      assert.equal(result.tombstoneBlocked, true);
+      assert.ok(await storage.getMemoryById(result.id), "the durable memory must remain readable");
+      assert.equal((await readdir(markerDir)).length > 0, true);
+      assert.equal(
+        await storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative(),
+        false,
+      );
+    } finally {
+      commitSpy.mock.restore();
+    }
+  });
+});
+
+test("blocked additions exclude their own marker from rebuild checks", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked addition should update the index incrementally.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "incremental-blocked-add",
+      rawContent: content,
+    });
+    await storage.hasTombstoneBlockedExplicitCapture("unrelated", "fact", "provider-a");
+    let rebuilds = 0;
+    const rebuildSpy = mock.method(
+      ContentHashIndex.prototype,
+      "rebuildUnderLock",
+      async () => {
+        rebuilds += 1;
+        return true;
+      },
+    );
+    try {
+      const result = await storage.writeMemory("fact", content, {
+        source: "test",
+        sourceConnector: "provider-a",
+      });
+      assert.equal(result.tombstoneBlocked, true);
+      assert.equal(rebuilds, 0);
+    } finally {
+      rebuildSpy.mock.restore();
+    }
+  });
+});
