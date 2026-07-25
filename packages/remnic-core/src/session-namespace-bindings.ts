@@ -68,7 +68,11 @@ function pruneBindingEntries(
     .sort(([leftKey, left], [rightKey, right]) => {
       if (leftKey === protectedKey) return -1;
       if (rightKey === protectedKey) return 1;
-      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+      const leftAt = Date.parse(left.updatedAt);
+      const rightAt = Date.parse(right.updatedAt);
+      if (leftAt !== rightAt) return rightAt > leftAt ? 1 : -1;
+      if (leftKey === rightKey) return 0;
+      return leftKey < rightKey ? -1 : 1;
     })
     .slice(0, SESSION_NAMESPACE_BINDING_MAX_ENTRIES);
   const pruned = Object.create(null) as Record<string, NamespaceBindingEntry>;
@@ -81,8 +85,14 @@ function encodeSessionKey(sessionKey: string): string {
 }
 
 async function readBindingFile(filePath: string): Promise<NamespaceBindingFile> {
+  let raw: string;
   try {
-    const raw = await readFile(filePath, "utf8");
+    raw = await readFile(filePath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return emptyBindingFile();
+    throw err;
+  }
+  try {
     const parsed = JSON.parse(raw) as Partial<NamespaceBindingFile>;
     if (!parsed || typeof parsed !== "object" || !parsed.entries || typeof parsed.entries !== "object") {
       return emptyBindingFile();

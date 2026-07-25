@@ -762,6 +762,7 @@ test("delegate flushes rebound namespaces concurrently within one hook deadline"
       ["team-first", "team-second"],
     );
   } finally {
+    for (const flush of pendingFlushes.splice(0)) flush();
     await stub.close();
   }
 });

@@ -56,7 +56,12 @@ async function startDaemonStub(): Promise<DaemonStub> {
       raw += String(chunk);
     });
     req.on("end", () => {
-      const body = JSON.parse(raw) as Record<string, unknown>;
+      let body: Record<string, unknown> = {};
+      try {
+        body = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        body = {};
+      }
       calls.push({ pathname: req.url ?? "", body });
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify(req.url === "/engram/v1/recall" ? { context: "remembered" } : {}));
