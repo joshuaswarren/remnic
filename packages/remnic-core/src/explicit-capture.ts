@@ -686,7 +686,7 @@ export class InlineExplicitCaptureProcessor {
   private readonly observedKeys = new Set<string>();
   private readonly observedKeyOrder: string[] = [];
   private readonly maxDedupeKeys: number;
-  private processingTail: Promise<void> = Promise.resolve();
+  private readonly processingTails = new Map<string, Promise<void>>();
 
   constructor(
     private readonly orchestrator: Orchestrator,
@@ -699,17 +699,17 @@ export class InlineExplicitCaptureProcessor {
         : DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT;
   }
 
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const previous = this.processingTail;
+  private enqueue<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.processingTails.get(key) ?? Promise.resolve();
     let release!: () => void;
-    this.processingTail = new Promise<void>((resolve) => {
+    const current = new Promise<void>((resolve) => {
       release = resolve;
     });
-    return previous.then(operation).finally(release);
-  }
-
-  async process(request: InlineExplicitCaptureProcessRequest): Promise<InlineExplicitCaptureProcessResult> {
-    return this.enqueue(() => this.processInternal(request));
+    this.processingTails.set(key, current);
+    return previous.then(operation).finally(() => {
+      if (this.processingTails.get(key) === current) this.processingTails.delete(key);
+      release();
+    });
   }
 
   private buildDedupeKeys(
@@ -803,7 +803,74 @@ export class InlineExplicitCaptureProcessor {
     }
   }
 
-  private async processInternal(request: InlineExplicitCaptureProcessRequest): Promise<InlineExplicitCaptureProcessResult> {
+  private async processNote(
+    request: InlineExplicitCaptureProcessRequest,
+    input: ExplicitCaptureInput,
+    replayKeys: readonly string[],
+    validationFailureKey: string,
+  ): Promise<
+    Pick<InlineExplicitCaptureProcessResult, "processed" | "accepted" | "queued" | "duplicates">
+  > {
+    const serializationKey = replayKeys.at(-1) ?? validationFailureKey;
+    return this.enqueue(serializationKey, async () => {
+      if (
+        replayKeys.some((key) => this.observedKeys.has(key))
+        || this.observedKeys.has(validationFailureKey)
+      ) {
+        return { processed: 0, accepted: 0, queued: 0, duplicates: 0 };
+      }
+
+      let validationSucceeded = false;
+      try {
+        const candidate = validateExplicitCaptureInput(input);
+        if (request.namespacePreResolved === true) candidate.namespacePreResolved = true;
+        validationSucceeded = true;
+        const persisted = await persistExplicitCapture(this.orchestrator, candidate, "inline");
+        this.remember(replayKeys);
+        if (persisted.duplicateOf) {
+          return { processed: 1, accepted: 0, queued: 0, duplicates: 1 };
+        }
+        if (persisted.tombstoneBlocked) {
+          this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note.review");
+          return { processed: 1, accepted: 0, queued: 1, duplicates: 0 };
+        }
+        this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
+        return { processed: 1, accepted: 1, queued: 0, duplicates: 0 };
+      } catch (error) {
+        const queueInput = request.namespacePreResolved === true
+          ? { ...input, namespacePreResolved: true }
+          : input;
+        const reviewNamespace =
+          request.reviewNamespacePreResolved === true &&
+          request.namespacePreResolved !== true &&
+          !this.isNamespacePolicyAuthorized(input.namespace)
+            ? request.reviewNamespace
+            : undefined;
+        try {
+          const review = await queueExplicitCaptureForReview(
+            this.orchestrator,
+            queueInput,
+            "inline",
+            error,
+            reviewNamespace ? { resolvedNamespace: reviewNamespace } : undefined,
+          );
+          this.remember(validationSucceeded ? replayKeys : [validationFailureKey]);
+          if (review.duplicateOf) {
+            return { processed: 1, accepted: 0, queued: 0, duplicates: 1 };
+          }
+          this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note.review");
+          return { processed: 1, accepted: 0, queued: 1, duplicates: 0 };
+        } catch (queueError) {
+          log.warn(
+            `explicit inline capture rejected: ${normalizeExplicitCaptureError(error)}; review queue fallback failed: ${normalizeExplicitCaptureError(queueError)}`,
+          );
+          return { processed: 0, accepted: 0, queued: 0, duplicates: 0 };
+        }
+      }
+    });
+  }
+
+  async process(request: InlineExplicitCaptureProcessRequest): Promise<InlineExplicitCaptureProcessResult> {
     if (!shouldProcessInlineExplicitCapture({ captureMode: request.captureMode })) {
       return { content: request.content, processed: 0, accepted: 0, queued: 0, duplicates: 0 };
     }
@@ -838,60 +905,11 @@ export class InlineExplicitCaptureProcessor {
           ? request.reviewNamespace
           : undefined,
       );
-      if (
-        replayKeys.some((key) => this.observedKeys.has(key))
-        || this.observedKeys.has(validationFailureKey)
-      ) continue;
-
-      let validationSucceeded = false;
-      try {
-        const candidate = validateExplicitCaptureInput(input);
-        if (request.namespacePreResolved === true) candidate.namespacePreResolved = true;
-        validationSucceeded = true;
-        const persisted = await persistExplicitCapture(this.orchestrator, candidate, "inline");
-        this.remember(replayKeys);
-        processed += 1;
-        if (persisted.duplicateOf) {
-          duplicates += 1;
-        } else if (persisted.tombstoneBlocked) {
-          queued += 1;
-          this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note.review");
-        } else {
-          accepted += 1;
-          this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
-        }
-      } catch (error) {
-        const queueInput = request.namespacePreResolved === true
-          ? { ...input, namespacePreResolved: true }
-          : input;
-        const reviewNamespace =
-          request.reviewNamespacePreResolved === true &&
-          request.namespacePreResolved !== true &&
-          !this.isNamespacePolicyAuthorized(input.namespace)
-            ? request.reviewNamespace
-            : undefined;
-        try {
-          const review = await queueExplicitCaptureForReview(
-            this.orchestrator,
-            queueInput,
-            "inline",
-            error,
-            reviewNamespace ? { resolvedNamespace: reviewNamespace } : undefined,
-          );
-          this.remember(validationSucceeded ? replayKeys : [validationFailureKey]);
-          processed += 1;
-          if (review.duplicateOf) {
-            duplicates += 1;
-          } else {
-            queued += 1;
-            this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note.review");
-          }
-        } catch (queueError) {
-          log.warn(
-            `explicit inline capture rejected: ${normalizeExplicitCaptureError(error)}; review queue fallback failed: ${normalizeExplicitCaptureError(queueError)}`,
-          );
-        }
-      }
+      const result = await this.processNote(request, input, replayKeys, validationFailureKey);
+      processed += result.processed;
+      accepted += result.accepted;
+      queued += result.queued;
+      duplicates += result.duplicates;
     }
 
     return { content, processed, accepted, queued, duplicates };
