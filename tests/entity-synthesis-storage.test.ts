@@ -12,6 +12,7 @@ import {
   serializeEntityFile,
 } from "../packages/remnic-core/src/storage.js";
 import { parseConfig } from "../packages/remnic-core/src/config.js";
+import { writeMaybeEncryptedFile } from "../packages/remnic-core/src/secure-store/secure-fs.js";
 
 test("writeEntity appends timeline evidence and marks older synthesis as stale", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-synthesis-storage-"));
@@ -213,6 +214,75 @@ test("ensureDirectories resumes a journaled legacy entity migration", async () =
   }
 });
 
+test("ensureDirectories re-encrypts legacy Entity ids at their canonical path", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-legacy-unicode-secure-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const canonical = normalizeEntityName(name, type);
+    const legacyCanonical = "project-";
+    const key = Buffer.alloc(32, 0x6d);
+    const seed = new StorageManager(dir);
+    seed.setSecureStoreKey(key, true);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
+    const entityContent = await seed.readEntity(canonical);
+    const legacyPath = path.join(dir, "entities", `${legacyCanonical}.md`);
+    await writeMaybeEncryptedFile(legacyPath, entityContent, key, {}, dir);
+    await rm(path.join(dir, "entities", `${canonical}.md`));
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
+
+    const upgraded = new StorageManager(dir);
+    upgraded.setSecureStoreKey(key, true);
+    await upgraded.ensureDirectories();
+
+    assert.match(await upgraded.readEntity(canonical), /# 月光/);
+    assert.equal(await upgraded.readEntity(legacyCanonical), "");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories resumes a secure Entity migration after its canonical write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-legacy-unicode-secure-resume-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const canonical = normalizeEntityName(name, type);
+    const legacyCanonical = "project-";
+    const key = Buffer.alloc(32, 0x6e);
+    const seed = new StorageManager(dir);
+    seed.setSecureStoreKey(key, true);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
+    const entityContent = await seed.readEntity(canonical);
+    await writeMaybeEncryptedFile(
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+      entityContent,
+      key,
+      {},
+      dir,
+    );
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({
+        version: 1,
+        complete: false,
+        mappings: { [legacyCanonical]: canonical },
+      }),
+      "utf-8",
+    );
+
+    const upgraded = new StorageManager(dir);
+    upgraded.setSecureStoreKey(key, true);
+    await upgraded.ensureDirectories();
+
+    assert.match(await upgraded.readEntity(canonical), /# 月光/);
+    assert.equal(await upgraded.readEntity(legacyCanonical), "");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("normalizeEntityName canonicalizes Unicode composition", () => {
   assert.equal(

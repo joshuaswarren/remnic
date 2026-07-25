@@ -3864,7 +3864,19 @@ export class StorageManager {
           const legacyExists = await this.storageFileExists(legacyPath);
           const canonicalExists = await this.storageFileExists(canonicalPath);
           if (legacyExists && canonicalExists) {
-            throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
+            const [legacyContent, canonicalContent] = await Promise.all([
+              this.readStorageSecureFile(legacyPath),
+              this.readStorageSecureFile(canonicalPath),
+            ]);
+            if (legacyContent !== canonicalContent) {
+              throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
+            }
+            if (!await lock.refresh()) {
+              throw new Error("Lost entity canonical-id migration lock.");
+            }
+            await this.snapshotBeforeWrite(legacyPath, "write");
+            await unlink(legacyPath);
+            continue;
           }
           if (!legacyExists && !canonicalExists) {
             throw new Error(`Cannot migrate legacy entity id ${legacyId}: both files are missing.`);
@@ -3873,8 +3885,16 @@ export class StorageManager {
           if (!await lock.refresh()) {
             throw new Error("Lost entity canonical-id migration lock.");
           }
+          const entityContent = await this.readStorageSecureFile(legacyPath);
           await this.snapshotBeforeWrite(legacyPath, "write");
-          await rename(legacyPath, canonicalPath);
+          await this.writeStorageSecureFile(canonicalPath, entityContent);
+          if (await this.readStorageSecureFile(canonicalPath) !== entityContent) {
+            throw new Error(`Cannot verify migrated entity id ${canonicalId}.`);
+          }
+          if (!await lock.refresh()) {
+            throw new Error("Lost entity canonical-id migration lock.");
+          }
+          await unlink(legacyPath);
         }
 
         await this.rewriteLegacyEntityRelationshipTargets(
