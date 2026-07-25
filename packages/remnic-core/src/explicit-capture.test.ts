@@ -285,3 +285,57 @@ test("inline capture processor keeps a replay key for fractional dedupe limits",
   const replay = await processor.process(request);
   assert.equal(replay.processed, 0);
 });
+
+test("inline capture processor scopes replay keys to the authorized namespace", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const content = [
+    "<memory_note>",
+    "content: A scoped replay key must not suppress another namespace.",
+    "category: fact",
+    "</memory_note>",
+  ].join("\n");
+  const request = {
+    captureMode: "hybrid" as const,
+    content,
+    dedupeKeys: ["shared-delivery"],
+    namespacePreResolved: true,
+  };
+
+  const first = await probe.processor.process({ ...request, namespace: "principal-one" });
+  const second = await probe.processor.process({ ...request, namespace: "principal-two" });
+
+  assert.equal(first.processed, 1);
+  assert.equal(second.processed, 1);
+  assert.ok(probe.requestedNamespaces.includes("principal-one"));
+  assert.ok(probe.requestedNamespaces.includes("principal-two"));
+});
+
+test("inline capture processor canonicalizes reordered note fields for replay dedupe", async () => {
+  const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
+  const first = await probe.processor.process({
+    captureMode: "hybrid",
+    content: [
+      "<memory_note>",
+      "content: Reordered note fields must share one replay identity.",
+      "category: fact",
+      "tags: release, capture",
+      "</memory_note>",
+    ].join("\n"),
+    dedupeKeys: ["reordered-delivery"],
+  });
+  const replay = await probe.processor.process({
+    captureMode: "hybrid",
+    content: [
+      "<memory_note>",
+      "tags: release, capture",
+      "category: fact",
+      "content: Reordered note fields must share one replay identity.",
+      "</memory_note>",
+    ].join("\n"),
+    dedupeKeys: ["reordered-delivery"],
+  });
+
+  assert.equal(first.queued, 1);
+  assert.equal(replay.processed, 0);
+  assert.equal(probe.envelopes.length, 1);
+});

@@ -677,12 +677,17 @@ export class InlineExplicitCaptureProcessor {
   private buildDedupeKeys(
     dedupeKeys: readonly string[] | undefined,
     note: ExplicitCaptureInput,
+    namespace: string | undefined,
   ): string[] {
-    const noteHash = createHash("sha256").update(JSON.stringify(note)).digest("hex");
+    const namespaceScope =
+      namespace === undefined ? asTrimmed(note.namespace) ?? "" : asTrimmed(namespace) ?? "";
+    const noteHash = createHash("sha256")
+      .update(JSON.stringify(Object.entries(note).sort(([left], [right]) => left.localeCompare(right))))
+      .digest("hex");
     return (dedupeKeys ?? [])
       .map((key) => asTrimmed(key))
       .filter((key): key is string => key !== undefined)
-      .map((key) => `${key}:inline-memory-note:${noteHash}`);
+      .map((key) => `${namespaceScope}\u0000${key}:inline-memory-note:${noteHash}`);
   }
 
   private remember(keys: readonly string[]): void {
@@ -716,7 +721,7 @@ export class InlineExplicitCaptureProcessor {
     let duplicates = 0;
 
     for (const note of notes) {
-      const dedupeKeys = this.buildDedupeKeys(request.dedupeKeys, note);
+      const dedupeKeys = this.buildDedupeKeys(request.dedupeKeys, note, request.namespace);
       if (dedupeKeys.some((key) => this.observedKeys.has(key))) continue;
 
       const input: ExplicitCaptureInput = {
