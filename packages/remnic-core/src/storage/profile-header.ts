@@ -9,7 +9,7 @@ type FenceMarker = {
 };
 
 function isLastUpdatedHeader(line: string): boolean {
-  const content = line.trimEnd();
+  const content = (line.startsWith(UTF8_BOM) ? line.slice(1) : line).trimEnd();
   return content.startsWith(LAST_UPDATED_PREFIX) && content.endsWith("*");
 }
 
@@ -507,7 +507,8 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
       titleIndex >= 0
         ? headerIndexes.find((index) => index > titleIndex) ?? firstHeaderIndex
         : firstHeaderIndex;
-    lines[canonicalIndex].content = header;
+    const bomPrefix = lines[canonicalIndex].content.startsWith(UTF8_BOM) ? UTF8_BOM : "";
+    lines[canonicalIndex].content = `${bomPrefix}${header}`;
     for (let index = headerIndexes.length - 1; index >= 0; index -= 1) {
       const headerIndex = headerIndexes[index];
       if (headerIndex === undefined || headerIndex === canonicalIndex) continue;

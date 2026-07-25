@@ -768,6 +768,21 @@ test("writeProfile preserves a leading BOM before the title", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile refreshes a BOM-prefixed header before the title", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = `\uFEFF${STALE_HEADER}\n# Behavioral Profile\n\n- Keeps metadata.\n`;
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), `\uFEFF${FRESH_HEADER}\n# Behavioral Profile\n\n- Keeps metadata.\n`);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile preserves a BOM-prefixed fenced example", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
