@@ -12,6 +12,11 @@ const SOURCE_TURN: BufferTurn = {
   timestamp: "2026-07-25T12:00:00.000Z",
 };
 
+const TAG_SOURCE_TURN: BufferTurn = {
+  ...SOURCE_TURN,
+  content: "The page uses <main> as the primary landmark.",
+};
+
 const SOURCE_GROUNDED_EXTRACTION = {
   facts: [{
     category: "fact",
@@ -172,6 +177,59 @@ test("local extraction discards literal structural placeholders", async () => {
   assert.deepEqual(result.questions, []);
   assert.deepEqual(result.relationships, []);
   assert.equal(result.identityReflection, undefined);
+});
+
+test("local extraction preserves source text that looks like a tag", async () => {
+  const engine = new ExtractionEngine(parseConfig({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+  }));
+  const localLlm: LocalLlmFixture = {
+    async chatCompletion() {
+      return {
+        content: JSON.stringify({
+          facts: [{ category: "fact", content: "<main>", confidence: 0.95, tags: [] }],
+          profileUpdates: [],
+          entities: [],
+          questions: [],
+        }),
+      };
+    },
+  };
+  const modelRegistry = {
+    calculateContextSizes: () => ({ maxInputChars: 8_000, maxOutputTokens: 1_000, description: "fixture" }),
+  };
+  assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
+  assert.equal(Reflect.set(engine, "modelRegistry", modelRegistry), true);
+
+  const result = await engine.extract([TAG_SOURCE_TURN]);
+
+  assert.equal(result.facts[0]?.content, "<main>");
+});
+
+test("local truncated recovery discards literal structural placeholders", async () => {
+  const engine = new ExtractionEngine(parseConfig({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+  }));
+  const localLlm: LocalLlmFixture = {
+    async chatCompletion() {
+      return {
+        content: "{\"facts\":[{\"category\":\"<category>\",\"content\":\"<source-grounded statement>\",\"confidence\":0.7}",
+      };
+    },
+  };
+  const modelRegistry = {
+    calculateContextSizes: () => ({ maxInputChars: 8_000, maxOutputTokens: 1_000, description: "fixture" }),
+  };
+  assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
+  assert.equal(Reflect.set(engine, "modelRegistry", modelRegistry), true);
+
+  const result = await engine.extract([SOURCE_TURN]);
+
+  assert.deepEqual(result.facts, []);
 });
 
 test("gateway extraction discards literal structural placeholders", async () => {

@@ -84,6 +84,10 @@ const EXTRACTION_RESPONSE_SHAPE = `{
   "identityReflection": "<conversation-grounded agent reflection>",
   "relationships": [{"source": "<normalized-name>", "target": "<normalized-name>", "label": "<source-grounded relationship>"}]
 }`;
+const EXTRACTION_RESPONSE_PLACEHOLDERS: Record<string, true> = {};
+for (const placeholder of EXTRACTION_RESPONSE_SHAPE.match(/<[^<>\r\n]+>/g) ?? []) {
+  EXTRACTION_RESPONSE_PLACEHOLDERS[placeholder] = true;
+}
 const CONSOLIDATION_RESPONSE_SCHEMA = `{
   "items": [
     {
@@ -105,7 +109,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function extractionText(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const text = value.trim();
-  return text.length > 0 && !/^<[^<>\r\n]+>$/.test(text) ? text : undefined;
+  return text.length > 0 && EXTRACTION_RESPONSE_PLACEHOLDERS[text] !== true ? text : undefined;
 }
 
 function extractionAttributes(value: unknown): Record<string, string> | undefined {
@@ -1546,29 +1550,6 @@ ${truncatedConversation}`;
    * Local LLMs sometimes hit token limits mid-JSON. This tries to salvage valid facts.
    */
   private extractPartialFacts(jsonStr: string): ExtractionResult {
-    const allowedCategories = new Set([
-      "fact",
-      "preference",
-      "correction",
-      "entity",
-      "decision",
-      "relationship",
-      "principle",
-      "commitment",
-      "moment",
-      "skill",
-      "rule",
-      "procedure",
-      "reasoning_trace",
-    ]);
-    const allowedEntityTypes = new Set([
-      "person",
-      "project",
-      "tool",
-      "company",
-      "place",
-      "other",
-    ]);
 
     const facts: ExtractionResult["facts"] = [];
     const entities: ExtractionResult["entities"] = [];
@@ -1578,8 +1559,8 @@ ${truncatedConversation}`;
       const factRegex = /\{\s*"category"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"([^"]+)"\s*,\s*"confidence"\s*:\s*([0-9.]+)/g;
       let match;
       while ((match = factRegex.exec(jsonStr)) !== null) {
-        const rawCat = match[1];
-        const category = allowedCategories.has(rawCat) ? (rawCat as ExtractionResult["facts"][number]["category"]) : "fact";
+        const category = match[1]?.trim() ?? "";
+        if (!isMemoryCategory(category)) continue;
         facts.push({
           category,
           content: match[2].replace(/\\n/g, '\n').replace(/\\"/g, '"'),
@@ -1591,8 +1572,8 @@ ${truncatedConversation}`;
       // Find all complete entity objects
       const entityRegex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"type"\s*:\s*"([^"]+)"/g;
       while ((match = entityRegex.exec(jsonStr)) !== null) {
-        const rawType = match[2];
-        const type = allowedEntityTypes.has(rawType) ? (rawType as ExtractionResult["entities"][number]["type"]) : "other";
+        const type = extractionEntityType(match[2]);
+        if (type === undefined) continue;
         entities.push({
           name: match[1],
           type,
@@ -1603,7 +1584,7 @@ ${truncatedConversation}`;
       // Ignore regex errors
     }
 
-    return { facts, entities, profileUpdates: [], questions: [] };
+    return this.normalizeExtractionResultPayload({ facts, entities, profileUpdates: [], questions: [] });
   }
 
   /**
