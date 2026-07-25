@@ -26,6 +26,28 @@ function makeTurn(sessionKey: string, content: string): BufferTurn {
   };
 }
 
+interface ScopedFlushTestDouble {
+  buffer: {
+    getTurns(bufferKey: string): BufferTurn[];
+  };
+  queueBufferedExtraction(
+    turns: BufferTurn[],
+    reason: string,
+    options?: Record<string, unknown>,
+  ): Promise<void>;
+  flushSession(
+    sessionKey: string,
+    options: {
+      reason: string;
+      abortSignal?: AbortSignal;
+      bufferKey?: string;
+      extractionDeadlineMs?: number;
+      writeNamespaceOverride?: string;
+      principalOverride?: string;
+    },
+  ): Promise<void>;
+}
+
 test("flushSession queues extraction for the targeted buffered session", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   const turns = [makeTurn("thread-a", "remember alpha")];
@@ -107,6 +129,45 @@ test("flushSession forwards abort signals into the queued extraction", async () 
   });
 
   assert.equal(queuedOptions?.abortSignal, abortController.signal);
+});
+
+test("flushSession preserves scoped force-drain routing and deadline options", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as unknown as ScopedFlushTestDouble;
+  const abortController = new AbortController();
+  const extractionDeadlineMs = Date.now() + 10_000;
+  let queuedOptions: Record<string, unknown> | undefined;
+
+  orchestrator.buffer = {
+    getTurns(bufferKey: string) {
+      return bufferKey === "logical-session" ? [makeTurn("session-z", "remember gamma")] : [];
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    _queuedTurns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queuedOptions = options;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("session-z", {
+    reason: "access_force_flush",
+    bufferKey: "logical-session",
+    abortSignal: abortController.signal,
+    extractionDeadlineMs,
+    writeNamespaceOverride: "alice-project-example",
+    principalOverride: "alice",
+  });
+
+  assert.equal(queuedOptions?.bufferKey, "logical-session");
+  assert.equal(queuedOptions?.abortSignal, abortController.signal);
+  assert.equal(queuedOptions?.extractionDeadlineMs, extractionDeadlineMs);
+  assert.equal(queuedOptions?.writeNamespaceOverride, "alice-project-example");
+  assert.equal(queuedOptions?.principalOverride, "alice");
+  assert.equal(queuedOptions?.skipDedupeCheck, true);
+  assert.equal(queuedOptions?.forceExtractionAttempt, true);
+  assert.equal(queuedOptions?.clearBufferAfterExtraction, true);
 });
 
 test("flushSession waits for queued extraction task completion", async () => {
