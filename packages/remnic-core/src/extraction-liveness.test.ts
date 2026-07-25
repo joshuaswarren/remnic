@@ -284,6 +284,31 @@ test("getBufferSnapshot: empty entries are not counted as sessions", async () =>
   assert.equal(snap.pendingTurnCount, 1);
 });
 
+test("getBufferSnapshot: counts retained (deferred) turns as pending, not just active (#562)", async () => {
+  const snap = await bufferFor({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+    entries: {
+      mixed: {
+        turns: [turn("2026-04-01T00:00:02.000Z")],
+        retainedTurns: [turn("2026-04-01T00:00:00.000Z"), turn("2026-04-01T00:00:01.000Z")],
+        lastExtractionAt: null,
+        extractionCount: 0,
+      },
+      retainedOnly: {
+        turns: [],
+        retainedTurns: [turn("2026-04-01T00:00:03.000Z")],
+        lastExtractionAt: null,
+        extractionCount: 0,
+      },
+    },
+  }).getBufferSnapshot();
+  assert.equal(snap.bufferedSessionCount, 2, "an entry with only retained turns still counts");
+  assert.equal(snap.pendingTurnCount, 4, "retained (2 + 1) + active (1) = 4");
+  assert.equal(snap.oldestTurnTimestamp, "2026-04-01T00:00:00.000Z", "oldest is the first retained turn");
+});
+
 test("evaluate: emits watermarkScope, defaulting to root-store and honoring an explicit scope", () => {
   const rootScoped = evaluateExtractionLiveness({
     config: ENABLED,

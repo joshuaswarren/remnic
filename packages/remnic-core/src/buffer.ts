@@ -308,7 +308,7 @@ export class SmartBuffer {
   }
 
   /** Snapshot of buffered, not-yet-extracted work across sessions (#2151): session count,
-   * pending-turn total, oldest buffered turn. Covers entries map + legacy top-level turns. */
+   * pending-turn total, oldest buffered turn. Counts retained (#562) + active turns per entry. */
   async getBufferSnapshot(): Promise<ExtractionBufferSnapshot> {
     await this.load();
     let bufferedSessionCount = 0;
@@ -328,7 +328,8 @@ export class SmartBuffer {
     };
     const entries = this.state.entries;
     if (entries) {
-      for (const entry of Object.values(entries)) consider(entry?.turns);
+      // Retained turns (deferred #562) are pending too - count with active (oldest-first), like getTurns().
+      for (const entry of Object.values(entries)) consider([...(entry?.retainedTurns ?? []), ...(entry?.turns ?? [])]);
     } else {
       consider(this.state.turns);
     }
