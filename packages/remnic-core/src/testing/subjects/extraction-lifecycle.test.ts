@@ -16,6 +16,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 
+import { EngramAccessService } from "../../access-service.js";
 import { Orchestrator } from "../../orchestrator.js";
 import { resolveNamespaceStorageRoot } from "../../namespaces/storage.js";
 import type { BufferTurn, PluginConfig } from "../../types.js";
@@ -41,6 +42,8 @@ interface ExtractionLifecycleState {
   cfg: PluginConfig;
   /** Every orchestrator built for the row; teardown destroys all of them. */
   orchestrators: Orchestrator[];
+  /** Access surface used for lifecycle drains in this matrix. */
+  service: EngramAccessService;
   /** The primary orchestrator's recorded extraction calls. */
   calls: BufferTurn[][];
   /** Second-instance drain calls (restart row). */
@@ -127,11 +130,18 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
                   extractionDedupeWindowMs: 60_000,
                 })
               : makeLifecycleConfig(memoryDir);
-      primary = new Orchestrator(cfg);
-      const calls = stubExtraction(primary, (turns) =>
+      const orchestrator = new Orchestrator(cfg);
+      primary = orchestrator;
+      const calls = stubExtraction(orchestrator, (turns) =>
         singleFactResult(turns.map((turn) => turn.content).join(" | ")),
       );
-      return { memoryDir, cfg, orchestrators: [primary], calls };
+      return {
+        memoryDir,
+        cfg,
+        orchestrators: [orchestrator],
+        service: new EngramAccessService(orchestrator),
+        calls,
+      };
     } catch (err) {
       // Transactional setup: a partial build must not leak the orchestrator or temp dir.
       await primary?.destroy().catch(() => undefined);
@@ -199,19 +209,21 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
 
         const second = new Orchestrator(makeLifecycleConfig(state.memoryDir));
         state.orchestrators.push(second);
+        state.service = new EngramAccessService(second);
         state.restartCalls = stubExtraction(second, (turns) =>
           singleFactResult(turns.map((turn) => turn.content).join(" | ")),
         );
-        // Drain the buffer that survived the restart (state/buffer.json).
-        await second.flushSession("session-parked", { reason: "session_end" });
+        // Drain the buffer that survived the restart through the public access
+        // boundary, preserving the exact same lifecycle semantics as a delegate.
+        await state.service.extractionForceFlush({ sessionKey: "session-parked" });
         return;
       }
       case "compaction-flush": {
         await primary.processTurn("user", "The deploy train departs at nine on Tuesdays.", "session-compact");
         await primary.processTurn("assistant", "Noted the Tuesday deploy train departure.", "session-compact");
-        await primary.flushSession("session-compact", { reason: "compaction" });
+        await state.service.extractionForceFlush({ sessionKey: "session-compact" });
         const before = state.calls.length;
-        await primary.flushSession("session-compact", { reason: "compaction" });
+        await state.service.extractionForceFlush({ sessionKey: "session-compact" });
         assert.equal(state.calls.length, before, "compacted buffer must not re-extract on a second flush");
         return;
       }
@@ -230,8 +242,8 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
           return singleFactResult(turns.map((turn) => turn.content).join(" | "));
         });
         let abortRejected = false;
-        await primary
-          .flushSession("session-reset", { reason: "before_reset", abortSignal: controller.signal })
+        await state.service
+          .extractionForceFlush({ sessionKey: "session-reset", abortSignal: controller.signal })
           .catch(() => {
             abortRejected = true;
           });
@@ -247,13 +259,13 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         state.secondFlushCalls = stubExtraction(primary, (turns) =>
           singleFactResult(turns.map((turn) => turn.content).join(" | ")),
         );
-        await primary.flushSession("session-reset", { reason: "before_reset" });
+        await state.service.extractionForceFlush({ sessionKey: "session-reset" });
         // The recovery flush must PERSIST the preserved turn as a fact...
         state.recoveredFactCount = (
           await memoryFilesContaining(path.join(state.memoryDir, "facts"), "replay ledger checkpoint")
         ).length;
         // ...and a further flush (buffer now drained) must NOT duplicate it.
-        await primary.flushSession("session-reset", { reason: "before_reset" });
+        await state.service.extractionForceFlush({ sessionKey: "session-reset" });
         state.factCountAfterExtraFlush = (
           await memoryFilesContaining(path.join(state.memoryDir, "facts"), "replay ledger checkpoint")
         ).length;
@@ -261,7 +273,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
       }
       case "session-end": {
         await primary.processTurn("user", "The nightly compaction sweep runs after the backup snapshot.", "session-end");
-        await primary.flushSession("session-end", { reason: "session_end" });
+        await state.service.extractionForceFlush({ sessionKey: "session-end" });
         return;
       }
       case "dedupe-replay": {
@@ -275,7 +287,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         // already be suppressed, so exactly one extraction has happened so far.
         state.callsBeforeForceFlush = state.calls.length;
         // Force-flush bypasses the dedupe fingerprint (skipDedupeCheck).
-        await primary.flushSession("session-dedupe", { reason: "before_reset" });
+        await state.service.extractionForceFlush({ sessionKey: "session-dedupe" });
         return;
       }
       default: {
