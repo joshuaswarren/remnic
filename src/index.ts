@@ -4264,6 +4264,8 @@ const pluginDefinition = {
               [inlineCaptureContentFingerprint, sparseInlineCaptureContentFingerprint],
             );
             const stripped = inlineCapture.content;
+            const inlineCaptureWasHandled =
+              inlineCapture.processed > 0 || inlineCapture.content === cleaned;
             const messageMetadata = buildOpenClawMessageMetadata(
               msg,
               event,
@@ -4310,7 +4312,9 @@ const pluginDefinition = {
                 if (messageDedupeKey) {
                   rememberObservedInboundMessageKeys(messageDedupeKeys);
                 }
-                rememberObservedInboundContentFingerprint(inlineCaptureContentFingerprint);
+                if (inlineCaptureWasHandled) {
+                  rememberObservedInboundContentFingerprint(inlineCaptureContentFingerprint);
+                }
                 rememberObservedInboundContentFingerprint(messageContentFingerprint);
               }
             }

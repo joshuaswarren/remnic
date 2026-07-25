@@ -725,12 +725,13 @@ export class InlineExplicitCaptureProcessor {
       .map((key) => asTrimmed(key))
       .filter((key): key is string => key !== undefined);
     const identityPrefix = `${canonicalInput.namespace}\u0000${canonicalInput.sourceConnector}\u0000`;
-    if (deliveryKeys.length === 0) {
-      return [`${identityPrefix}fallback:inline-memory-note:${noteHash}`];
-    }
-    return deliveryKeys.map(
-      (key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`,
-    );
+    const fallbackKey = `${identityPrefix}fallback:inline-memory-note:${noteHash}`;
+    return [
+      ...deliveryKeys.map(
+        (key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`,
+      ),
+      fallbackKey,
+    ];
   }
 
   private remember(keys: readonly string[]): void {

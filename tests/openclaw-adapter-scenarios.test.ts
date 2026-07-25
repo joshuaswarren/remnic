@@ -843,6 +843,62 @@ test("scenario: failed inline capture retries after transcript delivery succeeds
   );
 });
 
+test("scenario: agent-end capture failures remain retryable by message_received", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const agentEnd = registeredHook(capture, "agent_end");
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const storage = await orchestrator.getStorage();
+      const writeSealedMemory = storage.writeSealedMemory.bind(storage);
+      let writeAttempts = 0;
+      storage.writeSealedMemory = async (...args: Parameters<typeof writeSealedMemory>) => {
+        writeAttempts += 1;
+        if (writeAttempts <= 2) throw new Error("simulated agent-end capture write failure");
+        return writeSealedMemory(...args);
+      };
+      const content = [
+        "Remember this agent-end retryable visible transcript turn.",
+        "<memory_note>",
+        "content: This agent-end inline capture must retry after its write failure.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+      const timestamp = 1_780_000_300_000;
+
+      await agentEnd(
+        {
+          success: true,
+          runId: "agent-end-inline-retry-run",
+          timestamp,
+          messages: [
+            { role: "user", content },
+            { role: "assistant", content: "I will retry that capture." },
+          ],
+        },
+        { sessionKey: "agent-end-inline-retry-session" },
+      );
+      await messageReceived(
+        { content, runId: "agent-end-inline-retry-run", timestamp },
+        { sessionKey: "agent-end-inline-retry-session" },
+      );
+
+      assert.equal(writeAttempts, 3);
+      assert.match(readAllText(memoryDir), /agent-end inline capture must retry after its write failure/);
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: inline capture dedupe matches sparse thread and run metadata", async () => {
   await withScenarioRegistration(
     async ({ capture, orchestrator }) => {

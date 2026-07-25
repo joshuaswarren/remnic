@@ -446,3 +446,31 @@ test("inline capture processor derives a replay key without delivery metadata", 
   assert.equal(replay.processed, 0);
   assert.equal(probe.envelopes.length, 1);
 });
+
+test("inline capture processor keeps canonical fallback identity across delivery keys", async () => {
+  const probe = createInlineCaptureProcessorProbe({ tombstoneBlocked: true });
+  const first = await probe.processor.process({
+    captureMode: "hybrid",
+    content: [
+      "<memory_note>",
+      "content: A canonical fallback identity must survive delivery changes.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+    dedupeKeys: ["first-delivery"],
+  });
+  const replay = await probe.processor.process({
+    captureMode: "hybrid",
+    content: [
+      "<memory_note>",
+      "content: a canonical  fallback identity must survive DELIVERY changes.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+    dedupeKeys: ["second-delivery"],
+  });
+
+  assert.equal(first.queued, 1);
+  assert.equal(replay.processed, 0);
+  assert.equal(probe.envelopes.length, 1);
+});
