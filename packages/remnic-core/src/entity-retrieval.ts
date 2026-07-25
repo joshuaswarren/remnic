@@ -98,9 +98,22 @@ const KOREAN_PARTICLES = [
   "이", "가", "을", "를", "의", "께", "와", "과", "도", "만", "든",
   "에", "로", "나", "랑",
 ] as const;
+const KOREAN_UNSPACED_QUESTION_PARTICLES = ["은", "는", "이", "가"] as const;
+const KOREAN_INTERROGATIVE_PREFIXES = [
+  "어디", "무엇", "뭐", "왜", "어떻게", "언제", "누구", "어느", "몇", "얼마",
+] as const;
+
 const HANGUL_RUN_RE = /^[\p{Script=Hangul}]+/u;
 
+function isKoreanUnspacedQuestionBoundary(suffix: string): boolean {
+  return KOREAN_UNSPACED_QUESTION_PARTICLES.some((particle) =>
+    suffix.startsWith(particle) &&
+    KOREAN_INTERROGATIVE_PREFIXES.some((prefix) => suffix.startsWith(prefix, particle.length)),
+  );
+}
+
 function isKoreanParticleBoundary(suffix: string): boolean {
+  if (isKoreanUnspacedQuestionBoundary(suffix)) return true;
   const particleRun = suffix.match(HANGUL_RUN_RE)?.[0] ?? "";
   let offset = 0;
   while (offset < particleRun.length) {

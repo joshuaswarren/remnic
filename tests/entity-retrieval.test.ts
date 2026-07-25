@@ -202,6 +202,7 @@ test("entity retrieval resolves Korean grammatical particles after Unicode menti
   assert.ok(section);
   assert.match(section!, /target: 서울 \(project\)/);
   assert.match(section!, /Hangang-314/);
+  assert.ok(await buildSection(config, storage, "서울은어디인가요?"));
   assert.equal(await buildSection(config, storage, "서울로봇의 상태는 무엇인가요?"), null);
 });
 
