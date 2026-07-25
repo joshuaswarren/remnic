@@ -6330,7 +6330,7 @@
     "qmdColdTierEnabled": {
       "label": "Enable Cold QMD Tier",
       "advanced": true,
-      "help": "When hot recall misses, query a secondary cold QMD collection before archive scan fallback"
+      "help": "When hot recall misses, query a secondary cold QMD collection before the query-aware fallback"
     },
     "qmdColdCollection": {
       "label": "Cold QMD Collection",

@@ -626,11 +626,9 @@ export class RecallSearchPipelineCoordinator {
       if (filteredResults.length > bestFiltered.length) {
         bestFiltered = filteredResults;
       }
-      if (mergedResults.length === 0) {
-        await emitDebugSnapshot(filteredResults, fetchLimit);
-        return filteredResults;
-      }
-      if (mergedResults.length < fetchLimit) {
+      // A full raw page may filter down to nothing (for example, archive-only
+      // hits). Keep widening until the backend itself underfills the page.
+      if (primaryResults.length < fetchLimit) {
         await emitDebugSnapshot(filteredResults, fetchLimit);
         return filteredResults;
       }
