@@ -890,6 +890,10 @@ export class EngramAccessHttpServer {
       this.respondJson(res, 200, await this.service.health());
       return;
     }
+    if (req.method === "GET" && pathname === "/engram/v1/capabilities") {
+      this.respondJson(res, 200, { lcmCompactionFlushBatch: true });
+      return;
+    }
 
     if (req.method === "GET" && pathname === "/engram/v1/authorization") {
       res.setHeader("cache-control", "no-store");

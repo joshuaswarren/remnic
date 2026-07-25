@@ -62,6 +62,7 @@ async function startDaemonStub(
     pathname: string,
     body: Record<string, unknown>,
   ) => Record<string, unknown> | Promise<Record<string, unknown>>,
+  options: { batchFlush?: boolean } = {},
 ): Promise<DaemonStub> {
   const calls: RecordedCall[] = [];
   const server = http.createServer((req, res) => {
@@ -78,7 +79,11 @@ async function startDaemonStub(
         // empty/non-JSON bodies stay {}
       }
       calls.push({ pathname, body });
-      void Promise.resolve(respond(pathname, body))
+      const responsePromise =
+        pathname === "/engram/v1/capabilities" && options.batchFlush !== false
+          ? Promise.resolve({ lcmCompactionFlushBatch: true })
+          : Promise.resolve(respond(pathname, body));
+      void responsePromise
         .then((response) => {
           if (res.destroyed) return;
           res.setHeader("content-type", "application/json");
@@ -761,6 +766,40 @@ test("delegate batches rebound namespace flushes within one hook deadline", asyn
     assert.deepEqual(flushes[0]?.body.namespaces, ["team-first", "team-second"]);
   } finally {
     for (const flush of pendingFlushes.splice(0)) flush();
+    await stub.close();
+  }
+});
+
+test("delegate falls back to singular flushes when batch capability is unavailable", async () => {
+  const stub = await startDaemonStub(() => ({ flushed: true }), { batchFlush: false });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const sessionKey = "legacy-rebound-session";
+
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} session namespace` },
+            { role: "assistant", content: "the namespace is bound" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+    await invoke(api, "session_end", { sessionKey });
+
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.deepEqual(
+      flushes.map((call) => call.body.namespace),
+      ["team-first", "team-second"],
+    );
+    assert.equal(flushes.every((call) => !("namespaces" in call.body)), true);
+  } finally {
     await stub.close();
   }
 });

@@ -23,6 +23,40 @@ interface NamespaceBindingFile {
 type BindingFileWriter = (filePath: string, bindings: NamespaceBindingFile) => Promise<void>;
 
 const fileWriteChains = new Map<string, Promise<void>>();
+const volatileRefreshes = new Map<string, Map<string, string>>();
+
+function retainVolatileRefresh(filePath: string, sessionKey: string, updatedAt: string): void {
+  const refreshes = volatileRefreshes.get(filePath) ?? new Map<string, string>();
+  refreshes.set(sessionKey, updatedAt);
+  volatileRefreshes.set(filePath, refreshes);
+}
+
+function clearVolatileRefresh(filePath: string, sessionKey: string): void {
+  const refreshes = volatileRefreshes.get(filePath);
+  if (refreshes === undefined) return;
+  refreshes.delete(sessionKey);
+  if (refreshes.size === 0) volatileRefreshes.delete(filePath);
+}
+
+function applyVolatileRefreshes(filePath: string, entries: Record<string, NamespaceBindingEntry>): void {
+  const refreshes = volatileRefreshes.get(filePath);
+  if (refreshes === undefined) return;
+  for (const [key, updatedAt] of refreshes) {
+    const entry = entries[key];
+    if (entry === undefined) {
+      refreshes.delete(key);
+      continue;
+    }
+    const persistedAt = Date.parse(entry.updatedAt);
+    const refreshedAt = Date.parse(updatedAt);
+    if (Number.isFinite(refreshedAt) && (!Number.isFinite(persistedAt) || refreshedAt > persistedAt)) {
+      entry.updatedAt = updatedAt;
+    } else {
+      refreshes.delete(key);
+    }
+  }
+  if (refreshes.size === 0) volatileRefreshes.delete(filePath);
+}
 
 function emptyBindingFile(): NamespaceBindingFile {
   return { version: 1, entries: Object.create(null) as Record<string, NamespaceBindingEntry> };
@@ -89,7 +123,10 @@ async function readBindingFile(filePath: string): Promise<NamespaceBindingFile> 
   try {
     raw = await readFile(filePath, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return emptyBindingFile();
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+      volatileRefreshes.delete(filePath);
+      return emptyBindingFile();
+    }
     throw err;
   }
   const parsed = JSON.parse(raw) as Partial<NamespaceBindingFile>;
@@ -112,6 +149,7 @@ async function readBindingFile(filePath: string): Promise<NamespaceBindingFile> 
     if (namespaces.length === 0) continue;
     entries[key] = { namespaces, updatedAt: entry.updatedAt };
   }
+  applyVolatileRefreshes(filePath, entries);
   return { version: 1, entries: pruneBindingEntries(entries) };
 }
 
@@ -174,11 +212,14 @@ export function createFileSessionNamespaceBindingStore(
         const entry = bindings.entries[key];
         if (entry === undefined) return [];
         const namespaces = [...entry.namespaces];
-        entry.updatedAt = new Date().toISOString();
+        const updatedAt = new Date().toISOString();
+        entry.updatedAt = updatedAt;
         bindings.entries = pruneBindingEntries(bindings.entries, key);
         try {
           await write(filePath, bindings);
+          clearVolatileRefresh(filePath, key);
         } catch {
+          retainVolatileRefresh(filePath, key, updatedAt);
           return namespaces;
         }
         return namespaces;

@@ -349,6 +349,16 @@ export const lcmCompactionFlushRequestSchema = z
         path: ["namespaces"],
       });
     }
+    if (
+      value.namespaces !== undefined &&
+      new Set(value.namespaces).size !== value.namespaces.length
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "namespaces must not contain duplicates",
+        path: ["namespaces"],
+      });
+    }
   });
 
 export const lcmCompactionRecordRequestSchema = z.object({

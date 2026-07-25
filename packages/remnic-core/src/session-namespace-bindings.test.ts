@@ -206,6 +206,47 @@ test("session namespace bindings return known scope when timestamp refresh fails
   }
 });
 
+test("session namespace bindings retain failed refreshes in volatile state", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
+  const filePath = path.join(directory, "session-namespace-bindings.json");
+  const updatedAt = new Date(Date.now() - 60 * 60 * 1_000).toISOString();
+  try {
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          "volatile-refresh-session": { namespaces: ["team-known"], updatedAt },
+        },
+      }),
+      "utf8",
+    );
+    const store = createFileSessionNamespaceBindingStore(filePath, {
+      writeBindingFile: async () => {
+        throw new Error("forced refresh write failure");
+      },
+    });
+
+    assert.deepEqual(await store.namespacesFor("volatile-refresh-session"), ["team-known"]);
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          "volatile-refresh-session": {
+            namespaces: ["team-known"],
+            updatedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString(),
+          },
+        },
+      }),
+      "utf8",
+    );
+    assert.deepEqual(await store.namespacesFor("volatile-refresh-session"), ["team-known"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("session namespace bindings cap each session's namespace history", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
   const filePath = path.join(directory, "session-namespace-bindings.json");
