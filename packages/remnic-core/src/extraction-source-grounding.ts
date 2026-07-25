@@ -495,10 +495,10 @@ function isQuestionAnsweredBySource(question: string, source: string): boolean {
     if (isInterrogativeSourceSentence(sentence)) return false;
     if (isUnknownAnswerSentence(sentence)) return false;
     const score = groundedTokenScore(question, sentence);
-    if (score === 0) return false;
+    if (score !== 1) return false;
     const sentenceTokens = tokenize(sentence);
-    return isYesNoQuestion && score === 1
-      || [...sentenceTokens].some((token) => !questionTokens.has(token));
+    const hasAnswerToken = [...sentenceTokens].some((token) => !questionTokens.has(token));
+    return isYesNoQuestion || hasAnswerToken;
   });
 }
 
