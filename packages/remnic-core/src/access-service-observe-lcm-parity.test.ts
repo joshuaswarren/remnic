@@ -422,6 +422,61 @@ test("#2128: aborted or expired extraction force-flush never touches a buffer", 
   assert.equal(probe.extractionForceFlushCalls.length, 0);
 });
 
+test("#2128: an abort while attaching single-store context never starts the buffer drain", async () => {
+  const probe = makeParityProbe({ namespacesEnabled: false });
+  const service = new EngramAccessService(probe.orch);
+  const abortController = new AbortController();
+  const originalSetCodingContext = probe.orch.setCodingContextForSession.bind(probe.orch);
+  (probe.orch as unknown as {
+    setCodingContextForSession(sessionKey: string, context: CodingContext | null): void;
+  }).setCodingContextForSession = (sessionKey, context) => {
+    originalSetCodingContext(sessionKey, context);
+    if (context !== null) abortController.abort(new Error("late lifecycle abort"));
+  };
+
+  await assert.rejects(
+    () =>
+      service.extractionForceFlush({
+        sessionKey: "pi-geek:abort-during-attach",
+        projectTag: "Acme/Webshop",
+        authenticatedPrincipal: "pi-geek",
+        abortSignal: abortController.signal,
+      }),
+    /extraction force-flush aborted/,
+  );
+  assert.equal(probe.extractionForceFlushCalls.length, 0);
+});
+
+test("#2128: a deadline that elapses while attaching single-store context never starts the buffer drain", async () => {
+  const probe = makeParityProbe({ namespacesEnabled: false });
+  const service = new EngramAccessService(probe.orch);
+  const originalDateNow = Date.now;
+  const originalSetCodingContext = probe.orch.setCodingContextForSession.bind(probe.orch);
+  let now = 1_000;
+  (probe.orch as unknown as {
+    setCodingContextForSession(sessionKey: string, context: CodingContext | null): void;
+  }).setCodingContextForSession = (sessionKey, context) => {
+    originalSetCodingContext(sessionKey, context);
+    if (context !== null) now = 1_002;
+  };
+  Date.now = () => now;
+  try {
+    await assert.rejects(
+      () =>
+        service.extractionForceFlush({
+          sessionKey: "pi-geek:deadline-during-attach",
+          projectTag: "Acme/Webshop",
+          authenticatedPrincipal: "pi-geek",
+          deadlineMs: 1_001,
+        }),
+      /extraction force-flush deadline exceeded before buffer drain/,
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
+  assert.equal(probe.extractionForceFlushCalls.length, 0);
+});
+
 test("#1505 thread 2 (b) cwd git repo: observe LCM write key == recall reader key == compaction keys", async () => {
   const repoDir = mkdtempSync(join(tmpdir(), "remnic-lcm-parity-git-"));
   const git = (...args: string[]) =>

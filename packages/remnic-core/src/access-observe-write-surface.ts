@@ -884,6 +884,10 @@ export class AccessObserveWriteSurface {
       cwd: request.cwd,
       projectTag: request.projectTag,
     });
+    throwIfAborted(request.abortSignal, "extraction force-flush aborted");
+    if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
+      throw new Error("extraction force-flush deadline exceeded before buffer drain");
+    }
     await this.deps.orchestrator.flushSession(request.sessionKey, {
       reason: "access_force_flush",
       bufferKey: request.sessionKey,
