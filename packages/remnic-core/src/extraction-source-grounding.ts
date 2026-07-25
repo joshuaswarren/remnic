@@ -340,6 +340,9 @@ function filterGroundedEntity(
         ? [{ ...section, facts: groundedFacts }]
         : [];
     });
+  if (facts.length === 0 && (structuredSections === undefined || structuredSections.length === 0)) {
+    return undefined;
+  }
   const { structuredSections: _structuredSections, ...entityWithoutSections } = entity;
   return {
     ...entityWithoutSections,

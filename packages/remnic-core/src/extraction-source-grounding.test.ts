@@ -381,6 +381,33 @@ test("grounding filters unsupported durable fact fields and nested entity facts"
   ]);
 });
 
+test("grounding drops entities with no grounded facts", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [
+        {
+          name: "Moonlight",
+          type: "project",
+          facts: ["Moonlight has an unsupported secret plan."],
+          structuredSections: [
+            {
+              key: "details",
+              title: "Details",
+              facts: ["Moonlight runs on Mars."],
+            },
+          ],
+        },
+      ],
+      questions: [],
+    },
+    "Moonlight is a project.",
+  );
+
+  assert.deepEqual(result.entities, []);
+});
+
 test("proactive extraction grounds before delinearization", async () => {
   const engine = fixtureEngine({
     localLlmEnabled: true,
