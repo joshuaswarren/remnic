@@ -82,6 +82,15 @@ export interface SessionContextDeps {
   readonly orchestratorSelf: Orchestrator;
 }
 
+export interface SessionFlushOptions {
+  reason: string;
+  abortSignal?: AbortSignal;
+  bufferKey?: string;
+  extractionDeadlineMs?: number;
+  writeNamespaceOverride?: string;
+  principalOverride?: string;
+}
+
 export class SessionContextCoordinator {
   constructor(
     private readonly deps: SessionContextDeps,
@@ -316,14 +325,7 @@ export class SessionContextCoordinator {
 
   async flushSession(
     sessionKey: string,
-    options: {
-      reason: string;
-      abortSignal?: AbortSignal;
-      bufferKey?: string;
-      extractionDeadlineMs?: number;
-      writeNamespaceOverride?: string;
-      principalOverride?: string;
-    },
+    options: SessionFlushOptions,
   ): Promise<void> {
     // Force any pending debounced buffer save to land durably BEFORE we read
     // and (via clearBufferAfterExtraction below) clear turns (issue #1909, PR

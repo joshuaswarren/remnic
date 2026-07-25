@@ -25,6 +25,7 @@ import {
   queueExplicitCaptureForReview,
 } from "./explicit-capture.js";
 import { log } from "./logger.js";
+import { throwIfAborted } from "./abort-error.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import type { Orchestrator } from "./orchestrator.js";
 import { displayErrorDetail } from "./runtime/better-sqlite.js";
@@ -40,6 +41,8 @@ import {
   type CodingScopedWriteInput,
   type EngramAccessBriefingRequest,
   type EngramAccessBriefingResponse,
+  type EngramAccessExtractionForceFlushRequest,
+  type EngramAccessExtractionForceFlushResponse,
   type EngramAccessMemoryStoreRequest,
   type EngramAccessObserveRequest,
   type EngramAccessObserveResponse,
@@ -851,6 +854,56 @@ export class AccessObserveWriteSurface {
       },
       lcmArchived,
       extractionQueued,
+    };
+  }
+
+  async extractionForceFlush(
+    request: EngramAccessExtractionForceFlushRequest,
+  ): Promise<EngramAccessExtractionForceFlushResponse> {
+    if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
+      throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
+    }
+    if (
+      request.deadlineMs !== undefined &&
+      (!Number.isFinite(request.deadlineMs) || request.deadlineMs < 0)
+    ) {
+      throw new EngramAccessInputError("deadlineMs must be a finite non-negative number");
+    }
+    throwIfAborted(request.abortSignal, "extraction force-flush aborted");
+    if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
+      throw new Error("extraction force-flush deadline exceeded before scope resolution");
+    }
+
+    const scope = await this.deps.resolveMemoryScopePlan(request);
+    throwIfAborted(request.abortSignal, "extraction force-flush aborted");
+    if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
+      throw new Error("extraction force-flush deadline exceeded before buffer drain");
+    }
+
+    await this.deps.maybeAttachCodingContext(request.sessionKey, {
+      cwd: request.cwd,
+      projectTag: request.projectTag,
+    });
+    await this.deps.orchestrator.flushSession(request.sessionKey, {
+      reason: "access_force_flush",
+      bufferKey: request.sessionKey,
+      abortSignal: request.abortSignal,
+      extractionDeadlineMs: request.deadlineMs,
+      writeNamespaceOverride:
+        resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true
+          ? scope.writeNamespace
+          : undefined,
+      principalOverride:
+        typeof scope.principal === "string" && scope.principal.length > 0
+          ? scope.principal
+          : undefined,
+    });
+
+    return {
+      flushed: true,
+      sessionKey: request.sessionKey,
+      namespace: this.deps.legacyResponseNamespaceForScope(scope),
+      effectiveNamespace: scope.writeNamespace,
     };
   }
 
