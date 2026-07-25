@@ -541,7 +541,6 @@ import type {
   RecallSectionConfig,
   RecallTierExplain,
 } from "./types.js";
-import { disposeDefaultArchiveScoring, getDefaultArchiveScoring, memoryFileToScoreItem } from "./recall/archive-scoring.js";
 
 // Issue #1526 seam 15: ExtractionRunResult moved to orchestration/extraction-run.ts.
 export type { ExtractionRunResult } from "./orchestration/extraction-run.js";
@@ -997,8 +996,6 @@ export class Orchestrator {
       if (this.conversationQmd && this.conversationQmd !== this.qmd) {
         await (this.conversationQmd as { dispose?: () => void | Promise<void> }).dispose?.();
       }
-      // Issue #1674: terminate archive-scoring worker threads on destroy.
-      await disposeDefaultArchiveScoring();
     } finally {
       if (bufferFlushError !== undefined) {
         log.warn(
