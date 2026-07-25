@@ -37,13 +37,8 @@ import {
 } from "./graph-events.js";
 import { expandTildePath } from "./utils/path.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
-import {
-  getOperation,
-  operationRequiresAuthorizedNamespace,
-  RESOURCE_SCOPED_HTTP_NAMESPACE_OPERATIONS,
-  type OperationName,
-} from "./access-boundary.js";
-import { probeOperationAuthorization } from "./access-authorization-probe.js";
+import { getOperation, type OperationName } from "./access-boundary.js";
+import { authorizationProbeNamespaces, probeOperationAuthorization } from "./access-authorization-probe.js";
 import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
 import {
   assertOperationAllowed,
@@ -898,15 +893,9 @@ export class EngramAccessHttpServer {
     if (req.method === "GET" && pathname === "/engram/v1/authorization") {
       res.setHeader("cache-control", "no-store");
       const probe = probeOperationAuthorization(tokenCapabilityStore.getStore(), parsed.searchParams.getAll("op"));
-      const namespaceOperations = probe.operations.filter(operationRequiresAuthorizedNamespace);
-      if (namespaceOperations.some((operation) => RESOURCE_SCOPED_HTTP_NAMESPACE_OPERATIONS[operation] !== true)) {
-        this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
-      }
-      if (namespaceOperations.some((operation) => RESOURCE_SCOPED_HTTP_NAMESPACE_OPERATIONS[operation] === true)) {
-        // Resource-scoped routes derive the namespace from their stored target
-        // or the daemon default, not from the probe's query-string override.
-        this.resolveNamespace(req, undefined);
-      }
+      const namespaceParam = parsed.searchParams.get("namespace") ?? undefined;
+      for (const namespace of authorizationProbeNamespaces(probe.operations, namespaceParam))
+        this.resolveNamespace(req, namespace);
       this.respondJson(res, 200, probe);
       return;
     }

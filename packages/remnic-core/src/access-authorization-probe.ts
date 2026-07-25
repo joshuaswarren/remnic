@@ -1,4 +1,10 @@
-import { getOperation, type OperationName, OPERATION_NAMES } from "./access-boundary.js";
+import {
+  getOperation,
+  operationRequiresAuthorizedNamespace,
+  OPERATION_NAMES,
+  RESOURCE_SCOPED_HTTP_NAMESPACE_OPERATIONS,
+  type OperationName,
+} from "./access-boundary.js";
 import { EngramAccessInputError } from "./access-errors.js";
 import {
   assertOperationAuthorizationAllowed,
@@ -40,4 +46,27 @@ export function probeOperationAuthorization(
   }
 
   return { authorized: true, operations };
+}
+
+/**
+ * Resolve every namespace an authorization probe must check. Resource-scoped
+ * routes ignore the query namespace and use their stored target or daemon
+ * default, so mixed probes check both the requested and default namespaces.
+ */
+export function authorizationProbeNamespaces(
+  operations: readonly OperationName[],
+  requestedNamespace: string | undefined,
+): readonly (string | undefined)[] {
+  const namespaceOperations = operations.filter(operationRequiresAuthorizedNamespace);
+  const usesRequestNamespace = namespaceOperations.some(
+    (operation) => RESOURCE_SCOPED_HTTP_NAMESPACE_OPERATIONS[operation] !== true,
+  );
+  const usesResourceNamespace = namespaceOperations.some(
+    (operation) => RESOURCE_SCOPED_HTTP_NAMESPACE_OPERATIONS[operation] === true,
+  );
+  const namespaces: Array<string | undefined> = usesRequestNamespace ? [requestedNamespace] : [];
+  if (usesResourceNamespace && (requestedNamespace !== undefined || !usesRequestNamespace)) {
+    namespaces.push(undefined);
+  }
+  return namespaces;
 }
