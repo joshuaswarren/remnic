@@ -348,6 +348,61 @@ test("writeProfile keeps leading frontmatter before a header", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile keeps YAML block-scalar delimiters inside frontmatter", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "---",
+        "description: |",
+        "  ---",
+        "  ...",
+        "---",
+        "",
+        "- Keeps decisions short.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        `---\ndescription: |\n  ---\n  ...\n---\n\n${FRESH_HEADER}\n\n- Keeps decisions short.\n`,
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile preserves timestamp-shaped HTML preformatted code", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<pre>",
+        "*Last updated: literal example*",
+        "</pre>",
+        "",
+        "- Keeps code examples.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\n<pre>", `\n\n${FRESH_HEADER}\n\n<pre>`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile preserves code examples that mention Last updated", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });

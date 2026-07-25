@@ -44,7 +44,7 @@ function findFrontmatterEnd(lines: string[]): number {
   const firstLine = lines[0]?.startsWith(UTF8_BOM) ? lines[0].slice(1) : lines[0];
   if (firstLine !== "---") return -1;
   for (let index = 1; index < lines.length; index += 1) {
-    const line = lines[index]?.trim();
+    const line = lines[index]?.trimEnd();
     if (line === "---" || line === "...") return index;
   }
   return -1;
@@ -56,9 +56,23 @@ function visitOutsideFencedBlocks(
 ): void {
   const frontmatterEnd = findFrontmatterEnd(lines);
   let openFence: FenceMarker | null = null;
+  let openHtmlPre = false;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     if (index <= frontmatterEnd || isIndentedCodeLine(line)) continue;
+    const normalizedLine = line.trimStart().toLowerCase();
+    const closesHtmlPre = normalizedLine.includes("</pre>");
+    if (openHtmlPre) {
+      if (closesHtmlPre) openHtmlPre = false;
+      continue;
+    }
+    const startsHtmlPre =
+      normalizedLine.startsWith("<pre") &&
+      (normalizedLine[4] === ">" || normalizedLine[4] === " " || normalizedLine[4] === "\t");
+    if (startsHtmlPre) {
+      openHtmlPre = !closesHtmlPre;
+      continue;
+    }
     const fence = getFenceMarker(line);
     if (openFence) {
       if (fence && isClosingFence(fence, openFence)) openFence = null;
