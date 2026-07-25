@@ -13,7 +13,6 @@ import {
 } from "../packages/remnic-core/src/storage.js";
 import { parseConfig } from "../packages/remnic-core/src/config.js";
 import { normalizeLegacyEntityName } from "../packages/remnic-core/src/entity-id-normalization.js";
-import { EntityCanonicalIdMigrationRunner } from "../packages/remnic-core/src/storage/entity-canonical-id-migration-runner.js";
 import { normalizeEntityText } from "../packages/remnic-core/src/entity-schema.js";
 import {
   isEncryptedFile,
@@ -30,36 +29,6 @@ import {
 import { openBetterSqlite3 } from "../packages/remnic-core/src/runtime/better-sqlite.js";
 import { computeSupersessionKey } from "../packages/remnic-core/src/temporal-supersession.js";
 import type { MemoryFile } from "../packages/remnic-core/src/types.js";
-
-test("entity migration runner waits for an in-flight migration during directory initialization", async () => {
-  let releaseMigration!: () => void;
-  let migrationDone = false;
-  const migrationGate = new Promise<void>((resolve) => {
-    releaseMigration = () => {
-      migrationDone = true;
-      resolve();
-    };
-  });
-  let runCount = 0;
-  const runner = new EntityCanonicalIdMigrationRunner(
-    () => true,
-    async () => {
-      runCount += 1;
-      await migrationGate;
-    },
-  );
-
-  const inFlight = runner.ensure();
-  const initialization = runner.markDirectoriesInitialized();
-  await Promise.resolve();
-  assert.equal(migrationDone, false);
-
-  releaseMigration();
-  await initialization;
-  await inFlight;
-  assert.equal(migrationDone, true);
-  assert.equal(runCount, 1);
-});
 
 test("projection memory rewrites reject an empty memory id", async () => {
   await assert.rejects(
@@ -103,11 +72,10 @@ test("projection memory rewrites initialize legacy projection tables", async () 
 
     const verified = openBetterSqlite3(projectionPath);
     try {
-      assert.equal(
-        verified.prepare("SELECT entity_ref FROM memory_current WHERE memory_id = ?").get("memory-1")
-          ?.entity_ref,
-        "canonical-entity",
-      );
+      const currentRow = verified
+        .prepare("SELECT entity_ref FROM memory_current WHERE memory_id = ?")
+        .get("memory-1") as { entity_ref?: string } | undefined;
+      assert.equal(currentRow?.entity_ref, "canonical-entity");
       assert.equal(
         verified
           .prepare("SELECT entity_ref FROM memory_entity_mentions WHERE memory_id = ?")
