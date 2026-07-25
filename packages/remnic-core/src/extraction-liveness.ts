@@ -64,12 +64,17 @@ export interface ExtractionBufferSource {
  * The liveness payload surfaced on `/health.extraction` and in the doctor/stats
  * details.
  *
- * DAEMON-GLOBAL, NOT NAMESPACE-SCOPED: a daemon has a single implicit extraction
- * pipeline, fed by one global buffer and one last-extraction watermark (both
- * bound to the root/default store). `/health` returns the SAME `extraction`
- * block for every namespace argument — pairing a namespace-scoped watermark with
- * the global buffer would let recent activity in one namespace mask a stalled
- * backlog in another (issue #2151 review).
+ * DAEMON-SCOPED SIGNAL: a daemon has a single implicit extraction pipeline fed by
+ * one global buffer (`SmartBuffer` aggregates every session/namespace). The
+ * last-extraction watermark is read from the daemon's default/root store, so
+ * `/health` returns the same `extraction` block for every namespace argument.
+ *
+ * KNOWN LIMITATION (issue #2159): extraction stamps `lastExtractionAt` on the
+ * per-namespace store, so on a multi-namespace deployment an extraction confined
+ * to a NON-default namespace does not advance this watermark. The bias is
+ * conservative: the buffer is global, so a stale root watermark can only push the
+ * verdict toward `degraded` (a false alarm) — never toward falsely reporting
+ * healthy. Aggregating the watermark across namespaces is tracked in #2159.
  */
 export interface ExtractionLivenessStatus {
   lastExtractionAt: string | null;
@@ -291,12 +296,12 @@ export class ExtractionLivenessWarnThrottle {
  * Compute the liveness status for the authenticated `/health` payload and emit
  * the throttled aggregated WARN.
  *
- * The watermark is read from the DAEMON-GLOBAL root store (`orchestrator.storage`),
- * NOT a per-call namespace store: it must share the scope of the global buffer
- * (`orchestrator.buffer`). Pairing a namespace-scoped watermark with the global
- * buffer let recent activity in one namespace hide a stalled backlog in another
- * (issue #2151 review), so `/health` returns the same `extraction` block for any
- * namespace argument.
+ * The watermark is read from the daemon's default/root store (`orchestrator.storage`),
+ * which is why `/health` returns the same `extraction` block for any namespace
+ * argument. KNOWN LIMITATION (issue #2159): extraction writes `lastExtractionAt`
+ * per-namespace, so on a multi-namespace daemon an extraction confined to a
+ * non-default namespace does not advance this watermark; the bias is conservative
+ * (a stale root watermark over-reports `degraded`, never falsely healthy).
  */
 export async function computeExtractionLivenessStatus(
   orchestrator: ExtractionLivenessOrchestratorLike & { storage: ExtractionLivenessStorageLike },
