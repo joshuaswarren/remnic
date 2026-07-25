@@ -34,9 +34,12 @@ test("isActivityDigestPath matches only the digest file shape", () => {
   assert.equal(isActivityDigestPath("/tmp/memory/my-activity-note.md"), false);
 });
 
-test("isGenericRecallExcludedPath covers artifacts and activity digests only", () => {
+test("isGenericRecallExcludedPath covers artifacts, activity digests, and top-level archive content", () => {
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/artifacts/2026-02-21/a.md"), true);
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/activity/2026-07-22.md"), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/archive/2026-07-22/a.md", "/mem"), true);
+  assert.equal(isGenericRecallExcludedPath("archive/2026-07-22/a.md", "/mem"), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/team/archive/2026-07-22/a.md", "/mem"), true);
   assert.equal(isGenericRecallExcludedPath("/data/activity/remnic/facts/a.md"), false);
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/facts/a.md"), false);
 });
@@ -54,11 +57,14 @@ test("isActivityDigestPath is root-aware: only the top-level digest is excluded"
   assert.equal(isActivityDigestPath("/data/activity/remnic/activity/2026-07-22.md", "/data/activity/remnic"), true);
 });
 
-test("isGenericRecallExcludedPath root-aware keeps nested activity-named facts recallable", () => {
+test("isGenericRecallExcludedPath root-aware keeps nested activity and archive-named facts recallable", () => {
   const root = "/mem";
   assert.equal(isGenericRecallExcludedPath("/mem/artifacts/2026-02-21/a.md", root), true);
   assert.equal(isGenericRecallExcludedPath("/mem/activity/2026-07-22.md", root), true);
   assert.equal(isGenericRecallExcludedPath("/mem/facts/proj/activity/2026-07-22.md", root), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/facts/proj/archive/2026-07-22.md", root), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/archive/facts/a.md", root), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/team/facts/archive/a.md", root), false);
   assert.equal(isGenericRecallExcludedPath("/mem/facts/a.md", root), false);
 });
 
@@ -87,12 +93,13 @@ test("computeQmdHybridFetchLimit overscans only when artifacts are enabled", () 
   assert.equal(computeQmdHybridFetchLimit(0, true, 5), 0);
 });
 
-test("artifact filtering is applied before QMD cap", () => {
+test("generic path filtering is applied before QMD cap", () => {
   const qmdCandidates = [
-    { docid: "/tmp/memory/artifacts/2026-02-21/a.md", path: "/tmp/memory/artifacts/2026-02-21/a.md", snippet: "", score: 1.0 },
-    { docid: "/tmp/memory/artifacts/2026-02-21/b.md", path: "/tmp/memory/artifacts/2026-02-21/b.md", snippet: "", score: 0.99 },
-    { docid: "/tmp/memory/facts/3.md", path: "/tmp/memory/facts/3.md", snippet: "", score: 0.98 },
-    { docid: "/tmp/memory/facts/4.md", path: "/tmp/memory/facts/4.md", snippet: "", score: 0.97 },
+    { docid: "/tmp/memory/archive/2026-02-21/a.md", path: "/tmp/memory/archive/2026-02-21/a.md", snippet: "", score: 1.0 },
+    { docid: "/tmp/memory/artifacts/2026-02-21/a.md", path: "/tmp/memory/artifacts/2026-02-21/a.md", snippet: "", score: 0.99 },
+    { docid: "/tmp/memory/artifacts/2026-02-21/b.md", path: "/tmp/memory/artifacts/2026-02-21/b.md", snippet: "", score: 0.98 },
+    { docid: "/tmp/memory/facts/3.md", path: "/tmp/memory/facts/3.md", snippet: "", score: 0.97 },
+    { docid: "/tmp/memory/facts/4.md", path: "/tmp/memory/facts/4.md", snippet: "", score: 0.96 },
   ];
 
   const filtered = filterRecallCandidates(qmdCandidates, {
@@ -100,6 +107,7 @@ test("artifact filtering is applied before QMD cap", () => {
     recallNamespaces: [],
     resolveNamespace: () => "",
     limit: 2,
+    memoryRoot: "/tmp/memory",
   });
 
   assert.deepEqual(

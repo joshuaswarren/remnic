@@ -810,7 +810,7 @@ test("resolvePromptTagPrefilterAsync fails open when the tag index is corrupt", 
   assert.equal(result.paths, null);
 });
 
-test("qmd-unavailable recall sends archived-only query-aware matches to cold fallback", async () => {
+test("qmd-unavailable recall never injects archive-only query-aware matches", async () => {
   const orchestrator = await makeOrchestrator("engram-query-aware-archive-only-", {
     qmdEnabled: false,
     embeddingFallbackEnabled: false,
@@ -830,6 +830,8 @@ test("qmd-unavailable recall sends archived-only query-aware matches to cold fal
   );
   await storage.archiveMemory(archivedMemory);
 
+  const archived = await storage.readArchivedMemories();
+  assert.ok(archived.some((memory: { frontmatter: { id: string } }) => memory.frontmatter.id === archivedId));
   const corpus = await Promise.all([
     storage.readAllMemories(),
     (orchestrator as any).readArchivedMemoriesForNamespaces(["default"]),
@@ -848,11 +850,11 @@ test("qmd-unavailable recall sends archived-only query-aware matches to cold fal
     "user:test:query-aware-archive-only",
   );
 
-  assert.match(context, /infra ops archived incident summary/i);
+  assert.doesNotMatch(context, /infra ops archived incident summary/i);
   assert.doesNotMatch(context, /recent unrelated launch note/i);
 });
 
-test("archive-scan cold fallback fills budget after excluding artifact paths", async () => {
+test("archive-scan cold fallback never returns archived content", async () => {
   const orchestrator = await makeOrchestrator("engram-query-aware-archive-artifacts-", {
     qmdEnabled: false,
     embeddingFallbackEnabled: false,
@@ -894,9 +896,7 @@ test("archive-scan cold fallback fills budget after excluding artifact paths", a
     1,
   );
 
-  assert.equal(results.length, 1);
-  assert.match(results[0]?.path ?? "", new RegExp(archivedMemoryId));
-  assert.doesNotMatch(results[0]?.path ?? "", /artifacts[\\/]/i);
+  assert.deepEqual(results, []);
 });
 
 test("recent-scan fallback preserves artifact isolation when query-aware indexing is inactive", async () => {

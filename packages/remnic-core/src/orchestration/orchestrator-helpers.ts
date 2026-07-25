@@ -639,9 +639,16 @@ export function isActivityDigestPath(filePath: string, memoryRoot?: string): boo
   return ACTIVITY_DIGEST_ANYWHERE.test(filePath);
 }
 
+export function isTopLevelArchivePath(filePath: string, memoryRoot?: string): boolean {
+  const relative = memoryRoot
+    ? path.relative(memoryRoot, path.resolve(memoryRoot, filePath))
+    : filePath;
+  return /^(?:archive|namespaces[\\/][^\\/]+[\\/]archive)(?:[\\/]|$)/i.test(relative);
+}
+
 /**
  * Paths that dedicated surfaces own and generic recall must never inject:
- * artifacts, activity digests (issue #1899), and meeting records (issue #1900).
+ * artifacts, activity digests, top-level archive files, and meeting records.
  * One predicate shared by every recall filter site so the exclusion cannot drift.
  * Explicit search paths (memory_search, activity search) do not apply this
  * filter, so those surfaces still read them.
@@ -650,6 +657,7 @@ export function isGenericRecallExcludedPath(filePath: string, memoryRoot?: strin
   return (
     isArtifactMemoryPath(filePath) ||
     isActivityDigestPath(filePath, memoryRoot) ||
+    isTopLevelArchivePath(filePath, memoryRoot) ||
     isMeetingRecordPath(filePath)
   );
 }
@@ -668,7 +676,7 @@ export function filterRecallCandidates(
     recallNamespaces: string[];
     resolveNamespace: (path: string) => string;
     limit: number;
-    /** Memory root for top-level activity-digest detection. */
+    /** Memory root for top-level dedicated-path detection. */
     memoryRoot?: string;
   },
 ): QmdSearchResult[] {
