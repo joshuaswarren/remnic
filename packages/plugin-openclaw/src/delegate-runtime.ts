@@ -28,6 +28,7 @@ import {
 import { log } from "@remnic/core/logger";
 import {
   type SessionNamespaceBindingStore,
+  SESSION_NAMESPACE_BINDING_MAX_NAMESPACES,
   createFileSessionNamespaceBindingStore,
 } from "@remnic/core/session-namespace-bindings";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
@@ -600,12 +601,12 @@ export function registerDelegateRuntime(
   });
 
   let supportsBatchFlushPromise: Promise<boolean> | undefined;
-  const supportsBatchFlush = (): Promise<boolean> => {
+  const supportsBatchFlush = (timeoutMs: number): Promise<boolean> => {
     supportsBatchFlushPromise ??= getJson(
       target,
       options.serviceId,
       "/engram/v1/capabilities",
-      options.flushTimeoutMs,
+      timeoutMs,
     )
       .then((response) => response?.lcmCompactionFlushBatch === true)
       .catch(() => false);
@@ -616,6 +617,8 @@ export function registerDelegateRuntime(
     ctx: Record<string, unknown>,
   ): Promise<boolean> => {
     try {
+      const deadline = Date.now() + options.flushTimeoutMs;
+      const remainingTimeout = (): number => Math.max(1, deadline - Date.now());
       const sessionKey = lifecycleSessionKeyFrom(event, ctx);
       if (sessionKey === undefined) {
         log.warn("delegate flush skipped: lifecycle event has malformed session key");
@@ -634,9 +637,9 @@ export function registerDelegateRuntime(
           options.serviceId,
           "/engram/v1/lcm/compaction/flush",
           withNamespace(sessionNamespace, { sessionKey }),
-          options.flushTimeoutMs,
+          remainingTimeout(),
         );
-      if (namespaces.length <= 1 || (await supportsBatchFlush())) {
+      if (namespaces.length <= 1 || (await supportsBatchFlush(remainingTimeout()))) {
         const response =
           namespaces.length > 1
             ? await postJson(
@@ -647,7 +650,7 @@ export function registerDelegateRuntime(
                   sessionKey,
                   namespaces: namespaces.map((sessionNamespace) => sessionNamespace ?? ""),
                 },
-                options.flushTimeoutMs,
+                remainingTimeout(),
               )
             : await flushNamespace(namespaces[0]);
         return response?.flushed !== false;
@@ -736,19 +739,35 @@ function createDelegateNamespaceBindingStore(
       return [];
     }
   };
+  const mergeNamespaceHistory = (current: string[], previous: string[]): string[] => {
+    const merged: string[] = [];
+    for (const remembered of [...previous, ...current]) {
+      const existing = merged.indexOf(remembered);
+      if (existing >= 0) merged.splice(existing, 1);
+      merged.push(remembered);
+    }
+    return merged.slice(-SESSION_NAMESPACE_BINDING_MAX_NAMESPACES);
+  };
   return {
     async namespacesFor(sessionKey: string): Promise<string[]> {
       const current = await primary.namespacesFor(sessionKey);
       const previous = await readLegacyNamespaces(sessionKey);
       if (previous.length === 0) return current;
-      const merged = [...current];
+      const merged = mergeNamespaceHistory(current, previous);
+      const hasMissingLegacy = previous.some((remembered) => !current.includes(remembered));
       for (const remembered of previous) {
-        if (!merged.includes(remembered)) merged.push(remembered);
         if (current.includes(remembered)) continue;
         try {
           await primary.remember(sessionKey, remembered);
         } catch {
           break;
+        }
+      }
+      const currentNamespace = current[current.length - 1];
+      if (hasMissingLegacy && currentNamespace !== undefined) {
+        try {
+          await primary.remember(sessionKey, currentNamespace);
+        } catch {
         }
       }
       return merged;

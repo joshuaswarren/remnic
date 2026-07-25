@@ -804,6 +804,7 @@ test("delegate falls back to singular flushes when batch capability is unavailab
   }
 });
 
+
 test("delegate reloads a persisted namespace binding after its daemon host configuration changes", async () => {
   const stub = await startDaemonStub(() => ({ accepted: true }));
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-bindings-"));
@@ -946,6 +947,99 @@ test("delegate ignores a corrupt legacy binding file when canonical scope is ava
     const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
     assert.ok(flush);
     assert.equal(flush.body.namespace, "team-canonical");
+  } finally {
+    if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) Reflect.deleteProperty(process.env, "REMNIC_HOST");
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) Reflect.deleteProperty(process.env, "REMNIC_PORT");
+    else process.env.REMNIC_PORT = priorPort;
+    await rm(memoryDir, { recursive: true, force: true });
+    await stub.close();
+  }
+});
+
+test("delegate keeps the canonical current namespace last during legacy history merge", async () => {
+  const stub = await startDaemonStub(() => ({ flushed: true }));
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-bindings-"));
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  const sessionKey = "legacy-recency-session";
+  const current = Array.from({ length: 64 }, (_unused, index) => `team-current-${index}`);
+  const legacy = Array.from({ length: 64 }, (_unused, index) => `team-legacy-${index}`);
+  try {
+    const primaryPath = path.join(
+      memoryDir,
+      "state",
+      "plugins",
+      "openclaw-remnic",
+      "session-namespace-bindings.json",
+    );
+    const legacyPath = path.join(
+      memoryDir,
+      "state",
+      "plugins",
+      "openclaw-engram",
+      "session-namespace-bindings.json",
+    );
+    fs.mkdirSync(path.dirname(primaryPath), { recursive: true });
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+    const updatedAt = new Date().toISOString();
+    fs.writeFileSync(
+      primaryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [encodeURIComponent(sessionKey)]: { namespaces: current, updatedAt },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      legacyPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [encodeURIComponent(sessionKey)]: { namespaces: legacy, updatedAt },
+        },
+      }),
+    );
+
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    process.env.REMNIC_PORT = String(stub.port);
+    const api = recordingApi();
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        api,
+        {
+          serviceId: "openclaw-remnic",
+          configBridgeMode: "delegate",
+          passive: false,
+          allowPromptInjection: true,
+          gateHeartbeatTurns: false,
+          recallBudgetChars: 8_000,
+          memoryDir,
+          sessionTogglesEnabled: false,
+          respectBundledActiveMemoryToggle: false,
+          cleanUserMessage: (text: string) => text,
+          hookTimeoutMs: 5_000,
+          shouldSkipRecall: () => false,
+          flushOnResetEnabled: true,
+        },
+        { checkHealth: () => true },
+      ),
+      true,
+    );
+
+    await invoke(api, "session_end", { sessionKey });
+    const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush);
+    assert.deepEqual(flush.body.namespaces, current);
+    const persisted = JSON.parse(fs.readFileSync(primaryPath, "utf8")) as {
+      entries: Record<string, { namespaces: string[] }>;
+    };
+    assert.equal(persisted.entries[encodeURIComponent(sessionKey)].namespaces.at(-1), "team-current-63");
   } finally {
     if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorMode;

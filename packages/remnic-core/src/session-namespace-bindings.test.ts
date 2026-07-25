@@ -54,6 +54,37 @@ test("session namespace bindings reject structurally invalid files without overw
   }
 });
 
+test("session namespace bindings reject malformed persisted entries", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
+  const filePath = path.join(directory, "session-namespace-bindings.json");
+  const updatedAt = new Date().toISOString();
+  const invalidEntries = [
+    { "null-entry": null },
+    { "missing-namespaces": { updatedAt } },
+    { "missing-updated-at": { namespaces: ["team-known"] } },
+    { "invalid-namespaces": { namespaces: ["team-known", null], updatedAt } },
+  ];
+  try {
+    for (const entries of invalidEntries) {
+      const raw = JSON.stringify({ version: 1, entries });
+      await writeFile(filePath, raw, "utf8");
+      const store = createFileSessionNamespaceBindingStore(filePath);
+
+      await assert.rejects(
+        () => store.namespacesFor("invalid-entry-session"),
+        /entry has invalid structure/,
+      );
+      await assert.rejects(
+        () => store.remember("invalid-entry-session", "team-known"),
+        /entry has invalid structure/,
+      );
+      assert.equal(await readFile(filePath, "utf8"), raw);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("session namespace bindings retain concurrent scope observations", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
   const filePath = path.join(directory, "session-namespace-bindings.json");

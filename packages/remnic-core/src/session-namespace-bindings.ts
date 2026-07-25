@@ -142,11 +142,25 @@ async function readBindingFile(filePath: string): Promise<NamespaceBindingFile> 
   }
   const entries = Object.create(null) as Record<string, NamespaceBindingEntry>;
   for (const [key, value] of Object.entries(parsed.entries)) {
-    if (!value || typeof value !== "object") continue;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("session namespace binding entry has invalid structure");
+    }
     const entry = value as Partial<NamespaceBindingEntry>;
-    if (typeof entry.updatedAt !== "string") continue;
+    if (
+      typeof entry.updatedAt !== "string" ||
+      !Number.isFinite(Date.parse(entry.updatedAt)) ||
+      !Array.isArray(entry.namespaces) ||
+      entry.namespaces.length === 0 ||
+      entry.namespaces.some(
+        (namespace) => typeof namespace !== "string",
+      )
+    ) {
+      throw new Error("session namespace binding entry has invalid structure");
+    }
     const namespaces = normalizeNamespaces(entry.namespaces);
-    if (namespaces.length === 0) continue;
+    if (namespaces.length === 0) {
+      throw new Error("session namespace binding entry has invalid structure");
+    }
     entries[key] = { namespaces, updatedAt: entry.updatedAt };
   }
   applyVolatileRefreshes(filePath, entries);
