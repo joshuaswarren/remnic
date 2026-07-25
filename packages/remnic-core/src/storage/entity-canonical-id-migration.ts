@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { access, lstat, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { normalizeLegacyEntityName } from "../entity-id-normalization.js";
@@ -14,6 +14,7 @@ const ENTITY_CANONICAL_ID_MIGRATION_LOCK_STALE_MS = 60_000;
 const ENTITY_CANONICAL_ID_MIGRATION_LOCK_MAX_WAIT_MS = 300_000;
 const TOMBSTONE_LOCK_STALE_MS = 30_000;
 const TOMBSTONE_LOCK_MAX_WAIT_MS = 5_000;
+const MEMORY_REWRITE_MAX_PASSES = 3;
 
 const EntityCanonicalIdMigrationStateSchema = z.object({
   version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),
@@ -106,10 +107,35 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+async function assertNotSymlink(filePath: string, label: string): Promise<void> {
+  let stat;
+  try {
+    stat = await lstat(filePath);
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) return;
+    throw error;
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Refusing entity canonical-id migration through symlink: ${label}.`);
+  }
+}
+
+async function readSafeEntityEntries(entitiesDir: string): Promise<string[]> {
+  const rootStat = await lstat(entitiesDir);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new Error("Refusing entity canonical-id migration through a symlinked or non-directory entities root.");
+  }
+  const entries = await readdir(entitiesDir);
+  for (const entry of entries) {
+    await assertNotSymlink(path.join(entitiesDir, entry), entry);
+  }
+  return entries;
+}
+
 async function discoverMappings(deps: EntityCanonicalIdMigrationDependencies): Promise<Record<string, string>> {
   const mappings: Record<string, string> = {};
   const canonicalOwners = new Map<string, string>();
-  const entityEntries = await readdir(deps.entitiesDir);
+  const entityEntries = await readSafeEntityEntries(deps.entitiesDir);
   for (const entry of entityEntries) {
     if (!entry.endsWith(".md")) continue;
     const legacyId = entry.slice(0, -".md".length);
@@ -141,41 +167,48 @@ async function rewriteReferences(
   mappings: Readonly<Record<string, string>>,
   refreshLock: () => Promise<boolean>
 ): Promise<{ rewroteColdMemory: boolean }> {
-  const [hotMemories, coldMemories, archivedMemories] = await Promise.all([
-    deps.readAllMemories(),
-    deps.readAllColdMemories(),
-    deps.readArchivedMemories(),
-  ]);
-  const seenPaths = new Set<string>();
   let rewroteColdMemory = false;
-  for (const memory of [...hotMemories, ...coldMemories, ...archivedMemories]) {
-    const memoryPath = path.resolve(memory.path);
-    if (seenPaths.has(memoryPath)) continue;
-    seenPaths.add(memoryPath);
-    const previousEntityRef = memory.frontmatter.entityRef;
-    const canonicalId = previousEntityRef ? mappings[previousEntityRef] : undefined;
-    if (!previousEntityRef || !canonicalId) continue;
-    if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
-    const latestMemory = await deps.readMemoryByPath(memory.path);
-    if (!latestMemory) continue;
-    const latestPreviousEntityRef = latestMemory.frontmatter.entityRef;
-    const latestCanonicalId = latestPreviousEntityRef ? mappings[latestPreviousEntityRef] : undefined;
-    if (!latestPreviousEntityRef || !latestCanonicalId) continue;
-    const memoryEncrypted = await deps.isEncryptedStorageFile(latestMemory.path);
-    await deps.snapshotBeforeWrite(latestMemory.path, "write");
-    await deps.writeStorageSecureFile(
-      latestMemory.path,
-      deps.serializeMemoryWithEntityRef(latestMemory, latestCanonicalId),
-      memoryEncrypted,
-    );
-    await deps.rewriteProjectedMemoryEntityReference(
-      latestMemory.frontmatter.id,
-      latestPreviousEntityRef,
-      latestCanonicalId,
-    );
-    rewroteColdMemory ||= latestMemory.path.includes(`${path.sep}cold${path.sep}`);
+  for (let pass = 0; pass < MEMORY_REWRITE_MAX_PASSES; pass += 1) {
+    deps.invalidateAllMemoriesCache();
+    deps.invalidateColdMemoriesCache();
+    const [hotMemories, coldMemories, archivedMemories] = await Promise.all([
+      deps.readAllMemories(),
+      deps.readAllColdMemories(),
+      deps.readArchivedMemories(),
+    ]);
+    const seenPaths = new Set<string>();
+    let rewroteAny = false;
+    for (const memory of [...hotMemories, ...coldMemories, ...archivedMemories]) {
+      const memoryPath = path.resolve(memory.path);
+      if (seenPaths.has(memoryPath)) continue;
+      seenPaths.add(memoryPath);
+      const previousEntityRef = memory.frontmatter.entityRef;
+      const canonicalId = previousEntityRef ? mappings[previousEntityRef] : undefined;
+      if (!previousEntityRef || !canonicalId) continue;
+      if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
+      const latestMemory = await deps.readMemoryByPath(memory.path);
+      if (!latestMemory) continue;
+      const latestPreviousEntityRef = latestMemory.frontmatter.entityRef;
+      const latestCanonicalId = latestPreviousEntityRef ? mappings[latestPreviousEntityRef] : undefined;
+      if (!latestPreviousEntityRef || !latestCanonicalId) continue;
+      const memoryEncrypted = await deps.isEncryptedStorageFile(latestMemory.path);
+      await deps.snapshotBeforeWrite(latestMemory.path, "write");
+      await deps.writeStorageSecureFile(
+        latestMemory.path,
+        deps.serializeMemoryWithEntityRef(latestMemory, latestCanonicalId),
+        memoryEncrypted,
+      );
+      await deps.rewriteProjectedMemoryEntityReference(
+        latestMemory.frontmatter.id,
+        latestPreviousEntityRef,
+        latestCanonicalId,
+      );
+      rewroteAny = true;
+      rewroteColdMemory ||= latestMemory.path.includes(`${path.sep}cold${path.sep}`);
+    }
+    if (!rewroteAny) return { rewroteColdMemory };
   }
-  return { rewroteColdMemory };
+  throw new Error("Memory references changed while entity canonical-id migration was running; retry migration.");
 }
 
 function rewriteTombstoneLine(
@@ -258,7 +291,7 @@ async function rewriteRelationshipTargets(
   refreshLock: () => Promise<boolean>
 ): Promise<boolean> {
   let rewritten = false;
-  const entries = await readdir(deps.entitiesDir);
+  const entries = await readSafeEntityEntries(deps.entitiesDir);
   for (const entry of entries) {
     if (!entry.endsWith(".md")) continue;
     const entityPath = deps.resolveEntityFilePath(entry.slice(0, -".md".length));
@@ -297,6 +330,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
     },
     async (acquired, lock) => {
       if (!acquired) throw new Error("Timed out waiting for active entity canonical-id migration.");
+      await readSafeEntityEntries(deps.entitiesDir);
       let state = await readState(deps);
       if (state?.complete) return;
       if (!state) {
@@ -317,6 +351,8 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
         if (legacyPath === null || canonicalPath === null) {
           throw new Error("Invalid entity canonical-id migration path.");
         }
+        await assertNotSymlink(legacyPath, legacyId);
+        await assertNotSymlink(canonicalPath, canonicalId);
         const legacyExists = await fileExists(legacyPath);
         const canonicalExists = await fileExists(canonicalPath);
         if (legacyExists && canonicalExists) {
@@ -359,9 +395,11 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
       }
 
       await rewriteRelationshipTargets(deps, state.mappings, () => lock.refresh());
-      const { rewroteColdMemory } = await rewriteReferences(deps, state.mappings, () => lock.refresh());
+      let rewroteColdMemory = (await rewriteReferences(deps, state.mappings, () => lock.refresh())).rewroteColdMemory;
       await rewriteTombstoneReferences(deps, state.mappings, () => lock.refresh());
       await deps.rewriteProjectedEntityReferences(state.mappings);
+      const finalMemoryPass = await rewriteReferences(deps, state.mappings, () => lock.refresh());
+      rewroteColdMemory ||= finalMemoryPass.rewroteColdMemory;
       deps.invalidateKnowledgeIndexCache();
       deps.invalidateAllMemoriesCache();
       if (rewroteColdMemory) deps.invalidateColdMemoriesCache();

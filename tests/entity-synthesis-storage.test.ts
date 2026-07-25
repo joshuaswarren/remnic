@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import {
   StorageManager,
   compareEntityTimestamps,
@@ -321,6 +321,72 @@ test("ensureDirectories preserves memory updates made after migration discovery"
   }
 });
 
+test("ensureDirectories rescans memories created during migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-memory-rescan-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const canonical = normalizeEntityName(name, type);
+    const legacyCanonical = "project-";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+    );
+    const day = new Date().toISOString().slice(0, 10);
+    const writeLegacyMemory = async (id: string) => {
+      const memoryPath = path.join(dir, "facts", day, `${id}.md`);
+      await mkdir(path.dirname(memoryPath), { recursive: true });
+      await writeFile(
+        memoryPath,
+        [
+          "---",
+          `id: ${id}`,
+          "category: fact",
+          "created: 2026-07-25T00:00:00.000Z",
+          `entityRef: ${legacyCanonical}`,
+          "---",
+          "",
+          `${id} content.`,
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+      return memoryPath;
+    };
+    await writeLegacyMemory("migration-rescan-first");
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+
+    const upgraded = new StorageManager(dir);
+    const originalReadAll = upgraded.readAllMemories.bind(upgraded);
+    const initialSnapshot = await originalReadAll();
+    let readAllCalls = 0;
+    let injected = false;
+    (upgraded as unknown as { readAllMemories: () => Promise<unknown> }).readAllMemories = async () => {
+      readAllCalls += 1;
+      const result = readAllCalls === 1 ? initialSnapshot : await originalReadAll();
+      if (!injected) {
+        injected = true;
+        await writeLegacyMemory("migration-rescan-second");
+      }
+      return result;
+    };
+    try {
+      await upgraded.ensureDirectories();
+    } finally {
+      (upgraded as unknown as { readAllMemories: typeof originalReadAll }).readAllMemories = originalReadAll;
+    }
+
+    assert.ok(readAllCalls >= 2);
+    const memories = await upgraded.readAllMemories();
+    assert.deepEqual(memories.map((memory) => memory.frontmatter.entityRef).sort(), [canonical, canonical]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories preserves relationships added after migration discovery", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-relationship-race-"));
   try {
@@ -548,6 +614,39 @@ test("ensureDirectories rejects duplicate canonical targets before migration", a
     await assert.rejects(() => readFile(path.join(dir, "entities", `${canonical}.md`), "utf-8"));
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories rejects symlinked entity roots and entries", async () => {
+  const entryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-symlink-entry-"));
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-symlink-root-"));
+  try {
+    const entrySeed = new StorageManager(entryDir);
+    await entrySeed.ensureDirectories();
+    const outsideEntity = path.join(entryDir, "outside-entity.md");
+    await writeFile(outsideEntity, "# Café\n**Type:** project\n", "utf-8");
+    await symlink(outsideEntity, path.join(entryDir, "entities", "project-caf.md"));
+    await rm(path.join(entryDir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+    await assert.rejects(
+      () => new StorageManager(entryDir).ensureDirectories(),
+      /symlink/i,
+    );
+
+    const rootSeed = new StorageManager(rootDir);
+    await rootSeed.ensureDirectories();
+    const realEntitiesDir = path.join(rootDir, "entities-real");
+    await rename(path.join(rootDir, "entities"), realEntitiesDir);
+    await symlink(realEntitiesDir, path.join(rootDir, "entities"));
+    await rm(path.join(rootDir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+    await assert.rejects(
+      () => new StorageManager(rootDir).ensureDirectories(),
+      /symlink/i,
+    );
+  } finally {
+    await Promise.all([
+      rm(entryDir, { recursive: true, force: true }),
+      rm(rootDir, { recursive: true, force: true }),
+    ]);
   }
 });
 
