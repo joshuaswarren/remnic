@@ -1,5 +1,7 @@
 const LAST_UPDATED_PREFIX = "*Last updated:";
 const PROFILE_TITLE = /^#\s+/;
+const MARKDOWN_HEADING = /^#{1,6}\s+/;
+const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d+[.)])\s+/;
 const UTF8_BOM = "\uFEFF";
 
 type FenceMarker = {
@@ -181,6 +183,10 @@ function findCompleteHtmlTag(line: string): HtmlTag | null {
     }
   }
   return null;
+}
+function isRawHtmlBlockTerminator(line: string): boolean {
+  const tag = findCompleteHtmlTag(line.trim());
+  return tag?.isClosing === true && RAW_HTML_BLOCK_TAGS.some((name) => name === tag.name);
 }
 
 function findHtmlTags(line: string): HtmlTag[] {
@@ -410,6 +416,17 @@ function findProfileTitleIndex(lines: ProfileLine[]): number {
   return titleIndex;
 }
 
+function isMetadataBoundary(line: string): boolean {
+  return (
+    line === "" ||
+    MARKDOWN_HEADING.test(line) ||
+    MARKDOWN_LIST_ITEM.test(line) ||
+    isLastUpdatedHeader(line) ||
+    getFenceMarker(line) !== null ||
+    isRawHtmlBlockTerminator(line)
+  );
+}
+
 function isStandaloneMetadataLine(
   lines: ProfileLine[],
   index: number,
@@ -421,16 +438,8 @@ function isStandaloneMetadataLine(
     ? previousLine.slice(1)
     : previousLine;
   const nextWithoutBom = nextLine.startsWith(UTF8_BOM) ? nextLine.slice(1) : nextLine;
-  const previousMetadataBoundary =
-    previousLine === "" ||
-    PROFILE_TITLE.test(previousWithoutBom) ||
-    isLastUpdatedHeader(previousLine) ||
-    getFenceMarker(previousWithoutBom) !== null;
-  const nextMetadataBoundary =
-    nextLine === "" ||
-    PROFILE_TITLE.test(nextWithoutBom) ||
-    isLastUpdatedHeader(nextLine) ||
-    getFenceMarker(nextWithoutBom) !== null;
+  const previousMetadataBoundary = isMetadataBoundary(previousWithoutBom);
+  const nextMetadataBoundary = isMetadataBoundary(nextWithoutBom);
   const startsBlock =
     index === 0 || index === frontmatterEnd + 1 || previousMetadataBoundary;
   const endsBlock = index === lines.length - 1 || nextMetadataBoundary;

@@ -518,6 +518,68 @@ test("writeProfile retains a BOM when removing a duplicate pre-title header", as
   }
 });
 
+test("writeProfile recognizes heading and list metadata boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profiles = [
+        [
+          "# Behavioral Profile",
+          "",
+          "## Notes",
+          STALE_HEADER,
+          "",
+          "- Keeps heading metadata.",
+          "",
+        ].join("\n"),
+        [
+          "# Behavioral Profile",
+          "",
+          "- Existing note.",
+          STALE_HEADER,
+          "",
+          "- Keeps list metadata.",
+          "",
+        ].join("\n"),
+      ];
+
+      for (const profile of profiles) {
+        await storage.writeProfile(profile);
+        assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+      }
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile recognizes raw HTML terminators as metadata boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<pre>",
+        "Literal preformatted content.",
+        "</pre>",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after raw HTML.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile removes duplicate stale headers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
