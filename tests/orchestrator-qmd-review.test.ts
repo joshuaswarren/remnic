@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { Orchestrator, type QueryAwarePrefilter } from "../src/orchestrator.js";
+import type { QmdSearchResult } from "../src/types.js";
 import { registerTools } from "../src/tools.ts";
 
 const EMPTY_PREFILTER = {
@@ -643,7 +644,12 @@ test("cold fallback keeps absolute query-aware fallback hits under active runtim
   orchestrator.qmd = {
     isAvailable: () => false,
   };
-  orchestrator.searchQueryAwareFallback = async () => [
+  orchestrator.searchQueryAwareFallback = async (
+    _prompt: string,
+    _limit: number,
+    _queryAwarePrefilter?: QueryAwarePrefilter,
+    _abortSignal?: AbortSignal,
+  ): Promise<QmdSearchResult[]> => [
     {
       docid: memory.frontmatter.id,
       path: memory.path,

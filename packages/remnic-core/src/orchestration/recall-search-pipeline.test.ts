@@ -144,6 +144,35 @@ test("query-aware fallback excludes root archive candidates before its cap", asy
   assert.deepEqual(out.map((r) => r.path), ["facts/a.md"]);
 });
 
+test("query-aware fallback retains non-active candidates for historical filtering", async () => {
+  let optionsSeen: { allowArchived?: boolean } | undefined;
+  const searchScopedMemoryCandidates: RecallSearchPipelineDeps["searchScopedMemoryCandidates"] = async (
+    candidatePaths,
+    _query,
+    limit,
+    options,
+  ) => {
+    optionsSeen = options;
+    return [result("default", "facts/superseded.md")]
+      .filter((candidate) => candidatePaths.has(candidate.path))
+      .slice(0, limit);
+  };
+  const coordinator = new RecallSearchPipelineCoordinator({
+    config: { memoryDir: "/mem" },
+    namespaceFromPath: () => "default",
+    searchScopedMemoryCandidates,
+  } as unknown as RecallSearchPipelineDeps);
+
+  const out = await coordinator.searchQueryAwareFallback(
+    "historical incident",
+    1,
+    prefilter(["facts/superseded.md"]),
+  );
+
+  assert.deepEqual(out.map((candidate) => candidate.path), ["facts/superseded.md"]);
+  assert.deepEqual(optionsSeen, { allowArchived: true });
+});
+
 test("query-aware fallback overfetches scoped candidates before exclusion", async () => {
   // The scoped candidate order puts the NON-recallable meeting record FIRST;
   // capping the scoped fetch to the caller's limit (1) BEFORE the generic-recall

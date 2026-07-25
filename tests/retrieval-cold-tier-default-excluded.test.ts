@@ -4,15 +4,14 @@
  * Default recall skips the cold collection, does not re-query hot QMD, and
  * uses the query-aware fallback. Opting in queries the cold collection.
  */
-
+import { Orchestrator, type QueryAwarePrefilter } from "../src/orchestrator.js";
+import type { QmdSearchResult } from "../src/types.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import type { QmdSearchResult } from "../src/types.js";
 
 interface ColdAuditState {
   coldQmdCalls: number;
@@ -94,9 +93,12 @@ async function buildAuditedOrchestrator(opts: {
   };
 
   // Stub query-aware fallback so the default cold path remains observable.
-  orchestrator.searchQueryAwareFallback = async (): Promise<
-    QmdSearchResult[]
-  > => {
+  orchestrator.searchQueryAwareFallback = async (
+    _prompt: string,
+    _limit: number,
+    _queryAwarePrefilter?: QueryAwarePrefilter,
+    _abortSignal?: AbortSignal,
+  ): Promise<QmdSearchResult[]> => {
     state.queryAwareFallbackCalls += 1;
     return [];
   };

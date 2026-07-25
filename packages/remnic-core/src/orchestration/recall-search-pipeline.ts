@@ -690,6 +690,7 @@ export class RecallSearchPipelineCoordinator {
             candidatePaths,
             prompt,
             candidatePaths.size,
+            { allowArchived: true },
           )
         : []
     ).filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config, "qmd"));
