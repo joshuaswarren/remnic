@@ -57,7 +57,7 @@ import type {
 } from "./types.js";
 import { reportBufferSurpriseDistribution } from "./buffer-surprise-report.js";
 import { readJudgeVerdictStats } from "./extraction-judge-telemetry.js";
-import { summarizeCorpusAndReplica } from "./operator-doctor-replica.js";
+import { summarizeCorpusAndReplica } from "./operator-doctor-corpus.js";
 import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;

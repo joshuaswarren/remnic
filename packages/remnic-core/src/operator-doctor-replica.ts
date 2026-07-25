@@ -23,13 +23,11 @@
  * primary reporting path. Reconciliation is issue #2150.
  */
 
-import type { CorpusStorage, CorpusWatermark } from "./corpus-watermark.js";
-import { corpusWatermarksFromCheck, summarizeCorpusWatermark } from "./operator-doctor-corpus.js";
+import type { CorpusWatermark } from "./corpus-watermark.js";
 import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
-import { type FetchLike, type ReplicaPeerReport, pollReplicaPeers } from "./replica-divergence.js";
+import { type FetchLike, type ReplicaPeerReport, gateReportByCensus, pollReplicaPeers } from "./replica-divergence.js";
 import { resolveReplicaPeersConfig, type ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
-import type { PluginConfig } from "./types.js";
 
 export interface SummarizeReplicaDivergenceOptions {
   now?: Date;
@@ -89,10 +87,17 @@ export async function summarizeReplicaDivergence(
     resolveSecretRef: options.resolveSecretRef,
     fetchImpl: options.fetchImpl,
   });
-  const diverged = report.peers.filter((peer) => peer.state === "diverged");
-  const unreachable = report.peers.filter((peer) => peer.state === "unreachable" || peer.state === "unknown");
-  const lines = report.peers.map(formatPeerLine);
-  const censusIncomplete = options.localCensusComplete === false;
+  // Apply the SAME census gate /health uses (round 6): otherwise the doctor
+  // renders `peer: converged` lines and converged `details` while /health
+  // downgrades those same peers to `unknown`/`local_census_incomplete`, so a
+  // machine reading doctor JSON sees agreement /health denies. Gating here
+  // turns every would-be-converged peer into `unknown` when the local census
+  // was incomplete, so both surfaces derive peer state from one function.
+  const gated = gateReportByCensus(report, options.localCensusComplete !== false);
+  const diverged = gated.peers.filter((peer) => peer.state === "diverged");
+  const unreachable = gated.peers.filter((peer) => peer.state === "unreachable" || peer.state === "unknown");
+  const lines = gated.peers.map(formatPeerLine);
+  const censusIncomplete = gated.censusComplete === false;
 
   if (diverged.length > 0 || unreachable.length > 0 || censusIncomplete) {
     const counts = [`${diverged.length} diverged`, `${unreachable.length} unreachable/unknown`];
@@ -101,7 +106,7 @@ export async function summarizeReplicaDivergence(
       key: "replica_divergence",
       status: "warn",
       summary:
-        `Replica divergence across ${report.peers.length} peer(s): ` +
+        `Replica divergence across ${gated.peers.length} peer(s): ` +
         `${counts.join(", ")}. ${lines.join("; ")}`,
       remediation:
         (censusIncomplete
@@ -111,37 +116,14 @@ export async function summarizeReplicaDivergence(
         "Investigate the flagged peer(s): a diverged peer's corpus differs beyond the configured threshold " +
         "(a possible split-brain — the pair's recall will differ across failover); an unreachable/unknown peer " +
         "could not be polled or compared. Detection only; reconciliation is tracked in issue #2150.",
-      details: report,
+      details: gated,
     };
   }
 
   return {
     key: "replica_divergence",
     status: "ok",
-    summary: `All ${report.peers.length} replica peer(s) converged. ${lines.join("; ")}`,
-    details: report,
+    summary: `All ${gated.peers.length} replica peer(s) converged. ${lines.join("; ")}`,
+    details: gated,
   };
-}
-
-/**
- * Build the corpus-watermark and replica-divergence doctor checks together.
- *
- * They are paired deliberately: the replica comparison consumes the corpus
- * check's watermarks (one scan, not two) AND its completeness — an incomplete
- * local census must not let the replica check certify convergence. Keeping the
- * pairing here rather than in `runOperatorDoctor` means the invariant lives
- * next to the code that depends on it.
- */
-export async function summarizeCorpusAndReplica(
-  config: PluginConfig,
-  storageFactory: (dir: string) => CorpusStorage,
-  resolveSecretRef?: ResolveSecretRefFn | null,
-): Promise<OperatorDoctorCheck[]> {
-  const watermarkCheck = await summarizeCorpusWatermark(config, storageFactory);
-  const replicaCheck = await summarizeReplicaDivergence(
-    config.replicaPeers,
-    corpusWatermarksFromCheck(watermarkCheck),
-    { resolveSecretRef, localCensusComplete: watermarkCheck.status === "ok" },
-  );
-  return [watermarkCheck, replicaCheck];
 }

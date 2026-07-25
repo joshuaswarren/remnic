@@ -133,6 +133,39 @@ function writeAgeDeltaMs(local: string | null, peer: string | null): number | nu
 }
 
 /**
+ * THE replica certification ladder (issue #2149, review round 6). `converged` is
+ * an affirmative "these replicas agree" claim, so it is returned ONLY from
+ * evidence that can support it (AGENTS.md §22); every other outcome defaults to
+ * the safe non-converged side. The monitor, the doctor, and the capability
+ * filter all decide state HERE so they cannot drift. Precedence:
+ *   1. any diverged namespace          -> `diverged` (a positive finding wins);
+ *   2. any local-only namespace        -> `unknown`/`namespace_scope_unverifiable`
+ *      (a scoped peer token hides it, and a genuine peer loss omits it the same
+ *      way — unprovable in either direction);
+ *   3. NO namespace present on both     -> `unknown`/`no_shared_namespaces` (an
+ *      empty local corpus, a peer token that scoped out every namespace, or a
+ *      capability filter that removed every visible delta all leave zero shared
+ *      evidence, which cannot certify agreement);
+ *   4. otherwise                        -> `converged`.
+ * A genuinely empty single-namespace deployment still shares that namespace on
+ * both sides (0 files == 0 files) and converges; only a comparison with NO
+ * overlapping namespace at all is `no_shared_namespaces`.
+ */
+function verdictFromDeltas(namespaces: readonly ReplicaNamespaceDelta[]): {
+  state: "converged" | "diverged" | "unknown";
+  reason?: string;
+} {
+  if (namespaces.some((delta) => delta.diverged)) return { state: "diverged" };
+  if (namespaces.some((delta) => delta.presence === "local_only")) {
+    return { state: "unknown", reason: "namespace_scope_unverifiable" };
+  }
+  if (!namespaces.some((delta) => delta.presence === "both")) {
+    return { state: "unknown", reason: "no_shared_namespaces" };
+  }
+  return { state: "converged" };
+}
+
+/**
  * Compare a local watermark set against a peer's, per namespace. A namespace on
  * only one side is its own outcome (never silently skipped):
  * - `peer_only` is divergence — the peer holds data we lack.
@@ -140,17 +173,19 @@ function writeAgeDeltaMs(local: string | null, peer: string | null): number | nu
  *   namespaces it cannot see (not divergence), but an unrestricted peer that
  *   genuinely lost the namespace omits it the SAME way, so it cannot be
  *   certified converged either. It resolves the peer to `unknown` (codex P1).
- * Digest mismatch flags divergence ONLY at EQUAL file counts — the split-brain
- * case the issue exists for (equal size, different content). Any nonzero count
- * delta already perturbs the census digest, so flagging digest there too would
- * make `maxFileCountDelta` unreachable (codex P2); within tolerance the count
- * delta is the sole signal.
+ * Digest mismatch flags divergence ONLY at EQUAL total file counts — the same
+ * number of files distributed differently across `<tier>:<category>/<day>`
+ * buckets (a distribution split-brain). The digest hashes per-bucket COUNTS, so
+ * it does NOT catch two replicas whose buckets hold equal counts but different
+ * file contents. Any nonzero count delta already perturbs the digest, so
+ * flagging digest there too would make `maxFileCountDelta` unreachable (codex
+ * P2); within tolerance the count delta is the sole signal.
  */
 export function compareReplicaWatermarks(
   local: readonly CorpusWatermark[],
   peer: readonly CorpusWatermark[],
   thresholds: Pick<ReplicaPeersConfig, "maxFileCountDelta" | "maxWatermarkAgeDeltaMs">,
-): { state: "converged" | "diverged" | "unknown"; namespaces: ReplicaNamespaceDelta[]; divergedNamespaceCount: number } {
+): { state: "converged" | "diverged" | "unknown"; reason?: string; namespaces: ReplicaNamespaceDelta[]; divergedNamespaceCount: number } {
   const byLocal = new Map(local.map((watermark) => [watermark.namespace, watermark]));
   const byPeer = new Map(peer.map((watermark) => [watermark.namespace, watermark]));
   const allNamespaces = [...new Set([...byLocal.keys(), ...byPeer.keys()])].sort((a, b) =>
@@ -216,6 +251,13 @@ export function compareReplicaWatermarks(
     if (ageDelta !== null && ageDelta > thresholds.maxWatermarkAgeDeltaMs) {
       reasons.push(`write_age_delta_ms=${ageDelta}`);
     }
+    // One side has a dated newest write while the other reports null: with matching
+    // counts+digests that is inconsistent (a shared bucket census implies the same
+    // hot day-partitions), so it is asymmetric/corrupt telemetry, not agreement — a
+    // missing measurement cannot prove convergence (round 6, codex).
+    if ((l.newestWriteAt === null) !== (p.newestWriteAt === null)) {
+      reasons.push("newest_write_presence_mismatch");
+    }
     return {
       namespace,
       presence: "both",
@@ -232,18 +274,21 @@ export function compareReplicaWatermarks(
   });
 
   const divergedNamespaceCount = namespaces.filter((delta) => delta.diverged).length;
-  const hasAmbiguousLocalOnly = namespaces.some((delta) => delta.presence === "local_only");
-  // Precedence: real divergence > ambiguous local-only (unverifiable) > agreement.
-  const state = divergedNamespaceCount > 0 ? "diverged" : hasAmbiguousLocalOnly ? "unknown" : "converged";
-  return { state, namespaces, divergedNamespaceCount };
+  const verdict = verdictFromDeltas(namespaces);
+  return { state: verdict.state, reason: verdict.reason, namespaces, divergedNamespaceCount };
 }
 
 // ---------------------------------------------------------------------------
 // Peer fetch
 // ---------------------------------------------------------------------------
 
-/** Dual-prefix health paths: prefer the current `remnic` prefix, fall back to legacy `engram`. */
-const HEALTH_PATHS = ["/remnic/v1/health", "/engram/v1/health"] as const;
+/**
+ * Dual-prefix health probe order: try the path THIS server actually registers
+ * first (access-http.ts serves `/engram/v1/health` only), then the `/remnic/v1`
+ * prefix as forward-compat fallback. Probing an unregistered path first would
+ * make every same-version peer pay a 404 (round 6, codex P2).
+ */
+const HEALTH_PATHS = ["/engram/v1/health", "/remnic/v1/health"] as const;
 
 export type FetchLike = (input: string, init?: { headers?: Record<string, string>; signal?: AbortSignal }) => Promise<{
   ok: boolean;
@@ -256,6 +301,17 @@ export interface FetchPeerOptions {
   resolveSecretRef?: ResolveSecretRefFn | null;
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: FetchLike;
+  /**
+   * Max age (ms) a peer census `computedAt` may reach before the peer is treated
+   * as `unknown`/`peer_census_stale` — a snapshot older than this predates
+   * changes it may not reflect, so it cannot certify convergence (round 6, codex
+   * P1). Reuses the caller's `maxWatermarkAgeDeltaMs`; when unset OR non-positive,
+   * no staleness gate is applied (a 0 bound is the strictest DIVERGENCE mode, not
+   * a 0ms freshness gate — round 6, cursor).
+   */
+  maxCensusAgeMs?: number;
+  /** Wall clock (ms) the staleness gate measures `computedAt` against; defaults to now. */
+  nowMs?: number;
 }
 
 /** Redact a peer URL to `host:port` — strips userinfo/path/query so a credential in a URL cannot leak. */
@@ -308,14 +364,43 @@ function coerceCorpusWatermark(raw: unknown): CorpusWatermark | null {
     if (typeof record.newestWriteAt !== "string" || !Number.isFinite(Date.parse(record.newestWriteAt))) return null;
     newestWriteAt = record.newestWriteAt;
   }
+  // `computedAt` must be a present, parseable timestamp: an empty/unparseable
+  // value is corrupted telemetry, and the staleness gate (fetchPeerWatermarks)
+  // needs a real instant. A missing/bad computedAt routes the whole peer to
+  // `malformed_corpus`, never a certified convergence (round 6, codex P1).
+  if (typeof record.computedAt !== "string" || !Number.isFinite(Date.parse(record.computedAt))) {
+    return null;
+  }
   return {
     namespace: record.namespace,
     memoryFileCount: record.memoryFileCount,
     newestPartition: typeof record.newestPartition === "string" ? record.newestPartition : null,
     newestWriteAt,
     digest: record.digest,
-    computedAt: typeof record.computedAt === "string" ? record.computedAt : "",
+    computedAt: record.computedAt,
   };
+}
+
+/** Sentinel rejection for {@link withDeadline} timeouts (distinct from a resolver error). */
+const DEADLINE_TIMEOUT = Symbol("deadline_timeout");
+/**
+ * Bound a promise by an absolute deadline: reject with {@link DEADLINE_TIMEOUT} if
+ * it has not settled by `deadlineMs`. Keeps a stalling peer-token resolver from
+ * hanging the whole per-peer fetch (round 6, codex). The wrapped promise is
+ * abandoned on timeout; the race keeps its later settlement handled, so it never
+ * surfaces as an unhandled rejection.
+ */
+async function withDeadline<T>(promise: Promise<T>, deadlineMs: number): Promise<T> {
+  const { promise: expiry, reject } = Promise.withResolvers<never>();
+  // The deadline timer is NOT unref'd: it is the mechanism enforcing the bound,
+  // so it must fire even when the wrapped promise (e.g. a stalled token resolver)
+  // holds nothing else on the event loop. It is always cleared below on settle.
+  const timer = setTimeout(() => reject(DEADLINE_TIMEOUT), Math.max(1, deadlineMs - Date.now()));
+  try {
+    return await Promise.race([promise, expiry]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -328,19 +413,26 @@ export async function fetchPeerWatermarks(
   options: FetchPeerOptions,
 ): Promise<PeerFetchOutcome> {
   const doFetch = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
-  let token: string | undefined;
-  try {
-    token = await resolveAgentAccessAuthToken(peer.token, { resolveSecretRef: options.resolveSecretRef });
-  } catch {
-    // A SecretRef token with no resolver (or a resolver failure) must degrade to
-    // a per-peer failure, never throw and abort the whole poll (review round 1).
-    return { kind: "unreachable", reason: "token_error" };
-  }
-  const base = peer.url.replace(/\/+$/, "");
   // ONE deadline for the whole peer, not one per prefix: a preferred path that
   // 404s just under the limit would otherwise hand the legacy fallback a fresh
   // full budget and double the documented per-peer bound (round 5, codex P2).
+  // Token resolution runs UNDER this deadline too: a SecretRef whose host
+  // resolver stalls would otherwise hang this call forever, wedging the monitor's
+  // single-flight refresh and blocking doctor's whole peer batch (round 6, codex).
   const deadline = Date.now() + options.timeoutMs;
+  let token: string | undefined;
+  try {
+    token = await withDeadline(
+      resolveAgentAccessAuthToken(peer.token, { resolveSecretRef: options.resolveSecretRef }),
+      deadline,
+    );
+  } catch (error) {
+    // No resolver, a resolution failure, or a resolver that stalls past the
+    // deadline all degrade to a per-peer failure — never a throw or a hang
+    // (review round 1; round 6 adds the stall/timeout case).
+    return { kind: "unreachable", reason: error === DEADLINE_TIMEOUT ? "timeout" : "token_error" };
+  }
+  const base = peer.url.replace(/\/+$/, "");
 
   for (let i = 0; i < HEALTH_PATHS.length; i += 1) {
     const path = HEALTH_PATHS[i];
@@ -383,6 +475,21 @@ export async function fetchPeerWatermarks(
     // matching one would certify `converged` (round 3, codex P2).
     if (new Set(corpus.map((watermark) => watermark.namespace)).size !== corpus.length) {
       return { kind: "unknown", reason: "malformed_corpus" };
+    }
+    // A peer census whose `computedAt` is too far from the poll time in EITHER
+    // direction cannot certify convergence — treat it as `unknown`, not health
+    // (round 6, codex). Too OLD predates changes it may not reflect; too far in
+    // the FUTURE is corrupt/clock-skewed telemetry (e.g. a 9999 timestamp) that
+    // would otherwise read as indefinitely fresh. `computedAt` is validated
+    // parseable above. A non-positive bound disables the gate: maxWatermarkAgeDeltaMs=0
+    // is the strictest DIVERGENCE mode ("flag any write-age gap"), NOT a 0ms
+    // census-freshness bound that would mark every peer stale (round 6, cursor).
+    const maxCensusAgeMs = options.maxCensusAgeMs;
+    if (maxCensusAgeMs !== undefined && maxCensusAgeMs > 0) {
+      const now = options.nowMs ?? Date.now();
+      if (corpus.some((watermark) => Math.abs(now - Date.parse(watermark.computedAt)) > maxCensusAgeMs)) {
+        return { kind: "unknown", reason: "peer_census_stale" };
+      }
     }
     return { kind: "ok", corpus };
   }
@@ -448,6 +555,8 @@ export async function pollReplicaPeers(options: PollReplicaPeersOptions): Promis
           timeoutMs: config.requestTimeoutMs,
           resolveSecretRef: options.resolveSecretRef,
           fetchImpl: options.fetchImpl,
+          maxCensusAgeMs: config.maxWatermarkAgeDeltaMs,
+          nowMs: options.now?.getTime(),
         });
         if (outcome.kind !== "ok") {
           return { peer: label, state: outcome.kind, polledAt, namespaces: [], divergedNamespaceCount: 0, reason: outcome.reason };
@@ -460,10 +569,10 @@ export async function pollReplicaPeers(options: PollReplicaPeersOptions): Promis
           namespaces: comparison.namespaces,
           divergedNamespaceCount: comparison.divergedNamespaceCount,
         };
-        // A comparison that resolves to `unknown` (ambiguous local-only namespace)
-        // carries a token-free reason so /health and doctor show WHY it is not
-        // certified converged.
-        if (comparison.state === "unknown") peerReport.reason = "namespace_scope_unverifiable";
+        // A comparison that resolves to `unknown` (ambiguous local-only, or no
+        // shared namespace) carries a token-free reason so /health and doctor
+        // show WHY it is not certified converged (round 6).
+        if (comparison.reason) peerReport.reason = comparison.reason;
         return peerReport;
       } catch {
         // Defense in depth: no per-peer error may reject the whole poll (§22).
@@ -497,7 +606,10 @@ function logDivergence(log: PollReplicaPeersOptions["log"], report: ReplicaDiver
  * namespace-restricted token must not learn about namespaces it cannot see. A
  * peer's reachability state carries no namespace data and is preserved; a
  * comparison peer's visible state is recomputed from its visible deltas so
- * divergence in a hidden namespace never leaks as a "diverged" verdict.
+ * divergence in a hidden namespace never leaks as a "diverged" verdict. The
+ * census gate is then re-applied to the FILTERED view: filtering can hide a real
+ * shared divergence and leave a peer_only delta that must not read as a false
+ * split-brain to a restricted caller under an incomplete census (round 6, codex).
  */
 export function filterReplicaReportByCaps(
   report: ReplicaDivergenceStatus,
@@ -512,27 +624,72 @@ export function filterReplicaReportByCaps(
     if (peer.namespaces.length === 0) return peer;
     const namespaces = peer.namespaces.filter((delta) => capabilityAllowsNamespace(caps ?? undefined, delta.namespace));
     const divergedNamespaceCount = namespaces.filter((delta) => delta.diverged).length;
-    const hasAmbiguousLocalOnly = namespaces.some((delta) => delta.presence === "local_only");
-    // A census-level `unknown` is NOT namespace-scoped: it says the local set
-    // was partial, which no amount of capability filtering can make safe. Never
-    // recompute it back to `converged` (round 5, cursor).
-    const censusUnknown = peer.state === "unknown" && peer.reason === "local_census_incomplete";
-    const state = censusUnknown
-      ? "unknown"
-      : divergedNamespaceCount > 0
-        ? "diverged"
-        : hasAmbiguousLocalOnly
-          ? "unknown"
-          : "converged";
-    const filtered: ReplicaPeerReport = { ...peer, namespaces, divergedNamespaceCount, state };
-    // The comparison-`unknown` reason is generic (no namespace name); keep it
-    // only while the visible state stays unknown, else drop the stale reason.
-    if (censusUnknown) filtered.reason = "local_census_incomplete";
-    else if (state === "unknown") filtered.reason = "namespace_scope_unverifiable";
+    // A census-level `unknown` is NOT namespace-scoped: it says the local set was
+    // partial, which no amount of capability filtering can make safe. It survives
+    // the recompute verbatim (round 5, cursor).
+    if (peer.state === "unknown" && peer.reason === "local_census_incomplete") {
+      return { ...peer, namespaces, divergedNamespaceCount };
+    }
+    // Otherwise re-certify from the VISIBLE deltas through the one shared ladder.
+    // A token that hid EVERY namespace of this peer now sees zero shared
+    // evidence, which `verdictFromDeltas` resolves to `unknown` — never a
+    // convergence claim derived from nothing (round 6, coderabbit).
+    const verdict = verdictFromDeltas(namespaces);
+    const filtered: ReplicaPeerReport = { ...peer, namespaces, divergedNamespaceCount, state: verdict.state };
+    if (verdict.reason) filtered.reason = verdict.reason;
     else delete filtered.reason;
     return filtered;
   });
-  return { ...report, peers };
+  // Re-apply the census gate to the FILTERED view: hiding a real shared-namespace
+  // divergence can leave a visible peer_only delta that would falsely read as
+  // diverged to a restricted caller when the local census was incomplete. The
+  // gate is a no-op for a complete census (round 6, codex).
+  return gateReportByCensus({ ...report, peers }, report.censusComplete !== false);
+}
+
+// ---------------------------------------------------------------------------
+// Local-census completeness gate (shared by monitor + doctor)
+// ---------------------------------------------------------------------------
+
+/**
+ * Overlay the LOCAL-census half of the certification rule onto a whole report:
+ * a peer is `converged` only when the local census scanned EVERY configured
+ * namespace — a dropped local tenant never enters the comparison, so its
+ * divergence would be invisible (round 4). Applied identically by the
+ * background monitor (/health) and `summarizeReplicaDivergence` (doctor) so the
+ * two surfaces cannot disagree about an incomplete census (round 6). Under an
+ * incomplete census every `peer_only` delta is NEUTRALIZED (an incomplete local
+ * scan cannot tell a namespace we genuinely lack from one we merely failed to
+ * read — a false split-brain), so it stops counting as divergence. A peer then
+ * stays `diverged` ONLY if a REAL shared-namespace divergence remains; otherwise
+ * (converged, or peer_only-only) it is `unknown`/`local_census_incomplete`.
+ * unreachable/unknown already carry a truthful state and stand.
+ */
+export function gateReportByCensus(
+  report: ReplicaDivergenceStatus,
+  censusComplete: boolean,
+): ReplicaDivergenceStatus {
+  if (censusComplete) return { ...report, censusComplete: true };
+  return {
+    ...report,
+    censusComplete: false,
+    peers: report.peers.map((peer) => {
+      if (peer.state === "unreachable" || peer.state === "unknown") return peer;
+      // Neutralize every `peer_only` delta: against a partial local set a namespace
+      // we failed to scan is indistinguishable from one we genuinely lack, so it
+      // must not count as divergence or claim "absent locally" (round 6, codex).
+      // A REAL shared-namespace divergence still stands.
+      const namespaces = peer.namespaces.map((delta) =>
+        delta.presence === "peer_only" && delta.diverged
+          ? { ...delta, diverged: false, reasons: ["namespace_absent_locally_unverified"] }
+          : delta,
+      );
+      const divergedNamespaceCount = namespaces.filter((delta) => delta.diverged).length;
+      const hasSharedDivergence = namespaces.some((delta) => delta.presence === "both" && delta.diverged);
+      if (hasSharedDivergence) return { ...peer, namespaces, divergedNamespaceCount };
+      return { ...peer, namespaces, divergedNamespaceCount, state: "unknown" as const, reason: "local_census_incomplete" };
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +714,8 @@ export interface ReplicaDivergenceMonitorOptions {
  */
 export class ReplicaDivergenceMonitor {
   private cached: { report: ReplicaDivergenceStatus; expiresAt: number } | undefined;
+  /** Earliest clock() at which a failed poll may retry — enforces backoff (round 6). */
+  private nextAttemptAt = 0;
   private inFlight: Promise<void> | undefined;
   private readonly clock: () => number;
   private readonly resolveSecretRef: ResolveSecretRefFn | null | undefined;
@@ -588,7 +747,11 @@ export class ReplicaDivergenceMonitor {
     if (!config.enabled) return { enabled: false, pending: false, polledAt: null, peers: [] };
     if (config.peers.length === 0) return { enabled: true, pending: false, polledAt: null, peers: [] };
     const fresh = this.cached !== undefined && this.clock() < this.cached.expiresAt;
-    if (!fresh) this.refresh(config, input.computeLocalWatermarks);
+    // A failed poll backs off for one interval: refreshing again on the very
+    // next probe would re-run a full local corpus scan + peer fan-out per
+    // request (round 6, coderabbit). Serve the last good report if any, else the
+    // pending placeholder — both truthful, neither `converged`.
+    if (!fresh && this.clock() >= this.nextAttemptAt) this.refresh(config, input.computeLocalWatermarks);
     if (this.cached) return filterReplicaReportByCaps(this.cached.report, input.caps ?? null);
     // Enabled with peers but no completed poll yet — distinct from "no peers".
     return { enabled: true, pending: true, polledAt: null, peers: [] };
@@ -609,23 +772,19 @@ export class ReplicaDivergenceMonitor {
       });
       // Expiry is measured from when the poll FINISHES, not when it starts: a
       // poll slower than pollIntervalMs would otherwise store an already-expired
-      // entry and re-poll on every probe (cursor: unbounded re-polling).
-      // An incomplete local census cannot certify convergence: an unscanned
-      // tenant never enters the comparison, so its divergence would be
-      // invisible. Downgrade any `converged` peer to `unknown` (round 4).
-      const gated: ReplicaDivergenceStatus = census.complete
-        ? { ...report, censusComplete: true }
-        : {
-            ...report,
-            censusComplete: false,
-            peers: report.peers.map((peer) =>
-              peer.state === "converged" ? { ...peer, state: "unknown" as const, reason: "local_census_incomplete" } : peer,
-            ),
-          };
+      // entry and re-poll on every probe (round 2, cursor). The census overlay
+      // (an incomplete local set cannot certify convergence) is the SAME shared
+      // gate the doctor applies, so /health and doctor cannot disagree (round 6).
+      const gated = gateReportByCensus(report, census.complete);
       this.cached = { report: gated, expiresAt: this.clock() + config.pollIntervalMs };
+      this.nextAttemptAt = 0; // a successful poll clears any failure backoff
     })()
       .catch(() => {
-        // A failed poll never caches — keep serving the last good report.
+        // A failed poll caches no REPORT, but MUST consume the interval: else
+        // every probe reschedules a full local corpus scan + peer fan-out on a
+        // corpus this feature exists to protect (round 6, coderabbit). Until
+        // nextAttemptAt, getReport serves the last good report or `pending`.
+        this.nextAttemptAt = this.clock() + config.pollIntervalMs;
       })
       .finally(() => {
         this.inFlight = undefined;

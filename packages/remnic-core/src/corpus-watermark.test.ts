@@ -25,6 +25,7 @@ import {
   buildPartitionCensus,
   computeCorpusWatermark,
   computeCorpusWatermarks,
+  computeServiceCorpusCensus,
   computeServiceCorpusWatermarks,
   digestPartitionCensus,
   resolveCorpusNamespaceRoots,
@@ -837,4 +838,24 @@ test("finding round-10: a non-directory category root fails a strict census (nam
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("round 6 (coderabbit): a failed namespace enumeration is an INCOMPLETE census, not an empty corpus", async () => {
+  // computeServiceCorpusCensus wraps resolveCorpusNamespaceRoots: when enumeration
+  // throws, the census must report complete:false (so a peer is never certified
+  // converged against it) rather than an empty set that reads as an empty deployment.
+  const throwingConfig = new Proxy({} as PluginConfig, {
+    get() {
+      throw new Error("namespace enumeration unavailable");
+    },
+  });
+  const host = {
+    config: throwingConfig,
+    getStorage: () => {
+      throw new Error("getStorage must not be reached once enumeration fails");
+    },
+  };
+  const census = await computeServiceCorpusCensus(host);
+  assert.equal(census.complete, false, "an enumeration failure is incomplete, never a certified empty census");
+  assert.deepEqual(census.watermarks, [], "and it yields no watermarks");
 });

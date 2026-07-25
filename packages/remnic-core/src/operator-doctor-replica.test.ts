@@ -18,6 +18,7 @@ import { parseConfig } from "./config.js";
 import type { CorpusWatermark } from "./corpus-watermark.js";
 import { summarizeReplicaDivergence } from "./operator-doctor-replica.js";
 import { type OperatorToolkitOrchestrator, runOperatorDoctor } from "./operator-toolkit.js";
+import type { ReplicaDivergenceStatus } from "./replica-divergence.js";
 import { type ReplicaPeersConfig, parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { StorageManager } from "./storage.js";
 import type { PluginConfig } from "./types.js";
@@ -29,7 +30,7 @@ function watermark(namespace: string, overrides: Partial<CorpusWatermark> = {}):
     newestPartition: "2026-03-08",
     newestWriteAt: "2026-03-08T00:00:00.000Z",
     digest: `digest-${namespace}`,
-    computedAt: "2026-03-08T00:00:00.000Z",
+    computedAt: new Date().toISOString(),
     ...overrides,
   };
 }
@@ -111,6 +112,30 @@ test("summarizeReplicaDivergence: a converged peer resolves ok", async () => {
     const check = await summarizeReplicaDivergence(replicaConfig({ enabled: true, peers: [{ url: peer.url }] }), local);
     assert.equal(check.status, "ok");
     assert.match(check.summary, /converged/i);
+  } finally {
+    await peer.close();
+  }
+});
+
+test("summarizeReplicaDivergence: an incomplete local census downgrades a converged peer AND warns (round 6)", async () => {
+  // /health downgrades a would-be-converged peer to unknown/local_census_incomplete
+  // when the local census is partial; the doctor must derive the SAME peer state
+  // through the shared gate, not render `peer: converged` with converged details.
+  const local = [watermark("global")];
+  const peer = await startPeer(healthHandler(local));
+  try {
+    const check = await summarizeReplicaDivergence(
+      replicaConfig({ enabled: true, peers: [{ url: peer.url }] }),
+      local,
+      { localCensusComplete: false },
+    );
+    assert.equal(check.status, "warn", "an incomplete local census cannot certify convergence");
+    assert.match(check.summary, /local census incomplete/i);
+    const report = check.details as ReplicaDivergenceStatus;
+    assert.equal(report.censusComplete, false);
+    assert.equal(report.peers[0]?.state, "unknown", "the peer detail is downgraded, not left converged");
+    assert.equal(report.peers[0]?.reason, "local_census_incomplete");
+    assert.notEqual(report.peers[0]?.state, "converged");
   } finally {
     await peer.close();
   }

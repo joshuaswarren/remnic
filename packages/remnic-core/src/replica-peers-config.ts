@@ -19,6 +19,9 @@ const DEFAULT_POLL_INTERVAL_MS = 300_000; // 5 min
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_FILE_COUNT_DELTA = 100;
 const DEFAULT_MAX_WATERMARK_AGE_DELTA_MS = 900_000; // 15 min
+/** Node clamps a `setTimeout`/`AbortSignal.timeout` delay above 2^31-1 ms to 1ms,
+ *  which would make `withDeadline` fire immediately and mark every peer unreachable. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export interface ReplicaPeerConfig {
   /** Base URL of the peer's agent-access HTTP server (http/https). */
@@ -73,11 +76,14 @@ function expandEnvValue(value: string): string {
  * explicit `null`) must coerce to an integer `>= min`, else THROW. A fractional
  * or out-of-range value is rejected, never floored/reinterpreted (§1/§17/§39).
  */
-function parseIntegerAtLeast(value: unknown, min: number, dflt: number, label: string): number {
+function parseIntegerAtLeast(value: unknown, min: number, dflt: number, label: string, max = Number.MAX_SAFE_INTEGER): number {
   if (value === undefined) return dflt;
   const coerced = coerceNumber(value);
   if (coerced === undefined || !Number.isFinite(coerced) || !Number.isInteger(coerced) || coerced < min) {
     throw new Error(`${label} must be an integer greater than or equal to ${min}; got ${JSON.stringify(value)}`);
+  }
+  if (coerced > max) {
+    throw new Error(`${label} must be an integer no greater than ${max}; got ${JSON.stringify(value)}`);
   }
   return coerced;
 }
@@ -90,14 +96,17 @@ function asRecord(value: unknown, label: string): Record<string, unknown> {
 }
 
 function parseReplicaPeerToken(raw: unknown, index: number): AgentAccessAuthToken | undefined {
-  // Only an OMITTED token selects unauthenticated polling. A present `null` is
-  // schema-invalid; silently dropping it polls without the credential and
-  // surfaces a healthy peer as `http_401`, hiding the real config error
-  // (round 4, codex P2).
+  // Only an OMITTED token selects unauthenticated polling. A present `null` (round
+  // 4, codex P2) or an explicit empty/whitespace string (round 6, codex P2) is a
+  // present-but-invalid credential: silently dropping it polls without the token
+  // and surfaces a healthy peer as `http_401`, hiding the real config error.
   if (raw === undefined) return undefined;
   if (typeof raw === "string") {
     const trimmed = raw.trim();
-    return trimmed.length === 0 ? undefined : expandEnvValue(trimmed);
+    if (trimmed.length === 0) {
+      throw new Error(`replicaPeers.peers[${index}].token must be a non-empty string or a SecretRef object`);
+    }
+    return expandEnvValue(trimmed);
   }
   if (isAgentAccessSecretRef(raw)) return raw;
   throw new Error(`replicaPeers.peers[${index}].token must be a string or a SecretRef object`);
@@ -117,6 +126,16 @@ function parseReplicaPeer(value: unknown, index: number): ReplicaPeerConfig {
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`replicaPeers.peers[${index}].url must be an http(s) URL (got ${parsed.protocol})`);
+  }
+  // The health path is appended to this base by string concatenation, so a query
+  // or fragment would corrupt the request URL (`https://h?x` + `/engram/v1/health`
+  // targets `/` with a mangled query; a fragment drops the path). Reject them at
+  // parse time — a peer URL must be a clean base (round 6, codex). Embedded
+  // credentials (`user:pass@host`) are rejected too: Node's fetch refuses to
+  // construct a request from a URL with credentials, so a healthy peer would
+  // falsely read as unreachable while redaction hid the config mistake.
+  if (parsed.search.length > 0 || parsed.hash.length > 0 || parsed.username.length > 0 || parsed.password.length > 0) {
+    throw new Error(`replicaPeers.peers[${index}].url must be a clean base URL (no query, fragment, or embedded credentials)`);
   }
   const token = parseReplicaPeerToken(record.token, index);
   return token === undefined ? { url } : { url, token };
@@ -156,7 +175,7 @@ export function parseReplicaPeersConfig(cfg: Record<string, unknown>): ReplicaPe
     enabled: parseStrictBool(block.enabled, false, "replicaPeers.enabled"),
     peers,
     pollIntervalMs: parseIntegerAtLeast(block.pollIntervalMs, 1, DEFAULT_POLL_INTERVAL_MS, "replicaPeers.pollIntervalMs"),
-    requestTimeoutMs: parseIntegerAtLeast(block.requestTimeoutMs, 1, DEFAULT_REQUEST_TIMEOUT_MS, "replicaPeers.requestTimeoutMs"),
+    requestTimeoutMs: parseIntegerAtLeast(block.requestTimeoutMs, 1, DEFAULT_REQUEST_TIMEOUT_MS, "replicaPeers.requestTimeoutMs", MAX_TIMER_DELAY_MS),
     maxFileCountDelta: parseIntegerAtLeast(block.maxFileCountDelta, 0, DEFAULT_MAX_FILE_COUNT_DELTA, "replicaPeers.maxFileCountDelta"),
     maxWatermarkAgeDeltaMs: parseIntegerAtLeast(
       block.maxWatermarkAgeDeltaMs,
@@ -184,17 +203,17 @@ export function resolveReplicaPeersConfig(block: unknown): ReplicaPeersConfig {
     enabled: coerceBool(record.enabled) ?? false,
     peers: resolveReplicaPeers(record.peers),
     pollIntervalMs: resolveIntegerAtLeast(record.pollIntervalMs, 1, DEFAULT_POLL_INTERVAL_MS),
-    requestTimeoutMs: resolveIntegerAtLeast(record.requestTimeoutMs, 1, DEFAULT_REQUEST_TIMEOUT_MS),
+    requestTimeoutMs: resolveIntegerAtLeast(record.requestTimeoutMs, 1, DEFAULT_REQUEST_TIMEOUT_MS, MAX_TIMER_DELAY_MS),
     maxFileCountDelta: resolveIntegerAtLeast(record.maxFileCountDelta, 0, DEFAULT_MAX_FILE_COUNT_DELTA),
     maxWatermarkAgeDeltaMs: resolveIntegerAtLeast(record.maxWatermarkAgeDeltaMs, 0, DEFAULT_MAX_WATERMARK_AGE_DELTA_MS),
   };
 }
 
 /** Lenient sibling of {@link parseIntegerAtLeast}: a present-but-invalid value falls back, never throws. */
-function resolveIntegerAtLeast(value: unknown, min: number, dflt: number): number {
+function resolveIntegerAtLeast(value: unknown, min: number, dflt: number, max = Number.MAX_SAFE_INTEGER): number {
   if (value === undefined) return dflt;
   const coerced = coerceNumber(value);
-  return coerced !== undefined && Number.isFinite(coerced) && Number.isInteger(coerced) && coerced >= min ? coerced : dflt;
+  return coerced !== undefined && Number.isFinite(coerced) && Number.isInteger(coerced) && coerced >= min && coerced <= max ? coerced : dflt;
 }
 
 /** Lenient peer list: a non-array is empty; a malformed entry is dropped, never thrown (read boundary). */

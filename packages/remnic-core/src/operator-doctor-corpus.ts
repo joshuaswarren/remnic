@@ -23,7 +23,9 @@ import {
   computeCorpusWatermarks,
   resolveCorpusNamespaceRoots,
 } from "./corpus-watermark.js";
+import { summarizeReplicaDivergence } from "./operator-doctor-replica.js";
 import type { OperatorDoctorCheck } from "./operator-toolkit.js";
+import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import type { PluginConfig } from "./types.js";
 
 const DIGEST_PREFIX_LENGTH = 12;
@@ -107,4 +109,28 @@ export function corpusWatermarksFromCheck(check: OperatorDoctorCheck): CorpusWat
   }
   // This check always stores a CorpusWatermark[] under `corpus` (guarded above).
   return details.corpus as CorpusWatermark[];
+}
+
+/**
+ * Build the corpus-watermark and replica-divergence doctor checks together.
+ *
+ * They are paired deliberately: the replica comparison consumes the corpus
+ * check's watermarks (one scan, not two) AND its completeness — an incomplete
+ * local census must not let the replica check certify convergence. The pairing
+ * lives HERE, next to the corpus check + `corpusWatermarksFromCheck` it consumes
+ * and the `PluginConfig` it needs, so the sibling replica module stays a light
+ * tsup DTS entry free of the heavy `PluginConfig` type graph (round 6, coderabbit).
+ */
+export async function summarizeCorpusAndReplica(
+  config: PluginConfig,
+  storageFactory: (dir: string) => CorpusStorage,
+  resolveSecretRef?: ResolveSecretRefFn | null,
+): Promise<OperatorDoctorCheck[]> {
+  const watermarkCheck = await summarizeCorpusWatermark(config, storageFactory);
+  const replicaCheck = await summarizeReplicaDivergence(
+    config.replicaPeers,
+    corpusWatermarksFromCheck(watermarkCheck),
+    { resolveSecretRef, localCensusComplete: watermarkCheck.status === "ok" },
+  );
+  return [watermarkCheck, replicaCheck];
 }
