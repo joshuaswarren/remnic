@@ -108,6 +108,7 @@ const HTML_BLOCK_TAGS = [
 
 type HtmlBlock = {
   endMarker: string | null;
+  endsAtBlankLine: boolean;
 };
 
 function findHtmlBlockTag(line: string, tags: readonly string[]): string | null {
@@ -115,7 +116,11 @@ function findHtmlBlockTag(line: string, tags: readonly string[]): string | null 
     const nextCharacter = line[tag.length + 1];
     if (
       line.startsWith(`<${tag}`) &&
-      (nextCharacter === ">" || nextCharacter === " " || nextCharacter === "\t")
+      (nextCharacter === undefined ||
+        nextCharacter === ">" ||
+        nextCharacter === "/" ||
+        nextCharacter === " " ||
+        nextCharacter === "\t")
     ) {
       return tag;
     }
@@ -125,15 +130,16 @@ function findHtmlBlockTag(line: string, tags: readonly string[]): string | null 
 
 function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBlock | null {
   const rawTag = findHtmlBlockTag(normalizedLine, RAW_HTML_BLOCK_TAGS);
-  if (rawTag) return { endMarker: `</${rawTag}>` };
-  if (normalizedLine.startsWith("<!--")) return { endMarker: "-->" };
-  if (normalizedLine.startsWith("<?")) return { endMarker: "?>" };
-  if (normalizedLine.startsWith("<![cdata[")) return { endMarker: "]]>" };
+  if (rawTag) return { endMarker: `</${rawTag}>`, endsAtBlankLine: false };
+  if (normalizedLine.startsWith("<!--")) return { endMarker: "-->", endsAtBlankLine: false };
+  if (normalizedLine.startsWith("<?")) return { endMarker: "?>", endsAtBlankLine: false };
+  if (normalizedLine.startsWith("<![cdata[")) return { endMarker: "]]>", endsAtBlankLine: false };
   const declarationFirst = trimmedLine[2];
   if (trimmedLine.startsWith("<!") && declarationFirst && declarationFirst >= "A" && declarationFirst <= "Z") {
-    return { endMarker: null };
+    return { endMarker: null, endsAtBlankLine: true };
   }
-  return findHtmlBlockTag(normalizedLine, HTML_BLOCK_TAGS) ? { endMarker: null } : null;
+  const blockTag = findHtmlBlockTag(normalizedLine, HTML_BLOCK_TAGS);
+  return blockTag ? { endMarker: `</${blockTag}>`, endsAtBlankLine: true } : null;
 }
 
 type ProfileLine = {
@@ -180,7 +186,7 @@ function visitProfileMetadataLines(
   let openHtmlBlock: HtmlBlock | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]?.content ?? "";
-    if (index <= frontmatterEnd || isIndentedCodeLine(line)) continue;
+    if (index <= frontmatterEnd) continue;
     const fence = getFenceMarker(line);
     if (openFence) {
       if (fence && isClosingFence(fence, openFence)) openFence = null;
@@ -189,11 +195,15 @@ function visitProfileMetadataLines(
     const trimmedLine = line.trimStart();
     const normalizedLine = trimmedLine.toLowerCase();
     if (openHtmlBlock) {
-      if (openHtmlBlock.endMarker ? normalizedLine.includes(openHtmlBlock.endMarker) : normalizedLine === "") {
+      if (
+        (openHtmlBlock.endMarker && normalizedLine.includes(openHtmlBlock.endMarker)) ||
+        (openHtmlBlock.endsAtBlankLine && normalizedLine === "")
+      ) {
         openHtmlBlock = null;
       }
       continue;
     }
+    if (isIndentedCodeLine(line)) continue;
     if (fence) {
       openFence = fence;
       continue;

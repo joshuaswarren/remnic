@@ -194,6 +194,87 @@ test("writeProfile ignores invalid backtick fence openers", async (t) => {
   }
 });
 
+test("writeProfile exits an ordinary HTML block at its closing tag", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "<div>",
+        "*Last updated: literal example*",
+        "</div>",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after HTML.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile preserves HTML blocks with multiline open tags", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<div",
+        '  class="example">',
+        "*Last updated: literal example*",
+        "</div>",
+        "",
+        "- Keeps multiline HTML.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\n<div", `\n\n${FRESH_HEADER}\n\n<div`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile closes an active HTML block before skipping indented code", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "<pre>",
+        "*Last updated: literal example*",
+        "    </pre>",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after HTML.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 
 test("writeProfile removes duplicate stale headers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
