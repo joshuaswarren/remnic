@@ -37,9 +37,9 @@ For the OpenClaw plugin these keys live under
 
 Every long-running memory store hits the same wall: the index keeps growing even
 though most of the value is in a small, recently-touched subset. Without retention,
-the BM25 index, the graph, and the cold-scan fallback all compound indefinitely;
-recall@K erodes because relevant recent facts compete with stale chatter;
-cold-start probes get slower; backups balloon.
+the BM25 index, the graph, and cold-tier search compound indefinitely; recall@K
+erodes because relevant recent facts compete with stale chatter; cold-start probes
+get slower; backups balloon.
 
 [agentmemory](https://github.com/rohitg00/agentmemory) explicitly calls year-2
 retention an unsolved problem. Remnic's answer is a value-scored two-tier substrate

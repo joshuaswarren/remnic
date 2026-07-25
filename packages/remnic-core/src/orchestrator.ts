@@ -3597,16 +3597,14 @@ export class Orchestrator {
     );
   }
 
-  private async searchLongTermArchiveFallback(
+  private async searchQueryAwareFallback(
     prompt: string,
-    recallNamespaces: string[],
     limit: number,
     queryAwarePrefilter?: QueryAwarePrefilter,
     abortSignal?: AbortSignal,
   ): Promise<QmdSearchResult[]> {
-    return this.recallSearchPipelineCoordinator.searchLongTermArchiveFallback(
+    return this.recallSearchPipelineCoordinator.searchQueryAwareFallback(
       prompt,
-      recallNamespaces,
       limit,
       queryAwarePrefilter,
       abortSignal,
@@ -3962,13 +3960,6 @@ export class Orchestrator {
     namespaces: string[],
   ): Promise<MemoryFile[]> {
     return this.namespaceReadFanoutCoordinator.readAllMemoriesForNamespaces(
-      namespaces,
-    );
-  }
-  private async readArchivedMemoriesForNamespaces(
-    namespaces: string[],
-  ): Promise<MemoryFile[]> {
-    return this.namespaceReadFanoutCoordinator.readArchivedMemoriesForNamespaces(
       namespaces,
     );
   }

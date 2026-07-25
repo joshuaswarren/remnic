@@ -834,7 +834,7 @@ test("qmd-unavailable recall never injects archive-only query-aware matches", as
   assert.ok(archived.some((memory: { frontmatter: { id: string } }) => memory.frontmatter.id === archivedId));
   const corpus = await Promise.all([
     storage.readAllMemories(),
-    (orchestrator as any).readArchivedMemoriesForNamespaces(["default"]),
+    storage.readArchivedMemories(),
   ]);
   await indexMemoriesBatch(
     orchestrator.config.memoryDir,
@@ -852,51 +852,6 @@ test("qmd-unavailable recall never injects archive-only query-aware matches", as
 
   assert.doesNotMatch(context, /infra ops archived incident summary/i);
   assert.doesNotMatch(context, /recent unrelated launch note/i);
-});
-
-test("archive-scan cold fallback never returns archived content", async () => {
-  const orchestrator = await makeOrchestrator("engram-query-aware-archive-artifacts-", {
-    qmdEnabled: false,
-    embeddingFallbackEnabled: false,
-  });
-  const storage = (orchestrator as any).storage;
-
-  await storage.writeArtifact("archived infra ops artifact one", {
-    tags: ["infra/ops"],
-    confidence: 0.9,
-    artifactType: "fact",
-  });
-  await storage.writeArtifact("archived infra ops artifact two", {
-    tags: ["infra/ops"],
-    confidence: 0.9,
-    artifactType: "fact",
-  });
-  const { id: archivedMemoryId } = await storage.writeMemory("fact", "archived infra ops memory result", {
-    tags: ["infra/ops"],
-    confidence: 0.9,
-  });
-
-  for (const memory of await storage.readAllMemories()) {
-    await storage.archiveMemory(memory);
-  }
-
-  const archivedMemories = await (orchestrator as any).readArchivedMemoriesForNamespaces(["default"]);
-  await indexMemoriesBatch(
-    orchestrator.config.memoryDir,
-    archivedMemories.map((memory: any) => ({
-      path: memory.path,
-      createdAt: memory.frontmatter.created,
-      tags: memory.frontmatter.tags ?? [],
-    })),
-  );
-
-  const results = await (orchestrator as any).searchLongTermArchiveFallback(
-    "What happened with infra ops?",
-    ["default"],
-    1,
-  );
-
-  assert.deepEqual(results, []);
 });
 
 test("recent-scan fallback preserves artifact isolation when query-aware indexing is inactive", async () => {

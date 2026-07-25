@@ -475,16 +475,4 @@ export class NamespaceReadFanoutCoordinator {
     return lists.flat();
   }
 
-  async readArchivedMemoriesForNamespaces(
-    namespaces: string[],
-  ): Promise<MemoryFile[]> {
-    const uniq = Array.from(new Set(namespaces.filter(Boolean)));
-    const lists = await Promise.all(
-      uniq.map(async (ns) => {
-        const sm = await this.deps.storageRouter.storageFor(ns);
-        return sm.readArchivedMemories();
-      }),
-    );
-    return lists.flat();
-  }
 }

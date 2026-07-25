@@ -78,20 +78,12 @@ function scopedCandidatesStub(
     seed.filter((r) => candidatePaths.has(r.path)).slice(0, Math.max(0, limit));
 }
 
-function fallbackCoordinator(
+function queryAwareFallbackCoordinator(
   seed: QmdSearchResult[],
-  archived: MemoryFile[],
-  onArchiveRead: () => void = () => undefined,
 ): RecallSearchPipelineCoordinator {
-  const readArchivedMemoriesForNamespaces: RecallSearchPipelineDeps["readArchivedMemoriesForNamespaces"] =
-    async () => {
-      onArchiveRead();
-      return archived;
-    };
   const namespaceFromPath: RecallSearchPipelineDeps["namespaceFromPath"] = () => "default";
   const deps = {
     searchScopedMemoryCandidates: scopedCandidatesStub(seed),
-    readArchivedMemoriesForNamespaces,
     namespaceFromPath,
     config: { memoryDir: "/mem" },
   } as unknown as RecallSearchPipelineDeps;
@@ -114,48 +106,56 @@ const SEED_PATHS = [MEETING_RECORD, "facts/a.md", "artifacts/y.md"];
 const SEED_WITH_NON_RECALLABLE = SEED_PATHS.map((p) => result("default", p));
 const PREFILTER = prefilter(SEED_PATHS);
 
-test("archive fallback excludes non-recallable seeds on the archived-empty early return", async () => {
-  const coordinator = fallbackCoordinator(SEED_WITH_NON_RECALLABLE, []);
-  // limit 10 > filtered seed count, tokens non-empty, archived empty → the
-  // `return scopedSeedResults` early path at the archived-empty guard.
-  const out = await coordinator.searchLongTermArchiveFallback("quarterly report", ["default"], 10, PREFILTER);
+test("query-aware fallback filters non-recallable scoped candidates", async () => {
+  const coordinator = queryAwareFallbackCoordinator(SEED_WITH_NON_RECALLABLE);
+  const out = await coordinator.searchQueryAwareFallback("quarterly report", 10, PREFILTER);
   assert.deepEqual(
     out.map((r) => r.path),
     ["facts/a.md"],
-    "meeting record + artifact must not leak through the direct-caller early return",
+    "meeting records and artifacts must not leak through query-aware fallback",
   );
 });
 
-test("archive fallback excludes non-recallable seeds on the empty-tokens early return", async () => {
-  const coordinator = fallbackCoordinator(SEED_WITH_NON_RECALLABLE, [memory("facts/z.md", "archived")]);
-  // Empty prompt → zero tokens → the `return scopedSeedResults` early path
-  // before archive scoring is even attempted.
-  const out = await coordinator.searchLongTermArchiveFallback("", ["default"], 10, PREFILTER);
+test("query-aware fallback filters non-recallable scoped candidates for an empty query", async () => {
+  const coordinator = queryAwareFallbackCoordinator(SEED_WITH_NON_RECALLABLE);
+  const out = await coordinator.searchQueryAwareFallback("", 10, PREFILTER);
   assert.deepEqual(out.map((r) => r.path), ["facts/a.md"]);
 });
 
-test("archive fallback applies the cap to FILTERED seeds, not raw non-recallable hits", async () => {
-  // The scoped search returns a single non-recallable hit that would fill a cap
-  // of 1 if counted raw; the method must count only recallable seeds, so it does
-  // not early-return that hit and (archive empty) yields nothing.
-  const coordinator = fallbackCoordinator([result("default", MEETING_RECORD)], []);
-  const out = await coordinator.searchLongTermArchiveFallback("quarterly", ["default"], 1, prefilter([MEETING_RECORD]));
+test("query-aware fallback applies the cap after filtering", async () => {
+  const coordinator = queryAwareFallbackCoordinator([result("default", MEETING_RECORD)]);
+  const out = await coordinator.searchQueryAwareFallback("quarterly", 1, prefilter([MEETING_RECORD]));
   assert.deepEqual(out.map((r) => r.path), []);
 });
 
-test("finding 1 — overfetches scoped seeds before exclusion so a capped fetch still yields recallable hits", async () => {
+test("query-aware fallback excludes root archive candidates before its cap", async () => {
+  const archivePath = "archive/2026-02-23/fact-archived.md";
+  const coordinator = queryAwareFallbackCoordinator([
+    result("default", archivePath),
+    result("default", "facts/a.md"),
+  ]);
+
+  const out = await coordinator.searchQueryAwareFallback(
+    "quarterly",
+    1,
+    prefilter([archivePath, "facts/a.md"]),
+  );
+
+  assert.deepEqual(out.map((r) => r.path), ["facts/a.md"]);
+});
+
+test("query-aware fallback overfetches scoped candidates before exclusion", async () => {
   // The scoped candidate order puts the NON-recallable meeting record FIRST;
   // capping the scoped fetch to the caller's limit (1) BEFORE the generic-recall
   // exclusion would return only the meeting record, which is then filtered out —
   // dropping facts/a.md with no refill. Overfetching the full candidate set first
   // and excluding afterward must still surface the recallable hit at the cap.
-  const coordinator = fallbackCoordinator(
-    [result("default", MEETING_RECORD), result("default", "facts/a.md")],
-    [],
-  );
-  const out = await coordinator.searchLongTermArchiveFallback(
+  const coordinator = queryAwareFallbackCoordinator([
+    result("default", MEETING_RECORD),
+    result("default", "facts/a.md"),
+  ]);
+  const out = await coordinator.searchQueryAwareFallback(
     "quarterly",
-    ["default"],
     1,
     prefilter([MEETING_RECORD, "facts/a.md"]),
   );
@@ -166,17 +166,6 @@ test("finding 1 — overfetches scoped seeds before exclusion so a capped fetch 
   );
 });
 
-test("archive fallback skips the obsolete archive scan after policy exclusion", async () => {
-  let archiveReadCount = 0;
-  const coordinator = fallbackCoordinator([], [memory("archive/old.md", "archived")], () => {
-    archiveReadCount += 1;
-  });
-
-  const out = await coordinator.searchLongTermArchiveFallback("quarterly", ["default"], 1);
-
-  assert.deepEqual(out, []);
-  assert.equal(archiveReadCount, 0);
-});
 
 function hotSeedCoordinator(seed: QmdSearchResult[]): RecallSearchPipelineCoordinator {
   const deps = {

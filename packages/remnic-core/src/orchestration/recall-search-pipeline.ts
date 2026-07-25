@@ -184,7 +184,6 @@ export interface RecallSearchPipelineDeps {
   namespaceFromPath(p: string): string;
   readonly negatives: NegativeExampleStore;
   readonly qmd: SearchBackend;
-  readArchivedMemoriesForNamespaces(namespaces: string[]): Promise<MemoryFile[]>;
   readQmdResultMemory(
     resultPath: string,
     fallbackStorage: StorageManager,
@@ -214,9 +213,8 @@ export interface RecallSearchPipelineDeps {
     searchOptions?: SearchQueryOptions;
     execution?: SearchExecutionOptions;
   }): Promise<QmdSearchResult[]>;
-  searchLongTermArchiveFallback(
+  searchQueryAwareFallback(
     prompt: string,
-    recallNamespaces: string[],
     limit: number,
     queryAwarePrefilter?: QueryAwarePrefilter,
     abortSignal?: AbortSignal,
@@ -675,9 +673,8 @@ export class RecallSearchPipelineCoordinator {
    * Cold fallback retains qualifying query-aware candidates. Archive records
    * belong to dedicated surfaces and never re-enter generic recall.
    */
-  async searchLongTermArchiveFallback(
+  async searchQueryAwareFallback(
     prompt: string,
-    _recallNamespaces: string[],
     limit: number,
     queryAwarePrefilter?: QueryAwarePrefilter,
     abortSignal?: AbortSignal,
@@ -693,7 +690,6 @@ export class RecallSearchPipelineCoordinator {
             candidatePaths,
             prompt,
             candidatePaths.size,
-            { allowArchived: true },
           )
         : []
     ).filter((result) => !isGenericRecallExcludedPath(result.path, this.deps.config, "qmd"));
@@ -882,17 +878,19 @@ export class RecallSearchPipelineCoordinator {
       }
     }
     if (longTerm.length === 0) {
-      // The archive-scan scoring worker terminates when EITHER the caller
-      // aborts or this step's own deadline wins — both flow through the
-      // step signal injected by runColdStepWithinDeadline (#1674, #1907).
       longTerm = await runColdStepWithinDeadline(
-        "archive scan", [],
-        (stepSignal) => this.deps.searchLongTermArchiveFallback(
-          options.prompt, options.recallNamespaces, options.recallResultLimit,
-          options.queryAwarePrefilter, stepSignal),
+        "query-aware fallback",
+        [],
+        (stepSignal) =>
+          this.deps.searchQueryAwareFallback(
+            options.prompt,
+            options.recallResultLimit,
+            options.queryAwarePrefilter,
+            stepSignal,
+          ),
       );
       if (longTerm.length > 0) {
-        log.debug("cold-tier recall source=archive-scan");
+        log.debug("cold-tier recall source=query-aware-fallback");
       }
     }
     if (longTerm.length === 0) return [];

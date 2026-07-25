@@ -610,7 +610,7 @@ test("cold-tier recall resolves absolute cold paths from runtime recall namespac
   assert.equal(results[0].path, migrated.targetPath);
 });
 
-test("cold fallback keeps absolute fallback hits under active runtime recall roots", async () => {
+test("cold fallback keeps absolute query-aware fallback hits under active runtime recall roots", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-qmd-review-archive-abs-ns-"));
   const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "engram-qmd-review-archive-runtime-"));
   const cfg = parseConfig({
@@ -627,7 +627,7 @@ test("cold fallback keeps absolute fallback hits under active runtime recall roo
   const runtimeStorage = new StorageManagerCtor(runtimeDir);
   const { id: memoryId } = await runtimeStorage.writeMemory(
     "fact",
-    "runtime archive fallback absolute memory",
+    "runtime query-aware fallback absolute memory",
   );
   const memory = await runtimeStorage.getMemoryById(memoryId);
   assert.ok(memory);
@@ -643,17 +643,17 @@ test("cold fallback keeps absolute fallback hits under active runtime recall roo
   orchestrator.qmd = {
     isAvailable: () => false,
   };
-  orchestrator.searchLongTermArchiveFallback = async () => [
+  orchestrator.searchQueryAwareFallback = async () => [
     {
       docid: memory.frontmatter.id,
       path: memory.path,
-      snippet: "runtime archive fallback absolute memory",
+      snippet: "runtime query-aware fallback absolute memory",
       score: 0.9,
     },
   ];
 
   const results = await orchestrator.applyColdFallbackPipeline({
-    prompt: "review runtime archive fallback",
+    prompt: "review runtime query-aware fallback",
     recallNamespaces: ["runtime-archive"],
     recallResultLimit: 2,
     recallMode: "full",
