@@ -6,22 +6,23 @@
  * These tests prove:
  *   1. CORRECTNESS: the extracted pure scoring function produces the right
  *      results, and both strategies (sync + off-thread) are equivalent.
- *   2. PROVE-FAIL (old serialization): SyncArchiveScoring serializes K
- *      concurrent calls — they take ~K× the single-call latency because the
- *      synchronous loop blocks the event loop for its entire duration.
- *   3. PASS (new parallelism): OffThreadArchiveScoring parallelizes K
- *      concurrent calls via worker_threads — they complete in ~1× (not K×)
- *      the single-call latency.
+ *   2. SERIALIZATION: SyncArchiveScoring runs its CPU-bound scoring
+ *      synchronously, so K concurrent calls never overlap — the maximum
+ *      in-flight scoring count observed by the event loop stays <= 1.
+ *   3. PARALLELISM: OffThreadArchiveScoring dispatches to a worker_threads
+ *      pool, so K concurrent calls run at once — the maximum in-flight
+ *      scoring count observed by the event loop exceeds 1.
  *
- * The prove-fail/pass pair directly demonstrates the fix: concurrent recalls
- * no longer serialize on the main thread.
+ * The serialization/parallelism pair directly demonstrates the fix, and both
+ * assertions observe event-loop concurrency deterministically rather than
+ * wall-clock latency, so they never flake under CI load.
  */
 
 import assert from "node:assert/strict";
-import { performance } from "node:perf_hooks";
 import test from "node:test";
 import {
   type ArchiveScoreItem,
+  type ArchiveScoreResult,
   OffThreadArchiveScoring,
   SyncArchiveScoring,
   disposeDefaultArchiveScoring,
@@ -36,10 +37,10 @@ import type { MemoryFile } from "../packages/remnic-core/src/types.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Build a set of heavy score items so each scoring pass takes MEASURABLE time
- * (tens of ms). Each item's content is padded with ~200 KB of filler so the
- * `haystack.includes(token)` inner loop is expensive enough to distinguish
- * serial from parallel execution.
+ * Build a set of heavy score items so each scoring pass spans many event-loop
+ * ticks. Each item's content is padded with ~200 KB of filler so an off-thread
+ * pass keeps its worker busy while the in-flight sampler runs, and a sync pass
+ * blocks the event loop long enough that no sampler tick can interleave.
  */
 function makeHeavyItems(count: number, matchEveryNth: number): ArchiveScoreItem[] {
   const filler = "the quick brown fox jumps over the lazy dog ".repeat(5_000);
@@ -168,65 +169,144 @@ test("OffThreadArchiveScoring produces identical results to SyncArchiveScoring",
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. PROVE-FAIL: SyncArchiveScoring serializes K concurrent calls (K× latency)
+// 3+4. Concurrency semantics — measured deterministically, never by wall clock.
+//
+// The original tests timed one call and K concurrent calls and asserted on the
+// wall-clock ratio, which flakes: a loaded CI runner inflates the single-call
+// baseline, deflating the ratio below threshold even when behavior is correct.
+//
+// Both replacements sample a counter from a self-re-arming setImmediate loop
+// and assert on the maximum observed. What they count differs, and that
+// difference is the whole point:
+//
+//   - SYNC: count CALLS in flight. Sync scoring burns its CPU inside score()
+//     with no await, so the event loop is blocked for the whole pass and no
+//     sampler tick can ever catch two passes overlapping (max stays <= 1).
+//     This is the behavior that caused issue #1674.
+//   - OFF-THREAD: count BUSY WORKERS, not callers. A caller parked in the
+//     pool's acquire() is queued, not running — counting callers would report
+//     K even for a size-1 pool, so the assertion would pass while every task
+//     ran serially and would miss the exact regression it guards (codex P2 /
+//     CodeRabbit on PR #2158).
+//
+// Both are ordering facts, independent of how long the work takes, so neither
+// is sensitive to runner load.
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("SyncArchiveScoring serializes K concurrent calls (~K× single-call latency)", async () => {
+/**
+ * Run `body()` while a self-re-arming `setImmediate` loop samples.
+ *
+ * Reports both the maximum value `read()` ever showed AND how many sampler
+ * ticks fired while `body()` was in flight. The tick count is what proves
+ * whether the event loop was free: a strategy that blocks it starves the
+ * sampler entirely (0 ticks), one that yields to workers does not (> 0).
+ */
+async function observe(
+  read: () => number,
+  body: () => Promise<unknown>,
+): Promise<{ max: number; ticks: number }> {
+  let max = 0;
+  let ticks = 0;
+  let sampling = true;
+  const sample = () => {
+    ticks += 1;
+    const v = read();
+    if (v > max) max = v;
+    if (sampling) setImmediate(sample);
+  };
+  setImmediate(sample);
+  try {
+    await body();
+  } finally {
+    sampling = false;
+  }
+  return { max, ticks };
+}
+
+test("SyncArchiveScoring blocks the event loop for the whole batch", async () => {
   const K = 4;
   const sync = new SyncArchiveScoring();
+  let results: ArchiveScoreResult[][] = [];
 
-  // Measure single call.
-  const t0 = performance.now();
-  await sync.score(HEAVY_ITEMS, QUERY_TOKENS);
-  const singleMs = performance.now() - t0;
-
-  // Measure K concurrent calls.
-  const t1 = performance.now();
-  await Promise.all(Array.from({ length: K }, () => sync.score(HEAVY_ITEMS, QUERY_TOKENS)));
-  const concurrentMs = performance.now() - t1;
-
-  const ratio = concurrentMs / singleMs;
-  // PROVE-FAIL: sync scoring blocks the event loop, so K concurrent calls
-  // serialize — concurrent time should be >= 2.5× single (theoretical K=4×,
-  // allowing scheduling slack). This is the behavior that caused issue #1674.
-  assert.ok(
-    ratio >= 2.5,
-    `Sync scoring should serialize K=${K} concurrent calls (expected ratio >= 2.5, got ${ratio.toFixed(2)}; single=${singleMs.toFixed(0)}ms concurrent=${concurrentMs.toFixed(0)}ms)`
+  // Sampling starts, then the batch is launched in the SAME tick. Sync scoring
+  // burns all its CPU before returning, so the entire K-call batch completes
+  // inside one synchronous block and the sampler never gets to run.
+  const { ticks } = await observe(
+    () => 0,
+    async () => {
+      results = await Promise.all(
+        Array.from({ length: K }, () => sync.score(HEAVY_ITEMS, QUERY_TOKENS)),
+      );
+    },
   );
+
+  // Asserting an upper bound on an in-flight counter would be vacuous here:
+  // every call resolves before the first sampler tick, so the counter reads 0
+  // and the assertion would also pass if scoring became a no-op (codex P2 on
+  // PR #2158). Assert the positive fact instead — the loop was starved — and
+  // pin that real work happened, which is what makes the starvation meaningful.
+  assert.equal(
+    ticks,
+    0,
+    `Sync scoring must block the event loop for the whole batch (expected 0 sampler ticks, got ${ticks}); ` +
+      "this main-thread monopolization is the defect behind issue #1674",
+  );
+  assert.equal(results.length, K, "every call must return results");
+  for (const r of results) {
+    assert.ok(r.length > 0, "sync scoring must return matches, not a no-op");
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. PASS: OffThreadArchiveScoring parallelizes K concurrent calls (~1× latency)
+// 4. PASS: OffThreadArchiveScoring runs K tasks on K workers simultaneously
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("OffThreadArchiveScoring parallelizes K concurrent calls (< K× sync latency)", async (t) => {
+test("OffThreadArchiveScoring parallelizes K concurrent calls (busy workers > 1)", async (t) => {
   const K = 4;
   // Size the pool explicitly to K so the assertion is robust to the runner's
-  // core count: even on a 2-core CI box, K workers with no queuing beats the
-  // K× serialization of sync scoring (#1674 review thread).
+  // core count: K workers with no queuing all run at once (#1674 review thread).
   const offThread = new OffThreadArchiveScoring(K);
   t.after(async () => {
     await offThread.terminate();
   });
 
-  // Measure single call.
-  const t0 = performance.now();
-  await offThread.score(HEAVY_ITEMS, QUERY_TOKENS);
-  const singleMs = performance.now() - t0;
+  const { max: maxBusyWorkers, ticks } = await observe(
+    () => offThread.busyWorkers,
+    () => Promise.all(Array.from({ length: K }, () => offThread.score(HEAVY_ITEMS, QUERY_TOKENS))),
+  );
 
-  // Measure K concurrent calls.
-  const t1 = performance.now();
-  await Promise.all(Array.from({ length: K }, () => offThread.score(HEAVY_ITEMS, QUERY_TOKENS)));
-  const concurrentMs = performance.now() - t1;
-
-  const ratio = concurrentMs / singleMs;
-  // PASS: off-thread scoring dispatches to separate workers, so K concurrent
-  // calls finish in strictly less wall-clock time than the K× serialization
-  // of sync scoring. Asserting ratio < K (not a fixed multiplier) keeps the
-  // test robust regardless of the runner's core count.
   assert.ok(
-    ratio < K,
-    `Off-thread scoring should parallelize K=${K} concurrent calls (expected ratio < ${K}, got ${ratio.toFixed(2)}; single=${singleMs.toFixed(0)}ms concurrent=${concurrentMs.toFixed(0)}ms)`
+    maxBusyWorkers > 1,
+    `Off-thread scoring must run K=${K} calls on multiple workers at once (expected max busy workers > 1, got ${maxBusyWorkers})`,
+  );
+  // The mirror image of the sync test: dispatching to workers leaves the event
+  // loop free, so the sampler runs. Together the two pin the actual fix.
+  assert.ok(ticks > 0, "off-thread scoring must leave the event loop free while workers compute");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4b. GUARD: the off-thread assertion must FAIL if the pool regresses to one
+//     worker. This is what makes test 4 meaningful rather than vacuous — a
+//     caller-side counter would report K here and pass.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("a single-worker pool is observably serial (guards the parallelism assertion)", async (t) => {
+  const K = 4;
+  const singleWorker = new OffThreadArchiveScoring(1);
+  t.after(async () => {
+    await singleWorker.terminate();
+  });
+
+  const { max: maxBusyWorkers } = await observe(
+    () => singleWorker.busyWorkers,
+    () => Promise.all(Array.from({ length: K }, () => singleWorker.score(HEAVY_ITEMS, QUERY_TOKENS))),
+  );
+
+  assert.equal(
+    maxBusyWorkers,
+    1,
+    `A size-1 pool must never run two tasks at once (got ${maxBusyWorkers}); ` +
+      "if this reports K the counter is measuring queued callers, not busy workers",
   );
 });
 

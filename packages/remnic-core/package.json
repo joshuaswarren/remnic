@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.23.1",
+  "version": "9.23.3",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -494,6 +494,16 @@
       "types": "./dist/commitment-ledger.d.ts",
       "remnic-source": "./src/commitment-ledger.ts",
       "import": "./dist/commitment-ledger.js"
+    },
+    "./corpus-watermark": {
+      "types": "./dist/corpus-watermark.d.ts",
+      "remnic-source": "./src/corpus-watermark.ts",
+      "import": "./dist/corpus-watermark.js"
+    },
+    "./corpus-watermark.js": {
+      "types": "./dist/corpus-watermark.d.ts",
+      "remnic-source": "./src/corpus-watermark.ts",
+      "import": "./dist/corpus-watermark.js"
     },
     "./compat/checks": {
       "types": "./dist/compat/checks.d.ts",
@@ -3024,6 +3034,7 @@
     "meilisearch": "^0.46.0",
     "node-gyp": "^12.3.0",
     "openai": "^6.0.0",
+    "undici": "^6.27.0",
     "zod": "^3.24.0"
   },
   "optionalDependencies": {
@@ -3052,7 +3063,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.23.1"
+    "@remnic/coding-graph": "^9.23.3"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

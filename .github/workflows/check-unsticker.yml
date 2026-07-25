@@ -9,11 +9,16 @@ name: Check Unsticker
 #    manual rerun. This sweeper reruns the guard when its latest run failed
 #    but the PR now has zero unresolved (non-CodeQL) threads.
 #
-# 2. The AI Review Gate cancels superseded evaluations (per-PR concurrency).
-#    A burst of review events can leave the newest `ai-reviewers` run
-#    terminally cancelled, which the branch ruleset treats as non-passing.
-#    The sweeper reruns a terminally-cancelled gate run; re-evaluation is
-#    idempotent (passes iff reviewers are positive on the current head).
+# 2. A branch ruleset treats a required `ai-reviewers` context as non-passing
+#    when ANY check suite on the head carries a terminally `cancelled` (or a
+#    stale `failure`) run, and those dead suites never re-evaluate on their
+#    own. The AI gate's supersession path now concludes `neutral` rather than
+#    letting concurrency mint `cancelled`, so NEW cancelled suites stop being
+#    produced at the source; the sweeper only drains the pre-existing backlog.
+#    It reruns ONE such stale gate suite per sweep - a bulk enqueue would evict
+#    its own pending attempts on the gate's per-PR concurrency group and clear
+#    fewer suites, not more (#2154). Re-evaluation is idempotent (passes iff
+#    reviewers are positive on the current head).
 #
 # Loop safety: the guard is only rerun when threads are verifiably resolved
 # (a rerun then passes), and the gate is only rerun from `cancelled` (a rerun
@@ -273,17 +278,29 @@ jobs:
                 continue;
               }
               // Cancelled suites are always retryable (cancellation is not a
-              // verdict). Failed suites are retried while run_attempt <= 2 —
-              // up to two verdict-gated retries, because a premature retry of
-              // a CANCELLED suite can itself mint an attempt-2 failure before
-              // the reviewer speaks (codex review on #1615) — and only once
-              // the head demonstrably satisfies the gate: either a sibling
-              // gate suite already re-evaluated to green (covers
-              // review/comment-delivered verdicts, which trigger the gate),
-              // or the latest cursor check run on the head is positive
-              // (covers check-only verdicts, whose gate runs land on the
-              // default branch, not the PR head). The attempt bound prevents
-              // rerun loops on legitimately failing gates.
+              // verdict). The ruleset evaluates the required context against the
+              // LATEST run of EVERY suite on the head, so ONE cancelled suite
+              // keeps the context red until it re-evaluates. The gate's
+              // supersession path now concludes `neutral` instead of leaving
+              // `cancelled` (ai-review-gate.yml), so NEW cancelled suites stop
+              // being produced at the source — the sweeper only drains the
+              // pre-existing backlog. Rerun ONE cancelled suite per sweep, NOT
+              // all of them: the gate's per-PR concurrency group
+              // (cancel-in-progress: false) admits only one queued rerun at a
+              // time, so a bulk enqueue would evict its own pending attempts and
+              // clear FEWER suites, not more (#2154). Draining one per cron tick
+              // converges correctly and never starves.
+              //
+              // Failed suites are retried while run_attempt <= 2 — up to two
+              // verdict-gated retries, because a premature retry of a CANCELLED
+              // suite can itself mint an attempt-2 failure before the reviewer
+              // speaks (codex review on #1615) — and only once the head
+              // demonstrably satisfies the gate: either a sibling gate suite
+              // already re-evaluated to green (covers review/comment-delivered
+              // verdicts, which trigger the gate), or the latest cursor check
+              // run on the head is positive (covers check-only verdicts, whose
+              // gate runs land on the default branch, not the PR head). The
+              // attempt bound prevents rerun loops on legitimately failing gates.
               const cancelledGate = gateRuns.filter(
                 (run) => run.status === 'completed' && run.conclusion === 'cancelled',
               );

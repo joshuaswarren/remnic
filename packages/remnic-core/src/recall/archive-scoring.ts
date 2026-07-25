@@ -250,6 +250,17 @@ class ArchiveScoringWorkerPool {
   private idle: Worker[] = [];
   private waiters: Array<{ resolve: (worker: Worker) => void; reject: (err: Error) => void }> = [];
   private terminated = false;
+  private busy = 0;
+
+  /**
+   * Workers currently checked out and scoring — NOT callers waiting in line.
+   * A caller parked in `acquire()` is queued, not running, so this is the only
+   * honest measure of real task overlap: with a size-1 pool it never exceeds 1
+   * no matter how many callers are queued behind it.
+   */
+  get busyWorkers(): number {
+    return this.busy;
+  }
 
   constructor(size: number = defaultPoolSize()) {
     this.targetSize = Math.max(1, size);
@@ -265,11 +276,13 @@ class ArchiveScoringWorkerPool {
       return [];
     }
     let abandoned = false;
+    this.busy += 1;
     try {
       return await this.dispatch(worker, task, abortSignal, () => {
         abandoned = true;
       });
     } finally {
+      this.busy -= 1;
       if (abandoned) this.retireWorker(worker);
       else this.release(worker);
     }
@@ -422,6 +435,11 @@ export class OffThreadArchiveScoring implements ArchiveScoringStrategy {
     if (poolSize !== undefined) {
       this.pool = new ArchiveScoringWorkerPool(poolSize);
     }
+  }
+
+  /** Workers currently scoring; 0 when no pool has been created yet. */
+  get busyWorkers(): number {
+    return this.pool?.busyWorkers ?? 0;
   }
 
   async score(
