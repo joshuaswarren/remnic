@@ -401,7 +401,7 @@ async function findDuplicateExplicitCapture(
   const storage = await orchestrator.getStorage(resolvedNamespace);
   // Tombstone-blocked rows are absent from the active fact hash index. An
   // authoritative miss can therefore skip the corpus scan only after the
-  // targeted blocked-row index also reports a miss.
+  // targeted blocked-row index reports a miss and remains authoritative.
   let activeFactHashMayMatch = true;
   let authoritativeFactHashMiss = false;
   if (
@@ -434,7 +434,13 @@ async function findDuplicateExplicitCapture(
           candidate.category,
           candidate.sourceConnector,
         );
-        if (!hasBlocked) return null;
+        if (!hasBlocked) {
+          const isIndexAuthoritative =
+            typeof storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative === "function"
+              ? await storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative()
+              : false;
+          if (isIndexAuthoritative) return null;
+        }
       } catch (err) {
         // Fail open: an unavailable targeted index must not hide a durable
         // pending-review duplicate.
@@ -442,7 +448,12 @@ async function findDuplicateExplicitCapture(
       }
     }
   }
-  const existing = await storage.readAllMemories();
+  const hotMemories = await storage.readAllMemories();
+  const coldMemories =
+    typeof storage.readAllColdMemories === "function"
+      ? await storage.readAllColdMemories()
+      : [];
+  const existing = [...hotMemories, ...coldMemories];
   const normalizedCandidate = normalizeExplicitCaptureContent(candidate.content);
   const match = existing.find((memory) => {
     const status = memory.frontmatter.status ?? "active";
@@ -561,7 +572,12 @@ async function findQueuedExplicitCaptureDuplicate(
   sourceConnector?: string,
 ): Promise<string | null> {
   const storage = await orchestrator.getStorage(namespace);
-  const existing = await storage.readAllMemories();
+  const hotMemories = await storage.readAllMemories();
+  const coldMemories =
+    typeof storage.readAllColdMemories === "function"
+      ? await storage.readAllColdMemories()
+      : [];
+  const existing = [...hotMemories, ...coldMemories];
   const normalized = normalizeExplicitCaptureContent(content);
   const match = existing.find((memory) => {
     const status = memory.frontmatter.status ?? "active";

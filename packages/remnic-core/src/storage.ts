@@ -2016,6 +2016,7 @@ export class StorageManager {
   private tombstoneBlockedCaptureHashIndex: ContentHashIndex | null = null;
   private tombstoneBlockedCaptureHashIndexLoadPromise: Promise<ContentHashIndex> | null = null;
   private tombstoneBlockedCaptureHashIndexRefreshPromise: Promise<ContentHashIndex> | null = null;
+  private tombstoneBlockedCaptureHashIndexAuthoritative = false;
   /** Optional lock/retry tuning for the fact-hash index cross-process lock (PR #2016; tests inject tight budgets). */
   factHashIndexLockOptions: ContentHashIndexLockOptions = {};
   private readonly secureAppendChains = new Map<string, Promise<void>>();
@@ -3377,6 +3378,7 @@ export class StorageManager {
             throw new Error("tombstone-blocked capture index rebuild lock unavailable");
           }
         }
+        this.tombstoneBlockedCaptureHashIndexAuthoritative = true;
         this.tombstoneBlockedCaptureHashIndex = index;
         return index;
       })().catch((err) => {
@@ -3415,6 +3417,14 @@ export class StorageManager {
     }
     const refreshedIndex = await this.reloadTombstoneBlockedCaptureHashIndex();
     return refreshedIndex.has(buildExplicitCaptureDedupKey(content, category, sourceConnector));
+  }
+
+  async isTombstoneBlockedExplicitCaptureIndexAuthoritative(): Promise<boolean> {
+    const index = await this.getTombstoneBlockedCaptureHashIndex();
+    if (!(await index.isDiskFingerprintCurrent())) {
+      await this.reloadTombstoneBlockedCaptureHashIndex();
+    }
+    return this.tombstoneBlockedCaptureHashIndexAuthoritative;
   }
 
   private async addTombstoneBlockedCaptureToIndex(memory: MemoryFile): Promise<void> {
@@ -4085,6 +4095,7 @@ export class StorageManager {
           content: sanitized.text,
         });
       } catch (err) {
+        this.tombstoneBlockedCaptureHashIndexAuthoritative = false;
         // The durable memory remains visible even if the optimization index
         // cannot be updated; the duplicate path fails open to a corpus scan.
         log.warn(`storage.writeMemory completed but failed to update tombstone-blocked capture index: ${err}`);
@@ -5311,8 +5322,12 @@ export class StorageManager {
       this.invalidateAllMemoriesCache();
       if (this.tombstoneBlockedCaptureHashIndex) {
         try {
-          await this.rebuildTombstoneBlockedCaptureHashIndex(this.tombstoneBlockedCaptureHashIndex);
+          const rebuilt = await this.rebuildTombstoneBlockedCaptureHashIndex(
+            this.tombstoneBlockedCaptureHashIndex,
+          );
+          this.tombstoneBlockedCaptureHashIndexAuthoritative = rebuilt;
         } catch (err) {
+          this.tombstoneBlockedCaptureHashIndexAuthoritative = false;
           log.warn(`storage.invalidateMemory completed but failed to update tombstone-blocked capture index: ${err}`);
         }
       }
@@ -5372,6 +5387,7 @@ export class StorageManager {
         content: sanitized.text,
       });
     } catch (err) {
+      this.tombstoneBlockedCaptureHashIndexAuthoritative = false;
       log.warn(`storage.updateMemory completed but failed to update tombstone-blocked capture index: ${err}`);
     }
     log.debug(`updated memory ${id}`);
@@ -5417,6 +5433,7 @@ export class StorageManager {
         frontmatter: updated,
       });
     } catch (err) {
+      this.tombstoneBlockedCaptureHashIndexAuthoritative = false;
       log.warn(`storage.writeMemoryFrontmatter completed but failed to update tombstone-blocked capture index: ${err}`);
     }
     await this.appendGeneratedMemoryLifecycleEventFailOpen(

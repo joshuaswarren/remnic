@@ -67,6 +67,7 @@ function createInlineCaptureProcessorProbe(
   const maintenanceReasons: string[] = [];
   const requestedNamespaces: Array<string | undefined> = [];
   const memories: StoredMemory[] = [];
+  const coldMemories: StoredMemory[] = [];
   const blockedIndexArguments: Array<{
     content: string;
     category: string;
@@ -82,6 +83,11 @@ function createInlineCaptureProcessorProbe(
         frontmatter: { ...memory.frontmatter },
       }));
     },
+    readAllColdMemories: async () =>
+      coldMemories.map((memory) => ({
+        ...memory,
+        frontmatter: { ...memory.frontmatter },
+      })),
     writeSealedMemory: async (envelope: SealedMemoryEnvelope) => {
       const id = `memory-${nextId++}`;
       envelopes.push(envelope);
@@ -115,6 +121,7 @@ function createInlineCaptureProcessorProbe(
             blockedIndexArguments.push({ content, category, sourceConnector });
             return options.tombstoneBlockedCaptureIndexHit === true;
           },
+          isTombstoneBlockedExplicitCaptureIndexAuthoritative: async () => true,
         }
       : {}),
     appendMemoryLifecycleEvents: async (events: Array<{ eventType: string; actor: string }>) => {
@@ -151,6 +158,7 @@ function createInlineCaptureProcessorProbe(
     lifecycleEvents,
     maintenanceReasons,
     memories,
+    coldMemories,
     readAllCalls: () => readAllCalls,
     blockedIndexArguments: () => blockedIndexArguments,
     orchestrator,
@@ -739,9 +747,31 @@ test("explicit capture preserves tombstone-blocked status for duplicate pending 
   });
 
   const first = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
+
   const duplicate = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
 
   assert.equal(first.tombstoneBlocked, true);
+  assert.equal(duplicate.duplicateOf, first.id);
+  assert.equal(duplicate.tombstoneBlocked, true);
+  assert.equal(probe.envelopes.length, 1);
+});
+
+test("explicit capture confirms blocked duplicates in the cold tier", async () => {
+  const probe = createInlineCaptureProcessorProbe({
+    tombstoneBlocked: true,
+    authoritativeFactHashMiss: true,
+  });
+  const candidate = validateExplicitCaptureInput({
+    content: "A cold blocked capture must still deduplicate.",
+    category: "fact",
+  });
+
+  const first = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
+  const cold = probe.memories.shift();
+  if (!cold) throw new Error("expected the first capture to persist");
+  probe.coldMemories.push(cold);
+  const duplicate = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
+
   assert.equal(duplicate.duplicateOf, first.id);
   assert.equal(duplicate.tombstoneBlocked, true);
   assert.equal(probe.envelopes.length, 1);
