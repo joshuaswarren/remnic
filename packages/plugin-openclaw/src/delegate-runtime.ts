@@ -259,7 +259,7 @@ function sessionNamespaceFrom(
         : [ctx, event];
   for (const source of sources) {
     const sourceSessionKey = typeof source.sessionKey === "string" ? source.sessionKey : undefined;
-    if (sourceSessionKey && sourceSessionKey !== sessionKey) continue;
+    if (sourceSessionKey !== sessionKey) continue;
     const runtime = source.runtime;
     if (typeof runtime !== "object" || runtime === null) continue;
     const agent = (runtime as Record<string, unknown>).agent;

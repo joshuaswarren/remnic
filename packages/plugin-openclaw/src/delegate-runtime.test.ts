@@ -349,6 +349,28 @@ test("delegate flush uses the ended session namespace after a session rebinding"
   }
 });
 
+test("delegate ignores unkeyed runtime metadata when resolving an ended session namespace", async () => {
+  const stub = await startDaemonStub(() => ({ flushed: true }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+
+    await invoke(
+      api,
+      "before_reset",
+      { sessionKey: "ended-session" },
+      { runtime: { agent: { session: { namespace: "team-successor" } } } },
+    );
+
+    const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush);
+    assert.equal(flush.body.sessionKey, "ended-session");
+    assert.equal("namespace" in flush.body, false);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate passive mode registers no hooks", async () => {
   const api = recordingApi();
   registerDelegateRuntime(api, optionsFor(1, { passive: true }));
