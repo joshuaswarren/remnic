@@ -213,6 +213,12 @@ export class TurnIngestionCoordinator {
        * `principalOverride` (issue #570 PR 4).
        */
       principalOverride?: string;
+      /**
+       * Persist the authenticated principal that owns the replay session.
+       * Access observe supplies this from the transport auth boundary; replay
+       * and import callers leave it unset.
+       */
+      sessionOwnerPrincipal?: string;
     } = {},
   ): Promise<void> {
     if (!Array.isArray(turns) || turns.length === 0) return;
@@ -239,6 +245,7 @@ export class TurnIngestionCoordinator {
         timestamp: turn.timestamp,
         sourceValidAt: turn.sourceValidAt,
         sessionKey: key,
+        ...(options.sessionOwnerPrincipal ? { sessionOwnerPrincipal: options.sessionOwnerPrincipal } : {}),
         parts: turn.parts,
         rawContent: turn.rawContent,
         sourceFormat: turn.sourceFormat,

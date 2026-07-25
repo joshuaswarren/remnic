@@ -17,12 +17,13 @@ import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "./maintenance/namespace-planner.js";
 import { stubPersistExtraction } from "./testing/orchestrator-lite.js";
 
-function makeTurn(sessionKey: string, content: string): BufferTurn {
+function makeTurn(sessionKey: string, content: string, sessionOwnerPrincipal?: string): BufferTurn {
   return {
     role: "user",
     content,
     timestamp: "2026-04-12T12:00:00.000Z",
     sessionKey,
+    ...(sessionOwnerPrincipal ? { sessionOwnerPrincipal } : {}),
   };
 }
 
@@ -144,7 +145,7 @@ test("flushSession preserves scoped force-drain routing and deadline options", a
 
   orchestrator.buffer = {
     getTurns(bufferKey: string) {
-      return bufferKey === "logical-session" ? [makeTurn("session-z", "remember gamma")] : [];
+      return bufferKey === "logical-session" ? [makeTurn("session-z", "remember gamma", "alice")] : [];
     },
   };
   orchestrator.queueBufferedExtraction = async (
@@ -869,8 +870,8 @@ test("flushSession drains every discovered buffer for the session", async () => 
 
 test("flushSession filters shared-buffer turns before scoped extraction", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
-  const ownedTurn = makeTurn("session-z", "remember owned");
-  const foreignTurn = makeTurn("session-other", "remember foreign");
+  const ownedTurn = makeTurn("session-z", "remember owned", "session-z");
+  const foreignTurn = makeTurn("session-other", "remember foreign", "session-other");
   let queuedTurns: BufferTurn[] = [];
   let queuedOptions: Record<string, unknown> | undefined;
 
@@ -900,6 +901,38 @@ test("flushSession filters shared-buffer turns before scoped extraction", async 
 
   assert.deepEqual(queuedTurns, [ownedTurn]);
   assert.equal(queuedOptions?.clearMatchingTurns, true);
+});
+
+test("flushSession honors persisted ownership for opaque sessions", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const ownedTurn = makeTurn("opaque-session", "remember owned", "alice");
+  const foreignTurn = makeTurn("opaque-session", "remember foreign", "bob");
+  let queuedTurns: BufferTurn[] = [];
+
+  orchestrator.buffer = {
+    async findBufferKeysForSession() {
+      return ["codex-thread:shared"];
+    },
+    getTurns() {
+      return [ownedTurn, foreignTurn];
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queuedTurns = turns;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("opaque-session", {
+    reason: "access_force_flush",
+    writeNamespaceOverride: "alice-project",
+    principalOverride: "alice",
+  });
+
+  assert.deepEqual(queuedTurns, [ownedTurn]);
 });
 
 test("runExtraction skips active scope profile writes when no layer is writable", async () => {

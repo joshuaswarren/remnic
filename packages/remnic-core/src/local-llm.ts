@@ -315,6 +315,31 @@ export class LocalLlmClient {
     );
   }
 
+  private waitForRetryBackoff(backoffMs: number, signal?: AbortSignal): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(false);
+      };
+      const onTimer = (): void => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        resolve(true);
+      };
+      timer = setTimeout(onTimer, backoffMs);
+      if (signal) {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
+    });
+  }
+
   /**
    * Set the ModelRegistry for caching detected capabilities
    */
@@ -1077,9 +1102,7 @@ export class LocalLlmClient {
           log.warn(
             `local LLM request aborted: op=${operation} attempt=${attempt}/${maxAttempts} timeoutMs=${effectiveTimeoutMs} model=${this.config.localLlmModel}; retrying after ${backoffMs}ms`,
           );
-          const backoffWait = Promise.withResolvers<void>();
-          setTimeout(backoffWait.resolve, backoffMs);
-          await backoffWait.promise;
+          if (!(await this.waitForRetryBackoff(backoffMs, options.signal))) return null;
           continue;
         } finally {
           clearTimeout(attemptTimeout);
@@ -1110,14 +1133,11 @@ export class LocalLlmClient {
         log.warn(
           `local LLM request got ${response.status}; retrying (attempt ${attempt + 1}/${maxAttempts}) after ${backoffMs}ms`,
         );
-        const backoffWait = Promise.withResolvers<void>();
-        setTimeout(backoffWait.resolve, backoffMs);
-        await backoffWait.promise;
+        if (!(await this.waitForRetryBackoff(backoffMs, options.signal))) return null;
       }
       log.debug(
         `local LLM: received response, status=${response?.status}, ok=${response?.ok}`,
       );
-
       if (!response) {
         if (lastAbortError) {
           log.warn(

@@ -269,3 +269,29 @@ test("a process-wide custom dispatcher is left in place", async () => {
   assert.ok(restored);
   await restored.close();
 });
+
+test("aborting during a retry backoff stops the local request lane", async () => {
+  const original = globalThis.fetch;
+  const abortController = new AbortController();
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    setTimeout(() => abortController.abort(new Error("deadline")), 10);
+    return new Response("temporary failure", { status: 503 });
+  }) as typeof fetch;
+
+  try {
+    const client = new LocalLlmClient(
+      createConfig({ localLlmRetry5xxCount: 2, localLlmRetryBackoffMs: 5_000 }),
+    );
+    primeClient(client);
+    const result = await client.chatCompletion(
+      [{ role: "user", content: "extract facts" }],
+      { signal: abortController.signal },
+    );
+    assert.equal(result, null);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

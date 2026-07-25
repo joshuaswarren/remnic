@@ -2966,6 +2966,8 @@ export class Orchestrator {
        * `principalOverride` (issue #570 PR 4).
        */
       principalOverride?: string;
+      /** Persist the authenticated session owner on buffered turns. */
+      sessionOwnerPrincipal?: string;
     } = {},
   ): Promise<void> {
     return this.turnIngestionCoordinator.ingestReplayBatch(

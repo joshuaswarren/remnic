@@ -822,6 +822,9 @@ export class AccessObserveWriteSurface {
           archiveLcm: false,
           writeNamespaceOverride,
           principalOverride,
+          ...(typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
+            ? { sessionOwnerPrincipal: request.authenticatedPrincipal.trim() }
+            : {}),
         });
         extractionPromise.catch((err) => {
           log.error(`access-observe background extraction failed: ${err}`);
@@ -872,13 +875,15 @@ export class AccessObserveWriteSurface {
       throw new EngramAccessInputError("deadlineMs must be a finite non-negative number");
     }
     throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-    if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-      throw new EngramAccessInputError("extraction force-flush deadline exceeded before scope resolution");
-    }
     if (resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true) {
       const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
       const sessionPrincipal = resolvePrincipal(request.sessionKey, this.deps.orchestrator.config);
-      if (!authenticatedPrincipal || sessionPrincipal !== authenticatedPrincipal) {
+      if (
+        !authenticatedPrincipal ||
+        (sessionPrincipal !== undefined &&
+          sessionPrincipal !== "default" &&
+          sessionPrincipal !== authenticatedPrincipal)
+      ) {
         throw new EngramAccessInputError("sessionKey is not owned by authenticated principal");
       }
     }

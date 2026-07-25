@@ -55,6 +55,7 @@ interface ParityProbe {
     sessionKeys: string[];
     writeNamespaceOverride?: string;
     principalOverride?: string;
+    sessionOwnerPrincipal?: string;
   }>;
   lcmEngine: {
     enabled: boolean;
@@ -161,12 +162,17 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
     lcmEngine,
     ingestReplayBatch: async (
       turns: Array<{ sessionKey: string }>,
-      options: { writeNamespaceOverride?: string; principalOverride?: string } = {},
+      options: {
+        writeNamespaceOverride?: string;
+        principalOverride?: string;
+        sessionOwnerPrincipal?: string;
+      } = {},
     ) => {
       extractionCalls.push({
         sessionKeys: turns.map((t) => t.sessionKey),
         writeNamespaceOverride: options.writeNamespaceOverride,
         principalOverride: options.principalOverride,
+        sessionOwnerPrincipal: options.sessionOwnerPrincipal,
       });
     },
     flushSession: async (
@@ -441,6 +447,28 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
   assert.equal(call.options.principalOverride, "pi-geek");
 });
 
+test("#2128: authenticated opaque sessions persist their trusted owner for force-flush", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "opaque-session-42";
+
+  await service.observe(
+    observeRequest({
+      sessionKey,
+      authenticatedPrincipal: "pi-geek",
+      skipExtraction: false,
+    }),
+  );
+
+  assert.equal(probe.extractionCalls[0]?.sessionOwnerPrincipal, "pi-geek");
+  const response = await service.extractionForceFlush({
+    sessionKey,
+    authenticatedPrincipal: "pi-geek",
+  });
+  assert.equal(response.flushed, true);
+  assert.equal(probe.extractionForceFlushCalls[0]?.options.principalOverride, "pi-geek");
+});
+
 
 test("#2128: extraction force-flush rejects a session owned by another principal", async () => {
   const probe = makeParityProbe({
@@ -505,7 +533,7 @@ test("#2128: aborted or expired extraction force-flush never touches a buffer", 
       }),
     (error: unknown) =>
       error instanceof EngramAccessInputError &&
-      error.message === "extraction force-flush deadline exceeded before scope resolution",
+      error.message === "extraction force-flush deadline exceeded before buffer drain",
   );
   assert.equal(probe.extractionForceFlushCalls.length, 0);
 });

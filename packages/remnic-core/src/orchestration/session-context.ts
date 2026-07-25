@@ -374,8 +374,16 @@ export class SessionContextCoordinator {
       const scopedOwnership =
         typeof options.writeNamespaceOverride === "string" ||
         typeof options.principalOverride === "string";
+      const ownerPrincipal =
+        typeof options.principalOverride === "string" && options.principalOverride.trim().length > 0
+          ? options.principalOverride.trim()
+          : undefined;
       const turnsForSession = scopedOwnership
-        ? turns.filter((turn) => turn.sessionKey === sessionKey)
+        ? turns.filter(
+            (turn) =>
+              turn.sessionKey === sessionKey &&
+              (ownerPrincipal === undefined || turn.sessionOwnerPrincipal === ownerPrincipal),
+          )
         : turns;
       if (turnsForSession.length === 0) continue;
       await new Promise<void>((resolve, reject) => {

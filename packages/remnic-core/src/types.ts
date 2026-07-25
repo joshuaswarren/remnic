@@ -2653,6 +2653,12 @@ export interface BufferTurn extends SourceConnectorProvenance {
   timestamp: string;
   sourceValidAt?: string;
   sessionKey?: string;
+  /**
+   * Server-resolved principal that owns this session at the authenticated
+   * observe/write boundary. Persisted with the buffered turn so lifecycle
+   * flushes do not have to infer ownership from a client-chosen session key.
+   */
+  sessionOwnerPrincipal?: string;
   logicalSessionKey?: string;
   providerThreadId?: string | null;
   turnFingerprint?: string;
