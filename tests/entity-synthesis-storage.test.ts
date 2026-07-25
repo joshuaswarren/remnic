@@ -87,6 +87,11 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
       path.join(dir, "entities", `${canonical}.md`),
       path.join(dir, "entities", `${legacyCanonical}.md`),
     );
+    const relatedCanonical = await seed.writeEntity("Aurora", "project", ["Aurora is synthetic."]);
+    await seed.addEntityRelationship(relatedCanonical, {
+      target: legacyCanonical,
+      label: "depends on",
+    });
     const day = new Date().toISOString().slice(0, 10);
     const legacyMemoryDocument = (id: string) => [
       "---",
@@ -143,7 +148,11 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
       [canonical],
     );
     assert.equal(await upgraded.writeEntity(name, type, ["New entity fact."]), canonical);
-    assert.deepEqual(await upgraded.readEntities(), [canonical]);
+    assert.deepEqual(
+      parseEntityFile(await upgraded.readEntity(relatedCanonical)).relationships,
+      [{ target: canonical, label: "depends on" }],
+    );
+    assert.deepEqual(await upgraded.readEntities(), [relatedCanonical, canonical].sort());
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -202,6 +211,14 @@ test("ensureDirectories resumes a journaled legacy entity migration", async () =
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+
+test("normalizeEntityName canonicalizes Unicode composition", () => {
+  assert.equal(
+    normalizeEntityName("Café", "project"),
+    normalizeEntityName("Cafe\u0301", "project"),
+  );
 });
 
 test("writeEntity preserves structured sections alongside timeline evidence", async () => {
