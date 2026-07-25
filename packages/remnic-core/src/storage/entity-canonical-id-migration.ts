@@ -204,7 +204,6 @@ async function rewriteTombstoneReferences(
   refreshLock: () => Promise<boolean>
 ): Promise<void> {
   const tombstonePath = path.join(deps.stateDir, "tombstones.jsonl");
-  if (!(await fileExists(tombstonePath))) return;
 
   await withHeldFileLock(
     path.join(deps.stateDir, "tombstones.lock"),
@@ -214,6 +213,7 @@ async function rewriteTombstoneReferences(
     },
     async (acquired, tombstoneLock) => {
       if (!acquired) throw new Error("Timed out waiting for active tombstone migration.");
+      if (!(await fileExists(tombstonePath))) return;
       const tombstoneEncrypted = await deps.isEncryptedStorageFile(tombstonePath);
       const original = await deps.readStorageSecureFile(tombstonePath);
       let changed = false;
