@@ -92,18 +92,29 @@ function uniqueStrings(values: string[]): string[] {
 
 const UNICODE_WORD_OR_NUMBER_RE = /[\p{L}\p{N}]/u;
 const JAPANESE_PARTICLE_RE = /^[のはがをにへともやかでだ]$/u;
-const KOREAN_PARTICLE_SEQUENCE_RE = new RegExp(
-  "^(?:에서|에게|한테|으로|까지|부터|보다|처럼|같이|이나|라도|밖에|마다|조차|이랑|하고" +
-    "|은|는|이|가|을|를|의|께|와|과|도|만|든|에|로|나|랑)+$",
-  "u",
-);
+const KOREAN_PARTICLES = [
+  "에서", "에게", "한테", "으로", "까지", "부터", "보다", "처럼", "같이",
+  "이나", "라도", "밖에", "마다", "조차", "이랑", "하고", "은", "는",
+  "이", "가", "을", "를", "의", "께", "와", "과", "도", "만", "든",
+  "에", "로", "나", "랑",
+] as const;
 const HANGUL_RUN_RE = /^[\p{Script=Hangul}]+/u;
 
 function isKoreanParticleBoundary(suffix: string): boolean {
   const particleRun = suffix.match(HANGUL_RUN_RE)?.[0] ?? "";
-  if (!particleRun || !KOREAN_PARTICLE_SEQUENCE_RE.test(particleRun)) return false;
+  let offset = 0;
+  while (offset < particleRun.length) {
+    const particle = KOREAN_PARTICLES.find((candidate) =>
+      particleRun.startsWith(candidate, offset),
+    );
+    if (!particle) return false;
+    offset += particle.length;
+  }
   const nextCharacter = suffix.slice(particleRun.length).at(0) ?? "";
-  return nextCharacter.length === 0 || !UNICODE_WORD_OR_NUMBER_RE.test(nextCharacter);
+  return (
+    particleRun.length > 0 &&
+    (nextCharacter.length === 0 || !UNICODE_WORD_OR_NUMBER_RE.test(nextCharacter))
+  );
 }
 
 function isUnicodePhraseBoundary(character: string, suffix: string = ""): boolean {

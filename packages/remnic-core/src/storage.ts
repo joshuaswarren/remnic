@@ -1145,6 +1145,8 @@ export function normalizeEntityName(raw: string, type: string, aliases?: Readonl
 
 const ENTITY_CANONICAL_ID_MIGRATION_VERSION = 1;
 const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
+const ENTITY_CANONICAL_ID_MIGRATION_LOCK_STALE_MS = 60_000;
+const ENTITY_CANONICAL_ID_MIGRATION_LOCK_MAX_WAIT_MS = 300_000;
 
 const EntityCanonicalIdMigrationStateSchema = z.object({
   version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),
@@ -3822,75 +3824,78 @@ export class StorageManager {
 
   private async migrateLegacyEntityCanonicalIds(): Promise<void> {
     if (this.entityCanonicalIdMigrationComplete) return;
-    while (!this.entityCanonicalIdMigrationComplete) {
-      await withHeldFileLock(
-        this.entityCanonicalIdMigrationLockPath(),
-        { staleMs: 60_000, maxWaitMs: 60_000 },
-        async (acquired, lock) => {
-          if (!acquired) return;
-          let state = await this.readEntityCanonicalIdMigrationState();
-          if (state?.complete) {
-            this.entityCanonicalIdMigrationComplete = true;
-            return;
-          }
-          if (!state) {
-            state = {
-              version: ENTITY_CANONICAL_ID_MIGRATION_VERSION,
-              complete: false,
-              mappings: await this.discoverLegacyEntityCanonicalIdMappings(),
-            };
-            await this.writeEntityCanonicalIdMigrationState(state);
-          }
-          if (Object.keys(state.mappings).length === 0) {
-            await this.writeEntityCanonicalIdMigrationState({
-              ...state,
-              complete: true,
-            });
-            this.entityCanonicalIdMigrationComplete = true;
-            return;
-          }
-          for (const [legacyId, canonicalId] of Object.entries(state.mappings)) {
-            const legacyPath = this.resolveEntityFilePath(legacyId);
-            const canonicalPath = this.resolveEntityFilePath(canonicalId);
-            if (legacyPath === null || canonicalPath === null) {
-              throw new Error("Invalid entity canonical-id migration path.");
-            }
-            const legacyExists = await this.storageFileExists(legacyPath);
-            const canonicalExists = await this.storageFileExists(canonicalPath);
-            if (legacyExists && canonicalExists) {
-              throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
-            }
-            if (!legacyExists && !canonicalExists) {
-              throw new Error(`Cannot migrate legacy entity id ${legacyId}: both files are missing.`);
-            }
-            if (!legacyExists) continue;
-            if (!await lock.refresh()) {
-              throw new Error("Lost entity canonical-id migration lock.");
-            }
-            await this.snapshotBeforeWrite(legacyPath, "write");
-            await rename(legacyPath, canonicalPath);
-          }
-
-          await this.rewriteLegacyEntityRelationshipTargets(
-            state.mappings,
-            () => lock.refresh(),
-          );
-          const { rewroteColdMemory } = await this.rewriteLegacyEntityReferences(
-            state.mappings,
-            () => lock.refresh(),
-          );
-          this.invalidateKnowledgeIndexCache();
-          this.invalidateAllMemoriesCache();
-          if (rewroteColdMemory) this.invalidateColdMemoriesCache();
-          this.bumpMemoryStatusVersion();
+    await withHeldFileLock(
+      this.entityCanonicalIdMigrationLockPath(),
+      {
+        staleMs: ENTITY_CANONICAL_ID_MIGRATION_LOCK_STALE_MS,
+        maxWaitMs: ENTITY_CANONICAL_ID_MIGRATION_LOCK_MAX_WAIT_MS,
+      },
+      async (acquired, lock) => {
+        if (!acquired) {
+          throw new Error("Timed out waiting for active entity canonical-id migration.");
+        }
+        let state = await this.readEntityCanonicalIdMigrationState();
+        if (state?.complete) {
+          this.entityCanonicalIdMigrationComplete = true;
+          return;
+        }
+        if (!state) {
+          state = {
+            version: ENTITY_CANONICAL_ID_MIGRATION_VERSION,
+            complete: false,
+            mappings: await this.discoverLegacyEntityCanonicalIdMappings(),
+          };
+          await this.writeEntityCanonicalIdMigrationState(state);
+        }
+        if (Object.keys(state.mappings).length === 0) {
           await this.writeEntityCanonicalIdMigrationState({
             ...state,
             complete: true,
           });
           this.entityCanonicalIdMigrationComplete = true;
-        },
-      );
-    }
+          return;
+        }
+        for (const [legacyId, canonicalId] of Object.entries(state.mappings)) {
+          const legacyPath = this.resolveEntityFilePath(legacyId);
+          const canonicalPath = this.resolveEntityFilePath(canonicalId);
+          if (legacyPath === null || canonicalPath === null) {
+            throw new Error("Invalid entity canonical-id migration path.");
+          }
+          const legacyExists = await this.storageFileExists(legacyPath);
+          const canonicalExists = await this.storageFileExists(canonicalPath);
+          if (legacyExists && canonicalExists) {
+            throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
+          }
+          if (!legacyExists && !canonicalExists) {
+            throw new Error(`Cannot migrate legacy entity id ${legacyId}: both files are missing.`);
+          }
+          if (!legacyExists) continue;
+          if (!await lock.refresh()) {
+            throw new Error("Lost entity canonical-id migration lock.");
+          }
+          await this.snapshotBeforeWrite(legacyPath, "write");
+          await rename(legacyPath, canonicalPath);
+        }
+
+        await this.rewriteLegacyEntityRelationshipTargets(
+          state.mappings,
+          () => lock.refresh(),
+        );
+        const { rewroteColdMemory } = await this.rewriteLegacyEntityReferences(
+          state.mappings,
+          () => lock.refresh(),
+        );
+        this.invalidateKnowledgeIndexCache();
+        this.invalidateAllMemoriesCache();
+        if (rewroteColdMemory) this.invalidateColdMemoriesCache();
+        this.bumpMemoryStatusVersion();
+        await this.writeEntityCanonicalIdMigrationState({
+          ...state,
+          complete: true,
+        });
+        this.entityCanonicalIdMigrationComplete = true;
+      },
+    );
   }
 
   async ensureDirectories(): Promise<void> {
