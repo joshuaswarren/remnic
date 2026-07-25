@@ -162,25 +162,32 @@ Access layer notes:
 Each daemon exposes a cheap **corpus watermark** — a comparable fingerprint of its
 active-memory corpus — so two daemons behind an active/backup VIP can be checked for
 silent divergence (issue #2149). It is served to authenticated callers on
-`GET /engram/v1/health` as `corpus: CorpusWatermark[]` (one entry per namespace; a single
-default-namespace entry when namespaces are disabled) and summarized in `remnic doctor` as
-the `corpus_watermark` check.
+`GET /engram/v1/health` as `corpus: CorpusWatermark[]` and summarized in `remnic doctor`
+as the `corpus_watermark` check. Both surfaces resolve their namespace set through one
+shared, config-driven helper (which keeps working when the namespace catalog is opted
+out), so they cannot drift and silently omit a tenant. On `/health` the list is filtered
+to the presenting token's namespaces: a namespace-scoped bearer sees only its own tenants,
+an operator token sees the whole fleet.
 
 Each entry has:
 
 - `namespace` — the namespace the watermark covers.
-- `activeMemoryCount` — total active memory files, from a cheap directory scan that does not
-  parse frontmatter.
-- `newestPartition` — the newest `YYYY-MM-DD` day-partition seen, or `null` when nothing is
-  dated.
-- `newestWriteAt` — the maximum file mtime **within the newest partition only** (bounded to
-  one day's files so the probe stays cheap on a 100k+ corpus), or `null` when that partition
-  has no files.
-- `digest` — a sha256 over the per-`<category>/<day>` file-count census. This is a **census
-  fingerprint, not a content hash**: two daemons that agree on how many active memories live
-  in each day-partition share a digest, so a differing digest is a cheap divergence signal
+- `activeMemoryCount` — total active memory files across BOTH the hot and cold tiers, from a
+  cheap directory scan that does not parse frontmatter (cold memories stay reachable via cold
+  recall, so they count).
+- `newestPartition` — the newest `YYYY-MM-DD` day-partition seen in the HOT tier, or `null`
+  when nothing is dated.
+- `newestWriteAt` — the maximum file mtime **within the newest hot partition only** (bounded
+  to one day's active files so the probe stays cheap on a 100k+ corpus), or `null` when that
+  partition has no files.
+- `digest` — a sha256 over the per-`<tier>:<category>/<day>` file-count census. This is a
+  **census fingerprint, not a content hash**: two daemons that agree on how many active
+  memories live in each hot and cold day-partition share a digest, so a differing digest —
+  including a hot/cold split or a cold-tier-only difference — is a cheap divergence signal
   without reading file bodies.
-- `computedAt` — when the watermark was computed.
+- `computedAt` — when the watermark was computed. The `/health` watermark is served through a
+  bounded 60-second cache, so `computedAt` also lets a consumer see how stale the census is;
+  routine readiness/HA polling never triggers a full corpus rescan per request.
 
 This ships detection only. Fetching configured replica peers' watermarks and
 health-flagging count or watermark-age divergence beyond a threshold is a follow-up; today

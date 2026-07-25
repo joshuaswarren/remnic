@@ -7,13 +7,19 @@
  * compare against, so the check never warns — the follow-up PR that adds peer
  * polling introduces the count/age divergence thresholds.
  *
- * The caller supplies `storageFactory` (a `dir -> CorpusStorage`) so this
- * module never imports the storage god-module directly (issue #1533 ratchet).
+ * Namespaces are resolved through the shared resolveCorpusNamespaceRoots helper
+ * (issue #2156 finding C) so the doctor and the /health surface enumerate the
+ * SAME tenant set and cannot drift. The caller supplies `storageFactory` (a
+ * `dir -> CorpusStorage`) so this module never imports the storage god-module
+ * directly (issue #1533 ratchet).
  */
 
-import { resolveNamespaceCapabilities } from "./capabilities.js";
-import { type CorpusStorage, type CorpusWatermark, computeCorpusWatermarks } from "./corpus-watermark.js";
-import { listNamespaces } from "./namespaces/migrate.js";
+import {
+  type CorpusStorage,
+  type CorpusWatermark,
+  computeCorpusWatermarks,
+  resolveCorpusNamespaceRoots,
+} from "./corpus-watermark.js";
 import type { OperatorDoctorCheck } from "./operator-toolkit.js";
 import type { PluginConfig } from "./types.js";
 
@@ -26,7 +32,12 @@ export async function summarizeCorpusWatermark(
 ): Promise<OperatorDoctorCheck> {
   let watermarks: CorpusWatermark[] = [];
   try {
-    const rootByNamespace = await resolveCorpusRoots(config);
+    // The doctor orchestrator has no live namespace catalog, so config-driven
+    // enumeration (deduped by root inside the shared helper) is the whole set.
+    const rootByNamespace = new Map<string, string>();
+    for (const root of await resolveCorpusNamespaceRoots({ config })) {
+      rootByNamespace.set(root.namespace, root.rootDir);
+    }
     watermarks = await computeCorpusWatermarks(
       [...rootByNamespace.keys()],
       (namespace) => storageFactory(rootByNamespace.get(namespace) ?? config.memoryDir),
@@ -52,28 +63,4 @@ export async function summarizeCorpusWatermark(
         : `Corpus watermark across ${watermarks.length} namespace(s): ${lines.join("; ")}`,
     details: { corpus: watermarks },
   };
-}
-
-/**
- * Namespace -> memory root, deduped by root so a namespaces-disabled or
- * flat-root deployment reports its single shared corpus exactly once. Mirrors
- * runOperatorInventory's config-driven enumeration (the doctor orchestrator has
- * no live namespace catalog).
- */
-async function resolveCorpusRoots(config: PluginConfig): Promise<Map<string, string>> {
-  const rootByNamespace = new Map<string, string>();
-  if (resolveNamespaceCapabilities(config).namespaces !== true) {
-    rootByNamespace.set(config.defaultNamespace, config.memoryDir);
-    return rootByNamespace;
-  }
-  const seenRoots = new Set<string>();
-  for (const entry of await listNamespaces({ config })) {
-    if (seenRoots.has(entry.rootDir)) continue;
-    seenRoots.add(entry.rootDir);
-    rootByNamespace.set(entry.namespace, entry.rootDir);
-  }
-  if (rootByNamespace.size === 0) {
-    rootByNamespace.set(config.defaultNamespace, config.memoryDir);
-  }
-  return rootByNamespace;
 }

@@ -184,14 +184,18 @@ export class MemoryReadStore {
     return latestArtifacts;
   }
 
-  async collectActiveMemoryPaths(): Promise<string[]> {
+  /**
+   * Recursively collect `*.md` paths under `startDirs`, hardened against symlink
+   * escape: a category dir symlinked outside memoryDir (e.g. decisions/ -> an
+   * external dir) must NOT pull out-of-store files into a scan (info leak). Same
+   * walker-hardening pattern as document-scanner.ts / cli.ts /
+   * consolidation-provenance-check.ts; reuses the shared containment helper.
+   * Paths only — no frontmatter parse.
+   */
+  private async collectContainedMarkdownPaths(startDirs: readonly string[]): Promise<string[]> {
     const filePaths: string[] = [];
 
-    // Resolve the memory root once for containment checks below. A category dir
-    // symlinked outside memoryDir (e.g. decisions/ -> an external dir) must NOT
-    // pull out-of-store files into the QMD-unavailable recall fallback (info
-    // leak). Same walker-hardening pattern as document-scanner.ts / cli.ts /
-    // consolidation-provenance-check.ts; reuses the shared containment helper.
+    // Resolve the memory root once for the containment checks below.
     let memoryRootReal: string;
     try {
       memoryRootReal = await realpath(this.deps.baseDir);
@@ -199,7 +203,7 @@ export class MemoryReadStore {
       return filePaths;
     }
 
-    const collectPaths = async (dir: string) => {
+    const collectPaths = async (dir: string): Promise<void> => {
       // Directory-level guard, isolated from per-entry handling: skip symlinked
       // or non-directory category dirs and assert the resolved dir stays inside
       // the memory root before reading. A failure here means the whole subtree
@@ -243,6 +247,13 @@ export class MemoryReadStore {
       }
     };
 
+    for (const dir of startDirs) {
+      await collectPaths(dir);
+    }
+    return filePaths;
+  }
+
+  async collectActiveMemoryPaths(): Promise<string[]> {
     // Scan EVERY supported memory category directory, not just the legacy four
     // (facts/procedures/reasoning-traces/corrections). Issue #1497: the QMD
     // filesystem-fallback recall path (orchestrator `recent_scan` ->
@@ -269,14 +280,22 @@ export class MemoryReadStore {
     // those files (they have a `---` frontmatter block) and leak queue items
     // into recall. None of these excluded dirs are in RECALL_FALLBACK_DIRS; the
     // exclusion is asserted by tests in storage-fallback-category-dirs.test.ts.
-    //
-    // collectPaths() already ignores missing dirs (try/catch) and the parser
-    // returns null for non-memory markdown, so unrelated files never crash the
-    // scan.
-    for (const dir of RECALL_FALLBACK_DIRS) {
-      await collectPaths(path.join(this.deps.baseDir, dir));
-    }
-    return filePaths;
+    return this.collectContainedMarkdownPaths(
+      RECALL_FALLBACK_DIRS.map((dir) => path.join(this.deps.baseDir, dir)),
+    );
+  }
+
+  /**
+   * Cold-tier memory paths for the corpus census (issue #2156 finding D).
+   * Demoted memories move to `<baseDir>/cold/...` but stay active and reachable
+   * via cold recall, so the divergence census MUST count them — otherwise two
+   * replicas whose cold tiers differ show a false "converged" digest. Paths
+   * only, same symlink/containment hardening as the hot scan. This is NOT part
+   * of the recall fallback corpus (collectActiveMemoryPaths), whose scan is
+   * intentionally unchanged.
+   */
+  async collectColdMemoryPaths(): Promise<string[]> {
+    return this.collectContainedMarkdownPaths([this.deps.resolveTierRootDir("cold")]);
   }
 
   async readMemoriesWindow(options: {

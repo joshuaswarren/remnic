@@ -4652,6 +4652,15 @@ export class StorageManager {
     return this.memoryReadStore.collectActiveMemoryPaths();
   }
 
+  /**
+   * Public cheap cold-tier path scan (issue #2156 finding D corpus census).
+   * Lists demoted-but-reachable memory paths under `cold/` without parsing
+   * frontmatter, so the divergence watermark counts the cold tier too.
+   */
+  async collectColdMemoryPaths(): Promise<string[]> {
+    return this.memoryReadStore.collectColdMemoryPaths();
+  }
+
   private async readParsedMemoriesFromPaths(filePaths: string[], batchSize?: number): Promise<MemoryFile[]> {
     if (filePaths.length === 0) return [];
 

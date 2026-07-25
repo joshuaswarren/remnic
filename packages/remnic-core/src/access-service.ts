@@ -18,7 +18,7 @@ import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
   resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
-import { computeServiceCorpusWatermarks, type CorpusWatermark } from "./corpus-watermark.js";
+import { CorpusWatermarkCache, computeServiceCorpusWatermarks, type CorpusWatermark } from "./corpus-watermark.js";
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
@@ -1304,6 +1304,7 @@ export class EngramAccessService {
   private readonly recallInFlight = new Map<string, unknown>();
   private readonly budget: CrossNamespaceBudget;
   private readonly auditAdapter: AccessAuditAdapter | null;
+  private readonly corpusWatermarkCache = new CorpusWatermarkCache();
 
   /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessObserveWriteSurface: AccessObserveWriteSurface | undefined;
@@ -2480,7 +2481,8 @@ export class EngramAccessService {
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
-      corpus: await computeServiceCorpusWatermarks(this.orchestrator),
+      corpus: await computeServiceCorpusWatermarks(this.orchestrator, {
+        cache: this.corpusWatermarkCache, caps: tokenCapabilityStore.getStore() }),
     };
   }
 
