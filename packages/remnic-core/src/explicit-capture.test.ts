@@ -50,11 +50,13 @@ type StoredMemory = {
     status?: string;
     tags?: string[];
     sourceConnector?: string;
+    blockedBy?: string;
   };
   content: string;
 };
-
-function createInlineCaptureProcessorProbe(options: { tombstoneBlocked?: boolean } = {}) {
+function createInlineCaptureProcessorProbe(
+  options: { tombstoneBlocked?: boolean; authoritativeFactHashMiss?: boolean } = {},
+) {
   const envelopes: SealedMemoryEnvelope[] = [];
   const lifecycleEvents: Array<{ eventType: string; actor: string }> = [];
   const maintenanceReasons: string[] = [];
@@ -70,7 +72,9 @@ function createInlineCaptureProcessorProbe(options: { tombstoneBlocked?: boolean
         frontmatter: {
           id,
           category: envelope.category,
-          ...(options.tombstoneBlocked ? { status: "pending_review" } : {}),
+          ...(options.tombstoneBlocked
+            ? { status: "pending_review", blockedBy: "tombstone-1" }
+            : {}),
           tags: [...envelope.tags],
           sourceConnector: envelope.sourceConnector,
         },
@@ -78,6 +82,12 @@ function createInlineCaptureProcessorProbe(options: { tombstoneBlocked?: boolean
       });
       return { id, tombstoneBlocked: options.tombstoneBlocked === true };
     },
+    ...(options.authoritativeFactHashMiss
+      ? {
+          hasFactContentHash: async () => false,
+          isFactContentHashAuthoritative: () => true,
+        }
+      : {}),
     appendMemoryLifecycleEvents: async (events: Array<{ eventType: string; actor: string }>) => {
       lifecycleEvents.push(...events);
     },
@@ -475,4 +485,52 @@ test("inline capture processor keeps canonical fallback identity across delivery
   assert.equal(first.queued, 1);
   assert.equal(replay.processed, 0);
   assert.equal(probe.envelopes.length, 1);
+});
+
+test("inline capture processor queues complete notes that omit content", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const result = await probe.processor.process({
+    captureMode: "hybrid",
+    content: [
+      "Keep this visible text.",
+      "<memory_note>",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+  });
+
+  assert.equal(result.content, "Keep this visible text.");
+  assert.equal(result.processed, 1);
+  assert.equal(result.queued, 1);
+  assert.equal(probe.envelopes.length, 1);
+  assert.match(probe.envelopes[0]?.content ?? "", /\[empty explicit capture\]/);
+  assert.equal(probe.lifecycleEvents[0]?.eventType, "explicit_capture_queued");
+});
+
+test("inline capture processor deduplicates tombstone review captures after restart", async () => {
+  const probe = createInlineCaptureProcessorProbe({
+    tombstoneBlocked: true,
+    authoritativeFactHashMiss: true,
+  });
+  const request = {
+    captureMode: "hybrid" as const,
+    content: [
+      "<memory_note>",
+      "content: Tombstone-blocked captures must survive process restarts.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+  };
+
+  const first = await probe.processor.process(request);
+  const restarted = new InlineExplicitCaptureProcessor(probe.orchestrator, {
+    sourceConnector: "openclaw",
+  });
+  const replay = await restarted.process(request);
+
+  assert.equal(first.queued, 1);
+  assert.equal(replay.duplicates, 1);
+  assert.equal(replay.queued, 0);
+  assert.equal(probe.envelopes.length, 1);
+  assert.equal(probe.lifecycleEvents.length, 1);
 });

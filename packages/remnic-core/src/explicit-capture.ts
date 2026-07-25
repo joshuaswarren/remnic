@@ -234,7 +234,7 @@ function parseInlineConfidence(value: string): number {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
-function parseInlineNote(block: string): ExplicitCaptureInput | null {
+function parseInlineNote(block: string): ExplicitCaptureInput {
   const lines = block.replace(/\r/g, "").split("\n");
   const note: Partial<ExplicitCaptureInput> = {};
   let idx = 0;
@@ -302,16 +302,19 @@ function parseInlineNote(block: string): ExplicitCaptureInput | null {
     }
   }
 
-  return asTrimmed(note.content) ? (note as ExplicitCaptureInput) : null;
+  return { content: "", ...note };
+}
+
+function parseInlineExplicitCaptureCandidates(text: string): ExplicitCaptureInput[] {
+  const notes: ExplicitCaptureInput[] = [];
+  for (const match of text.matchAll(INLINE_NOTE_RE)) {
+    notes.push(parseInlineNote(match[1] ?? ""));
+  }
+  return notes;
 }
 
 export function parseInlineExplicitCaptureNotes(text: string): ExplicitCaptureInput[] {
-  const notes: ExplicitCaptureInput[] = [];
-  for (const match of text.matchAll(INLINE_NOTE_RE)) {
-    const parsed = parseInlineNote(match[1] ?? "");
-    if (parsed) notes.push(parsed);
-  }
-  return notes;
+  return parseInlineExplicitCaptureCandidates(text).filter((note) => asTrimmed(note.content));
 }
 
 export function hasInlineExplicitCaptureMarkup(text: string): boolean {
@@ -403,22 +406,20 @@ async function findDuplicateExplicitCapture(
   candidate: ValidExplicitCapture,
 ): Promise<string | null> {
   const storage = await orchestrator.getStorage(resolvedNamespace);
+  // Tombstone-blocked rows are absent from the active fact hash index.
+  let activeFactHashMayMatch = true;
   if (
     candidate.category === "fact"
-    && typeof (storage as { hasFactContentHash?: (content: string) => Promise<boolean> }).hasFactContentHash === "function"
+    && typeof storage.hasFactContentHash === "function"
   ) {
     try {
-      const hasHash = await (storage as { hasFactContentHash: (content: string) => Promise<boolean> }).hasFactContentHash(
-        candidate.content,
-      );
+      const hasHash = await storage.hasFactContentHash(candidate.content);
       if (!hasHash) {
         const authoritative =
-          typeof (storage as { isFactContentHashAuthoritative?: () => Promise<boolean> | boolean }).isFactContentHashAuthoritative
-            === "function"
-            ? await (storage as { isFactContentHashAuthoritative: () => Promise<boolean> | boolean })
-              .isFactContentHashAuthoritative()
+          typeof storage.isFactContentHashAuthoritative === "function"
+            ? await storage.isFactContentHashAuthoritative()
             : false;
-        if (authoritative) return null;
+        activeFactHashMayMatch = !authoritative;
       }
     } catch (err) {
       // Fail open: hash index is only an optimization, so fall back to the full corpus scan.
@@ -429,7 +430,12 @@ async function findDuplicateExplicitCapture(
   const normalizedCandidate = normalizeCaptureContent(candidate.content);
   const match = existing.find((memory) => {
     const status = memory.frontmatter.status ?? "active";
-    if (status !== "active") return false;
+    if (
+      (status !== "active" && (status !== "pending_review" || !memory.frontmatter.blockedBy))
+      || (status === "active" && !activeFactHashMayMatch)
+    ) {
+      return false;
+    }
     if (memory.frontmatter.category !== candidate.category) return false;
     if (normalizeCaptureContent(memory.content) !== normalizedCandidate) return false;
     // Connector-aware dedup: same content from different connectors is NOT
@@ -734,7 +740,7 @@ export class InlineExplicitCaptureProcessor {
       throw new Error("namespacePreResolved requires a resolved namespace");
     }
 
-    const notes = parseInlineExplicitCaptureNotes(request.content);
+    const notes = parseInlineExplicitCaptureCandidates(request.content);
     const content = hasInlineExplicitCaptureMarkup(request.content)
       ? stripInlineExplicitCaptureNotes(request.content)
       : request.content;
