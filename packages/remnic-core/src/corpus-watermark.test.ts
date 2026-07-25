@@ -767,7 +767,7 @@ test("finding round-7: namespace enumeration is cached (resolved once per TTL, s
   let resolveCalls = 0;
   const resolve = async (): Promise<CorpusNamespaceRoot[]> => {
     resolveCalls += 1;
-    return [{ namespace: "global", rootDir: "/mem" }];
+    return [{ namespace: "global", rootDir: "/mem", namespaces: ["global"] }];
   };
   assert.equal(cache.getResolvedRoots(resolve), undefined, "cold: nothing yet, enumerating in background");
   await cache.whenIdle();
@@ -799,4 +799,42 @@ test("finding round-9: background refresh scans are bounded to maxConcurrentRefr
   await cache.whenIdle();
   assert.ok(peak >= 1, "at least one scan ran");
   assert.ok(peak <= 2, `peak concurrent scans ${peak} must not exceed the cap (2), even with 5 cold namespaces`);
+});
+
+test("finding round-10: a token scoped to a non-representative alias still sees the shared-root corpus", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    // namespaces disabled: default (global) and shared collapse onto memoryDir,
+    // so `global` wins dedupe. A token scoped to `shared` must still see it.
+    const config = serviceConfig(memoryDir, {
+      namespacesEnabled: false,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+    });
+    const host = {
+      config,
+      getStorage: (_namespace: string) => fakeStorage(memoryDir, [path.join(memoryDir, "facts/2026-03-08/a.md")]),
+    };
+    const roots = await resolveCorpusNamespaceRoots({ config });
+    assert.equal(roots.length, 1, "the shared root is reported once");
+    assert.ok(roots[0]?.namespaces.includes("global") && roots[0]?.namespaces.includes("shared"), "both aliases are tracked");
+    const scopedToShared = await computeServiceCorpusWatermarks(host, { caps: { version: 1, namespaces: ["shared"] } });
+    assert.equal(scopedToShared.length, 1, "a shared-scoped token sees the shared-root corpus, not an empty array");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("finding round-10: a non-directory category root fails a strict census (namespace omitted, not partial)", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    await writeMemory(memoryDir, "facts/2026-03-08/a.md");
+    // A category dir replaced by a regular file is a layout corruption; the
+    // strict census must omit the namespace rather than publish facts/ alone.
+    await writeFile(path.join(memoryDir, "procedures"), "not a directory", "utf-8");
+    const watermarks = await computeCorpusWatermarks(["global"], () => new StorageManager(memoryDir));
+    assert.deepEqual(watermarks, [], "a non-directory category root omits the namespace, not a partial count");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });

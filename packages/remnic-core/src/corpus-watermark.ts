@@ -281,8 +281,17 @@ export async function computeCorpusWatermarks(
 
 /** A namespace and the memory root its corpus lives under. */
 export interface CorpusNamespaceRoot {
+  /** Representative namespace label for this root (default wins on collapse). */
   readonly namespace: string;
   readonly rootDir: string;
+  /**
+   * Every configured namespace name that resolves to `rootDir` (aliases that
+   * collapsed onto one physical root, e.g. `global` + `shared` when namespaces
+   * are disabled). `/health` filters visibility against ALL of these so a token
+   * scoped to a non-representative alias still sees the shared corpus (issue
+   * #2156 round-10). Always includes `namespace`.
+   */
+  readonly namespaces: readonly string[];
 }
 
 /**
@@ -313,16 +322,20 @@ export async function resolveCorpusNamespaceRoots(options: {
     ...configDriven.filter((entry) => entry.namespace !== config.defaultNamespace),
   ];
   const seenNamespaces = new Set<string>();
-  const seenRoots = new Set<string>();
-  const roots: CorpusNamespaceRoot[] = [];
+  const byRoot = new Map<string, { namespace: string; rootDir: string; namespaces: string[] }>();
   for (const entry of ordered) {
-    if (seenNamespaces.has(entry.namespace) || seenRoots.has(entry.rootDir)) continue;
+    if (seenNamespaces.has(entry.namespace)) continue;
     seenNamespaces.add(entry.namespace);
-    seenRoots.add(entry.rootDir);
-    roots.push({ namespace: entry.namespace, rootDir: entry.rootDir });
+    const existing = byRoot.get(entry.rootDir);
+    if (existing) {
+      existing.namespaces.push(entry.namespace); // an alias collapsing onto a seen root
+    } else {
+      byRoot.set(entry.rootDir, { namespace: entry.namespace, rootDir: entry.rootDir, namespaces: [entry.namespace] });
+    }
   }
+  const roots: CorpusNamespaceRoot[] = [...byRoot.values()];
   if (roots.length === 0) {
-    roots.push({ namespace: config.defaultNamespace, rootDir: config.memoryDir });
+    roots.push({ namespace: config.defaultNamespace, rootDir: config.memoryDir, namespaces: [config.defaultNamespace] });
   }
   return roots;
 }
@@ -498,7 +511,7 @@ export async function computeServiceCorpusWatermarks(
     }
   }
   if (!roots) return []; // enumeration still warming (cold) — served on a later probe
-  const visible = roots.filter((root) => capabilityAllowsNamespace(options.caps, root.namespace));
+  const visible = roots.filter((root) => root.namespaces.some((ns) => capabilityAllowsNamespace(options.caps, ns)));
   const watermarks: CorpusWatermark[] = [];
   for (const { namespace } of visible) {
     const compute = async (): Promise<CorpusWatermark> =>

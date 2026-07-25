@@ -9,7 +9,7 @@
  * listing.
  */
 
-import type { Dirent } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
@@ -229,16 +229,34 @@ export class MemoryReadStore {
       // or non-directory category dirs and assert the resolved dir stays inside
       // the memory root before reading. A failure here means the whole subtree
       // does not exist or escaped the store — fail closed by skipping it.
+      let dirStat: Stats;
+      try {
+        dirStat = await lstat(dir);
+      } catch (err) {
+        // ENOENT (absent category dir) is expected; a backend read error
+        // (EACCES/EIO/…) propagates in strict census mode.
+        if (propagateReadErrors && isPropagatableReadError(err)) throw err;
+        return;
+      }
+      if (dirStat.isSymbolicLink()) return; // never follow symlinks out of the store (both modes)
+      if (!dirStat.isDirectory()) {
+        // A category root that EXISTS but is not a directory (e.g. `facts/`
+        // replaced by a regular file) is a layout/backend failure: a strict
+        // census must not silently publish the remaining categories as healthy.
+        // Non-strict (recall) stays best-effort and skips it (issue #2156 round-10).
+        if (propagateReadErrors) {
+          throw new Error(`corpus scan: expected a directory but found a non-directory at ${dir}`);
+        }
+        return;
+      }
       let entries: Dirent[];
       try {
-        const dirStat = await lstat(dir);
-        if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
         assertPathInsideRoot(memoryRootReal, await realpath(dir), dir);
         entries = await readdir(dir, { withFileTypes: true });
       } catch (err) {
-        // Symlink/non-dir already returned above; a containment failure carries
-        // no errno (skip). A backend read error (EACCES …) propagates in strict
-        // census mode so a partial subtree is not silently counted.
+        // A containment failure carries no errno (skip); a backend read error
+        // (EACCES …) propagates in strict census mode so a partial subtree is
+        // not silently counted.
         if (propagateReadErrors && isPropagatableReadError(err)) throw err;
         return;
       }
