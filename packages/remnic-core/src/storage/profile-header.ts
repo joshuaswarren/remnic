@@ -339,26 +339,7 @@ function findFrontmatterEnd(lines: ProfileLine[]): number {
 
 function hasHtmlBlockEndMarker(line: string, endMarker: string): boolean {
   const markerIndex = line.indexOf(endMarker);
-  if (markerIndex < 0) return false;
-  if (!endMarker.startsWith("</")) {
-    return line.slice(markerIndex + endMarker.length).trim() === "";
-  }
-  if (line.slice(0, markerIndex).trim() === "") return true;
-  const tagName = endMarker.slice(2, -1);
-  const openingPrefix = `<${tagName}`;
-  const trimmedLine = line.trimStart();
-  const boundary = trimmedLine[tagName.length + 1];
-  const validOpeningBoundary =
-    boundary === undefined ||
-    boundary === ">" ||
-    boundary === "/" ||
-    boundary === " " ||
-    boundary === "\t";
-  return (
-    trimmedLine.startsWith(openingPrefix) &&
-    validOpeningBoundary &&
-    line.slice(markerIndex + endMarker.length).trim() === ""
-  );
+  return markerIndex >= 0 && line.slice(markerIndex + endMarker.length).trim() === "";
 }
 
 function visitProfileMetadataLines(
@@ -475,6 +456,7 @@ function insertHeaderAfter(lines: ProfileLine[], index: number, header: string):
       0,
       { content: "", ending },
       { content: header, ending },
+      { content: "", ending },
     );
   }
 }

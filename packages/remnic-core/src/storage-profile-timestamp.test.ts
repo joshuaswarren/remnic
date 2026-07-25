@@ -62,6 +62,22 @@ test("writeProfile adds one canonical header when content has none", async (t) =
     t.mock.timers.reset();
   }
 });
+test("writeProfile keeps an inserted header standalone", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      await storage.writeProfile("# Behavioral Profile\n- Values direct communication.\n");
+
+      const firstWrite = await storage.readProfile();
+      await storage.writeProfile(firstWrite);
+
+      assert.equal(await storage.readProfile(), firstWrite);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile preserves CRLF line endings", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
@@ -905,6 +921,32 @@ test("writeProfile closes same-line raw HTML blocks", async (t) => {
         "# Behavioral Profile",
         "",
         "<pre>inline </pre>",
+        "# Notes",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after inline code.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile closes raw HTML blocks after inline content", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<pre>",
+        "code</pre>",
         "# Notes",
         "",
         STALE_HEADER,
