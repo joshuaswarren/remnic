@@ -2097,7 +2097,7 @@ export class StorageManager {
    * this method does not zero the buffer on replacement; the keyring
    * module (`keyring.ts`) owns zeroization.
    */
-  setSecureStoreKey(key: Buffer | null, encryptOnWrite = true): void {
+  async setSecureStoreKey(key: Buffer | null, encryptOnWrite = true): Promise<void> {
     this._secureStoreKey = key;
     this._secureStoreEncryptOnWrite = encryptOnWrite;
     // Route through the invalidation chokepoint (issue #1535): a key change
@@ -2111,15 +2111,7 @@ export class StorageManager {
     // Same rationale for the behavior-signals dedup key cache (issue #1909):
     // drop it on a key change so a re-encrypted/re-decrypted ledger is reloaded.
     this.behaviorSignalsKeyCache = null;
-    if (key !== null) {
-      this.entityCanonicalIdMigration.triggerAfterUnlock((error: unknown) => {
-        log.warn(
-          `entity canonical-id migration after secure-store unlock failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      });
-    }
+    if (key !== null) await this.entityCanonicalIdMigration.triggerAfterUnlock();
 
   }
 

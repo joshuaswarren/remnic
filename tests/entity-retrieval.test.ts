@@ -480,6 +480,22 @@ test("entity retrieval skips corpus assembly for unrelated Japanese queries with
   assert.equal(memoryReadCalls, 0);
 });
 
+test("entity retrieval ignores one-character and stop-word aliases in implicit queries", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-implicit-trivial-alias");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  await writeEntity(storage, "A", "project", ["A is synthetic."], "A is synthetic.");
+  await writeEntity(storage, "The", "project", ["The is synthetic."], "The is synthetic.");
+
+  const section = await buildSection(config, storage, "Can you make a plan for the project?");
+
+  assert.equal(section, null);
+});
+
 test("entity retrieval refreshes a persisted index after an entity-linked Fact changes", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-refresh");
   t.after(async () => {

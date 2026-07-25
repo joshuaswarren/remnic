@@ -22,6 +22,7 @@ import { rebuildMemoryProjection } from "../packages/remnic-core/src/maintenance
 import { rewriteProjectedMemoryEntityReference } from "../packages/remnic-core/src/memory-projection-mutations.js";
 import {
   getMemoryProjectionPath,
+  initializeMemoryProjectionDb,
   readProjectedEntityMentions,
   readProjectedMemoryState,
 } from "../packages/remnic-core/src/memory-projection-store.js";
@@ -34,6 +35,60 @@ test("projection memory rewrites reject an empty memory id", async () => {
     () => rewriteProjectedMemoryEntityReference("/tmp/remnic-projection-test", "", "legacy", "canonical"),
     /memoryId must not be empty/,
   );
+});
+
+test("projection memory rewrites initialize legacy projection tables", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-projection-legacy-schema-"));
+  try {
+    const projectionPath = getMemoryProjectionPath(memoryDir);
+    await mkdir(path.dirname(projectionPath), { recursive: true });
+    const db = openBetterSqlite3(projectionPath);
+    try {
+      initializeMemoryProjectionDb(db);
+      db.prepare(`
+        INSERT INTO memory_current (
+          memory_id, category, status, path_rel, path_valid, created_at, updated_at,
+          entity_ref, source, confidence, confidence_tier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "memory-1",
+        "fact",
+        "active",
+        "facts/memory-1.md",
+        1,
+        "2026-07-25T00:00:00.000Z",
+        "2026-07-25T00:00:00.000Z",
+        "legacy-entity",
+        "test",
+        1,
+        "explicit",
+      );
+      db.exec("DROP TABLE memory_entity_mentions");
+    } finally {
+      db.close();
+    }
+
+    await rewriteProjectedMemoryEntityReference(memoryDir, "memory-1", "legacy-entity", "canonical-entity");
+
+    const verified = openBetterSqlite3(projectionPath);
+    try {
+      assert.equal(
+        verified.prepare("SELECT entity_ref FROM memory_current WHERE memory_id = ?").get("memory-1")
+          ?.entity_ref,
+        "canonical-entity",
+      );
+      assert.equal(
+        verified
+          .prepare("SELECT entity_ref FROM memory_entity_mentions WHERE memory_id = ?")
+          .get("memory-1"),
+        undefined,
+      );
+    } finally {
+      verified.close();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
 
 test("writeEntity appends timeline evidence and marks older synthesis as stale", async () => {
@@ -269,7 +324,7 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
       parseEntityFile(await upgraded.readEntity(relatedCanonical)).relationships,
       [{ target: canonical, label: "depends on" }],
     );
-    assert.deepEqual(await upgraded.readEntities(), [relatedCanonical, canonical].sort());
+    assert.deepEqual((await upgraded.readEntities()).sort(), [relatedCanonical, canonical].sort());
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -609,22 +664,10 @@ test("setSecureStoreKey resumes entity migration after a locked startup", async 
     await upgraded.ensureDirectories();
     await assert.rejects(readFile(canonicalPath), { code: "ENOENT" });
 
-    upgraded.setSecureStoreKey(key, false);
-    let migratedEntity = false;
-    let migratedMemories: MemoryFile[] = [];
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      try {
-        migratedEntity = isEncryptedFile(await readFile(canonicalPath));
-      } catch {
-        migratedEntity = false;
-      }
-      migratedMemories = await upgraded.readAllMemories();
-      if (migratedEntity && migratedMemories.some((memory) => memory.frontmatter.entityRef === canonical)) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal(migratedEntity, true);
+    await upgraded.setSecureStoreKey(key, false);
+    assert.equal(isEncryptedFile(await readFile(canonicalPath)), true);
+    const migratedMemories = await upgraded.readAllMemories();
     assert.deepEqual(migratedMemories.map((memory) => memory.frontmatter.entityRef), [canonical]);
-    await upgraded.ensureDirectories();
     await assert.rejects(readFile(legacyPath), { code: "ENOENT" });
   } finally {
     await rm(dir, { recursive: true, force: true });

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { getMemoryProjectionPath } from "./memory-projection-store.js";
+import { getMemoryProjectionPath, initializeMemoryProjectionDb } from "./memory-projection-store.js";
 import { type BetterSqlite3Database, openBetterSqlite3 } from "./runtime/better-sqlite.js";
 
 const PROJECTION_WRITE_BUSY_TIMEOUT_MS = 100;
@@ -44,6 +44,7 @@ async function rewriteProjectedEntityReferenceRows(
     try {
       db = openBetterSqlite3(projectionPath, { fileMustExist: true });
       db.pragma(`busy_timeout = ${PROJECTION_WRITE_BUSY_TIMEOUT_MS}`);
+      initializeMemoryProjectionDb(db);
       const updateCurrent = db.prepare(
         scopedMemory
           ? "UPDATE memory_current SET entity_ref = ? WHERE memory_id = ? AND entity_ref = ?"

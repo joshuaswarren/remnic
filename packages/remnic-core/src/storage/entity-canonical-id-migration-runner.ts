@@ -24,9 +24,9 @@ export class EntityCanonicalIdMigrationRunner {
     return migration;
   }
 
-  public triggerAfterUnlock(onError: (error: unknown) => void): void {
-    if (!this.directoriesInitialized) return;
-    void this.ensure().catch(onError);
+  public triggerAfterUnlock(): Promise<void> {
+    if (!this.directoriesInitialized) return Promise.resolve();
+    return this.ensure();
   }
 
   public markComplete(): void {

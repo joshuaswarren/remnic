@@ -702,6 +702,51 @@ function resolveExplicitCandidates(
 
 const EXPLICIT_ENTITY_MENTION_SCORE = 9;
 
+const IMPLICIT_ENTITY_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "can",
+  "do",
+  "for",
+  "from",
+  "has",
+  "how",
+  "i",
+  "if",
+  "in",
+  "is",
+  "it",
+  "me",
+  "my",
+  "of",
+  "on",
+  "or",
+  "the",
+  "to",
+  "was",
+  "what",
+  "when",
+  "where",
+  "who",
+  "why",
+  "with",
+  "you",
+  "your",
+]);
+
+function isDistinctiveImplicitAlias(normalizedAlias: string): boolean {
+  const tokens = normalizedAlias.split(/\s+/).filter(Boolean);
+  if (tokens.length !== 1) return true;
+  const token = tokens[0]!;
+  return Array.from(token).length > 1 && !IMPLICIT_ENTITY_STOP_WORDS.has(token);
+}
+
 function resolveLanguageIndependentExplicitCandidates(
   index: EntityMentionIndex,
   query: string,
@@ -726,6 +771,7 @@ function resolveLanguageIndependentExplicitCandidates(
       const score = scoreAliasMatch(query, alias);
       if (
         !normalizedAlias ||
+        !isDistinctiveImplicitAlias(normalizedAlias) ||
         canonicalIdsByAlias.get(normalizedAlias)?.size !== 1 ||
         score < EXPLICIT_ENTITY_MENTION_SCORE ||
         score <= bestScore
