@@ -106,6 +106,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "observe", operation: "observe" },
   { tool: "lcm_search", operation: "lcm_search" },
   { tool: "lcm_compaction_flush", operation: "lcm_compaction_flush" },
+  { tool: "extraction_force_flush", operation: "extraction_force_flush" },
   { tool: "lcm_compaction_record", operation: "lcm_compaction_record" },
   { tool: "continuity_audit_generate", operation: "continuity_audit_generate" },
   { tool: "continuity_incident_open", operation: "continuity_incident_open" },

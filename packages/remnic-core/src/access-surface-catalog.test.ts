@@ -282,6 +282,25 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
     }
   }
 
+  if (/\bawait\s+maybeHandleLifecycleFlush\(/.test(source)) {
+    const lifecycleSource = readFileSync(
+      new URL("./access-http-lifecycle-flush.ts", import.meta.url),
+      "utf-8",
+    );
+    const lifecycleRoutes = [
+      ["/engram/v1/lcm/compaction/flush", "lcm_compaction_flush"],
+      ["/engram/v1/extraction/flush", "extraction_force_flush"],
+    ] as const;
+    for (const [pathname, operation] of lifecycleRoutes) {
+      const escapedPathname = pathname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const routeBlock = lifecycleSource.match(
+        new RegExp(`pathname\\s*===\\s*"${escapedPathname}"[\\s\\S]*?return true;`),
+      )?.[0];
+      if (routeBlock?.includes(`deps.enforceTokenOp("${operation}")`)) {
+        routeOps.set(`POST ${pathname}`, new Set([operation]));
+      }
+    }
+  }
   return routeOps;
 }
 
@@ -465,6 +484,18 @@ test("dispatch validator catches cross-method contamination on a shared path", (
   assert.ok(
     noDispatch.some((v) => v.detail.includes("GET /engram/v1/memories")),
     "dispatch validator must flag a GET route whose operation is dispatched only by the POST route on the same path",
+  );
+});
+
+test("dispatch validator follows lifecycle helper-owned HTTP routes", () => {
+  const routeDispatch = extractHttpRouteDispatchMap();
+  assert.equal(
+    routeDispatch.get("POST /engram/v1/lcm/compaction/flush")?.has("lcm_compaction_flush"),
+    true,
+  );
+  assert.equal(
+    routeDispatch.get("POST /engram/v1/extraction/flush")?.has("extraction_force_flush"),
+    true,
   );
 });
 
