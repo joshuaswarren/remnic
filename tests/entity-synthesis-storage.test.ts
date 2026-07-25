@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import {
   StorageManager,
   compareEntityTimestamps,
@@ -12,7 +12,11 @@ import {
   serializeEntityFile,
 } from "../packages/remnic-core/src/storage.js";
 import { parseConfig } from "../packages/remnic-core/src/config.js";
-import { writeMaybeEncryptedFile } from "../packages/remnic-core/src/secure-store/secure-fs.js";
+import { normalizeEntityText } from "../packages/remnic-core/src/entity-schema.js";
+import {
+  isEncryptedFile,
+  writeMaybeEncryptedFile,
+} from "../packages/remnic-core/src/secure-store/secure-fs.js";
 import { rebuildMemoryProjection } from "../packages/remnic-core/src/maintenance/rebuild-memory-projection.js";
 import {
   getMemoryProjectionPath,
@@ -171,6 +175,15 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
     const projectionLock = openBetterSqlite3(getMemoryProjectionPath(dir), { fileMustExist: true });
     projectionLock.pragma("busy_timeout = 0");
     projectionLock.exec("BEGIN IMMEDIATE");
+    const tombstoneLockPath = path.join(dir, "state", "tombstones.lock");
+    const tombstoneLock = await open(tombstoneLockPath, "wx");
+    let tombstoneLockReleased = false;
+    const releaseTombstoneLock = async () => {
+      if (tombstoneLockReleased) return;
+      tombstoneLockReleased = true;
+      await tombstoneLock.close();
+      await rm(tombstoneLockPath, { force: true });
+    };
     let projectionLockReleased = false;
     const releaseProjectionLock = () => {
       if (projectionLockReleased) return;
@@ -179,11 +192,16 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
       projectionLock.close();
     };
     const releaseImmediate = setImmediate(releaseProjectionLock);
+    const releaseTombstoneImmediate = setImmediate(() => {
+      void releaseTombstoneLock();
+    });
     try {
       await upgraded.ensureDirectories();
     } finally {
       clearImmediate(releaseImmediate);
       releaseProjectionLock();
+      clearImmediate(releaseTombstoneImmediate);
+      await releaseTombstoneLock();
     }
 
     assert.match(await upgraded.readEntity(canonical), /# 月光/);
@@ -321,8 +339,9 @@ test("ensureDirectories re-encrypts legacy Entity ids at their canonical path", 
     await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
 
     const upgraded = new StorageManager(dir);
-    upgraded.setSecureStoreKey(key, true);
+    upgraded.setSecureStoreKey(key, false);
     await upgraded.ensureDirectories();
+    assert.equal(isEncryptedFile(await readFile(path.join(dir, "entities", `${canonical}.md`))), true);
 
     assert.match(await upgraded.readEntity(canonical), /# 月光/);
     assert.equal(await upgraded.readEntity(legacyCanonical), "");
@@ -344,6 +363,7 @@ test("ensureDirectories resumes a secure Entity migration after its canonical wr
     await seed.ensureDirectories();
     await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
     const entityContent = await seed.readEntity(canonical);
+    await writeFile(path.join(dir, "entities", `${canonical}.md`), entityContent, "utf-8");
     await writeMaybeEncryptedFile(
       path.join(dir, "entities", `${legacyCanonical}.md`),
       entityContent,
@@ -362,8 +382,9 @@ test("ensureDirectories resumes a secure Entity migration after its canonical wr
     );
 
     const upgraded = new StorageManager(dir);
-    upgraded.setSecureStoreKey(key, true);
+    upgraded.setSecureStoreKey(key, false);
     await upgraded.ensureDirectories();
+    assert.equal(isEncryptedFile(await readFile(path.join(dir, "entities", `${canonical}.md`))), true);
 
     assert.match(await upgraded.readEntity(canonical), /# 月光/);
     assert.equal(await upgraded.readEntity(legacyCanonical), "");
@@ -377,6 +398,18 @@ test("normalizeEntityName canonicalizes Unicode composition", () => {
     normalizeEntityName("Café", "project"),
     normalizeEntityName("Cafe\u0301", "project"),
   );
+});
+
+test("normalizeEntityName preserves combining marks in canonical ids and text", () => {
+  const base = normalizeEntityName("क", "project");
+  const shortVowel = normalizeEntityName("कि", "project");
+  const longVowel = normalizeEntityName("की", "project");
+  assert.equal(shortVowel, "project-कि");
+  assert.equal(longVowel, "project-की");
+  assert.notEqual(base, shortVowel);
+  assert.notEqual(shortVowel, longVowel);
+  assert.equal(normalizeEntityText("कि"), "कि");
+  assert.equal(normalizeEntityText("की"), "की");
 });
 
 test("writeEntity preserves structured sections alongside timeline evidence", async () => {

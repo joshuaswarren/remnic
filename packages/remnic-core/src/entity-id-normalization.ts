@@ -28,7 +28,7 @@ function normalizeEntityNameWithPattern(
 }
 
 export function normalizeEntityName(raw: string, type: string, aliases?: Readonly<Record<string, string>>): string {
-  return normalizeEntityNameWithPattern(raw, type, aliases, /[^\p{L}\p{N}]+/gu, true);
+  return normalizeEntityNameWithPattern(raw, type, aliases, /[^\p{L}\p{M}\p{N}]+/gu, true);
 }
 
 export function normalizeLegacyEntityName(

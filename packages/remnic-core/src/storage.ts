@@ -3615,6 +3615,7 @@ export class StorageManager {
       resolveEntityFilePath: this.resolveEntityFilePath.bind(this),
       readStorageSecureFile: this.readStorageSecureFile.bind(this),
       writeStorageSecureFile: this.writeStorageSecureFile.bind(this),
+      isEncryptedStorageFile: this.isEncryptedFileHeader.bind(this),
       snapshotBeforeWrite: this.snapshotBeforeWrite.bind(this),
       parseEntityFile: (content) => parseEntityFile(content, this.entitySchemas),
       serializeEntityFile: (entity) => serializeEntityFile(entity, this.entitySchemas),
