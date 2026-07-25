@@ -96,6 +96,14 @@ test("category-named QMD collections preserve filesystem paths and exclude quali
     isGenericRecallExcludedPath("facts/archive/2026-07-22/a.md", policy, "qmd"),
     true,
   );
+  assert.equal(
+    isGenericRecallExcludedPath(
+      "facts/archive/2026-07-22/a.md",
+      { memoryDir: "/mem", qmdColdCollection: "facts" },
+      "qmd",
+    ),
+    true,
+  );
 });
 
 test("reserved collection names do not hide archive roots", () => {
