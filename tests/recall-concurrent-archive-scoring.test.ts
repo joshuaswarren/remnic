@@ -6,22 +6,23 @@
  * These tests prove:
  *   1. CORRECTNESS: the extracted pure scoring function produces the right
  *      results, and both strategies (sync + off-thread) are equivalent.
- *   2. PROVE-FAIL (old serialization): SyncArchiveScoring serializes K
- *      concurrent calls — they take ~K× the single-call latency because the
- *      synchronous loop blocks the event loop for its entire duration.
- *   3. PASS (new parallelism): OffThreadArchiveScoring parallelizes K
- *      concurrent calls via worker_threads — they complete in ~1× (not K×)
- *      the single-call latency.
+ *   2. SERIALIZATION: SyncArchiveScoring runs its CPU-bound scoring
+ *      synchronously, so K concurrent calls never overlap — the maximum
+ *      in-flight scoring count observed by the event loop stays <= 1.
+ *   3. PARALLELISM: OffThreadArchiveScoring dispatches to a worker_threads
+ *      pool, so K concurrent calls run at once — the maximum in-flight
+ *      scoring count observed by the event loop exceeds 1.
  *
- * The prove-fail/pass pair directly demonstrates the fix: concurrent recalls
- * no longer serialize on the main thread.
+ * The serialization/parallelism pair directly demonstrates the fix, and both
+ * assertions observe event-loop concurrency deterministically rather than
+ * wall-clock latency, so they never flake under CI load.
  */
 
 import assert from "node:assert/strict";
-import { performance } from "node:perf_hooks";
 import test from "node:test";
 import {
   type ArchiveScoreItem,
+  type ArchiveScoringStrategy,
   OffThreadArchiveScoring,
   SyncArchiveScoring,
   disposeDefaultArchiveScoring,
@@ -36,10 +37,10 @@ import type { MemoryFile } from "../packages/remnic-core/src/types.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Build a set of heavy score items so each scoring pass takes MEASURABLE time
- * (tens of ms). Each item's content is padded with ~200 KB of filler so the
- * `haystack.includes(token)` inner loop is expensive enough to distinguish
- * serial from parallel execution.
+ * Build a set of heavy score items so each scoring pass spans many event-loop
+ * ticks. Each item's content is padded with ~200 KB of filler so an off-thread
+ * pass keeps its worker busy while the in-flight sampler runs, and a sync pass
+ * blocks the event loop long enough that no sampler tick can interleave.
  */
 function makeHeavyItems(count: number, matchEveryNth: number): ArchiveScoreItem[] {
   const filler = "the quick brown fox jumps over the lazy dog ".repeat(5_000);
@@ -168,65 +169,84 @@ test("OffThreadArchiveScoring produces identical results to SyncArchiveScoring",
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. PROVE-FAIL: SyncArchiveScoring serializes K concurrent calls (K× latency)
+// 3+4. Concurrency semantics — measured deterministically via max in-flight.
+//
+// Instead of timing one call and K concurrent calls and asserting on the
+// wall-clock ratio (which flakes: a loaded CI runner inflates the single-call
+// baseline, deflating the ratio below threshold), we observe the property
+// directly. Each score() call brackets its work with an in-flight counter; a
+// self-re-arming setImmediate sampler records the maximum count it ever sees.
+//
+//   - Sync scoring runs its CPU work synchronously inside score(), so the event
+//     loop is blocked for the whole pass and every wrapper's decrement drains
+//     before any sampler tick fires: the sampler never catches two passes
+//     overlapping (max stays <= 1).
+//   - Off-thread scoring yields the event loop while workers compute, so all K
+//     passes sit in flight together and the sampler observes K.
+//
+// This is an ordering fact (micro/macrotask + worker round-trip), independent
+// of how long the work takes, so it is immune to runner load.
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("SyncArchiveScoring serializes K concurrent calls (~K× single-call latency)", async () => {
+async function measureMaxInFlight(strategy: ArchiveScoringStrategy, k: number): Promise<number> {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let sampling = true;
+
+  const sample = () => {
+    if (inFlight > maxInFlight) maxInFlight = inFlight;
+    if (sampling) setImmediate(sample);
+  };
+  setImmediate(sample);
+
+  const scoreOnce = async () => {
+    inFlight += 1;
+    try {
+      await strategy.score(HEAVY_ITEMS, QUERY_TOKENS);
+    } finally {
+      inFlight -= 1;
+    }
+  };
+
+  await Promise.all(Array.from({ length: k }, () => scoreOnce()));
+  sampling = false;
+  return maxInFlight;
+}
+
+test("SyncArchiveScoring serializes K concurrent calls (max in-flight <= 1)", async () => {
   const K = 4;
   const sync = new SyncArchiveScoring();
 
-  // Measure single call.
-  const t0 = performance.now();
-  await sync.score(HEAVY_ITEMS, QUERY_TOKENS);
-  const singleMs = performance.now() - t0;
+  const maxInFlight = await measureMaxInFlight(sync, K);
 
-  // Measure K concurrent calls.
-  const t1 = performance.now();
-  await Promise.all(Array.from({ length: K }, () => sync.score(HEAVY_ITEMS, QUERY_TOKENS)));
-  const concurrentMs = performance.now() - t1;
-
-  const ratio = concurrentMs / singleMs;
-  // PROVE-FAIL: sync scoring blocks the event loop, so K concurrent calls
-  // serialize — concurrent time should be >= 2.5× single (theoretical K=4×,
-  // allowing scheduling slack). This is the behavior that caused issue #1674.
+  // Sync scoring blocks the event loop for each pass, so the K calls can never
+  // overlap. This is the behavior that caused issue #1674.
   assert.ok(
-    ratio >= 2.5,
-    `Sync scoring should serialize K=${K} concurrent calls (expected ratio >= 2.5, got ${ratio.toFixed(2)}; single=${singleMs.toFixed(0)}ms concurrent=${concurrentMs.toFixed(0)}ms)`
+    maxInFlight <= 1,
+    `Sync scoring must serialize K=${K} concurrent calls (expected max in-flight <= 1, got ${maxInFlight})`
   );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. PASS: OffThreadArchiveScoring parallelizes K concurrent calls (~1× latency)
+// 4. PASS: OffThreadArchiveScoring parallelizes K concurrent calls
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("OffThreadArchiveScoring parallelizes K concurrent calls (< K× sync latency)", async (t) => {
+test("OffThreadArchiveScoring parallelizes K concurrent calls (max in-flight > 1)", async (t) => {
   const K = 4;
   // Size the pool explicitly to K so the assertion is robust to the runner's
-  // core count: even on a 2-core CI box, K workers with no queuing beats the
-  // K× serialization of sync scoring (#1674 review thread).
+  // core count: K workers with no queuing all run at once (#1674 review thread).
   const offThread = new OffThreadArchiveScoring(K);
   t.after(async () => {
     await offThread.terminate();
   });
 
-  // Measure single call.
-  const t0 = performance.now();
-  await offThread.score(HEAVY_ITEMS, QUERY_TOKENS);
-  const singleMs = performance.now() - t0;
+  const maxInFlight = await measureMaxInFlight(offThread, K);
 
-  // Measure K concurrent calls.
-  const t1 = performance.now();
-  await Promise.all(Array.from({ length: K }, () => offThread.score(HEAVY_ITEMS, QUERY_TOKENS)));
-  const concurrentMs = performance.now() - t1;
-
-  const ratio = concurrentMs / singleMs;
-  // PASS: off-thread scoring dispatches to separate workers, so K concurrent
-  // calls finish in strictly less wall-clock time than the K× serialization
-  // of sync scoring. Asserting ratio < K (not a fixed multiplier) keeps the
-  // test robust regardless of the runner's core count.
+  // Off-thread scoring dispatches to separate workers, so the K calls are all
+  // in flight simultaneously — the fix for issue #1674.
   assert.ok(
-    ratio < K,
-    `Off-thread scoring should parallelize K=${K} concurrent calls (expected ratio < ${K}, got ${ratio.toFixed(2)}; single=${singleMs.toFixed(0)}ms concurrent=${concurrentMs.toFixed(0)}ms)`
+    maxInFlight > 1,
+    `Off-thread scoring must parallelize K=${K} concurrent calls (expected max in-flight > 1, got ${maxInFlight})`
   );
 });
 
