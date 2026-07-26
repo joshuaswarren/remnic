@@ -1806,3 +1806,36 @@ test("grounding rejects topical overlap for short copular claims", () => {
 
   assert.deepEqual(result.facts, []);
 });
+
+test("grounding preserves proper identifiers before inflectional stemming", () => {
+  const factResult = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice uses Spr.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice uses Spring.",
+  );
+  const entityResult = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [{
+        name: "Spr",
+        type: "tool",
+        facts: ["Spr is deployed."],
+      }],
+      questions: [],
+    },
+    "Spring is deployed.",
+  );
+
+  assert.deepEqual(factResult.facts, []);
+  assert.deepEqual(entityResult.entities, []);
+});

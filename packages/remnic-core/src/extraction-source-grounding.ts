@@ -311,6 +311,7 @@ const GROUNDING_MIN_COVERAGE = 0.5;
 
 function stemToken(token: string, preserveTerminalS = false): string {
   if (token.endsWith("'s")) return token.slice(0, -2);
+  if (preserveTerminalS) return token;
   if (token.length > 5 && token.endsWith("ing")) {
     const stem = token.slice(0, -3);
     return /(.)\1$/u.test(stem) ? stem.slice(0, -1) : stem;
