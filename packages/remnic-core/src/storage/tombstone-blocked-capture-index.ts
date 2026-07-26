@@ -835,6 +835,47 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     this.bumpMemoryStatusVersion();
   }
 
+  protected async runTombstoneBlockedInvalidation(
+    memory: MemoryFile,
+    task: (
+      current: MemoryFile,
+      rebuildMarker: string | undefined,
+      markDurable: () => void
+    ) => Promise<boolean>
+  ): Promise<boolean> {
+    const initiallyBlocked = this.isTombstoneBlockedMemory(memory);
+    const invalidate = async (): Promise<boolean> => {
+      const current = (await this.tombstoneBlockedCaptureIndexOptions().readAllMemories()).find(
+        (candidate) => candidate.frontmatter.id === memory.frontmatter.id
+      );
+      if (!current) return false;
+      const blocked = this.isTombstoneBlockedMemory(current);
+      const blockedIndex = blocked ? this.getTombstoneBlockedCaptureIndex() : null;
+      let rebuildMarker: string | undefined;
+      let durable = false;
+      try {
+        if (blockedIndex) rebuildMarker = await blockedIndex.prepareWrite();
+        return await task(current, rebuildMarker, () => {
+          durable = true;
+        });
+      } catch {
+        if (rebuildMarker && !durable && blockedIndex) {
+          try {
+            await blockedIndex.discardWrite(rebuildMarker);
+          } catch {
+            blockedIndex.markUntrusted();
+          }
+        }
+        return false;
+      }
+    };
+    if (!initiallyBlocked) return invalidate();
+    return await this.withTombstoneBlockedCaptureWriteLock(
+      invalidate,
+      buildExplicitCaptureDedupKey(memory.content, memory.frontmatter.category, memory.frontmatter.sourceConnector)
+    );
+  }
+
   protected async runTombstoneBlockedOfflineSyncMutation(
     target: string,
     after: MemoryFile | null,
