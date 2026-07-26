@@ -1456,6 +1456,43 @@ test("writeProfile preserves timestamp prose before a noninterrupting ordered li
     t.mock.timers.reset();
   }
 });
+
+test("writeProfile preserves timestamp prose before indented code", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "*Last updated: literal example*",
+        "    # code example",
+        "",
+        "- Keeps prose content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "*Last updated: literal example*",
+          "    # code example",
+          "",
+          "- Keeps prose content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile preserves timestamp-shaped prose continuations", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

@@ -572,7 +572,7 @@ function isStandaloneMetadataLine(
     : currentLine;
   const indentation = currentWithoutBom.length - currentWithoutBom.trimStart().length;
   const previousLine = lines[index - 1]?.content.trim() ?? "";
-  const nextLine = lines[index + 1]?.content.trim() ?? "";
+  const nextLine = lines[index + 1]?.content.trimEnd() ?? "";
   const previousWithoutBom = previousLine.startsWith(UTF8_BOM)
     ? previousLine.slice(1)
     : previousLine;
