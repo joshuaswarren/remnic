@@ -1242,13 +1242,6 @@ export class RecallSearchPipelineCoordinator {
       }
       const memory = memoryForResult(memoryByPath, r);
       if (memory) {
-        // Issue #2183 — carry the persisted sourceConnector on the result here,
-        // at the single point the result meets its hydrated memory, so it flows
-        // through every downstream branch (hot QMD, embedding, cold fallback)
-        // and the renderer reads it directly — no per-branch side-channel map.
-        if (memory.frontmatter.sourceConnector) {
-          r.sourceConnector = memory.frontmatter.sourceConnector;
-        }
         // Review-lifecycle statuses never enter active recall injection
         // (forgotten, pending_review, rejected, quarantined). Superseded and
         // archived have dedicated filters below. #1576: the faithfulness gate
@@ -1346,7 +1339,15 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
       }
-      filtered.push(r);
+      // Issue #2183 — derive sourceConnector EXCLUSIVELY from the hydrated
+      // memory, on a copy so a shared/cached result object (global QMD cache)
+      // is never mutated across recalls and a result-supplied value (e.g.
+      // RemoteSearchBackend casting arbitrary responses) cannot pose as trusted
+      // provenance. Connectorless memory (or no memory) → cleared (undefined).
+      filtered.push({
+        ...r,
+        sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
+      });
     }
     if (lifecycleFilteredCount > 0) {
       log.debug(
