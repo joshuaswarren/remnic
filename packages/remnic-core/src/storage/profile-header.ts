@@ -303,7 +303,11 @@ function updateHtmlBlockDepth(
     : null;
 }
 
-function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBlock | null {
+function findHtmlBlockStart(
+  normalizedLine: string,
+  trimmedLine: string,
+  allowGenericHtmlBlock: boolean,
+): HtmlBlock | null {
   const rawTag = findHtmlBlockTag(normalizedLine, RAW_HTML_BLOCK_TAGS);
   if (rawTag) {
     const completeTag =
@@ -346,6 +350,7 @@ function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBl
     }
     return { endMarker: `</${blockTag}>`, endsAtBlankLine: true, tagName: blockTag, depth: 1 };
   }
+  if (!allowGenericHtmlBlock) return null;
   const genericTag = findCompleteHtmlTag(trimmedLine);
   if (!genericTag) return null;
   if (genericTag.isClosing || genericTag.isSelfClosing) {
@@ -405,9 +410,19 @@ function isHtmlBlockTerminator(line: string): boolean {
 
 function hasRawHtmlBlockEndMarker(line: string, endMarker: string): boolean {
   const markerIndex = line.indexOf(endMarker);
+
   if (markerIndex < 0) return false;
   if (markerIndex === 0) return true;
   return !/\s/.test(line[markerIndex - 1] ?? "");
+}
+function canStartGenericHtmlBlock(lines: ProfileLine[], index: number): boolean {
+  const previousLine = lines[index - 1]?.content.trim() ?? "";
+  if (previousLine === "") return true;
+  return (
+    isMetadataBoundary(previousLine) &&
+    !MARKDOWN_LIST_ITEM.test(previousLine) &&
+    !MARKDOWN_BLOCK_QUOTE.test(previousLine)
+  );
 }
 
 function visitProfileMetadataLines(
@@ -452,7 +467,11 @@ function visitProfileMetadataLines(
       openFence = fence;
       continue;
     }
-    const htmlBlock = findHtmlBlockStart(normalizedLine, trimmedLine);
+    const htmlBlock = findHtmlBlockStart(
+      normalizedLine,
+      trimmedLine,
+      canStartGenericHtmlBlock(lines, index),
+    );
     if (htmlBlock) {
       openHtmlBlock = htmlBlock.tagName
         ? updateHtmlBlockDepth(htmlBlock, normalizedLine, true)
@@ -523,8 +542,11 @@ function isStandaloneMetadataLine(
   const nextWithoutBom = nextLine.startsWith(UTF8_BOM) ? nextLine.slice(1) : nextLine;
   const previousMetadataBoundary = isMetadataBoundary(previousWithoutBom);
   const nextMetadataBoundary = isMetadataBoundary(nextWithoutBom);
+  const previousContainerMarker =
+    MARKDOWN_LIST_ITEM.test(previousWithoutBom) || MARKDOWN_BLOCK_QUOTE.test(previousWithoutBom);
   const startsBlock =
-    index === 0 || index === frontmatterEnd + 1 || previousMetadataBoundary;
+    (index === 0 || index === frontmatterEnd + 1 || previousMetadataBoundary) &&
+    !previousContainerMarker;
   const endsBlock = index === lines.length - 1 || nextMetadataBoundary;
   const compactHeaderAfterTitle = isProfileTitleLine(lines, index - 1, previousWithoutBom);
   const compactHeaderAfterHeader = isLastUpdatedHeader(previousWithoutBom);

@@ -833,6 +833,50 @@ test("writeProfile preserves timestamp-shaped generic HTML blocks", async (t) =>
   }
 });
 
+test("writeProfile keeps generic HTML inline after paragraph prose", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "Preamble prose.",
+        "<custom-widget>",
+        "# Behavioral Profile",
+        STALE_HEADER,
+        "",
+        "Profile body.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile keeps lazy list timestamp text as content", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "- Explanation in a list item.",
+        "*Last updated: literal example*",
+        "",
+        "Body prose.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), `${FRESH_HEADER}\n\n${profile}`);
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile keeps inline HTML blocks opaque until a blank line", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -941,6 +985,7 @@ test("writeProfile recognizes heading and list metadata boundaries", async (t) =
           "# Behavioral Profile",
           "",
           "- Existing note.",
+          "",
           STALE_HEADER,
           "",
           "- Keeps list metadata.",
