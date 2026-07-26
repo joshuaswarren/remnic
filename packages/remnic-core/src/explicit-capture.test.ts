@@ -754,6 +754,32 @@ test("inline capture queues safe unsupported namespaces through the authorized r
   assert.ok(probe.requestedNamespaces.every((namespace) => namespace === "default"));
 });
 
+test("inline capture review fallback scans the default root when namespaces are disabled", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  (probe.orchestrator.config as PluginConfig).namespacesEnabled = false;
+  const request = {
+    captureMode: "hybrid" as const,
+    content: [
+      "<memory_note>",
+      "content: A default-root review must deduplicate when namespaces are disabled.",
+      "category: fact",
+      "confidence: invalid",
+      "</memory_note>",
+    ].join("\n"),
+  };
+
+  const first = await probe.processor.process(request);
+  const restarted = new InlineExplicitCaptureProcessor(probe.orchestrator, {
+    sourceConnector: "openclaw",
+  });
+  const second = await restarted.process(request);
+
+  assert.equal(first.queued, 1);
+  assert.equal(second.duplicates, 1);
+  assert.equal(probe.envelopes.length, 1);
+  assert.ok(probe.requestedNamespaces.includes(undefined));
+});
+
 test("inline capture globally deduplicates unsupported namespace review replay", async () => {
   const probe = createInlineCaptureProcessorProbe();
   const request = {

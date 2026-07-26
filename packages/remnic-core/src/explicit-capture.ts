@@ -595,12 +595,11 @@ function explicitCaptureReviewNamespaces(
   queueNamespace: string | undefined
 ): Array<string | undefined> {
   const config = orchestrator.config;
-  const namespaces = new Set<string>();
+  const namespaces = new Set<string | undefined>();
   const add = (namespace: string | undefined): void => {
-    const normalized = asTrimmed(namespace);
-    if (normalized) namespaces.add(normalized);
+    namespaces.add(asTrimmed(namespace));
   };
-  add(queueNamespace);
+  add(queueNamespace ?? config.defaultNamespace);
   if (config.namespacesEnabled !== false) {
     for (const policy of config.namespacePolicies) add(policy.name);
   }
