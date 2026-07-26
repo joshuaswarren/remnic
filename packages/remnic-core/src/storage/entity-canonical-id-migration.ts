@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { computeSupersessionKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { EntityFile, MemoryFile } from "../types.js";
+import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -69,6 +70,14 @@ const EntityCanonicalIdMigrationStateSchema = z.object({
   version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),
   complete: z.boolean(),
   mappings: z.record(z.string().min(1)),
+  /**
+   * Pairs the migration refused to resolve, PARKED rather than dropped.
+   * Deleting the record would strand the collision: once an operator removes
+   * the legacy file, no later scan can rediscover the mapping, so references
+   * still naming the legacy id would never be rewritten. Optional so a journal
+   * written by an older build still parses.
+   */
+  blocked: z.record(z.string().min(1)).optional(),
 });
 
 type EntityCanonicalIdMigrationState = z.infer<typeof EntityCanonicalIdMigrationStateSchema>;
@@ -348,12 +357,28 @@ async function readSafeEntityEntries(entitiesDir: string): Promise<string[]> {
   return entries;
 }
 
+/**
+ * Legacy ids the migration cannot resolve on its own, mapped to the canonical
+ * id they collide with. Two entity files describing one entity is an ORDINARY
+ * operator state, and picking a winner would silently drop whichever side lost.
+ * So the pair is skipped and reported: reads of the legacy id keep working
+ * exactly as they did before the migration ran.
+ */
+export type BlockedEntityPairs = Map<string, string>;
+
 async function discoverMappings(
   deps: EntityCanonicalIdMigrationDependencies,
   knownMappings: Readonly<Record<string, string>> = {},
+  blocked: BlockedEntityPairs = new Map(),
 ): Promise<Record<string, string>> {
   const mappings: Record<string, string> = {};
-  const canonicalOwners = new Map<string, string>();
+  const canonicalOwners = new Map<string, string[]>();
+  // Blocks describe THIS scan of the directory, so they are rebuilt per pass.
+  // Accumulating them across a run would let a collision another writer has
+  // since resolved keep pruning its now-valid mapping: the entity file gets
+  // renamed while the pruned mapping skips the reference rewrite, stranding
+  // memories on a filename that no longer exists.
+  blocked.clear();
   const entityEntries = await readSafeEntityEntries(deps.entitiesDir);
   for (const entry of entityEntries) {
     if (!entry.endsWith(".md")) continue;
@@ -386,17 +411,22 @@ async function discoverMappings(
     if (canonicalExists) {
       const canonicalContent = await deps.readStorageSecureFile(canonicalPath);
       if (entityContent !== canonicalContent) {
-        throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
+        blocked.set(legacyId, canonicalId);
+        continue;
       }
     }
-    const previousOwner = canonicalOwners.get(canonicalId);
-    if (previousOwner !== undefined && previousOwner !== legacyId) {
-      throw new Error(
-        `Cannot migrate legacy entity ids ${previousOwner} and ${legacyId}: both normalize to ${canonicalId}.`,
-      );
-    }
-    canonicalOwners.set(canonicalId, legacyId);
+    canonicalOwners.set(canonicalId, [...(canonicalOwners.get(canonicalId) ?? []), legacyId]);
     mappings[legacyId] = canonicalId;
+  }
+  // A canonical id claimed by more than one legacy file has no non-arbitrary
+  // winner, and readdir order is not stable (§6) - so the "winner" would differ
+  // between hosts reading identical data. Block every claimant instead.
+  for (const [canonicalId, claimants] of canonicalOwners) {
+    if (claimants.length < 2) continue;
+    for (const legacyId of claimants) {
+      blocked.set(legacyId, canonicalId);
+      delete mappings[legacyId];
+    }
   }
   return mappings;
 }
@@ -645,7 +675,19 @@ function mergeDiscoveredMappings(
   for (const [legacyId, canonicalId] of Object.entries(discovered)) {
     const previousMapping = merged[legacyId];
     if (previousMapping !== undefined && previousMapping !== canonicalId) {
-      throw new Error(`Legacy entity id ${legacyId} changed canonical target during migration.`);
+      // A -> B collapses to A -> C once B -> C exists, so a rescan that still
+      // reads A -> B off disk is reporting the same chain, not a new target.
+      // Only a target the chain cannot reach is a real conflict.
+      let hop: string | undefined = canonicalId;
+      const seen = new Set<string>();
+      while (hop !== undefined && hop !== previousMapping && !seen.has(hop)) {
+        seen.add(hop);
+        hop = merged[hop];
+      }
+      if (hop !== previousMapping) {
+        throw new Error(`Legacy entity id ${legacyId} changed canonical target during migration.`);
+      }
+      continue;
     }
     if (previousMapping === undefined && wouldCreateMappingCycle(merged, legacyId, canonicalId)) continue;
     const previousOwner = canonicalOwners.get(canonicalId);
@@ -681,6 +723,8 @@ function collapseMappings(mappings: Readonly<Record<string, string>>): Record<st
 type EntityFileMigrationResult = {
   deferred: boolean;
   progressed: boolean;
+  /** The pair collided on content; skipped and reported, never migrated. */
+  blocked?: boolean;
 };
 
 async function migrateEntityFilePair(
@@ -711,7 +755,9 @@ async function migrateEntityFilePair(
         deps.isEncryptedStorageFile(canonicalPath),
       ]);
       if (legacyContent !== canonicalContent) {
-        throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
+        // A mapping persisted by an older build, or a file changed since
+        // discovery. Same verdict as discovery: skip the pair, keep both files.
+        return { deferred: false, progressed: false, blocked: true };
       }
       if (legacyEncrypted && !canonicalEncrypted) {
         if (!(await refreshMigrationLock()) || !(await refreshEntityLock())) {
@@ -792,6 +838,77 @@ export async function migrateLegacyEntityCanonicalIds(
           mappings: {},
         };
       }
+      const blocked: BlockedEntityPairs = new Map();
+      // ONE aggregated line per run, not one per pair per restart: this used to
+      // abort the daemon, so the operator needs the whole list and the remedy.
+      const finish = (): Promise<string | undefined> | string | undefined => {
+        if (blocked.size > 0) {
+          const pairs = [...blocked].map(([legacyId, canonicalId]) => `${legacyId} -> ${canonicalId}`).join(", ");
+          log.warn(
+            `entity canonical-id migration skipped ${blocked.size} unresolvable pair(s): ${pairs}. `
+            + "Both files were kept and the legacy id still resolves; merge or delete one side to migrate it.",
+          );
+        }
+        return deps.readMigrationFingerprint?.();
+      };
+      /**
+       * Drop blocked pairs from the working set. Discovery only refuses to
+       * ADD them; a mapping persisted by an earlier run would otherwise still
+       * be applied - migrating one claimant and rewriting every reference onto
+       * the canonical file, i.e. picking the winner this fix exists to avoid,
+       * off stale state rather than what is on disk.
+       */
+      /** @returns true when a park was promoted back into the mapping set. */
+      const pruneBlocked = async (): Promise<boolean> => {
+        const current = state;
+        if (!current) return false;
+        // THIS scan's verdict wins over the journal: normalization can change
+        // between runs, so a stale parked target would otherwise be promoted
+        // later and rewrite references onto an id that does not exist.
+        let revived = false;
+        const parked: Record<string, string> = { ...(current.blocked ?? {}) };
+        const active: Record<string, string> = {};
+        for (const [legacyId, canonicalId] of Object.entries(current.mappings)) {
+          if (!blocked.has(legacyId)) active[legacyId] = canonicalId;
+        }
+        for (const [legacyId, canonicalId] of blocked) parked[legacyId] = canonicalId;
+        // A parked pair whose legacy file is gone was resolved by keeping the
+        // canonical side. The rename is moot; the reference rewrite is not, and
+        // this record is the only thing that can still perform it.
+        // A park survives ONLY while this scan re-establishes the collision.
+        // Anything else - the scan found a real migration, or found the source
+        // needs none (already canonical under a newer normalization) - makes
+        // the record obsolete, and keeping it lets a later deletion promote a
+        // target the entity never occupied.
+        for (const [legacyId, canonicalId] of Object.entries(parked)) {
+          if (blocked.has(legacyId)) continue;
+          delete parked[legacyId];
+          if (active[legacyId] !== undefined) continue;
+          const legacyPath = deps.resolveEntityFilePath(legacyId);
+          if (legacyPath !== null && (await fileExists(legacyPath))) continue;
+          // Source gone: the rename is moot, but references still name it and
+          // this record is the only thing that can still rewrite them.
+          active[legacyId] = canonicalId;
+          revived = true;
+        }
+        // Reviving a whole chain at once yields A -> B -> C, and each rewrite
+        // surface makes a different number of passes over it - so collapse
+        // transitively before anything consumes the set.
+        const collapsed = collapseMappings(active);
+        // Parked targets follow ACTIVE moves only: hopping over a still-blocked
+        // link would jump to an id the migration has not been allowed to reach.
+        for (const [legacyId, canonicalId] of Object.entries(parked)) {
+          const moved = collapsed[canonicalId];
+          if (moved !== undefined && moved !== legacyId) parked[legacyId] = moved;
+        }
+        const same = (a: Record<string, string>, b: Record<string, string>): boolean =>
+          Object.keys(a).length === Object.keys(b).length
+          && Object.entries(a).every(([key, value]) => b[key] === value);
+        if (same(collapsed, current.mappings) && same(parked, current.blocked ?? {})) return revived;
+        state = { ...current, mappings: collapsed, blocked: parked };
+        await writeState(deps, state);
+        return revived;
+      };
       const previousMappings = state.mappings;
       const collapsedMappings = collapseMappings(previousMappings);
       const mappingsChanged =
@@ -804,11 +921,12 @@ export async function migrateLegacyEntityCanonicalIds(
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
         const discoveredBefore = rejectMappingCycles(
           state.mappings,
-          await discoverMappings(deps, state.mappings),
+          await discoverMappings(deps, state.mappings, blocked),
         );
+        await pruneBlocked();
         const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
         if (state.complete && Object.keys(discoveredBefore).length === 0 && !mappingsChanged) {
-          if (Object.keys(state.mappings).length === 0) return deps.readMigrationFingerprint?.();
+          if (Object.keys(state.mappings).length === 0) return finish();
           const rewroteColdMemory = await rewriteKnownReferences(
             deps,
             state.mappings,
@@ -818,7 +936,7 @@ export async function migrateLegacyEntityCanonicalIds(
           deps.invalidateAllMemoriesCache();
           if (rewroteColdMemory) deps.invalidateColdMemoriesCache();
           deps.bumpMemoryStatusVersion();
-          return deps.readMigrationFingerprint?.();
+          return finish();
         }
         if (
           state.complete
@@ -832,11 +950,16 @@ export async function migrateLegacyEntityCanonicalIds(
           if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
           const discoveredAfter = rejectMappingCycles(
             state.mappings,
-            await discoverMappings(deps, state.mappings),
+            await discoverMappings(deps, state.mappings, blocked),
           );
-          if (Object.keys(discoveredAfter).length === 0) {
+          // Reconcile before declaring completion: this rescan can resolve a
+          // park (another writer removed the legacy file), and completing
+          // without promoting it strands its references behind a fingerprint
+          // that already reflects the deletion - so no later run revisits it.
+          const revivedInRescan = await pruneBlocked();
+          if (Object.keys(discoveredAfter).length === 0 && !revivedInRescan) {
             await writeState(deps, { ...state, complete: true });
-            return deps.readMigrationFingerprint?.();
+            return finish();
           }
           state = {
             ...state,
@@ -857,9 +980,8 @@ export async function migrateLegacyEntityCanonicalIds(
               canonicalId,
               () => lock.refresh(),
             );
-            if (result.deferred) {
-              deferredMappings.push([legacyId, canonicalId]);
-            }
+            if (result.blocked) blocked.set(legacyId, canonicalId);
+            else if (result.deferred) deferredMappings.push([legacyId, canonicalId]);
             progressed ||= result.progressed;
           }
           if (deferredMappings.length === 0) break;
@@ -871,6 +993,7 @@ export async function migrateLegacyEntityCanonicalIds(
           }
           pendingMappings = deferredMappings;
         }
+        await pruneBlocked();
 
         const rewroteColdMemory = await rewriteKnownReferences(
           deps,
@@ -885,11 +1008,16 @@ export async function migrateLegacyEntityCanonicalIds(
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
         const discoveredAfter = rejectMappingCycles(
           state.mappings,
-          await discoverMappings(deps, state.mappings),
+          await discoverMappings(deps, state.mappings, blocked),
         );
-        if (Object.keys(discoveredAfter).length === 0) {
+        // A park resolved after the rewrite pass is promoted here, and a
+        // promotion still has to be APPLIED. Completing on `discoveredAfter`
+        // alone fingerprints the post-deletion corpus, so the runner never
+        // retries and those references stay stranded.
+        const revivedAfterRewrite = await pruneBlocked();
+        if (Object.keys(discoveredAfter).length === 0 && !revivedAfterRewrite) {
           await writeState(deps, { ...state, complete: true });
-          return deps.readMigrationFingerprint?.();
+          return finish();
         }
         state = {
           ...state,

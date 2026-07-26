@@ -879,7 +879,7 @@ test("ensureDirectories migrates legacy filenames after display-name normalizati
   }
 });
 
-test("ensureDirectories rejects duplicate canonical targets before migration", async () => {
+test("ensureDirectories skips duplicate canonical targets instead of aborting", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-duplicate-canonical-target-"));
   try {
     const composedName = "Café";
@@ -905,11 +905,12 @@ test("ensureDirectories rejects duplicate canonical targets before migration", a
       "utf-8",
     );
     await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
+    // Two legacy files normalizing onto one canonical id is an ordinary data
+    // state the migration cannot disambiguate. It must refuse to PICK — never
+    // refuse to BOOT: this ran during directory initialization, so throwing
+    // took the daemon down on every restart with no way out.
     const migrating = new StorageManager(dir);
-    await assert.rejects(
-      () => migrating.ensureDirectories(),
-      /both normalize to project-café/,
-    );
+    await migrating.ensureDirectories();
     assert.match(await readFile(path.join(dir, "entities", `${firstLegacy}.md`), "utf-8"), /# Café/);
     assert.match(
       await readFile(path.join(dir, "entities", `${secondLegacy}.md`), "utf-8"),
