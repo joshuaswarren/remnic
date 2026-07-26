@@ -113,7 +113,15 @@ function parseReplicaPeerToken(raw: unknown, index: number): AgentAccessAuthToke
     if (trimmed.length === 0) {
       throw new Error(`replicaPeers.peers[${index}].token must be a non-empty string or a SecretRef object`);
     }
-    return expandEnvValue(trimmed);
+    // Re-validate AFTER expansion: `${PEER_TOKEN}` pointing at a whitespace-only
+    // env value clears the check above, then resolveAgentAccessAuthToken
+    // normalizes it to undefined — silently downgrading an explicitly
+    // authenticated peer to an unauthenticated poll read as http_401 (round 9).
+    const expanded = expandEnvValue(trimmed);
+    if (expanded.trim().length === 0) {
+      throw new Error(`replicaPeers.peers[${index}].token expanded to an empty value`);
+    }
+    return expanded;
   }
   if (isAgentAccessSecretRef(raw)) return raw;
   throw new Error(`replicaPeers.peers[${index}].token must be a string or a SecretRef object`);

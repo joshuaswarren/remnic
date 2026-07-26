@@ -513,6 +513,13 @@ export async function fetchPeerWatermarks(
       if (error instanceof PeerResponseTooLarge) {
         return { kind: "unknown", reason: "response_too_large" };
       }
+      // A peer that sent headers then stalled mid-body aborts the reader. That
+      // is a timeout, not malformed JSON — monitoring must be able to tell a
+      // body-phase stall from corrupt telemetry (round 9, codex P2).
+      const name = (error as { name?: unknown } | null)?.name;
+      if (name === "TimeoutError" || name === "AbortError") {
+        return { kind: "unreachable", reason: networkReason(error) };
+      }
       return { kind: "unknown", reason: "invalid_json" };
     }
     if (!body || typeof body !== "object" || !("corpus" in body) || !Array.isArray(body.corpus)) {
@@ -545,6 +552,11 @@ export async function fetchPeerWatermarks(
     // `replica.censusComplete` came from the peer's independently-cached
     // monitor scan and could disagree with the array it shipped (round 8).
     const peerBody = body as { corpusComplete?: unknown; replica?: { censusComplete?: unknown } };
+    // Absent is compatibility (an older peer); PRESENT but non-boolean is
+    // corrupt telemetry and must not fall through to a weaker signal (round 9).
+    if (peerBody.corpusComplete !== undefined && typeof peerBody.corpusComplete !== "boolean") {
+      return { kind: "unknown", reason: "malformed_corpus" };
+    }
     const peerComplete =
       typeof peerBody.corpusComplete === "boolean" ? peerBody.corpusComplete : peerBody.replica?.censusComplete;
     if (peerComplete === false) {
@@ -816,6 +828,14 @@ export class ReplicaDivergenceMonitor {
     /** Fresh local watermark set for comparison; invoked only during a background refresh. */
     computeLocalWatermarks: () => Promise<LocalCensus>;
     caps?: TokenCapabilities | null;
+    /**
+     * Completeness of the census THIS request is presenting alongside the
+     * report. A cached poll was gated by the census that existed when it ran,
+     * so a since-degraded scan could ship `converged` peers next to an
+     * incomplete corpus (round 9, cursor). Gating on the way out keeps the one
+     * response self-consistent without poisoning the shared cache.
+     */
+    localCensusComplete?: boolean;
   }): ReplicaDivergenceStatus {
     const config = resolveReplicaPeersConfig(input.config);
     if (!config.enabled) return { enabled: false, pending: false, polledAt: null, peers: [] };
@@ -826,7 +846,11 @@ export class ReplicaDivergenceMonitor {
     // request (round 6, coderabbit). Serve the last good report if any, else the
     // pending placeholder — both truthful, neither `converged`.
     if (!fresh && this.clock() >= this.nextAttemptAt) this.refresh(config, input.computeLocalWatermarks);
-    if (this.cached) return filterReplicaReportByCaps(this.cached.report, input.caps ?? null);
+    if (this.cached) {
+      const gated =
+        input.localCensusComplete === false ? gateReportByCensus(this.cached.report, false) : this.cached.report;
+      return filterReplicaReportByCaps(gated, input.caps ?? null);
+    }
     // Enabled with peers but no completed poll yet — distinct from "no peers".
     return { enabled: true, pending: true, polledAt: null, peers: [] };
   }

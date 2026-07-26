@@ -2476,8 +2476,11 @@ export class EngramAccessService {
       corpusComplete: corpusCensus.complete,
       replica: this.replicaDivergenceMonitor.getReport({
         config: this.orchestrator.config.replicaPeers,
-        computeLocalWatermarks: async () => corpusCensus,
+        // Capability-INDEPENDENT: this poll is cached instance-wide, so a
+        // restricted caller's filtered census must never seed it (round 9).
+        computeLocalWatermarks: () => computeServiceCorpusCensus(this.orchestrator, {}),
         caps,
+        localCensusComplete: corpusCensus.complete,
       }),
     };
   }

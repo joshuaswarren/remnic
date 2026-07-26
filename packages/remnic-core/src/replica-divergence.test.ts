@@ -1338,3 +1338,59 @@ test("round 8 (codex P2): an unterminated env placeholder in a peer token is rej
     "a typo'd placeholder must fail at parse, not be sent literally as a bearer token",
   );
 });
+
+test("round 9 (cursor): a cached poll is re-gated by the census shipped with THIS response", async () => {
+  // Poll once while the census is complete, then serve the cache while the
+  // local scan has degraded. The response must not pair `converged` peers with
+  // an incomplete corpus.
+  let now = 0;
+  const monitor = new ReplicaDivergenceMonitor({ clock: () => now, fetchImpl: async () => ({
+    ok: true, status: 200,
+    json: async () => ({ corpus: [watermark("default")], corpusComplete: true }),
+  }) });
+  const config = parseReplicaPeersConfig({
+    replicaPeers: { enabled: true, pollIntervalMs: 60_000, peers: [{ url: "http://127.0.0.1:4318" }] },
+  });
+  const complete = async () => ({ watermarks: [watermark("default")], complete: true });
+  monitor.getReport({ config, computeLocalWatermarks: complete });
+  await monitor.whenIdle();
+  const fresh = monitor.getReport({ config, computeLocalWatermarks: complete });
+  assert.equal(fresh.peers[0]?.state, "converged", "baseline: a complete census can certify convergence");
+
+  now += 1_000; // still inside the poll TTL, so the cache is served
+  const degraded = monitor.getReport({ config, computeLocalWatermarks: complete, localCensusComplete: false });
+  assert.notEqual(degraded.peers[0]?.state, "converged", "an incomplete census cannot certify a cached verdict");
+  assert.equal(degraded.censusComplete, false);
+});
+
+test("round 9 (codex P2): a present but non-boolean corpusComplete is malformed telemetry", async () => {
+  const bad: FetchLike = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ corpus: [watermark("default")], corpusComplete: "false" }),
+  });
+  const status = await pollReplicaPeers({
+    config: parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } }),
+    localWatermarks: [watermark("default")],
+    fetchImpl: bad,
+  });
+  assert.equal(status.peers[0]?.state, "unknown");
+  assert.equal(status.peers[0]?.reason, "malformed_corpus", "a corrupt flag must not fall through to a weaker signal");
+});
+
+test("round 9 (codex P2): a token expanding to whitespace is rejected, not silently unauthenticated", () => {
+  process.env.REMNIC_TEST_BLANK_PEER_TOKEN = "   ";
+  try {
+    assert.throws(
+      () =>
+        parseReplicaPeersConfig({
+          replicaPeers: {
+            enabled: true,
+            peers: [{ url: "http://127.0.0.1:4318", token: "${REMNIC_TEST_BLANK_PEER_TOKEN}" }],
+          },
+        }),
+      /expanded to an empty value/,
+    );
+  } finally {
+    delete process.env.REMNIC_TEST_BLANK_PEER_TOKEN;
+  }
+});

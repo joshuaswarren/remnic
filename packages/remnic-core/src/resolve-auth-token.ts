@@ -172,7 +172,16 @@ export async function loadHostSecretRefResolver(options: {
     | null
     | undefined;
 }): Promise<ResolveSecretRefFn | null | undefined> {
-  return options.resolveSecretRef ?? (options.loadResolveSecretRef ? await options.loadResolveSecretRef() : null);
+  if (options.resolveSecretRef) return options.resolveSecretRef;
+  if (!options.loadResolveSecretRef) return null;
+  try {
+    return await options.loadResolveSecretRef();
+  } catch {
+    // A host whose lazy loader throws means "no resolver available" — not
+    // "abort the caller". `doctor` must still run its unrelated checks and let
+    // the replica check report token_error per affected peer (round 9, codex).
+    return null;
+  }
 }
 
 /**
