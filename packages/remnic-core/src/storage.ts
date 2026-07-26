@@ -6730,12 +6730,26 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
 
-    await this.writeTombstoneBlockedMemory(filePath, fileContent, fm, sanitized.text);
-    // Keep the version-keyed hot-memories cache coherent with the new chunk
-    // file (issue #1902) — same single-file patch path writeMemory uses.
-    await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
-    log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
-    return id;
+    const tombstoneBlocked = fm.status === "pending_review" && Boolean(fm.blockedBy);
+    const persist = async (): Promise<string> => {
+      if (tombstoneBlocked) {
+        const duplicate = await this.findExistingTombstoneBlockedMemory(sanitized.text, category, fm.sourceConnector);
+        if (duplicate) return duplicate.frontmatter.id;
+      }
+      await this.writeTombstoneBlockedMemory(filePath, fileContent, fm, sanitized.text);
+      // Keep the version-keyed hot-memories cache coherent with the new chunk
+      // file (issue #1902) — same single-file patch path writeMemory uses.
+      await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
+      log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
+      return id;
+    };
+    if (tombstoneBlocked) {
+      return await this.withTombstoneBlockedCaptureWriteLock(
+        persist,
+        buildExplicitCaptureDedupKey(sanitized.text, category, fm.sourceConnector)
+      );
+    }
+    return await persist();
   }
 
   /**

@@ -64,6 +64,7 @@ function createInlineCaptureProcessorProbe(
     tombstoneBlockedCaptureIndexHit?: boolean;
     failWrites?: boolean;
     duplicateReadDelayMs?: number;
+    lockBusyAttempts?: number;
   } = {}
 ) {
   const envelopes: SealedMemoryEnvelope[] = [];
@@ -82,6 +83,7 @@ function createInlineCaptureProcessorProbe(
   let maxConcurrentReadAllCalls = 0;
   let nextId = 1;
   let writeTail = Promise.resolve();
+  let lockBusyAttemptsRemaining = options.lockBusyAttempts ?? 0;
   const storage = {
     readAllMemories: async () => {
       readAllCalls += 1;
@@ -125,6 +127,10 @@ function createInlineCaptureProcessorProbe(
       });
       await previous;
       try {
+        if (lockBusyAttemptsRemaining > 0) {
+          lockBusyAttemptsRemaining -= 1;
+          throw new Error("tombstone-blocked capture write lock remained busy");
+        }
         return await operation();
       } finally {
         release();
@@ -669,6 +675,32 @@ test("inline capture processor reports failed review fallback without claiming c
   assert.equal(result.queued, 0);
   assert.equal(result.failed, 1);
   assert.equal(result.content, "Keep this visible turn.");
+});
+
+test("inline capture defers bounded lock contention for a later retry", async () => {
+  const probe = createInlineCaptureProcessorProbe({ lockBusyAttempts: 2 });
+  const request = {
+    captureMode: "hybrid" as const,
+    content: [
+      "Keep this visible turn.",
+      "<memory_note>",
+      "content: A busy capture lock must remain retryable, not become review state.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+  };
+
+  const deferred = await probe.processor.process(request);
+  assert.equal(deferred.processed, 0);
+  assert.equal(deferred.queued, 0);
+  assert.equal(deferred.failed, 1);
+  assert.equal(probe.envelopes.length, 0);
+
+  const retry = await probe.processor.process(request);
+  assert.equal(retry.accepted, 1);
+  assert.equal(retry.queued, 0);
+  assert.equal(retry.failed, 0);
+  assert.equal(probe.envelopes.length, 1);
 });
 
 test("inline capture processor derives a replay key without delivery metadata", async () => {

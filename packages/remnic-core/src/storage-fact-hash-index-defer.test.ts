@@ -1559,6 +1559,119 @@ test("blocked chunk writes enter the targeted dedupe index", async () => {
   });
 });
 
+test("blocked chunk writes recheck identity after waiting on the capture lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked chunk must reuse a capture committed while it waited.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "blocked-chunk-lock-recheck",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const captureResult = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(captureResult.tombstoneBlocked, true);
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      entered.resolve();
+      await release.promise;
+    }, identity);
+    await entered.promise;
+
+    const chunk = storage.writeChunk("chunk-parent", 0, 1, "fact", content, {
+      source: "chunking",
+      sourceConnector: "provider-a",
+      status: "pending_review",
+      blockedBy: tombstoneId,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    release.resolve();
+
+    const chunkId = await chunk;
+    await held;
+    assert.equal(chunkId, captureResult.id);
+    const matches = (await storage.readAllMemories()).filter((memory) => memory.content === content);
+    assert.equal(matches.length, 1, "the capture and waiting chunk must share one durable row");
+  });
+});
+
+test("offline sync rechecks blocked identity after waiting on the capture lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A buffer sync must not publish a duplicate after waiting on capture.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "offline-buffer-lock-recheck",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const captureResult = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(captureResult.tombstoneBlocked, true);
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      entered.resolve();
+      await release.promise;
+    }, identity);
+    await entered.promise;
+
+    const incomingFile = [
+      "---",
+      "id: incoming-buffer-sync",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${tombstoneId}`,
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n");
+    const target = path.join(dir, "facts", "2026-01-01", "incoming-buffer.md");
+    const pending = storage.writeOfflineSyncFile(target, Buffer.from(incomingFile, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    release.resolve();
+
+    await pending;
+    await held;
+    assert.equal(existsSync(target), false, "sync must not publish a duplicate blocked row");
+    const matches = (await storage.readAllMemories()).filter((memory) => memory.content === content);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0]?.frontmatter.id, captureResult.id);
+  });
+});
+
 test("offline sync mutation rebuilds a loaded tombstone-blocked index", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);

@@ -21,6 +21,11 @@ const TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS = 60_000;
 const CAPTURE_WRITE_LOCK_MAX_ATTEMPTS = 3;
 const CAPTURE_WRITE_LOCK_RETRY_BASE_MS = 25;
 const ABANDONED_MARKER_MIN_AGE_MS = 60_000;
+const CAPTURE_WRITE_LOCK_BUSY_MESSAGE = "tombstone-blocked capture write lock remained busy";
+
+export function isTombstoneBlockedCaptureWriteLockBusy(error: unknown): boolean {
+  return error instanceof Error && error.message === CAPTURE_WRITE_LOCK_BUSY_MESSAGE;
+}
 
 type RebuildMarker = {
   path: string;
@@ -378,7 +383,7 @@ export class TombstoneBlockedCaptureIndex {
       setTimeout(delayState.resolve, CAPTURE_WRITE_LOCK_RETRY_BASE_MS * 2 ** attempt);
       await delayState.promise;
     }
-    throw new Error("tombstone-blocked capture write lock remained busy");
+    throw new Error(CAPTURE_WRITE_LOCK_BUSY_MESSAGE);
   }
 
   async withCaptureWriteLock<T>(task: () => Promise<T>, identity?: string | readonly string[]): Promise<T> {
@@ -759,6 +764,19 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       memory.frontmatter.sourceConnector
     );
   }
+  private async isDuplicateTombstoneBlockedOfflineSync(target: string, incoming: MemoryFile): Promise<boolean> {
+    const before = await this.readMemoryByPath(target);
+    const duplicate = await this.getTombstoneBlockedCaptureIndex().has(
+      incoming.content,
+      incoming.frontmatter.category,
+      incoming.frontmatter.sourceConnector
+    );
+    return (
+      duplicate &&
+      (!this.isTombstoneBlockedMemory(before) ||
+        this.offlineSyncMemoryIdentity(before) !== this.offlineSyncMemoryIdentity(incoming))
+    );
+  }
 
   private async invalidateAfterOfflineSyncMutation(filePath: string, ownedMarker?: string): Promise<void> {
     this.invalidateAllMemoriesCache();
@@ -791,6 +809,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       ...(coordinate && after === null ? [""] : []),
     ];
     const mutate = async (): Promise<void> => {
+      if (
+        this.isTombstoneBlockedMemory(after) &&
+        (await this.isDuplicateTombstoneBlockedOfflineSync(target, after))
+      ) {
+        return;
+      }
       const marker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
       let durable = false;
       try {
@@ -875,21 +899,6 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       ...(coordinate && prepared.after === null ? [""] : []),
     ];
     const mutate = async (): Promise<void> => {
-      if (incoming) {
-        const before = await this.readMemoryByPath(target);
-        const duplicate = await this.getTombstoneBlockedCaptureIndex().has(
-          incoming.content,
-          incoming.frontmatter.category,
-          incoming.frontmatter.sourceConnector
-        );
-        if (
-          duplicate &&
-          (!this.isTombstoneBlockedMemory(before) ||
-            this.offlineSyncMemoryIdentity(before) !== incomingIdentity)
-        ) {
-          return;
-        }
-      }
       await this.runTombstoneBlockedOfflineSyncMutation(
         target,
         prepared.after,

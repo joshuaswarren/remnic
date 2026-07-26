@@ -5,11 +5,12 @@ import type { Orchestrator } from "./orchestrator.js";
 import { log } from "./logger.js";
 import { isSafeRouteNamespace } from "./routing/engine.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
+import type { CaptureMode, MemoryCategory, MemoryLifecycleEvent, PluginConfig } from "./types.js";
 import {
   buildExplicitCaptureDedupKey,
+  isTombstoneBlockedCaptureWriteLockBusy,
   normalizeExplicitCaptureContent,
 } from "./storage/tombstone-blocked-capture-index.js";
-import type { CaptureMode, MemoryCategory, MemoryLifecycleEvent, PluginConfig } from "./types.js";
 import type { StorageManager } from "./storage.js";
 
 export type ExplicitCaptureInput = {
@@ -904,12 +905,9 @@ export class InlineExplicitCaptureProcessor {
         return { processed: 0, accepted: 0, queued: 0, duplicates: 1, failed: 0 };
       }
 
-      let validationSucceeded = false;
-      try {
-        const candidate = validateExplicitCaptureInput(input);
-        if (request.namespacePreResolved === true) candidate.namespacePreResolved = true;
-        validationSucceeded = true;
-        const persisted = await persistExplicitCapture(this.orchestrator, candidate, "inline");
+      const classifyPersisted = (
+        persisted: Awaited<ReturnType<typeof persistExplicitCapture>>
+      ): Pick<InlineExplicitCaptureProcessResult, "processed" | "accepted" | "queued" | "duplicates" | "failed"> => {
         this.remember(replayKeys);
         if (persisted.duplicateOf) {
           return { processed: 1, accepted: 0, queued: 0, duplicates: 1, failed: 0 };
@@ -920,7 +918,32 @@ export class InlineExplicitCaptureProcessor {
         }
         this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
         return { processed: 1, accepted: 1, queued: 0, duplicates: 0, failed: 0 };
+      };
+      const persistCandidate = async (candidate: ValidExplicitCapture) =>
+        classifyPersisted(await persistExplicitCapture(this.orchestrator, candidate, "inline"));
+
+      let validationSucceeded = false;
+      let candidate: ValidExplicitCapture | undefined;
+      try {
+        candidate = validateExplicitCaptureInput(input);
+        if (request.namespacePreResolved === true) candidate.namespacePreResolved = true;
+        validationSucceeded = true;
+        return await persistCandidate(candidate);
       } catch (error) {
+        let captureError: unknown = error;
+        if (validationSucceeded && candidate && isTombstoneBlockedCaptureWriteLockBusy(error)) {
+          try {
+            return await persistCandidate(candidate);
+          } catch (retryError) {
+            if (isTombstoneBlockedCaptureWriteLockBusy(retryError)) {
+              log.warn(
+                `explicit inline capture deferred after tombstone write lock contention: ${normalizeExplicitCaptureError(retryError)}`
+              );
+              return { processed: 0, accepted: 0, queued: 0, duplicates: 0, failed: 1 };
+            }
+            captureError = retryError;
+          }
+        }
         const queueInput = request.namespacePreResolved === true ? { ...input, namespacePreResolved: true } : input;
         const reviewNamespace =
           request.reviewNamespacePreResolved === true &&
@@ -933,7 +956,7 @@ export class InlineExplicitCaptureProcessor {
             this.orchestrator,
             queueInput,
             "inline",
-            error,
+            captureError,
             reviewNamespace ? { resolvedNamespace: reviewNamespace } : undefined
           );
           this.remember(validationSucceeded ? replayKeys : [validationFailureKey]);
@@ -944,7 +967,7 @@ export class InlineExplicitCaptureProcessor {
           return { processed: 1, accepted: 0, queued: 1, duplicates: 0, failed: 0 };
         } catch (queueError) {
           log.warn(
-            `explicit inline capture rejected: ${normalizeExplicitCaptureError(error)}; review queue fallback failed: ${normalizeExplicitCaptureError(queueError)}`
+            `explicit inline capture rejected: ${normalizeExplicitCaptureError(captureError)}; review queue fallback failed: ${normalizeExplicitCaptureError(queueError)}`
           );
           return { processed: 0, accepted: 0, queued: 0, duplicates: 0, failed: 1 };
         }
