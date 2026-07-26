@@ -123,13 +123,74 @@ export interface ReconcileOptions {
   conflictPolicy?: ReconcileConflictPolicy;
 }
 
-function indexByPath(files: Iterable<ReconcileFileState>): Map<string, ReconcileFileState> {
+/**
+ * A census the planner refuses to reason about.
+ *
+ * Dropping a malformed or contradictory record would let the planner return
+ * `converged: true` for a corpus it could not actually read, and transport is
+ * invited to skip everything on that flag — so bad input fails loudly instead
+ * (§1/§39).
+ */
+export class ReconcilePlanInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReconcilePlanInputError";
+  }
+}
+
+function assertCensusPath(file: ReconcileFileState | undefined, side: string, namespace: string): string {
+  const path = file?.path;
+  if (typeof path !== "string" || path.length === 0) {
+    throw new ReconcilePlanInputError(
+      `reconcile: ${side} census for namespace ${namespace} contains a record with no path`,
+    );
+  }
+  return path;
+}
+
+/**
+ * Duplicate paths are accepted only when they agree. Two digests for one path
+ * make the plan depend on which record arrived last, which would break the
+ * byte-stable ordering the convergence report relies on.
+ */
+function rejectConflictingDuplicate(
+  existing: ReconcileFileState | undefined,
+  incoming: ReconcileFileState,
+  path: string,
+  side: string,
+  namespace: string,
+): boolean {
+  if (!existing) return false;
+  if (existing.sha256 === incoming.sha256) return true;
+  throw new ReconcilePlanInputError(
+    `reconcile: ${side} census for namespace ${namespace} lists ${path} twice with different digests`,
+  );
+}
+
+function indexByPath(
+  files: Iterable<ReconcileFileState>,
+  side: string,
+  namespace: string,
+): Map<string, ReconcileFileState> {
   const index = new Map<string, ReconcileFileState>();
   for (const file of files) {
-    if (typeof file?.path !== "string" || file.path.length === 0) continue;
-    index.set(file.path, file);
+    const path = assertCensusPath(file, side, namespace);
+    if (rejectConflictingDuplicate(index.get(path), file, path, side, namespace)) continue;
+    index.set(path, file);
   }
   return index;
+}
+
+const RECONCILE_CONFLICT_POLICIES: readonly ReconcileConflictPolicy[] = ["manual", "newest-wins", "keep-both"];
+
+function assertConflictPolicy(value: ReconcileConflictPolicy | undefined): ReconcileConflictPolicy {
+  if (value === undefined) return "manual";
+  if (!RECONCILE_CONFLICT_POLICIES.includes(value)) {
+    throw new ReconcilePlanInputError(
+      `reconcile: unknown conflictPolicy ${JSON.stringify(value)}; expected one of ${RECONCILE_CONFLICT_POLICIES.join(", ")}`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -173,28 +234,52 @@ export function planNamespaceReconciliation(
   input: ReconcileNamespaceInput,
   options: ReconcileOptions = {},
 ): ReconcilePlanEntry[] {
-  const policy = options.conflictPolicy ?? "manual";
   const namespace = input.namespace;
+  const policy = assertConflictPolicy(options.conflictPolicy);
   // Index the peer census only, then stream the local one against it, removing
   // each match as it is consumed. Peak residency is one index plus the entry
   // list rather than two full censuses (round 2, codex P2).
-  const peer = indexByPath(input.peer);
-  const base = input.base ? indexByPath(input.base) : null;
+  const peer = indexByPath(input.peer, "peer", namespace);
+  const base = input.base ? indexByPath(input.base, "base", namespace) : null;
   const tombstoned = new Set(input.tombstonedFileSha256 ?? []);
   const entries: ReconcilePlanEntry[] = [];
 
-  // Paths only, not file objects: enough to make the stream idempotent without
-  // materializing the second census.
-  const seenLocal = new Set<string>();
+  // Path -> digest only, never the file objects: enough to make the stream
+  // idempotent and to catch contradictory duplicates without materializing the
+  // second census.
+  const seenLocal = new Map<string, string>();
   for (const localFile of input.local) {
-    const path = localFile?.path;
-    if (typeof path !== "string" || path.length === 0) continue;
-    if (seenLocal.has(path)) continue;
-    seenLocal.add(path);
+    const path = assertCensusPath(localFile, "local", namespace);
+    const seenDigest = seenLocal.get(path);
+    if (seenDigest !== undefined) {
+      if (seenDigest !== localFile.sha256) {
+        throw new ReconcilePlanInputError(
+          `reconcile: local census for namespace ${namespace} lists ${path} twice with different digests`,
+        );
+      }
+      continue;
+    }
+    seenLocal.set(path, localFile.sha256);
     const peerFile = peer.get(path);
     // Consumed: whatever remains in the index afterwards is peer-only.
     peer.delete(path);
     const baseSha256 = base?.get(path)?.sha256;
+    // Retraction outranks every other decision for this path. Checked BEFORE
+    // hash comparison and conflict resolution: otherwise a retracted peer
+    // revision reaches the conflict ladder and `newest-wins` can hand it the
+    // win, resurrecting exactly what was retracted (round 3).
+    if (peerFile && tombstoned.has(peerFile.sha256)) {
+      entries.push({
+        path,
+        namespace,
+        action: "suppress",
+        reason: "tombstoned",
+        localSha256: localFile.sha256,
+        peerSha256: peerFile.sha256,
+        ...(baseSha256 === undefined ? {} : { baseSha256 }),
+      });
+      continue;
+    }
     if (!peerFile) {
       // Base PRESENCE is what proves a deletion, not equality with whatever the
       // surviving side now holds. If we also edited since the base, this is

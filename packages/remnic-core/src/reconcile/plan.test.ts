@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ReconcilePlanInputError,
   planNamespaceReconciliation,
   planReconciliation,
   summarizeReconcilePlan,
@@ -276,5 +277,90 @@ test("streaming the local side still reports every peer-only path exactly once",
   assert.deepEqual(
     entries.filter((e) => e.action === "pull").map((e) => e.path),
     ["facts/p1.md", "facts/p2.md"],
+  );
+});
+
+test("a retracted digest present on BOTH sides is suppressed, not called identical", () => {
+  // Same path, same digest, retracted here. Calling it identical converges the
+  // plan and the peer keeps serving the retracted fact.
+  const plan = planReconciliation([
+    {
+      namespace: "default",
+      local: [file("facts/retracted.md", "gone")],
+      peer: [file("facts/retracted.md", "gone")],
+      tombstonedFileSha256: ["gone"],
+    },
+  ]);
+  assert.equal(plan.entries[0]?.action, "suppress");
+  assert.equal(plan.converged, false);
+});
+
+test("a retracted peer revision cannot win a conflict", () => {
+  // Same path, different content, peer's copy is the retracted one and is
+  // NEWER. Reaching the conflict ladder at all would let newest-wins resurrect
+  // precisely what was retracted.
+  const entries = planNamespaceReconciliation(
+    {
+      namespace: "default",
+      local: [file("facts/a.md", "live", 1000)],
+      peer: [file("facts/a.md", "retracted", 9000)],
+      tombstonedFileSha256: ["retracted"],
+    },
+    { conflictPolicy: "newest-wins" },
+  );
+  const entry = entryFor(entries, "facts/a.md");
+  assert.equal(entry.action, "suppress");
+  assert.equal(entry.resolution, undefined, "a retraction is not a conflict to be won");
+});
+
+test("a malformed census record fails the plan instead of vanishing from it", () => {
+  for (const side of ["local", "peer"] as const) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation({
+          namespace: "default",
+          local: side === "local" ? [{ path: "", sha256: "x" }] : [],
+          peer: side === "peer" ? [{ path: "", sha256: "x" }] : [],
+        }),
+      ReconcilePlanInputError,
+      `${side} census with an empty path must reject`,
+    );
+  }
+});
+
+test("a path listed twice with different digests is rejected on every census", () => {
+  const dupe = [file("facts/a.md", "one"), file("facts/a.md", "two")];
+  for (const side of ["local", "peer", "base"] as const) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation({
+          namespace: "default",
+          local: side === "local" ? dupe : [],
+          peer: side === "peer" ? dupe : [],
+          base: side === "base" ? dupe : undefined,
+        }),
+      /lists facts\/a\.md twice with different digests/,
+      `${side} census must not silently pick a winner by arrival order`,
+    );
+  }
+  // An exact repeat is unambiguous and stays acceptable.
+  assert.doesNotThrow(() =>
+    planNamespaceReconciliation({
+      namespace: "default",
+      local: [file("facts/a.md", "one"), file("facts/a.md", "one")],
+      peer: [],
+    }),
+  );
+});
+
+test("an unknown conflictPolicy is rejected rather than silently treated as manual", () => {
+  assert.throws(
+    () =>
+      planNamespaceReconciliation(
+        { namespace: "default", local: [file("facts/a.md", "l")], peer: [file("facts/a.md", "p")] },
+        // Deserialized config or an untyped JS caller can produce this.
+        { conflictPolicy: "newest_wins" as unknown as "newest-wins" },
+      ),
+    ReconcilePlanInputError,
   );
 });
