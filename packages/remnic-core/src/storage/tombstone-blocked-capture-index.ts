@@ -740,12 +740,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         if (rebuildMarker) await beforeIndexUpdate?.();
         await updateIndex(rebuildMarker);
       };
-      if (!blocked || this.captureWriteLockContext.getStore() !== undefined) {
+      if (!blocked) {
         await mutate();
       } else {
         await this.withTombstoneBlockedCaptureWriteLock(mutate, lockIdentity);
       }
-      if (retryIdentity === undefined || this.captureWriteLockContext.getStore() !== undefined) return;
+      if (retryIdentity === undefined) return;
       const identities = Array.isArray(lockIdentity)
         ? [...lockIdentity, retryIdentity]
         : [lockIdentity, retryIdentity];
@@ -1021,12 +1021,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
           throw err;
         }
       };
-      if (!blocked || this.captureWriteLockContext.getStore() !== undefined) {
+      if (!blocked) {
         await mutate();
       } else {
         await this.withTombstoneBlockedCaptureWriteLock(mutate, identities);
       }
-      if (retryIdentity !== undefined && this.captureWriteLockContext.getStore() === undefined) continue;
+      if (retryIdentity !== undefined) continue;
       return;
     }
   }

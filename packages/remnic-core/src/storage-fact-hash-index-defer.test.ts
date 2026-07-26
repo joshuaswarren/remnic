@@ -2245,6 +2245,168 @@ test("chunked offline sync rechecks blocked identity after buffering", async () 
     assert.equal(matches.length, 1, "the explicit capture remains the sole blocked row");
   });
 });
+test("chunked offline sync acquires a target identity discovered in a nested recheck", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const peer = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await peer.ensureDirectories();
+    const tombstoneConfig = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    };
+    storage.setTombstonesConfig(tombstoneConfig);
+    peer.setTombstonesConfig(tombstoneConfig);
+    const targetContent = "The chunk target becomes blocked after its outer lock recheck.";
+    const incomingContent = "The incoming chunk replaces the newly blocked target.";
+    const incomingTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "chunk-nested-incoming",
+      rawContent: incomingContent,
+    });
+    assert.ok(incomingTombstone);
+    const target = await storage.writeMemory("fact", targetContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const targetTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "chunk-nested-target",
+      rawContent: targetContent,
+    });
+    assert.ok(targetTombstone);
+    assert.equal(target.tombstoneBlocked, false);
+    const targetMemory = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.id === target.id
+    );
+    assert.ok(targetMemory);
+    const incomingFile = [
+      "---",
+      "id: chunk-nested-incoming",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${incomingTombstone}`,
+      "---",
+      "",
+      incomingContent,
+      "",
+    ].join("\n");
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (let offset = 0; offset < incomingFile.length; offset += 23) {
+        yield Buffer.from(incomingFile.slice(offset, offset + 23), "utf8");
+      }
+    })();
+    const identityC = buildExplicitCaptureDedupKey(targetContent, "fact", "provider-a");
+    const storageWithOverrides = storage as unknown as {
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<unknown>,
+        identity?: string | readonly string[],
+      ) => Promise<unknown>;
+      runTombstoneBlockedOfflineSyncMutation: (
+        target: string,
+        after: MemoryFile | null,
+        write: () => Promise<void>,
+        coordinate?: boolean,
+      ) => Promise<void>;
+    };
+    const originalLock = storageWithOverrides.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    const originalRun = storageWithOverrides.runTombstoneBlockedOfflineSyncMutation.bind(storage);
+    const capturedIdentities: Array<string | readonly string[] | undefined> = [];
+    storageWithOverrides.withTombstoneBlockedCaptureWriteLock = async (task, identity) => {
+      capturedIdentities.push(identity);
+      return await originalLock(task, identity);
+    };
+    let rewroteTarget = false;
+    let pauseNextPrepare = false;
+    const markerEntered = Promise.withResolvers<void>();
+    const releaseMarker = Promise.withResolvers<void>();
+    storageWithOverrides.runTombstoneBlockedOfflineSyncMutation = async (
+      syncTarget,
+      after,
+      write,
+      coordinate,
+    ) => {
+      if (!rewroteTarget) {
+        rewroteTarget = true;
+        const current = (await peer.readAllMemories()).find(
+          (memory) => memory.frontmatter.id === target.id
+        );
+        assert.ok(current);
+        await peer.writeMemoryFrontmatter(current, {
+          status: "pending_review",
+          blockedBy: targetTombstone,
+        });
+        pauseNextPrepare = true;
+      }
+      return await originalRun(syncTarget, after, write, coordinate);
+    };
+    const originalPrepare = TombstoneBlockedCaptureIndex.prototype.prepareWrite;
+    const prepareSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "prepareWrite",
+      async function (this: TombstoneBlockedCaptureIndex) {
+        const marker = await originalPrepare.call(this);
+        if (pauseNextPrepare) {
+          pauseNextPrepare = false;
+          markerEntered.resolve();
+          await releaseMarker.promise;
+        }
+        return marker;
+      },
+    );
+
+    const sync = storage.writeOfflineSyncFileChunks(targetMemory.path, chunks);
+    try {
+      await markerEntered.promise;
+      assert.ok(
+        capturedIdentities.some((identity) =>
+          (Array.isArray(identity) ? identity : [identity]).includes(identityC)
+        ),
+        "nested chunk sync must acquire the identity discovered after the outer recheck",
+      );
+      let recaptureCompleted = false;
+      const recapture = peer
+        .writeMemory("fact", targetContent, {
+          source: "test",
+          sourceConnector: "provider-a",
+        })
+        .then((result) => {
+          recaptureCompleted = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(recaptureCompleted, false, "recapture must wait for the nested target identity lock");
+      releaseMarker.resolve();
+      await sync;
+      const recaptured = await recapture;
+      assert.equal(recaptured.tombstoneBlocked, true);
+      const after = await peer.readAllMemories();
+      assert.equal(
+        after.find((memory) => memory.path === targetMemory.path)?.content,
+        incomingContent,
+        "chunk sync must replace the target only while holding its current identity lock",
+      );
+      assert.equal(after.filter((memory) => memory.content === targetContent).length, 1);
+    } finally {
+      releaseMarker.resolve();
+      prepareSpy.mock.restore();
+      storageWithOverrides.withTombstoneBlockedCaptureWriteLock = originalLock;
+      storageWithOverrides.runTombstoneBlockedOfflineSyncMutation = originalRun;
+      await sync.catch(() => undefined);
+    }
+  });
+});
 
 test("chunked offline sync streams non-memory files through the host writer", async () => {
   await withMemoryDir(async (dir) => {
