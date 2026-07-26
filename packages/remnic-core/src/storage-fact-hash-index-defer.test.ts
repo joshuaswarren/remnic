@@ -1792,6 +1792,68 @@ test("offline sync replaces a blocked target when the incoming identity exists e
   });
 });
 
+test("offline sync applies same-identity durable metadata updates", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "Replica metadata needs to stay synchronized.";
+    const firstTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "same-identity-before",
+      rawContent: content,
+    });
+    const secondTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "same-identity-after",
+      rawContent: content,
+    });
+    assert.ok(firstTombstone);
+    assert.ok(secondTombstone);
+    const initial = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(initial.tombstoneBlocked, true);
+    const before = await storage.getMemoryById(initial.id);
+    assert.ok(before);
+    const incomingFile = [
+      "---",
+      "id: same-identity-after",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-02-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.95",
+      "confidenceTier: explicit",
+      'tags: ["synced"]',
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${secondTombstone}`,
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n");
+    await storage.writeOfflineSyncFile(before.path, Buffer.from(incomingFile, "utf8"));
+    const after = await storage.getMemoryById("same-identity-after");
+    assert.ok(after);
+    assert.equal(after.content, content);
+    assert.equal(after.frontmatter.tags.join(","), "synced");
+    assert.equal(after.frontmatter.confidence, 0.95);
+    assert.equal(after.frontmatter.confidenceTier, "explicit");
+    assert.equal(after.frontmatter.updated, "2026-02-01T00:00:00.000Z");
+    assert.equal(after.frontmatter.blockedBy, secondTombstone);
+  });
+});
+
 test("offline sync mutation rebuilds a loaded tombstone-blocked index", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);

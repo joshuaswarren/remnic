@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -815,7 +816,9 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       (memory) => this.isTombstoneBlockedMemory(memory) && this.offlineSyncMemoryIdentity(memory) === incomingIdentity
     );
     if (!exactMatch) return false;
-    return !this.isTombstoneBlockedMemory(before) || this.offlineSyncMemoryIdentity(before) === incomingIdentity;
+    if (!this.isTombstoneBlockedMemory(before)) return true;
+    if (this.offlineSyncMemoryIdentity(before) !== incomingIdentity) return false;
+    return before.content === incoming.content && isDeepStrictEqual(before.frontmatter, incoming.frontmatter);
   }
 
   private async invalidateAfterOfflineSyncMutation(filePath: string, ownedMarker?: string): Promise<void> {
