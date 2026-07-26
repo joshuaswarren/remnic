@@ -308,10 +308,24 @@ export class CorrectionExecutor {
     };
     let mutationCommitted = false;
     let cancellationSafeAfterCommit = false;
+    let cancellationRequestedAfterCommit = false;
     const throwIfAbortedBeforeCommit = (): void => {
       if (!mutationCommitted || !cancellationSafeAfterCommit) {
         throwIfAborted(abortSignal, "correction apply aborted");
       }
+    };
+    const stopBeforeNewAction = async (): Promise<boolean> => {
+      if (!abortSignal?.aborted) return false;
+      if (!mutationCommitted) {
+        try {
+          throwIfAborted(abortSignal, "correction apply aborted");
+        } catch (error) {
+          await resetApplying();
+          throw error;
+        }
+      }
+      cancellationRequestedAfterCommit = true;
+      return true;
     };
     const throwIfAbortedBeforeCommitAndReset = async (): Promise<void> => {
       try {
@@ -329,7 +343,8 @@ export class CorrectionExecutor {
     // the write fails, the loser is NOT superseded (§14: never destroy old
     // state for an action whose replacement write failed).
     for (const action of plan.actions) {
-      throwIfAbortedBeforeCommit();
+      if (await stopBeforeNewAction()) break;
+
       if (action.kind === "supersede" && action.replacement) {
         // Preflight the loser BEFORE writing the replacement (review thread
         // Of0pz): if the loser was deleted between plan and apply, writing a
@@ -341,8 +356,12 @@ export class CorrectionExecutor {
           loser = await this.deps.getMemory(namespace, action.loserId, abortSignal);
         } catch (error) {
           if (abortSignal?.aborted) {
-            await resetApplying();
-            throwIfAborted(abortSignal, "correction apply aborted");
+            if (!mutationCommitted) {
+              await resetApplying();
+              throwIfAborted(abortSignal, "correction apply aborted");
+            }
+            cancellationRequestedAfterCommit = true;
+            break;
           }
           throw error;
         }
@@ -393,7 +412,11 @@ export class CorrectionExecutor {
             cancellationSafeAfterCommit = true;
           }
         } catch (err) {
-          if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
+          if (abortSignal?.aborted) {
+            if (!mutationCommitted) throw err;
+            cancellationRequestedAfterCommit = true;
+            break;
+          }
           results.push({
             action,
             status: "failed",
@@ -406,14 +429,18 @@ export class CorrectionExecutor {
             namespace,
             action.memoryId,
             action.patch,
-            cancellationSafeAfterCommit ? undefined : abortSignal
+            abortSignal
           );
           mutationCommitted = true;
           cancellationSafeAfterCommit = true;
           results.push({ action, status: "applied", memoryId: editedId });
           appliedTouched.push(editedId);
         } catch (err) {
-          if (!mutationCommitted && abortSignal?.aborted) throw err;
+          if (abortSignal?.aborted) {
+            if (!mutationCommitted) throw err;
+            cancellationRequestedAfterCommit = true;
+            break;
+          }
           results.push({ action, status: "failed", error: errMsg(err) });
         }
       } else if (action.kind === "redaction_rule") {
@@ -421,13 +448,17 @@ export class CorrectionExecutor {
           await this.deps.registerRedactionRule(
             namespace,
             action.pattern,
-            cancellationSafeAfterCommit ? undefined : abortSignal
+            abortSignal
           );
           mutationCommitted = true;
           cancellationSafeAfterCommit = true;
           results.push({ action, status: "applied" });
         } catch (err) {
-          if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
+          if (abortSignal?.aborted) {
+            if (!mutationCommitted) throw err;
+            cancellationRequestedAfterCommit = true;
+            break;
+          }
           results.push({ action, status: "failed", error: errMsg(err) });
         }
       }
@@ -437,9 +468,13 @@ export class CorrectionExecutor {
     // Only run for supersede/retract actions whose replacement write (if any)
     // succeeded. A supersede WITHOUT a replacement is a pure retract.
     for (const action of plan.actions) {
+      const needsPhase2Work =
+        action.kind === "retract" ||
+        action.kind === "rescope" ||
+        (action.kind === "supersede" && !retiredReplacementActions.has(action));
+      if (needsPhase2Work && (await stopBeforeNewAction())) break;
       try {
-      throwIfAbortedBeforeCommit();
-      if (action.kind === "supersede" && retiredReplacementActions.has(action)) continue;
+        if (action.kind === "supersede" && retiredReplacementActions.has(action)) continue;
       if (action.kind === "supersede") {
         const replacementResult = results.find((r) => r.action === action && r.status === "applied");
         // If the replacement write failed, skip retirement (§14).
@@ -453,7 +488,7 @@ export class CorrectionExecutor {
           results,
           appliedTouched,
           { supersededBy: replacementResult?.memoryId },
-          cancellationSafeAfterCommit ? undefined : abortSignal
+          abortSignal
         );
         if (results.at(-1)?.status === "applied") {
           mutationCommitted = true;
@@ -470,7 +505,7 @@ export class CorrectionExecutor {
           results,
           appliedTouched,
           {},
-          cancellationSafeAfterCommit ? undefined : abortSignal
+          abortSignal
         );
         if (results.at(-1)?.status === "applied") {
           mutationCommitted = true;
@@ -499,7 +534,7 @@ export class CorrectionExecutor {
             namespace,
             action.memoryId,
             action.toNamespace,
-            cancellationSafeAfterCommit ? undefined : abortSignal
+            abortSignal
           );
           mutationCommitted = true;
           cancellationSafeAfterCommit = true;
@@ -517,13 +552,22 @@ export class CorrectionExecutor {
             // non-fatal — the source propagation still fires.
           }
         } catch (err) {
-          if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
+          if (abortSignal?.aborted) {
+            if (!mutationCommitted) throw err;
+            cancellationRequestedAfterCommit = true;
+            break;
+          }
           results.push({ action, status: "failed", error: errMsg(err) });
         }
       }
       } catch (err) {
-        if (!mutationCommitted && abortSignal?.aborted) {
-          await resetApplying();
+        if (abortSignal?.aborted) {
+          if (!mutationCommitted) {
+            await resetApplying();
+            throw err;
+          }
+          cancellationRequestedAfterCommit = true;
+          break;
         }
         throw err;
       }
@@ -546,7 +590,8 @@ export class CorrectionExecutor {
     await throwIfAbortedBeforeCommitAndReset();
     // ── Phase 4: audit record ─────────────────────────────────────────────
     const anyFailed = results.some((r) => r.status === "failed");
-    const status: CorrectionOutcome["status"] = anyFailed ? "partial" : "applied";
+    const status: CorrectionOutcome["status"] =
+      anyFailed || cancellationRequestedAfterCommit ? "partial" : "applied";
     const appliedAt = this.deps.now().toISOString();
     const outcome: CorrectionOutcome = {
       planId,

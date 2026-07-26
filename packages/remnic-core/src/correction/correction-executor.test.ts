@@ -1006,6 +1006,56 @@ test("#2128 committed actions terminalize plans after cancellation", async () =>
     });
   }
 });
+test("#2128 cancellation skips unstarted actions after a committed edit", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-edit", { memoryId: "mem-edit", path: "facts/mem-edit.md", content: "old", excerpt: "old", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([["mem-edit", fakeMemory({ memoryId: "mem-edit", content: "old" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const abortController = new AbortController();
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [
+          { kind: "edit", memoryId: "mem-edit", patch: "edited" },
+          { kind: "redaction_rule", pattern: "secret-token-\\d+" },
+        ],
+        relevance: [{ memoryId: "mem-edit", why: "test" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "old", targetIds: ["mem-edit"] }, ["default"]);
+    const baseDeps = makeExecutorDeps(state);
+    const deps: ExecutorDeps = {
+      ...baseDeps,
+      applyEdit: async (namespace, memoryId, patch, signal) => {
+        const editedId = await baseDeps.applyEdit(namespace, memoryId, patch, signal);
+        abortController.abort(new Error("caller disconnected"));
+        return editedId;
+      },
+    };
+
+    const outcome = await new CorrectionExecutor(deps, planner).apply("default", plan.planId, {
+      confirm: true,
+      abortSignal: abortController.signal,
+    });
+    assert.equal(outcome.status, "partial");
+    assert.equal((await planner.loadPlan("default", plan.planId))?.status, "partial");
+    assert.equal(state.memories.get("mem-edit")?.content, "edited");
+    assert.deepEqual(state.redactionRules, [], "the cancelled plan must not start its second action");
+    assert.equal(state.auditRecords.length, 1);
+  });
+});
 
 test("Of0pz: supersede with a missing loser writes NO replacement (preflight before write)", async () => {
   await withTempDir(async (dir) => {
