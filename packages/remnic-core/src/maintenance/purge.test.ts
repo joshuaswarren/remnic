@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import { rebuildMemoryProjection } from "./rebuild-memory-projection.js";
 import { readProjectedMemoryBrowse } from "../memory-projection-store.js";
 import { StorageManager } from "../storage.js";
 import type { MemoryFile } from "../types.js";
+import { buildExplicitCaptureDedupKey } from "../storage/tombstone-blocked-capture-index.js";
 
 test("purgeMemories records audit errors without blocking hard delete", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-purge-"));
@@ -38,6 +39,10 @@ test("purgeMemories records audit errors without blocking hard delete", async ()
       readAllMemories: async () => [],
       readAllColdMemories: async () => [memory],
       readArchivedMemories: async () => [],
+      deleteMemoryForMaintenance: async (candidate: MemoryFile) => {
+        await unlink(candidate.path);
+        return candidate;
+      },
     };
 
     const result = await purgeMemories({
@@ -108,6 +113,10 @@ test("purgeMemories invalidates projection rows for already-absent files but not
       dir,
       readAllMemories: async () => [firstMemory, secondMemory],
       readAllColdMemories: async () => [],
+      deleteMemoryForMaintenance: async (candidate: MemoryFile) => {
+        await unlink(candidate.path);
+        return candidate;
+      },
       readArchivedMemories: async () => [],
     };
     const future = () => new Date(Date.now() + 86_400_000);
@@ -125,6 +134,123 @@ test("purgeMemories invalidates projection rows for already-absent files but not
     assert.ok(page);
     // ENOENT row invalidated; failed-delete row keeps its projection entry.
     assert.equal(page.total, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cleanExpiredCommitments coordinates blocked capture deletion", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-commitment-delete-lock-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked commitment must not disappear under a concurrent capture.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "commitment-delete-lock",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const blocked = await storage.getMemoryById(result.id);
+    assert.ok(blocked);
+    assert.equal(
+      await storage.writeMemoryFrontmatter(blocked, {
+        category: "commitment",
+        tags: ["fulfilled"],
+      }),
+      true,
+    );
+    const identity = buildExplicitCaptureDedupKey(content, "commitment", "provider-a");
+    const release = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      entered.resolve();
+      await release.promise;
+    }, identity);
+    await entered.promise;
+
+    let completed = false;
+    const pending = storage.cleanExpiredCommitments(-1).then((deleted) => {
+      completed = true;
+      return deleted;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(completed, false, "commitment cleanup must wait for the blocked capture identity lock");
+    release.resolve();
+    await held;
+    const deleted = await pending;
+    assert.equal(deleted.length, 1);
+    assert.equal(deleted[0]?.frontmatter.id, result.id);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("purgeMemories coordinates blocked capture deletion", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-purge-delete-lock-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked memory must not disappear under a concurrent capture.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "purge-delete-lock",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const blocked = await storage.getMemoryById(result.id);
+    assert.ok(blocked);
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const release = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      entered.resolve();
+      await release.promise;
+    }, identity);
+    await entered.promise;
+
+    let completed = false;
+    const pending = purgeMemories({
+      storage,
+      olderThanMs: 1,
+      tier: "all",
+      dryRun: false,
+      now: () => new Date(Date.now() + 86_400_000),
+    }).then((purged) => {
+      completed = true;
+      return purged;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(completed, false, "purge must wait for the blocked capture identity lock");
+    release.resolve();
+    await held;
+    const purged = await pending;
+    assert.equal(purged.purgedCount, 1);
+    assert.equal(await fileExists(blocked.path), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

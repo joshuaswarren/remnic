@@ -5075,6 +5075,34 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return null;
   }
 
+  async deleteMemoryForMaintenance(
+    memory: MemoryFile,
+    shouldDelete: (current: MemoryFile) => boolean = () => true
+  ): Promise<MemoryFile | null> {
+    let deleted: MemoryFile | null = null;
+    const removed = await this.runTombstoneBlockedInvalidation(
+      memory,
+      async (current, rebuildMarker, markDurable) => {
+        if (!shouldDelete(current)) return false;
+        await unlink(current.path);
+        markDurable();
+        deleted = current;
+        markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
+        this.invalidateAllMemoriesCache();
+        if (current.path.includes(`${path.sep}cold${path.sep}`)) {
+          this.invalidateColdMemoriesCache();
+        }
+        await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
+        this.bumpMemoryCorpusVersion();
+        this.bumpMemoryStatusVersion();
+        return true;
+      },
+      true,
+      true
+    );
+    return removed ? deleted : null;
+  }
+
   async invalidateMemory(id: string): Promise<boolean> {
     const memories = await this.readAllMemories();
     const memory = memories.find((candidate) => candidate.frontmatter.id === id);
@@ -5227,19 +5255,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (!m.frontmatter.expiresAt) continue;
       const expiresAt = new Date(m.frontmatter.expiresAt).getTime();
       if (expiresAt >= now) continue;
-
-      await this.runTombstoneBlockedExpiredTTL(
-        m,
-        now,
-        async (current, markDurable) => {
-          await unlink(current.path);
-          markDurable();
-          markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
-          this.bumpMemoryCorpusVersion();
-          deleted.push(current);
-          log.debug(`cleaned expired memory ${current.frontmatter.id} (TTL expired)`);
-        }
-      );
+      const removed = await this.deleteMemoryForMaintenance(m, (current) => {
+        const currentExpiresAt = current.frontmatter.expiresAt
+          ? new Date(current.frontmatter.expiresAt).getTime()
+          : Number.NaN;
+        return Number.isFinite(currentExpiresAt) && currentExpiresAt < now;
+      });
+      if (removed) {
+        deleted.push(removed);
+        log.debug(`cleaned expired memory ${removed.frontmatter.id} (TTL expired)`);
+      }
     }
 
     if (deleted.length > 0) {
@@ -6348,20 +6373,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (!isResolved) continue;
 
       const updatedAt = new Date(m.frontmatter.updated).getTime();
-      if (updatedAt < cutoff) {
-        // Remove the file
-        try {
-          await unlink(m.path);
-          markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
-          // Bump per deletion so a concurrent readAllMemories mid-loop rescans
-          // and never re-caches a partially-cleaned corpus (Cursor Medium,
-          // #1902); bumpMemoryStatusVersion below still runs at loop end.
-          this.bumpMemoryCorpusVersion();
-          deleted.push(m);
-          log.debug(`cleaned expired commitment ${m.frontmatter.id}`);
-        } catch {
-          // Ignore
+      if (updatedAt >= cutoff) continue;
+      try {
+        const removed = await this.deleteMemoryForMaintenance(m, (current) => {
+          const currentResolved = current.frontmatter.tags.some((tag) => tag === "fulfilled" || tag === "expired");
+          const currentUpdatedAt = new Date(current.frontmatter.updated).getTime();
+          return currentResolved && currentUpdatedAt < cutoff;
+        });
+        if (removed) {
+          deleted.push(removed);
+          log.debug(`cleaned expired commitment ${removed.frontmatter.id}`);
         }
+      } catch {
+        // Ignore
       }
     }
 

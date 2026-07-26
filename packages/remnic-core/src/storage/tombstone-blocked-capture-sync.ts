@@ -465,10 +465,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       current: MemoryFile,
       rebuildMarker: string | undefined,
       markDurable: () => void
-    ) => Promise<boolean>
+    ) => Promise<boolean>,
+    propagateErrors = false,
+    coordinate = false
   ): Promise<boolean> {
     let lockIdentity =
-      this.isTombstoneBlockedMemory(memory) || isQueuedReviewMemory(memory)
+      coordinate || this.isTombstoneBlockedMemory(memory) || isQueuedReviewMemory(memory)
         ? this.offlineSyncMemoryIdentity(memory)
         : undefined;
     for (;;) {
@@ -493,8 +495,15 @@ export abstract class TombstoneBlockedCaptureIndexHost {
           const result = await task(current, rebuildMarker, () => {
             durable = true;
           });
+          if (!result && rebuildMarker && !durable && blockedIndex) {
+            try {
+              await blockedIndex.discardWrite(rebuildMarker);
+            } catch {
+              blockedIndex.markUntrusted();
+            }
+          }
           return { result };
-        } catch {
+        } catch (error) {
           if (rebuildMarker && !durable && blockedIndex) {
             try {
               await blockedIndex.discardWrite(rebuildMarker);
@@ -502,6 +511,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
               blockedIndex.markUntrusted();
             }
           }
+          if (propagateErrors) throw error;
           return { result: false };
         }
       };
@@ -515,30 +525,6 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       }
       return result.result;
     }
-  }
-  protected async runTombstoneBlockedExpiredTTL(
-    memory: MemoryFile,
-    now: number,
-    deleteMemory: (current: MemoryFile, markDurable: () => void) => Promise<void>
-  ): Promise<void> {
-    await this.runTombstoneBlockedInvalidation(
-      memory,
-      async (current, rebuildMarker, markDurable) => {
-        const expiresAt = current.frontmatter.expiresAt
-          ? new Date(current.frontmatter.expiresAt).getTime()
-          : Number.NaN;
-        if (!Number.isFinite(expiresAt) || expiresAt >= now) return false;
-        try {
-          await deleteMemory(current, markDurable);
-          if (rebuildMarker !== undefined) {
-            await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
-          }
-          return true;
-        } catch {
-          return false;
-        }
-      }
-    );
   }
 
   protected async runTombstoneBlockedOfflineSyncMutation(
