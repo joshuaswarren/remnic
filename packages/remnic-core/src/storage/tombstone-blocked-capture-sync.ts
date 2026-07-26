@@ -4,6 +4,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
+import { markProjectedMemoryPathInvalid } from "../memory-projection-store.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
 import {
@@ -171,6 +172,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected abstract invalidateColdMemoriesCache(): void;
   protected abstract bumpArtifactWriteVersion(): number;
   protected abstract bumpMemoryStatusVersion(): void;
+  protected abstract bumpMemoryCorpusVersion(): void;
   protected abstract markFactHashIndexNotAuthoritative(): void;
 
   private async writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
@@ -525,6 +527,34 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       }
       return result.result;
     }
+  }
+  async deleteMemoryForMaintenance(
+    memory: MemoryFile,
+    shouldDelete: (current: MemoryFile) => boolean = () => true
+  ): Promise<MemoryFile | null> {
+    let deleted: MemoryFile | null = null;
+    const removed = await this.runTombstoneBlockedInvalidation(
+      memory,
+      async (current, rebuildMarker, markDurable) => {
+        if (!shouldDelete(current)) return false;
+        await unlink(current.path);
+        markDurable();
+        deleted = current;
+        const memoryDir = this.tombstoneBlockedCaptureIndexOptions().memoryDir;
+        markProjectedMemoryPathInvalid(memoryDir, current.frontmatter.id);
+        this.invalidateAllMemoriesCache();
+        if (current.path.includes(`${path.sep}cold${path.sep}`)) {
+          this.invalidateColdMemoriesCache();
+        }
+        await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
+        this.bumpMemoryCorpusVersion();
+        this.bumpMemoryStatusVersion();
+        return true;
+      },
+      true,
+      true
+    );
+    return removed ? deleted : null;
   }
 
   protected async runTombstoneBlockedOfflineSyncMutation(

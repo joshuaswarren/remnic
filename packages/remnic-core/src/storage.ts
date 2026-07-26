@@ -2478,7 +2478,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.readSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
   }
 
-  private bumpMemoryCorpusVersion(): void {
+  protected bumpMemoryCorpusVersion(): void {
     // Bump only — unlike bumpMemoryStatusVersion this must NOT invalidateAllForDir
     // (that would drop the very hot entry the write path just patched).
     this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
@@ -5075,33 +5075,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return null;
   }
 
-  async deleteMemoryForMaintenance(
-    memory: MemoryFile,
-    shouldDelete: (current: MemoryFile) => boolean = () => true
-  ): Promise<MemoryFile | null> {
-    let deleted: MemoryFile | null = null;
-    const removed = await this.runTombstoneBlockedInvalidation(
-      memory,
-      async (current, rebuildMarker, markDurable) => {
-        if (!shouldDelete(current)) return false;
-        await unlink(current.path);
-        markDurable();
-        deleted = current;
-        markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
-        this.invalidateAllMemoriesCache();
-        if (current.path.includes(`${path.sep}cold${path.sep}`)) {
-          this.invalidateColdMemoriesCache();
-        }
-        await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
-        this.bumpMemoryCorpusVersion();
-        this.bumpMemoryStatusVersion();
-        return true;
-      },
-      true,
-      true
-    );
-    return removed ? deleted : null;
-  }
 
   async invalidateMemory(id: string): Promise<boolean> {
     const memories = await this.readAllMemories();
