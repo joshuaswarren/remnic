@@ -308,6 +308,7 @@ function stemToken(token: string, preserveTerminalS = false): string {
   return token;
 }
 
+
 function tokenize(text: string): Set<string> {
   const tokens = new Set<string>();
   for (const { token, preserveTerminalS } of groundingLexemes(text)) {
@@ -371,27 +372,35 @@ function normalizedGroundingTokenSequence(text: string): string[] {
   return groundingTokenSequence(text).map((token) => token.replace(/'$/u, ""));
 }
 
+function areGroundingTokensCompatible(left: string, right: string): boolean {
+  return left === right || `${left}e` === right || left === `${right}e`;
+}
+
 function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): boolean {
   const candidateTokens = normalizedGroundingTokenSequence(candidate);
   const sourceTokens = normalizedGroundingTokenSequence(source);
   if (candidateTokens.length < 3 || sourceTokens.length < 3) return true;
 
-  const subjectAligned = candidateTokens[0] === sourceTokens[0];
+  const subjectAligned = areGroundingTokensCompatible(candidateTokens[0]!, sourceTokens[0]!);
   const hasCorrectionReordering = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
     && /\b(?:not|rather\s+than|instead\s+of)\b/iu.test(source);
   let foundAlignedToken = false;
   const sharedLength = Math.min(candidateTokens.length, sourceTokens.length);
   for (let index = 1; index < sharedLength; index += 1) {
-    if (candidateTokens[index] !== sourceTokens[index]) continue;
+    if (!areGroundingTokensCompatible(candidateTokens[index]!, sourceTokens[index]!)) continue;
     foundAlignedToken = true;
     const candidateNext = candidateTokens[index + 1];
     const sourceNext = sourceTokens[index + 1];
-    if (candidateNext !== undefined && sourceNext !== undefined && candidateNext !== sourceNext) {
+    if (
+      candidateNext !== undefined
+      && sourceNext !== undefined
+      && !areGroundingTokensCompatible(candidateNext, sourceNext)
+    ) {
       return false;
     }
   }
   return subjectAligned
-    && (candidateTokens[1] === sourceTokens[1] || hasCorrectionReordering)
+    && (areGroundingTokensCompatible(candidateTokens[1]!, sourceTokens[1]!) || hasCorrectionReordering)
     && foundAlignedToken;
 }
 
@@ -405,7 +414,9 @@ function groundedTokenScore(
   const sourceTokens = tokenize(source);
   let sharedTokens = 0;
   for (const token of candidateTokens) {
-    if (sourceTokens.has(token)) sharedTokens += 1;
+    if ([...sourceTokens].some((sourceToken) => areGroundingTokensCompatible(token, sourceToken))) {
+      sharedTokens += 1;
+    }
   }
   if (
     sharedTokens < GROUNDING_MIN_SHARED_TOKENS
@@ -559,14 +570,20 @@ function hasAnswerSupport(
   source: string,
   assertionSource: string,
 ): boolean {
-  const assertionAnswers = new Set(
-    tokenSequence(assertionSource).filter((token) => token === "yes" || token === "no"),
+  const assertedAnswerSentences = new Set(
+    sourceSentences(assertionSource)
+      .filter((sentence) => {
+        const answerToken = tokenSequence(sentence)[0];
+        return answerToken === "yes" || answerToken === "no";
+      })
+      .map((sentence) => normalizeForExactMatch(sentence)),
   );
-  if (assertionAnswers.size === 0) return false;
+  if (assertedAnswerSentences.size === 0) return false;
   const sentences = sourceSentences(source);
   return sentences.some((sentence, index) => {
     const answerToken = tokenSequence(sentence)[0];
-    if (answerToken !== "yes" && answerToken !== "no" || !assertionAnswers.has(answerToken)) return false;
+    if (answerToken !== "yes" && answerToken !== "no") return false;
+    if (!assertedAnswerSentences.has(normalizeForExactMatch(sentence))) return false;
     const precedingSentence = sentences[index - 1];
     if (
       precedingSentence === undefined
@@ -680,7 +697,8 @@ function filterGroundedFact(
     false,
     factContext.allowRoleNormalization,
   )) return undefined;
-  const factSupportingSource = sourceSentences(factContext.source).find((sentence) =>
+  const factEventTime = fact.eventTime;
+  const factSupportingSentences = sourceSentences(factContext.source).filter((sentence) =>
     isGroundedCandidate(
       fact.content,
       sentence,
@@ -689,6 +707,17 @@ function filterGroundedFact(
       factContext.allowRoleNormalization,
     ),
   );
+  const factSupportingSource = factEventTime === undefined
+    ? factSupportingSentences[0]
+    : factSupportingSentences.find((sentence) =>
+      isGroundedCandidate(
+        factEventTime,
+        sentence,
+        undefined,
+        false,
+        factContext.allowRoleNormalization,
+      ),
+    ) ?? factSupportingSentences[0];
   const eventTimeSource = factSupportingSource ?? factContext.source;
   const eventTimeAssertionSource = factSupportingSource === undefined
     ? factContext.assertionSource
@@ -715,15 +744,16 @@ function filterGroundedFact(
         }),
     )
     : undefined;
+  const procedureGroundingSource = factContext.assertionSource ?? factContext.source;
   const groundedProcedureSteps = fact.procedureSteps
     ? fact.procedureSteps.flatMap((step) => {
-      if (!isGroundedCandidate(step.intent, source, assertionSource, true)) return [];
+      if (!isGroundedCandidate(step.intent, procedureGroundingSource, undefined, false)) return [];
       const expectedOutcome = step.expectedOutcome
-        && isGroundedCandidate(step.expectedOutcome, source, assertionSource, true)
+        && isGroundedCandidate(step.expectedOutcome, procedureGroundingSource, undefined, false)
         ? step.expectedOutcome
         : undefined;
       const toolCall = step.toolCall
-        && isGroundedCandidate(step.toolCall.signature, source, assertionSource, true)
+        && isGroundedCandidate(step.toolCall.signature, procedureGroundingSource, undefined, false)
         ? step.toolCall
         : undefined;
       const {
@@ -838,7 +868,8 @@ function isUnknownAnswerSentence(sentence: string): boolean {
 }
 
 function isYesNoAnswer(sentence: string): boolean {
-  return /^(?:yes|no)\b(?:[,:;.!?]|\s|$)/iu.test(sentence.trim());
+  return /^(?:yes|no)(?:[.!?]|,\s*(?:absolutely|definitely|indeed|exactly|correct|of\s+course|use\s+that|do\s+that)[.!?]?)?$/iu
+    .test(sentence.trim());
 }
 
 function hasWhAnswerRoleAlignment(question: string, sentence: string): boolean {

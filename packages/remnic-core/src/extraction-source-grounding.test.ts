@@ -1575,3 +1575,116 @@ test("grounding answers object wh-questions with aligned evidence", () => {
 
   assert.deepEqual(result.questions, []);
 });
+
+test("grounding accepts e-dropping past-tense verb paraphrases", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice agreed with Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice agree with Acme.",
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["Alice agreed with Acme."]);
+});
+
+test("grounding does not swallow factual yes-or-no-prefixed sentences", () => {
+  const yesResult = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "The release is Friday.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Yes, the release is Friday.",
+  );
+  const noResult = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "No one is on call.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "No one is on call.",
+  );
+
+  assert.deepEqual(yesResult.facts.map((fact) => fact.content), ["The release is Friday."]);
+  assert.deepEqual(noResult.facts.map((fact) => fact.content), ["No one is on call."]);
+});
+
+test("grounding binds affirmative answer support to the asserted answer turn", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Does Alice work at Acme?\nYes.\nYes, Bob joined the call.",
+    "Yes, Bob joined the call.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding excludes unanswered questions from procedure evidence", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "procedure",
+        content: "The deployment runbook is documented.",
+        confidence: 0.9,
+        tags: [],
+        procedureSteps: [{ order: 1, intent: "delete backups first" }],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "The deployment runbook is documented. Should operators delete backups first?",
+  );
+
+  assert.deepEqual(result.facts[0]?.procedureSteps ?? [], []);
+});
+
+test("grounding selects eventTime from the supporting fact sentence", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice deployed Acme.",
+        confidence: 0.9,
+        tags: [],
+        eventTime: "yesterday",
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice deployed Acme. Alice deployed Acme yesterday.",
+  );
+
+  assert.equal(result.facts[0]?.eventTime, "yesterday");
+});
