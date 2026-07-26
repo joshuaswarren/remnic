@@ -963,3 +963,24 @@ test("grounding rejects substring matches that do not preserve token boundaries"
 
   assert.deepEqual(result.facts, []);
 });
+test("grounding rejects subject-swapped overlap claims", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "Bob works at Acme.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: ["Bob works at Acme."],
+      entities: [],
+      questions: [],
+    },
+    "Alice works at Acme.",
+  );
+
+  assert.deepEqual(result.facts, []);
+  assert.deepEqual(result.profileUpdates, []);
+});

@@ -269,6 +269,39 @@ function isInterrogativeSourceSentence(sentence: string): boolean {
     );
 }
 
+function groundingTokenSequence(text: string): string[] {
+  let tokens = tokenSequence(text);
+  while (tokens.length > 0 && GROUNDING_AUXILIARY_TOKENS.has(tokens[0]!)) {
+    tokens = tokens.slice(1);
+  }
+  return tokens
+    .filter((token) => GROUNDING_STOPWORDS[token] !== true)
+    .map(stemToken);
+}
+
+function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): boolean {
+  const candidateTokens = groundingTokenSequence(candidate);
+  const sourceTokens = groundingTokenSequence(source);
+  if (candidateTokens.length < 3 || sourceTokens.length < 3) return true;
+
+  for (
+    let index = 1;
+    index + 1 < candidateTokens.length && index + 1 < sourceTokens.length;
+    index += 1
+  ) {
+    if (
+      candidateTokens[index] !== sourceTokens[index]
+      || candidateTokens[index + 1] !== sourceTokens[index + 1]
+    ) {
+      continue;
+    }
+    const candidateSubject = candidateTokens.slice(0, index);
+    const sourceSubject = sourceTokens.slice(0, index);
+    return candidateSubject.every((token, subjectIndex) => token === sourceSubject[subjectIndex]);
+  }
+  return true;
+}
+
 function groundedTokenScore(candidate: string, source: string): number {
   const candidateTokens = tokenize(candidate);
   if (candidateTokens.size === 0) return 0;
@@ -277,10 +310,14 @@ function groundedTokenScore(candidate: string, source: string): number {
   for (const token of candidateTokens) {
     if (sourceTokens.has(token)) sharedTokens += 1;
   }
-  return sharedTokens >= GROUNDING_MIN_SHARED_TOKENS
-    && sharedTokens / candidateTokens.size >= GROUNDING_MIN_COVERAGE
-    ? sharedTokens / candidateTokens.size
-    : 0;
+  if (
+    sharedTokens < GROUNDING_MIN_SHARED_TOKENS
+    || sharedTokens / candidateTokens.size < GROUNDING_MIN_COVERAGE
+  ) {
+    return 0;
+  }
+  if (!hasAlignedSubjectPredicateOverlap(candidate, source)) return 0;
+  return sharedTokens / candidateTokens.size;
 }
 
 function candidateClauses(candidate: string): string[] {
