@@ -7,8 +7,8 @@ const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
 const MARKDOWN_LINK_REFERENCE =
-  /^\[[^\]]+\]:\s*(?:<[^>\n]*>|[^\s]+)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?$/;
-const MARKDOWN_LINK_REFERENCE_LABEL = /^\[[^\]]+\]:\s*$/;
+  /^\[(?:\\.|[^\\\]])+\]:\s*(?:<[^>\n]*>|[^\s]+)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?$/;
+const MARKDOWN_LINK_REFERENCE_LABEL = /^\[(?:\\.|[^\\\]])+\]:\s*$/;
 const MARKDOWN_LINK_REFERENCE_CONTINUATION =
   /^ {1,3}(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\))$/;
 const MARKDOWN_LINK_REFERENCE_DESTINATION_CONTINUATION =
@@ -56,7 +56,7 @@ function isClosingFence(fence: FenceMarker, openFence: FenceMarker): boolean {
   );
 }
 
-const RAW_HTML_BLOCK_TAGS = ["pre", "textarea", "script", "style", "xmp"] as const;
+const RAW_HTML_BLOCK_TAGS = ["pre", "textarea", "script", "style"] as const;
 const HTML_BLOCK_TAGS = [
   "address",
   "article",
@@ -91,6 +91,7 @@ const HTML_BLOCK_TAGS = [
   "h6",
   "head",
   "header",
+  "hgroup",
   "hr",
   "html",
   "iframe",

@@ -1315,6 +1315,41 @@ test("writeProfile ignores invalid link-reference prose", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile recognizes escaped link-reference labels", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "[foo\\]]: /url",
+        STALE_HEADER,
+        "",
+        "- Keeps escaped link-reference content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          "[foo\\]]: /url",
+          FRESH_HEADER,
+          "",
+          "- Keeps escaped link-reference content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 
 
 
@@ -1367,7 +1402,7 @@ test("writeProfile exits an ordinary HTML block at its closing tag", async (t) =
     t.mock.timers.reset();
   }
 });
-test("writeProfile keeps frame and frameset HTML blocks opaque", async (t) => {
+test("writeProfile keeps frame, frameset, and hgroup HTML blocks opaque", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
     await withMemoryDir(async (dir) => {
@@ -1382,6 +1417,10 @@ test("writeProfile keeps frame and frameset HTML blocks opaque", async (t) => {
         "# Literal frameset heading",
         "*Last updated: literal frameset*",
         "</frameset>",
+        "<hgroup>",
+        "# Literal hgroup heading",
+        "*Last updated: literal hgroup*",
+        "</hgroup>",
         "# Behavioral Profile",
         "",
         STALE_HEADER,
@@ -1404,6 +1443,10 @@ test("writeProfile keeps frame and frameset HTML blocks opaque", async (t) => {
           "# Literal frameset heading",
           "*Last updated: literal frameset*",
           "</frameset>",
+          "<hgroup>",
+          "# Literal hgroup heading",
+          "*Last updated: literal hgroup*",
+          "</hgroup>",
           "# Behavioral Profile",
           "",
           FRESH_HEADER,
@@ -2481,6 +2524,51 @@ test("writeProfile preserves timestamp-shaped raw HTML blocks", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile treats xmp as a blank-terminated HTML block", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "Preamble prose.",
+        "",
+        "<xmp>",
+        "# Literal xmp heading",
+        STALE_HEADER,
+        "",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after xmp content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "Preamble prose.",
+          "",
+          "<xmp>",
+          "# Literal xmp heading",
+          STALE_HEADER,
+          "",
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- Keeps metadata after xmp content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile closes same-line raw HTML blocks", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
