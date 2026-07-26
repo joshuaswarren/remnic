@@ -1,0 +1,306 @@
+import type { OfflineSyncFileState } from "../offline-sync.js";
+
+/**
+ * Bootstrap reconciliation planner for two peer daemons whose corpora have
+ * already diverged (issue #2150).
+ *
+ * The offline-sync protocol assumes a satellite that shares a common base with
+ * one daemon: every path it does not know about is a pull, and a conflict is
+ * rare. Two long-lived daemons are the opposite case — each side holds months
+ * of history the other never saw, both sides are authoritative, and there is
+ * NO common base on the first run. That is a different decision problem, so it
+ * gets its own planner rather than another mode flag inside `applyOfflineSync*`.
+ *
+ * This module is deliberately pure: it takes two file censuses and returns what
+ * to do. No I/O, no transport, no clock. Everything that makes reconciliation
+ * risky — which side wins, what counts as converged, what is reported — is
+ * decided here where it can be exhaustively tested, and the transport layer is
+ * left to carry out an already-settled plan.
+ */
+
+/** Which way a path must move for the two corpora to agree. */
+export type ReconcileAction = "pull" | "push" | "identical" | "conflict";
+
+/**
+ * How a path present on BOTH sides with different content is settled.
+ *
+ * `manual` is the safe default: on a bootstrap merge the two sides are equally
+ * authoritative, so silently picking one is data loss with extra steps. An
+ * operator opts into an automatic rule once they know the shape of their split.
+ */
+export type ReconcileConflictPolicy = "manual" | "newest-wins" | "keep-both";
+
+/**
+ * What the planner decided for a conflicting path.
+ *
+ * `keep-both` never overwrites: the older side is retained and linked as
+ * superseded by the newer one, which is the only resolution that cannot lose a
+ * fact neither corpus has seen.
+ */
+export type ReconcileResolution = "local-wins" | "peer-wins" | "supersede-link" | "unresolved";
+
+export interface ReconcilePlanEntry {
+  path: string;
+  namespace: string;
+  action: ReconcileAction;
+  /** Stable machine-readable cause, safe to assert on and to aggregate. */
+  reason: ReconcileReason;
+  localSha256?: string;
+  peerSha256?: string;
+  /** Present only when a prior converged run left a cursor covering this path. */
+  baseSha256?: string;
+  /** Set only when `action` is `conflict`. */
+  resolution?: ReconcileResolution;
+}
+
+export type ReconcileReason =
+  | "peer_only"
+  | "local_only"
+  | "same_content"
+  | "both_modified"
+  | "peer_deleted"
+  | "local_deleted"
+  | "tombstoned";
+
+export interface ReconcileNamespaceReport {
+  namespace: string;
+  pull: number;
+  push: number;
+  identical: number;
+  conflict: number;
+  /** Conflicts the policy could not settle; these need an operator. */
+  unresolved: number;
+}
+
+export interface ReconcilePlan {
+  entries: ReconcilePlanEntry[];
+  byNamespace: ReconcileNamespaceReport[];
+  /**
+   * True when the two corpora already agree — every shared path matches and
+   * neither side holds a path the other lacks.
+   *
+   * This is the idempotency contract from #2150: running reconciliation against
+   * an already-converged peer must be a no-op, and a caller can skip the whole
+   * transfer phase on this flag alone.
+   */
+  converged: boolean;
+}
+
+/** Minimal shape the planner needs; `OfflineSyncFileState` satisfies it. */
+export type ReconcileFileState = Pick<OfflineSyncFileState, "path" | "sha256"> &
+  Partial<Pick<OfflineSyncFileState, "mtimeMs" | "bytes">>;
+
+export interface ReconcileNamespaceInput {
+  namespace: string;
+  local: Iterable<ReconcileFileState>;
+  peer: Iterable<ReconcileFileState>;
+  /**
+   * File states agreed at the end of the last converged run with THIS peer.
+   * Absent on a bootstrap merge, which is why a path missing from one side is
+   * read as "never seen" rather than "deleted".
+   */
+  base?: Iterable<ReconcileFileState>;
+  /**
+   * Content hashes tombstoned locally. A peer that still holds a fact this side
+   * deliberately retracted must not resurrect it, so those paths are dropped
+   * from the pull set instead of being re-imported.
+   */
+  tombstonedSha256?: Iterable<string>;
+}
+
+export interface ReconcileOptions {
+  conflictPolicy?: ReconcileConflictPolicy;
+}
+
+function indexByPath(files: Iterable<ReconcileFileState>): Map<string, ReconcileFileState> {
+  const index = new Map<string, ReconcileFileState>();
+  for (const file of files) {
+    if (typeof file?.path !== "string" || file.path.length === 0) continue;
+    index.set(file.path, file);
+  }
+  return index;
+}
+
+/**
+ * Total ordering for plan entries (§12): namespace, then path. Both are unique
+ * per entry, so equal keys are impossible and the comparator never has to
+ * return 0 for distinct rows — the output is byte-identical across runs, which
+ * is what makes a convergence report diffable.
+ */
+function compareEntries(a: ReconcilePlanEntry, b: ReconcilePlanEntry): number {
+  if (a.namespace !== b.namespace) return a.namespace < b.namespace ? -1 : 1;
+  if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+  return 0;
+}
+
+function resolveConflict(
+  policy: ReconcileConflictPolicy,
+  local: ReconcileFileState,
+  peer: ReconcileFileState,
+): ReconcileResolution {
+  if (policy === "keep-both") return "supersede-link";
+  if (policy !== "newest-wins") return "unresolved";
+  const localMs = typeof local.mtimeMs === "number" && Number.isFinite(local.mtimeMs) ? local.mtimeMs : null;
+  const peerMs = typeof peer.mtimeMs === "number" && Number.isFinite(peer.mtimeMs) ? peer.mtimeMs : null;
+  // Without a usable timestamp on both sides "newest" is not decidable, and a
+  // coin flip here silently discards one side's history. Fall back to keeping
+  // both rather than inventing an order.
+  if (localMs === null || peerMs === null) return "supersede-link";
+  if (localMs === peerMs) return "supersede-link";
+  return localMs > peerMs ? "local-wins" : "peer-wins";
+}
+
+/**
+ * Plan one namespace. Exposed for callers that stream namespaces one at a time
+ * so a 100k-file corpus never has two full censuses resident at once.
+ */
+export function planNamespaceReconciliation(
+  input: ReconcileNamespaceInput,
+  options: ReconcileOptions = {},
+): ReconcilePlanEntry[] {
+  const policy = options.conflictPolicy ?? "manual";
+  const namespace = input.namespace;
+  const local = indexByPath(input.local);
+  const peer = indexByPath(input.peer);
+  const base = input.base ? indexByPath(input.base) : null;
+  const tombstoned = new Set(input.tombstonedSha256 ?? []);
+  const entries: ReconcilePlanEntry[] = [];
+
+  for (const [path, localFile] of local) {
+    const peerFile = peer.get(path);
+    const baseSha256 = base?.get(path)?.sha256;
+    if (!peerFile) {
+      // Only a base proves the peer once had this path and dropped it. Without
+      // one, the peer simply never saw it, and a bootstrap merge must push
+      // rather than delete — the whole point is that both sides hold unique
+      // valid data.
+      const deletedByPeer = baseSha256 !== undefined && baseSha256 === localFile.sha256;
+      entries.push({
+        path,
+        namespace,
+        action: deletedByPeer ? "conflict" : "push",
+        reason: deletedByPeer ? "peer_deleted" : "local_only",
+        localSha256: localFile.sha256,
+        ...(baseSha256 === undefined ? {} : { baseSha256 }),
+        ...(deletedByPeer ? { resolution: "unresolved" as const } : {}),
+      });
+      continue;
+    }
+    if (peerFile.sha256 === localFile.sha256) {
+      entries.push({
+        path,
+        namespace,
+        action: "identical",
+        reason: "same_content",
+        localSha256: localFile.sha256,
+        peerSha256: peerFile.sha256,
+        ...(baseSha256 === undefined ? {} : { baseSha256 }),
+      });
+      continue;
+    }
+    // A base that matches one side turns a "conflict" into an ordinary
+    // one-sided change: that side is the only one that moved since agreement.
+    if (baseSha256 !== undefined && baseSha256 === localFile.sha256) {
+      entries.push({
+        path,
+        namespace,
+        action: "pull",
+        reason: "peer_only",
+        localSha256: localFile.sha256,
+        peerSha256: peerFile.sha256,
+        baseSha256,
+      });
+      continue;
+    }
+    if (baseSha256 !== undefined && baseSha256 === peerFile.sha256) {
+      entries.push({
+        path,
+        namespace,
+        action: "push",
+        reason: "local_only",
+        localSha256: localFile.sha256,
+        peerSha256: peerFile.sha256,
+        baseSha256,
+      });
+      continue;
+    }
+    entries.push({
+      path,
+      namespace,
+      action: "conflict",
+      reason: "both_modified",
+      localSha256: localFile.sha256,
+      peerSha256: peerFile.sha256,
+      ...(baseSha256 === undefined ? {} : { baseSha256 }),
+      resolution: resolveConflict(policy, localFile, peerFile),
+    });
+  }
+
+  for (const [path, peerFile] of peer) {
+    if (local.has(path)) continue;
+    const baseSha256 = base?.get(path)?.sha256;
+    if (tombstoned.has(peerFile.sha256)) {
+      // Retracted here on purpose. Pulling it back would undo the retraction
+      // every time the peers reconcile.
+      entries.push({
+        path,
+        namespace,
+        action: "identical",
+        reason: "tombstoned",
+        peerSha256: peerFile.sha256,
+        ...(baseSha256 === undefined ? {} : { baseSha256 }),
+      });
+      continue;
+    }
+    const deletedLocally = baseSha256 !== undefined && baseSha256 === peerFile.sha256;
+    entries.push({
+      path,
+      namespace,
+      action: deletedLocally ? "conflict" : "pull",
+      reason: deletedLocally ? "local_deleted" : "peer_only",
+      peerSha256: peerFile.sha256,
+      ...(baseSha256 === undefined ? {} : { baseSha256 }),
+      ...(deletedLocally ? { resolution: "unresolved" as const } : {}),
+    });
+  }
+
+  return entries.sort(compareEntries);
+}
+
+/** Aggregate entries into the per-namespace convergence report (#2150). */
+export function summarizeReconcilePlan(entries: readonly ReconcilePlanEntry[]): ReconcileNamespaceReport[] {
+  const byNamespace = new Map<string, ReconcileNamespaceReport>();
+  for (const entry of entries) {
+    let report = byNamespace.get(entry.namespace);
+    if (!report) {
+      report = { namespace: entry.namespace, pull: 0, push: 0, identical: 0, conflict: 0, unresolved: 0 };
+      byNamespace.set(entry.namespace, report);
+    }
+    report[entry.action] += 1;
+    if (entry.action === "conflict" && entry.resolution === "unresolved") report.unresolved += 1;
+  }
+  return [...byNamespace.values()].sort((a, b) => (a.namespace === b.namespace ? 0 : a.namespace < b.namespace ? -1 : 1));
+}
+
+/**
+ * Plan a full reconciliation across namespaces.
+ *
+ * `converged` is an affirmative claim that nothing needs to move, so it is
+ * derived from the entries rather than tracked alongside them: any action other
+ * than `identical` disproves it.
+ */
+export function planReconciliation(
+  namespaces: readonly ReconcileNamespaceInput[],
+  options: ReconcileOptions = {},
+): ReconcilePlan {
+  const entries: ReconcilePlanEntry[] = [];
+  for (const namespace of namespaces) {
+    entries.push(...planNamespaceReconciliation(namespace, options));
+  }
+  entries.sort(compareEntries);
+  return {
+    entries,
+    byNamespace: summarizeReconcilePlan(entries),
+    converged: entries.every((entry) => entry.action === "identical"),
+  };
+}

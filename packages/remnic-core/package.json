@@ -156,6 +156,16 @@
       "remnic-source": "./src/adapters/claude-code.ts",
       "import": "./dist/adapters/claude-code.js"
     },
+    "./reconcile/plan": {
+      "types": "./dist/reconcile/plan.d.ts",
+      "remnic-source": "./src/reconcile/plan.ts",
+      "import": "./dist/reconcile/plan.js"
+    },
+    "./reconcile/plan.js": {
+      "types": "./dist/reconcile/plan.d.ts",
+      "remnic-source": "./src/reconcile/plan.ts",
+      "import": "./dist/reconcile/plan.js"
+    },
     "./adapters/codex": {
       "types": "./dist/adapters/codex.d.ts",
       "remnic-source": "./src/adapters/codex.ts",
