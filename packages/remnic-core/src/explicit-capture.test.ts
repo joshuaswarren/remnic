@@ -1104,3 +1104,24 @@ test("explicit capture keeps the authoritative fact-hash miss fast path", async 
   assert.equal(probe.envelopes.length, 1);
   assert.equal(probe.readAllCalls(), 0);
 });
+
+test("explicit capture scans active rows when the blocked index is unavailable", async () => {
+  const probe = createInlineCaptureProcessorProbe({ authoritativeFactHashMiss: true });
+  const candidate = validateExplicitCaptureInput({
+    content: "An active duplicate must survive an unavailable blocked index.",
+    category: "fact",
+  });
+  probe.memories.push({
+    frontmatter: {
+      id: "active-existing",
+      category: "fact",
+      status: "active",
+    },
+    content: candidate.content,
+  });
+
+  const result = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
+
+  assert.equal(result.duplicateOf, "active-existing");
+  assert.equal(probe.envelopes.length, 0);
+});

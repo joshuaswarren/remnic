@@ -417,7 +417,6 @@ async function findDuplicateExplicitCapture(
   // Tombstone-blocked rows are absent from the active fact hash index. An
   // authoritative miss can therefore skip the corpus scan only after the
   // targeted blocked-row index reports a miss and remains authoritative.
-  let activeFactHashMayMatch = true;
   let authoritativeFactHashMiss = false;
   if (candidate.category === "fact" && typeof storage.hasFactContentHash === "function") {
     try {
@@ -427,7 +426,6 @@ async function findDuplicateExplicitCapture(
           typeof storage.isFactContentHashAuthoritative === "function"
             ? await storage.isFactContentHashAuthoritative()
             : false;
-        activeFactHashMayMatch = !authoritative;
         authoritativeFactHashMiss = authoritative;
       }
     } catch (err) {
@@ -483,10 +481,7 @@ async function findDuplicateExplicitCapture(
   const normalizedCandidate = normalizeExplicitCaptureContent(candidate.content);
   const match = existing.find((memory) => {
     const status = memory.frontmatter.status ?? "active";
-    if (
-      (status !== "active" && (status !== "pending_review" || !memory.frontmatter.blockedBy)) ||
-      (status === "active" && !activeFactHashMayMatch)
-    ) {
+    if (status !== "active" && (status !== "pending_review" || !memory.frontmatter.blockedBy)) {
       return false;
     }
     if (memory.frontmatter.category !== candidate.category) return false;
