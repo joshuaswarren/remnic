@@ -599,7 +599,7 @@ async function runExtractionFlush(args: ParsedArgs, preferredId?: string): Promi
     {
       sessionKey: requireOption(args, "session-key"),
       namespace: getLastOption(args, "namespace"),
-      cwd: getLastOption(args, "cwd"),
+      cwd: expandOptionalPath(getLastOption(args, "cwd")),
       projectTag: getLastOption(args, "project-tag"),
       deadlineMs: parseIntegerOption(args, "deadline-ms", { min: 0 }),
     },

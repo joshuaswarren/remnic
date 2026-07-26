@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -560,6 +561,55 @@ test("access-cli extraction-flush drains the requested session through the bound
     assert.match(output, /"flushed": true/);
     assert.match(output, /"sessionKey": "cli:flush"/);
     assert.match(output, /"effectiveNamespace": "default"/);
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("access-cli extraction-flush expands tilde in cwd before resolving project scope", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-access-cli-"));
+  const repoDir = path.join(tempDir, "repo");
+  fs.mkdirSync(repoDir);
+  execFileSync("git", ["init", "-q"], { cwd: repoDir });
+  let output = "";
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    output += String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const configPath = path.join(tempDir, "openclaw.json");
+    writeOpenClawConfig(configPath, {
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      agentAccessHttp: { principal: "pi-geek" },
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [{ match: "cli:", principal: "pi-geek" }],
+      codingMode: { projectScope: true },
+    });
+
+    await withPatchedEnv(
+      {
+        HOME: tempDir,
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_ENGRAM_CONFIG_PATH: undefined,
+      },
+      async () => {
+        await main([
+          "extraction-flush",
+          "--session-key",
+          "cli:tilde-cwd",
+          "--cwd",
+          "~/repo",
+          "--deadline-ms",
+          String(Date.now() + 10_000),
+        ]);
+      },
+    );
+
+    assert.match(output, /"effectiveNamespace": "default-project-/);
   } finally {
     process.stdout.write = originalStdoutWrite;
     fs.rmSync(tempDir, { recursive: true, force: true });

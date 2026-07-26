@@ -30,6 +30,7 @@ import {
   type MemoryScopePlan,
   NamespaceNotWritableError,
 } from "./access-service.js";
+import { EngramAccessForbiddenError } from "./access-errors.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
   resolveCompressionCapabilities,
@@ -47,6 +48,7 @@ import { resolvePrincipal } from "./namespaces/principal.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import type { Orchestrator } from "./orchestrator.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
+import { SessionOwnershipError } from "./orchestration/session-context.js";
 import { displayErrorDetail } from "./runtime/better-sqlite.js";
 import type { MemoryActionOutcome, MemoryActionType } from "./types.js";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "./work/board.js";
@@ -943,7 +945,7 @@ export class AccessObserveWriteSurface {
         abortSignal: request.abortSignal,
         failOnExtractionFailure: true,
         extractionDeadlineMs: request.deadlineMs,
-        writeNamespaceOverride: namespacesEnabled ? scope.writeNamespace : undefined,
+        writeNamespaceOverride: scope.writeNamespace,
         principalOverride:
           typeof scope.principal === "string" && scope.principal.length > 0
             ? scope.principal
@@ -958,6 +960,9 @@ export class AccessObserveWriteSurface {
       };
     } catch (error) {
       clearSeededCodingContext();
+      if (error instanceof SessionOwnershipError) {
+        throw new EngramAccessForbiddenError(error.message);
+      }
       if (error instanceof ExtractionDeadlineError) {
         throw new EngramAccessInputError(error.message);
       }

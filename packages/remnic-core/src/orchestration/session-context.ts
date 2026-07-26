@@ -11,6 +11,7 @@
  * Behavior-preserving move (late-binding selfDeps wiring, seams 18–27).
  */
 
+import { abortError, throwIfAborted } from "../abort-error.js";
 import { SmartBuffer } from "../buffer.js";
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import { combineNamespaces, resolveCodingNamespaceOverlay } from "../coding/coding-namespace.js";
@@ -21,6 +22,7 @@ import { StorageManager } from "../index.js";
 import { LocalLlmClient } from "../local-llm.js";
 import { log } from "../logger.js";
 import { canWriteNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "../namespaces/principal.js";
+import { ExtractionDeadlineError } from "./extraction-run.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
 import type { EntitySynthesisCoordinator } from "./entity-synthesis-coordinator.js";
 import type { BufferTurn, CodingContext, DaySummaryResult, MemoryFile, PluginConfig } from "../types.js";
@@ -100,6 +102,60 @@ export class SessionOwnershipError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SessionOwnershipError";
+  }
+}
+
+const MAX_SET_TIMEOUT_MS = 2_147_483_647;
+
+async function awaitSessionFlushPhase<T>(
+  task: () => Promise<T>,
+  options: Pick<SessionFlushOptions, "abortSignal" | "extractionDeadlineMs" | "reason">,
+): Promise<T> {
+  const abortMessage =
+    options.reason === "access_force_flush" ? "extraction force-flush aborted" : "session flush aborted";
+  throwIfAborted(options.abortSignal, abortMessage);
+  const deadline = options.extractionDeadlineMs;
+  if (typeof deadline === "number" && Date.now() >= deadline) {
+    throw new ExtractionDeadlineError("before_buffer_flush");
+  }
+
+  const taskPromise = Promise.resolve().then(task);
+  if (!options.abortSignal && typeof deadline !== "number") return taskPromise;
+
+  let abortHandler: (() => void) | undefined;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const abortPromise =
+    options.abortSignal === undefined
+      ? undefined
+      : new Promise<T>((_resolve, reject) => {
+          abortHandler = () => reject(abortError(abortMessage));
+          options.abortSignal?.addEventListener("abort", abortHandler, { once: true });
+        });
+  const deadlinePromise =
+    typeof deadline !== "number"
+      ? undefined
+      : new Promise<T>((_resolve, reject) => {
+          const schedule = (): void => {
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) {
+              reject(new ExtractionDeadlineError("before_buffer_flush"));
+              return;
+            }
+            deadlineTimer = setTimeout(schedule, Math.min(remainingMs, MAX_SET_TIMEOUT_MS));
+            deadlineTimer.unref?.();
+          };
+          schedule();
+        });
+  const races: Promise<T>[] = [taskPromise];
+  if (abortPromise) races.push(abortPromise);
+  if (deadlinePromise) races.push(deadlinePromise);
+  try {
+    return await Promise.race(races);
+  } finally {
+    if (abortHandler && options.abortSignal) {
+      options.abortSignal.removeEventListener("abort", abortHandler);
+    }
+    if (deadlineTimer) clearTimeout(deadlineTimer);
   }
 }
 
@@ -353,7 +409,18 @@ export class SessionContextCoordinator {
     // durable save stops this lifecycle drain BEFORE any extraction runs
     // flushPendingSave retains pending state and re-arms a retry on failure.
     if (typeof this.deps.buffer.flushPendingSave === "function") {
-      await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
+      await awaitSessionFlushPhase(
+        () => this.deps.buffer.flushPendingSave!({ throwOnFailure: true }),
+        options,
+      );
+    } else {
+      throwIfAborted(
+        options.abortSignal,
+        options.reason === "access_force_flush" ? "extraction force-flush aborted" : "session flush aborted",
+      );
+      if (typeof options.extractionDeadlineMs === "number" && Date.now() >= options.extractionDeadlineMs) {
+        throw new ExtractionDeadlineError("before_buffer_flush");
+      }
     }
     const explicitBufferKey =
       typeof options.bufferKey === "string" && options.bufferKey.length > 0
@@ -365,7 +432,10 @@ export class SessionContextCoordinator {
       sessionKey.length === 0 ||
       typeof this.deps.buffer.findBufferKeysForSession !== "function"
         ? []
-        : await this.deps.buffer.findBufferKeysForSession(sessionKey);
+        : await awaitSessionFlushPhase(
+            () => this.deps.buffer.findBufferKeysForSession!(sessionKey),
+            options,
+          );
     const bufferKeys = explicitBufferKey
       ? [explicitBufferKey]
       : discoveredBufferKeys.length > 0

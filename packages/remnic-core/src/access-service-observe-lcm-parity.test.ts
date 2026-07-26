@@ -30,8 +30,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { EngramAccessInputError, EngramAccessService } from "./access-service.js";
+import { EngramAccessForbiddenError } from "./access-errors.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
+import { SessionOwnershipError } from "./orchestration/session-context.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
 import {
   combineNamespaces,
@@ -504,6 +506,25 @@ test("#2128: extraction force-flush rejects a session owned by another principal
     /sessionKey is not owned by authenticated principal/,
   );
   assert.equal(probe.extractionForceFlushCalls.length, 0);
+});
+
+test("#2128: opaque ownership denial is surfaced as a forbidden access error", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  probe.orch.flushSession = async () => {
+    throw new SessionOwnershipError("session opaque-session has buffered turns without trusted ownership");
+  };
+  const service = new EngramAccessService(probe.orch);
+
+  await assert.rejects(
+    () =>
+      service.extractionForceFlush({
+        sessionKey: "opaque-session",
+        authenticatedPrincipal: "pi-geek",
+      }),
+    (error: unknown) =>
+      error instanceof EngramAccessForbiddenError &&
+      error.message === "session opaque-session has buffered turns without trusted ownership",
+  );
 });
 
 test("#2128: explicit namespace force-flush does not bind unrelated project context", async () => {
