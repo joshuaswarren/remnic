@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { computeSupersessionKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { EntityFile, MemoryFile } from "../types.js";
+import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -348,12 +349,22 @@ async function readSafeEntityEntries(entitiesDir: string): Promise<string[]> {
   return entries;
 }
 
+/**
+ * Legacy ids the migration cannot resolve on its own, mapped to the canonical
+ * id they collide with. Two entity files describing one entity is an ORDINARY
+ * operator state, and picking a winner would silently drop whichever side lost.
+ * So the pair is skipped and reported: reads of the legacy id keep working
+ * exactly as they did before the migration ran.
+ */
+export type BlockedEntityPairs = Map<string, string>;
+
 async function discoverMappings(
   deps: EntityCanonicalIdMigrationDependencies,
   knownMappings: Readonly<Record<string, string>> = {},
+  blocked: BlockedEntityPairs = new Map(),
 ): Promise<Record<string, string>> {
   const mappings: Record<string, string> = {};
-  const canonicalOwners = new Map<string, string>();
+  const canonicalOwners = new Map<string, string[]>();
   const entityEntries = await readSafeEntityEntries(deps.entitiesDir);
   for (const entry of entityEntries) {
     if (!entry.endsWith(".md")) continue;
@@ -386,17 +397,22 @@ async function discoverMappings(
     if (canonicalExists) {
       const canonicalContent = await deps.readStorageSecureFile(canonicalPath);
       if (entityContent !== canonicalContent) {
-        throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
+        blocked.set(legacyId, canonicalId);
+        continue;
       }
     }
-    const previousOwner = canonicalOwners.get(canonicalId);
-    if (previousOwner !== undefined && previousOwner !== legacyId) {
-      throw new Error(
-        `Cannot migrate legacy entity ids ${previousOwner} and ${legacyId}: both normalize to ${canonicalId}.`,
-      );
-    }
-    canonicalOwners.set(canonicalId, legacyId);
+    canonicalOwners.set(canonicalId, [...(canonicalOwners.get(canonicalId) ?? []), legacyId]);
     mappings[legacyId] = canonicalId;
+  }
+  // A canonical id claimed by more than one legacy file has no non-arbitrary
+  // winner, and readdir order is not stable (§6) - so the "winner" would differ
+  // between hosts reading identical data. Block every claimant instead.
+  for (const [canonicalId, claimants] of canonicalOwners) {
+    if (claimants.length < 2) continue;
+    for (const legacyId of claimants) {
+      blocked.set(legacyId, canonicalId);
+      delete mappings[legacyId];
+    }
   }
   return mappings;
 }
@@ -681,6 +697,8 @@ function collapseMappings(mappings: Readonly<Record<string, string>>): Record<st
 type EntityFileMigrationResult = {
   deferred: boolean;
   progressed: boolean;
+  /** The pair collided on content; skipped and reported, never migrated. */
+  blocked?: boolean;
 };
 
 async function migrateEntityFilePair(
@@ -711,7 +729,9 @@ async function migrateEntityFilePair(
         deps.isEncryptedStorageFile(canonicalPath),
       ]);
       if (legacyContent !== canonicalContent) {
-        throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
+        // A mapping persisted by an older build, or a file changed since
+        // discovery. Same verdict as discovery: skip the pair, keep both files.
+        return { deferred: false, progressed: false, blocked: true };
       }
       if (legacyEncrypted && !canonicalEncrypted) {
         if (!(await refreshMigrationLock()) || !(await refreshEntityLock())) {
@@ -792,6 +812,19 @@ export async function migrateLegacyEntityCanonicalIds(
           mappings: {},
         };
       }
+      const blocked: BlockedEntityPairs = new Map();
+      // ONE aggregated line per run, not one per pair per restart: this used to
+      // abort the daemon, so the operator needs the whole list and the remedy.
+      const finish = (): Promise<string | undefined> | string | undefined => {
+        if (blocked.size > 0) {
+          const pairs = [...blocked].map(([legacyId, canonicalId]) => `${legacyId} -> ${canonicalId}`).join(", ");
+          log.warn(
+            `entity canonical-id migration skipped ${blocked.size} unresolvable pair(s): ${pairs}. `
+            + "Both files were kept and the legacy id still resolves; merge or delete one side to migrate it.",
+          );
+        }
+        return deps.readMigrationFingerprint?.();
+      };
       const previousMappings = state.mappings;
       const collapsedMappings = collapseMappings(previousMappings);
       const mappingsChanged =
@@ -804,11 +837,11 @@ export async function migrateLegacyEntityCanonicalIds(
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
         const discoveredBefore = rejectMappingCycles(
           state.mappings,
-          await discoverMappings(deps, state.mappings),
+          await discoverMappings(deps, state.mappings, blocked),
         );
         const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
         if (state.complete && Object.keys(discoveredBefore).length === 0 && !mappingsChanged) {
-          if (Object.keys(state.mappings).length === 0) return deps.readMigrationFingerprint?.();
+          if (Object.keys(state.mappings).length === 0) return finish();
           const rewroteColdMemory = await rewriteKnownReferences(
             deps,
             state.mappings,
@@ -818,7 +851,7 @@ export async function migrateLegacyEntityCanonicalIds(
           deps.invalidateAllMemoriesCache();
           if (rewroteColdMemory) deps.invalidateColdMemoriesCache();
           deps.bumpMemoryStatusVersion();
-          return deps.readMigrationFingerprint?.();
+          return finish();
         }
         if (
           state.complete
@@ -832,11 +865,11 @@ export async function migrateLegacyEntityCanonicalIds(
           if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
           const discoveredAfter = rejectMappingCycles(
             state.mappings,
-            await discoverMappings(deps, state.mappings),
+            await discoverMappings(deps, state.mappings, blocked),
           );
           if (Object.keys(discoveredAfter).length === 0) {
             await writeState(deps, { ...state, complete: true });
-            return deps.readMigrationFingerprint?.();
+            return finish();
           }
           state = {
             ...state,
@@ -857,9 +890,8 @@ export async function migrateLegacyEntityCanonicalIds(
               canonicalId,
               () => lock.refresh(),
             );
-            if (result.deferred) {
-              deferredMappings.push([legacyId, canonicalId]);
-            }
+            if (result.blocked) blocked.set(legacyId, canonicalId);
+            else if (result.deferred) deferredMappings.push([legacyId, canonicalId]);
             progressed ||= result.progressed;
           }
           if (deferredMappings.length === 0) break;
@@ -870,6 +902,15 @@ export async function migrateLegacyEntityCanonicalIds(
             );
           }
           pendingMappings = deferredMappings;
+        }
+        if (blocked.size > 0) {
+          const remaining: Record<string, string> = Object.fromEntries(
+            Object.entries(state.mappings).filter(([legacyId]) => !blocked.has(legacyId)),
+          );
+          if (Object.keys(remaining).length !== Object.keys(state.mappings).length) {
+            state = { ...state, mappings: remaining };
+            await writeState(deps, state);
+          }
         }
 
         const rewroteColdMemory = await rewriteKnownReferences(
@@ -885,11 +926,11 @@ export async function migrateLegacyEntityCanonicalIds(
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
         const discoveredAfter = rejectMappingCycles(
           state.mappings,
-          await discoverMappings(deps, state.mappings),
+          await discoverMappings(deps, state.mappings, blocked),
         );
         if (Object.keys(discoveredAfter).length === 0) {
           await writeState(deps, { ...state, complete: true });
-          return deps.readMigrationFingerprint?.();
+          return finish();
         }
         state = {
           ...state,
