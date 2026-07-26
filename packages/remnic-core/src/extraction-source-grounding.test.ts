@@ -3,7 +3,10 @@ import test from "node:test";
 
 import { parseConfig } from "./config.js";
 import { ExtractionEngine } from "./extraction.js";
-import { filterExtractionResultBySource } from "./extraction-source-grounding.js";
+import {
+  applyExtractionSourceGrounding,
+  filterExtractionResultBySource,
+} from "./extraction-source-grounding.js";
 import type { ExtractionResult } from "./types.js";
 
 const OBSERVED_TURN = {
@@ -1838,4 +1841,100 @@ test("grounding preserves proper identifiers before inflectional stemming", () =
 
   assert.deepEqual(factResult.facts, []);
   assert.deepEqual(entityResult.entities, []);
+});
+
+test("grounding requires entity identifiers in one coherent source span", () => {
+  const splitResult = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [{
+        name: "Alice Bob",
+        type: "person",
+        facts: ["Alice works at Acme."],
+      }],
+      questions: [],
+    },
+    "Alice works at Acme. Bob owns Mars.",
+  );
+  const coherentResult = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [{
+        name: "Alice Bob",
+        type: "person",
+        facts: ["Alice Bob joined Acme."],
+      }],
+      questions: [],
+    },
+    "Alice Bob joined Acme.",
+  );
+
+  assert.deepEqual(splitResult.entities, []);
+  assert.deepEqual(coherentResult.entities.map((entity) => entity.name), ["Alice Bob"]);
+});
+
+test("grounding preserves explicit cross-speaker facts", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "The assistant uses PostgreSQL.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "The assistant uses PostgreSQL.",
+    "The assistant uses PostgreSQL.",
+    { profile: "", identity: "" },
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["The assistant uses PostgreSQL."]);
+});
+
+test("grounding anchors relative eventTime for matching and preserves its source value", () => {
+  const result = applyExtractionSourceGrounding(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice deployed Acme.",
+        confidence: 0.9,
+        tags: [],
+        eventTime: "yesterday",
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice deployed Acme. Alice deployed Acme yesterday.",
+    undefined,
+    undefined,
+    new Date("2026-07-26T12:00:00.000Z"),
+    { sourceGrounding: true, anchorTemporalExpressions: true },
+  );
+
+  assert.equal(result.facts[0]?.eventTime, "yesterday");
+});
+
+test("grounding keeps declarative conditional facts", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice uses PostgreSQL if available.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice uses PostgreSQL if available.",
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["Alice uses PostgreSQL if available."]);
 });

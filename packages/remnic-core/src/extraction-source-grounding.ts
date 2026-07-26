@@ -34,6 +34,7 @@ export function applyExtractionSourceGrounding(
     anchorSource(sourceText),
     anchorSource(assertionSourceText),
     anchoredRoleSources,
+    options.anchorTemporalExpressions ? anchorSource : undefined,
   );
 }
 
@@ -409,14 +410,27 @@ function sourceSentences(source: string): string[] {
 
 function isInterrogativeSourceSentence(sentence: string): boolean {
   const normalized = sentence.trim();
+  const embeddedQuestionVerbIndex = normalized.search(
+    /\b(?:determine|know|wonder|ask(?:ed)?|question|decide|check|confirm|find|figure|understand|unclear)\b/iu,
+  );
+  const embeddedQuestionMarkerIndex = normalized.search(/\b(?:whether|if)\b/iu);
+  const hasEmbeddedQuestion = embeddedQuestionVerbIndex >= 0
+    && embeddedQuestionMarkerIndex > embeddedQuestionVerbIndex;
   return normalized.endsWith("?")
-    || /\b(?:whether|if)\b/iu.test(normalized)
+    || hasEmbeddedQuestion
     || (
       !normalized.includes(":")
-      && /^(?:suppose|assuming|maybe|perhaps|hypothetically|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who)\b/iu.test(
+      && /^(?:suppose|assuming|maybe|perhaps|hypothetically|if|whether|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who)\b/iu.test(
         normalized,
       )
     );
+}
+function hasExplicitRoleSubject(candidate: string, source: string): boolean {
+  const candidateRole = groundingTokenSequence(candidate)[0];
+  if (!GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateRole ?? "")) return false;
+  return sourceSentences(source).some((sentence) =>
+    groundingTokenSequence(sentence).includes(candidateRole!),
+  );
 }
 
 function groundingTokenSequence(text: string): string[] {
@@ -637,8 +651,14 @@ function normalizedEntityIdentifierTokens(name: string): string[] {
 
 function isGroundedEntityName(name: string, source: string): boolean {
   const nameTokens = normalizedEntityIdentifierTokens(name);
-  const sourceTokens = tokenize(source);
-  return nameTokens.length > 0 && nameTokens.every((token) => sourceTokens.has(token));
+  return nameTokens.length > 0 && sourceSentences(source).some((sentence) => {
+    const sentenceTokens = groundingLexemes(sentence)
+      .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
+      .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS));
+    return nameTokens.some((_, start) =>
+      nameTokens.every((token, offset) => sentenceTokens[start + offset] === token),
+    );
+  });
 }
 
 function hasGroundedPredicateAnchor(candidate: string, sentence: string): boolean {
@@ -736,6 +756,8 @@ interface GroundingContext {
   source: string;
   assertionSource: string | undefined;
   allowRoleNormalization: boolean;
+  fallbackSource?: string;
+  fallbackAssertionSource?: string;
 }
 
 function resolveGroundingContext(
@@ -758,7 +780,39 @@ function resolveGroundingContext(
     source: roleSource ?? "",
     assertionSource: roleSource ?? "",
     allowRoleNormalization: true,
+    fallbackSource: source,
+    fallbackAssertionSource: assertionSource,
   };
+}
+
+function selectGroundingContext(candidate: string, context: GroundingContext): GroundingContext {
+  if (isGroundedCandidate(
+    candidate,
+    context.source,
+    context.assertionSource,
+    false,
+    context.allowRoleNormalization,
+  )) {
+    return context;
+  }
+  if (
+    context.fallbackSource === undefined
+    || !hasExplicitRoleSubject(candidate, context.fallbackSource)
+  ) return context;
+  const fallbackContext: GroundingContext = {
+    source: context.fallbackSource,
+    assertionSource: context.fallbackAssertionSource,
+    allowRoleNormalization: false,
+  };
+  return isGroundedCandidate(
+    candidate,
+    fallbackContext.source,
+    fallbackContext.assertionSource,
+    false,
+    fallbackContext.allowRoleNormalization,
+  )
+    ? fallbackContext
+    : context;
 }
 
 function isGroundedCandidate(
@@ -798,8 +852,12 @@ function filterGroundedFact(
   source: string,
   assertionSource: string | undefined,
   roleAssertionSources: ExtractionGroundingRoleSources | undefined,
+  eventTimeNormalizer: ((eventTime: string) => string) | undefined,
 ): ExtractionResult["facts"][number] | undefined {
-  const factContext = resolveGroundingContext(fact.content, source, assertionSource, roleAssertionSources);
+  const factContext = selectGroundingContext(
+    fact.content,
+    resolveGroundingContext(fact.content, source, assertionSource, roleAssertionSources),
+  );
   if (!isGroundedCandidate(
     fact.content,
     factContext.source,
@@ -808,6 +866,9 @@ function filterGroundedFact(
     factContext.allowRoleNormalization,
   )) return undefined;
   const factEventTime = fact.eventTime;
+  const groundedFactEventTime = factEventTime === undefined
+    ? undefined
+    : eventTimeNormalizer?.(factEventTime) ?? factEventTime;
   const factSupportingSentences = sourceSentences(factContext.source).filter((sentence) =>
     isGroundedCandidate(
       fact.content,
@@ -821,7 +882,7 @@ function filterGroundedFact(
     ? factSupportingSentences[0]
     : factSupportingSentences.find((sentence) =>
       isGroundedCandidate(
-        factEventTime,
+        groundedFactEventTime ?? factEventTime,
         sentence,
         undefined,
         false,
@@ -838,11 +899,14 @@ function filterGroundedFact(
       Object.entries(fact.structuredAttributes)
         .filter(([key, value]) => {
           const attribute = `${key}: ${value}`;
-          const attributeContext = resolveGroundingContext(
+          const attributeContext = selectGroundingContext(
             attribute,
-            source,
-            assertionSource,
-            roleAssertionSources,
+            resolveGroundingContext(
+              attribute,
+              source,
+              assertionSource,
+              roleAssertionSources,
+            ),
           );
           return isGroundedCandidate(
             attribute,
@@ -911,9 +975,9 @@ function filterGroundedFact(
         : {}),
     }
     : undefined;
-  const groundedEventTime = fact.eventTime
-    && isGroundedCandidate(fact.eventTime, eventTimeSource, eventTimeAssertionSource)
-    ? fact.eventTime
+  const groundedEventTime = groundedFactEventTime
+    && isGroundedCandidate(groundedFactEventTime, eventTimeSource, eventTimeAssertionSource)
+    ? factEventTime
     : undefined;
   const entityRefSource = factContext.assertionSource ?? factContext.source;
   const groundedEntityRef = fact.entityRef !== undefined
@@ -1079,6 +1143,7 @@ export function filterExtractionResultBySource(
   source: string,
   assertionSource?: string,
   roleAssertionSources?: ExtractionGroundingRoleSources,
+  eventTimeNormalizer?: (eventTime: string) => string,
 ): ExtractionResult {
   if (source.trim().length === 0) {
     return {
@@ -1093,7 +1158,13 @@ export function filterExtractionResultBySource(
   }
 
   const facts = result.facts.flatMap((fact) => {
-    const grounded = filterGroundedFact(fact, source, assertionSource, roleAssertionSources);
+    const grounded = filterGroundedFact(
+      fact,
+      source,
+      assertionSource,
+      roleAssertionSources,
+      eventTimeNormalizer,
+    );
     return grounded === undefined ? [] : [grounded];
   });
   const profileGroundingSource = roleAssertionSources?.profile ?? source;
