@@ -12,6 +12,7 @@
     "packages/remnic-core/src/storage.ts",
     "packages/remnic-core/src/storage/entity-canonical-id-migration.ts",
     "packages/remnic-core/src/storage/entity-canonical-id-migration-runner.ts",
+    "packages/remnic-core/src/storage/entity-canonical-id-migration-adapter.ts",
     "packages/remnic-core/src/storage/**",
     "packages/remnic-core/src/session-toggles.ts",
     "packages/remnic-core/src/session-namespace-bindings.ts",
