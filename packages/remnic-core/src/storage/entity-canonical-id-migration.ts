@@ -343,14 +343,20 @@ async function rewriteReferences(
       const canonicalId = previousEntityRef ? mappings[previousEntityRef] : undefined;
       if (!previousEntityRef || !canonicalId) continue;
       await assertNotMemorySymlink(memory.path);
+      const observedMemoryFingerprint = await fingerprintPath(memory.path);
+      if (observedMemoryFingerprint === "missing") continue;
       if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
       const latestMemory = await deps.readMemoryByPath(memory.path);
       if (!latestMemory) continue;
+      const latestMemoryFingerprint = await fingerprintPath(latestMemory.path);
+      if (latestMemoryFingerprint !== observedMemoryFingerprint) continue;
       const latestPreviousEntityRef = latestMemory.frontmatter.entityRef;
       const latestCanonicalId = latestPreviousEntityRef ? mappings[latestPreviousEntityRef] : undefined;
       if (!latestPreviousEntityRef || !latestCanonicalId) continue;
       const memoryEncrypted = await deps.isEncryptedStorageFile(latestMemory.path);
+      if ((await fingerprintPath(latestMemory.path)) !== latestMemoryFingerprint) continue;
       await deps.snapshotBeforeWrite(latestMemory.path, "write");
+      if ((await fingerprintPath(latestMemory.path)) !== latestMemoryFingerprint) continue;
       await deps.writeStorageSecureFile(
         latestMemory.path,
         deps.serializeMemoryWithEntityRef(latestMemory, latestCanonicalId),

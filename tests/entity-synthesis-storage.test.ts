@@ -453,6 +453,77 @@ test("ensureDirectories preserves memory updates made after migration discovery"
   }
 });
 
+test("ensureDirectories preserves memory updates during the final rewrite check", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-final-race-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const canonical = normalizeEntityName(name, type);
+    const legacyCanonical = "project-";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+    );
+    const day = new Date().toISOString().slice(0, 10);
+    const memoryPath = path.join(dir, "facts", day, "migration-final-race.md");
+    await mkdir(path.dirname(memoryPath), { recursive: true });
+    await writeFile(
+      memoryPath,
+      [
+        "---",
+        "id: migration-final-race",
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        `entityRef: ${legacyCanonical}`,
+        "---",
+        "",
+        "Original content.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+
+    const upgraded = new StorageManager(dir);
+    const originalReadMemoryByPath = upgraded.readMemoryByPath.bind(upgraded);
+    let injected = false;
+    const testStorage = upgraded as unknown as {
+      readMemoryByPath: typeof originalReadMemoryByPath;
+      bumpMemoryCorpusVersion(): void;
+    };
+    testStorage.readMemoryByPath = async (filePath) => {
+      const current = await originalReadMemoryByPath(filePath);
+      if (current && !injected) {
+        injected = true;
+        const currentContent = await readFile(filePath, "utf-8");
+        await writeFile(filePath, `${currentContent}Concurrent content update.\n`, "utf-8");
+        testStorage.bumpMemoryCorpusVersion();
+      }
+      return current;
+    };
+    try {
+      await upgraded.ensureDirectories();
+    } finally {
+      testStorage.readMemoryByPath = originalReadMemoryByPath;
+    }
+
+    const racedContent = await readFile(memoryPath, "utf-8");
+    assert.match(racedContent, new RegExp(`entityRef: ${legacyCanonical}`));
+    assert.match(racedContent, /Concurrent content update/);
+
+    await upgraded.ensureDirectories();
+
+    const migratedContent = await readFile(memoryPath, "utf-8");
+    assert.match(migratedContent, new RegExp(`entityRef: ${canonical}`));
+    assert.match(migratedContent, /Concurrent content update/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories rescans memories created during migration", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-memory-rescan-"));
   try {

@@ -33,14 +33,12 @@ export class EntityCanonicalIdMigrationRunner {
   }
 
   private async runOrReuse(): Promise<void> {
-    if (this.migrationComplete) {
-      const currentFingerprint = await this.readFingerprint();
-      if (currentFingerprint === this.completedFingerprint) return;
-    }
+    const fingerprintAtStart = await this.readFingerprint();
+    if (this.migrationComplete && fingerprintAtStart === this.completedFingerprint) return;
 
     await this.runMigration();
     this.migrationComplete = true;
-    this.completedFingerprint = await this.readFingerprint();
+    this.completedFingerprint = fingerprintAtStart;
   }
 
   private clearInFlight(migration: Promise<void>): void {

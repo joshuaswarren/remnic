@@ -55,3 +55,21 @@ test("entity migration runner caches a stable completion and reruns after a fing
   await runner.ensure();
   assert.equal(runCount, 2);
 });
+
+test("entity migration runner does not cache writes that race migration completion", async () => {
+  let runCount = 0;
+  let fingerprint = "initial";
+  const runner = new EntityCanonicalIdMigrationRunner(
+    () => true,
+    async () => {
+      runCount += 1;
+      fingerprint = "changed";
+    },
+    async () => fingerprint,
+  );
+
+  await runner.ensure();
+  await runner.ensure();
+
+  assert.equal(runCount, 2);
+});
