@@ -368,6 +368,8 @@ function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): b
   if (candidateTokens.length < 3 || sourceTokens.length < 3) return true;
 
   const subjectAligned = candidateTokens[0] === sourceTokens[0];
+  const hasCorrectionReordering = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
+    && /\b(?:not|rather\s+than|instead\s+of)\b/iu.test(source);
   let foundAlignedToken = false;
   const sharedLength = Math.min(candidateTokens.length, sourceTokens.length);
   for (let index = 1; index < sharedLength; index += 1) {
@@ -379,7 +381,9 @@ function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): b
       return false;
     }
   }
-  return subjectAligned && foundAlignedToken;
+  return subjectAligned
+    && (candidateTokens[1] === sourceTokens[1] || hasCorrectionReordering)
+    && foundAlignedToken;
 }
 
 function groundedTokenScore(
@@ -471,10 +475,10 @@ function isSourceGrounded(
   const candidateText = normalizeForExactMatch(candidate);
   const sourceText = source.normalize("NFKC").trim();
   if (candidateText.length === 0 || sourceText.length === 0) return false;
-
   const hasSupportedExactMatch = sourceSentences(sourceText).some((sentence) => {
     const sentenceText = normalizeForExactMatch(sentence);
-    const isExplanatoryLabel = sentenceText.startsWith(`${candidateText}:`);
+    const isExplanatoryLabel = sentenceText.startsWith(`${candidateText}:`)
+      && !sentence.trim().endsWith("?");
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence) && !isExplanatoryLabel) return false;
     return containsExactTokenSequence(candidateText, sentenceText)
       && !hasContradictoryPolarity(candidateText, sentenceText);
@@ -667,6 +671,19 @@ function filterGroundedFact(
     false,
     factContext.allowRoleNormalization,
   )) return undefined;
+  const factSupportingSource = sourceSentences(factContext.source).find((sentence) =>
+    isGroundedCandidate(
+      fact.content,
+      sentence,
+      undefined,
+      false,
+      factContext.allowRoleNormalization,
+    ),
+  );
+  const eventTimeSource = factSupportingSource ?? factContext.source;
+  const eventTimeAssertionSource = factSupportingSource === undefined
+    ? factContext.assertionSource
+    : undefined;
 
   const groundedAttributes = fact.structuredAttributes
     ? Object.fromEntries(
@@ -728,7 +745,7 @@ function filterGroundedFact(
     }
     : undefined;
   const groundedEventTime = fact.eventTime
-    && isGroundedCandidate(fact.eventTime, source, assertionSource)
+    && isGroundedCandidate(fact.eventTime, eventTimeSource, eventTimeAssertionSource)
     ? fact.eventTime
     : undefined;
   const entityRefSource = factContext.assertionSource ?? factContext.source;

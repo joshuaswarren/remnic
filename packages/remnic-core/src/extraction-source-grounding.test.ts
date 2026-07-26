@@ -1461,3 +1461,65 @@ test("grounding clears question context that is supported only by the question",
     priority: 0.5,
   }]);
 });
+test("grounding rejects predicate mismatches with shared subject and object", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice supports Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice criticized Acme.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding keeps eventTime tied to the fact's supporting sentence", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice deployed Acme.",
+        confidence: 0.9,
+        tags: [],
+        eventTime: "yesterday",
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice deployed Acme today. Bob left yesterday.",
+  );
+
+  assert.deepEqual(result.facts, [{
+    category: "fact",
+    content: "Alice deployed Acme.",
+    confidence: 0.9,
+    tags: [],
+  }]);
+});
+
+test("grounding rejects colon-suffixed unresolved questions", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice works at Acme: yes or no?",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
