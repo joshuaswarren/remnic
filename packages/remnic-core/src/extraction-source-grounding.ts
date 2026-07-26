@@ -1,5 +1,10 @@
 import type { ExtractionResult } from "./types.js";
 import { anchorTemporalExpressions } from "./delinearize.js";
+import {
+  containsContiguousGroundingTokens,
+  hasExplicitRoleSubjectToken,
+  isInterrogativeSourceSentence,
+} from "./extraction-source-grounding-helpers.js";
 
 export interface ExtractionSourceGroundingOptions {
   sourceGrounding: boolean;
@@ -408,30 +413,6 @@ function sourceSentences(source: string): string[] {
   return sentences.length > 0 ? sentences : [source];
 }
 
-function isInterrogativeSourceSentence(sentence: string): boolean {
-  const normalized = sentence.trim();
-  const embeddedQuestionVerbIndex = normalized.search(
-    /\b(?:determine|know|wonder|ask(?:ed)?|question|decide|check|confirm|find|figure|understand|unclear)\b/iu,
-  );
-  const embeddedQuestionMarkerIndex = normalized.search(/\b(?:whether|if)\b/iu);
-  const hasEmbeddedQuestion = embeddedQuestionVerbIndex >= 0
-    && embeddedQuestionMarkerIndex > embeddedQuestionVerbIndex;
-  return normalized.endsWith("?")
-    || hasEmbeddedQuestion
-    || (
-      !normalized.includes(":")
-      && /^(?:suppose|assuming|maybe|perhaps|hypothetically|if|whether|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who)\b/iu.test(
-        normalized,
-      )
-    );
-}
-function hasExplicitRoleSubject(candidate: string, source: string): boolean {
-  const candidateRole = groundingTokenSequence(candidate)[0];
-  if (!GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateRole ?? "")) return false;
-  return sourceSentences(source).some((sentence) =>
-    groundingTokenSequence(sentence).includes(candidateRole!),
-  );
-}
 
 function groundingTokenSequence(text: string): string[] {
   let lexemes = groundingLexemes(text);
@@ -655,9 +636,7 @@ function isGroundedEntityName(name: string, source: string): boolean {
     const sentenceTokens = groundingLexemes(sentence)
       .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
       .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS));
-    return nameTokens.some((_, start) =>
-      nameTokens.every((token, offset) => sentenceTokens[start + offset] === token),
-    );
+    return containsContiguousGroundingTokens(nameTokens, sentenceTokens);
   });
 }
 
@@ -797,7 +776,10 @@ function selectGroundingContext(candidate: string, context: GroundingContext): G
   }
   if (
     context.fallbackSource === undefined
-    || !hasExplicitRoleSubject(candidate, context.fallbackSource)
+    || !hasExplicitRoleSubjectToken(
+      groundingTokenSequence(candidate)[0],
+      sourceSentences(context.fallbackSource).map((sentence) => groundingTokenSequence(sentence)),
+    )
   ) return context;
   const fallbackContext: GroundingContext = {
     source: context.fallbackSource,
