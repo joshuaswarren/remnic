@@ -11,6 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { computeSupersessionKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { EntityFile, MemoryFile } from "../types.js";
@@ -29,6 +30,40 @@ const ENTITY_CANONICAL_ID_MUTATION_LOCK_STALE_MS = 60_000;
 const ENTITY_CANONICAL_ID_MUTATION_LOCK_MAX_WAIT_MS = 300_000;
 const MEMORY_REWRITE_MAX_PASSES = 3;
 const ENTITY_MAPPING_RESCAN_MAX_PASSES = 3;
+
+export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Record<string, string>> {
+  const statePath = path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE);
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(statePath, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const mappings = (parsed as { mappings?: unknown }).mappings;
+    if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return {};
+    const cleaned: Record<string, string> = {};
+    for (const [legacyId, canonicalId] of Object.entries(mappings)) {
+      if (legacyId.length > 0 && typeof canonicalId === "string" && canonicalId.length > 0) {
+        cleaned[legacyId] = canonicalId;
+      }
+    }
+    return cleaned;
+  } catch {
+    return {};
+  }
+}
+
+export function resolveHistoricalEntityCanonicalId(
+  normalized: string,
+  mappings: Readonly<Record<string, string>>,
+): string {
+  let current = normalized;
+  const seen = new Set<string>();
+  while (!seen.has(current)) {
+    seen.add(current);
+    const next = mappings[current];
+    if (!next || next === current) break;
+    current = next;
+  }
+  return current;
+}
 
 const EntityCanonicalIdMigrationStateSchema = z.object({
   version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),

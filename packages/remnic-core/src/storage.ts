@@ -3577,16 +3577,10 @@ export class StorageManager {
     () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => this.getCorpusScanVersion()),
   );
   normalizeEntityName(raw: string, type: string): string {
-    const normalized = this.entityStore.normalizeEntityName(raw, type);
-    let current = normalized;
-    const seen = new Set<string>();
-    while (!seen.has(current)) {
-      seen.add(current);
-      const next = this.historicalEntityCanonicalIds[current];
-      if (!next || next === current) break;
-      current = next;
-    }
-    return current;
+    return entityMigration.resolveHistoricalEntityCanonicalId(
+      this.entityStore.normalizeEntityName(raw, type),
+      this.historicalEntityCanonicalIds,
+    );
   }
 
   /**
@@ -3634,24 +3628,7 @@ export class StorageManager {
     }
   }
   private loadHistoricalEntityCanonicalIdsSync(): void {
-    const statePath = path.join(this.baseDir, "state", entityMigration.ENTITY_CANONICAL_ID_MIGRATION_FILE);
-    this.historicalEntityCanonicalIds = {};
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(statePath, "utf-8"));
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
-      const mappings = (parsed as { mappings?: unknown }).mappings;
-      if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return;
-      const cleaned: Record<string, string> = {};
-      for (const [legacyId, canonicalId] of Object.entries(mappings)) {
-        if (legacyId.length > 0 && typeof canonicalId === "string" && canonicalId.length > 0) {
-          cleaned[legacyId] = canonicalId;
-        }
-      }
-      this.historicalEntityCanonicalIds = cleaned;
-    } catch {
-      // The migration validates malformed state when it runs; normalization
-      // should fall back to the current alias table until then.
-    }
+    this.historicalEntityCanonicalIds = entityMigration.loadHistoricalEntityCanonicalIds(this.stateDir);
   }
 
   private async runLegacyEntityCanonicalIdMigration(): Promise<string> {
