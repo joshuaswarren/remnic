@@ -474,6 +474,27 @@ test("inline capture review fallback isolates authorized review namespaces", asy
   assert.equal(secondary.memories.length, 1);
 });
 
+test("inline capture routes unsupported namespaces to the authorized default review scope", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const result = await probe.processor.process({
+    captureMode: "hybrid",
+    content: [
+      "<memory_note>",
+      "content: An unsupported namespace must still produce a review item.",
+      "category: fact",
+      "namespace: unsupported-inline-namespace",
+      "</memory_note>",
+    ].join("\n"),
+  });
+
+  assert.equal(result.queued, 1);
+  assert.equal(result.failed, 0);
+  assert.equal(probe.envelopes[0]?.source, "explicit-inline-review");
+  assert.equal(probe.memories.length, 1);
+  assert.ok(probe.requestedNamespaces.every((namespace) => namespace === "default"));
+});
+
+
 test("inline capture review fallback replays within one authorized review namespace", async () => {
   const probe = createInlineCaptureProcessorProbe();
   const config = probe.orchestrator.config as PluginConfig;

@@ -826,8 +826,8 @@ export class InlineExplicitCaptureProcessor {
       try {
         effectiveNamespace = resolveExplicitCaptureNamespace(this.orchestrator, effectiveNamespace);
       } catch {
-        fallbackNamespace = asTrimmed(fallbackReviewNamespace);
-        effectiveNamespace = fallbackNamespace ?? asTrimmed(input.namespace);
+        fallbackNamespace = asTrimmed(fallbackReviewNamespace) ?? this.orchestrator.config.defaultNamespace;
+        effectiveNamespace = fallbackNamespace;
       }
     }
     const namespaceScope = fallbackNamespace ?? effectiveNamespace ?? this.orchestrator.config.defaultNamespace;
@@ -884,6 +884,17 @@ export class InlineExplicitCaptureProcessor {
       return false;
     }
   }
+
+  private resolveReviewFallbackNamespace(
+    request: InlineExplicitCaptureProcessRequest,
+    input: ExplicitCaptureInput
+  ): string | undefined {
+    if (request.namespacePreResolved === true || this.isNamespacePolicyAuthorized(input.namespace)) return undefined;
+    return request.reviewNamespacePreResolved === true
+      ? asTrimmed(request.reviewNamespace)
+      : this.orchestrator.config.defaultNamespace;
+  }
+
 
   private remember(keys: readonly string[]): void {
     for (const key of keys) {
@@ -954,12 +965,7 @@ export class InlineExplicitCaptureProcessor {
         }
 
         const queueInput = request.namespacePreResolved === true ? { ...input, namespacePreResolved: true } : input;
-        const reviewNamespace =
-          request.reviewNamespacePreResolved === true &&
-          request.namespacePreResolved !== true &&
-          !this.isNamespacePolicyAuthorized(input.namespace)
-            ? request.reviewNamespace
-            : undefined;
+        const reviewNamespace = this.resolveReviewFallbackNamespace(request, input);
         try {
           const review = await queueExplicitCaptureForReview(
             this.orchestrator,
@@ -1016,7 +1022,7 @@ export class InlineExplicitCaptureProcessor {
         request.dedupeKeys,
         input,
         request.namespacePreResolved === true,
-        request.reviewNamespacePreResolved === true ? request.reviewNamespace : undefined
+        this.resolveReviewFallbackNamespace(request, input)
       );
       const result = await this.processNote(request, input, replayKeys, validationFailureKey);
       processed += result.processed;
