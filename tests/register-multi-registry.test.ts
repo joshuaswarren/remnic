@@ -37,6 +37,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
+import { createServer } from "node:http";
+import type { AddressInfo, Socket } from "node:net";
 import { clearAuthTokenSecretCache } from "../packages/remnic-core/src/resolve-auth-token.js";
 
 // ============================================================================
@@ -1702,5 +1704,77 @@ test("register() scopes runtime singletons per serviceId when two plugin ids sha
 
     // restoreGlobals() restores the canonical slots AND the unkeyed mirror.
     restoreGlobals(saved);
+  }
+});
+
+test("register(): a replicaPeers SecretRef peer token is host-resolved and reaches the peer request (round 6)", async () => {
+  const saved = saveAndResetGlobals();
+  const previousDisableMigration = disableRegisterMigrationForTest();
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-replica-secretref-"));
+  let built: ReturnType<typeof buildApi> | undefined;
+
+  // A local stand-in peer that records the Authorization header each probe sends.
+  const authHeaders: (string | undefined)[] = [];
+  const sockets = new Set<Socket>();
+  const peer = createServer((req, res) => {
+    authHeaders.push(req.headers.authorization);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, corpus: [] }));
+  });
+  peer.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  const listening = Promise.withResolvers<void>();
+  peer.once("error", listening.reject);
+  peer.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const peerUrl = `http://127.0.0.1:${(peer.address() as AddressInfo).port}`;
+
+  clearAuthTokenSecretCache();
+  // The host resolver src/index.ts wires into EngramAccessService (via
+  // loadOpenClawSecretRefResolver) resolves peer-token SecretRefs at poll time.
+  (globalThis as Record<string, unknown>)[SECRET_REF_RESOLVER_TEST_KEY] = async () => "RESOLVED-PEER-TOKEN";
+
+  try {
+    const { default: plugin } = await import("../src/index.js");
+    built = buildApi("replica-secretref");
+    const pluginConfig = {
+      ...BASE_TEST_PLUGIN_CONFIG,
+      memoryDir,
+      replicaPeers: {
+        enabled: true,
+        peers: [{ url: peerUrl, token: { source: "exec", provider: "kc_peer", id: "value" } }],
+      },
+    };
+    built.api.pluginConfig = pluginConfig;
+    plugin.register(built.api as never);
+    await built.api._registeredStart?.();
+
+    const accessService = (globalThis as Record<string, unknown>)[ACCESS_SVC_KEY] as
+      | { health(): Promise<unknown>; replicaDivergenceMonitor: { whenIdle(): Promise<void> } }
+      | undefined;
+    assert.ok(accessService, "register() must construct the shared access service");
+    // health() kicks the SWR replica monitor; whenIdle() awaits its one background
+    // poll so the assertion does not race the fire-and-forget refresh.
+    await accessService.health();
+    await accessService.replicaDivergenceMonitor.whenIdle();
+
+    assert.ok(
+      authHeaders.includes("Bearer RESOLVED-PEER-TOKEN"),
+      `the host-resolved SecretRef peer token must reach the peer request (saw ${JSON.stringify(authHeaders)})`,
+    );
+  } finally {
+    await safeStop(built?.api);
+    delete (globalThis as Record<string, unknown>)[SECRET_REF_RESOLVER_TEST_KEY];
+    clearAuthTokenSecretCache();
+    for (const socket of sockets) socket.destroy();
+    const closed = Promise.withResolvers<void>();
+    peer.close(() => closed.resolve());
+    await closed.promise;
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    restoreGlobals(saved);
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });

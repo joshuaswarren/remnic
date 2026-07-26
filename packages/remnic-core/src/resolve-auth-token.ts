@@ -154,3 +154,41 @@ export function isAgentAccessSecretRef(value: unknown): value is SecretRef {
 export function clearAuthTokenSecretCache(): void {
   resolvedCache = new WeakMap<ResolveSecretRefFn, Map<string, string>>();
 }
+
+/**
+ * Resolve a host SecretRef resolver, preferring an explicitly supplied one over
+ * the lazy loader.
+ *
+ * Shared by every CLI command that authenticates with a SecretRef — `access
+ * serve` and `doctor` (replica peer tokens, issue #2149) — so the two cannot
+ * drift. Structurally typed rather than importing the CLI's options type, which
+ * would invert the dependency.
+ */
+export async function loadHostSecretRefResolver(options: {
+  resolveSecretRef?: ResolveSecretRefFn | null;
+  loadResolveSecretRef?: () =>
+    | Promise<ResolveSecretRefFn | null | undefined>
+    | ResolveSecretRefFn
+    | null
+    | undefined;
+}): Promise<ResolveSecretRefFn | null | undefined> {
+  if (options.resolveSecretRef) return options.resolveSecretRef;
+  if (!options.loadResolveSecretRef) return null;
+  try {
+    return await options.loadResolveSecretRef();
+  } catch {
+    // A host whose lazy loader throws means "no resolver available" — not
+    // "abort the caller". `doctor` must still run its unrelated checks and let
+    // the replica check report token_error per affected peer (round 9, codex).
+    return null;
+  }
+}
+
+/**
+ * Adapt a host's lazily-loaded SecretRef resolver into the eager
+ * `ResolveSecretRefFn` that `EngramAccessService` expects, so replica peer
+ * tokens resolve at poll time (issue #2149).
+ */
+export function hostSecretRefResolver(options: Parameters<typeof loadHostSecretRefResolver>[0]): ResolveSecretRefFn {
+  return (ref, context) => loadHostSecretRefResolver(options).then((resolve) => resolve?.(ref, context));
+}

@@ -108,6 +108,29 @@ test("health reports active QMD version and collection state", async () => {
   }
 });
 
+test("health reports replica divergence disabled by default (no peers -> behaves as today)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-replica-"));
+  try {
+    const config = parseConfig({ memoryDir });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+
+    assert.equal(health.replica.enabled, false);
+    assert.equal(health.replica.pending, false);
+    assert.equal(health.replica.polledAt, null);
+    assert.equal(health.replica.peers.length, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("health treats qmdEmbeddingBacklogThreshold 0 as backlog degradation disabled", async () => {
   const config = parseConfig({ qmdEnabled: true, qmdEmbeddingBacklogThreshold: 0 });
   const qmd = makeQmd({

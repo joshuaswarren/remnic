@@ -1533,16 +1533,16 @@ const pluginDefinition = {
     const accessService =
       existingAccessService && (existingAccessService as EngramAccessService)
         ? existingAccessService
-        : new EngramAccessService(orchestrator);
+        : new EngramAccessService(orchestrator, {
+            resolveSecretRef: (ref, context) =>
+              loadOpenClawSecretRefResolver().then((resolver) => (resolver ? resolver(ref, context) : undefined)),
+          });
     (globalThis as any)[keys.ACCESS_SERVICE] = accessService;
 
     // ── agentAccessHttp.authToken SecretRef wiring (issue #757) ──────────
-    //
     // `parseConfig` preserves SecretRef objects verbatim; resolution must
     // happen before any request validation runs. Two construction paths:
-    //
     //   1. String authToken (the pre-#757 shape): pass through unchanged.
-    //
     //   2. SecretRef authToken: construct the server with `authToken:
     //      undefined` and route the resolved value through
     //      `authTokensGetter`, which is already the mechanism used for

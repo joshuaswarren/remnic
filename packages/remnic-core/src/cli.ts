@@ -115,6 +115,8 @@ import {
   renderActionConfidenceText,
 } from "./action-confidence.js";
 import {
+  hostSecretRefResolver,
+  loadHostSecretRefResolver,
   resolveAgentAccessAuthToken,
   type ResolveSecretRefFn,
 } from "./resolve-auth-token.js";
@@ -3797,7 +3799,8 @@ export function registerCli(
         .option("--json", "Emit machine-readable JSON only")
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
-          const report = await runOperatorDoctor({ orchestrator });
+          const resolveSecretRef = await loadHostSecretRefResolver(registerOptions);
+          const report = await runOperatorDoctor({ orchestrator, resolveSecretRef });
           if (reportHasMachineReadableOutput(options)) {
             console.log(JSON.stringify(report, null, 2));
           } else {
@@ -6767,7 +6770,10 @@ export function registerCli(
           console.log("OK");
         });
 
-      const accessService = new EngramAccessService(orchestrator);
+      // /health's replica monitor resolves peer-token SecretRefs at poll time (#2149).
+      const accessService = new EngramAccessService(orchestrator, {
+        resolveSecretRef: hostSecretRefResolver(registerOptions),
+      });
       const accessCmd = cmd
         .command("access")
         .description("Manage Engram HTTP and MCP access surfaces");
@@ -6796,11 +6802,7 @@ export function registerCli(
             typeof options.token === "string" && options.token.trim().length > 0
               ? options.token
               : undefined;
-          const resolveSecretRef =
-            registerOptions.resolveSecretRef ??
-            (registerOptions.loadResolveSecretRef
-              ? await registerOptions.loadResolveSecretRef()
-              : null);
+          const resolveSecretRef = await loadHostSecretRefResolver(registerOptions);
           const resolvedConfigAuthToken = cliTokenOverride
             ? undefined
             : await resolveAgentAccessAuthToken(

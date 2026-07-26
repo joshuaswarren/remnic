@@ -3951,6 +3951,93 @@
           }
         }
       },
+      "replicaPeers": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Replica divergence detection (issue #2149). Poll each configured peer's authenticated /health corpus watermark and flag per-namespace drift (file-count delta, watermark age delta, digest mismatch). Detection only; reconciliation is issue #2150. Disabled by default.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master gate. When false (default) no peers are polled and the daemon behaves exactly as before."
+          },
+          "peers": {
+            "type": "array",
+            "default": [],
+            "description": "Peer Remnic agent-access HTTP endpoints to poll for corpus watermarks.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "url"
+              ],
+              "properties": {
+                "url": {
+                  "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                  "description": "Base URL of the peer's agent-access HTTP server (http or https). Supports ${ENV_VAR} expansion."
+                },
+                "token": {
+                  "description": "Bearer token for the peer's authenticated /health. A literal string (supports ${ENV_VAR} expansion) or an OpenClaw SecretRef object resolved at poll time like agentAccessHttp.authToken (issue #757). Never logged.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "source"
+                      ],
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "command": {}
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "pollIntervalMs": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 300000,
+            "description": "How often each peer is re-polled (stale-while-revalidate TTL), in ms. Finite integer >= 1; string forms are coerced and fractional/non-positive values are rejected at parse time. Default 300000 (5 min)."
+          },
+          "requestTimeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+          "maximum": 2147483647,
+            "default": 10000,
+            "description": "Per-peer HTTP request timeout, in ms. Finite integer >= 1. Default 10000 (10s)."
+          },
+          "maxFileCountDelta": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 100,
+            "description": "Per-namespace memory-file-count difference beyond which a peer is flagged diverged. 0 flags any difference. Default 100."
+          },
+          "maxWatermarkAgeDeltaMs": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 900000,
+            "description": "Per-namespace newest-write timestamp gap (ms) beyond which a peer is flagged diverged. 0 flags any gap. Default 900000 (15 min)."
+          }
+        }
+      },
       "profilingEnabled": {
         "type": "boolean",
         "default": false,

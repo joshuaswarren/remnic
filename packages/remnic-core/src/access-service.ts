@@ -19,7 +19,9 @@ import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
   resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
-import { CorpusWatermarkCache, computeServiceCorpusWatermarks } from "./corpus-watermark.js";
+import { CorpusWatermarkCache, computeServiceCorpusCensus } from "./corpus-watermark.js";
+import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
+import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import type {
   EngramAccessHealthResponse,
   EngramAccessQmdCollectionState,
@@ -1277,6 +1279,7 @@ export class EngramAccessService {
   private readonly budget: CrossNamespaceBudget;
   private readonly auditAdapter: AccessAuditAdapter | null;
   private readonly corpusWatermarkCache = new CorpusWatermarkCache();
+  private readonly replicaDivergenceMonitor: ReplicaDivergenceMonitor;
 
   /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessObserveWriteSurface: AccessObserveWriteSurface | undefined;
@@ -1339,8 +1342,13 @@ export class EngramAccessService {
   }
   private readonly extractionLivenessWarn = new ExtractionLivenessWarnThrottle();
 
-  constructor(private readonly orchestrator: Orchestrator) {
+  constructor(private readonly orchestrator: Orchestrator, options: { resolveSecretRef?: ResolveSecretRefFn | null } = {}) {
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
+    // Peer SecretRef tokens resolve at poll time through the host resolver, the
+    // same indirection as agentAccessHttp.authToken (review round 1). Absent a
+    // resolver, string/${ENV} tokens still work and a SecretRef degrades to a
+    // per-peer `unreachable` (never a throw).
+    this.replicaDivergenceMonitor = new ReplicaDivergenceMonitor({ resolveSecretRef: options.resolveSecretRef });
     const accessCaps = resolveAccessSetupCapabilities(orchestrator.config); // #1566 Cluster B
     this.budget = new CrossNamespaceBudget({
       enabled: accessCaps.recallCrossNamespaceBudget,
@@ -2432,6 +2440,11 @@ export class EngramAccessService {
     const searchBackend = this.orchestrator.config.searchBackend ?? "qmd";
     const qmdEnabled = resolveQmdCapabilities(this.orchestrator.config).qmd === true;
     const extraction = await computeExtractionLivenessStatus(this.orchestrator, this.extractionLivenessWarn);
+    // ONE call: the corpus array and the flag describing it must not come from
+    // two independently-cached scans (round 8, codex P1).
+    const caps = tokenCapabilityStore.getStore();
+    const corpusCensus = await computeServiceCorpusCensus(this.orchestrator, {
+      cache: this.corpusWatermarkCache, caps });
     let projectionAvailable = false;
     try {
       await stat(getMemoryProjectionPath(storage.dir));
@@ -2456,8 +2469,18 @@ export class EngramAccessService {
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
       extraction,
-      corpus: await computeServiceCorpusWatermarks(this.orchestrator, {
-        cache: this.corpusWatermarkCache, caps: tokenCapabilityStore.getStore() }),
+      corpus: corpusCensus.watermarks,
+      // Describes THIS response's array (round 8): a separate scan could report
+      // complete while the shipped corpus was partial, and peers trust it.
+      corpusComplete: corpusCensus.complete,
+      replica: this.replicaDivergenceMonitor.getReport({
+        config: this.orchestrator.config.replicaPeers,
+        // Capability-INDEPENDENT: this poll is cached instance-wide, so a
+        // restricted caller's filtered census must never seed it (round 9).
+        computeLocalWatermarks: () => computeServiceCorpusCensus(this.orchestrator, {}),
+        caps,
+        localCensusComplete: corpusCensus.complete,
+      }),
     };
   }
 

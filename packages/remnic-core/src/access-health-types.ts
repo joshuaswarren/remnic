@@ -10,6 +10,7 @@
  */
 import type { ExtractionLivenessStatus } from "./extraction-liveness.js";
 import type { CorpusWatermark } from "./corpus-watermark.js";
+import type { ReplicaDivergenceStatus } from "./replica-divergence.js";
 
 export interface EngramAccessHealthResponse {
   ok: true;
@@ -23,6 +24,13 @@ export interface EngramAccessHealthResponse {
   projectionAvailable: boolean;
   extraction: ExtractionLivenessStatus;
   corpus: CorpusWatermark[];
+  /**
+   * Whether `corpus` above is the COMPLETE census for this responder, from the
+   * same call that produced it. A polling peer must refuse to certify
+   * convergence against a partial array (issue #2149).
+   */
+  corpusComplete: boolean;
+  replica: ReplicaDivergenceStatus;
 }
 
 export type EngramAccessQmdCollectionState =

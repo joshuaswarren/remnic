@@ -186,17 +186,94 @@ Each entry has:
   **census fingerprint, not a content hash**: two daemons that agree on how many active
   memories live in each hot and cold day-partition share a digest, so a differing digest —
   including a hot/cold split or a cold-tier-only difference — is a cheap divergence signal
-  without reading file bodies.
+  without reading file bodies. Because it hashes per-bucket COUNTS, two replicas whose buckets
+  hold the SAME counts but DIFFERENT file contents produce an IDENTICAL digest — that
+  same-count content split-brain is NOT detected by this signal.
 - `computedAt` — when the watermark was computed. The `/health` watermark is served through a
   bounded 60-second cache, so `computedAt` also lets a consumer see how stale the census is;
   routine readiness/HA polling never triggers a full corpus rescan per request.
 
-This ships detection only: fetching configured replica peers' watermarks and
-health-flagging count or watermark-age divergence beyond a threshold is a
-follow-up, so the `corpus_watermark` doctor check does not yet compare peers. It
-does, however, report `warn` when a namespace cannot be scanned (unreadable or
-churning corpus) or enumeration fails — a scan failure omits that namespace, so
-the check surfaces it rather than certifying a partial fleet as `ok`.
+The `corpus_watermark` doctor check does not itself compare peers — that is the
+job of the separate `replica_divergence` check described below. It reports `warn`
+when a namespace cannot be scanned (unreadable or churning corpus) or enumeration
+fails — a scan failure omits that namespace, so the check surfaces it rather than
+certifying a partial fleet as `ok`.
+
+### Replica divergence detection (issue #2149)
+
+A daemon configured with `replicaPeers` (see [config-reference.md](config-reference.md))
+polls each peer's authenticated `/health` corpus watermark on the configured interval and
+compares it against the local set, per namespace. Results appear in the `replica` block of
+`GET /engram/v1/health` (filtered to the presenting token's namespaces, exactly like
+`corpus`) and in the `remnic doctor` `replica_divergence` check. The poller tries
+`GET /engram/v1/health` (the path this server serves) first, then `GET /remnic/v1/health`
+as a forward-compat fallback.
+
+Per peer, the reported state is one of the following. They are evaluated in
+**evidence order, not severity order**: any condition that makes the comparison
+uncertifiable — an unreachable peer, an incomplete local census, an incomplete or
+malformed peer census, a namespace only one side can see — resolves to
+`unreachable`/`unknown` BEFORE `converged` or `diverged` is considered. A partial
+census therefore never reads as a definitive verdict in either direction:
+
+- `converged` — every shared namespace agrees within the configured thresholds, and the peer
+  reported every namespace present locally. Convergence is certified only over the namespaces
+  the configured peer token can SEE: a namespace-restricted peer token cannot reveal peer-only
+  namespaces it hides, so `converged` from a scoped token means "the visible namespaces agree,"
+  not "the replicas are fully identical." Use an unrestricted (operator) peer token to certify
+  full convergence; scope-aware certification against a peer's advertised authorized namespace
+  set is the documented follow-up (see the `unknown` local-only case below).
+- `diverged` — at least one shared namespace differs beyond a threshold (a file-count delta
+  above `maxFileCountDelta`, a newest-write age gap above `maxWatermarkAgeDeltaMs`, or a digest
+  mismatch at EQUAL total counts — the same number of files distributed differently across
+  `<tier>:<category>/<day>` buckets, a distribution split-brain), or the peer holds a namespace
+  absent locally. A split-brain that keeps the SAME per-bucket counts but different file CONTENTS
+  is NOT caught by the digest (it fingerprints counts, not bytes). The concrete deltas are
+  reported so an operator sees numbers, not just a verdict.
+- `unreachable` — the peer timed out, refused the connection, returned a non-2xx status, or its
+  token could not be resolved (a SecretRef with no host resolver reports `token_error`, never a
+  crash — a single peer failure never aborts the poll).
+- `unknown` — the comparison could not be certified either way. Causes:
+  1. The peer answered 2xx but the payload carried no usable `corpus` array (missing, containing
+     malformed entries, an absent/unparseable `computedAt`, or repeating a namespace) — reason
+     `missing_corpus`/`malformed_corpus`.
+  2. A namespace present locally is ABSENT from the peer's response (`namespace_scope_unverifiable`).
+     This is genuinely ambiguous: a namespace-restricted peer token hides namespaces it cannot see,
+     and a peer that has genuinely LOST the namespace omits it in exactly the same way. The evidence
+     cannot distinguish the two, so the peer is reported `unknown` rather than certified healthy —
+     and `remnic doctor` warns. The comparison has no view of the peer token's scope, so it cannot
+     currently tell the two apart even with an unrestricted token — a local-only namespace always
+     reports `unknown`. Scope-aware comparison would need the peer to advertise its authorized
+     namespace set; until then, treat a persistent `unknown` on a scoped-token peer as expected,
+     and investigate it as a possible real loss on an unrestricted-token peer.
+  3. The comparison saw NO namespace present on both replicas (`no_shared_namespaces`) — an empty
+     local corpus, or a scoped peer token that hid every namespace it holds. No overlap is no
+     evidence of agreement, so it is never `converged`. (A genuinely empty single-namespace
+     deployment still shares that one namespace on both sides and converges normally.)
+  4. The peer census is stale (`peer_census_stale`): the peer's newest `computedAt` is older than
+     `maxWatermarkAgeDeltaMs`, so it predates changes the peer may not have rescanned and thus
+     cannot certify agreement.
+  5. The local corpus census was incomplete (a per-namespace scan failed, or enumeration was
+     still warming), reported as `censusComplete: false` with reason `local_census_incomplete`.
+     A peer cannot be certified against a partial local set — resolve the `corpus_watermark`
+     warning first. Both `/health` and `remnic doctor` apply this downgrade through one shared
+     gate, so they never disagree about an incomplete census.
+
+`unreachable`/`unknown` are deliberately distinct from `converged`: a monitor must be able to
+tell "the peer agrees" from "we could not ask" (the same error-vs-empty distinction the corpus
+check draws for scan failures). When the feature is enabled with peers configured but no poll
+has completed yet, the block reports `pending: true` — distinct from `pending: false` with an
+empty `peers` list, which means no peers are configured. Peer tokens are a literal string,
+`${ENV}` expansion, or a SecretRef resolved lazily at poll time (not eagerly at config load) through the
+host gateway resolver like `agentAccessHttp.authToken` — and, as with that token, resolution is cached
+per resolver for the process lifetime, so a rotated peer secret is picked up on the next daemon restart;
+they are never logged or included in any payload, and a peer is
+identified only by its redacted `host:port`.
+
+**Detection is deliberately separate from reconciliation.** This surface only reports drift;
+making a diverged pair converge is tracked in issue #2150. Polling is stale-while-revalidate:
+a probe reads the last completed poll with its timestamp and never blocks on peer I/O, so a
+health check stays cheap.
 
 ## Compression Guideline Optimizer Tool
 
