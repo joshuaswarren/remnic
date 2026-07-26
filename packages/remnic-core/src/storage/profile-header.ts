@@ -1,6 +1,6 @@
 const LAST_UPDATED_HEADER = /^\*Last updated:[^*]*\*$/;
 const PROFILE_TITLE = /^ {0,3}#\s+/;
-const MARKDOWN_HEADING = /^#{1,6}\s+/;
+const MARKDOWN_HEADING = /^#{1,6}(?:\s+|$)/;
 const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d+[.)])\s+/;
 const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
@@ -543,7 +543,8 @@ function isStandaloneMetadataLine(
   const previousMetadataBoundary = isMetadataBoundary(previousWithoutBom);
   const nextMetadataBoundary = isMetadataBoundary(nextWithoutBom);
   const previousContainerMarker =
-    MARKDOWN_LIST_ITEM.test(previousWithoutBom) || MARKDOWN_BLOCK_QUOTE.test(previousWithoutBom);
+    !MARKDOWN_THEMATIC_BREAK.test(previousWithoutBom) &&
+    (MARKDOWN_LIST_ITEM.test(previousWithoutBom) || MARKDOWN_BLOCK_QUOTE.test(previousWithoutBom));
   const startsBlock =
     (index === 0 || index === frontmatterEnd + 1 || previousMetadataBoundary) &&
     !previousContainerMarker;

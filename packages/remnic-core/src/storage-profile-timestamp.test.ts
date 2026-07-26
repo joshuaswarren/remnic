@@ -313,6 +313,40 @@ test("writeProfile recognizes thematic breaks as metadata boundaries", async (t)
     t.mock.timers.reset();
   }
 });
+test("writeProfile recognizes empty headings and spaced thematic breaks", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profiles = [
+        [
+          "# Behavioral Profile",
+          "",
+          STALE_HEADER,
+          "###",
+          "Body after an empty heading.",
+          "",
+        ].join("\n"),
+        [
+          "# Behavioral Profile",
+          "",
+          "- - -",
+          STALE_HEADER,
+          "",
+          "Body after a spaced thematic break.",
+          "",
+        ].join("\n"),
+      ];
+
+      for (const profile of profiles) {
+        await storage.writeProfile(profile);
+        assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+      }
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile recognizes a compact header before prose", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
