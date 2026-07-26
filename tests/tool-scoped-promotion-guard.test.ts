@@ -629,3 +629,46 @@ test("profile targets: attributed tool-scoped fact still promotes to a non-serve
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// Layer composition with #2184 (PR sibling, now in main): #2184 forces any
+// RECOGNIZED agent qualifier ("In Pi, …") to project scope during extraction, so
+// a qualified tool-scoped fact reaches persistExtraction already scoped `project`
+// and never hits the scope-routing guard. This test proves the case #2184 CANNOT
+// catch and that this guard still stands on its own: an UNQUALIFIED tool-scoped
+// fact that arrives as scope="global" (no qualifier to rescope) WITH a
+// sourceConnector is still withheld from the shared namespace by this guard.
+// (These fixtures build the ExtractionResult directly, bypassing extraction, so
+// the scope is exactly what we set — confirming the guard sees scope="global".)
+// ---------------------------------------------------------------------------
+test("layer composition with #2184: an UNQUALIFIED tool-scoped global fact + connector is still withheld", async () => {
+  const memoryDir = tmpDir("tool-scoped-compose-2184");
+  try {
+    const orchestrator = new Orchestrator(baseConfig(memoryDir));
+    stubBackgroundWork(orchestrator);
+    const defaultStorage = await orchestrator.getStorageForNamespace("default");
+    await defaultStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
+    await sharedStorage.ensureDirectories();
+
+    // No agent qualifier in the content -> #2184 does not rescope it; it reaches
+    // the guard as scope="global", where this PR's tool-scope check withholds it.
+    await orchestrator.persistExtraction(globalFact(TOOL_FACT), defaultStorage, "thread-1", { sourceConnector: "pi" });
+
+    const defaultMems = await defaultStorage.readAllMemories();
+    const sharedMems = await sharedStorage.readAllMemories();
+    assert.ok(
+      defaultMems.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
+      "unqualified tool-scoped global fact is persisted in the session namespace (non-vacuous)",
+    );
+    assert.equal(
+      sharedMems.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
+      false,
+      "unqualified tool-scoped global fact is withheld from shared by THIS guard (the case #2184 cannot catch)",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
