@@ -880,37 +880,50 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       markDurable: () => void
     ) => Promise<boolean>
   ): Promise<boolean> {
-    const initiallyBlocked = this.isTombstoneBlockedMemory(memory);
-    const invalidate = async (): Promise<boolean> => {
-      const current = (await this.tombstoneBlockedCaptureIndexOptions().readAllMemories()).find(
-        (candidate) => candidate.frontmatter.id === memory.frontmatter.id
-      );
-      if (!current) return false;
-      const blocked = this.isTombstoneBlockedMemory(current);
-      const blockedIndex = blocked ? this.getTombstoneBlockedCaptureIndex() : null;
-      let rebuildMarker: string | undefined;
-      let durable = false;
-      try {
-        if (blockedIndex) rebuildMarker = await blockedIndex.prepareWrite();
-        return await task(current, rebuildMarker, () => {
-          durable = true;
-        });
-      } catch {
-        if (rebuildMarker && !durable && blockedIndex) {
-          try {
-            await blockedIndex.discardWrite(rebuildMarker);
-          } catch {
-            blockedIndex.markUntrusted();
-          }
+    let lockIdentity = this.isTombstoneBlockedMemory(memory)
+      ? this.offlineSyncMemoryIdentity(memory)
+      : undefined;
+    for (;;) {
+      const attempt = async () => {
+        const current = (await this.tombstoneBlockedCaptureIndexOptions().readAllMemories()).find(
+          (candidate) => candidate.frontmatter.id === memory.frontmatter.id
+        );
+        if (!current) return { result: false };
+        const blocked = this.isTombstoneBlockedMemory(current);
+        if (blocked) {
+          const currentIdentity = this.offlineSyncMemoryIdentity(current);
+          if (lockIdentity !== currentIdentity) return { retryIdentity: currentIdentity };
         }
-        return false;
+        const blockedIndex = blocked ? this.getTombstoneBlockedCaptureIndex() : null;
+        let rebuildMarker: string | undefined;
+        let durable = false;
+        try {
+          if (blockedIndex) rebuildMarker = await blockedIndex.prepareWrite();
+          const result = await task(current, rebuildMarker, () => {
+            durable = true;
+          });
+          return { result };
+        } catch {
+          if (rebuildMarker && !durable && blockedIndex) {
+            try {
+              await blockedIndex.discardWrite(rebuildMarker);
+            } catch {
+              blockedIndex.markUntrusted();
+            }
+          }
+          return { result: false };
+        }
+      };
+      const result =
+        lockIdentity === undefined
+          ? await attempt()
+          : await this.withTombstoneBlockedCaptureWriteLock(attempt, lockIdentity);
+      if (result.retryIdentity !== undefined) {
+        lockIdentity = result.retryIdentity;
+        continue;
       }
-    };
-    if (!initiallyBlocked) return invalidate();
-    return await this.withTombstoneBlockedCaptureWriteLock(
-      invalidate,
-      buildExplicitCaptureDedupKey(memory.content, memory.frontmatter.category, memory.frontmatter.sourceConnector)
-    );
+      return result.result;
+    }
   }
 
   protected async runTombstoneBlockedOfflineSyncMutation(
