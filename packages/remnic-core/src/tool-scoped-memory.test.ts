@@ -67,6 +67,8 @@ const EXTRA_POSITIVE: string[] = [
   "The WebFetch tool retrieves pages",
   "Run git status before committing",
   "Use npm install to add dependencies",
+  "The Bash Tool executes commands",
+  "Run git checkout -b feature before editing",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {
@@ -112,6 +114,7 @@ const EXTRA_NEGATIVE: string[] = [
   "The tool — a recent addition — is optional",
   "Use `TypeScript` for new packages",
   "Use `config.json` for configuration",
+  "Use `/health` for readiness checks",
   "Use least-privilege when designing authorization",
   "Use TypeScript-first for new packages",
 ];

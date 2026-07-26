@@ -37,7 +37,7 @@ const FLAG_NAKED = "(?:--|-)[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*";
 const OPCODE = "[A-Za-z0-9_./-]{1,20}";
 
 const NO_SLASH_TOKEN = "[A-Za-z0-9_.-]{1,60}";
-const SLASH_CMD_TOKEN = "/(?!" + FS_ROOTS + "\\b)[A-Za-z0-9_.-]{1,60}";
+const SLASH_CMD_TOKEN = "/(?:" + GENERIC_NAMES_ALT + ")\\b";
 const QUOTED_CONTENT = "(?:" + NO_SLASH_TOKEN + "|" + SLASH_CMD_TOKEN + ")";
 const QUOTED_PERMISSIVE =
   "(?:" + BT + QUOTED_CONTENT + BT + "|\"" + QUOTED_CONTENT + "\"|'" + QUOTED_CONTENT + "')";
@@ -57,7 +57,7 @@ const VERB = "\\b(?:use|run|call|invoke)\\b";
 const SLASH_GENERIC = "/(?:" + GENERIC_NAMES_ALT + ")\\b";
 const CLAUSE_BOUNDARY = "(?:$|[.,;(:]|(?:when|before|after|to|with|for|on|in|if|unless|whenever)\\b)";
 const ARGS = "(?:\\s+" + FLAG + "(?:\\s+" + OPCODE + "){0,4})?";
-const POSITIONAL = "(?:\\s+[a-z][a-z0-9-]{0,15}){1,2}";
+const CLI_ARG_RUN = "(?:\\s+(?:[a-z][a-z0-9-]{0,15}|" + FLAG_NAKED + ")){1,4}";
 
 const QSTRICT_CONTENT =
   "(?:" + KNOWN_NAMES_ALT + "|[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+" + "|" + FLAG_NAKED + "|" + SLASH_CMD_TOKEN +
@@ -67,9 +67,9 @@ const QUOTED_STRICT =
 
 const INVOCATION_FLAG_ARGS =
   VERB + "\\s+(?:" + QUOTED_STRICT + "|" + KNOWN_NAMES_CI + "|" + SNAKE + "|" + SLASH_GENERIC + "|" + FLAG + ")" + ARGS + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
-const INVOCATION_POSITIONAL =
-  VERB + "\\s+" + CLI_NAMES_CI + POSITIONAL + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
-const INVOCATION = "(?:" + INVOCATION_FLAG_ARGS + "|" + INVOCATION_POSITIONAL + ")";
+const INVOCATION_CLI_ARGS =
+  VERB + "\\s+" + CLI_NAMES_CI + CLI_ARG_RUN + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
+const INVOCATION = "(?:" + INVOCATION_FLAG_ARGS + "|" + INVOCATION_CLI_ARGS + ")";
 
 const TOOL_REFERENCE_CI = new RegExp(
   "(?:" +
@@ -95,17 +95,21 @@ const STOP_WORDS: Record<string, true> = {
   Every: true, Each: true, All: true, Both: true, Some: true, Any: true,
   No: true, Such: true, Same: true, Other: true, Another: true, Many: true,
   Few: true, Several: true, One: true, Two: true, Three: true, Which: true,
-  What: true, Who: true, Research: true, Marketing: true, Development: true, Design: true, Production: true, Operations: true, Engineering: true, Communication: true, Leadership: true, Management: true, Strategy: true, Analytics: true, Business: true, Financial: true, Science: true, Quality: true, Technical: true, Academic: true, Educational: true, Medical: true, Legal: true, Planning: true,
+  What: true, Who: true, Research: true, Marketing: true, Development: true, Design: true, Production: true, Operations: true, Engineering: true, Communication: true, Leadership: true, Management: true, Strategy: true, Analytics: true, Business: true, Financial: true, Science: true, Quality: true, Technical: true, Academic: true, Educational: true, Medical: true, Legal: true, Planning: true, Line: true,
 };
 
 function hasCapitalisedToolName(content: string): boolean {
   for (const re of [
-    /\b([A-Z][A-Za-z0-9]+)\b[\s'`<>]{0,4}\b(?:tool|command|subcommand)\b/,
-    /\b(?:tool|command|subcommand)\b[\s'`<>]{0,4}\b([A-Z][A-Za-z0-9]+)\b/,
-    /\b(?:tool|command|subcommand)\b\s+(?:named|called|aka)\s+([A-Z][A-Za-z0-9]+)\b/,
+    /\b([A-Za-z][A-Za-z0-9]+)\b[\s'`<>]{0,4}\b(?:tool|command|subcommand)\b/gi,
+    /\b(?:tool|command|subcommand)\b[\s'`<>]{0,4}\b([A-Za-z][A-Za-z0-9]+)\b/gi,
+    /\b(?:tool|command|subcommand)\b\s+(?:named|called|aka)\s+([A-Za-z][A-Za-z0-9]+)\b/gi,
   ]) {
-    const match = re.exec(content);
-    if (match && match[1] && !(match[1] in STOP_WORDS)) return true;
+    re.lastIndex = 0;
+    let match;
+    while ((match = re.exec(content)) !== null) {
+      const w = match[1];
+      if (w && w[0] >= "A" && w[0] <= "Z" && !(w in STOP_WORDS)) return true;
+    }
   }
   return false;
 }
