@@ -52,7 +52,7 @@ import { wrapWorkLayerContext } from "./work/boundary.js";
 import { WorkStorage } from "./work/storage.js";
 import { buildAccessWriteRequestFingerprint } from "./write-envelope.js";
 import { type QuarantineOperation, WriteQuarantineStore } from "./write-quarantine.js";
-import { PendingObserveExtractionTracker } from "./access-observe-helpers.js";
+import { PendingObserveExtractionTracker, pendingObserveScopeHint } from "./access-observe-helpers.js";
 export interface AccessObserveWriteSurfaceDeps {
   attachCodingContextAfterScopedWrite(
     request: CodingScopedWriteInput & { namespace?: string; sessionKey?: string }
@@ -114,6 +114,7 @@ export interface AccessObserveWriteSurfaceDeps {
     sessionKey: string,
     principal?: string,
     namespace?: string,
+    scopeHint?: string,
   ): void;
   resolveReadableNamespace(namespace: string | undefined, principal?: string): string;
   validateWriteCandidate(
@@ -135,8 +136,9 @@ export class AccessObserveWriteSurface {
     sessionKey: string,
     principal?: string,
     namespace?: string,
+    scopeHint?: string,
   ): void {
-    this.pendingObserveExtractions.cancel(sessionKey, principal, namespace);
+    this.pendingObserveExtractions.cancel(sessionKey, principal, namespace, scopeHint);
   }
   constructor(private readonly deps: AccessObserveWriteSurfaceDeps) {}
 
@@ -670,7 +672,10 @@ export class AccessObserveWriteSurface {
     //    self base leaves NO coding context bound to the session, matching how
     //    `memory_store` resolves its full scoped write namespace before any
     //    session mutation.
-    const observePreparation = this.pendingObserveExtractions.reserve(request.sessionKey);
+    const observePreparation = this.pendingObserveExtractions.reserve(
+      request.sessionKey,
+      pendingObserveScopeHint(request),
+    );
     try {
 
     let scope: MemoryScopePlan;
@@ -685,6 +690,7 @@ export class AccessObserveWriteSurface {
       throw err;
     }
     const writeNamespace = scope.writeNamespace;
+    observePreparation.setScope(scope.principal, writeNamespace);
 
     // Backward-compatible BASE writable namespace (pre-#1495 response semantics)
     // for the legacy `namespace` response field. DERIVED from the already-resolved
@@ -896,13 +902,14 @@ export class AccessObserveWriteSurface {
     return extractionForceFlush(
       this.deps,
       request,
-      (sessionKey, principal, namespace, abortSignal, registerCancellation) =>
+      (sessionKey, principal, namespace, abortSignal, registerCancellation, scopeHint) =>
         this.pendingObserveExtractions.wait(
           sessionKey,
           principal,
           namespace,
           abortSignal,
           registerCancellation,
+          scopeHint,
         ),
     );
   }

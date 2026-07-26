@@ -11,13 +11,15 @@ import { log } from "./logger.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import { SessionOwnershipError, awaitSessionFlushPhase } from "./orchestration/session-context.js";
+import { pendingObserveScopeHint } from "./access-observe-helpers.js";
 
 type PendingObserveExtractionWaiter = (
   sessionKey: string,
   principal: string | undefined,
   namespace: string | undefined,
   abortSignal?: AbortSignal,
-  registerCancellation?: (cancel: () => void) => void
+  registerCancellation?: (cancel: () => void) => void,
+  scopeHint?: string,
 ) => Promise<void>;
 
 export async function extractionForceFlush(
@@ -58,8 +60,14 @@ export async function extractionForceFlush(
 
   try {
     const scope = await deps.resolveMemoryScopePlan(request);
+    const reservationScopeHint = pendingObserveScopeHint(request);
     const cancelScopedPendingObserveExtractions = (): void => {
-      deps.cancelPendingObserveExtractions?.(request.sessionKey, scope.principal, scope.writeNamespace);
+      deps.cancelPendingObserveExtractions?.(
+        request.sessionKey,
+        scope.principal,
+        scope.writeNamespace,
+        reservationScopeHint,
+      );
     };
     if (request.abortSignal?.aborted) cancelScopedPendingObserveExtractions();
     throwIfAborted(request.abortSignal, "extraction force-flush aborted");
@@ -105,7 +113,8 @@ export async function extractionForceFlush(
             request.abortSignal,
             (cancel) => {
               cancelPendingObserveExtraction = cancel;
-            }
+            },
+            reservationScopeHint,
           ),
         {
           abortSignal: request.abortSignal,

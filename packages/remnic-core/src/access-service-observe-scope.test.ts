@@ -243,6 +243,19 @@ test("#2128 pending observe preparation is a force-flush barrier", async () => {
   assert.equal(waited, true);
 });
 
+test("#2128 scoped observe preparation cancellation preserves another project", () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const projectA = tracker.reserve("opaque-session", "projectTag:project-a");
+  const projectB = tracker.reserve("opaque-session", "projectTag:project-b");
+
+  tracker.cancel("opaque-session", undefined, "alice-project-a", "projectTag:project-a");
+
+  assert.equal(projectA.isCancelled(), true);
+  assert.equal(projectB.isCancelled(), false);
+  projectA.release();
+  projectB.release();
+});
+
 test("#2128 concurrent scope plans do not share temporary coding context", async () => {
   const probe = makeObserveProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);

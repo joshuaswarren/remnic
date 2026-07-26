@@ -1,13 +1,30 @@
 type PendingObservePreparation = {
   cancelled: boolean;
+  scopeHint?: string;
+  principal?: string;
+  namespace?: string;
   released: Promise<void>;
   release: () => void;
 };
 
 export type PendingObservePreparationHandle = {
   isCancelled(): boolean;
+  setScope(principal?: string, namespace?: string): void;
   release(): void;
 };
+
+export function pendingObserveScopeHint(options: {
+  namespace?: string;
+  projectTag?: string;
+  cwd?: string;
+}): string | undefined {
+  const namespace = options.namespace?.trim();
+  if (namespace) return `namespace:${namespace}`;
+  const projectTag = options.projectTag?.trim();
+  if (projectTag) return `projectTag:${projectTag}`;
+  const cwd = options.cwd?.trim();
+  return cwd ? `cwd:${cwd}` : undefined;
+}
 
 type PendingObserveExtraction = {
   promise: Promise<void>;
@@ -18,11 +35,12 @@ export class PendingObserveExtractionTracker {
   private readonly entries = new Map<string, PendingObserveExtraction>();
   private readonly preparations = new Map<string, Set<PendingObservePreparation>>();
 
-  reserve(sessionKey: string): PendingObservePreparationHandle {
+  reserve(sessionKey: string, scopeHint?: string): PendingObservePreparationHandle {
     let released = false;
     let resolveReleased: () => void = () => {};
     const reservation: PendingObservePreparation = {
       cancelled: false,
+      scopeHint,
       released: new Promise<void>((resolve) => {
         resolveReleased = resolve;
       }),
@@ -40,6 +58,10 @@ export class PendingObserveExtractionTracker {
     this.preparations.set(sessionKey, entries);
     return {
       isCancelled: () => reservation.cancelled,
+      setScope: (principal, namespace) => {
+        reservation.principal = principal;
+        reservation.namespace = namespace;
+      },
       release: reservation.release,
     };
   }
@@ -81,8 +103,25 @@ export class PendingObserveExtractionTracker {
       });
   }
 
-  cancel(sessionKey: string, principal?: string, namespace?: string): void {
+  cancel(
+    sessionKey: string,
+    principal?: string,
+    namespace?: string,
+    scopeHint?: string,
+  ): void {
     for (const reservation of this.preparations.get(sessionKey) ?? []) {
+      if (
+        (reservation.scopeHint !== undefined && reservation.scopeHint !== scopeHint) ||
+        (reservation.scopeHint === undefined && scopeHint !== undefined) ||
+        (principal !== undefined &&
+          reservation.principal !== undefined &&
+          reservation.principal !== principal) ||
+        (namespace !== undefined &&
+          reservation.namespace !== undefined &&
+          reservation.namespace !== namespace)
+      ) {
+        continue;
+      }
       reservation.cancelled = true;
     }
 
@@ -103,11 +142,12 @@ export class PendingObserveExtractionTracker {
     principal: string | undefined,
     namespace: string | undefined,
     abortSignal?: AbortSignal,
-    registerCancellation?: (cancel: () => void) => void
+    registerCancellation?: (cancel: () => void) => void,
+    scopeHint?: string,
   ): Promise<void> {
     const key = this.key(sessionKey, principal, namespace);
     const abortTracked = (): void => {
-      this.cancel(sessionKey, principal, namespace);
+      this.cancel(sessionKey, principal, namespace, scopeHint);
     };
     registerCancellation?.(abortTracked);
     abortSignal?.addEventListener("abort", abortTracked, { once: true });
