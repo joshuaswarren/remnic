@@ -20,6 +20,7 @@ import { isErrnoCode } from "../utils/errno.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { isValidTranscriptDate } from "../wearables/day-store.js";
 import {
+  extractRawFrontmatter,
   isValidBufferSurpriseEvent,
   normalizeFrontmatterForPath,
   parseEntityFile,
@@ -503,6 +504,7 @@ export class MemoryReadStore {
             parsed.content,
           ),
           content: parsed.content,
+          rawFrontmatter: extractRawFrontmatter(raw) ?? undefined,
         };
       }
 

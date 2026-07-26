@@ -200,6 +200,7 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
       "category: fact",
       "created: 2026-07-25T00:00:00.000Z",
       `entityRef: ${legacyCanonical}`,
+      `adapterMetadata: {"provider":"test","version":1}`,
       "---",
       "",
       "Legacy entity reference.",
@@ -298,6 +299,10 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
     assert.deepEqual(
       (await upgraded.readAllMemories()).map((memory) => memory.frontmatter.entityRef),
       [canonical],
+    );
+    assert.match(
+      await readFile(path.join(dir, "facts", day, "legacy-unicode-entity.md"), "utf-8"),
+      /adapterMetadata: {"provider":"test","version":1}/,
     );
     assert.deepEqual(
       (await upgraded.readAllColdMemories()).map((memory) => memory.frontmatter.entityRef),

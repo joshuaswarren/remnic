@@ -100,6 +100,28 @@ test("entity retrieval builds answer hints and persists a mention index", async 
   assert.ok(index.entities.some((entry: { canonicalId: string }) => entry.canonicalId === canonical));
 });
 
+test("entity retrieval requires a case signal for short Latin aliases in unprefixed queries", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-short-latin");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+
+  await writeEntity(
+    storage,
+    "US",
+    "project",
+    ["US is a synthetic project entity."],
+    "US is a synthetic project entity.",
+  );
+
+  assert.equal(await buildSection(config, storage, "Can you help us debug?"), null);
+  assert.ok(await buildSection(config, storage, "Can you help US debug?"));
+  assert.ok(await buildSection(config, storage, "Who is US?"));
+});
+
 test("entity retrieval resolves explicit canonical and alias mentions in Japanese direct questions", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-direct");
   t.after(async () => {

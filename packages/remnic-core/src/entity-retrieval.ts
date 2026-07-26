@@ -696,6 +696,21 @@ function isDistinctiveImplicitAlias(normalizedAlias: string): boolean {
   return Array.from(token).length > 1 && !IMPLICIT_ENTITY_STOP_WORDS.has(token);
 }
 
+function isShortLatinAlias(alias: string): boolean {
+  return /^[A-Za-z]{2,3}$/.test(alias.trim());
+}
+
+function hasStrongShortLatinAliasMention(query: string, alias: string): boolean {
+  const normalizedAlias = alias.trim();
+  const titleCaseAlias = `${normalizedAlias[0]!.toUpperCase()}${normalizedAlias.slice(1).toLowerCase()}`;
+  const forms = new Set([normalizedAlias, normalizedAlias.toUpperCase(), titleCaseAlias]);
+  return [...forms].some((form) => {
+    if (form === form.toLowerCase()) return false;
+    const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?:$|[^A-Za-z0-9])`).test(query);
+  });
+}
+
 function resolveLanguageIndependentExplicitCandidates(
   index: EntityMentionIndex,
   query: string,
@@ -721,6 +736,7 @@ function resolveLanguageIndependentExplicitCandidates(
       if (
         !normalizedAlias ||
         !isDistinctiveImplicitAlias(normalizedAlias) ||
+        (isShortLatinAlias(alias) && !hasStrongShortLatinAliasMention(query, alias)) ||
         canonicalIdsByAlias.get(normalizedAlias)?.size !== 1 ||
         score < EXPLICIT_ENTITY_MENTION_SCORE ||
         score <= bestScore

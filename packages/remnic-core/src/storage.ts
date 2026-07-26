@@ -573,6 +573,25 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
   return lines.join("\n");
 }
 
+function serializeMemoryWithEntityRef(memory: MemoryFile, entityRef: string): string {
+  const rawFrontmatter = memory.rawFrontmatter;
+  if (rawFrontmatter === undefined) {
+    return `${serializeFrontmatter({ ...memory.frontmatter, entityRef })}\n\n${memory.content}\n`;
+  }
+  const lines = rawFrontmatter.split("\n");
+  let entityRefLine = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (/^\s*entityRef\s*:/.test(lines[index] ?? "")) entityRefLine = index;
+  }
+  if (entityRefLine >= 0) {
+    const indent = lines[entityRefLine]!.match(/^\s*/)?.[0] ?? "";
+    lines[entityRefLine] = `${indent}entityRef: ${entityRef}`;
+  } else {
+    lines.push(`entityRef: ${entityRef}`);
+  }
+  return `---\n${lines.join("\n")}\n---\n\n${memory.content}\n`;
+}
+
 function parseStructuredAttributes(raw: string | undefined): Record<string, string> | undefined {
   if (!raw || !raw.trim()) return undefined;
   try {
@@ -680,6 +699,10 @@ function parseReinforcementCountField(raw: string | undefined): number | undefin
   const n = Number(trimmed);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return undefined;
   return n;
+}
+
+export function extractRawFrontmatter(raw: string): string | null {
+  return raw.match(/^---\n([\s\S]*?)\n---\n?/)?.[1] ?? null;
 }
 
 export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter; content: string } | null {
@@ -3636,7 +3659,7 @@ export class StorageManager {
       this as unknown as EntityCanonicalIdMigrationHost,
       (content) => parseEntityFile(content, this.entitySchemas),
       (entity) => serializeEntityFile(entity, this.entitySchemas),
-      (memory, entityRef) => `${serializeFrontmatter({ ...memory.frontmatter, entityRef })}\n\n${memory.content}\n`,
+      serializeMemoryWithEntityRef,
     );
     this.loadHistoricalEntityCanonicalIdsSync();
     return completionFingerprint;
@@ -4689,6 +4712,7 @@ export class StorageManager {
                 parsed.content
               ),
               content: parsed.content,
+              rawFrontmatter: extractRawFrontmatter(raw) ?? undefined,
             } satisfies MemoryFile;
           } catch (err) {
             // Re-throw store-locked errors so a locked encrypted store fails
@@ -4848,6 +4872,7 @@ export class StorageManager {
                     parsed.content
                   ),
                   content: parsed.content,
+                  rawFrontmatter: extractRawFrontmatter(raw) ?? undefined,
                 });
               }
             } catch (err) {
