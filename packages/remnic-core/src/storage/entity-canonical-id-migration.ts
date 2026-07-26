@@ -365,6 +365,12 @@ async function discoverMappings(
 ): Promise<Record<string, string>> {
   const mappings: Record<string, string> = {};
   const canonicalOwners = new Map<string, string[]>();
+  // Blocks describe THIS scan of the directory, so they are rebuilt per pass.
+  // Accumulating them across a run would let a collision another writer has
+  // since resolved keep pruning its now-valid mapping: the entity file gets
+  // renamed while the pruned mapping skips the reference rewrite, stranding
+  // memories on a filename that no longer exists.
+  blocked.clear();
   const entityEntries = await readSafeEntityEntries(deps.entitiesDir);
   for (const entry of entityEntries) {
     if (!entry.endsWith(".md")) continue;
