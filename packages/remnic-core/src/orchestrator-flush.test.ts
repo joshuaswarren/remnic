@@ -178,6 +178,8 @@ test("flushSession preserves scoped force-drain routing and deadline options", a
   assert.equal(queuedOptions?.writeNamespaceOverride, "alice-project-example");
   assert.equal(queuedOptions?.principalOverride, "alice");
   assert.equal(queuedOptions?.skipDedupeCheck, true);
+  assert.equal(queuedOptions?.skipCharThreshold, true);
+  assert.equal(queuedOptions?.skipUserTurnThreshold, true);
   assert.equal(queuedOptions?.forceExtractionAttempt, true);
   assert.equal(queuedOptions?.clearBufferAfterExtraction, true);
 });

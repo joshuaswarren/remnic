@@ -512,6 +512,8 @@ export class SessionContextCoordinator {
             bufferKey,
             clearBufferAfterExtraction: true,
             skipDedupeCheck: true,
+            skipCharThreshold: true,
+            skipUserTurnThreshold: true,
             failOnExtractionFailure: options.failOnExtractionFailure === true,
             forceExtractionAttempt: true,
             abortSignal: options.abortSignal,
