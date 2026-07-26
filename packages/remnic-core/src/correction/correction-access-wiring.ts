@@ -495,7 +495,6 @@ async function applyEditMemory(
       ...(contentHashForPatch ? { contentHash: contentHashForPatch } : {}),
     },
   );
-  throwIfAborted(abortSignal, "correction apply aborted");
   return memoryId;
 }
 
@@ -520,7 +519,6 @@ async function retireMemoryFn(
     ...(opts.status === "superseded" ? { supersededAt: new Date().toISOString() } : {}),
     ...(opts.validUntil ? { invalid_at: opts.validUntil } : {}),
   });
-  throwIfAborted(abortSignal, "correction apply aborted");
 }
 
 async function rescopeMemoryFn(
@@ -1083,6 +1081,7 @@ export {
   isEligibleCorrectionCandidate,
   applyEditMemory,
   appendTombstoneFn,
+  retireMemoryFn,
   rescopeMemoryFn,
   writeReplacementMemory,
 };

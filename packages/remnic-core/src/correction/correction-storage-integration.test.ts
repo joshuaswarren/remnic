@@ -20,6 +20,7 @@ import {
   isEligibleCorrectionCandidate,
   applyEditMemory,
   appendTombstoneFn,
+  retireMemoryFn,
   rescopeMemoryFn,
   writeReplacementMemory,
 } from "./correction-access-wiring.js";
@@ -118,6 +119,67 @@ test("#1672 item 3: applyEditMemory leaves non-fact contentHash untouched (only 
     assert.equal(after!.content, "likes light mode");
     // Non-fact categories are not content-hash indexed, so no hash is forced.
     assert.ok(!after!.frontmatter.contentHash, "non-fact edit must not synthesize a contentHash");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("#2128 edit returns its committed id after cancellation", async () => {
+  const { storage, cleanup } = await makeStorage("remnic-corr-edit-abort-");
+  try {
+    const { id } = await storage.writeMemory("fact", "the database is MySQL", { source: "test" });
+    const originalWriteFrontmatter = storage.writeMemoryFrontmatter.bind(storage);
+    const abortController = new AbortController();
+    let committed = false;
+    (storage as any).writeMemoryFrontmatter = async (...args: any[]) => {
+      const result = await (originalWriteFrontmatter as (...inner: any[]) => Promise<unknown>)(...args);
+      committed = true;
+      abortController.abort(new Error("caller disconnected"));
+      return result;
+    };
+    const wiring = { orchestrator: { getStorage: async () => storage } } as any;
+
+    const editedId = await applyEditMemory(
+      wiring,
+      "default",
+      id,
+      "the database is PostgreSQL",
+      abortController.signal,
+    );
+
+    assert.equal(committed, true);
+    assert.equal(editedId, id);
+    assert.equal((await storage.getMemoryById(id))?.content, "the database is PostgreSQL");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("#2128 retirement completes after cancellation during the durable write", async () => {
+  const { storage, cleanup } = await makeStorage("remnic-corr-retire-abort-");
+  try {
+    const { id } = await storage.writeMemory("fact", "the database is MySQL", { source: "test" });
+    const originalWriteFrontmatter = storage.writeMemoryFrontmatter.bind(storage);
+    const abortController = new AbortController();
+    let committed = false;
+    (storage as any).writeMemoryFrontmatter = async (...args: any[]) => {
+      const result = await (originalWriteFrontmatter as (...inner: any[]) => Promise<unknown>)(...args);
+      committed = true;
+      abortController.abort(new Error("caller disconnected"));
+      return result;
+    };
+    const wiring = { orchestrator: { getStorage: async () => storage } } as any;
+
+    await retireMemoryFn(
+      wiring,
+      "default",
+      id,
+      { status: "retracted" },
+      abortController.signal,
+    );
+
+    assert.equal(committed, true);
+    assert.equal((await storage.getMemoryById(id))?.frontmatter.status, "forgotten");
   } finally {
     await cleanup();
   }
