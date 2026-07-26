@@ -1005,6 +1005,82 @@ test("grounding rejects subject-swapped overlap claims", () => {
   assert.deepEqual(result.profileUpdates, []);
 });
 
+test("grounding rejects claims with unsupported object values", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice uses Windows.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice uses Linux.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding rejects claims with reversed argument order", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice supports Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Acme supports Alice.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding compares polarity within one source occurrence", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice does not work at Acme, but Alice works at Globex.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding rejects overlap with a differing object", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice works at Globex.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
 test("grounding rejects structured attributes sourced only from unanswered questions", () => {
   const result = filterExtractionResultBySource(
     {

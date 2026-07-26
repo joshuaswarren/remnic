@@ -190,6 +190,34 @@ function isNegatedAt(tokens: ReadonlyArray<string>, index: number): boolean {
 
 function hasContradictoryPolarity(candidate: string, source: string): boolean {
   const candidateTokens = tokenSequence(candidate);
+  let coherentContradiction = false;
+  for (const clause of sourceSentences(source).flatMap((sentence) =>
+    sentence.split(/\s+(?:and|but|or|while|although|because)\s+/gu))) {
+    const sourceTokens = tokenSequence(clause);
+    let sourceCursor = 0;
+    let allTokensFound = true;
+    let contradiction = false;
+    for (const [candidateIndex, candidateToken] of candidateTokens.entries()) {
+      if (GROUNDING_STOPWORDS[candidateToken] === true) continue;
+      const sourceIndex = sourceTokens.findIndex(
+        (sourceToken, index) => index >= sourceCursor && stemToken(sourceToken) === stemToken(candidateToken),
+      );
+      if (sourceIndex === -1) {
+        allTokensFound = false;
+        break;
+      }
+      if (isNegatedAt(candidateTokens, candidateIndex) !== isNegatedAt(sourceTokens, sourceIndex)) {
+        contradiction = true;
+      }
+      sourceCursor = sourceIndex + 1;
+    }
+    if (allTokensFound) {
+      if (!contradiction) return false;
+      coherentContradiction = true;
+    }
+  }
+  if (coherentContradiction) return true;
+
   const sourceTokens = tokenSequence(source);
   const sourcePositions = new Map<string, number[]>();
   sourceTokens.forEach((token, index) => {
@@ -198,7 +226,6 @@ function hasContradictoryPolarity(candidate: string, source: string): boolean {
     if (positions) positions.push(index);
     else sourcePositions.set(key, [index]);
   });
-
   for (const [candidateIndex, token] of candidateTokens.entries()) {
     if (GROUNDING_STOPWORDS[token] === true) continue;
     const positions = sourcePositions.get(stemToken(token));
@@ -280,30 +307,35 @@ function groundingTokenSequence(text: string): string[] {
     .map(stemToken);
 }
 
-function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): boolean {
-  const candidateTokens = groundingTokenSequence(candidate);
-  const sourceTokens = groundingTokenSequence(source);
-  if (candidateTokens.length < 3 || sourceTokens.length < 3) return true;
-
-  for (
-    let index = 1;
-    index + 1 < candidateTokens.length && index + 1 < sourceTokens.length;
-    index += 1
-  ) {
-    if (
-      candidateTokens[index] !== sourceTokens[index]
-      || candidateTokens[index + 1] !== sourceTokens[index + 1]
-    ) {
-      continue;
-    }
-    const candidateSubject = candidateTokens.slice(0, index);
-    const sourceSubject = sourceTokens.slice(0, index);
-    return candidateSubject.every((token, subjectIndex) => token === sourceSubject[subjectIndex]);
-  }
-  return true;
+function normalizedGroundingTokenSequence(text: string): string[] {
+  return groundingTokenSequence(text).map((token) => token.replace(/'$/u, ""));
 }
 
-function groundedTokenScore(candidate: string, source: string): number {
+function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): boolean {
+  const candidateTokens = normalizedGroundingTokenSequence(candidate);
+  const sourceTokens = normalizedGroundingTokenSequence(source);
+  if (candidateTokens.length < 3 || sourceTokens.length < 3) return true;
+
+  const subjectAligned = candidateTokens[0] === sourceTokens[0];
+  let foundAlignedToken = false;
+  const sharedLength = Math.min(candidateTokens.length, sourceTokens.length);
+  for (let index = 1; index < sharedLength; index += 1) {
+    if (candidateTokens[index] !== sourceTokens[index]) continue;
+    foundAlignedToken = true;
+    const candidateNext = candidateTokens[index + 1];
+    const sourceNext = sourceTokens[index + 1];
+    if (candidateNext !== undefined && sourceNext !== undefined && candidateNext !== sourceNext) {
+      return false;
+    }
+  }
+  return subjectAligned && foundAlignedToken;
+}
+
+function groundedTokenScore(
+  candidate: string,
+  source: string,
+  requireAlignedArguments = true,
+): number {
   const candidateTokens = tokenize(candidate);
   if (candidateTokens.size === 0) return 0;
   const sourceTokens = tokenize(source);
@@ -317,7 +349,7 @@ function groundedTokenScore(candidate: string, source: string): number {
   ) {
     return 0;
   }
-  if (!hasAlignedSubjectPredicateOverlap(candidate, source)) return 0;
+  if (requireAlignedArguments && !hasAlignedSubjectPredicateOverlap(candidate, source)) return 0;
   return sharedTokens / candidateTokens.size;
 }
 
@@ -360,7 +392,7 @@ function isSourceGroundedClause(
       bestContradictedScore = Math.max(bestContradictedScore, 1);
       continue;
     }
-    const score = groundedTokenScore(candidate, sentenceText);
+    const score = groundedTokenScore(candidate, sentenceText, !includeInterrogativeSource);
     if (score === 0) continue;
     if (hasContradictoryPolarity(candidate, sentenceText)) {
       bestContradictedScore = Math.max(bestContradictedScore, score);
@@ -370,7 +402,6 @@ function isSourceGroundedClause(
   }
   return bestSupportedScore > bestContradictedScore;
 }
-
 function isSourceGrounded(
   candidate: string,
   source: string,
@@ -416,8 +447,8 @@ function isGroundedEntityName(name: string, source: string): boolean {
 }
 
 function hasGroundedPredicateAnchor(candidate: string, sentence: string): boolean {
-  const candidateTokens = groundingTokenSequence(candidate);
-  const sourceTokens = groundingTokenSequence(sentence).map((token) => token.replace(/'$/u, ""));
+  const candidateTokens = normalizedGroundingTokenSequence(candidate);
+  const sourceTokens = normalizedGroundingTokenSequence(sentence);
   const comparableCandidateTokens = GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateTokens[0] ?? "")
     ? candidateTokens.slice(1)
     : candidateTokens;
