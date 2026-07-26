@@ -2443,10 +2443,9 @@ export class EngramAccessService {
     const extraction = await computeExtractionLivenessStatus(this.orchestrator, this.extractionLivenessWarn);
     // ONE call: the corpus array and the flag describing it must not come from
     // two independently-cached scans (round 8, codex P1).
+    const caps = tokenCapabilityStore.getStore();
     const corpusCensus = await computeServiceCorpusCensus(this.orchestrator, {
-      cache: this.corpusWatermarkCache,
-      caps: tokenCapabilityStore.getStore(),
-    });
+      cache: this.corpusWatermarkCache, caps });
     let projectionAvailable = false;
     try {
       await stat(getMemoryProjectionPath(storage.dir));
@@ -2472,15 +2471,13 @@ export class EngramAccessService {
       projectionAvailable,
       extraction,
       corpus: corpusCensus.watermarks,
-      // Describes THIS response's `corpus` array, from the same call that built
-      // it. Sourcing it from the replica monitor's independent scan instead let
-      // a warming/failing corpus cache emit a partial array alongside a
-      // complete-looking flag, which a polling peer would trust (round 8).
+      // Describes THIS response's array (round 8): a separate scan could report
+      // complete while the shipped corpus was partial, and peers trust it.
       corpusComplete: corpusCensus.complete,
       replica: this.replicaDivergenceMonitor.getReport({
         config: this.orchestrator.config.replicaPeers,
         computeLocalWatermarks: async () => corpusCensus,
-        caps: tokenCapabilityStore.getStore(),
+        caps,
       }),
     };
   }
