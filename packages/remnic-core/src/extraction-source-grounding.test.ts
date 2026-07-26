@@ -1063,6 +1063,25 @@ test("grounding rejects role-normalized profile claims with swapped arguments", 
   assert.deepEqual(result.profileUpdates, []);
 });
 
+test("grounding rejects punctuation-delimited appended claims", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme. Bob owns Mars.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice works at Acme.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
 test("grounding rejects context-only claims with a subject-only assertion anchor", () => {
   const result = filterExtractionResultBySource(
     {

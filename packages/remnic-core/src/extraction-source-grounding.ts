@@ -321,10 +321,12 @@ function groundedTokenScore(candidate: string, source: string): number {
 }
 
 function candidateClauses(candidate: string): string[] {
-  return candidate
-    .split(/\s+(?:and|but|or|while|although|because)\s+/gu)
-    .map((clause) => clause.trim())
-    .filter((clause) => clause.length > 0);
+  return sourceSentences(candidate).flatMap((sentence) =>
+    sentence
+      .split(/\s+(?:and|but|or|while|although|because)\s+/gu)
+      .map((clause) => clause.trim())
+      .filter((clause) => clause.length > 0),
+  );
 }
 
 function isSourceGroundedClause(
