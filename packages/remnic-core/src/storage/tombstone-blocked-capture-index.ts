@@ -692,6 +692,33 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     );
   }
 
+  protected async writeTombstoneBlockedChunk(
+    pathname: string,
+    fileContent: string,
+    frontmatter: MemoryFrontmatter,
+    content: string,
+    findDuplicate: () => Promise<MemoryFile | null>,
+    afterWrite: () => Promise<void>
+  ): Promise<string> {
+    const blocked = this.tombstoneBlocked(frontmatter);
+    const persist = async (): Promise<string> => {
+      if (blocked) {
+        const duplicate = await findDuplicate();
+        if (duplicate) return duplicate.frontmatter.id;
+      }
+      await this.writeTombstoneBlockedMemory(pathname, fileContent, frontmatter, content);
+      await afterWrite();
+      return frontmatter.id;
+    };
+    if (blocked) {
+      return await this.withTombstoneBlockedCaptureWriteLock(
+        persist,
+        buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector)
+      );
+    }
+    return await persist();
+  }
+
   protected async writeTombstoneBlockedUpdate(
     before: MemoryFile,
     fileContent: string,
