@@ -865,7 +865,7 @@ test("MCP LCM compaction flush dispatches sanitized args to the access service",
   assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
 });
 
-test("MCP extraction force-flush dispatches scope and deadline to the access service", async () => {
+test("MCP extraction force-flush dispatches scope, deadline, and cancellation to the access service", async () => {
   let received: Record<string, unknown> | undefined;
   const service = {
     ...makeMockService(),
@@ -875,6 +875,7 @@ test("MCP extraction force-flush dispatches scope and deadline to the access ser
     },
   } as unknown as EngramAccessService;
   const server = new EngramMcpServer(service);
+  const abortController = new AbortController();
 
   const response = await server.handleRequest(
     makeToolRequest("remnic.extraction_force_flush", {
@@ -884,6 +885,7 @@ test("MCP extraction force-flush dispatches scope and deadline to the access ser
       projectTag: "Acme/Webshop",
       deadlineMs: 1_900_000_000_000,
     }),
+    { abortSignal: abortController.signal },
   );
 
   assert.deepEqual(received, {
@@ -893,6 +895,8 @@ test("MCP extraction force-flush dispatches scope and deadline to the access ser
     projectTag: "Acme/Webshop",
     deadlineMs: 1_900_000_000_000,
     authenticatedPrincipal: undefined,
+    onCommitted: undefined,
+    abortSignal: abortController.signal,
   });
   assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
 });

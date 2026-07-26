@@ -333,6 +333,67 @@ test("cancellation after marking a plan applying restores it to pending", async 
   });
 });
 
+test("cancellation during loser preflight restores an applying plan to pending", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-old", { memoryId: "mem-old", path: "facts/mem-old.md", content: "old", excerpt: "old", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([["mem-old", fakeMemory({ memoryId: "mem-old", content: "old" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-old", replacement: { content: "new" } }],
+        relevance: [{ memoryId: "mem-old", why: "x" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "old", targetIds: ["mem-old"] }, ["default"]);
+    const abortController = new AbortController();
+    let resolveReadStarted!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      resolveReadStarted = resolve;
+    });
+    const baseDeps = makeExecutorDeps(state);
+    const deps: ExecutorDeps = {
+      ...baseDeps,
+      getMemory: async (namespace, memoryId, abortSignal) => {
+        resolveReadStarted();
+        await new Promise<never>((_resolve, reject) => {
+          abortSignal?.addEventListener(
+            "abort",
+            () => reject(abortSignal.reason ?? new Error("aborted")),
+            { once: true },
+          );
+        });
+        return baseDeps.getMemory(namespace, memoryId);
+      },
+    };
+    const executor = new CorrectionExecutor(deps, planner);
+    const applyPromise = executor.apply("default", plan.planId, {
+      confirm: true,
+      abortSignal: abortController.signal,
+    });
+
+    await readStarted;
+    abortController.abort();
+    await assert.rejects(applyPromise, /correction apply aborted/);
+
+    const reloaded = await planner.loadPlan("default", plan.planId);
+    assert.equal(reloaded?.status, "pending");
+    assert.equal(state.writtenReplacements.length, 0);
+  });
+});
+
 test("supersede retries loser retirement after a transient failure", async () => {
   await withTempDir(async (dir) => {
     const candidates = new Map<string, PlannerCandidate>([

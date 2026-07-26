@@ -67,6 +67,7 @@ export class PendingObserveExtractionTracker {
           await entry.promise;
         } catch (error) {
           if (this.entries.get(key) !== entry) continue;
+          this.entries.delete(key);
           throw error;
         }
         if (this.entries.get(key) !== entry) continue;

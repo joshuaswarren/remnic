@@ -621,13 +621,17 @@ test("#2128: chained observes remain behind one force-flush barrier", async () =
   assert.equal((await flushPromise).flushed, true);
 });
 
-test("#2128: a failed observe extraction remains visible to force-flush", async () => {
+test("#2128: a failed observe extraction is consumed after force-flush reports it", async () => {
   const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
   let rejectExtraction!: (error: Error) => void;
-  probe.orch.ingestReplayBatch = async () =>
-    new Promise<void>((_resolve, reject) => {
+  let extractionAttempt = 0;
+  probe.orch.ingestReplayBatch = async () => {
+    extractionAttempt += 1;
+    if (extractionAttempt > 1) return;
+    return new Promise<void>((_resolve, reject) => {
       rejectExtraction = reject;
     });
+  };
   const service = new EngramAccessService(probe.orch);
   const sessionKey = "failed-observe-extraction";
   const failure = new Error("provider failed");
@@ -638,6 +642,9 @@ test("#2128: a failed observe extraction remains visible to force-flush", async 
     service.extractionForceFlush({ sessionKey }),
     (error: unknown) => error === failure,
   );
+
+  await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
+  await assert.doesNotReject(() => service.extractionForceFlush({ sessionKey }));
 });
 
 test("#2128: force-flush deadline cancels the pending observe extraction", async () => {
@@ -703,6 +710,77 @@ test("#2128: force-flush abort signal cancels the pending observe extraction", a
     (error: unknown) => error instanceof Error && error.message === "extraction force-flush aborted",
   );
   assert.equal(extractionSignal?.aborted, true);
+});
+
+test("#2128: force-flush abort only cancels the resolved namespace barrier", async () => {
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "project-a", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: "project-b", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+  } as Partial<PluginConfig>);
+  const extractionSignals = new Map<string, AbortSignal | undefined>();
+  const extractionResolvers = new Map<string, () => void>();
+  probe.orch.ingestReplayBatch = async (_turns, options = {}) => {
+    const namespace = options.writeNamespaceOverride ?? "";
+    extractionSignals.set(namespace, options.abortSignal);
+    return new Promise<void>((resolve, reject) => {
+      extractionResolvers.set(namespace, resolve);
+      options.abortSignal?.addEventListener(
+        "abort",
+        () => reject(options.abortSignal?.reason ?? new Error("extraction cancelled")),
+        { once: true },
+      );
+    });
+  };
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "opaque-shared-session";
+  const namespaceA = "project-a";
+  const namespaceB = "project-b";
+
+  await service.observe(
+    observeRequest({
+      sessionKey,
+      authenticatedPrincipal: "pi-geek",
+      namespace: namespaceA,
+      skipExtraction: false,
+    }),
+  );
+  await service.observe(
+    observeRequest({
+      sessionKey,
+      authenticatedPrincipal: "pi-geek",
+      namespace: namespaceB,
+      skipExtraction: false,
+    }),
+  );
+  assert.ok(extractionSignals.has(namespaceA));
+  assert.ok(extractionSignals.has(namespaceB));
+
+  const abortController = new AbortController();
+  const flushA = service.extractionForceFlush({
+    sessionKey,
+    authenticatedPrincipal: "pi-geek",
+    namespace: namespaceA,
+    abortSignal: abortController.signal,
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  abortController.abort();
+  await assert.rejects(
+    flushA,
+    (error: unknown) => error instanceof Error && error.message === "extraction force-flush aborted",
+  );
+  assert.equal(extractionSignals.get(namespaceA)?.aborted, true);
+  assert.equal(extractionSignals.get(namespaceB)?.aborted, false);
+
+  extractionResolvers.get(namespaceB)?.();
+  await assert.doesNotReject(() =>
+    service.extractionForceFlush({
+      sessionKey,
+      authenticatedPrincipal: "pi-geek",
+      namespace: namespaceB,
+    }),
+  );
 });
 
 test("#2128: authenticated opaque sessions persist their trusted owner for force-flush", async () => {

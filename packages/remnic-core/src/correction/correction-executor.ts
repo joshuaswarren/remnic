@@ -25,18 +25,18 @@
  */
 
 import { throwIfAborted } from "../abort-error.js";
-import { serializeMutations } from "../utils/serialize-mutations.js";
 import { log } from "../logger.js";
-import type { CorrectionPlanner } from "./correction-planner.js";
+import { serializeMutations } from "../utils/serialize-mutations.js";
 import {
-  CorrectionContractError,
-  validateCorrectionAction,
-  validateRedactionPattern,
   type CorrectionAction,
   type CorrectionActionResult,
+  CorrectionContractError,
   type CorrectionOutcome,
   type CorrectionPlan,
+  validateCorrectionAction,
+  validateRedactionPattern,
 } from "./correction-contract.js";
+import type { CorrectionPlanner } from "./correction-planner.js";
 
 // ---------------------------------------------------------------------------
 // Injected collaborators
@@ -90,19 +90,14 @@ export interface ExecutorDeps {
       structuredAttributes?: Record<string, string>;
       supersedes?: string;
     },
-    abortSignal?: AbortSignal,
+    abortSignal?: AbortSignal
   ): Promise<string>;
   /**
    * Apply a versioned edit to an existing memory (page-versioning — every
    * change revertable). Returns the memory id. The patch is the NEW full
    * content; the implementation snapshots the prior version.
    */
-  applyEdit(
-    namespace: string,
-    memoryId: string,
-    patch: string,
-    abortSignal?: AbortSignal,
-  ): Promise<string>;
+  applyEdit(namespace: string, memoryId: string, patch: string, abortSignal?: AbortSignal): Promise<string>;
   /**
    * Flip a memory's status to superseded/retracted and stamp `validUntil`
    * when bi-temporal is gated on (#1578). Idempotent.
@@ -115,19 +110,14 @@ export interface ExecutorDeps {
       supersededBy?: string;
       validUntil?: string;
     },
-    abortSignal?: AbortSignal,
+    abortSignal?: AbortSignal
   ): Promise<void>;
   /**
    * Move a memory to a different namespace (rescope). The destination
    * namespace is re-authorized by the service before the executor runs; the
    * implementation performs the move atomically (write-then-unlink).
    */
-  rescopeMemory(
-    namespace: string,
-    memoryId: string,
-    toNamespace: string,
-    abortSignal?: AbortSignal,
-  ): Promise<string>;
+  rescopeMemory(namespace: string, memoryId: string, toNamespace: string, abortSignal?: AbortSignal): Promise<string>;
   /**
    * Append a tombstone (#1579) for a retired memory. Returns the tombstone
    * id, or null if tombstones are disabled (off = pre-feature behavior).
@@ -150,7 +140,7 @@ export interface ExecutorDeps {
       /** Canonical contentHash from the retired memory's frontmatter (#1672 item 4). */
       contentHash?: string;
     },
-    abortSignal?: AbortSignal,
+    abortSignal?: AbortSignal
   ): Promise<string | null>;
   /**
    * Persist a redaction rule so extraction consults it the same way tombstones
@@ -169,7 +159,7 @@ export interface ExecutorDeps {
       outcome: CorrectionOutcome;
       requestText: string;
     },
-    abortSignal?: AbortSignal,
+    abortSignal?: AbortSignal
   ): Promise<string>;
   /**
    * Post-write propagation: QMD reindex for touched files (checklist §31),
@@ -177,11 +167,7 @@ export interface ExecutorDeps {
    * here is recorded as a warning, never as a failed action (propagation is
    * not part of the §14 non-destructive-order guarantee; it runs after).
    */
-  propagate(
-    namespace: string,
-    touchedMemoryIds: readonly string[],
-    abortSignal?: AbortSignal,
-  ): Promise<void>;
+  propagate(namespace: string, touchedMemoryIds: readonly string[], abortSignal?: AbortSignal): Promise<void>;
   /** Whether the bi-temporal gate (#1578) is on. When off, validUntil is omitted. */
   readonly biTemporalEnabled: boolean;
   /** Injected clock for deterministic tests. */
@@ -195,7 +181,7 @@ export interface ExecutorDeps {
 export class CorrectionExecutor {
   constructor(
     private readonly deps: ExecutorDeps,
-    private readonly planner: CorrectionPlanner,
+    private readonly planner: CorrectionPlanner
   ) {}
 
   /**
@@ -216,23 +202,18 @@ export class CorrectionExecutor {
        * source namespace already resolves to a writable scope (single-tenant).
        */
       canWriteDestination?: (namespace: string) => Promise<boolean>;
-    },
+    }
   ): Promise<CorrectionOutcome> {
     throwIfAborted(opts.abortSignal, "correction apply aborted");
     if (!opts.confirm) {
       throw new CorrectionContractError(
-        "Correction apply requires explicit confirmation (correction.applyRequiresConfirm).",
+        "Correction apply requires explicit confirmation (correction.applyRequiresConfirm)."
       );
     }
     // serializeMutations on the plan id so two concurrent applies of the SAME
     // plan serialize — the second observes the consumed status and rejects.
     return serializeMutations(`correction-apply:${namespace}:${planId}`, () =>
-      this.applyInternal(
-        namespace,
-        planId,
-        opts.canWriteDestination,
-        opts.abortSignal,
-      ),
+      this.applyInternal(namespace, planId, opts.canWriteDestination, opts.abortSignal)
     );
   }
 
@@ -240,7 +221,7 @@ export class CorrectionExecutor {
     namespace: string,
     planId: string,
     canWriteDestination?: (namespace: string) => Promise<boolean>,
-    abortSignal?: AbortSignal,
+    abortSignal?: AbortSignal
   ): Promise<CorrectionOutcome> {
     throwIfAborted(abortSignal, "correction apply aborted");
     const plan = await this.planner.loadPlan(namespace, planId);
@@ -251,12 +232,12 @@ export class CorrectionExecutor {
     if (plan.namespace !== namespace) {
       // Cross-namespace foreign-id guard (rule 42 / checklist §16).
       throw new CorrectionContractError(
-        `Correction plan ${planId} belongs to namespace '${plan.namespace}', not '${namespace}'.`,
+        `Correction plan ${planId} belongs to namespace '${plan.namespace}', not '${namespace}'.`
       );
     }
     if (plan.status === "applied" || plan.status === "partial" || plan.status === "applying") {
       throw new CorrectionContractError(
-        `Correction plan ${planId} has already been applied or is in progress (status=${plan.status}).`,
+        `Correction plan ${planId} has already been applied or is in progress (status=${plan.status}).`
       );
     }
     if (plan.status === "discarded") {
@@ -266,7 +247,7 @@ export class CorrectionExecutor {
     if (this.deps.now().getTime() > new Date(plan.expiresAt).getTime()) {
       await this.planner.markConsumed(namespace, planId, "discarded");
       throw new CorrectionContractError(
-        `Correction plan ${planId} expired at ${plan.expiresAt} and has been discarded.`,
+        `Correction plan ${planId} expired at ${plan.expiresAt} and has been discarded.`
       );
     }
 
@@ -293,21 +274,25 @@ export class CorrectionExecutor {
       // If we cannot even mark the plan in-progress, the filesystem is
       // likely unwritable and mutations would fail too — fail closed now.
       throw new CorrectionContractError(
-        `Correction plan ${planId}: cannot mark in-progress (filesystem unwritable?) — aborting before any mutation.`,
+        `Correction plan ${planId}: cannot mark in-progress (filesystem unwritable?) — aborting before any mutation.`
       );
     }
-    try {
-      throwIfAborted(abortSignal, "correction apply aborted");
-    } catch (error) {
+
+    const resetApplying = async (): Promise<void> => {
       try {
         await this.planner.resetApplying(namespace, planId);
       } catch (resetError) {
         log.warn(
           `Correction plan ${planId}: cancellation reset failed; leaving plan applying: ${
             resetError instanceof Error ? resetError.message : String(resetError)
-          }`,
+          }`
         );
       }
+    };
+    try {
+      throwIfAborted(abortSignal, "correction apply aborted");
+    } catch (error) {
+      await resetApplying();
       throw error;
     }
 
@@ -334,7 +319,16 @@ export class CorrectionExecutor {
         // replacement creates an orphan fact that supersedes nothing. Phase 2
         // (retireAndTombstone) re-checks via getMemory, so verifying here
         // keeps the two phases in agreement and avoids the orphan write.
-        const loser = await this.deps.getMemory(namespace, action.loserId, abortSignal);
+        let loser: ExecutorMemory | null;
+        try {
+          loser = await this.deps.getMemory(namespace, action.loserId, abortSignal);
+        } catch (error) {
+          if (abortSignal?.aborted) {
+            await resetApplying();
+            throwIfAborted(abortSignal, "correction apply aborted");
+          }
+          throw error;
+        }
         if (!loser) {
           results.push({
             action,
@@ -344,19 +338,23 @@ export class CorrectionExecutor {
           continue;
         }
         try {
-          const newId = await this.deps.writeReplacement(namespace, {
-            content: action.replacement.content,
-            ...(action.replacement.category ? { category: action.replacement.category } : {}),
-            ...(action.replacement.confidence !== undefined ? { confidence: action.replacement.confidence } : {}),
-            ...(action.replacement.tags ? { tags: action.replacement.tags } : {}),
-            ...(action.replacement.entityRef ? { entityRef: action.replacement.entityRef } : {}),
-            ...(action.replacement.validAt ? { validAt: action.replacement.validAt } : {}),
-            ...(action.replacement.observedAt ? { observedAt: action.replacement.observedAt } : {}),
-            ...(action.replacement.structuredAttributes
-              ? { structuredAttributes: action.replacement.structuredAttributes }
-              : {}),
-            supersedes: action.loserId,
-          }, abortSignal);
+          const newId = await this.deps.writeReplacement(
+            namespace,
+            {
+              content: action.replacement.content,
+              ...(action.replacement.category ? { category: action.replacement.category } : {}),
+              ...(action.replacement.confidence !== undefined ? { confidence: action.replacement.confidence } : {}),
+              ...(action.replacement.tags ? { tags: action.replacement.tags } : {}),
+              ...(action.replacement.entityRef ? { entityRef: action.replacement.entityRef } : {}),
+              ...(action.replacement.validAt ? { validAt: action.replacement.validAt } : {}),
+              ...(action.replacement.observedAt ? { observedAt: action.replacement.observedAt } : {}),
+              ...(action.replacement.structuredAttributes
+                ? { structuredAttributes: action.replacement.structuredAttributes }
+                : {}),
+              supersedes: action.loserId,
+            },
+            abortSignal
+          );
           results.push({ action, status: "applied", memoryId: newId });
           appliedTouched.push(newId);
           // A replacement and retirement form one non-destructive transaction.
@@ -364,14 +362,9 @@ export class CorrectionExecutor {
           // retirement half and leave both memories active. This remains inside
           // the apply plan's serializeMutations lock.
           const retirementResultBeforePhase2 = results.at(-1);
-          await this.retireAndTombstone(
-            namespace,
-            action,
-            "supersession",
-            results,
-            appliedTouched,
-            { supersededBy: newId },
-          );
+          await this.retireAndTombstone(namespace, action, "supersession", results, appliedTouched, {
+            supersededBy: newId,
+          });
           const retirementResult = results.at(-1);
           if (
             retirementResult !== retirementResultBeforePhase2 &&
@@ -415,9 +408,7 @@ export class CorrectionExecutor {
       throwIfAborted(abortSignal, "correction apply aborted");
       if (action.kind === "supersede" && retiredReplacementActions.has(action)) continue;
       if (action.kind === "supersede") {
-        const replacementResult = results.find(
-          (r) => r.action === action && r.status === "applied",
-        );
+        const replacementResult = results.find((r) => r.action === action && r.status === "applied");
         // If the replacement write failed, skip retirement (§14).
         if (action.replacement && !replacementResult) {
           continue;
@@ -429,21 +420,13 @@ export class CorrectionExecutor {
           results,
           appliedTouched,
           { supersededBy: replacementResult?.memoryId },
-          abortSignal,
+          abortSignal
         );
         if (results.at(-1)?.action === action && results.at(-1)?.status === "applied") {
           removeFailedResultsFor(action);
         }
       } else if (action.kind === "retract") {
-        await this.retireAndTombstone(
-          namespace,
-          action,
-          "retraction",
-          results,
-          appliedTouched,
-          {},
-          abortSignal,
-        );
+        await this.retireAndTombstone(namespace, action, "retraction", results, appliedTouched, {}, abortSignal);
         if (results.at(-1)?.action === action && results.at(-1)?.status === "applied") {
           removeFailedResultsFor(action);
         }
@@ -463,12 +446,7 @@ export class CorrectionExecutor {
             });
             continue;
           }
-          const destId = await this.deps.rescopeMemory(
-            namespace,
-            action.memoryId,
-            action.toNamespace,
-            abortSignal,
-          );
+          const destId = await this.deps.rescopeMemory(namespace, action.memoryId, action.toNamespace, abortSignal);
           // #1678 (thread OiiV6): report the DESTINATION memory id, not the
           // source. The source is archived by the move; callers that re-fetch
           // the reported id need the live (destination) memory, otherwise they
@@ -520,12 +498,16 @@ export class CorrectionExecutor {
       (outcome as CorrectionOutcome & { warnings?: string[] }).warnings = propagationWarnings;
     }
     try {
-      const auditId = await this.deps.appendAuditRecord(namespace, {
-        planId,
-        classification: plan.classification,
-        outcome,
-        requestText: plan.request.text,
-      }, abortSignal);
+      const auditId = await this.deps.appendAuditRecord(
+        namespace,
+        {
+          planId,
+          classification: plan.classification,
+          outcome,
+          requestText: plan.request.text,
+        },
+        abortSignal
+      );
       outcome.auditMemoryId = auditId;
     } catch (err) {
       if (abortSignal?.aborted) throw err;
@@ -559,10 +541,9 @@ export class CorrectionExecutor {
     results: CorrectionActionResult[],
     appliedTouched: string[],
     opts: { supersededBy?: string } = {},
-    abortSignal?: AbortSignal,
+    abortSignal?: AbortSignal
   ): Promise<void> {
-    const memoryId =
-      action.kind === "supersede" ? action.loserId : action.kind === "retract" ? action.memoryId : null;
+    const memoryId = action.kind === "supersede" ? action.loserId : action.kind === "retract" ? action.memoryId : null;
     if (!memoryId) return;
     try {
       const memory = await this.deps.getMemory(namespace, memoryId, abortSignal);
@@ -581,30 +562,39 @@ export class CorrectionExecutor {
       // operates on un-mutated state with no resurrection window. A tombstone
       // for a still-active memory (if retire later fails) is benign — it only
       // blocks re-ingestion of the same content, which is exactly the intent.
-      const tombstoneId = await this.deps.appendTombstone(namespace, {
-        reason,
-        sourceMemoryId: memoryId,
-        rawContent: memory.rawContent,
-        ...(memory.entityRef ? { entityRef: memory.entityRef } : {}),
-        ...(memory.supersessionKey ? { supersessionKey: memory.supersessionKey } : {}),
-        // #1672 item 4: carry the canonical contentHash (exact tier) and the
-        // full supersession-key set (keyed tier) so paraphrased re-observations
-        // of the same supersession identity are blocked, not just the literal
-        // body. Without these the tombstone projected from a structured fact
-        // dropped both fields and the fact could resurrect.
-        ...(memory.contentHash ? { contentHash: memory.contentHash } : {}),
-        ...(memory.supersessionKeys && memory.supersessionKeys.length > 0
-          ? { supersessionKeys: memory.supersessionKeys }
-          : {}),
-      }, abortSignal);
+      const tombstoneId = await this.deps.appendTombstone(
+        namespace,
+        {
+          reason,
+          sourceMemoryId: memoryId,
+          rawContent: memory.rawContent,
+          ...(memory.entityRef ? { entityRef: memory.entityRef } : {}),
+          ...(memory.supersessionKey ? { supersessionKey: memory.supersessionKey } : {}),
+          // #1672 item 4: carry the canonical contentHash (exact tier) and the
+          // full supersession-key set (keyed tier) so paraphrased re-observations
+          // of the same supersession identity are blocked, not just the literal
+          // body. Without these the tombstone projected from a structured fact
+          // dropped both fields and the fact could resurrect.
+          ...(memory.contentHash ? { contentHash: memory.contentHash } : {}),
+          ...(memory.supersessionKeys && memory.supersessionKeys.length > 0
+            ? { supersessionKeys: memory.supersessionKeys }
+            : {}),
+        },
+        abortSignal
+      );
       // A committed tombstone and source retirement form one transaction from
       // the caller's point of view. Once append succeeds, cancellation must
       // not prevent retirement and leave an active source behind the block.
-      await this.deps.retireMemory(namespace, memoryId, {
-        status: reason === "supersession" ? "superseded" : "retracted",
-        ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
-        ...(validUntil ? { validUntil } : {}),
-      }, tombstoneId === null ? abortSignal : undefined);
+      await this.deps.retireMemory(
+        namespace,
+        memoryId,
+        {
+          status: reason === "supersession" ? "superseded" : "retracted",
+          ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
+          ...(validUntil ? { validUntil } : {}),
+        },
+        tombstoneId === null ? abortSignal : undefined
+      );
       results.push({
         action,
         status: "applied",
@@ -638,9 +628,7 @@ export function sanitizeErrorMessage(raw: string): string {
     .replace(/(^|[\s:'"(])\/(?:[^\s'">)\\]+\/)+[^\s'">)\\]*/g, "$1<path>")
     .replace(/(^|[\s:'"(])[A-Za-z]:\\[^\s'">)\\]+(?:\\[^\s'">) ]*)*/g, "$1<path>");
   const trimmed = stripped.trim();
-  return trimmed.length > CORRECTION_ERROR_MAX
-    ? `${trimmed.slice(0, CORRECTION_ERROR_MAX)}…`
-    : trimmed;
+  return trimmed.length > CORRECTION_ERROR_MAX ? `${trimmed.slice(0, CORRECTION_ERROR_MAX)}…` : trimmed;
 }
 
 function errMsg(err: unknown): string {

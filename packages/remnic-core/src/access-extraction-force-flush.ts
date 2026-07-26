@@ -1,16 +1,14 @@
 import { isAbortError, throwIfAborted } from "./abort-error.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
+import type { AccessObserveWriteSurfaceDeps } from "./access-observe-write-surface.js";
 import {
   type EngramAccessExtractionForceFlushRequest,
   type EngramAccessExtractionForceFlushResponse,
   EngramAccessInputError,
 } from "./access-service.js";
-import {
-  resolveNamespaceCapabilities,
-} from "./capabilities.js";
-import { resolvePrincipal } from "./namespaces/principal.js";
-import type { AccessObserveWriteSurfaceDeps } from "./access-observe-write-surface.js";
+import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { log } from "./logger.js";
+import { resolvePrincipal } from "./namespaces/principal.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import { SessionOwnershipError, awaitSessionFlushPhase } from "./orchestration/session-context.js";
 
@@ -19,36 +17,22 @@ type PendingObserveExtractionWaiter = (
   principal: string | undefined,
   namespace: string | undefined,
   abortSignal?: AbortSignal,
-  registerCancellation?: (cancel: () => void) => void,
+  registerCancellation?: (cancel: () => void) => void
 ) => Promise<void>;
 
 export async function extractionForceFlush(
   deps: AccessObserveWriteSurfaceDeps,
   request: EngramAccessExtractionForceFlushRequest,
-  waitForPendingObserveExtraction?: PendingObserveExtractionWaiter,
+  waitForPendingObserveExtraction?: PendingObserveExtractionWaiter
 ): Promise<EngramAccessExtractionForceFlushResponse> {
-  if (
-    !request.sessionKey ||
-    typeof request.sessionKey !== "string" ||
-    request.sessionKey.trim().length === 0
-  ) {
+  if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
     throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
   }
-  if (
-    request.deadlineMs !== undefined &&
-    (!Number.isFinite(request.deadlineMs) || request.deadlineMs < 0)
-  ) {
+  if (request.deadlineMs !== undefined && (!Number.isFinite(request.deadlineMs) || request.deadlineMs < 0)) {
     throw new EngramAccessInputError("deadlineMs must be a finite non-negative number");
   }
 
   const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
-  const cancelPendingObserveExtractions = (): void => {
-    deps.cancelPendingObserveExtractions?.(
-      request.sessionKey,
-      authenticatedPrincipal,
-    );
-  };
-  if (request.abortSignal?.aborted) cancelPendingObserveExtractions();
   throwIfAborted(request.abortSignal, "extraction force-flush aborted");
 
   const namespacesEnabled = resolveNamespaceCapabilities(deps.orchestrator.config).namespaces === true;
@@ -58,9 +42,7 @@ export async function extractionForceFlush(
   if (namespacesEnabled) {
     if (
       !authenticatedPrincipal ||
-      (sessionPrincipal !== undefined &&
-        sessionPrincipal !== "default" &&
-        sessionPrincipal !== authenticatedPrincipal)
+      (sessionPrincipal !== undefined && sessionPrincipal !== "default" && sessionPrincipal !== authenticatedPrincipal)
     ) {
       throw new EngramAccessInputError("sessionKey is not owned by authenticated principal");
     }
@@ -72,24 +54,21 @@ export async function extractionForceFlush(
     committed = true;
     request.onCommitted?.();
   };
-  const abortHandler = (): void => cancelPendingObserveExtractions();
-  request.abortSignal?.addEventListener("abort", abortHandler, { once: true });
+  let abortHandler: (() => void) | undefined;
 
   try {
     const scope = await deps.resolveMemoryScopePlan(request);
+    const cancelScopedPendingObserveExtractions = (): void => {
+      deps.cancelPendingObserveExtractions?.(request.sessionKey, scope.principal, scope.writeNamespace);
+    };
+    if (request.abortSignal?.aborted) cancelScopedPendingObserveExtractions();
     throwIfAborted(request.abortSignal, "extraction force-flush aborted");
     if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-      cancelPendingObserveExtractions();
+      cancelScopedPendingObserveExtractions();
       throw new EngramAccessInputError("extraction force-flush deadline exceeded before buffer drain");
     }
-
-    const cancelScopedPendingObserveExtractions = (): void => {
-      deps.cancelPendingObserveExtractions?.(
-        request.sessionKey,
-        scope.principal,
-        scope.writeNamespace,
-      );
-    };
+    abortHandler = cancelScopedPendingObserveExtractions;
+    request.abortSignal?.addEventListener("abort", abortHandler, { once: true });
     await awaitSessionFlushPhase(
       () =>
         deps.orchestrator.flushSession(request.sessionKey, {
@@ -99,9 +78,7 @@ export async function extractionForceFlush(
           extractionDeadlineMs: request.deadlineMs,
           writeNamespaceOverride: scope.writeNamespace,
           principalOverride:
-            typeof scope.principal === "string" && scope.principal.length > 0
-              ? scope.principal
-              : undefined,
+            typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined,
           scopeProfileWritePlan: scope.scopeProfilePlan,
           onCommitted: markCommitted,
         }),
@@ -111,7 +88,7 @@ export async function extractionForceFlush(
         reason: "access_force_flush",
         deadlineStage: "buffer_drain",
         onDeadline: cancelScopedPendingObserveExtractions,
-      },
+      }
     );
     // A flush with no buffered turns still consumes the lifecycle write;
     // durable drains already invoked this idempotent callback.
@@ -128,7 +105,7 @@ export async function extractionForceFlush(
             request.abortSignal,
             (cancel) => {
               cancelPendingObserveExtraction = cancel;
-            },
+            }
           ),
         {
           abortSignal: request.abortSignal,
@@ -139,7 +116,7 @@ export async function extractionForceFlush(
             cancelScopedPendingObserveExtractions();
             cancelPendingObserveExtraction?.();
           },
-        },
+        }
       );
     }
 
@@ -148,20 +125,16 @@ export async function extractionForceFlush(
       try {
         await awaitSessionFlushPhase(
           () =>
-            buffer.clearRetainedTurnsForSession(
-              request.sessionKey,
-              namespacesEnabled ? scope.principal : undefined,
-              {
-                abortSignal: request.abortSignal,
-                deadlineMs: request.deadlineMs,
-              },
-            ),
+            buffer.clearRetainedTurnsForSession(request.sessionKey, namespacesEnabled ? scope.principal : undefined, {
+              abortSignal: request.abortSignal,
+              deadlineMs: request.deadlineMs,
+            }),
           {
             abortSignal: request.abortSignal,
             extractionDeadlineMs: request.deadlineMs,
             reason: "access_force_flush",
             deadlineStage: "retained_turn_cleanup",
-          },
+          }
         );
       } catch (cleanupError) {
         if (isAbortError(cleanupError) || cleanupError instanceof ExtractionDeadlineError) {
@@ -170,7 +143,7 @@ export async function extractionForceFlush(
         log.warn(
           `extractionForceFlush: retained-turn cleanup failed after a successful flush, continuing: ${
             cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-          }`,
+          }`
         );
       }
     }
@@ -190,6 +163,6 @@ export async function extractionForceFlush(
     }
     throw error;
   } finally {
-    request.abortSignal?.removeEventListener("abort", abortHandler);
+    if (abortHandler) request.abortSignal?.removeEventListener("abort", abortHandler);
   }
 }
