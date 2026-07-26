@@ -447,7 +447,6 @@ async function writeReplacementMemory(
     ...(draft.observedAt ? { observedAt: draft.observedAt } : {}),
     ...(draft.supersedes ? { supersedes: draft.supersedes } : {}),
   });
-  throwIfAborted(abortSignal, "correction apply aborted");
   if (tombstoneBlocked) {
     // #1645 (review thread): the replacement content matched a tombstone, so it
     // landed pending_review (non-active). Returning the id would let the
@@ -1078,4 +1077,5 @@ export {
   applyEditMemory,
   appendTombstoneFn,
   rescopeMemoryFn,
+  writeReplacementMemory,
 };

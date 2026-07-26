@@ -11,7 +11,6 @@
  */
 
 import { createHash } from "node:crypto";
-import { throwIfAborted } from "./abort-error.js";
 import {
   type CodingScopedWriteInput,
   ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
@@ -30,7 +29,7 @@ import {
   type MemoryScopePlan,
   NamespaceNotWritableError,
 } from "./access-service.js";
-import { EngramAccessForbiddenError } from "./access-errors.js";
+import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
   resolveCompressionCapabilities,
@@ -44,11 +43,8 @@ import {
   queueExplicitCaptureForReview,
 } from "./explicit-capture.js";
 import { log } from "./logger.js";
-import { resolvePrincipal } from "./namespaces/principal.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import type { Orchestrator } from "./orchestrator.js";
-import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
-import { SessionOwnershipError } from "./orchestration/session-context.js";
 import { displayErrorDetail } from "./runtime/better-sqlite.js";
 import type { MemoryActionOutcome, MemoryActionType } from "./types.js";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "./work/board.js";
@@ -867,107 +863,7 @@ export class AccessObserveWriteSurface {
   async extractionForceFlush(
     request: EngramAccessExtractionForceFlushRequest,
   ): Promise<EngramAccessExtractionForceFlushResponse> {
-    if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
-      throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
-    }
-    if (
-      request.deadlineMs !== undefined &&
-      (!Number.isFinite(request.deadlineMs) || request.deadlineMs < 0)
-    ) {
-      throw new EngramAccessInputError("deadlineMs must be a finite non-negative number");
-    }
-    throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-    const namespacesEnabled = resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true;
-    const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
-    const sessionPrincipal = namespacesEnabled
-      ? resolvePrincipal(request.sessionKey, this.deps.orchestrator.config)
-      : undefined;
-    const opaqueSession =
-      namespacesEnabled && (sessionPrincipal === undefined || sessionPrincipal === "default");
-    if (namespacesEnabled) {
-      if (
-        !authenticatedPrincipal ||
-        (sessionPrincipal !== undefined &&
-          sessionPrincipal !== "default" &&
-          sessionPrincipal !== authenticatedPrincipal)
-      ) {
-        throw new EngramAccessInputError("sessionKey is not owned by authenticated principal");
-      }
-    }
-
-    const previousCodingContext = this.deps.orchestrator.getCodingContextForSession(request.sessionKey);
-    let seededCodingContext: unknown = null;
-    const captureSeededCodingContext = (): void => {
-      if (previousCodingContext !== null || seededCodingContext !== null) return;
-      const currentCodingContext = this.deps.orchestrator.getCodingContextForSession(request.sessionKey);
-      if (currentCodingContext !== null) seededCodingContext = currentCodingContext;
-    };
-    const clearSeededCodingContext = (): void => {
-      if (previousCodingContext !== null || seededCodingContext === null) return;
-      if (this.deps.orchestrator.getCodingContextForSession(request.sessionKey) === seededCodingContext) {
-        this.deps.orchestrator.setCodingContextForSession(request.sessionKey, null);
-      }
-    };
-
-    try {
-      const scope = await this.deps.resolveMemoryScopePlan(request);
-      captureSeededCodingContext();
-      if (opaqueSession && previousCodingContext === null) {
-        // Scope resolution may seed a temporary overlay to reuse the shared
-        // resolver. Opaque keys cannot prove ownership, so remove that seed
-        // before draining while retaining the resolved write namespace.
-        const scopedCodingContext = this.deps.orchestrator.getCodingContextForSession(request.sessionKey);
-        if (scopedCodingContext !== null) {
-          this.deps.orchestrator.setCodingContextForSession(request.sessionKey, null);
-          seededCodingContext = null;
-        }
-      }
-      throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-      if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-        throw new EngramAccessInputError("extraction force-flush deadline exceeded before buffer drain");
-      }
-
-      // An opaque session has no principal proof, so keep project context
-      // per-call during this drain instead of persisting it on the key.
-      if (!request.namespace?.trim() && !opaqueSession) {
-        await this.deps.maybeAttachCodingContext(request.sessionKey, {
-          cwd: request.cwd,
-          projectTag: request.projectTag,
-        });
-        captureSeededCodingContext();
-      }
-      throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-      if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-        throw new EngramAccessInputError("extraction force-flush deadline exceeded before buffer drain");
-      }
-      await this.deps.orchestrator.flushSession(request.sessionKey, {
-        reason: "access_force_flush",
-        abortSignal: request.abortSignal,
-        failOnExtractionFailure: true,
-        extractionDeadlineMs: request.deadlineMs,
-        writeNamespaceOverride: scope.writeNamespace,
-        principalOverride:
-          typeof scope.principal === "string" && scope.principal.length > 0
-            ? scope.principal
-            : undefined,
-      });
-
-      return {
-        flushed: true,
-        sessionKey: request.sessionKey,
-        namespace: this.deps.legacyResponseNamespaceForScope(scope),
-        effectiveNamespace: scope.writeNamespace,
-      };
-    } catch (error) {
-      clearSeededCodingContext();
-      if (error instanceof SessionOwnershipError) {
-        throw new EngramAccessForbiddenError(error.message);
-      }
-      if (error instanceof ExtractionDeadlineError) {
-        throw new EngramAccessInputError(error.message);
-      }
-      throw error;
-    }
+    return extractionForceFlush(this.deps, request);
   }
 
   async workTask(request: {

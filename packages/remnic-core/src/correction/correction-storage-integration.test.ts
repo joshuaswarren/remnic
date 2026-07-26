@@ -21,6 +21,7 @@ import {
   applyEditMemory,
   appendTombstoneFn,
   rescopeMemoryFn,
+  writeReplacementMemory,
 } from "./correction-access-wiring.js";
 
 async function makeStorage(prefix = "remnic-corr-wiring-") {
@@ -165,6 +166,35 @@ test("#2128 rescope retires the source when cancellation lands after destination
   } finally {
     await source.cleanup();
     await destination.cleanup();
+  }
+});
+
+test("#2128 replacement write returns its committed id after cancellation", async () => {
+  const { storage, cleanup } = await makeStorage("remnic-corr-replacement-");
+  try {
+    const originalWriteSealedMemory = storage.writeSealedMemory.bind(storage);
+    const abortController = new AbortController();
+    let committed = false;
+    (storage as any).writeSealedMemory = async (...args: any[]) => {
+      const result = await (originalWriteSealedMemory as (...inner: any[]) => Promise<unknown>)(...args);
+      committed = true;
+      abortController.abort(new Error("caller disconnected"));
+      return result;
+    };
+    const wiring = { orchestrator: { getStorage: async () => storage } } as any;
+
+    const id = await writeReplacementMemory(
+      wiring,
+      "default",
+      { content: "the database is PostgreSQL", supersedes: "source-id" },
+      abortController.signal,
+    );
+
+    assert.equal(committed, true);
+    assert.equal(typeof id, "string");
+    assert.equal((await storage.getMemoryById(id))?.frontmatter.status, "active");
+  } finally {
+    await cleanup();
   }
 });
 

@@ -11,6 +11,16 @@ import type {
 } from "./types.js";
 import { resolvePresentationCapabilities } from "./capabilities.js";
 import type { ExtractionBufferSnapshot } from "./extraction-liveness.js";
+import {
+  bufferTurnArrayIsSuffixOfSnapshot,
+  bufferTurnArraysEqual,
+  bufferTurnsEqual,
+  copyBufferTurn,
+  describeError,
+  liveTurnsFromExtractionSnapshot,
+  matchingQueuedExtractionPrefixLength,
+  probeWithTimeout,
+} from "./buffer-turn-helpers.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
 
@@ -1033,189 +1043,4 @@ export class SmartBuffer {
   async flushSurpriseTelemetry(): Promise<void> {
     await this.surpriseTelemetryWriteChain;
   }
-}
-
-/**
- * Render an arbitrary thrown value as a short string for debug logging.
- *
- * JavaScript permits throwing *any* value (`throw null`,
- * `Promise.reject("x")`, `throw { reason: "timeout" }`) — not just
- * `Error` instances. The defensive catch blocks in `SmartBuffer` must
- * never themselves throw while trying to log the failure, or they
- * would defeat the whole point of isolating the surprise path from the
- * core extraction decision.
- */
-function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (err === null) return "null";
-  if (err === undefined) return "undefined";
-  if (typeof err === "string") return err;
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
-}
-
-function copyBufferTurn(turn: BufferTurn): BufferTurn {
-  const copy: BufferTurn = {
-    role: turn.role,
-    content: turn.content,
-    timestamp: turn.timestamp,
-  };
-  if (typeof turn.sessionKey === "string") copy.sessionKey = turn.sessionKey;
-  if (typeof turn.logicalSessionKey === "string") {
-    copy.logicalSessionKey = turn.logicalSessionKey;
-  }
-  if (
-    turn.providerThreadId === null ||
-    typeof turn.providerThreadId === "string"
-  ) {
-    copy.providerThreadId = turn.providerThreadId;
-  }
-  if (typeof turn.sessionOwnerPrincipal === "string") {
-    copy.sessionOwnerPrincipal = turn.sessionOwnerPrincipal;
-  }
-  if (typeof turn.turnFingerprint === "string") {
-    copy.turnFingerprint = turn.turnFingerprint;
-  }
-  if (typeof turn.persistProcessedFingerprint === "boolean") {
-    copy.persistProcessedFingerprint = turn.persistProcessedFingerprint;
-  }
-  if (typeof turn.sourceConnector === "string") {
-    copy.sourceConnector = turn.sourceConnector;
-  }
-  return copy;
-}
-
-function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn): boolean {
-  if (!left) return false;
-  return (
-    left.role === right.role &&
-    left.content === right.content &&
-    left.timestamp === right.timestamp &&
-    left.sessionKey === right.sessionKey &&
-    left.sessionOwnerPrincipal === right.sessionOwnerPrincipal &&
-    left.logicalSessionKey === right.logicalSessionKey &&
-    left.providerThreadId === right.providerThreadId &&
-    left.turnFingerprint === right.turnFingerprint &&
-    left.persistProcessedFingerprint === right.persistProcessedFingerprint &&
-    left.sourceConnector === right.sourceConnector
-  );
-}
-
-function bufferTurnArraysEqual(
-  left: readonly BufferTurn[],
-  right: readonly BufferTurn[],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every((turn, index) => bufferTurnsEqual(turn, right[index]))
-  );
-}
-
-function bufferTurnArrayIsSuffixOfSnapshot(
-  liveTurns: readonly BufferTurn[],
-  snapshot: readonly BufferTurn[],
-): boolean {
-  if (liveTurns.length === 0 || liveTurns.length > snapshot.length) {
-    return false;
-  }
-  const offset = snapshot.length - liveTurns.length;
-  return liveTurns.every((turn, index) =>
-    bufferTurnsEqual(turn, snapshot[offset + index]),
-  );
-}
-
-function liveTurnsFromExtractionSnapshot(
-  entry: BufferEntryState,
-  extractedTurns: readonly BufferTurn[],
-): readonly BufferTurn[] {
-  const retainedTurns = entry.retainedTurns ?? [];
-  if (
-    retainedTurns.length > 0 &&
-    extractedTurns.length >= retainedTurns.length &&
-    retainedTurns.every((turn, index) =>
-      bufferTurnsEqual(extractedTurns[index], turn),
-    )
-  ) {
-    const withoutRetainedPrefix = extractedTurns.slice(retainedTurns.length);
-    if (
-      withoutRetainedPrefix.length > 0 &&
-      matchingPrefixLength(entry.turns, withoutRetainedPrefix) > 0
-    ) {
-      return withoutRetainedPrefix;
-    }
-  }
-  return extractedTurns;
-}
-
-function matchingPrefixLength(
-  liveTurns: readonly BufferTurn[],
-  extractedTurns: readonly BufferTurn[],
-): number {
-  let index = 0;
-  while (
-    index < liveTurns.length &&
-    index < extractedTurns.length &&
-    bufferTurnsEqual(liveTurns[index], extractedTurns[index])
-  ) {
-    index += 1;
-  }
-  return index;
-}
-
-function matchingQueuedExtractionPrefixLength(
-  liveTurns: readonly BufferTurn[],
-  extractedTurns: readonly BufferTurn[],
-): number {
-  let bestMatchedCount = 0;
-  for (let start = 0; start < extractedTurns.length; start += 1) {
-    const matchedCount = matchingPrefixLength(
-      liveTurns,
-      extractedTurns.slice(start),
-    );
-    if (matchedCount > bestMatchedCount) {
-      bestMatchedCount = matchedCount;
-      if (bestMatchedCount === liveTurns.length) break;
-    }
-  }
-  return bestMatchedCount;
-}
-
-/**
- * Sentinel error class for the probe timeout path. Catching it via
- * `instanceof` lets the buffer's surprise helper distinguish a timeout
- * from a probe rejection (which could carry operational context the
- * operator wants to see).
- */
-class ProbeTimeoutError extends Error {
-  constructor(timeoutMs: number) {
-    super(`probe exceeded ${timeoutMs}ms`);
-    this.name = "ProbeTimeoutError";
-  }
-}
-
-/**
- * Race `inflight` against a timeout clock. Resolves with `inflight`'s
- * value if it settles first, otherwise rejects with `ProbeTimeoutError`.
- * The timer is cleared in both branches so a fast-resolving probe does
- * not leak a handle that would keep the Node event loop alive.
- */
-function probeWithTimeout<T>(
-  inflight: Promise<T>,
-  timeoutMs: number,
-): Promise<T> {
-  let timer: NodeJS.Timeout | null = null;
-  const timeout = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => reject(new ProbeTimeoutError(timeoutMs)), timeoutMs);
-    // `.unref()` so the timer does not hold the event loop open if the
-    // caller decides the probe result is no longer interesting.
-    if (typeof (timer as NodeJS.Timeout).unref === "function") {
-      (timer as NodeJS.Timeout).unref();
-    }
-  });
-  return Promise.race([inflight, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
 }

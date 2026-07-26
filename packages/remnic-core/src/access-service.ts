@@ -4410,6 +4410,7 @@ export class EngramAccessService {
       ) ?? request.sessionKey;
     await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
     await this.orchestrator.lcmEngine.preCompactionFlush(lcmSessionKey);
+    clearSeededCodingContext();
     return {
       enabled: true,
       flushed: true,

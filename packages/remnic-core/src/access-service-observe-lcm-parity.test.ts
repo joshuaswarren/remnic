@@ -412,6 +412,23 @@ test("#2128: failed LCM flush rolls back a seeded project context", async () => 
   assert.equal(probe.orch.getCodingContextForSession(sessionKey), null);
 });
 
+test("#2128: successful LCM flush does not bind per-call project context", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "pi-geek:successful-lcm-flush";
+
+  const response = await service.lcmCompactionFlush({
+    sessionKey,
+    projectTag: "Acme/Webshop",
+    authenticatedPrincipal: "pi-geek",
+  });
+
+  assert.equal(response.enabled, true);
+  assert.equal(response.flushed, true);
+  assert.equal(probe.orch.getCodingContextForSession(sessionKey), null);
+  assert.equal(probe.compactionFlushKeys.length, 1);
+});
+
 test("#2128: extraction force-flush uses observe's scoped target even when LCM is disabled", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);
