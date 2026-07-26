@@ -1,8 +1,9 @@
+import { execFile } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -16,12 +17,15 @@ import {
 import { writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
 
 const REBUILD_MAX_ATTEMPTS = 3;
+const execFileAsync = promisify(execFile);
 const REBUILD_RETRY_BASE_MS = 50;
 
 const TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS = 60_000;
 const CAPTURE_WRITE_LOCK_MAX_ATTEMPTS = 3;
 const CAPTURE_WRITE_LOCK_RETRY_BASE_MS = 25;
 const ABANDONED_MARKER_MIN_AGE_MS = 60_000;
+const MARKER_PROCESS_START_TOLERANCE_MS = 2_000;
+const MARKER_PROCESS_STARTED_AT_MS = Date.now() - process.uptime() * 1000;
 const CAPTURE_WRITE_LOCK_BUSY_MESSAGE = "tombstone-blocked capture write lock remained busy";
 
 export function isTombstoneBlockedCaptureWriteLockBusy(error: unknown): boolean {
@@ -34,6 +38,7 @@ type RebuildMarker = {
   pid?: number;
   ownerId?: string;
   createdAt?: number;
+  processStartedAtMs?: number;
   malformed?: boolean;
 };
 
@@ -173,12 +178,19 @@ export class TombstoneBlockedCaptureIndex {
                   ? value.ownerId
                   : path.basename(markerPath);
               if (typeof value.ownerId !== "string" || value.ownerId.length === 0) malformed = true;
+              const processStartedAtMs =
+                typeof value.processStartedAtMs === "number" &&
+                Number.isFinite(value.processStartedAtMs) &&
+                value.processStartedAtMs > 0
+                  ? value.processStartedAtMs
+                  : undefined;
               return {
                 path: markerPath,
                 committed: state === "committed",
                 ...(typeof value.pid === "number" && Number.isInteger(value.pid) ? { pid: value.pid } : {}),
                 ...(ownerId.length > 0 ? { ownerId } : {}),
                 ...(typeof createdAt === "number" && Number.isFinite(createdAt) ? { createdAt } : {}),
+                ...(processStartedAtMs === undefined ? {} : { processStartedAtMs }),
                 ...(malformed ? { malformed: true } : {}),
               };
             } catch (err) {
@@ -193,20 +205,45 @@ export class TombstoneBlockedCaptureIndex {
       throw err;
     }
   }
-  private isAbandonedMarker(marker: RebuildMarker): boolean {
+  private async isAbandonedMarker(marker: RebuildMarker): Promise<boolean> {
     if (marker.committed || marker.createdAt === undefined) return false;
     if (Date.now() - marker.createdAt < ABANDONED_MARKER_MIN_AGE_MS) return false;
     if (marker.malformed) return true;
-    return marker.pid !== undefined && !this.isProcessAlive(marker.pid);
+    return marker.pid !== undefined && !(await this.isProcessAlive(marker.pid, marker.processStartedAtMs));
   }
 
-  private isProcessAlive(pid: number): boolean {
+  private async isProcessAlive(pid: number, processStartedAtMs?: number): Promise<boolean> {
     try {
       process.kill(pid, 0);
-      return true;
     } catch (err) {
       return !isErrnoCode(err, "ESRCH");
     }
+    if (processStartedAtMs === undefined) return true;
+    const runningStartedAtMs = await this.readProcessStartedAtMs(pid);
+    if (runningStartedAtMs === null) return true;
+    return runningStartedAtMs <= processStartedAtMs + MARKER_PROCESS_START_TOLERANCE_MS;
+  }
+
+  private async readProcessStartedAtMs(pid: number): Promise<number | null> {
+    try {
+      const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="], {
+        encoding: "utf8",
+        timeout: 1_000,
+      });
+      const output = stdout.trim();
+      if (!output) return null;
+      const startedAtMs = Date.parse(output);
+      return Number.isFinite(startedAtMs) ? startedAtMs : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async getClearableRebuildMarkerPaths(markers: readonly RebuildMarker[]): Promise<string[]> {
+    const paths = await Promise.all(
+      markers.map(async (marker) => (marker.committed || (await this.isAbandonedMarker(marker)) ? marker.path : null))
+    );
+    return paths.filter((markerPath): markerPath is string => markerPath !== null);
   }
 
   private async getRebuildMarkers(): Promise<RebuildMarker[]> {
@@ -238,6 +275,7 @@ export class TombstoneBlockedCaptureIndex {
         pid: process.pid,
         ownerId,
         createdAt: Date.now(),
+        processStartedAtMs: MARKER_PROCESS_STARTED_AT_MS,
       })}\n`
     );
     return markerPath;
@@ -251,6 +289,7 @@ export class TombstoneBlockedCaptureIndex {
         pid: process.pid,
         ownerId: path.basename(markerPath),
         createdAt: Date.now(),
+        processStartedAtMs: MARKER_PROCESS_STARTED_AT_MS,
       })}\n`
     );
   }
@@ -309,9 +348,7 @@ export class TombstoneBlockedCaptureIndex {
       this.loadPromise = (async () => {
         await index.load();
         const rebuildMarkers = await this.getRebuildMarkers();
-        const clearableRebuildMarkers = rebuildMarkers
-          .filter((marker) => marker.committed || this.isAbandonedMarker(marker))
-          .map((marker) => marker.path);
+        const clearableRebuildMarkers = await this.getClearableRebuildMarkerPaths(rebuildMarkers);
         let persisted = true;
         try {
           await stat(this.indexPath());
@@ -485,12 +522,12 @@ export class TombstoneBlockedCaptureIndex {
     if (!index) return;
     const rebuildMarkers = await this.getRebuildMarkers();
     const rebuildMarker = await this.markRebuildRequired(true);
+    const clearableRebuildMarkers = await this.getClearableRebuildMarkerPaths(rebuildMarkers);
     const rebuilt = await this.rebuild(await index);
     if (rebuilt) {
       await this.clearRebuildRequired([
-        ...rebuildMarkers
-          .filter((marker) => marker.committed || this.isAbandonedMarker(marker) || marker.path === ownedMarker)
-          .map((marker) => marker.path),
+        ...clearableRebuildMarkers,
+        ...(ownedMarker === undefined || clearableRebuildMarkers.includes(ownedMarker) ? [] : [ownedMarker]),
         rebuildMarker,
       ]);
     }
@@ -521,13 +558,12 @@ export class TombstoneBlockedCaptureIndex {
     }
     const existingMarkers = await this.getRebuildMarkers();
     const marker = rebuildMarker ?? (await this.markRebuildRequired(true));
+    const clearableExistingMarkers = await this.getClearableRebuildMarkerPaths(existingMarkers);
     if (rebuildMarker) await this.markRebuildCommitted(rebuildMarker);
     const rebuilt = await this.rebuild(await this.getIndex());
     if (rebuilt) {
       await this.clearRebuildRequired([
-        ...existingMarkers
-          .filter((entry) => entry.committed || this.isAbandonedMarker(entry))
-          .map((entry) => entry.path),
+        ...clearableExistingMarkers,
         marker,
       ]);
     }
@@ -816,7 +852,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       (memory) => this.isTombstoneBlockedMemory(memory) && this.offlineSyncMemoryIdentity(memory) === incomingIdentity
     );
     if (!exactMatch) return false;
-    if (!this.isTombstoneBlockedMemory(before)) return true;
+    if (before === null) return true;
+    if (!this.isTombstoneBlockedMemory(before)) return false;
     if (this.offlineSyncMemoryIdentity(before) !== incomingIdentity) return false;
     return before.content === incoming.content && isDeepStrictEqual(before.frontmatter, incoming.frontmatter);
   }

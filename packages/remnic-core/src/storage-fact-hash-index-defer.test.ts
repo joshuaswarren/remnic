@@ -1792,6 +1792,63 @@ test("offline sync replaces a blocked target when the incoming identity exists e
   });
 });
 
+test("offline sync replaces a non-blocked target when the incoming identity exists elsewhere", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const incomingContent = "Replica canonical content for an active target.";
+    const targetContent = "Replica stale content for an active target.";
+    const incomingTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "nonblocked-target-incoming",
+      rawContent: incomingContent,
+    });
+    assert.ok(incomingTombstone);
+    const incoming = await storage.writeMemory("fact", incomingContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const target = await storage.writeMemory("fact", targetContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(incoming.tombstoneBlocked, true);
+    assert.equal(target.tombstoneBlocked, false);
+    const targetMemory = await storage.getMemoryById(target.id);
+    assert.ok(targetMemory);
+    const incomingFile = [
+      "---",
+      "id: nonblocked-target-incoming",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${incomingTombstone}`,
+      "---",
+      "",
+      incomingContent,
+      "",
+    ].join("\n");
+    await storage.writeOfflineSyncFile(targetMemory.path, Buffer.from(incomingFile, "utf8"));
+    const replaced = (await storage.readAllMemories()).find((memory) => memory.path === targetMemory.path);
+    assert.ok(replaced);
+    assert.equal(replaced.content, incomingContent);
+    assert.equal(replaced.frontmatter.id, "nonblocked-target-incoming");
+  });
+});
+
 test("offline sync applies same-identity durable metadata updates", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);
@@ -2372,9 +2429,10 @@ test("abandoned pending blocked-index markers rebuild and are reaped", async () 
       path.join(markerDir, "abandoned-writer"),
       `${JSON.stringify({
         state: "pending",
-        pid: 999_999_999,
+        pid: process.pid,
         ownerId: "abandoned-writer",
         createdAt: Date.now() - 120_000,
+        processStartedAtMs: 1,
       })}\n`,
       "utf8"
     );
