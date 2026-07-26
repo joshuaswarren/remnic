@@ -299,6 +299,7 @@ export class CorrectionExecutor {
 
     const results: CorrectionActionResult[] = [];
     const appliedTouched: string[] = [];
+    const retiredReplacementActions = new Set<CorrectionAction>();
 
     // ── Phase 1: replacement / edit writes (new state first) ───────────────
     // For each supersede with a replacement, write the replacement FIRST. If
@@ -337,6 +338,19 @@ export class CorrectionExecutor {
           }, abortSignal);
           results.push({ action, status: "applied", memoryId: newId });
           appliedTouched.push(newId);
+          // A replacement and retirement form one non-destructive transaction.
+          // Once the replacement is durable, cancellation cannot interrupt the
+          // retirement half and leave both memories active. This remains inside
+          // the apply plan's serializeMutations lock.
+          await this.retireAndTombstone(
+            namespace,
+            action,
+            "supersession",
+            results,
+            appliedTouched,
+            { supersededBy: newId },
+          );
+          retiredReplacementActions.add(action);
         } catch (err) {
           if (abortSignal?.aborted) throw err;
           results.push({
@@ -370,6 +384,7 @@ export class CorrectionExecutor {
     // succeeded. A supersede WITHOUT a replacement is a pure retract.
     for (const action of plan.actions) {
       throwIfAborted(abortSignal, "correction apply aborted");
+      if (action.kind === "supersede" && retiredReplacementActions.has(action)) continue;
       if (action.kind === "supersede") {
         const replacementResult = results.find(
           (r) => r.action === action && r.status === "applied",

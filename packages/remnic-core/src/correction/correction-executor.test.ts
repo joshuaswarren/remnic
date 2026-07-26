@@ -225,6 +225,63 @@ test("ordering: replacement write fails → loser NOT superseded, tagged partial
   });
 });
 
+test("supersede retires the loser atomically when cancellation arrives after replacement write", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-old", { memoryId: "mem-old", path: "facts/mem-old.md", content: "old", excerpt: "old", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([["mem-old", fakeMemory({ memoryId: "mem-old", content: "old" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-old", replacement: { content: "new" } }],
+        relevance: [{ memoryId: "mem-old", why: "x" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "old", targetIds: ["mem-old"] }, ["default"]);
+    const abortController = new AbortController();
+    const baseDeps = makeExecutorDeps(state);
+    const deps: ExecutorDeps = {
+      ...baseDeps,
+      writeReplacement: async (namespace, draft, abortSignal) => {
+        const newId = await baseDeps.writeReplacement(namespace, draft, abortSignal);
+        abortController.abort();
+        return newId;
+      },
+      retireMemory: async (namespace, memoryId, opts, abortSignal) => {
+        assert.equal(abortSignal, undefined, "retirement must finish after replacement cancellation");
+        await baseDeps.retireMemory(namespace, memoryId, opts, abortSignal);
+      },
+    };
+
+    const executor = new CorrectionExecutor(deps, planner);
+    await assert.rejects(
+      executor.apply("default", plan.planId, {
+        confirm: true,
+        abortSignal: abortController.signal,
+      }),
+      /correction apply aborted/,
+    );
+
+    const loser = state.memories.get("mem-old");
+    assert.equal(loser?.status, "superseded");
+    assert.equal(loser?.supersededBy, "mem-new-0");
+    assert.equal(state.tombstones.length, 1);
+    assert.equal(state.retireCalls, 1);
+  });
+});
+
 test("tombstone emitted per retract; validUntil absent when bi-temporal OFF", async () => {
   await withTempDir(async (dir) => {
     const candidates = new Map<string, PlannerCandidate>([
