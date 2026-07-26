@@ -1084,6 +1084,88 @@ test("writeProfile recognizes indented Markdown block boundaries", async (t) => 
   }
 });
 
+test("writeProfile keeps a candidate header before inline generic HTML as prose", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "Preamble prose.",
+        "",
+        "*Last updated: literal example*",
+        "<custom-widget>",
+        "Custom widget content.",
+        "</custom-widget>",
+        "",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps the actual profile header.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "Preamble prose.",
+          "",
+          "*Last updated: literal example*",
+          "<custom-widget>",
+          "Custom widget content.",
+          "</custom-widget>",
+          "",
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- Keeps the actual profile header.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile recognizes link reference definitions as metadata boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "[docs]: /url",
+        STALE_HEADER,
+        "",
+        "- Keeps link-reference content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          "[docs]: /url",
+          FRESH_HEADER,
+          "",
+          "- Keeps link-reference content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile ignores invalid backtick fence openers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

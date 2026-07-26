@@ -6,6 +6,7 @@ const MARKDOWN_LIST_ITEM_CAN_INTERRUPT = /^(?:[-+*]|1[.)])\s+/;
 const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
+const MARKDOWN_LINK_REFERENCE = /^\[[^\]]+\]:\s*\S/;
 const UTF8_BOM = "\uFEFF";
 
 type FenceMarker = {
@@ -424,6 +425,7 @@ function canStartGenericHtmlBlock(
   if (previousLine === "") return true;
   return (
     isMetadataBoundary(previousLine, previousHtmlTerminator) &&
+    !isLastUpdatedHeader(previousLine) &&
     !MARKDOWN_LIST_ITEM.test(previousLine) &&
     !MARKDOWN_BLOCK_QUOTE.test(previousLine)
   );
@@ -564,6 +566,7 @@ function isMetadataBoundary(
     (allowSetext && MARKDOWN_SETEXT_UNDERLINE.test(boundaryLine)) ||
     MARKDOWN_THEMATIC_BREAK.test(boundaryLine) ||
     MARKDOWN_BLOCK_QUOTE.test(boundaryLine) ||
+    MARKDOWN_LINK_REFERENCE.test(boundaryLine) ||
     isLastUpdatedHeader(line) ||
     getFenceMarker(line) !== null ||
     htmlTerminator
