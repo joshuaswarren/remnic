@@ -1048,3 +1048,23 @@ test("grounding preserves short role-normalized profile traits", () => {
 
   assert.deepEqual(result.profileUpdates, ["The user is vegan."]);
 });
+
+test("grounding rejects context-only claims with a subject-only assertion anchor", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice works at Acme. Alice called Bob.",
+    "Alice called Bob.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});

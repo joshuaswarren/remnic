@@ -412,10 +412,16 @@ function isGroundedEntityName(name: string, source: string): boolean {
   return nameTokens.length > 0 && nameTokens.every((token) => sourceTokens.has(token));
 }
 
-function hasGroundingAnchor(candidate: string, assertionSource: string): boolean {
-  const candidateTokens = tokenize(candidate);
-  const assertionTokens = tokenize(assertionSource);
-  return [...candidateTokens].some((token) => assertionTokens.has(token));
+function hasGroundingAnchor(
+  candidate: string,
+  assertionSource: string,
+  includeInterrogativeSource = false,
+): boolean {
+  return sourceSentences(assertionSource).some((sentence) => {
+    if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence)) return false;
+    return groundedTokenScore(candidate, sentence) > 0
+      || hasRoleNormalizedGrounding(candidate, sentence);
+  });
 }
 
 function hasAffirmativeAnswerSupport(
@@ -426,7 +432,7 @@ function hasAffirmativeAnswerSupport(
   if (!tokenSequence(assertionSource).includes("yes")) return false;
   const sentences = sourceSentences(source);
   return sentences.some((sentence, index) => {
-    if (!isBareYesNoAnswer(sentence) || tokenSequence(sentence)[0] !== "yes") return false;
+    if (tokenSequence(sentence)[0] !== "yes") return false;
     const precedingSentence = sentences[index - 1];
     return precedingSentence !== undefined
       && isInterrogativeSourceSentence(precedingSentence)
@@ -471,7 +477,7 @@ function isGroundedCandidate(
   const clauses = candidateClauses(candidate);
   return clauses.length > 0
     && (
-      clauses.every((clause) => hasGroundingAnchor(clause, assertionSource))
+      clauses.every((clause) => hasGroundingAnchor(clause, assertionSource, includeInterrogativeSource))
       || hasAffirmativeAnswerSupport(candidate, source, assertionSource)
     );
 }
