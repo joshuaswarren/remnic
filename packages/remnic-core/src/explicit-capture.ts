@@ -832,6 +832,9 @@ export class InlineExplicitCaptureProcessor {
     }
     const namespaceScope = fallbackNamespace ?? effectiveNamespace ?? this.orchestrator.config.defaultNamespace;
     const sourceConnectorScope = asTrimmed(input.sourceConnector) ?? "";
+    const deliveryKeys = Array.from(
+      new Set((dedupeKeys ?? []).map((key) => asTrimmed(key)).filter((key): key is string => key !== undefined))
+    ).sort();
     const noteHash = createHash("sha256")
       .update(
         JSON.stringify({
@@ -859,12 +862,10 @@ export class InlineExplicitCaptureProcessor {
           entityRef: asTrimmed(input.entityRef),
           sourceReason: asTrimmed(input.sourceReason),
           ttl: asTrimmed(input.ttl),
+          deliveryKeys,
         })
       )
       .digest("hex");
-    const deliveryKeys = (dedupeKeys ?? [])
-      .map((key) => asTrimmed(key))
-      .filter((key): key is string => key !== undefined);
     const identityPrefix = `${namespaceScope}\u0000${sourceConnectorScope}\u0000`;
     const fallbackKey = `${identityPrefix}fallback:inline-memory-note:${noteHash}`;
     return {

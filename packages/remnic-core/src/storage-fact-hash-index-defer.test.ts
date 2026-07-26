@@ -1988,6 +1988,55 @@ test("offline sync invalidates cold cache before blocked index rebuild", async (
   });
 });
 
+test("frontmatter rewrites invalidate cold cache before blocked index sync", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A cold frontmatter rewrite must publish its new blocked identity.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-cold-frontmatter",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const memory = await storage.getMemoryById(result.id);
+    assert.ok(memory, "blocked memory must be readable before tier migration");
+    const moved = await storage.migrateMemoryToTier(memory, "cold");
+    assert.equal(moved.changed, true);
+    const coldMemory = (await storage.readAllColdMemories()).find(
+      (candidate) => candidate.frontmatter.id === result.id
+    );
+    assert.ok(coldMemory, "migrated blocked memory must be readable from cold tier");
+
+    assert.equal(
+      await storage.writeMemoryFrontmatter(coldMemory, { sourceConnector: "provider-b" }),
+      true
+    );
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      false,
+      "frontmatter rewrite must remove the stale cold identity"
+    );
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
+      true,
+      "frontmatter rewrite must index the updated cold identity"
+    );
+  });
+});
+
 test("memory invalidation rebuilds an unloaded persisted blocked index", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);
@@ -2307,6 +2356,39 @@ test("blocked generic writes share their explicit-capture identity lock", async 
     assert.equal(result.tombstoneBlocked, true);
     assert.equal(result.id, firstResult.id, "the waiting writer must recheck identity after lock acquisition");
     assert.equal((await storage.readAllMemories()).length, 1, "the duplicate row must not be persisted");
+  });
+});
+
+test("blocked explicit writes reuse the active identity lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked explicit write must not reacquire its identity lock.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "reentrant-explicit-lock",
+      rawContent: content,
+    });
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+
+    const result = await storage.withTombstoneBlockedCaptureWriteLock(
+      () =>
+        storage.writeMemory("fact", content, {
+          source: "explicit",
+          sourceConnector: "provider-a",
+        }),
+      identity
+    );
+
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal((await storage.readAllMemories()).length, 1);
   });
 });
 

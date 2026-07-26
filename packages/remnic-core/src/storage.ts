@@ -5158,14 +5158,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
     await this.writeTombstoneBlockedFrontmatter(memory, fileContent, updated, async () => {
       this.invalidateAllMemoriesCache();
+      // Rebuild the blocked index from the post-write cold-tier cache.
+      if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
+        this.invalidateColdMemoriesCache();
+      }
     });
     await this.patchHotMemoriesCache({ addedPath: memory.path });
-    // If the target file lives in cold/, bump the cold-version sentinel so
-    // other processes detect the change on their next readAllColdMemories()
-    // call (Finding UvUy fix).
-    if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
-      this.invalidateColdMemoriesCache();
-    }
     try {
       await this.syncFactHashIndexAfterRewrite(memory, {
         ...memory,

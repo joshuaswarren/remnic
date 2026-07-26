@@ -957,6 +957,32 @@ test("inline capture deduplicates an invalid review replay", async () => {
   assert.equal(probe.envelopes.length, 1);
 });
 
+test("inline capture keeps invalid notes distinct across delivery keys", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const content = [
+    "<memory_note>",
+    "content: The same invalid note may arrive as a new delivery.",
+    "category: fact",
+    "confidence: invalid",
+    "</memory_note>",
+  ].join("\n");
+  const first = await probe.processor.process({
+    captureMode: "hybrid",
+    dedupeKeys: ["invalid-delivery-a"],
+    content,
+  });
+  probe.memories.length = 0;
+  const second = await probe.processor.process({
+    captureMode: "hybrid",
+    dedupeKeys: ["invalid-delivery-b"],
+    content,
+  });
+
+  assert.equal(first.queued, 1);
+  assert.equal(second.queued, 1);
+  assert.equal(probe.envelopes.length, 2);
+});
+
 test("explicit capture preserves tombstone-blocked status for duplicate pending review rows", async () => {
   const probe = createInlineCaptureProcessorProbe({
     tombstoneBlocked: true,

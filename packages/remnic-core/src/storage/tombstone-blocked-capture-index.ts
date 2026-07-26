@@ -583,7 +583,7 @@ export class TombstoneBlockedCaptureIndex {
 
 export abstract class TombstoneBlockedCaptureIndexHost {
   private tombstoneBlockedCaptureIndex: TombstoneBlockedCaptureIndex | null = null;
-  private readonly captureWriteLockContext = new AsyncLocalStorage<boolean>();
+  private readonly captureWriteLockContext = new AsyncLocalStorage<ReadonlySet<string>>();
   protected abstract tombstoneBlockedCaptureIndexOptions(): TombstoneBlockedCaptureIndexOptions;
   protected abstract writeStorageSecureFile(
     filePath: string,
@@ -622,9 +622,18 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     task: () => Promise<T>,
     identity?: string | readonly string[]
   ): Promise<T> {
+    const identities =
+      Array.isArray(identity) && identity.length > 0 ? identity : [typeof identity === "string" ? identity : ""];
+    const current = this.captureWriteLockContext.getStore();
+    const missing = current ? identities.filter((key) => !current.has(key)) : identities;
+    if (missing.length === 0) {
+      return await task();
+    }
+    const next = new Set(current);
+    for (const key of identities) next.add(key);
     return await this.getTombstoneBlockedCaptureIndex().withCaptureWriteLock(
-      () => this.captureWriteLockContext.run(true, task),
-      identity
+      () => this.captureWriteLockContext.run(next, task),
+      missing
     );
   }
   private tombstoneBlocked(frontmatter: MemoryFrontmatter): boolean {
@@ -667,7 +676,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       if (rebuildMarker) await beforeIndexUpdate?.();
       await updateIndex(rebuildMarker);
     };
-    if (!blocked || this.captureWriteLockContext.getStore() === true) {
+    if (!blocked || this.captureWriteLockContext.getStore() !== undefined) {
       await mutate();
       return;
     }
@@ -868,7 +877,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         throw err;
       }
     };
-    if (!blocked || this.captureWriteLockContext.getStore() === true) {
+    if (!blocked || this.captureWriteLockContext.getStore() !== undefined) {
       await mutate();
       return;
     }
