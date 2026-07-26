@@ -1070,7 +1070,7 @@ test("delegate reprobes batch support after daemon replacement", async () => {
   }
 });
 
-test("delegate invalidates cached batch support after a failed batch flush", async () => {
+test("delegate falls back to singular flushes after a failed batch request", async () => {
   let batchAttempts = 0;
   const stub = await startDaemonStub((pathname) => {
     if (pathname === "/engram/v1/lcm/compaction/flush" && batchAttempts++ === 0) {
@@ -1098,16 +1098,20 @@ test("delegate invalidates cached batch support after a failed batch flush", asy
       );
     }
 
-    assert.equal(await invoke(api, "before_compaction", { sessionKey }), false);
-    await invoke(api, "before_reset", { sessionKey });
+    assert.equal(await invoke(api, "before_compaction", { sessionKey }), true);
+    assert.equal(await invoke(api, "before_reset", { sessionKey }), true);
     assert.equal(
       stub.calls.filter((call) => call.pathname === "/engram/v1/capabilities").length,
       2,
     );
     const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
-    assert.equal(flushes.length, 2);
+    assert.equal(flushes.length, 4);
     assert.deepEqual(flushes[0]?.body.namespaces, ["team-first", "team-second"]);
-    assert.deepEqual(flushes[1]?.body.namespaces, ["team-first", "team-second"]);
+    assert.deepEqual(
+      flushes.slice(1, 3).map((call) => call.body.namespace).sort(),
+      ["team-first", "team-second"],
+    );
+    assert.deepEqual(flushes[3]?.body.namespaces, ["team-first", "team-second"]);
   } finally {
     await stub.close();
   }
@@ -1601,11 +1605,52 @@ test("delegate preserves legacy bindings while the legacy adapter is active", as
     );
 
     const persistedLegacy = JSON.parse(fs.readFileSync(legacyPath, "utf8")) as {
-      entries: Record<string, { namespaces: string[] }>;
+      entries: Record<string, { namespaces: string[]; updatedAt: string }>;
     };
     assert.deepEqual(
       persistedLegacy.entries[encodeURIComponent(sessionKey)]?.namespaces,
       ["team-legacy"],
+    );
+
+    const lateSessionKey = "late-legacy-adapter-session";
+    await canonicalAgentEnd(
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the first late canonical namespace" },
+          { role: "assistant", content: "the first late namespace is bound" },
+        ],
+      },
+      { sessionKey: lateSessionKey, runtime: { agent: { session: { namespace: "team-canonical-first" } } } },
+    );
+    persistedLegacy.entries[encodeURIComponent(lateSessionKey)] = {
+      namespaces: ["team-legacy-late"],
+      updatedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(legacyPath, JSON.stringify(persistedLegacy));
+    await canonicalAgentEnd(
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the second late canonical namespace" },
+          { role: "assistant", content: "the second late namespace is bound" },
+        ],
+      },
+      { sessionKey: lateSessionKey, runtime: { agent: { session: { namespace: "team-canonical-second" } } } },
+    );
+    const canonicalPath = path.join(
+      memoryDir,
+      "state",
+      "plugins",
+      "openclaw-remnic",
+      "session-namespace-bindings.json",
+    );
+    const persistedCanonical = JSON.parse(fs.readFileSync(canonicalPath, "utf8")) as {
+      entries: Record<string, { namespaces: string[] }>;
+    };
+    assert.deepEqual(
+      persistedCanonical.entries[encodeURIComponent(lateSessionKey)]?.namespaces,
+      ["team-legacy-late", "team-canonical-first", "team-canonical-second"],
     );
   } finally {
     if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");

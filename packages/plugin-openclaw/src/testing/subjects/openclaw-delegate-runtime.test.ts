@@ -82,7 +82,12 @@ async function startDaemonStub(): Promise<DaemonStub> {
                     result: { enabled: true, flushed: true },
                   })),
                 }
-              : {};
+              : {
+                  enabled: true,
+                  flushed: true,
+                  sessionKey: body.sessionKey,
+                  namespace: typeof body.namespace === "string" ? body.namespace : "",
+                };
       res.end(JSON.stringify(response));
     });
   });
@@ -245,13 +250,37 @@ const subject: LifecycleSubject<DelegateLifecycleState> = {
         );
         return;
       case "compaction-flush":
-        await invoke(state, "before_compaction", { sessionKey }, namespaceContext(sessionKey, "team-compaction"));
+        assert.equal(
+          await invoke(
+            state,
+            "before_compaction",
+            { sessionKey },
+            namespaceContext(sessionKey, "team-compaction"),
+          ),
+          true,
+        );
         return;
       case "before-reset":
-        await invoke(state, "before_reset", { sessionKey }, namespaceContext(sessionKey, "team-reset"));
+        assert.equal(
+          await invoke(
+            state,
+            "before_reset",
+            { sessionKey },
+            namespaceContext(sessionKey, "team-reset"),
+          ),
+          true,
+        );
         return;
       case "session-end":
-        await invoke(state, "session_end", { sessionKey }, namespaceContext(sessionKey, "team-end"));
+        assert.equal(
+          await invoke(
+            state,
+            "session_end",
+            { sessionKey },
+            namespaceContext(sessionKey, "team-end"),
+          ),
+          true,
+        );
         return;
       case "dedupe-replay":
         await invoke(

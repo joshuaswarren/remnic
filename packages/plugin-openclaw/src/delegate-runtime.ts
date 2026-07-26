@@ -739,9 +739,9 @@ export function registerDelegateRuntime(
             return false;
           }
           return true;
-        } catch (err) {
+        } catch {
           invalidateCachedBatchFlushSupport();
-          throw err;
+          return flushIndividually();
         }
       }
       return flushIndividually();
@@ -756,9 +756,7 @@ export function registerDelegateRuntime(
     const flushEndedSession = async (
       event: Record<string, unknown>,
       ctx: Record<string, unknown>,
-    ): Promise<void> => {
-      await flushHandler(event, ctx);
-    };
+    ): Promise<boolean> => flushHandler(event, ctx);
     api.on("before_reset", flushEndedSession);
     api.on("session_end", flushEndedSession);
   }
@@ -866,7 +864,7 @@ function createDelegateNamespaceBindingStore(
     sessionKey: string,
     current: string[],
   ): Promise<string[]> => {
-    if (migratedLegacySessions.has(sessionKey)) return [];
+    if (!isLegacyAdapterActive() && migratedLegacySessions.has(sessionKey)) return [];
     try {
       const previous = await legacy.namespacesFor(sessionKey);
       if (previous.length === 0) rememberMigratedLegacySession(sessionKey);
