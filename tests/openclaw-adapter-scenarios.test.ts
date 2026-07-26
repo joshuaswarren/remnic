@@ -939,10 +939,10 @@ test("scenario: failed inline capture retries after transcript delivery succeeds
       ].join("\n");
       const event = {
         content,
+        messageId: "inline-retry-message",
         runId: "inline-retry-run",
         timestamp: 1_780_000_200_000,
       };
-
       await messageReceived(event, { sessionKey: "inline-retry-session" });
       await messageReceived(event, { sessionKey: "inline-retry-session" });
 

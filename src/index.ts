@@ -4103,7 +4103,7 @@ const pluginDefinition = {
               turnId: crypto.randomUUID(),
               ...(metadata ? { metadata } : {}),
             });
-            if (inboundMessageKeys.length > 0) {
+            if (inboundMessageKeys.length > 0 && inlineCapture.failed === 0) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
               rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
