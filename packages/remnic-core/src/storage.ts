@@ -4960,51 +4960,72 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Returns the new file path on success, null on failure.
    */
   async archiveMemory(memory: MemoryFile, lifecycle?: MemoryLifecycleEventWriteOptions): Promise<string | null> {
-    try {
-      const now = lifecycle?.at ?? new Date();
-      const today = now.toISOString().slice(0, 10);
-      const destDir = path.join(this.archiveDir, today);
-      await mkdir(destDir, { recursive: true });
+    const archiveCurrent = async (
+      current: MemoryFile,
+      rebuildMarker?: string,
+      markDurable?: () => void
+    ): Promise<string | null> => {
+      try {
+        const now = lifecycle?.at ?? new Date();
+        const today = now.toISOString().slice(0, 10);
+        const destDir = path.join(this.archiveDir, today);
+        await mkdir(destDir, { recursive: true });
 
-      // Update frontmatter to reflect archived status
-      const updatedFm: MemoryFrontmatter = {
-        ...memory.frontmatter,
-        status: "archived",
-        archivedAt: now.toISOString(),
-        updated: now.toISOString(),
-      };
+        const updatedFm: MemoryFrontmatter = {
+          ...current.frontmatter,
+          status: "archived",
+          archivedAt: now.toISOString(),
+          updated: now.toISOString(),
+        };
 
-      const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
-      const destPath = path.join(destDir, path.basename(memory.path));
+        const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
+        const destPath = path.join(destDir, path.basename(current.path));
 
-      // Write to archive location first (encrypted if applicable), then remove original.
-      await this.writeStorageSecureFile(destPath, fileContent);
-      await unlink(memory.path);
-      markProjectedMemoryPathInvalid(this.baseDir, memory.frontmatter.id);
-      this.invalidateAllMemoriesCache();
-      await this.appendGeneratedMemoryLifecycleEventFailOpen(
-        "storage.archiveMemory",
-        {
-          memoryId: memory.frontmatter.id,
-          eventType: "archived",
-          timestamp: updatedFm.archivedAt ?? updatedFm.updated,
-          actor: lifecycle?.actor ?? "storage.archiveMemory",
-          reasonCode: lifecycle?.reasonCode,
-          before: this.summarizeLifecycleState(memory.frontmatter, memory.path),
-          after: this.summarizeLifecycleState(updatedFm, destPath),
-          relatedMemoryIds: lifecycle?.relatedMemoryIds,
-          correlationId: lifecycle?.correlationId,
-        },
-        lifecycle?.ruleVersion
-      );
-      this.bumpMemoryStatusVersion();
+        await this.writeStorageSecureFile(destPath, fileContent);
+        await unlink(current.path);
+        markDurable?.();
+        if (rebuildMarker !== undefined) {
+          await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
+        }
+        markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
+        this.invalidateAllMemoriesCache();
+        await this.appendGeneratedMemoryLifecycleEventFailOpen(
+          "storage.archiveMemory",
+          {
+            memoryId: current.frontmatter.id,
+            eventType: "archived",
+            timestamp: updatedFm.archivedAt ?? updatedFm.updated,
+            actor: lifecycle?.actor ?? "storage.archiveMemory",
+            reasonCode: lifecycle?.reasonCode,
+            before: this.summarizeLifecycleState(current.frontmatter, current.path),
+            after: this.summarizeLifecycleState(updatedFm, destPath),
+            relatedMemoryIds: lifecycle?.relatedMemoryIds,
+            correlationId: lifecycle?.correlationId,
+          },
+          lifecycle?.ruleVersion
+        );
+        this.bumpMemoryStatusVersion();
 
-      log.debug(`archived memory ${memory.frontmatter.id} → ${destPath}`);
-      return destPath;
-    } catch (err) {
-      log.warn(`failed to archive memory ${memory.frontmatter.id}: ${err}`);
-      return null;
-    }
+        log.debug(`archived memory ${current.frontmatter.id} → ${destPath}`);
+        return destPath;
+      } catch (err) {
+        log.warn(`failed to archive memory ${current.frontmatter.id}: ${err}`);
+        return null;
+      }
+    };
+
+    const blocked = memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
+    if (!blocked) return await archiveCurrent(memory);
+
+    let archivedPath: string | null = null;
+    const archived = await this.runTombstoneBlockedInvalidation(
+      memory,
+      async (current, rebuildMarker, markDurable) => {
+        archivedPath = await archiveCurrent(current, rebuildMarker, markDurable);
+        return archivedPath !== null;
+      }
+    );
+    return archived ? archivedPath : null;
   }
 
   async readEntities(): Promise<string[]> {

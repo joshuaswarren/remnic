@@ -3008,6 +3008,116 @@ test("blocked invalidation reserves the index marker before deleting under the i
     }
   });
 });
+
+test("blocked archive serializes capture scans with the archive transition", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const peer = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await peer.ensureDirectories();
+    const tombstoneConfig = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    };
+    storage.setTombstonesConfig(tombstoneConfig);
+    peer.setTombstonesConfig(tombstoneConfig);
+    const content = "Archiving a blocked row must serialize with recapture.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "blocked-archive-lock",
+      rawContent: content,
+    });
+    const first = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(first.tombstoneBlocked, true);
+    const firstMemory = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === first.id);
+    assert.ok(firstMemory);
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a");
+    await peer.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a");
+
+    const storageWithOverride = storage as unknown as {
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<unknown>,
+        identity?: string | readonly string[],
+      ) => Promise<unknown>;
+    };
+    const originalLock = storageWithOverride.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    let capturedIdentity: string | readonly string[] | undefined;
+    storageWithOverride.withTombstoneBlockedCaptureWriteLock = async (task, lockIdentity) => {
+      capturedIdentity = lockIdentity;
+      return await originalLock(task, lockIdentity);
+    };
+
+    const markerEntered = Promise.withResolvers<void>();
+    const releaseMarker = Promise.withResolvers<void>();
+    const originalPrepare = TombstoneBlockedCaptureIndex.prototype.prepareWrite;
+    let paused = false;
+    const prepareSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "prepareWrite",
+      async function (this: TombstoneBlockedCaptureIndex) {
+        const marker = await originalPrepare.call(this);
+        if (!paused) {
+          paused = true;
+          markerEntered.resolve();
+          await releaseMarker.promise;
+        }
+        return marker;
+      },
+    );
+
+    const archive = storage.archiveMemory(firstMemory);
+    try {
+      const enteredBeforeTimeout = await Promise.race([
+        markerEntered.promise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+      ]);
+      assert.equal(enteredBeforeTimeout, true, "archive must reserve its marker under the capture lock");
+      assert.equal(capturedIdentity, identity);
+
+      let recaptureCompleted = false;
+      const recapture = peer
+        .writeMemory("fact", content, {
+          source: "test",
+          sourceConnector: "provider-a",
+        })
+        .then((result) => {
+          recaptureCompleted = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(recaptureCompleted, false, "recapture must wait while archive owns the identity lock");
+
+      releaseMarker.resolve();
+      const archivePath = await archive;
+      assert.ok(archivePath);
+      const second = await recapture;
+      assert.equal(second.tombstoneBlocked, true);
+      assert.notEqual(second.id, first.id);
+      assert.equal(
+        (await peer.readAllMemories()).filter((memory) => memory.content === content).length,
+        1,
+        "recapture must recreate the review row after archive removes the old row",
+      );
+      assert.equal(
+        await peer.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+        true,
+        "the recreated review row must remain indexed",
+      );
+    } finally {
+      releaseMarker.resolve();
+      prepareSpy.mock.restore();
+      storageWithOverride.withTombstoneBlockedCaptureWriteLock = originalLock;
+      await archive.catch(() => null);
+    }
+  });
+});
 test("blocked invalidation reacquires the reloaded identity lock", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);
