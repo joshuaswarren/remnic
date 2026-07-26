@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Recall-timeout circuit breaker for the Pi plugin's automatic between-tool
+  context recalls (`packages/plugin-pi`). When `recallTimeoutThreshold` (default
+  `7`) of the last `recallTimeoutWindow` (default `10`) recall calls fail with an
+  explicit request timeout, automatic recall is disabled for the remainder of the
+  process: subsequent calls are neither retried nor awaited, in-flight recalls are
+  aborted, and the session status reports that recall is off until restart. The
+  breaker is in-memory, never re-enables itself after a cooldown, and adds no
+  latency on the healthy path. Only explicit request timeouts count toward
+  tripping; other failures still occupy window slots so stale timeouts age out.
+
 ## [v9.8.0] — 2026-07-21
 
 ### Added
