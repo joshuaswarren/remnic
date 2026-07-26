@@ -1403,3 +1403,61 @@ test("grounding preserves identifier terminal s instead of stemming names", () =
 
   assert.deepEqual(result.facts, []);
 });
+test("grounding rejects exact propositions embedded in explicit denials", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "The claim that Alice works at Acme is false.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding preserves wh-questions when an assertion reverses their roles", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{ question: "Who employs Alice?", context: "", priority: 0.5 }],
+    },
+    "Who employs Alice? Alice employs Acme.",
+  );
+
+  assert.deepEqual(result.questions, [{
+    question: "Who employs Alice?",
+    context: "",
+    priority: 0.5,
+  }]);
+});
+
+test("grounding clears question context that is supported only by the question", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{
+        question: "Does Alice use PostgreSQL?",
+        context: "Alice uses PostgreSQL.",
+        priority: 0.5,
+      }],
+    },
+    "Does Alice use PostgreSQL?",
+  );
+
+  assert.deepEqual(result.questions, [{
+    question: "Does Alice use PostgreSQL?",
+    context: "",
+    priority: 0.5,
+  }]);
+});

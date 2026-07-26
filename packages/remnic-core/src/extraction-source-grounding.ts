@@ -88,6 +88,10 @@ const GROUNDING_STOPWORDS: Record<string, true> = {
 const GROUNDING_NEGATION_TOKENS = new Set([
   "no",
   "not",
+  "false",
+  "untrue",
+  "incorrect",
+  "wrong",
   "never",
   "without",
   "neither",
@@ -811,6 +815,24 @@ function isBareYesNoAnswer(sentence: string): boolean {
   return /^(?:yes|no)[.!]?$/iu.test(sentence.trim());
 }
 
+function hasWhSubjectAnswerAlignment(question: string, sentence: string): boolean {
+  const match = /^(?:who|what)\s+([^\s?]+)\s+(.+?)\??$/iu.exec(question.trim());
+  if (match === null) return true;
+  const predicateTokens = groundingTokenSequence(match[1] ?? "");
+  const objectTokens = groundingTokenSequence(match[2] ?? "");
+  if (predicateTokens.length === 0 || objectTokens.length === 0) return true;
+  const sourceTokens = normalizedGroundingTokenSequence(sentence);
+  const predicateStart = sourceTokens.indexOf(predicateTokens[0]!);
+  if (predicateStart === -1) return false;
+  let sourceIndex = predicateStart + predicateTokens.length;
+  for (const objectToken of objectTokens) {
+    const objectIndex = sourceTokens.indexOf(objectToken, sourceIndex);
+    if (objectIndex === -1) return false;
+    sourceIndex = objectIndex + 1;
+  }
+  return true;
+}
+
 function isQuestionAnsweredBySource(question: string, source: string): boolean {
   const questionTokens = tokenize(question);
   if (questionTokens.size === 0) return false;
@@ -830,7 +852,7 @@ function isQuestionAnsweredBySource(question: string, source: string): boolean {
     if (score !== 1) return false;
     const sentenceTokens = tokenize(sentence);
     const hasAnswerToken = [...sentenceTokens].some((token) => !questionTokens.has(token));
-    return isYesNoQuestion || hasAnswerToken;
+    return (isYesNoQuestion || hasAnswerToken) && hasWhSubjectAnswerAlignment(question, sentence);
   });
 }
 
@@ -844,7 +866,7 @@ function groundQuestion(
   const normalizedContext = question.context.trim();
   if (
     normalizedContext.length > 0
-    && !isGroundedCandidate(normalizedContext, `${source}\n${question.question}`, assertionSource, true)
+    && !isGroundedCandidate(normalizedContext, assertionSource ?? source, undefined, false)
   ) {
     return { ...question, context: "" };
   }
