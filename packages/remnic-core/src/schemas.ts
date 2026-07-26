@@ -91,7 +91,7 @@ export const ExtractedFactSchema = z.object({
     .optional()
     .nullable()
     .describe(
-      'Scope classification: "global" for cross-project knowledge (framework bugs, library behavior, API patterns, user preferences, tool configs, general coding patterns); "project" for project-specific knowledge (file paths, env configs, deployment details, project workarounds). Defaults to "project" when a coding context is active.',
+      'Scope classification: "global" for cross-project knowledge (framework bugs, library behavior, API patterns, user preferences, general coding patterns); "project" for project-specific knowledge (file paths, env configs, deployment details, project workarounds) and for tool, command, or CLI-flag instructions tied to one agent, since the same tool name can mean different things across agents. When keeping such an agent-tied instruction, begin the fact with a leading "In <agent>," clause naming that agent. Defaults to "project" when a coding context is active.',
     ),
   quote: z
     .string()

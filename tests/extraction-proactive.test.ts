@@ -5,6 +5,14 @@ import { parseConfig } from "../src/config.ts";
 import { ExtractionResultSchema, ProactiveExtractionResultSchema } from "../src/schemas.ts";
 import type { ExtractionResult } from "../src/types.ts";
 
+// applyProactiveQuestionPass now takes a bundled ExtractionGroundingContext
+// (source-agent-qualifier.ts) instead of positional grounding args.
+const groundingCtx = (source: string): {
+  groundingSource: string;
+  assertionSource: string;
+  messageTimestamp: Date | undefined;
+} => ({ groundingSource: source, assertionSource: source, messageTimestamp: undefined });
+
 test("generateProactiveQuestions does not call cloud fallback when localLlmFallback is false", async () => {
   const config = parseConfig({
     memoryDir: ".tmp/memory",
@@ -104,12 +112,7 @@ test("applyProactiveQuestionPass answers proactive questions into additive memor
   };
 
   const observedSource = "Alex committed to ship the review on Friday. Alex owns the review timeline.";
-  const result = await (engine as any).applyProactiveQuestionPass(
-    "conversation",
-    base,
-    observedSource,
-    observedSource,
-  );
+  const result = await (engine as any).applyProactiveQuestionPass("conversation", base, groundingCtx(observedSource));
   assert.equal(result.facts.length, 2);
   assert.equal(result.facts[1]?.source, "proactive");
   assert.equal(result.facts[1]?.promptedByQuestion, "What deadline did they commit to?");
@@ -440,7 +443,7 @@ test("applyProactiveQuestionPass filters proactive facts by allowlist and confid
   });
 
   const base: ExtractionResult = { facts: [], profileUpdates: [], entities: [], questions: [] };
-  const result = await (engine as any).applyProactiveQuestionPass("conversation", base);
+  const result = await (engine as any).applyProactiveQuestionPass("conversation", base, groundingCtx("conversation"));
   assert.deepEqual(result.facts, []);
 });
 
@@ -498,15 +501,8 @@ test("applyProactiveQuestionPass enforces a single total addition budget across 
   const observedSource = "Alex committed to ship on Friday. The team chose the safer rollout.";
   const result = await (engine as any).applyProactiveQuestionPass(
     "conversation",
-    {
-      facts: [],
-      profileUpdates: [],
-      entities: [],
-      relationships: [],
-      questions: [],
-    },
-    observedSource,
-    observedSource,
+    { facts: [], profileUpdates: [], entities: [], relationships: [], questions: [] },
+    groundingCtx(observedSource),
   );
 
   const totalAdditions = result.facts.length
@@ -619,7 +615,7 @@ test("applyProactiveQuestionPass skips the pass without any LLM call when the lo
     entities: [],
     questions: [],
   };
-  const result = await (engine as any).applyProactiveQuestionPass("conversation", base);
+  const result = await (engine as any).applyProactiveQuestionPass("conversation", base, groundingCtx("conversation"));
 
   assert.equal(result, base);
   assert.equal(chatCalled, false);
@@ -647,7 +643,7 @@ test("applyProactiveQuestionPass runs the pass when the local lane is idle (issu
   };
 
   const base: ExtractionResult = { facts: [], profileUpdates: [], entities: [], questions: [] };
-  const result = await (engine as any).applyProactiveQuestionPass("conversation", base);
+  const result = await (engine as any).applyProactiveQuestionPass("conversation", base, groundingCtx("conversation"));
 
   assert.equal(generateCalled, true);
   assert.equal(result, base);

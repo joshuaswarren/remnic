@@ -41,9 +41,9 @@ import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import {
   attachExtractionProvenance,
-  applyExtractionSourceGrounding,
   type ExtractionGroundingRoleSources,
 } from "./extraction-source-grounding.js";
+import { applyGroundingWithConnector, headerConnector, renderExtractionConversation, resolveSourceConnector, type ExtractionGroundingContext } from "./source-agent-qualifier.js";
 import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
@@ -666,10 +666,7 @@ export class ExtractionEngine {
   private async applyProactiveQuestionPass(
     conversation: string,
     base: ExtractionResult,
-    groundingSource: string,
-    assertionSource: string,
-    messageTimestamp?: Date,
-    roleAssertionSources?: ExtractionGroundingRoleSources,
+    ctx: ExtractionGroundingContext,
     signal?: AbortSignal,
   ): Promise<ExtractionResult> {
     if (!resolvePipelineProcessingCapabilities(this.config).proactiveExtraction) return base;
@@ -684,16 +681,11 @@ export class ExtractionEngine {
         base,
         proactive,
         maxAdditional,
+        ctx.sourceConnector,
         signal,
       );
-      const sanitizedAdditions = this.sanitizeExtractionResult(proactiveAdditions, messageTimestamp);
-      const groundedAdditions = this.applySourceGrounding(
-        sanitizedAdditions,
-        groundingSource,
-        assertionSource,
-        roleAssertionSources,
-        messageTimestamp,
-      );
+      const sanitizedAdditions = this.sanitizeExtractionResult(proactiveAdditions, ctx.messageTimestamp);
+      const groundedAdditions = applyGroundingWithConnector(this.config, sanitizedAdditions, ctx);
       if (!this.hasExtractionOutputs(groundedAdditions)) return base;
       return this.mergeProactiveExtractionPass(base, groundedAdditions, maxAdditional);
     } catch (err) {
@@ -841,6 +833,7 @@ export class ExtractionEngine {
     base: ExtractionResult,
     proactiveQuestions: ExtractionQuestion[],
     maxAdditional: number,
+    sourceConnector: string | undefined,
     signal?: AbortSignal,
   ): Promise<ExtractionResult> {
     const factsPreview = base.facts
@@ -870,6 +863,9 @@ export class ExtractionEngine {
       // (chatgpt-codex thread on extraction.ts:1607). Returns "" when the
       // bi-temporal gate is off, keeping the prompt unchanged by default.
       this.eventTimePromptInstruction(),
+      headerConnector(sourceConnector) !== undefined && resolveMemoryLifecycleCapabilities(this.config).extractionScopeClassification
+        ? `Tool, command, or CLI-flag instructions tied to the ${sourceConnector} agent are "project" scope; when you recover one, begin the fact with a leading "In ${sourceConnector}, " clause naming that agent (e.g. "In ${sourceConnector}, use the search tool with a repository path.").`
+        : "",
       "",
       "Base extracted facts (do not repeat):",
       factsPreview || "(none)",
@@ -1097,27 +1093,6 @@ export class ExtractionEngine {
     return null;
   }
 
-  private applySourceGrounding(
-    result: ExtractionResult,
-    sourceText: string,
-    assertionSourceText: string = sourceText,
-    roleAssertionSources?: ExtractionGroundingRoleSources,
-    messageTimestamp?: Date,
-  ): ExtractionResult {
-    const capabilities = resolvePipelineProcessingCapabilities(this.config);
-    return applyExtractionSourceGrounding(
-      result,
-      sourceText,
-      assertionSourceText,
-      roleAssertionSources,
-      messageTimestamp,
-      {
-        sourceGrounding: capabilities.sourceGrounding,
-        anchorTemporalExpressions: capabilities.delinearize,
-      },
-    );
-  }
-
   private finalizeExtractionResult(
     result: ExtractionResult,
     turns: ReadonlyArray<{
@@ -1127,8 +1102,10 @@ export class ExtractionEngine {
       timestamp: string;
       turnFingerprint?: string;
     }>,
+    sourceConnector?: string,
   ): ExtractionResult {
-    return attachExtractionProvenance(result, turns, this.config.provenance);
+    const provenanced = attachExtractionProvenance(result, turns, this.config.provenance);
+    return sourceConnector === undefined ? provenanced : { ...provenanced, sourceConnector };
   }
 
   async extract(
@@ -1153,13 +1130,17 @@ export class ExtractionEngine {
           : turn.content,
       }))
       .filter((turn) => turn.content.trim().length > 0);
-    const conversation = boundedTurns
-      .map((t) => {
-        const roleLabel =
-          t.extractionContextOnly === true ? `context ${t.role}` : t.role;
-        return `[${roleLabel}] ${t.content}`;
-      })
-      .join("\n\n");
+    // One derivation, over the turns the model actually sees (boundedTurns) —
+    // the same set the qualifier, grounding source, and telemetry filter
+    // operate on. result.sourceConnector carries it to persistence so the
+    // orchestrator does not recompute over a different turn set (#2183).
+    const resolvedConnector = resolveSourceConnector(boundedTurns);
+    // The header and qualifier strip/restore are gated on the scope-classification
+    // capability; persistence records resolvedConnector regardless (trusted metadata).
+    const sourceConnector = lifecycleCaps.extractionScopeClassification
+      ? resolvedConnector
+      : undefined;
+    const { conversation, renderedConversation } = renderExtractionConversation(boundedTurns, headerConnector(sourceConnector));
 
     const groundingSource = boundedTurns
       .map((turn) => turn.content)
@@ -1178,13 +1159,13 @@ export class ExtractionEngine {
         .map((turn) => turn.content)
         .join("\n\n"),
     };
-    if (conversation.trim().length === 0) {
+    if (renderedConversation.trim().length === 0) {
       log.debug("extraction skipped — conversation only contained non-memory work-layer context");
       return { facts: [], profileUpdates: [], entities: [], questions: [] };
     }
     if (
       lifecycleCaps.extractionTelemetryPrefilter &&
-      looksLikeMechanicalTelemetryTranscript(conversation)
+      looksLikeMechanicalTelemetryTranscript(renderedConversation)
     ) {
       log.debug("extraction skipped — mechanical action/state telemetry without durable-memory cues");
       return {
@@ -1198,6 +1179,14 @@ export class ExtractionEngine {
     // Use the last turn's timestamp for temporal anchoring (more accurate than wall-clock)
     const lastTurnTs = boundedTurns.length > 0 ? new Date(boundedTurns[boundedTurns.length - 1].timestamp) : undefined;
     const messageTimestamp = lastTurnTs && !isNaN(lastTurnTs.getTime()) ? lastTurnTs : undefined;
+    const groundingContext: ExtractionGroundingContext = {
+      groundingSource,
+      assertionSource,
+      roleAssertionSources,
+      messageTimestamp,
+      sourceConnector,
+      scopeClassificationEnabled: lifecycleCaps.extractionScopeClassification,
+    };
 
     const traceId = crypto.randomUUID();
     // Only emit llm_start for the direct path when a client or local LLM is configured.
@@ -1234,23 +1223,9 @@ export class ExtractionEngine {
           this.emit({ kind: "llm_end", traceId, model: this.config.localLlmModel, operation: "extraction", durationMs });
           log.debug(`extraction: used local LLM — ${localResult.facts.length} facts, ${localResult.entities.length} entities`);
           const sanitized = this.sanitizeExtractionResult(localResult, messageTimestamp);
-          const grounded = this.applySourceGrounding(
-            sanitized,
-            groundingSource,
-            assertionSource,
-            roleAssertionSources,
-            messageTimestamp,
-          );
-          const finalResult = await this.applyProactiveQuestionPass(
-            conversation,
-            grounded,
-            groundingSource,
-            assertionSource,
-            messageTimestamp,
-            roleAssertionSources,
-            signal,
-          );
-          return this.finalizeExtractionResult(finalResult, boundedTurns);
+          const grounded = applyGroundingWithConnector(this.config, sanitized, groundingContext);
+          const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
+          return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector);
         }
         // Local failed, fall back if allowed
         if (!this.config.localLlmFallback) {
@@ -1297,23 +1272,9 @@ export class ExtractionEngine {
           this.emit({ kind: "llm_end", traceId, model: this.config.model, operation: "extraction", durationMs });
           log.debug(`extraction: used direct client (${this.config.model}) — ${directResult.facts.length} facts, ${directResult.entities.length} entities`);
           const sanitized = this.sanitizeExtractionResult(directResult, messageTimestamp);
-          const grounded = this.applySourceGrounding(
-            sanitized,
-            groundingSource,
-            assertionSource,
-            roleAssertionSources,
-            messageTimestamp,
-          );
-          const finalResult = await this.applyProactiveQuestionPass(
-            conversation,
-            grounded,
-            groundingSource,
-            assertionSource,
-            messageTimestamp,
-            roleAssertionSources,
-            signal,
-          );
-          return this.finalizeExtractionResult(finalResult, boundedTurns);
+          const grounded = applyGroundingWithConnector(this.config, sanitized, groundingContext);
+          const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
+          return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector);
         }
         // Emit error event so Opik sees the direct client failure before fallback.
         // Wrapped in try/catch so a subscriber error doesn't break the fallback path.
@@ -1399,23 +1360,9 @@ export class ExtractionEngine {
         );
         const normalized = this.normalizeExtractionResultPayload(result);
         const sanitized = this.sanitizeExtractionResult(normalized, messageTimestamp);
-        const grounded = this.applySourceGrounding(
-          sanitized,
-          groundingSource,
-          assertionSource,
-          roleAssertionSources,
-          messageTimestamp,
-        );
-        const finalResult = await this.applyProactiveQuestionPass(
-          conversation,
-          grounded,
-          groundingSource,
-          assertionSource,
-          messageTimestamp,
-          roleAssertionSources,
-          signal,
-        );
-        return this.finalizeExtractionResult(finalResult, boundedTurns);
+        const grounded = applyGroundingWithConnector(this.config, sanitized, groundingContext);
+        const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
+        return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector);
       }
 
       this.emit({
@@ -1519,7 +1466,7 @@ Rules:
 - Add structuredAttributes only for concrete values.
 - Include at most five durable relationships.${this.config.provenance?.enabled ? `
 - Each fact must include a quote copied verbatim from one contiguous conversation span.` : ""}${lifecycleCaps.extractionScopeClassification ? `
-- Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge.` : ""}
+- Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge. Tool, command, or CLI-flag instructions tied to one agent are "project" (the same tool name can mean different things across agents); when keeping one, begin the fact with a leading "In <agent>," clause naming that agent.` : ""}
 ${this.eventTimePromptInstruction()}
 Return only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:
 ${EXTRACTION_RESPONSE_SHAPE}
@@ -1748,8 +1695,8 @@ Rules:
 
 Scope classification:
 For each fact, set "scope" to one of:
-- "global" — knowledge that applies across projects: core framework/library bugs, API behavior patterns, user preferences (editor, language, style), tool configurations, general coding patterns, infrastructure knowledge, technology facts not tied to one codebase
-- "project" — knowledge specific to one codebase: file paths, environment configs, deployment details, project-specific workarounds, team/stakeholder info tied to one project, repo-specific conventions
+- "global" — knowledge that applies across projects: core framework/library bugs, API behavior patterns, user preferences (editor, language, style), general coding patterns, infrastructure knowledge, technology facts not tied to one codebase
+- "project" — knowledge specific to one codebase: file paths, environment configs, deployment details, project-specific workarounds, team/stakeholder info tied to one project, repo-specific conventions. Tool, command, or CLI-flag instructions TIED TO ONE AGENT are also "project", because the same tool name means different things in different agent integrations (a "search" tool may search repository code in one agent and the web in another); when keeping such an agent-tied instruction, the fact text MUST name the originating agent as a leading "In <agent>," clause (e.g. "In Pi, use the search tool with a repository path."). A tool/command fact that holds in every agent and every repo is NOT agent-tied — leave it "global" and do not add a qualifier (e.g. "\`git status --short\` emits compact output"). Examples: "In Pi, the search tool takes a repository path" -> "project"; "\`git status --short\` emits compact output" -> "global".
 When in doubt, prefer "project" — it is safer to keep knowledge scoped narrowly.` : ""}
 Entity creation rules (STRICT):
 - Only create entities for DURABLE things: real people, companies, products, tools, ongoing projects

@@ -21,9 +21,12 @@ import {
 import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./orchestration/turn-ingestion.js";
 import { StorageManager } from "./storage.js";
 import { hashAccessIdempotencyPayload } from "./access-idempotency.js";
-import type { ExtractionEngine } from "./extraction.js";
+import { ExtractionEngine } from "./extraction.js";
 import type { ThreadingManager } from "./threading.js";
 import type { BufferTurn, ExtractionResult, PluginConfig } from "./types.js";
+import { parseConfig } from "./config.js";
+import { resolveSourceConnector } from "./source-agent-qualifier.js";
+import type { FallbackLlmOptions } from "./fallback-llm.js";
 import { handleCodingDecision } from "./coding/decision-surfaces.js";
 import type { DecisionSurfaceContext } from "./coding/decision-surfaces.js";
 
@@ -271,11 +274,12 @@ test("runExtraction: mixed tagged+untagged turns → persistExtraction receives 
         config,
         getBuffer: () => buffer,
         getExtraction: () => ({
-          extract: async (..._args: Parameters<ExtractionEngine["extract"]>): Promise<ExtractionResult> => ({
+          extract: async (turns: BufferTurn[]): Promise<ExtractionResult> => ({
             facts: [{ content: "test fact", category: "fact", confidence: 0.8, tags: [] }],
             entities: [],
             questions: [],
             profileUpdates: [],
+            sourceConnector: resolveSourceConnector(turns),
           }),
         }),
         getStorageRouter: () => ({
@@ -373,11 +377,12 @@ test("runExtraction: context-only turns without sourceConnector do not affect at
       config,
       getBuffer: () => buffer,
       getExtraction: () => ({
-        extract: async (..._args: Parameters<ExtractionEngine["extract"]>): Promise<ExtractionResult> => ({
+        extract: async (turns: BufferTurn[]): Promise<ExtractionResult> => ({
           facts: [{ content: "test fact", category: "fact", confidence: 0.8, tags: [] }],
           entities: [],
           questions: [],
           profileUpdates: [],
+          sourceConnector: resolveSourceConnector(turns),
         }),
       }),
       getStorageRouter: () => ({
@@ -615,4 +620,82 @@ test("codegraph_manage_adr operation: ctx.sourceConnector forwarded to codegraph
     "chatgpt",
     "operation handler must forward ctx.sourceConnector='chatgpt' to codegraphTool"
   );
+});
+
+test("runExtraction: the Source agent header connector equals the persisted sourceConnector (boundary-drop case)", async () => {
+  // One derivation over boundedTurns: a work-layer-dropped UNTAGGED assistant
+  // turn must not suppress the connector the model effectively saw, and the
+  // value rendered in the header must be the same value persisted.
+  StorageManager.clearAllStaticCaches();
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-one-"));
+  try {
+    const storage = new StorageManager(baseDir);
+    await storage.ensureDirectories();
+    const config = makeMinimalConfig();
+    const buffer = new SmartBuffer(config, storage);
+    await buffer.load();
+
+    let headerConversation = "";
+    let persistedConnector: string | undefined = "SENTINEL";
+    const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
+    assert.equal(Reflect.set(engine, "fallbackLlm", {
+      async parseWithSchemaDetailed<T>(
+        messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+        _schema: { parse: (data: unknown) => T },
+        _options?: FallbackLlmOptions,
+      ) {
+        headerConversation = messages[1]?.content ?? "";
+        return {
+          modelUsed: "fixture",
+          result: { facts: [{ content: "use the search tool", category: "fact", confidence: 0.9, tags: [] }], entities: [], questions: [], profileUpdates: [] } as unknown as T,
+        };
+      },
+    }), true);
+
+    const coordinator = new ExtractionRunCoordinator({
+      config,
+      getBuffer: () => buffer,
+      getExtraction: () => engine,
+      getStorageRouter: () => ({ storageFor: async () => storage }),
+      getThreading: () => ({ processTurn: async () => "thread-1", updateThreadTitle: async () => {} }),
+      persistExtraction: async (_r, _s, _t, sourceContext?) => {
+        persistedConnector = sourceContext?.sourceConnector;
+        return { persistedIds: ["fact-1"], memoryPathById: new Map() };
+      },
+      maybeCapturePassiveCorrections: async () => {},
+      resolveSelfNamespace: () => "default",
+      getCodingContextForSession: () => null,
+      applyCodingNamespaceOverlay: (_sk: string, ns: string) => ns,
+      boxBuilderFor: () => { throw new Error("unexpected boxBuilderFor"); },
+      appendPersistedThreadEpisodes: async () => {},
+      maybeScheduleConsolidation: () => {},
+      requestQmdMaintenance: () => {},
+      runTierMigrationCycle: async () => { throw new Error("unexpected runTierMigrationCycle"); },
+      getLastPersistExtractionDeferredCount: () => 0,
+      recordProcessedExtractionFingerprint: async () => {},
+    });
+
+    await coordinator.runExtraction(
+      [
+        makeTurn({ content: "Use the search tool.", sourceConnector: "pi" }),
+        makeTurn({ role: "assistant", content: "Found it.", sourceConnector: "pi" }),
+        // UNTAGGED assistant turn that is entirely work-layer context -> dropped
+        // by the work-layer boundary, so it is absent from boundedTurns.
+        makeTurn({
+          role: "assistant",
+          content: "[WORK_LAYER_CONTEXT link_to_memory=false]\ninternal scratch\n[/WORK_LAYER_CONTEXT]",
+        }),
+      ],
+      { skipCharThreshold: true, skipUserTurnThreshold: true }
+    );
+
+    const headerMatch = headerConversation.match(/^Source agent: (\S+)/);
+    const headerConnector = headerMatch ? headerMatch[1] : undefined;
+    assert.equal(headerConnector, "pi", "header names the connector the model saw (boundedTurns)");
+    assert.equal(persistedConnector, "pi", "persistence records the same resolved connector");
+    assert.equal(headerConnector, persistedConnector, "header connector must equal persisted connector");
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(baseDir, { recursive: true, force: true });
+  }
 });
