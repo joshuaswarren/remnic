@@ -108,6 +108,224 @@ test("HTTP memory browse rejects malformed pagination and sort query values", as
   }
 });
 
+test("HTTP batch LCM flush isolates namespace failures and charges one write quota", async () => {
+  const calls: Array<{ namespace?: string; sessionKey: string; authenticatedPrincipal?: string }> = [];
+  const service = {
+    lcmCompactionFlush: async (request: {
+      namespace?: string;
+      sessionKey: string;
+      authenticatedPrincipal?: string;
+    }) => {
+      calls.push(request);
+      if (request.namespace === "team-b") throw new Error("team-b flush failed");
+      return { enabled: true, flushed: true };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/flush`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "batch-session",
+        namespaces: ["team-a", "team-b"],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      enabled: false,
+      flushed: false,
+      sessionKey: "batch-session",
+      namespaces: ["team-a", "team-b"],
+      results: [
+        {
+          status: "fulfilled",
+          namespace: "team-a",
+          result: { enabled: true, flushed: true },
+        },
+        { status: "rejected", namespace: "team-b" },
+      ],
+    });
+    assert.deepEqual(calls, [
+      {
+        sessionKey: "batch-session",
+        namespace: "team-a",
+        authenticatedPrincipal: undefined,
+      },
+      {
+        sessionKey: "batch-session",
+        namespace: "team-b",
+        authenticatedPrincipal: undefined,
+      },
+    ]);
+
+    const conflicting = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/flush`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "batch-session",
+        namespace: "team-a",
+        namespaces: ["team-b"],
+      }),
+    });
+    assert.equal(conflicting.status, 400);
+    assert.equal(calls.length, 2, "conflicting namespace forms must fail before dispatch");
+
+    const rateLimited = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/flush`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "batch-session",
+        namespaces: ["team-a"],
+      }),
+    });
+    assert.equal(rateLimited.status, 429);
+    assert.equal(calls.length, 2, "a batch consumes one write quota unit");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP batch LCM flush deduplicates aliases after effective namespace resolution", async () => {
+  const calls: Array<{ namespace?: string; sessionKey: string; authenticatedPrincipal?: string }> = [];
+  const service = {
+    configRef: parseConfig({ namespacesEnabled: true, defaultNamespace: "default" }),
+    lcmCompactionFlush: async (request: {
+      namespace?: string;
+      sessionKey: string;
+      authenticatedPrincipal?: string;
+    }) => {
+      calls.push(request);
+      return { enabled: true, flushed: true };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/flush`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "effective-namespace-session",
+        namespaces: ["", "default"],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      enabled: true,
+      flushed: true,
+      sessionKey: "effective-namespace-session",
+      namespaces: ["", "default"],
+      results: [
+        {
+          status: "fulfilled",
+          namespace: "",
+          result: { enabled: true, flushed: true },
+        },
+        {
+          status: "fulfilled",
+          namespace: "default",
+          result: { enabled: true, flushed: true },
+        },
+      ],
+    });
+    assert.deepEqual(calls, [
+      {
+        sessionKey: "effective-namespace-session",
+        namespace: undefined,
+        authenticatedPrincipal: undefined,
+      },
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
+
+test("HTTP batch LCM flush isolates per-namespace authorization failures", async () => {
+  const calls: string[] = [];
+  const service = {
+    lcmCompactionFlush: async (request: { namespace?: string }) => {
+      calls.push(request.namespace ?? "");
+      return { enabled: true, flushed: true };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "unused-token",
+    authTokenEntriesGetter: () => [
+      {
+        token: "scoped-token",
+        capabilities: {
+          version: 1,
+          ops: ["lcm_compaction_flush"],
+          namespaces: ["team-a"],
+        },
+      },
+    ],
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/flush`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer scoped-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "authorized-batch-session",
+        namespaces: ["team-a", "team-b"],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      enabled: false,
+      flushed: false,
+      sessionKey: "authorized-batch-session",
+      namespaces: ["team-a", "team-b"],
+      results: [
+        {
+          status: "fulfilled",
+          namespace: "team-a",
+          result: { enabled: true, flushed: true },
+        },
+        { status: "rejected", namespace: "team-b" },
+      ],
+    });
+    assert.deepEqual(calls, ["team-a"]);
+  } finally {
+    await server.stop();
+  }
+});
 test("HTTP admin console assets are public but API routes require bearer authentication", async () => {
   const service = {} as EngramAccessService;
   const server = new EngramAccessHttpServer({

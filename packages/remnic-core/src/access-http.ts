@@ -40,6 +40,7 @@ import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation, type OperationName } from "./access-boundary.js";
 import { authorizationProbeNamespaces, probeOperationAuthorization } from "./access-authorization-probe.js";
 import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
+import * as lcm from "./access-http-lcm-compaction.js";
 import {
   assertOperationAllowed,
   capabilityAllowsOp,
@@ -889,7 +890,7 @@ export class EngramAccessHttpServer {
       this.respondJson(res, 200, await this.service.health());
       return;
     }
-
+    if (req.method === "GET" && pathname === "/engram/v1/capabilities") return lcm.respondLcmCompactionCapabilitiesHttp(res);
     if (req.method === "GET" && pathname === "/engram/v1/authorization") {
       res.setHeader("cache-control", "no-store");
       const probe = probeOperationAuthorization(tokenCapabilityStore.getStore(), parsed.searchParams.getAll("op"));
@@ -1674,14 +1675,13 @@ export class EngramAccessHttpServer {
     ) {
       this.enforceTokenOp("lcm_compaction_flush"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "lcmCompactionFlush");
-      this.ensureWriteRateLimitAvailable(req);
-      const response = await this.service.lcmCompactionFlush({
-        sessionKey: body.sessionKey,
-        namespace: this.resolveNamespace(req, body.namespace),
-        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      await lcm.handleLcmCompactionFlushHttp({
+        body, service: this.service,
+        response: res, ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
+        recordWriteRateLimitHit: () => this.recordWriteRateLimitHit(req),
+        resolveNamespace: (namespace) => this.resolveNamespace(req, namespace), defaultNamespace: this.service.configRef?.defaultNamespace,
+        resolveRequestPrincipal: () => this.resolveRequestPrincipal(req), respondJson: this.respondJson.bind(this),
       });
-      this.recordWriteRateLimitHit(req);
-      this.respondJson(res, 200, response);
       return;
     }
 

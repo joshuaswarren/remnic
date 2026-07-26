@@ -15,13 +15,13 @@
  * `MATRIX_ROWS` entry. Adding a row here is a one-file change that
  * automatically extends every adopter — the whole point of the harness.
  *
- * Test-support only: this file lives under `src/testing/` (a subdirectory, so
- * tsup — which entry-points only top-level `src/*.ts` and the public exports —
- * never bundles it) and is intentionally absent from package.json `exports`.
- * It imports `node:test` and must NEVER be imported by runtime code.
+ * Test-support only: this file lives under `src/testing/` and is exported solely
+ * so adapter test subjects can share the canonical matrix across packages.
+ * The registrar loads `node:test` through `createRequire` so the built artifact
+ * keeps the builtin specifier, and runtime code must never import this module.
  */
 
-import test from "node:test";
+import { createRequire } from "node:module";
 
 /** The nine canonical AGENTS.md session/retrieval/cache matrix rows. */
 export type MatrixRowId =
@@ -215,13 +215,23 @@ export interface RunLifecycleMatrixOptions {
 export function lifecycleTestName(subjectName: string, row: MatrixRow): string {
   return `lifecycle-matrix[${subjectName}] :: ${row.id} — ${row.title}`;
 }
+type NodeTestRegistrar = {
+  (name: string, fn: () => void | Promise<void>): void;
+  (name: string, options: { skip: string }, fn: () => void): void;
+};
+
+const requiredNodeTest = createRequire(import.meta.url)("node:test") as
+  | NodeTestRegistrar
+  | { test: NodeTestRegistrar };
+const nodeTest: NodeTestRegistrar =
+  typeof requiredNodeTest === "function" ? requiredNodeTest : requiredNodeTest.test;
 
 const defaultRegister: MatrixTestRegistrar = (name, fn) => {
-  test(name, fn);
+  nodeTest(name, fn);
 };
 
 const defaultRegisterSkipped: MatrixSkipRegistrar = (name, reason) => {
-  test(name, { skip: reason }, () => {});
+  nodeTest(name, { skip: reason }, () => {});
 };
 
 /**

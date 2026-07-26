@@ -534,6 +534,7 @@ test("HTTP handler source routes match the catalog (static completeness)", () =>
 
   const INFRA = [
     /^\/engram\/v1\/health$/,
+    /^\/engram\/v1\/capabilities$/,
     /^\/engram\/v1\/authorization$/,
     /^\/engram\/v1\/admin\//,
     /^\/engram\/ui/,

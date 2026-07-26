@@ -6,7 +6,7 @@
  * paths — reusing scripts/effective-diff.mjs) touches a lifecycle-critical path
  * in scripts/lifecycle-matrix/coverage.json's `lifecycleManifest`, this gate
  * requires that path to be covered by a registered `LifecycleSubject`
- * (packages/remnic-core/src/testing/subjects). Grandfathered paths (decision C)
+ * (package `src/testing/subjects` directories). Grandfathered paths (decision C)
  * warn instead of fail; the grandfather list is a ratchet — it may shrink,
  * never grow. A manifest glob with no coverage mapping and no grandfather entry
  * fails the gate, naming the path and the manifest.
@@ -554,14 +554,17 @@ export function unexplainedRemovals(removed, explained) {
   return removed.filter((glob) => glob.includes("*") || !explained.has(glob));
 }
 
-/** Scan the subjects directory for `runLifecycleMatrix("<name>", ...)` registrations. */
-export function registeredSubjectNames(subjectsDir) {
-  if (!existsSync(subjectsDir)) return [];
+/** Scan subject directories for `runLifecycleMatrix("<name>", ...)` registrations. */
+export function registeredSubjectNames(subjectsDirs) {
+  const directories = Array.isArray(subjectsDirs) ? subjectsDirs : [subjectsDirs];
   const names = new Set();
-  for (const entry of readdirSync(subjectsDir)) {
-    if (!entry.endsWith(".test.ts")) continue;
-    const source = readFileSync(join(subjectsDir, entry), "utf8");
-    for (const name of discoverSubjectRegistrations(source)) names.add(name);
+  for (const subjectsDir of directories) {
+    if (!existsSync(subjectsDir)) continue;
+    for (const entry of readdirSync(subjectsDir)) {
+      if (!entry.endsWith(".test.ts")) continue;
+      const source = readFileSync(join(subjectsDir, entry), "utf8");
+      for (const name of discoverSubjectRegistrations(source)) names.add(name);
+    }
   }
   return [...names];
 }
@@ -695,9 +698,10 @@ function main() {
     : join(scriptDir, "coverage.json");
   const manifest = loadCoverageManifest(JSON.parse(readFileSync(manifestPath, "utf8")));
 
-  const registered = registeredSubjectNames(
+  const registered = registeredSubjectNames([
     join(repoRoot, "packages", "remnic-core", "src", "testing", "subjects"),
-  );
+    join(repoRoot, "packages", "plugin-openclaw", "src", "testing", "subjects"),
+  ]);
   const missingSubjects = unregisteredSubjects(manifest, registered);
   if (missingSubjects.length > 0) {
     console.error(

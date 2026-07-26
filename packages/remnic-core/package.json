@@ -2420,6 +2420,26 @@
       "remnic-source": "./src/session-integrity.ts",
       "import": "./dist/session-integrity.js"
     },
+    "./session-namespace-bindings": {
+      "types": "./dist/session-namespace-bindings.d.ts",
+      "remnic-source": "./src/session-namespace-bindings.ts",
+      "import": "./dist/session-namespace-bindings.js"
+    },
+    "./session-namespace-bindings.js": {
+      "types": "./dist/session-namespace-bindings.d.ts",
+      "remnic-source": "./src/session-namespace-bindings.ts",
+      "import": "./dist/session-namespace-bindings.js"
+    },
+    "./testing/lifecycle-matrix": {
+      "types": "./dist/testing/lifecycle-matrix.d.ts",
+      "remnic-source": "./src/testing/lifecycle-matrix.ts",
+      "import": "./dist/testing/lifecycle-matrix.js"
+    },
+    "./testing/lifecycle-matrix.js": {
+      "types": "./dist/testing/lifecycle-matrix.d.ts",
+      "remnic-source": "./src/testing/lifecycle-matrix.ts",
+      "import": "./dist/testing/lifecycle-matrix.js"
+    },
     "./session-observer-bands": {
       "types": "./dist/session-observer-bands.d.ts",
       "remnic-source": "./src/session-observer-bands.ts",

@@ -49,6 +49,15 @@ test("LCM compaction schemas validate Pi extension requests", () => {
   assert.equal(record.success, true);
 });
 
+test("LCM compaction flush rejects duplicate namespace batches", () => {
+  const result = validateRequest("lcmCompactionFlush", {
+    sessionKey: "pi:session",
+    namespaces: ["work", "work"],
+  });
+
+  assert.equal(result.success, false);
+});
+
 test("LCM compaction record rejects invalid token counts", () => {
   const result = validateRequest("lcmCompactionRecord", {
     sessionKey: "pi:session",
