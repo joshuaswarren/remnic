@@ -47,6 +47,9 @@ const EXTRA_POSITIVE: string[] = [
   "the tool named search returns repo hits",
   "Pi exposes a search tool; OpenClaw exposes a same-named web tool.",
   "Invoke `memory_store` to persist the reflection.",
+  "Use search when locating implementation",
+  "Run rg before editing",
+  "Call memory_store to persist the result",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {
@@ -72,6 +75,8 @@ const EXTRA_NEGATIVE: string[] = [
   "The service reads configuration from /etc/remnic/config.json",
   "Logs live under /var/log/remnic",
   "Restore the backup from /tmp/dump.sql",
+  "Use /etc/remnic/config.json for configuration",
+  "The service should use /health for readiness checks",
 ];
 for (const content of EXTRA_NEGATIVE) {
   test(`referencesAgentSpecificTool ignores prose: "${content.slice(0, 44)}…"`, () => {
@@ -116,6 +121,7 @@ const WITHHOLD_CASES: Array<{
 }> = [
   { name: "tool-scoped + connector -> withhold", args: { content: "Prefer the search tool when locating code.", sourceConnector: "pi" }, expected: true },
   { name: "tool-scoped + empty connector -> do not withhold", args: { content: "Prefer the search tool when locating code.", sourceConnector: "" }, expected: false },
+  { name: "tool-scoped + whitespace-only connector -> do not withhold", args: { content: "Prefer the search tool when locating code.", sourceConnector: "   " }, expected: false },
   { name: "tool-scoped + no connector -> do not withhold", args: { content: "Prefer the search tool when locating code." }, expected: false },
   { name: "portable + connector -> do not withhold", args: { content: "User prefers dark mode in all editors", sourceConnector: "pi" }, expected: false },
   { name: "portable title + connector + tool-bearing steps -> withhold (#2183 P2)", args: { content: "When locating implementation", sourceConnector: "pi", procedureSteps: [{ intent: "find", toolCall: { kind: "search", signature: "search('foo')" } }] }, expected: true },

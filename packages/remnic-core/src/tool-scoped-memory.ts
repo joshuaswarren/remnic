@@ -27,7 +27,8 @@ const BT = "`";
 // Generic tool/command names the issue calls out. Word-anchored so the "search"
 // inside "research" and the "read" inside "reads" do not match.
 const GENERIC_TOOL_NAMES = ["read", "write", "search", "fetch", "browser", "exec", "shell", "memory"];
-const GENERIC = "\\b(?:" + GENERIC_TOOL_NAMES.join("|") + ")\\b";
+const GENERIC_NAMES_ALT = GENERIC_TOOL_NAMES.join("|");
+const GENERIC = "\\b(?:" + GENERIC_NAMES_ALT + ")\\b";
 
 // Backticked or quoted short token. Bounded {1,60} keeps the match linear
 // (CodeQL js/polynomial-redos — see source-attribution.ts for the house
@@ -50,12 +51,22 @@ const IMM = "[\\s'\"" + BT + "]{1,4}";
 // Explicit named/called/aka connective (longer reach, identifier on the far side).
 const CONN = "\\s+(?:named|called|aka)\\s+";
 
-// Imperative invocation: use/run/call/invoke immediately followed by a
-// backticked/quoted identifier OR a slash command — "Use `search`",
-// "Run `rg`", "Use /search". The identifier is restricted to the quoted/slash
-// form (not the generic name) so prose like "writers use memory" does not fire,
-// and a bare absolute path ("from /etc/remnic/config.json") never qualifies.
-const INVOCATION = "\\b(?:use|run|call|invoke)\\b\\s+(?:" + QUOTED_TOKEN + "|/[a-z][a-z0-9_-]{0,40}\\b)";
+// Imperative invocation: use/run/call/invoke immediately followed by a tool
+// identifier. A quoted/backticked identifier is unambiguous on its own ("Use
+// `search`", "Run `rg`"). A bare identifier or generic name — or a slash
+// command naming a generic tool ("/search") — is only admitted when a clause
+// boundary follows (end, punctuation, or a preposition/subordinator), so prose
+// continuations into a noun phrase do not fire: "search **when**" and
+// "memory_store **to**" match, but "search **engines**" and "memory **and**"
+// do not. A slash token is restricted to a generic tool name so absolute paths
+// ("/etc/remnic/config.json", "/health") never qualify.
+const VERB = "\\b(?:use|run|call|invoke)\\b";
+const BARE_IDENT = "[A-Za-z_][A-Za-z0-9_-]{0,40}";
+const SLASH_GENERIC = "/(?:" + GENERIC_NAMES_ALT + ")\\b";
+const CLAUSE_BOUNDARY = "(?:$|[.,;:]|(?:when|before|after|to|with|for|on|in|if|unless|whenever)\\b)";
+const INVOCATION_IDENT_PLAIN = "(?:" + GENERIC + "|" + BARE_IDENT + "|" + SLASH_GENERIC + ")";
+const INVOCATION =
+  VERB + "\\s+(?:" + QUOTED_TOKEN + "|" + INVOCATION_IDENT_PLAIN + "(?=\\s*" + CLAUSE_BOUNDARY + "))";
 
 const TOOL_REFERENCE = new RegExp(
   "(?:" +
@@ -68,8 +79,9 @@ const TOOL_REFERENCE = new RegExp(
 
 /**
  * Returns true when `content` references a specific tool or command invocation
- * (e.g. "use the search tool", "the `read` tool", "Run `rg`", "Use /search")
- * rather than portable, agent-agnostic knowledge.
+ * (e.g. "use the search tool", "the `read` tool", "Use search when locating
+ * code", "Run `rg` before editing", "Use /search with a path") rather than
+ * portable, agent-agnostic knowledge.
  *
  * Pure and dependency-free. Biased toward detection: a false positive only
  * narrows the namespace (safe default), while a false negative is the
@@ -94,10 +106,11 @@ export interface ToolScopeWithholdInputs {
 
 /**
  * Primitive — the SINGLE definition of "tool-scoped and attributed". True when
- * a fact was produced by a known integration (`sourceConnector`) AND either its
- * text references a specific tool/command or one of its structured procedure
- * steps invokes a tool. Every shared-namespace promotion path (scope-routing
- * AND auto-promotion) consults this, so the tool-scope decision cannot diverge
+ * a fact was produced by a known integration (`sourceConnector`, non-empty
+ * after trim — matching dedup/semantic.ts house style) AND either its text
+ * references a specific tool/command or one of its structured procedure steps
+ * invokes a tool. Every shared-namespace promotion path (scope-routing AND
+ * auto-promotion) consults this, so the tool-scope decision cannot diverge
  * across paths (issue #2183).
  */
 export function withholdToolScopedFromSharedNamespace({
@@ -105,7 +118,7 @@ export function withholdToolScopedFromSharedNamespace({
   sourceConnector,
   procedureSteps,
 }: ToolScopeWithholdInputs): boolean {
-  if (typeof sourceConnector !== "string" || sourceConnector.length === 0) return false;
+  if (typeof sourceConnector !== "string" || sourceConnector.trim().length === 0) return false;
   if (referencesAgentSpecificTool(content)) return true;
   if (
     procedureSteps?.some((s) => {

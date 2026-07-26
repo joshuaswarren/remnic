@@ -432,40 +432,11 @@ test("auto-promote: chunked path also withholds a tool-scoped fact with sourceCo
 // title but tool-bearing steps is tool-scoped. The primitive consults
 // procedureSteps[].toolCall.kind; promoteMemoryToShared forwards the steps, so
 // such a procedure is withheld from the shared namespace on the auto-promote
-// path. autoPromoteToSharedCategories includes "procedure" so the control case
-// (no connector) actually promotes.
+// path. Procedures cannot flat-auto-promote (autoPromoteToSharedCategories is
+// allow-listed to fact|correction|decision|preference), so the meaningful
+// coverage is the scope-routing path (scope="global"), with a no-connector
+// control proving the procedure still promotes when unattributed.
 // ---------------------------------------------------------------------------
-
-test("auto-promote: procedure with portable title + tool-bearing steps + connector is NOT auto-promoted", async () => {
-  const memoryDir = tmpDir("tool-scoped-procedure-withheld");
-  try {
-    const orchestrator = new Orchestrator(
-      autoPromoteConfig(memoryDir, { autoPromoteToSharedCategories: ["correction", "procedure"] }),
-    );
-    stubBackgroundWork(orchestrator);
-    const defaultStorage = await orchestrator.getStorageForNamespace("default");
-    await defaultStorage.ensureDirectories();
-    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
-    await sharedStorage.ensureDirectories();
-
-    await orchestrator.persistExtraction(procedureResult("Workflow for locating an implementation", "project"), defaultStorage, "thread-1", { sourceConnector: "pi" });
-
-    const sharedMems = await sharedStorage.readAllMemories();
-    const defaultMems = await defaultStorage.readAllMemories();
-    assert.ok(
-      defaultMems.some((m) => m.content?.includes("locating an implementation")),
-      "procedure must actually be persisted in the session namespace (non-vacuous)",
-    );
-    assert.equal(
-      sharedMems.some((m) => m.content?.includes("locating an implementation")),
-      false,
-      "procedure with tool-bearing steps must NOT be auto-promoted to shared when attributed",
-    );
-  } finally {
-    StorageManager.clearAllStaticCaches();
-    await rm(memoryDir, { recursive: true, force: true });
-  }
-});
 
 test("scope-routing: global procedure with portable title + tool-bearing steps + connector is NOT promoted to shared", async () => {
   // auto-promote is OFF here, so the ONLY promotion path is scope routing
@@ -492,6 +463,32 @@ test("scope-routing: global procedure with portable title + tool-bearing steps +
       sharedMems.some((m) => m.content?.includes("locating an implementation")),
       false,
       "global procedure with tool-bearing steps must NOT be scope-routed to shared when attributed",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("scope-routing: same global procedure WITHOUT sourceConnector is still scope-routed to shared (control)", async () => {
+  // Paired control for the scope-routing procedure-withheld test: with no
+  // attribution the guard does not withhold, so the global procedure must be
+  // scope-routed to shared.
+  const memoryDir = tmpDir("tool-scoped-procedure-control-scope-routing");
+  try {
+    const orchestrator = new Orchestrator(baseConfig(memoryDir));
+    stubBackgroundWork(orchestrator);
+    const defaultStorage = await orchestrator.getStorageForNamespace("default");
+    await defaultStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
+    await sharedStorage.ensureDirectories();
+
+    await orchestrator.persistExtraction(procedureResult("Workflow for locating an implementation", "global"), defaultStorage, "thread-1");
+
+    const sharedMems = await sharedStorage.readAllMemories();
+    assert.ok(
+      sharedMems.some((m) => m.content?.includes("locating an implementation")),
+      "unattributed global procedure must still be scope-routed to shared (control)",
     );
   } finally {
     StorageManager.clearAllStaticCaches();
