@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { MemoryFile } from "../types.js";
 
 import { StorageManager, ContentHashIndex } from "../storage.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
@@ -19,8 +20,8 @@ import {
   isEligibleCorrectionCandidate,
   applyEditMemory,
   appendTombstoneFn,
+  rescopeMemoryFn,
 } from "./correction-access-wiring.js";
-import type { MemoryFile } from "../types.js";
 
 async function makeStorage(prefix = "remnic-corr-wiring-") {
   StorageManager.clearAllStaticCaches();
@@ -118,6 +119,52 @@ test("#1672 item 3: applyEditMemory leaves non-fact contentHash untouched (only 
     assert.ok(!after!.frontmatter.contentHash, "non-fact edit must not synthesize a contentHash");
   } finally {
     await cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Rescope cancellation transaction
+// ---------------------------------------------------------------------------
+
+test("#2128 rescope retires the source when cancellation lands after destination write", async () => {
+  const source = await makeStorage("remnic-corr-rescope-source-");
+  const destination = await makeStorage("remnic-corr-rescope-dest-");
+  try {
+    const { id: sourceId } = await source.storage.writeMemory("fact", "the database is MySQL", {
+      source: "test",
+    });
+    const abortController = new AbortController();
+    const originalWriteSealedMemory = destination.storage.writeSealedMemory.bind(destination.storage);
+    let destinationWriteCompleted = false;
+    (destination.storage as any).writeSealedMemory = async (...args: any[]) => {
+      const result = await (originalWriteSealedMemory as (...args: any[]) => Promise<unknown>)(...args);
+      destinationWriteCompleted = true;
+      abortController.abort(new Error("caller disconnected"));
+      return result;
+    };
+    const wiring = {
+      orchestrator: {
+        getStorage: async (namespace: string) =>
+          namespace === "source" ? source.storage : destination.storage,
+      },
+    } as any;
+
+    const destinationId = await rescopeMemoryFn(
+      wiring,
+      "source",
+      sourceId,
+      "destination",
+      abortController.signal,
+    );
+
+    assert.equal(destinationWriteCompleted, true);
+    const archivedSource = await source.storage.getMemoryById(sourceId);
+    const activeDestination = await destination.storage.getMemoryById(destinationId);
+    assert.equal(archivedSource?.frontmatter.status, "archived");
+    assert.equal(activeDestination?.frontmatter.status, "active");
+  } finally {
+    await source.cleanup();
+    await destination.cleanup();
   }
 });
 

@@ -8,6 +8,7 @@ import {
   Orchestrator,
 } from "./orchestrator.js";
 import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
+import { TurnIngestionCoordinator } from "./orchestration/turn-ingestion.js";
 import { SmartBuffer } from "./buffer.js";
 import { parseConfig } from "./config.js";
 import { stableHash } from "./coding/git-context.js";
@@ -309,6 +310,52 @@ test("flushSession flushes the pending debounced buffer save before extraction, 
   assert.equal(entryTurns.length, 1, "keep_buffering turn is durable after failed flush");
   assert.equal(entryTurns[0]?.content, "remember alpha");
 });
+test("queued extraction settles immediately when its caller aborts while waiting", async () => {
+  const queue = new ExtractionQueueCoordinator();
+  let extractionStarted = false;
+  let releaseExtraction!: () => void;
+  const coordinator = new TurnIngestionCoordinator({
+    extractionQueueCoordinator: queue,
+    shouldQueueExtraction: () => true,
+    runExtraction: async () => {
+      extractionStarted = true;
+      await new Promise<void>((resolve) => {
+        releaseExtraction = resolve;
+      });
+      return {
+        status: "skipped",
+        reason: "test",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      };
+    },
+  } as any);
+  const turns = [makeTurn("thread-a", "remember alpha")];
+
+  await coordinator.queueBufferedExtraction(turns, "trigger_mode", {
+    skipDedupeCheck: true,
+  });
+  for (let i = 0; i < 50 && !extractionStarted; i++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(extractionStarted, true, "the first extraction must occupy the queue");
+
+  const abortController = new AbortController();
+  const abortReason = new Error("caller disconnected");
+  const settled = Promise.withResolvers<unknown>();
+  await coordinator.queueBufferedExtraction(turns, "trigger_mode", {
+    skipDedupeCheck: true,
+    abortSignal: abortController.signal,
+    onTaskSettled: (error) => settled.resolve(error),
+  });
+
+  abortController.abort(abortReason);
+  assert.equal(await settled.promise, abortReason);
+
+  releaseExtraction();
+  assert.equal(await queue.waitForIdle(1_000), true);
+});
+
 
 test("flushSession aborts a blocked pre-drain save before queueing extraction", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;

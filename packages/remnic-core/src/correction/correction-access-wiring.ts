@@ -585,7 +585,6 @@ async function rescopeMemoryFn(
     ...(Array.isArray(fm.links) ? { links: fm.links } : {}),
     ...(fm.intentGoal ? { intentGoal: fm.intentGoal } : {}),
   });
-  throwIfAborted(abortSignal, "correction apply aborted");
   if (destBlocked) {
     // #1645: destination tombstone-blocked the rescope (pending_review). Don't
     // archive the source — that deletes the only active copy while the
@@ -598,13 +597,13 @@ async function rescopeMemoryFn(
   // fails AFTER the destination write succeeded, compensate by archiving the
   // destination too so no duplicate ACTIVE fact remains, then re-throw so the
   // executor records the action as failed (review: rescope-duplicates-on-fail).
-  throwIfAborted(abortSignal, "correction apply aborted");
+  // Once the destination write resolves, cancellation cannot interrupt the
+  // source retirement or leave both memories active.
   try {
     await sourceStorage.writeMemoryFrontmatter(memory, {
       status: "archived",
       archivedAt: new Date().toISOString(),
     });
-  throwIfAborted(abortSignal, "correction apply aborted");
   } catch (err) {
     try {
       const destMem = await destStorage.getMemoryById(destId);
@@ -1078,4 +1077,5 @@ export {
   isEligibleCorrectionCandidate,
   applyEditMemory,
   appendTombstoneFn,
+  rescopeMemoryFn,
 };

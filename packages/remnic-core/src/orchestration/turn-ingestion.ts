@@ -17,6 +17,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { abortError } from "../abort-error.js";
 import { SmartBuffer } from "../buffer.js";
 import type { ImportTurn } from "../bulk-import/types.js";
 import { resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
@@ -673,6 +674,13 @@ export class TurnIngestionCoordinator {
         timeout = undefined;
       }
     };
+    let abortHandler: (() => void) | undefined;
+    const clearAbortListener = (): void => {
+      if (abortHandler && options.abortSignal) {
+        options.abortSignal.removeEventListener("abort", abortHandler);
+        abortHandler = undefined;
+      }
+    };
     const settleTask = (
       error?: unknown,
       result?: ExtractionRunResult,
@@ -680,9 +688,19 @@ export class TurnIngestionCoordinator {
       if (settled) return false;
       settled = true;
       clearQueueWaitTimer();
+      clearAbortListener();
       options.onTaskSettled?.(error, result);
       return true;
     };
+    if (options.abortSignal) {
+      const signal = options.abortSignal;
+      abortHandler = () => settleTask(signal.reason ?? abortError("extraction aborted (queue_wait)"));
+      signal.addEventListener("abort", abortHandler, { once: true });
+      if (signal.aborted) {
+        settleTask(signal.reason ?? abortError("extraction aborted (queue_wait)"));
+        return;
+      }
+    }
 
     if (typeof extractionDeadlineMs === "number") {
       const deadline = extractionDeadlineMs;
