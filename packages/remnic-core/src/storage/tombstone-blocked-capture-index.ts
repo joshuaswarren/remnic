@@ -17,6 +17,8 @@ const REBUILD_MAX_ATTEMPTS = 3;
 const REBUILD_RETRY_BASE_MS = 50;
 
 const TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS = 60_000;
+const CAPTURE_WRITE_LOCK_MAX_ATTEMPTS = 3;
+const CAPTURE_WRITE_LOCK_RETRY_BASE_MS = 25;
 const ABANDONED_MARKER_MIN_AGE_MS = 60_000;
 
 type RebuildMarker = {
@@ -69,6 +71,7 @@ export type TombstoneBlockedCaptureIndexOptions = {
   readonly lockOptions: () => ContentHashIndexLockOptions;
   readonly readAllMemories: () => Promise<MemoryFile[]>;
   readonly readAllColdMemories: () => Promise<MemoryFile[]>;
+  readonly withHeldFileLock?: typeof withHeldFileLock;
 };
 
 /**
@@ -308,18 +311,31 @@ export class TombstoneBlockedCaptureIndex {
     );
     await mkdir(path.dirname(lockPath), { recursive: true });
     const retry = Symbol("retry");
-    for (;;) {
-      const result = await withHeldFileLock<T | typeof retry>(
+    const permanentFailure = Symbol("permanent-failure");
+    const runWithHeldFileLock = this.options.withHeldFileLock ?? withHeldFileLock;
+    for (let attempt = 0; attempt < CAPTURE_WRITE_LOCK_MAX_ATTEMPTS; attempt += 1) {
+      const result = await runWithHeldFileLock<T | typeof retry | typeof permanentFailure>(
         lockPath,
         {
           staleMs: TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS,
           maxWaitMs: 1_000,
           pollMs: 25,
         },
-        async (acquired) => (acquired ? await task() : retry),
+        async (acquired, controller) => {
+          if (acquired) return await task();
+          return controller.failure === "error" ? permanentFailure : retry;
+        },
       );
+      if (result === permanentFailure) {
+        throw new Error("tombstone-blocked capture write lock acquisition failed");
+      }
       if (result !== retry) return result;
+      if (attempt === CAPTURE_WRITE_LOCK_MAX_ATTEMPTS - 1) break;
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, CAPTURE_WRITE_LOCK_RETRY_BASE_MS * 2 ** attempt);
+      });
     }
+    throw new Error("tombstone-blocked capture write lock remained busy");
   }
 
   private async reload(): Promise<ContentHashIndex> {

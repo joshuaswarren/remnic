@@ -1636,6 +1636,34 @@ test("offline sync mutation rebuilds blocked index for every recall category", a
   });
 });
 
+test("permanent capture lock failures stop retrying", async () => {
+  await withMemoryDir(async (dir) => {
+    let attempts = 0;
+    const index = new TombstoneBlockedCaptureIndex({
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 2, retryBaseMs: 1 }),
+      readAllMemories: async () => [],
+      readAllColdMemories: async () => [],
+      withHeldFileLock: async (_lockPath, _options, task) => {
+        attempts += 1;
+        return await task(false, {
+          failure: "error",
+          refresh: async () => false,
+        });
+      },
+    });
+
+    await assert.rejects(
+      index.withCaptureWriteLock(async () => "unreachable"),
+      /capture write lock acquisition failed/,
+    );
+    assert.equal(attempts, 1, "permanent filesystem failures must not retry as contention");
+  });
+});
+
 test("pre-load blocked index invalidation rebuilds a persisted index", async () => {
   await withMemoryDir(async (dir) => {
     const content = "A pre-load invalidation must refresh blocked capture identity.";

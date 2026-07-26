@@ -851,17 +851,20 @@ test("withHeldFileLock runs task(false) best-effort when the lock directory cann
     const lockPath = path.join(blocker, "nested.lock");
 
     let acquired = true; // expect false
+    let failure: "timeout" | "error" | undefined;
     let ran = false;
     await withHeldFileLock(
       lockPath,
       { staleMs: 5_000, maxWaitMs: 50 },
-      async (a) => {
+      async (a, lock) => {
         acquired = a;
+        failure = lock.failure;
         ran = true;
       },
     );
     assert.equal(ran, true, "task ran despite lock-dir setup failure");
     assert.equal(acquired, false, "task ran best-effort (acquired=false) without the lock");
+    assert.equal(failure, "error", "lock setup failures must be distinguishable from contention timeouts");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
