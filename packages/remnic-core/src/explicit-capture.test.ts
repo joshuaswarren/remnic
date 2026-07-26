@@ -61,6 +61,7 @@ function createInlineCaptureProcessorProbe(
     authoritativeFactHashMiss?: boolean;
     tombstoneBlockedCaptureIndexHit?: boolean;
     failWrites?: boolean;
+    duplicateReadDelayMs?: number;
   } = {},
 ) {
   const envelopes: SealedMemoryEnvelope[] = [];
@@ -75,11 +76,19 @@ function createInlineCaptureProcessorProbe(
     sourceConnector?: string;
   }> = [];
   let readAllCalls = 0;
+  let activeReadAllCalls = 0;
+  let maxConcurrentReadAllCalls = 0;
   let nextId = 1;
   let writeTail = Promise.resolve();
   const storage = {
     readAllMemories: async () => {
       readAllCalls += 1;
+      activeReadAllCalls += 1;
+      maxConcurrentReadAllCalls = Math.max(maxConcurrentReadAllCalls, activeReadAllCalls);
+      if (options.duplicateReadDelayMs !== undefined) {
+        await new Promise((resolve) => setTimeout(resolve, options.duplicateReadDelayMs));
+      }
+      activeReadAllCalls -= 1;
       return memories.map((memory) => ({
         ...memory,
         frontmatter: { ...memory.frontmatter },
@@ -187,6 +196,7 @@ function createInlineCaptureProcessorProbe(
     memories,
     coldMemories,
     readAllCalls: () => readAllCalls,
+    maxConcurrentReadAllCalls: () => maxConcurrentReadAllCalls,
     blockedIndexArguments: () => blockedIndexArguments,
     orchestrator,
     processor: new InlineExplicitCaptureProcessor(orchestrator, { sourceConnector: "openclaw" }),
@@ -394,6 +404,35 @@ test("inline capture processor queues invalid complete markup and never leaves i
   assert.equal(disabled.content, content);
   assert.equal(disabled.processed, 0);
   assert.equal(probe.envelopes.length, 1);
+});
+
+test("inline capture review fallback serializes duplicate checks across processor instances", async () => {
+  const probe = createInlineCaptureProcessorProbe({ duplicateReadDelayMs: 15 });
+  const secondProcessor = new InlineExplicitCaptureProcessor(probe.orchestrator, {
+    sourceConnector: "openclaw",
+  });
+  const request = {
+    captureMode: "hybrid" as const,
+    content: [
+      "<memory_note>",
+      "content: Concurrent invalid captures must queue one review.",
+      "confidence: invalid",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+    namespace: "principal-project",
+    namespacePreResolved: true,
+  };
+  const [first, second] = await Promise.all([
+    probe.processor.process({ ...request, dedupeKeys: ["review-fallback-1"] }),
+    secondProcessor.process({ ...request, dedupeKeys: ["review-fallback-2"] }),
+  ]);
+
+  assert.equal(first.queued + second.queued, 1);
+  assert.equal(first.duplicates + second.duplicates, 1);
+  assert.equal(probe.envelopes.length, 1);
+  assert.equal(probe.lifecycleEvents.length, 1);
+  assert.equal(probe.maxConcurrentReadAllCalls(), 1);
 });
 
 test("inline capture processor rejects pre-resolved input without a resolved namespace", async () => {

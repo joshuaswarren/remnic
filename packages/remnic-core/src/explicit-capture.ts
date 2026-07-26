@@ -659,69 +659,83 @@ export async function queueExplicitCaptureForReview(
       ? requestedNamespace
       : resolveExplicitCaptureReviewNamespace(orchestrator, requestedNamespace));
   const content = buildExplicitCaptureReviewContent(input, reason);
-  const duplicateOf = await findQueuedExplicitCaptureDuplicate(orchestrator, queueNamespace, content, input.sourceConnector);
-  if (duplicateOf) {
-    return { id: duplicateOf, duplicateOf };
-  }
-
   const requestedCategory = asTrimmed(input.category);
   const reviewCategory = requestedCategory && INLINE_ALLOWED_CATEGORIES.has(requestedCategory as MemoryCategory)
     ? requestedCategory as MemoryCategory
     : "fact";
   const requestedTags = sanitizeReviewTags(input.tags);
   const storage = await orchestrator.getStorage(queueNamespace);
-  const reviewEnvelope = composeMemoryEnvelope(
-    {
-      content,
-      category: reviewCategory,
-      confidence: 0.2,
-      tags: Array.from(new Set([...EXPLICIT_CAPTURE_REVIEW_TAGS, ...requestedTags])),
-      ...(sanitizeReviewMetadata(input.entityRef) ? { entityRef: sanitizeReviewMetadata(input.entityRef) } : {}),
-      ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
-    },
-    { source: source === "inline" ? "explicit-inline-review" : "explicit-review" },
-    // The review queue is the FALLBACK for a capture that already failed
-    // primary validation — it must never be un-queueable. The tag list is
-    // machine-assembled (requested tags + the two fixed review tags), so 49+
-    // requested tags would push past the 50-tag limit and strict compose
-    // would throw, losing the capture (#2014 review round). Salvage clamps
-    // instead; the fixed review tags sort first in the assembly above, so
-    // they always survive the clamp.
-    { salvage: true },
+  const lockIdentity = buildExplicitCaptureDedupKey(
+    content,
+    reviewCategory,
+    input.sourceConnector,
   );
-  const { id: id } = await storage.writeSealedMemory(reviewEnvelope);
-  try {
-    const created = await storage.getMemoryById(id);
-    if (created) {
-      await storage.writeMemoryFrontmatter(created, {
-        status: "pending_review",
-        updated: new Date().toISOString(),
-      }, {
-        actor: explicitCaptureActor(source),
-        reasonCode: reason,
-        ruleVersion: "explicit-capture.v1",
-      });
+  const queue = async (): Promise<{ id: string; duplicateOf?: string }> => {
+    const duplicateOf = await findQueuedExplicitCaptureDuplicate(
+      orchestrator,
+      queueNamespace,
+      content,
+      input.sourceConnector,
+    );
+    if (duplicateOf) {
+      return { id: duplicateOf, duplicateOf };
     }
-  } finally {
-    // Record the catalog write touch (issue #1499, round 5/6 codex P2; NIhUg).
-    // A queued review capture writes memory to the namespace's root (the DEFAULT
-    // root when undefined), so its `lastWriteAt` must reflect the write once
-    // `writeMemory` returns an id. If the later pending-review frontmatter update
-    // fails, the memory file is still durable and must not disappear from
-    // writtenSince/maintenance scheduling. Guarded optional hook (rule #33).
-    // #1522: catalog touch handled at the storage chokepoint.
-  }
-  const event: MemoryLifecycleEvent = {
-    eventId: `mle-${randomUUID()}`,
-    memoryId: id,
-    eventType: "explicit_capture_queued",
-    timestamp: new Date().toISOString(),
-    actor: explicitCaptureActor(source),
-    reasonCode: reason,
-    ruleVersion: "explicit-capture.v1",
+
+    const reviewEnvelope = composeMemoryEnvelope(
+      {
+        content,
+        category: reviewCategory,
+        confidence: 0.2,
+        tags: Array.from(new Set([...EXPLICIT_CAPTURE_REVIEW_TAGS, ...requestedTags])),
+        ...(sanitizeReviewMetadata(input.entityRef) ? { entityRef: sanitizeReviewMetadata(input.entityRef) } : {}),
+        ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
+      },
+      { source: source === "inline" ? "explicit-inline-review" : "explicit-review" },
+      // The review queue is the FALLBACK for a capture that already failed
+      // primary validation — it must never be un-queueable. The tag list is
+      // machine-assembled (requested tags + the two fixed review tags), so 49+
+      // requested tags would push past the 50-tag limit and strict compose
+      // would throw, losing the capture (#2014 review round). Salvage clamps
+      // instead; the fixed review tags sort first in the assembly above, so
+      // they always survive the clamp.
+      { salvage: true },
+    );
+    const { id } = await storage.writeSealedMemory(reviewEnvelope);
+    try {
+      const created = await storage.getMemoryById(id);
+      if (created) {
+        await storage.writeMemoryFrontmatter(created, {
+          status: "pending_review",
+          updated: new Date().toISOString(),
+        }, {
+          actor: explicitCaptureActor(source),
+          reasonCode: reason,
+          ruleVersion: "explicit-capture.v1",
+        });
+      }
+    } finally {
+      // Record the catalog write touch (issue #1499, round 5/6 codex P2; NIhUg).
+      // A queued review capture writes memory to the namespace's root (the DEFAULT
+      // root when undefined), so its `lastWriteAt` must reflect the write once
+      // `writeMemory` returns an id. If the later pending-review frontmatter update
+      // fails, the memory file is still durable and must not disappear from
+      // writtenSince/maintenance scheduling. Guarded optional hook (rule #33).
+      // #1522: catalog touch handled at the storage chokepoint.
+    }
+    const event: MemoryLifecycleEvent = {
+      eventId: `mle-${randomUUID()}`,
+      memoryId: id,
+      eventType: "explicit_capture_queued",
+      timestamp: new Date().toISOString(),
+      actor: explicitCaptureActor(source),
+      reasonCode: reason,
+      ruleVersion: "explicit-capture.v1",
+    };
+    await storage.appendMemoryLifecycleEvents([event]);
+    return { id };
   };
-  await storage.appendMemoryLifecycleEvents([event]);
-  return { id };
+  if (typeof storage.withTombstoneBlockedCaptureWriteLock !== "function") return await queue();
+  return await storage.withTombstoneBlockedCaptureWriteLock(queue, lockIdentity);
 }
 
 export function shouldSkipImplicitExtraction(cfg: Pick<PluginConfig, "captureMode">): boolean {
