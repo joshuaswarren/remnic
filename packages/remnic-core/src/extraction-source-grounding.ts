@@ -539,9 +539,13 @@ function candidateClauses(candidate: string): string[] {
       .split(/,\s+(?=[\p{L}][\p{L}\p{N}'’-]*\s+\S)/gu)
       .flatMap((commaClause) =>
         commaClause
-          .split(/\s+(?:and|but|or|while|although|because)\s+/gu)
-          .map((clause) => clause.trim())
-          .filter((clause) => clause.length > 0),
+          .split(/\s*(?::|[—–])\s+|\s+\/\s+/u)
+          .flatMap((delimiterClause) =>
+            delimiterClause
+              .split(/\s+(?:and|but|or|while|although|because)\s+/gu)
+              .map((clause) => clause.trim())
+              .filter((clause) => clause.length > 0),
+          ),
       ),
   );
 }
@@ -851,7 +855,8 @@ function filterGroundedFact(
   const groundedFactEventTime = factEventTime === undefined
     ? undefined
     : eventTimeNormalizer?.(factEventTime) ?? factEventTime;
-  const factSupportingSentences = sourceSentences(factContext.source).filter((sentence) =>
+  const factSupportingSourceText = factContext.assertionSource ?? factContext.source;
+  const factSupportingSentences = sourceSentences(factSupportingSourceText).filter((sentence) =>
     isGroundedCandidate(
       fact.content,
       sentence,
@@ -1080,13 +1085,21 @@ function hasWhAnswerRoleAlignment(question: string, sentence: string): boolean {
   return true;
 }
 
-function isQuestionAnsweredBySource(question: string, source: string): boolean {
+function isQuestionAnsweredBySource(
+  question: string,
+  source: string,
+  assertionSource: string | undefined,
+): boolean {
   const questionTokens = tokenize(question);
   if (questionTokens.size === 0) return false;
   const isYesNoQuestion = /^(?:is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had)\b/iu
     .test(question.trim());
+  const assertedSentences = new Set(
+    sourceSentences(assertionSource ?? source).map((sentence) => normalizeForExactMatch(sentence)),
+  );
   const sentences = sourceSentences(source);
   return sentences.some((sentence, index) => {
+    if (!assertedSentences.has(normalizeForExactMatch(sentence))) return false;
     if (isInterrogativeSourceSentence(sentence)) return false;
     if (isYesNoAnswer(sentence)) {
       const precedingSentence = sentences[index - 1];
@@ -1108,8 +1121,8 @@ function groundQuestion(
   source: string,
   assertionSource: string | undefined,
 ): ExtractionResult["questions"][number] | undefined {
-  if (isQuestionAnsweredBySource(question.question, source)) return undefined;
-  if (!isGroundedCandidate(question.question, source, assertionSource, true)) return undefined;
+  if (isQuestionAnsweredBySource(question.question, source, assertionSource)) return undefined;
+  if (!isGroundedCandidate(question.question, source, undefined, true)) return undefined;
   const normalizedContext = question.context.trim();
   if (
     normalizedContext.length > 0

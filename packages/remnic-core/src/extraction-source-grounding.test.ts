@@ -1938,3 +1938,67 @@ test("grounding keeps declarative conditional facts", () => {
 
   assert.deepEqual(result.facts.map((fact) => fact.content), ["Alice uses PostgreSQL if available."]);
 });
+
+test("grounding rejects unsupported propositions after common delimiters", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme: Bob owns Mars.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice works at Acme.",
+    "Alice works at Acme.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding does not keep context-only event times", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice deployed Acme.",
+        confidence: 0.9,
+        tags: [],
+        eventTime: "yesterday",
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice deployed Acme yesterday.\nAlice deployed Acme today.",
+    "Alice deployed Acme today.",
+  );
+
+  assert.equal(result.facts[0]?.eventTime, undefined);
+});
+
+test("grounding keeps unresolved questions when only context answers them", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{
+        question: "Does Alice work at Acme?",
+        context: "",
+        priority: 0.5,
+      }],
+    },
+    "Does Alice work at Acme?\nYes.\nAlice still needs confirmation.",
+    "Alice still needs confirmation.",
+  );
+
+  assert.deepEqual(result.questions, [{
+    question: "Does Alice work at Acme?",
+    context: "",
+    priority: 0.5,
+  }]);
+});
