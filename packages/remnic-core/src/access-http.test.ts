@@ -241,11 +241,16 @@ test("HTTP batch LCM flush deduplicates aliases after effective namespace resolu
       enabled: true,
       flushed: true,
       sessionKey: "effective-namespace-session",
-      namespaces: [""],
+      namespaces: ["", "default"],
       results: [
         {
           status: "fulfilled",
           namespace: "",
+          result: { enabled: true, flushed: true },
+        },
+        {
+          status: "fulfilled",
+          namespace: "default",
           result: { enabled: true, flushed: true },
         },
       ],

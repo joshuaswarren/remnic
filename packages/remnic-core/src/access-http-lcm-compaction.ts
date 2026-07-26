@@ -78,6 +78,16 @@ export async function handleLcmCompactionFlushHttp({
       })
     )
   );
+  const serviceOutcomesByEffectiveNamespace = new Map<
+    string,
+    PromiseSettledResult<EngramAccessLcmCompactionFlushResponse>
+  >();
+  for (const [index, resolved] of uniqueResolvedNamespaces.entries()) {
+    const serviceOutcome = serviceOutcomes[index];
+    if (serviceOutcome !== undefined) {
+      serviceOutcomesByEffectiveNamespace.set(resolved.effectiveNamespace, serviceOutcome);
+    }
+  }
   type BatchResult =
     | {
         requestedNamespace: string;
@@ -85,30 +95,22 @@ export async function handleLcmCompactionFlushHttp({
         result: EngramAccessLcmCompactionFlushResponse;
       }
     | { requestedNamespace: string; status: "rejected" };
-  const results: BatchResult[] = [];
-  const emittedEffectiveNamespaces = new Set<string>();
-  let serviceOutcomeIndex = 0;
-  for (const [index, outcome] of resolutionOutcomes.entries()) {
+  const results: BatchResult[] = resolutionOutcomes.map((outcome, index) => {
     const requestedNamespace = requestedNamespaces[index] ?? "";
     if (outcome.status === "rejected") {
-      results.push({ status: "rejected", requestedNamespace });
-      continue;
+      return { status: "rejected", requestedNamespace };
     }
-    if (emittedEffectiveNamespaces.has(outcome.value.effectiveNamespace)) continue;
-    emittedEffectiveNamespaces.add(outcome.value.effectiveNamespace);
-    const serviceOutcome = serviceOutcomes[serviceOutcomeIndex++];
-    if (serviceOutcome?.status === "fulfilled") {
-      results.push({ status: "fulfilled", requestedNamespace, result: serviceOutcome.value });
-    } else {
-      results.push({ status: "rejected", requestedNamespace });
-    }
-  }
+    const serviceOutcome = serviceOutcomesByEffectiveNamespace.get(outcome.value.effectiveNamespace);
+    return serviceOutcome?.status === "fulfilled"
+      ? { status: "fulfilled", requestedNamespace, result: serviceOutcome.value }
+      : { status: "rejected", requestedNamespace };
+  });
   recordWriteRateLimitHit();
   respondJson(response, 200, {
     enabled: results.every((result) => result.status === "fulfilled" && result.result.enabled !== false),
     flushed: results.every((result) => result.status === "fulfilled" && result.result.flushed !== false),
     sessionKey: body.sessionKey,
-    namespaces: results.map(({ requestedNamespace }) => requestedNamespace),
+    namespaces: requestedNamespaces,
     results: results.map(({ requestedNamespace, ...result }) => ({ ...result, namespace: requestedNamespace })),
   });
 }
