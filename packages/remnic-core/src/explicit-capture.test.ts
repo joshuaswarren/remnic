@@ -422,7 +422,7 @@ test("inline capture review fallback serializes duplicate checks across processo
   assert.equal(probe.maxConcurrentReadAllCalls(), 1);
 });
 
-test("inline capture review fallback deduplicates across authorized review namespaces", async () => {
+test("inline capture review fallback isolates authorized review namespaces", async () => {
   const primary = createInlineCaptureProcessorProbe();
   const secondary = createInlineCaptureProcessorProbe();
   const config = primary.orchestrator.config as PluginConfig;
@@ -439,7 +439,7 @@ test("inline capture review fallback deduplicates across authorized review names
   });
   const content = [
     "<memory_note>",
-    "content: The same unsupported note must queue once across review roots.",
+    "content: The same unsupported note must stay isolated by review principal.",
     "category: fact",
     "namespace: unsupported-inline-namespace",
     "</memory_note>",
@@ -460,9 +460,43 @@ test("inline capture review fallback deduplicates across authorized review names
   });
 
   assert.equal(first.queued, 1);
-  assert.equal(second.duplicates, 1);
+  assert.equal(second.queued, 1);
   assert.equal(primary.memories.length, 1);
-  assert.equal(secondary.memories.length, 0);
+  assert.equal(secondary.memories.length, 1);
+});
+
+test("inline capture review fallback replays within one authorized review namespace", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const config = probe.orchestrator.config as PluginConfig;
+  config.namespacePolicies = [{ name: "review-a", readPrincipals: ["*"], writePrincipals: ["*"] }];
+  const content = [
+    "<memory_note>",
+    "content: A same-principal invalid note must queue once.",
+    "category: fact",
+    "namespace: unsupported-inline-namespace",
+    "</memory_note>",
+  ].join("\n");
+  const first = await probe.processor.process({
+    captureMode: "hybrid",
+    content,
+    dedupeKeys: ["delivery-a"],
+    reviewNamespace: "review-a",
+    reviewNamespacePreResolved: true,
+  });
+  const restarted = new InlineExplicitCaptureProcessor(probe.orchestrator, {
+    sourceConnector: "openclaw",
+  });
+  const second = await restarted.process({
+    captureMode: "hybrid",
+    content,
+    dedupeKeys: ["delivery-b"],
+    reviewNamespace: "review-a",
+    reviewNamespacePreResolved: true,
+  });
+
+  assert.equal(first.queued, 1);
+  assert.equal(second.duplicates, 1);
+  assert.equal(probe.memories.length, 1);
 });
 
 test("inline capture processor rejects pre-resolved input without a resolved namespace", async () => {
@@ -778,36 +812,6 @@ test("inline capture review fallback scans the default root when namespaces are 
   assert.equal(second.duplicates, 1);
   assert.equal(probe.envelopes.length, 1);
   assert.ok(probe.requestedNamespaces.includes(undefined));
-});
-
-test("inline capture globally deduplicates unsupported namespace review replay", async () => {
-  const probe = createInlineCaptureProcessorProbe();
-  const request = {
-    captureMode: "hybrid" as const,
-    content: [
-      "<memory_note>",
-      "content: A safe unsupported namespace needs an isolated review replay.",
-      "category: fact",
-      "namespace: unconfigured-inline",
-      "</memory_note>",
-    ].join("\n"),
-  };
-
-  const first = await probe.processor.process({
-    ...request,
-    reviewNamespace: "review-one",
-    reviewNamespacePreResolved: true,
-  });
-  const second = await probe.processor.process({
-    ...request,
-    reviewNamespace: "review-two",
-    reviewNamespacePreResolved: true,
-  });
-
-  assert.equal(first.queued, 1);
-  assert.equal(second.processed, 0);
-  assert.equal(second.duplicates, 1);
-  assert.ok(probe.requestedNamespaces.includes("review-one"));
 });
 
 test("inline capture accepts corrected metadata after queuing a validation failure", async () => {

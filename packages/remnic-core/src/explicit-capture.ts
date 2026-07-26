@@ -595,15 +595,7 @@ function explicitCaptureReviewNamespaces(
   queueNamespace: string | undefined
 ): Array<string | undefined> {
   const config = orchestrator.config;
-  const namespaces = new Set<string | undefined>();
-  const add = (namespace: string | undefined): void => {
-    namespaces.add(asTrimmed(namespace));
-  };
-  add(queueNamespace ?? config.defaultNamespace);
-  if (config.namespacesEnabled !== false) {
-    for (const policy of config.namespacePolicies) add(policy.name);
-  }
-  return [...namespaces];
+  return [asTrimmed(queueNamespace) ?? asTrimmed(config.defaultNamespace)];
 }
 
 async function findQueuedExplicitCaptureDuplicate(
@@ -786,7 +778,6 @@ export interface InlineExplicitCaptureProcessorOptions {
 }
 
 const DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT = 1024;
-const EXPLICIT_CAPTURE_REVIEW_FALLBACK_SCOPE = "__explicit-capture-review-fallback__";
 
 export class InlineExplicitCaptureProcessor {
   private readonly observedKeys = new Set<string>();
@@ -824,19 +815,17 @@ export class InlineExplicitCaptureProcessor {
     namespacePreResolved: boolean,
     fallbackReviewNamespace?: string
   ): { replayKeys: string[]; validationFailureKey: string } {
+    let fallbackNamespace: string | undefined;
     let effectiveNamespace = asTrimmed(input.namespace);
-    let reviewFallback = false;
     if (!namespacePreResolved) {
       try {
         effectiveNamespace = resolveExplicitCaptureNamespace(this.orchestrator, effectiveNamespace);
       } catch {
-        reviewFallback = fallbackReviewNamespace !== undefined;
-        effectiveNamespace = asTrimmed(fallbackReviewNamespace) ?? asTrimmed(input.namespace);
+        fallbackNamespace = asTrimmed(fallbackReviewNamespace);
+        effectiveNamespace = fallbackNamespace ?? asTrimmed(input.namespace);
       }
     }
-    const namespaceScope = reviewFallback
-      ? EXPLICIT_CAPTURE_REVIEW_FALLBACK_SCOPE
-      : (effectiveNamespace ?? this.orchestrator.config.defaultNamespace);
+    const namespaceScope = fallbackNamespace ?? effectiveNamespace ?? this.orchestrator.config.defaultNamespace;
     const sourceConnectorScope = asTrimmed(input.sourceConnector) ?? "";
     const noteHash = createHash("sha256")
       .update(

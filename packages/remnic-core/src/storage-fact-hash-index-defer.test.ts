@@ -1620,6 +1620,79 @@ test("offline sync mutation rebuilds a loaded tombstone-blocked index", async ()
   });
 });
 
+test("chunked offline sync reserves the incoming blocked identity before streaming", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "Chunked offline sync must coordinate its incoming blocked identity.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "chunked-incoming-identity",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory);
+
+    const updatedFile = [
+      "---",
+      `id: ${memory.frontmatter.id}`,
+      "category: fact",
+      `created: ${memory.frontmatter.created}`,
+      `updated: ${new Date(Date.now() + 1_000).toISOString()}`,
+      `source: ${memory.frontmatter.source}`,
+      `confidence: ${memory.frontmatter.confidence}`,
+      `confidenceTier: ${memory.frontmatter.confidenceTier}`,
+      "tags: []",
+      "sourceConnector: provider-b",
+      "status: pending_review",
+      `blockedBy: ${memory.frontmatter.blockedBy}`,
+      "---",
+      "",
+      memory.content,
+      "",
+    ].join("\n");
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (let offset = 0; offset < updatedFile.length; offset += 31) {
+        yield Buffer.from(updatedFile.slice(offset, offset + 31), "utf8");
+      }
+    })();
+    const identity = buildExplicitCaptureDedupKey(memory.content, "fact", "provider-b");
+    const releaseState = Promise.withResolvers<void>();
+    const enteredState = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      enteredState.resolve();
+      await releaseState.promise;
+    }, identity);
+    await enteredState.promise;
+
+    let completed = false;
+    const pending = storage.writeOfflineSyncFileChunks(memory.path, chunks).then(() => {
+      completed = true;
+    });
+    const delayState = Promise.withResolvers<void>();
+    setTimeout(delayState.resolve, 50);
+    await delayState.promise;
+    assert.equal(completed, false, "chunked sync must wait for the incoming identity lock");
+    releaseState.resolve();
+    await held;
+    await pending;
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"), true);
+  });
+});
+
 test("offline sync mutation rebuilds blocked index for every recall category", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);
@@ -2037,6 +2110,56 @@ test("blocked generic writes share their explicit-capture identity lock", async 
     assert.equal(result.tombstoneBlocked, true);
     assert.equal(result.id, firstResult.id, "the waiting writer must recheck identity after lock acquisition");
     assert.equal((await storage.readAllMemories()).length, 1, "the duplicate row must not be persisted");
+  });
+});
+
+test("blocked dedupe preserves punctuation and connector identity", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "identity-preservation",
+      rawContent: "Remember cats.",
+    });
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "connector-preservation",
+      rawContent: "Remember dogs.",
+    });
+
+    const punctuationA = await storage.writeMemory("fact", "Remember cats.", {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const punctuationB = await storage.writeMemory("fact", "Remember cats!", {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const connectorA = await storage.writeMemory("fact", "Remember dogs.", {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const connectorB = await storage.writeMemory("fact", "Remember dogs.", {
+      source: "test",
+      sourceConnector: "provider.a",
+    });
+
+    assert.equal(punctuationA.tombstoneBlocked, true);
+    assert.equal(punctuationB.tombstoneBlocked, true);
+    assert.equal(connectorA.tombstoneBlocked, true);
+    assert.equal(connectorB.tombstoneBlocked, true);
+    assert.notEqual(punctuationA.id, punctuationB.id);
+    assert.notEqual(connectorA.id, connectorB.id);
+    assert.equal((await storage.readAllMemories()).length, 4);
   });
 });
 

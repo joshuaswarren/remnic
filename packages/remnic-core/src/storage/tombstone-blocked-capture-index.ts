@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { normalizeContent } from "../content-hash.js";
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -43,18 +42,15 @@ export function normalizeExplicitCaptureContent(value: string): string {
 
 /**
  * Build the targeted identity for a tombstone-blocked explicit-capture row.
- * Each field is normalized and length-prefixed so the punctuation-stripping
- * content-hash index cannot collapse tuple boundaries or distinct providers.
+ * Content uses the same whitespace-only normalization as durable duplicate
+ * checks; category and connector preserve their exact trimmed values.
  */
 export function buildExplicitCaptureDedupKey(
   content: string,
   category: string,
   sourceConnector: string | undefined
 ): string {
-  const encode = (label: string, value: string): string => {
-    const normalized = normalizeContent(value);
-    return `${label} ${normalized.length} ${normalized}`;
-  };
+  const encode = (label: string, value: string): string => `${label} ${value.length} ${value}`;
   return [
     encode("category", category),
     encode("connector", sourceConnector?.trim() ?? ""),
@@ -775,6 +771,9 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       ...(this.isTombstoneBlockedMemory(before) ? [this.offlineSyncMemoryIdentity(before)] : []),
       ...(this.isTombstoneBlockedMemory(after) ? [this.offlineSyncMemoryIdentity(after)] : []),
       ...(coordinate ? [target] : []),
+      // A coordinate stream that cannot be parsed has no incoming identity
+      // yet; hold the global capture lock while the durable stream is in flight.
+      ...(coordinate && after === null ? [""] : []),
     ];
     const mutate = async (): Promise<void> => {
       const marker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
@@ -818,16 +817,47 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     );
   }
 
+  private async prepareTombstoneBlockedOfflineSyncChunks(
+    target: string,
+    chunks: AsyncIterable<Buffer>
+  ): Promise<{ after: MemoryFile | null; chunks: AsyncIterable<Buffer> }> {
+    const parseMemory = this.tombstoneBlockedCaptureIndexOptions().parseMemory;
+    if (!parseMemory) return { after: null, chunks };
+
+    const iterator = chunks[Symbol.asyncIterator]();
+    const buffered: Buffer[] = [];
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) break;
+      buffered.push(next.value);
+    }
+
+    let after: MemoryFile | null = null;
+    try {
+      after = parseMemory(target, Buffer.concat(buffered));
+    } catch {
+      after = null;
+    }
+    const replay = (async function* (): AsyncIterable<Buffer> {
+      for (const chunk of buffered) yield chunk;
+    })();
+    return { after, chunks: replay };
+  }
+
   protected async writeTombstoneBlockedOfflineSyncFileChunks(
     target: string,
     chunks: AsyncIterable<Buffer>,
     writeChunks: (filePath: string, chunks: AsyncIterable<Buffer>) => Promise<void>
   ): Promise<void> {
+    const coordinate = this.getTombstoneBlockedCaptureIndex().shouldRebuildAfterInvalidationForPath(target);
+    const prepared = coordinate
+      ? await this.prepareTombstoneBlockedOfflineSyncChunks(target, chunks)
+      : { after: null, chunks };
     await this.runTombstoneBlockedOfflineSyncMutation(
       target,
-      null,
-      () => writeChunks(target, chunks),
-      this.getTombstoneBlockedCaptureIndex().shouldRebuildAfterInvalidationForPath(target)
+      prepared.after,
+      () => writeChunks(target, prepared.chunks),
+      coordinate
     );
   }
 
