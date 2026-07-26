@@ -1,4 +1,6 @@
-import { existsSync } from "node:fs";
+import { lstat, realpath } from "node:fs/promises";
+import { isErrnoCode } from "./utils/errno.js";
+import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { getMemoryProjectionPath, initializeMemoryProjectionDb } from "./memory-projection-store.js";
 import { type BetterSqlite3Database, openBetterSqlite3 } from "./runtime/better-sqlite.js";
 
@@ -20,6 +22,28 @@ function isSqliteBusyError(error: unknown): boolean {
   return lower.includes("database is locked") || lower.includes("sqlite_busy");
 }
 
+async function validateProjectionPath(
+  memoryDir: string,
+  projectionPath: string,
+): Promise<boolean> {
+  let projectionStat;
+  try {
+    projectionStat = await lstat(projectionPath);
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) return false;
+    throw error;
+  }
+  if (projectionStat.isSymbolicLink() || !projectionStat.isFile()) {
+    throw new Error(`Refusing memory projection rewrite through unsafe database path: ${projectionPath}.`);
+  }
+  const [memoryRoot, projectionReal] = await Promise.all([
+    realpath(memoryDir),
+    realpath(projectionPath),
+  ]);
+  assertPathInsideRoot(memoryRoot, projectionReal, projectionPath);
+  return true;
+}
+
 async function rewriteProjectedEntityReferenceRows(
   memoryDir: string,
   entries: ReadonlyArray<readonly [string, string]>,
@@ -36,10 +60,11 @@ async function rewriteProjectedEntityReferenceRows(
   if (validEntries.length === 0) return;
 
   const projectionPath = getMemoryProjectionPath(memoryDir);
-  if (!existsSync(projectionPath)) return;
+  if (!(await validateProjectionPath(memoryDir, projectionPath))) return;
 
   let lastError: unknown;
   for (let attempt = 0; attempt < PROJECTION_WRITE_RETRY_COUNT; attempt += 1) {
+    if (!(await validateProjectionPath(memoryDir, projectionPath))) return;
     let db: BetterSqlite3Database | null = null;
     try {
       db = openBetterSqlite3(projectionPath, { fileMustExist: true });

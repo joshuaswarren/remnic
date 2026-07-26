@@ -116,8 +116,8 @@ export class OrchestratorInitCoordinator {
         quiet: true,
         logger: (message) => log.info(message),
       });
-      await this.deps.storage.ensureDirectories();
       await this.deps.storage.loadAliases();
+      await this.deps.storage.ensureDirectories();
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
         const namespaces = new Set<string>([
           this.deps.config.defaultNamespace,
@@ -126,8 +126,8 @@ export class OrchestratorInitCoordinator {
         ]);
         for (const ns of namespaces) {
           const sm = await this.deps.storageRouter.storageFor(ns);
-          await sm.ensureDirectories();
           await sm.loadAliases().catch(() => undefined);
+          await sm.ensureDirectories();
         }
         // Explicitly seed the catalog with all configured namespaces at startup
         // (round 6, cursor Medium — NBLlR). The storageFor loop above fires the

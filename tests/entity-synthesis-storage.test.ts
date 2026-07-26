@@ -19,7 +19,10 @@ import {
   writeMaybeEncryptedFile,
 } from "../packages/remnic-core/src/secure-store/secure-fs.js";
 import { rebuildMemoryProjection } from "../packages/remnic-core/src/maintenance/rebuild-memory-projection.js";
-import { rewriteProjectedMemoryEntityReference } from "../packages/remnic-core/src/memory-projection-mutations.js";
+import {
+  rewriteProjectedMemoryEntityReference,
+  rewriteProjectedEntityReferences,
+} from "../packages/remnic-core/src/memory-projection-mutations.js";
 import {
   getMemoryProjectionPath,
   initializeMemoryProjectionDb,
@@ -35,6 +38,27 @@ test("projection memory rewrites reject an empty memory id", async () => {
     () => rewriteProjectedMemoryEntityReference("/tmp/remnic-projection-test", "", "legacy", "canonical"),
     /memoryId must not be empty/,
   );
+});
+
+test("projection memory rewrites reject symlinked databases outside the memory root", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-projection-symlink-memory-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-projection-symlink-outside-"));
+  try {
+    const projectionPath = getMemoryProjectionPath(memoryDir);
+    const outsidePath = path.join(outsideDir, "memory-projection.sqlite");
+    await mkdir(path.dirname(projectionPath), { recursive: true });
+    await writeFile(outsidePath, "external projection", "utf-8");
+    await symlink(outsidePath, projectionPath);
+
+    await assert.rejects(
+      () => rewriteProjectedEntityReferences(memoryDir, { "legacy-entity": "canonical-entity" }),
+      /unsafe database path/,
+    );
+    assert.equal(await readFile(outsidePath, "utf-8"), "external projection");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
 });
 
 test("projection memory rewrites initialize legacy projection tables", async () => {
@@ -325,6 +349,50 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
       [{ target: canonical, label: "depends on" }],
     );
     assert.deepEqual((await upgraded.readEntities()).sort(), [relatedCanonical, canonical].sort());
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories reapplies completed mappings to memories created later", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-completed-reapply-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const canonical = normalizeEntityName(name, type);
+    const legacyCanonical = "project-";
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await storage.writeEntity(name, type, ["Historical entity fact."]);
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+    );
+    await storage.ensureDirectories();
+
+    const day = new Date().toISOString().slice(0, 10);
+    const memoryPath = path.join(dir, "facts", day, "created-after-migration.md");
+    await mkdir(path.dirname(memoryPath), { recursive: true });
+    await writeFile(
+      memoryPath,
+      [
+        "---",
+        "id: created-after-migration",
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        `entityRef: ${legacyCanonical}`,
+        "---",
+        "",
+        "Created after the migration completed.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    (storage as unknown as { bumpMemoryCorpusVersion(): void }).bumpMemoryCorpusVersion();
+
+    await storage.ensureDirectories();
+
+    assert.match(await readFile(memoryPath, "utf-8"), new RegExp(`entityRef: ${canonical}`));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -933,6 +1001,67 @@ test("ensureDirectories reruns migration when aliases change and ignores reversa
     await storage.ensureDirectories();
     assert.match(await readFile(path.join(dir, "entities", `${nextCanonical}.md`), "utf-8"), /# Café/);
     await assert.rejects(() => readFile(path.join(dir, "entities", `${previousCanonical}.md`)), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories rejects a symlinked migration journal", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-journal-symlink-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-journal-outside-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const journalPath = path.join(dir, "state", "entity-canonical-id-migration-v1.json");
+    const outsideJournal = path.join(outsideDir, "migration.json");
+    await writeFile(
+      outsideJournal,
+      JSON.stringify({ version: 1, complete: true, mappings: {} }),
+      "utf-8",
+    );
+    await rm(journalPath, { force: true });
+    await symlink(outsideJournal, journalPath);
+
+    await assert.rejects(
+      () => new StorageManager(dir).ensureDirectories(),
+      /unsafe migration state file|symlink/i,
+    );
+    assert.deepEqual(
+      JSON.parse(await readFile(outsideJournal, "utf-8")),
+      { version: 1, complete: true, mappings: {} },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("ensureDirectories rejects path separators in alias migration targets", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-alias-path-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const name = "Café";
+    const type = "project";
+    const canonical = storage.normalizeEntityName(name, type);
+    await storage.writeEntity(name, type, ["Canonical entity fact."]);
+    const legacy = normalizeLegacyEntityName(name, type);
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${legacy}.md`),
+    );
+    await writeFile(
+      path.join(dir, "config", "aliases.json"),
+      JSON.stringify({ "café": "foo/bar" }),
+      "utf-8",
+    );
+    await storage.loadAliases();
+
+    await assert.rejects(
+      () => storage.ensureDirectories(),
+      /unsafe entity id|path separator/i,
+    );
+    assert.match(await readFile(path.join(dir, "entities", `${legacy}.md`), "utf-8"), /# Café/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

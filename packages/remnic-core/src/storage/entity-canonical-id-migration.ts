@@ -128,6 +128,29 @@ function statePath(deps: EntityCanonicalIdMigrationDependencies): string {
   return path.join(deps.stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE);
 }
 
+async function assertSafeMigrationStateFile(
+  deps: EntityCanonicalIdMigrationDependencies,
+): Promise<void> {
+  const migrationStatePath = statePath(deps);
+  let fileStat;
+  try {
+    fileStat = await lstat(migrationStatePath);
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) return;
+    throw error;
+  }
+  if (fileStat.isSymbolicLink() || !fileStat.isFile()) {
+    throw new Error(
+      `Refusing entity canonical-id migration through unsafe migration state file: ${migrationStatePath}.`,
+    );
+  }
+  const [stateRoot, stateFile] = await Promise.all([
+    realpath(deps.stateDir),
+    realpath(migrationStatePath),
+  ]);
+  assertPathInsideRoot(stateRoot, stateFile, migrationStatePath);
+}
+
 function lockPath(deps: EntityCanonicalIdMigrationDependencies): string {
   return path.join(deps.stateDir, "entity-canonical-id-migration.lock");
 }
@@ -135,6 +158,7 @@ function lockPath(deps: EntityCanonicalIdMigrationDependencies): string {
 async function readState(
   deps: EntityCanonicalIdMigrationDependencies
 ): Promise<EntityCanonicalIdMigrationState | null> {
+  await assertSafeMigrationStateFile(deps);
   let raw: string;
   try {
     raw = await readFile(statePath(deps), "utf-8");
@@ -185,6 +209,12 @@ async function sameFileIdentity(leftPath: string, rightPath: string): Promise<bo
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) return false;
     throw error;
+  }
+}
+
+function assertSafeEntityId(entityId: string): void {
+  if (/[\/\\\0]/.test(entityId)) {
+    throw new Error(`Refusing entity canonical-id migration through unsafe entity id: ${entityId}.`);
   }
 }
 
@@ -246,6 +276,7 @@ async function discoverMappings(
   for (const entry of entityEntries) {
     if (!entry.endsWith(".md")) continue;
     const legacyId = entry.slice(0, -".md".length);
+    assertSafeEntityId(legacyId);
     const legacyPath = deps.resolveEntityFilePath(legacyId);
     if (legacyPath === null) continue;
     const entityContent = await deps.readStorageSecureFile(legacyPath);
@@ -260,6 +291,7 @@ async function discoverMappings(
       throw new Error(`Cannot migrate malformed entity file ${entry}: missing name or type.`);
     }
     const canonicalId = deps.normalizeEntityName(entity.name, entity.type);
+    assertSafeEntityId(canonicalId);
     if (legacyId === canonicalId) continue;
     const canonicalPath = deps.resolveEntityFilePath(canonicalId);
     if (canonicalPath === null) continue;
@@ -454,6 +486,20 @@ async function rewriteRelationshipTargets(
   return rewritten;
 }
 
+async function rewriteKnownReferences(
+  deps: EntityCanonicalIdMigrationDependencies,
+  mappings: Readonly<Record<string, string>>,
+  refreshLock: () => Promise<boolean>,
+): Promise<boolean> {
+  await rewriteRelationshipTargets(deps, mappings, refreshLock);
+  let rewroteColdMemory = (await rewriteReferences(deps, mappings, refreshLock)).rewroteColdMemory;
+  await rewriteTombstoneReferences(deps, mappings, refreshLock);
+  await deps.rewriteProjectedEntityReferences(mappings);
+  const finalMemoryPass = await rewriteReferences(deps, mappings, refreshLock);
+  rewroteColdMemory ||= finalMemoryPass.rewroteColdMemory;
+  return rewroteColdMemory;
+}
+
 function wouldCreateMappingCycle(
   mappings: Readonly<Record<string, string>>,
   legacyId: string,
@@ -564,7 +610,19 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
           await discoverMappings(deps, state.mappings),
         );
         const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
-        if (state.complete && Object.keys(discoveredBefore).length === 0 && !mappingsChanged) return;
+        if (state.complete && Object.keys(discoveredBefore).length === 0 && !mappingsChanged) {
+          if (Object.keys(state.mappings).length === 0) return;
+          const rewroteColdMemory = await rewriteKnownReferences(
+            deps,
+            state.mappings,
+            () => lock.refresh(),
+          );
+          deps.invalidateKnowledgeIndexCache();
+          deps.invalidateAllMemoriesCache();
+          if (rewroteColdMemory) deps.invalidateColdMemoriesCache();
+          deps.bumpMemoryStatusVersion();
+          return;
+        }
         if (
           state.complete
           || Object.keys(discoveredBefore).length > 0
@@ -596,6 +654,8 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
           const deferredMappings: Array<[string, string]> = [];
           let progressed = false;
           for (const [legacyId, canonicalId] of pendingMappings) {
+            assertSafeEntityId(legacyId);
+            assertSafeEntityId(canonicalId);
             const legacyPath = deps.resolveEntityFilePath(legacyId);
             const canonicalPath = deps.resolveEntityFilePath(canonicalId);
             if (legacyPath === null || canonicalPath === null) {
@@ -663,12 +723,11 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
           pendingMappings = deferredMappings;
         }
 
-        await rewriteRelationshipTargets(deps, state.mappings, () => lock.refresh());
-        let rewroteColdMemory = (await rewriteReferences(deps, state.mappings, () => lock.refresh())).rewroteColdMemory;
-        await rewriteTombstoneReferences(deps, state.mappings, () => lock.refresh());
-        await deps.rewriteProjectedEntityReferences(state.mappings);
-        const finalMemoryPass = await rewriteReferences(deps, state.mappings, () => lock.refresh());
-        rewroteColdMemory ||= finalMemoryPass.rewroteColdMemory;
+        const rewroteColdMemory = await rewriteKnownReferences(
+          deps,
+          state.mappings,
+          () => lock.refresh(),
+        );
         deps.invalidateKnowledgeIndexCache();
         deps.invalidateAllMemoriesCache();
         if (rewroteColdMemory) deps.invalidateColdMemoriesCache();

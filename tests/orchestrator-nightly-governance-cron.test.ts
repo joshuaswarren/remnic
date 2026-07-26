@@ -48,6 +48,34 @@ function stubInitializeDependencies(orchestrator: any) {
   orchestrator.buffer = { load: async () => {} };
 }
 
+test("initialize loads aliases before running storage migration", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-alias-before-migration-memory-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-alias-before-migration-workspace-"));
+  try {
+    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, false));
+    stubInitializeDependencies(orchestrator);
+    const order: string[] = [];
+    orchestrator.storage = {
+      ensureDirectories: async () => {
+        order.push("ensureDirectories");
+      },
+      loadAliases: async () => {
+        order.push("loadAliases");
+      },
+      readAllMemories: async () => [],
+      readAllEntityFiles: async () => [],
+    };
+
+    await orchestrator.initialize();
+    await orchestrator.deferredReady;
+
+    assert.deepEqual(order.slice(0, 2), ["loadAliases", "ensureDirectories"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("initialize skips nightly governance cron auto-register unless explicitly enabled", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-off-memory-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-off-workspace-"));
