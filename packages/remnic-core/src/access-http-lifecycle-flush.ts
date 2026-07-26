@@ -4,13 +4,14 @@ import type {
   EngramAccessService,
 } from "./access-service.js";
 import type { OperationName } from "./access-boundary.js";
+import type { LcmCompactionFlushRequest } from "./access-schema.js";
 
 export interface LifecycleFlushHttpDeps {
   service: Pick<EngramAccessService, "extractionForceFlush" | "lcmCompactionFlush">;
   enforceTokenOp(op: OperationName): void;
-  readValidatedBody(
-    schemaName: "lcmCompactionFlush" | "extractionForceFlush",
-  ): Promise<EngramAccessLcmCompactionFlushRequest | EngramAccessExtractionForceFlushRequest>;
+  handleLcmCompactionFlushHttp?(body: LcmCompactionFlushRequest): Promise<void>;
+  readValidatedBody(schemaName: "lcmCompactionFlush"): Promise<LcmCompactionFlushRequest>;
+  readValidatedBody(schemaName: "extractionForceFlush"): Promise<EngramAccessExtractionForceFlushRequest>;
   ensureWriteRateLimitAvailable(): void;
   resolveNamespace(namespace: string | undefined): string | undefined;
   resolveRequestPrincipal(): string | undefined;
@@ -31,6 +32,10 @@ export async function maybeHandleLifecycleFlush(
   ) {
     deps.enforceTokenOp("lcm_compaction_flush");
     const body = await deps.readValidatedBody("lcmCompactionFlush");
+    if (deps.handleLcmCompactionFlushHttp !== undefined) {
+      await deps.handleLcmCompactionFlushHttp(body);
+      return true;
+    }
     deps.ensureWriteRateLimitAvailable();
     const response = await deps.service.lcmCompactionFlush({
       ...body,

@@ -3626,6 +3626,18 @@ export class EngramAccessHttpServer {
   private lifecycleFlushDeps(req: IncomingMessage, res: ServerResponse): LifecycleFlushHttpDeps {
     return {
       service: this.service,
+      handleLcmCompactionFlushHttp: (body) =>
+        lcm.handleLcmCompactionFlushHttp({
+          body,
+          service: this.service,
+          response: res,
+          ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
+          recordWriteRateLimitHit: () => this.recordWriteRateLimitHit(req),
+          resolveNamespace: (namespace) => this.resolveNamespace(req, namespace),
+          defaultNamespace: this.service.configRef?.defaultNamespace,
+          resolveRequestPrincipal: () => this.resolveRequestPrincipal(req),
+          respondJson: this.respondJson.bind(this),
+        }),
       enforceTokenOp: (op) => this.enforceTokenOp(op),
       readValidatedBody: (schemaName) => this.readValidatedBody(req, schemaName),
       ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),

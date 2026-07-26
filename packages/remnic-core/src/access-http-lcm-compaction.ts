@@ -41,6 +41,8 @@ export async function handleLcmCompactionFlushHttp({
     const result = await service.lcmCompactionFlush({
       sessionKey: body.sessionKey,
       namespace: resolveNamespace(body.namespace),
+      ...(body.cwd !== undefined ? { cwd: body.cwd } : {}),
+      ...(body.projectTag !== undefined ? { projectTag: body.projectTag } : {}),
       authenticatedPrincipal: resolveRequestPrincipal(),
     });
     recordWriteRateLimitHit();
@@ -74,6 +76,8 @@ export async function handleLcmCompactionFlushHttp({
       service.lcmCompactionFlush({
         sessionKey: body.sessionKey,
         namespace,
+        ...(body.cwd !== undefined ? { cwd: body.cwd } : {}),
+        ...(body.projectTag !== undefined ? { projectTag: body.projectTag } : {}),
         authenticatedPrincipal: resolveRequestPrincipal(),
       })
     )
