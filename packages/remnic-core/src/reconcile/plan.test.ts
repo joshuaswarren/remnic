@@ -143,7 +143,7 @@ test("a locally tombstoned fact is suppressed on the peer, not pulled back", () 
     namespace: "default",
     local: [],
     peer: [file("facts/retracted.md", "retracted-hash"), file("facts/fresh.md", "fresh-hash")],
-    tombstonedSha256: ["retracted-hash"],
+    tombstonedFileSha256: ["retracted-hash"],
   });
   const retracted = entryFor(entries, "facts/retracted.md");
   assert.equal(retracted.action, "suppress", "a retraction must survive every future reconcile");
@@ -159,7 +159,7 @@ test("a peer still serving a retracted fact is NOT converged", () => {
       namespace: "default",
       local: [],
       peer: [file("facts/retracted.md", "retracted-hash")],
-      tombstonedSha256: ["retracted-hash"],
+      tombstonedFileSha256: ["retracted-hash"],
     },
   ]);
   assert.equal(plan.converged, false, "propagating the retraction is work, not agreement");
@@ -253,4 +253,28 @@ test("entries carry the hashes a transport needs to verify what it moved", () =>
   const b = entryFor(entries, "facts/b.md");
   assert.equal(b.peerSha256, "peer-b");
   assert.equal(b.localSha256, undefined);
+});
+
+test("a duplicate path in the streamed local census does not double-count", () => {
+  // The local side is consumed as a stream, so a repeated path must not emit
+  // two entries or reappear as peer-only after the index entry was consumed.
+  const entries = planNamespaceReconciliation({
+    namespace: "default",
+    local: [file("facts/a.md", "same"), file("facts/a.md", "same")],
+    peer: [file("facts/a.md", "same")],
+  });
+  assert.equal(entries.filter((e) => e.path === "facts/a.md").length, 1);
+  assert.equal(entries[0]?.action, "identical");
+});
+
+test("streaming the local side still reports every peer-only path exactly once", () => {
+  const entries = planNamespaceReconciliation({
+    namespace: "default",
+    local: [file("facts/shared.md", "s")],
+    peer: [file("facts/shared.md", "s"), file("facts/p1.md", "1"), file("facts/p2.md", "2")],
+  });
+  assert.deepEqual(
+    entries.filter((e) => e.action === "pull").map((e) => e.path),
+    ["facts/p1.md", "facts/p2.md"],
+  );
 });

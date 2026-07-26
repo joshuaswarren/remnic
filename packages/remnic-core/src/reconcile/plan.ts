@@ -106,11 +106,17 @@ export interface ReconcileNamespaceInput {
    */
   base?: Iterable<ReconcileFileState>;
   /**
-   * Content hashes tombstoned locally. A peer that still holds a fact this side
-   * deliberately retracted must not resurrect it, so those paths are dropped
-   * from the pull set instead of being re-imported.
+   * Digests of FILES this side has retracted, in the same form as
+   * `ReconcileFileState.sha256` — a hash of the serialized file.
+   *
+   * Deliberately NOT `TombstoneEntry.contentHash`, which hashes the canonical
+   * raw fact text and therefore never equals a file digest (§13: one content
+   * form, everywhere). Mapping retracted fact hashes onto the file digests that
+   * carry them is the caller's job, because only the caller can read its own
+   * corpus; handing this the wrong form would silently plan `pull` and
+   * resurrect every retracted fact, so the parameter name states the form.
    */
-  tombstonedSha256?: Iterable<string>;
+  tombstonedFileSha256?: Iterable<string>;
 }
 
 export interface ReconcileOptions {
@@ -156,8 +162,12 @@ function resolveConflict(
 }
 
 /**
- * Plan one namespace. Exposed for callers that stream namespaces one at a time
- * so a 100k-file corpus never has two full censuses resident at once.
+ * Plan one namespace. Exposed for callers that stream namespaces one at a time.
+ *
+ * Residency is one peer index + a set of local paths + the entry list. The
+ * local census is consumed as a stream and never materialized, so a 100k-file
+ * corpus does not hold two full censuses at once — but this is NOT constant
+ * memory, and a caller holding its own census arrays adds to that.
  */
 export function planNamespaceReconciliation(
   input: ReconcileNamespaceInput,
@@ -165,14 +175,25 @@ export function planNamespaceReconciliation(
 ): ReconcilePlanEntry[] {
   const policy = options.conflictPolicy ?? "manual";
   const namespace = input.namespace;
-  const local = indexByPath(input.local);
+  // Index the peer census only, then stream the local one against it, removing
+  // each match as it is consumed. Peak residency is one index plus the entry
+  // list rather than two full censuses (round 2, codex P2).
   const peer = indexByPath(input.peer);
   const base = input.base ? indexByPath(input.base) : null;
-  const tombstoned = new Set(input.tombstonedSha256 ?? []);
+  const tombstoned = new Set(input.tombstonedFileSha256 ?? []);
   const entries: ReconcilePlanEntry[] = [];
 
-  for (const [path, localFile] of local) {
+  // Paths only, not file objects: enough to make the stream idempotent without
+  // materializing the second census.
+  const seenLocal = new Set<string>();
+  for (const localFile of input.local) {
+    const path = localFile?.path;
+    if (typeof path !== "string" || path.length === 0) continue;
+    if (seenLocal.has(path)) continue;
+    seenLocal.add(path);
     const peerFile = peer.get(path);
+    // Consumed: whatever remains in the index afterwards is peer-only.
+    peer.delete(path);
     const baseSha256 = base?.get(path)?.sha256;
     if (!peerFile) {
       // Base PRESENCE is what proves a deletion, not equality with whatever the
@@ -252,7 +273,6 @@ export function planNamespaceReconciliation(
   }
 
   for (const [path, peerFile] of peer) {
-    if (local.has(path)) continue;
     const baseSha256 = base?.get(path)?.sha256;
     if (tombstoned.has(peerFile.sha256)) {
       // Retracted here on purpose, and the peer still serves it. Pulling it
