@@ -143,10 +143,46 @@ const GROUNDING_ENTITY_TYPE_PREFIXES = new Set([
   "other",
 ]);
 
-function tokenSequence(text: string): string[] {
-  return text.normalize("NFKC").toLocaleLowerCase().match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu)
-    ?.map((token) => token.replaceAll("’", "'"))
+const GROUNDING_COMMON_VERB_FORMS = new Set([
+  "contains",
+  "employs",
+  "gives",
+  "has",
+  "hosts",
+  "likes",
+  "makes",
+  "needs",
+  "owns",
+  "prefers",
+  "requires",
+  "runs",
+  "shares",
+  "supports",
+  "takes",
+  "uses",
+  "wants",
+  "works",
+]);
+
+interface GroundingLexeme {
+  token: string;
+  preserveTerminalS: boolean;
+}
+
+function groundingLexemes(text: string): GroundingLexeme[] {
+  return text.normalize("NFKC").match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu)
+    ?.map((rawToken) => {
+      const token = rawToken.replaceAll("’", "'").toLocaleLowerCase();
+      return {
+        token,
+        preserveTerminalS: /^\p{Lu}/u.test(rawToken) && !GROUNDING_COMMON_VERB_FORMS.has(token),
+      };
+    })
     ?? [];
+}
+
+function tokenSequence(text: string): string[] {
+  return groundingLexemes(text).map(({ token }) => token);
 }
 
 function containsExactTokenSequence(candidate: string, source: string): boolean {
@@ -189,18 +225,23 @@ function isNegatedAt(tokens: ReadonlyArray<string>, index: number): boolean {
 }
 
 function hasContradictoryPolarity(candidate: string, source: string): boolean {
-  const candidateTokens = tokenSequence(candidate);
+  const candidateLexemes = groundingLexemes(candidate);
+  const candidateTokens = candidateLexemes.map(({ token }) => token);
   let coherentContradiction = false;
   for (const clause of sourceSentences(source).flatMap((sentence) =>
     sentence.split(/\s+(?:and|but|or|while|although|because)\s+/gu))) {
-    const sourceTokens = tokenSequence(clause);
+    const sourceLexemes = groundingLexemes(clause);
+    const sourceTokens = sourceLexemes.map(({ token }) => token);
     let sourceCursor = 0;
     let allTokensFound = true;
     let contradiction = false;
     for (const [candidateIndex, candidateToken] of candidateTokens.entries()) {
       if (GROUNDING_STOPWORDS[candidateToken] === true) continue;
       const sourceIndex = sourceTokens.findIndex(
-        (sourceToken, index) => index >= sourceCursor && stemToken(sourceToken) === stemToken(candidateToken),
+        (sourceToken, index) =>
+          index >= sourceCursor
+          && stemToken(sourceToken, sourceLexemes[index]?.preserveTerminalS === true)
+            === stemToken(candidateToken, candidateLexemes[candidateIndex]?.preserveTerminalS === true),
       );
       if (sourceIndex === -1) {
         allTokensFound = false;
@@ -218,17 +259,20 @@ function hasContradictoryPolarity(candidate: string, source: string): boolean {
   }
   if (coherentContradiction) return true;
 
-  const sourceTokens = tokenSequence(source);
+  const sourceLexemes = groundingLexemes(source);
+  const sourceTokens = sourceLexemes.map(({ token }) => token);
   const sourcePositions = new Map<string, number[]>();
-  sourceTokens.forEach((token, index) => {
-    const key = stemToken(token);
+  sourceLexemes.forEach(({ token, preserveTerminalS }, index) => {
+    const key = stemToken(token, preserveTerminalS);
     const positions = sourcePositions.get(key);
     if (positions) positions.push(index);
     else sourcePositions.set(key, [index]);
   });
   for (const [candidateIndex, token] of candidateTokens.entries()) {
     if (GROUNDING_STOPWORDS[token] === true) continue;
-    const positions = sourcePositions.get(stemToken(token));
+    const positions = sourcePositions.get(
+      stemToken(token, candidateLexemes[candidateIndex]?.preserveTerminalS === true),
+    );
     if (!positions || positions.length === 0) continue;
     const sourceIndex = positions[positions.length - 1];
     if (isNegatedAt(candidateTokens, candidateIndex) !== isNegatedAt(sourceTokens, sourceIndex)) {
@@ -241,17 +285,20 @@ function hasContradictoryPolarity(candidate: string, source: string): boolean {
 const GROUNDING_MIN_SHARED_TOKENS = 2;
 const GROUNDING_MIN_COVERAGE = 0.5;
 
-function stemToken(token: string): string {
+function stemToken(token: string, preserveTerminalS = false): string {
+  if (token.endsWith("'s")) return token.slice(0, -2);
   if (token.length > 5 && token.endsWith("ing")) return token.slice(0, -3);
   if (token.length > 4 && token.endsWith("ed")) return token.slice(0, -2);
-  if (token.length > 3 && token.endsWith("s") && !token.endsWith("ss")) return token.slice(0, -1);
+  if (!preserveTerminalS && token.length > 3 && token.endsWith("s") && !token.endsWith("ss")) {
+    return token.slice(0, -1);
+  }
   return token;
 }
 
 function tokenize(text: string): Set<string> {
   const tokens = new Set<string>();
-  for (const token of text.normalize("NFKC").toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []) {
-    if (GROUNDING_STOPWORDS[token] !== true) tokens.add(stemToken(token));
+  for (const { token, preserveTerminalS } of groundingLexemes(text)) {
+    if (GROUNDING_STOPWORDS[token] !== true) tokens.add(stemToken(token, preserveTerminalS));
   }
   return tokens;
 }
@@ -269,7 +316,7 @@ function sourceSentences(source: string): string[] {
     const boundary = character === "!"
       || character === "?"
       || character === ";"
-      || (character === "\n" && nextCharacter === "\n")
+      || character === "\n"
       || (character === "." && (
         nextCharacter === undefined
         || /\s/u.test(nextCharacter)
@@ -298,13 +345,13 @@ function isInterrogativeSourceSentence(sentence: string): boolean {
 }
 
 function groundingTokenSequence(text: string): string[] {
-  let tokens = tokenSequence(text);
-  while (tokens.length > 0 && GROUNDING_AUXILIARY_TOKENS.has(tokens[0]!)) {
-    tokens = tokens.slice(1);
+  let lexemes = groundingLexemes(text);
+  while (lexemes.length > 0 && GROUNDING_AUXILIARY_TOKENS.has(lexemes[0]!.token)) {
+    lexemes = lexemes.slice(1);
   }
-  return tokens
-    .filter((token) => GROUNDING_STOPWORDS[token] !== true)
-    .map(stemToken);
+  return lexemes
+    .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
+    .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS));
 }
 
 function normalizedGroundingTokenSequence(text: string): string[] {
@@ -374,12 +421,18 @@ function isSourceGroundedClause(
     const sentence = sentences[index];
     if (isBareYesNoAnswer(sentence)) {
       const precedingSentence = sentences[index - 1];
+      const answerToken = tokenSequence(sentence)[0];
+      const contradictoryPolarity = precedingSentence !== undefined
+        ? hasContradictoryPolarity(candidate, precedingSentence)
+        : false;
       if (
-        tokenSequence(sentence)[0] === "yes"
-        && precedingSentence !== undefined
+        precedingSentence !== undefined
         && isInterrogativeSourceSentence(precedingSentence)
         && groundedTokenScore(candidate, precedingSentence) === 1
-        && !hasContradictoryPolarity(candidate, precedingSentence)
+        && (
+          (answerToken === "yes" && !contradictoryPolarity)
+          || (answerToken === "no" && contradictoryPolarity)
+        )
       ) {
         return true;
       }
@@ -388,13 +441,13 @@ function isSourceGroundedClause(
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence)) continue;
     const sentenceText = normalizeForExactMatch(sentence);
     if (containsExactTokenSequence(candidate, sentenceText)) {
-      if (!hasContradictoryPolarity(candidate, sentenceText)) return true;
+      if (!hasContradictoryPolarity(candidate, sentence)) return true;
       bestContradictedScore = Math.max(bestContradictedScore, 1);
       continue;
     }
-    const score = groundedTokenScore(candidate, sentenceText, !includeInterrogativeSource);
+    const score = groundedTokenScore(candidate, sentence, !includeInterrogativeSource);
     if (score === 0) continue;
-    if (hasContradictoryPolarity(candidate, sentenceText)) {
+    if (hasContradictoryPolarity(candidate, sentence)) {
       bestContradictedScore = Math.max(bestContradictedScore, score);
     } else {
       bestSupportedScore = Math.max(bestSupportedScore, score);
@@ -408,7 +461,7 @@ function isSourceGrounded(
   includeInterrogativeSource = false,
 ): boolean {
   const candidateText = normalizeForExactMatch(candidate);
-  const sourceText = normalizeForExactMatch(source);
+  const sourceText = source.normalize("NFKC").trim();
   if (candidateText.length === 0 || sourceText.length === 0) return false;
 
   const hasSupportedExactMatch = sourceSentences(sourceText).some((sentence) => {
@@ -432,9 +485,9 @@ function isSourceGrounded(
 
 function normalizedEntityIdentifierTokens(name: string): string[] {
   const identifier = normalizeForExactMatch(name).replace(/[-_]+/gu, " ");
-  const tokens = tokenSequence(identifier)
-    .filter((token) => GROUNDING_STOPWORDS[token] !== true)
-    .map(stemToken);
+  const tokens = groundingLexemes(identifier)
+    .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
+    .map(({ token }) => stemToken(token, true));
   return tokens.length > 1 && GROUNDING_ENTITY_TYPE_PREFIXES.has(tokens[0] ?? "")
     ? tokens.slice(1)
     : tokens;
@@ -480,20 +533,29 @@ function hasGroundingAnchor(
   });
 }
 
-function hasAffirmativeAnswerSupport(
+function hasAnswerSupport(
   candidate: string,
   source: string,
   assertionSource: string,
 ): boolean {
-  if (!tokenSequence(assertionSource).includes("yes")) return false;
+  const assertionAnswers = new Set(
+    tokenSequence(assertionSource).filter((token) => token === "yes" || token === "no"),
+  );
+  if (assertionAnswers.size === 0) return false;
   const sentences = sourceSentences(source);
   return sentences.some((sentence, index) => {
-    if (tokenSequence(sentence)[0] !== "yes") return false;
+    const answerToken = tokenSequence(sentence)[0];
+    if (answerToken !== "yes" && answerToken !== "no" || !assertionAnswers.has(answerToken)) return false;
     const precedingSentence = sentences[index - 1];
-    return precedingSentence !== undefined
-      && isInterrogativeSourceSentence(precedingSentence)
-      && groundedTokenScore(candidate, precedingSentence) === 1
-      && !hasContradictoryPolarity(candidate, precedingSentence);
+    if (
+      precedingSentence === undefined
+      || !isInterrogativeSourceSentence(precedingSentence)
+      || groundedTokenScore(candidate, precedingSentence) !== 1
+    ) {
+      return false;
+    }
+    const contradictoryPolarity = hasContradictoryPolarity(candidate, precedingSentence);
+    return answerToken === "yes" ? !contradictoryPolarity : contradictoryPolarity;
   });
 }
 
@@ -521,6 +583,36 @@ function hasRoleNormalizedGrounding(candidate: string, source: string): boolean 
       && !hasContradictoryPolarity(candidate, sentence);
   });
 }
+
+interface GroundingContext {
+  source: string;
+  assertionSource: string | undefined;
+  allowRoleNormalization: boolean;
+}
+
+function resolveGroundingContext(
+  candidate: string,
+  source: string,
+  assertionSource: string | undefined,
+  roleAssertionSources: ExtractionGroundingRoleSources | undefined,
+): GroundingContext {
+  const candidateRole = groundingTokenSequence(candidate)[0];
+  if (!GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateRole ?? "")) {
+    return { source, assertionSource, allowRoleNormalization: false };
+  }
+  if (roleAssertionSources === undefined) {
+    return { source, assertionSource, allowRoleNormalization: true };
+  }
+  const roleSource = candidateRole === "user"
+    ? roleAssertionSources.profile
+    : roleAssertionSources.identity;
+  return {
+    source: roleSource ?? "",
+    assertionSource: roleSource ?? "",
+    allowRoleNormalization: true,
+  };
+}
+
 function isGroundedCandidate(
   candidate: string,
   source: string,
@@ -549,7 +641,7 @@ function isGroundedCandidate(
     && (
       clauses.every((clause) =>
         hasGroundingAnchor(clause, assertionSource, includeInterrogativeSource, requirePredicateSupport))
-      || hasAffirmativeAnswerSupport(candidate, source, assertionSource)
+      || hasAnswerSupport(candidate, source, assertionSource)
     );
 }
 
@@ -557,13 +649,36 @@ function filterGroundedFact(
   fact: ExtractionResult["facts"][number],
   source: string,
   assertionSource: string | undefined,
+  roleAssertionSources: ExtractionGroundingRoleSources | undefined,
 ): ExtractionResult["facts"][number] | undefined {
-  if (!isGroundedCandidate(fact.content, source, assertionSource)) return undefined;
+  const factContext = resolveGroundingContext(fact.content, source, assertionSource, roleAssertionSources);
+  if (!isGroundedCandidate(
+    fact.content,
+    factContext.source,
+    factContext.assertionSource,
+    false,
+    factContext.allowRoleNormalization,
+  )) return undefined;
 
   const groundedAttributes = fact.structuredAttributes
     ? Object.fromEntries(
       Object.entries(fact.structuredAttributes)
-        .filter(([key, value]) => isGroundedCandidate(`${key}: ${value}`, source, assertionSource)),
+        .filter(([key, value]) => {
+          const attribute = `${key}: ${value}`;
+          const attributeContext = resolveGroundingContext(
+            attribute,
+            source,
+            assertionSource,
+            roleAssertionSources,
+          );
+          return isGroundedCandidate(
+            attribute,
+            attributeContext.source,
+            attributeContext.assertionSource,
+            false,
+            attributeContext.allowRoleNormalization,
+          );
+        }),
     )
     : undefined;
   const groundedProcedureSteps = fact.procedureSteps
@@ -608,8 +723,9 @@ function filterGroundedFact(
     && isGroundedCandidate(fact.eventTime, source, assertionSource)
     ? fact.eventTime
     : undefined;
+  const entityRefSource = factContext.assertionSource ?? factContext.source;
   const groundedEntityRef = fact.entityRef !== undefined
-    && isGroundedEntityName(fact.entityRef, source)
+    && isGroundedEntityName(fact.entityRef, entityRefSource)
     ? fact.entityRef
     : undefined;
   const {
@@ -673,17 +789,12 @@ function isGroundedRelationship(
   const labelTokens = tokenize(relationship.label);
   if (sourceName.length === 0 || targetName.length === 0 || labelTokens.size === 0) return false;
   const relationText = `${sourceName} ${relationship.label} ${targetName}`;
-  const allowInterrogativeSource = assertionSource !== undefined
-    && normalizeForExactMatch(assertionSource) !== normalizeForExactMatch(source);
   const hasCoherentSourceSpan = sourceSentences(source).some((sentence) => {
-    if (!allowInterrogativeSource && isInterrogativeSourceSentence(sentence)) return false;
-    const sentenceText = normalizeForExactMatch(sentence);
-    return groundedTokenScore(relationText, sentenceText) === 1
-      && !hasContradictoryPolarity(relationText, sentenceText);
+    if (isInterrogativeSourceSentence(sentence)) return false;
+    return groundedTokenScore(relationText, sentence) === 1
+      && !hasContradictoryPolarity(relationText, sentence);
   });
-  const hasContextualSourceSupport = allowInterrogativeSource
-    && [...labelTokens].every((token) => tokenize(source).has(token));
-  return (hasCoherentSourceSpan || hasContextualSourceSupport)
+  return hasCoherentSourceSpan
     && isGroundedCandidate(relationText, source, assertionSource);
 }
 
@@ -755,7 +866,7 @@ export function filterExtractionResultBySource(
   }
 
   const facts = result.facts.flatMap((fact) => {
-    const grounded = filterGroundedFact(fact, source, assertionSource);
+    const grounded = filterGroundedFact(fact, source, assertionSource, roleAssertionSources);
     return grounded === undefined ? [] : [grounded];
   });
   const profileGroundingSource = roleAssertionSources?.profile ?? source;

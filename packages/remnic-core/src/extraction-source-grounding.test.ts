@@ -431,6 +431,7 @@ test("grounding filters unsupported durable fact fields and nested entity facts"
       { order: 1, description: "first inspect logs" },
       { order: 2, description: "then compare traces" },
     ],
+
     finalAnswer: "increase timeout",
   });
   assert.deepEqual(result.entities, [
@@ -447,6 +448,88 @@ test("grounding filters unsupported durable fact fields and nested entity facts"
       ],
     },
   ]);
+});
+
+test("grounding does not let context questions establish unsupported facts", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Does Alice work at Acme?\n\nAlice joined the call.",
+    "Alice joined the call.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding splits unpunctuated turns before evaluating facts", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "PostgreSQL is the selected database.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "What database should we select\n\nPostgreSQL is the selected database.",
+    "PostgreSQL is the selected database.",
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["PostgreSQL is the selected database."]);
+});
+
+test("grounding excludes auxiliary fields sourced only from questions", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "The deployment finished.",
+        confidence: 0.9,
+        tags: [],
+        structuredAttributes: { owner: "Alice" },
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "The deployment finished.\nIs Alice the owner?",
+    "The deployment finished.",
+  );
+
+  assert.equal(result.facts[0]?.structuredAttributes, undefined);
+});
+
+test("grounding rejects swapped role-normalized fact arguments", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "The user supports Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Acme supports me.",
+    "Acme supports me.",
+    { profile: "Acme supports me." },
+  );
+
+  assert.deepEqual(result.facts, []);
 });
 
 test("grounding drops entities with no grounded facts", () => {
@@ -1193,6 +1276,110 @@ test("grounding rejects context-only claims with a subject-only assertion anchor
     },
     "Alice works at Acme. Alice called Bob.",
     "Alice called Bob.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+test("grounding keeps bare negative answers as negative facts", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "The database does not use PostgreSQL.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Does the database use PostgreSQL?\nNo.",
+    "No.",
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["The database does not use PostgreSQL."]);
+});
+
+test("grounding scopes fact role normalization to the matching speaker", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "The user is vegan.",
+          confidence: 0.9,
+          tags: [],
+        },
+        {
+          category: "fact",
+          content: "The user is a cyclist.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "I am vegan.\nI am a cyclist.",
+    undefined,
+    {
+      profile: "I am vegan.",
+      identity: "I am a cyclist.",
+    },
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["The user is vegan."]);
+});
+
+test("grounding drops fact entity refs found only in context source", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+        entityRef: "company-globex",
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice works at Acme.\nWhich company is Globex?",
+    "Alice works at Acme.",
+  );
+
+  assert.deepEqual(result.facts, [{
+    category: "fact",
+    content: "Alice works at Acme.",
+    confidence: 0.9,
+    tags: [],
+  }]);
+});
+
+test("grounding preserves identifier terminal s instead of stemming names", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "Alice uses Redi.",
+          confidence: 0.9,
+          tags: [],
+        },
+        {
+          category: "fact",
+          content: "Jame works at Acme.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice uses Redis. James works at Acme.",
   );
 
   assert.deepEqual(result.facts, []);
