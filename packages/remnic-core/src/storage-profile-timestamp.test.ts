@@ -1488,6 +1488,42 @@ test("writeProfile ignores malformed link-reference destinations", async (t) => 
 });
 
 
+test("writeProfile ignores link-reference labels with unescaped brackets", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "[foo[bar]: /url",
+        STALE_HEADER,
+        "",
+        "- Keeps malformed link-reference labels.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "[foo[bar]: /url",
+          STALE_HEADER,
+          "",
+          "- Keeps malformed link-reference labels.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 
 test("writeProfile ignores invalid backtick fence openers", async (t) => {
@@ -2731,6 +2767,29 @@ test("writeProfile closes same-line raw HTML blocks", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile treats same-line raw HTML closures as metadata boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<pre></pre>",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after a same-line raw block.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile closes raw HTML blocks after inline content", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -2803,6 +2862,42 @@ test("writeProfile keeps self-closing raw HTML blocks opaque", async (t) => {
       assert.equal(
         await storage.readProfile(),
         profile.replace("\n\n<pre/>", `\n\n${FRESH_HEADER}\n\n<pre/>`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile keeps no-space self-closing raw tags in prose", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "*Last updated: literal example*",
+        "<pre/>",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps inline raw tags as prose.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "*Last updated: literal example*",
+          "<pre/>",
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- Keeps inline raw tags as prose.",
+          "",
+        ].join("\n"),
       );
     });
   } finally {

@@ -7,8 +7,8 @@ const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
 const MARKDOWN_LINK_REFERENCE =
-  /^\[(?:\\.|[^\\\]])+\]:\s*(?:<[^>\n]*>|([^\s]+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?$/;
-const MARKDOWN_LINK_REFERENCE_LABEL = /^\[(?:\\.|[^\\\]])+\]:\s*$/;
+  /^\[(?:\\.|[^\\\[\]])+\]:\s*(?:<[^>\n]*>|([^\s]+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?$/;
+const MARKDOWN_LINK_REFERENCE_LABEL = /^\[(?:\\.|[^\\\[\]])+\]:\s*$/;
 const MARKDOWN_LINK_REFERENCE_CONTINUATION =
   /^ {1,3}(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\))$/;
 const MARKDOWN_LINK_REFERENCE_DESTINATION_CONTINUATION =
@@ -332,11 +332,12 @@ function findHtmlBlockStart(
     const completeTag =
       findCompleteHtmlTag(trimmedLine) ?? findHtmlTagPrefix(trimmedLine);
     if (!completeTag && normalizedLine.startsWith("</")) return null;
-    if (completeTag?.isSelfClosing && !hasSpacedSelfClosingSlash(trimmedLine)) {
-      return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
-    }
+    if (completeTag?.isSelfClosing && !hasSpacedSelfClosingSlash(trimmedLine)) return null;
     const endMarker = `</${rawTag}>`;
-    if (hasHtmlBlockEndMarker(normalizedLine, endMarker)) return null;
+    if (hasHtmlBlockEndMarker(normalizedLine, endMarker)) {
+      if (!completeTag || completeTag.isClosing) return null;
+      return { endMarker, endsAtBlankLine: false, tagName: null, depth: 0 };
+    }
     return { endMarker, endsAtBlankLine: false, tagName: null, depth: 0 };
   }
   if (normalizedLine.startsWith("<!--")) {
