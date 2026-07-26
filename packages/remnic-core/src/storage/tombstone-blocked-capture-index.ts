@@ -914,9 +914,17 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     const archived = await this.runTombstoneBlockedInvalidation(
       memory,
       async (current, rebuildMarker, markDurable) => {
-        archivedPath = await task(current, markDurable);
-        if (archivedPath !== null) {
+        let archiveDurable = false;
+        const markArchiveDurable = () => {
+          archiveDurable = true;
+          markDurable();
+        };
+        archivedPath = await task(current, markArchiveDurable);
+        if (rebuildMarker !== undefined && (archivedPath !== null || archiveDurable)) {
           await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
+        } else if (rebuildMarker !== undefined) {
+          const index = this.getTombstoneBlockedCaptureIndex();
+          try { await index.discardWrite(rebuildMarker); } catch { index.markUntrusted(); }
         }
         return archivedPath !== null;
       }

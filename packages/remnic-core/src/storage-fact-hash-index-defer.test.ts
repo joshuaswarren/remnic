@@ -3118,6 +3118,54 @@ test("blocked archive serializes capture scans with the archive transition", asy
     }
   });
 });
+
+test("blocked archive failures discard their uncommitted rebuild marker", async () => {
+  await withMemoryDir(async (dir) => {
+    class FailingArchiveStorageManager extends StorageManager {
+      failArchiveWrites = false;
+
+      protected override writeStorageSecureFile(
+        filePath: string,
+        content: string | Buffer,
+        forceEncrypt = false,
+      ): Promise<void> {
+        if (this.failArchiveWrites && filePath.includes(`${path.sep}archive${path.sep}`)) {
+          return Promise.reject(new Error("simulated archive write failure"));
+        }
+        return super.writeStorageSecureFile(filePath, content, forceEncrypt);
+      }
+    }
+
+    const storage = new FailingArchiveStorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A failed blocked archive must not poison rebuild state.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "failed-blocked-archive",
+      rawContent: content,
+    });
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory);
+    await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a");
+    const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
+    storage.failArchiveWrites = true;
+
+    assert.equal(await storage.archiveMemory(memory), null);
+    assert.deepEqual(await readdir(markerDir), []);
+    assert.equal(await storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative(), true);
+  });
+});
 test("blocked invalidation reacquires the reloaded identity lock", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);
