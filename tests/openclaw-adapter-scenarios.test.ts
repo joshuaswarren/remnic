@@ -10,6 +10,7 @@ import {
   restoreRegisterMigrationForCaptureTest,
   saveAndResetOpenClawRegistrationGlobals,
 } from "./helpers/openclaw-registration-harness.js";
+import { mergeInlineCaptureDedupeKeys } from "../src/explicit-capture.js";
 
 const SERVICE_ID = "openclaw-remnic";
 const ORCHESTRATOR_KEY = `__openclawEngramOrchestrator::${SERVICE_ID}`;
@@ -993,14 +994,19 @@ test("scenario: agent-end capture failures remain retryable by message_received"
           runId: "agent-end-inline-retry-run",
           timestamp,
           messages: [
-            { role: "user", content },
+            { role: "user", content, messageId: "agent-end-inline-retry-message" },
             { role: "assistant", content: "I will retry that capture." },
           ],
         },
         { sessionKey: "agent-end-inline-retry-session" },
       );
       await messageReceived(
-        { content, runId: "agent-end-inline-retry-run", timestamp },
+        {
+          content,
+          messageId: "agent-end-inline-retry-message",
+          runId: "agent-end-inline-retry-run",
+          timestamp,
+        },
         { sessionKey: "agent-end-inline-retry-session" },
       );
 
@@ -1014,6 +1020,24 @@ test("scenario: agent-end capture failures remain retryable by message_received"
         transcriptEnabled: true,
       },
     },
+  );
+});
+
+test("scenario: message_received uses delivery IDs before content fallbacks", () => {
+  const fallbackKeys = [
+    "delivery-key-session\u0000content\u0000run\u0000timestamp\u0000hash",
+    "delivery-key-session\u0000sparse-content\u0000hash",
+  ];
+
+  assert.deepEqual(
+    mergeInlineCaptureDedupeKeys(["delivery-key-session\u0000run\u0000message-id"], fallbackKeys),
+    ["delivery-key-session\u0000run\u0000message-id"],
+    "delivery-key requests must not add content fallbacks",
+  );
+  assert.deepEqual(
+    mergeInlineCaptureDedupeKeys([], fallbackKeys),
+    fallbackKeys,
+    "ID-less requests should retain content fallback identity",
   );
 });
 

@@ -12,7 +12,7 @@ import {
   open,
 } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
 import path from "node:path";
 import { log } from "./logger.js";
@@ -183,7 +183,7 @@ import {
 } from "./storage/content-hash-index.js";
 import {
   TombstoneBlockedCaptureIndexHost,
-  buildExplicitCaptureDedupKey,
+  parseTombstoneBlockedOfflineSyncMemory,
   type TombstoneBlockedCaptureIndexOptions,
 } from "./storage/tombstone-blocked-capture-index.js";
 export { ContentHashIndex, FactHashIndexNotAuthoritativeError };
@@ -2464,7 +2464,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
-  private bumpMemoryStatusVersion(): void {
+  protected bumpMemoryStatusVersion(): void {
     this.bumpSharedVersion("memory-status", StorageManager.memoryStatusVersionByDir);
     // Also bump the corpus sentinel so peer processes rescan the hot-memories
     // cache after status/lifecycle/bulk mutations (issue #1902). invalidateAllForDir
@@ -2539,7 +2539,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
-  private bumpArtifactWriteVersion(): number {
+  protected bumpArtifactWriteVersion(): number {
     return this.bumpSharedVersion("artifact-write", StorageManager.artifactWriteVersionByDir);
   }
 
@@ -2751,7 +2751,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
   }
 
-  private assertManagedStoragePath(filePath: string, method: string): string {
+  protected assertManagedStoragePath(filePath: string, method: string): string {
     const resolved = path.resolve(filePath);
     const base = path.resolve(this.baseDir);
     const rel = path.relative(base, resolved);
@@ -2923,82 +2923,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
-  private isTombstoneBlockedMemory(memory: MemoryFile | null): memory is MemoryFile {
-    return memory !== null && memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
-  }
-
-  private parseOfflineSyncMemory(filePath: string, content: Buffer): MemoryFile | null {
-    const parsed = parseFrontmatter(content.toString("utf8"));
-    if (!parsed) return null;
-    return {
-      path: filePath,
-      frontmatter: normalizeFrontmatterForPath(
-        parsed.frontmatter,
-        toMemoryPathRel(this.baseDir, filePath),
-        parsed.content,
-      ),
-      content: parsed.content,
-    };
-  }
-
-  private offlineSyncMemoryIdentity(memory: MemoryFile): string {
-    return buildExplicitCaptureDedupKey(
-      memory.content,
-      memory.frontmatter.category,
-      memory.frontmatter.sourceConnector,
-    );
-  }
-
-  private async runOfflineSyncMutation(
-    target: string,
-    after: MemoryFile | null,
-    write: () => Promise<void>,
-  ): Promise<void> {
-    const before = await this.readMemoryByPath(target);
-    const blocked = this.isTombstoneBlockedMemory(before) || this.isTombstoneBlockedMemory(after);
-    const identities = [
-      ...(this.isTombstoneBlockedMemory(before) ? [this.offlineSyncMemoryIdentity(before)] : []),
-      ...(this.isTombstoneBlockedMemory(after) ? [this.offlineSyncMemoryIdentity(after)] : []),
-    ];
-    const mutate = async (): Promise<void> => {
-      const marker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
-      let durable = false;
-      try {
-        await write();
-        durable = true;
-        if (marker) {
-          try {
-            await this.getTombstoneBlockedCaptureIndex().commitWrite(marker);
-          } catch (err) {
-            this.getTombstoneBlockedCaptureIndex().markUntrusted();
-            log.warn(`storage.offlineSyncFile committed write marker failed: ${err}`);
-          }
-        }
-        await this.invalidateAfterOfflineSyncMutation(target, marker);
-      } catch (err) {
-        if (marker && !durable) {
-          try {
-            await this.getTombstoneBlockedCaptureIndex().discardWrite(marker);
-          } catch (cleanupError) {
-            this.getTombstoneBlockedCaptureIndex().markUntrusted();
-            log.warn(`storage.offlineSyncFile failed to clear write marker: ${cleanupError}`);
-          }
-        }
-        throw err;
-      }
-    };
-    if (!blocked) {
-      await mutate();
-      return;
-    }
-    await this.withTombstoneBlockedCaptureWriteLock(mutate, identities);
-  }
-
   async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
-    await this.runOfflineSyncMutation(target, this.parseOfflineSyncMemory(target, content), async () => {
-      await this.writeStorageSecureFile(target, content);
-    });
+    await this.writeTombstoneBlockedOfflineSyncFile(target, content);
   }
 
   async writeOfflineSyncStagingFile(filePath: string, content: Buffer): Promise<void> {
@@ -3008,56 +2935,26 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
-    const temporaryPath = `${target}.offline-sync-${randomUUID()}.tmp`;
-    try {
-      const handle = await open(temporaryPath, "w", 0o600);
-      try {
-        for await (const chunk of chunks) {
-          if (chunk.length > 0) await handle.write(chunk);
-        }
-      } finally {
-        await handle.close();
-      }
-      const content = await readFile(temporaryPath);
-      await this.runOfflineSyncMutation(target, this.parseOfflineSyncMemory(target, content), async () => {
-        await writeMaybeEncryptedFileFromChunks(target, createReadStream(temporaryPath), this.resolveWriteKey(), {}, this.baseDir);
-        this.notifyCatalogWriteForPath(target);
-      });
-    } finally {
-      await unlink(temporaryPath).catch((err: unknown) => {
-        if (!isErrnoCode(err, "ENOENT")) throw err;
-      });
-    }
+    await this.writeTombstoneBlockedOfflineSyncFileChunks(
+      target,
+      chunks,
+      async (filePath, temporaryPath) => {
+        await writeMaybeEncryptedFileFromChunks(
+          filePath,
+          createReadStream(temporaryPath),
+          this.resolveWriteKey(),
+          {},
+          this.baseDir,
+        );
+        this.notifyCatalogWriteForPath(filePath);
+      },
+    );
   }
 
   async deleteOfflineSyncFile(filePath: string): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.deleteOfflineSyncFile");
-    await this.runOfflineSyncMutation(target, null, async () => {
-      await unlink(target).catch((error: unknown) => {
-        if (isErrnoCode(error, "ENOENT")) return;
-        throw error;
-      });
-    });
+    await this.deleteTombstoneBlockedOfflineSyncFile(target);
   }
-
-  private async invalidateAfterOfflineSyncMutation(filePath: string, ownedMarker?: string): Promise<void> {
-    // invalidateAllMemoriesCache() routes through the invalidateAllForDir()
-    // chokepoint, which also covers the entity cache (issue #1535).
-    this.invalidateAllMemoriesCache();
-    this.invalidateKnowledgeIndexCache();
-    // Force a corpus rebuild of the fact-hash index on next use (round 11: no
-    // on-disk ready marker — the in-memory authoritative flag is the only gate).
-    this.factHashIndexAuthoritative = false;
-    if (filePath.includes(`${path.sep}cold${path.sep}`)) {
-      this.invalidateColdMemoriesCache();
-    }
-    await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath, ownedMarker);
-    if (filePath.includes(`${path.sep}artifacts${path.sep}`)) {
-      this.bumpArtifactWriteVersion();
-    }
-    this.bumpMemoryStatusVersion();
-  }
-
   createContentHashIndex(): ContentHashIndex {
     return new ContentHashIndex(
       this.stateDir,
@@ -3353,9 +3250,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
     return await store.rebuild(retired);
   }
+  protected markFactHashIndexNotAuthoritative(): void { this.factHashIndexAuthoritative = false; }
   protected tombstoneBlockedCaptureIndexOptions(): TombstoneBlockedCaptureIndexOptions {
-    return { stateDir: this.stateDir, memoryDir: this.baseDir, secureStoreKeyProvider: () => this._secureStoreKey, secureStoreWriteKeyProvider: () => this.resolveWriteKey(),
-      lockOptions: () => this.factHashIndexLockOptions, readAllMemories: () => this.readAllMemories(), readAllColdMemories: () => this.readAllColdMemories() };
+    return {
+      stateDir: this.stateDir,
+      memoryDir: this.baseDir,
+      secureStoreKeyProvider: () => this._secureStoreKey,
+      secureStoreWriteKeyProvider: () => this.resolveWriteKey(),
+      lockOptions: () => this.factHashIndexLockOptions,
+      parseMemory: (filePath, content) => parseTombstoneBlockedOfflineSyncMemory(
+        filePath, content, this.baseDir, parseFrontmatter, normalizeFrontmatterForPath, toMemoryPathRel),
+      readAllMemories: () => this.readAllMemories(),
+      readAllColdMemories: () => this.readAllColdMemories(),
+    };
   }
   private async getFactHashIndex(): Promise<ContentHashIndex> {
     if (this.factHashIndex) {
@@ -4543,7 +4450,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    *  exclusively by invalidateColdMemoriesCache(), which is called only when
    *  cold content actually changes (hot→cold demotions, writeMemoryFileAtomic
    *  inside cold/, archiveMemory, etc.). */
-  private invalidateAllMemoriesCache(): void {
+  protected invalidateAllMemoriesCache(): void {
     deleteInFlightReadsForDir(this.baseDir);
     // Bulk/ambiguous mutations drop the hot layer wholesale (below); bump the
     // corpus sentinel too so PEER processes rescan instead of serving a warm
@@ -4697,7 +4604,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Finding UvUy (PR #402 round-11): bumping the sentinel here makes the
    * per-process in-memory cache safe across process boundaries.
    */
-  private invalidateColdMemoriesCache(): void {
+  protected invalidateColdMemoriesCache(): void {
     const coldRoot = path.join(this.baseDir, "cold");
     StorageManager.coldMemoriesCache.delete(coldRoot);
     this.bumpColdWriteVersion();

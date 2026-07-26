@@ -1,18 +1,18 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { normalizeContent } from "../content-hash.js";
+import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+import { isErrnoCode } from "../utils/errno.js";
+import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import {
-  ContentHashIndex,
   CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS,
+  ContentHashIndex,
   type ContentHashIndexLockOptions,
 } from "./content-hash-index.js";
-import { normalizeContent } from "../content-hash.js";
-import { isErrnoCode } from "../utils/errno.js";
-import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
-import { withHeldFileLock } from "../utils/serialize-mutations.js";
-import { log } from "../logger.js";
 
 const REBUILD_MAX_ATTEMPTS = 3;
 const REBUILD_RETRY_BASE_MS = 50;
@@ -38,10 +38,7 @@ type RebuildMarker = {
  * optimization, while this key gates whether a durable row needs inspection.
  */
 export function normalizeExplicitCaptureContent(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -52,7 +49,7 @@ export function normalizeExplicitCaptureContent(value: string): string {
 export function buildExplicitCaptureDedupKey(
   content: string,
   category: string,
-  sourceConnector: string | undefined,
+  sourceConnector: string | undefined
 ): string {
   const encode = (label: string, value: string): string => {
     const normalized = normalizeContent(value);
@@ -65,6 +62,25 @@ export function buildExplicitCaptureDedupKey(
   ].join(" ");
 }
 
+export type OfflineSyncMemoryParser = (filePath: string, content: Buffer) => MemoryFile | null;
+
+export function parseTombstoneBlockedOfflineSyncMemory(
+  filePath: string,
+  content: Buffer,
+  memoryDir: string,
+  parseFrontmatter: (raw: string) => { frontmatter: MemoryFrontmatter; content: string } | null,
+  normalizeFrontmatterForPath: (frontmatter: MemoryFrontmatter, pathRel: string, content?: string) => MemoryFrontmatter,
+  toMemoryPathRel: (baseDir: string, filePath: string) => string
+): MemoryFile | null {
+  const parsed = parseFrontmatter(content.toString("utf8"));
+  if (!parsed) return null;
+  return {
+    path: filePath,
+    frontmatter: normalizeFrontmatterForPath(parsed.frontmatter, toMemoryPathRel(memoryDir, filePath), parsed.content),
+    content: parsed.content,
+  };
+}
+
 export type TombstoneBlockedCaptureIndexOptions = {
   readonly stateDir: string;
   readonly memoryDir: string;
@@ -73,6 +89,7 @@ export type TombstoneBlockedCaptureIndexOptions = {
   readonly lockOptions: () => ContentHashIndexLockOptions;
   readonly readAllMemories: () => Promise<MemoryFile[]>;
   readonly readAllColdMemories: () => Promise<MemoryFile[]>;
+  readonly parseMemory?: OfflineSyncMemoryParser;
   readonly withHeldFileLock?: typeof withHeldFileLock;
 };
 
@@ -100,7 +117,7 @@ export class TombstoneBlockedCaptureIndex {
       this.options.secureStoreKeyProvider,
       this.options.secureStoreWriteKeyProvider,
       this.options.memoryDir,
-      this.options.lockOptions(),
+      this.options.lockOptions()
     );
   }
 
@@ -149,9 +166,7 @@ export class TombstoneBlockedCaptureIndex {
                 path: markerPath,
                 committed: state === "committed",
                 ...(typeof value.pid === "number" && Number.isInteger(value.pid) ? { pid: value.pid } : {}),
-                ...(typeof value.ownerId === "string" && value.ownerId.length > 0
-                  ? { ownerId: value.ownerId }
-                  : {}),
+                ...(typeof value.ownerId === "string" && value.ownerId.length > 0 ? { ownerId: value.ownerId } : {}),
                 ...(typeof createdAt === "number" && Number.isFinite(createdAt) ? { createdAt } : {}),
                 ...(malformed ? { malformed: true } : {}),
               };
@@ -159,7 +174,7 @@ export class TombstoneBlockedCaptureIndex {
               if (isErrnoCode(err, "ENOENT")) return null;
               throw err;
             }
-          }),
+          })
         )
       ).filter((marker): marker is RebuildMarker => marker !== null);
     } catch (err) {
@@ -182,7 +197,6 @@ export class TombstoneBlockedCaptureIndex {
       return !isErrnoCode(err, "ESRCH");
     }
   }
-
 
   private async getRebuildMarkers(): Promise<RebuildMarker[]> {
     return await this.readRebuildMarkers();
@@ -213,7 +227,7 @@ export class TombstoneBlockedCaptureIndex {
         pid: process.pid,
         ownerId,
         createdAt: Date.now(),
-      })}\n`,
+      })}\n`
     );
     return markerPath;
   }
@@ -226,7 +240,7 @@ export class TombstoneBlockedCaptureIndex {
         pid: process.pid,
         ownerId: path.basename(markerPath),
         createdAt: Date.now(),
-      })}\n`,
+      })}\n`
     );
   }
 
@@ -238,7 +252,7 @@ export class TombstoneBlockedCaptureIndex {
         } catch (err) {
           if (!isErrnoCode(err, "ENOENT")) throw err;
         }
-      }),
+      })
     );
   }
 
@@ -247,10 +261,8 @@ export class TombstoneBlockedCaptureIndex {
     return (await this.getRebuildMarkers()).some((marker) => !excluded.has(marker.path));
   }
 
-
   private async setAuthoritative(rebuilt: boolean): Promise<void> {
-    this.authoritative =
-      rebuilt && !(await this.getRebuildMarkers()).some((marker) => !marker.committed);
+    this.authoritative = rebuilt && !(await this.getRebuildMarkers()).some((marker) => !marker.committed);
   }
   private isBlocked(memory: MemoryFile): boolean {
     return memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
@@ -259,18 +271,11 @@ export class TombstoneBlockedCaptureIndex {
   private async rebuild(index: ContentHashIndex): Promise<boolean> {
     return await index.rebuildUnderLock(async () => {
       index.clear();
-      const existing = [
-        ...(await this.options.readAllMemories()),
-        ...(await this.options.readAllColdMemories()),
-      ];
+      const existing = [...(await this.options.readAllMemories()), ...(await this.options.readAllColdMemories())];
       for (const memory of existing) {
         if (!this.isBlocked(memory)) continue;
         index.add(
-          buildExplicitCaptureDedupKey(
-            memory.content,
-            memory.frontmatter.category,
-            memory.frontmatter.sourceConnector,
-          ),
+          buildExplicitCaptureDedupKey(memory.content, memory.frontmatter.category, memory.frontmatter.sourceConnector)
         );
       }
     });
@@ -338,17 +343,10 @@ export class TombstoneBlockedCaptureIndex {
       identity.length === 0
         ? "explicit-capture-write.lock"
         : `explicit-capture-write-${createHash("sha256").update(identity).digest("hex")}.lock`;
-    return path.join(
-      this.options.stateDir,
-      "tombstone-blocked-capture",
-      filename,
-    );
+    return path.join(this.options.stateDir, "tombstone-blocked-capture", filename);
   }
 
-  private async withSingleCaptureWriteLock<T>(
-    lockPath: string,
-    task: () => Promise<T>,
-  ): Promise<T> {
+  private async withSingleCaptureWriteLock<T>(lockPath: string, task: () => Promise<T>): Promise<T> {
     await mkdir(path.dirname(lockPath), { recursive: true });
     const retry = Symbol("retry");
     const permanentFailure = Symbol("permanent-failure");
@@ -364,7 +362,7 @@ export class TombstoneBlockedCaptureIndex {
         async (acquired, controller) => {
           if (acquired) return await task();
           return controller.failure === "error" ? permanentFailure : retry;
-        },
+        }
       );
       if (result === permanentFailure) {
         throw new Error("tombstone-blocked capture write lock acquisition failed");
@@ -378,14 +376,9 @@ export class TombstoneBlockedCaptureIndex {
     throw new Error("tombstone-blocked capture write lock remained busy");
   }
 
-  async withCaptureWriteLock<T>(
-    task: () => Promise<T>,
-    identity?: string | readonly string[],
-  ): Promise<T> {
+  async withCaptureWriteLock<T>(task: () => Promise<T>, identity?: string | readonly string[]): Promise<T> {
     const identities =
-      Array.isArray(identity) && identity.length > 0
-        ? identity
-        : [typeof identity === "string" ? identity : ""];
+      Array.isArray(identity) && identity.length > 0 ? identity : [typeof identity === "string" ? identity : ""];
     const lockPaths = [...new Set(identities.map((key) => this.captureWriteLockPath(key)))].sort();
     const run = async (index: number): Promise<T> => {
       if (index === lockPaths.length) return await task();
@@ -411,14 +404,11 @@ export class TombstoneBlockedCaptureIndex {
   async check(
     content: string,
     category: string,
-    sourceConnector?: string,
+    sourceConnector?: string
   ): Promise<{ has: boolean; authoritative: boolean }> {
     const key = buildExplicitCaptureDedupKey(content, category, sourceConnector);
     let index = await this.getIndex();
-    if (
-      await this.hasRebuildRequired()
-      || !(await index.isDiskFingerprintCurrent())
-    ) {
+    if ((await this.hasRebuildRequired()) || !(await index.isDiskFingerprintCurrent())) {
       index = await this.reload();
     }
     return { has: index.has(key), authoritative: this.authoritative };
@@ -432,10 +422,7 @@ export class TombstoneBlockedCaptureIndex {
   /** Return whether the in-memory index is safe to answer an authoritative miss. */
   async isAuthoritative(): Promise<boolean> {
     const index = await this.getIndex();
-    if (
-      await this.hasRebuildRequired()
-      || !(await index.isDiskFingerprintCurrent())
-    ) {
+    if ((await this.hasRebuildRequired()) || !(await index.isDiskFingerprintCurrent())) {
       await this.reload();
     }
     return this.authoritative;
@@ -461,19 +448,15 @@ export class TombstoneBlockedCaptureIndex {
     if (!this.isBlocked(memory)) return;
     let index = await this.getIndex();
     if (
-      await this.hasRebuildRequired(rebuildMarker ? [rebuildMarker] : [])
-      || !(await index.isDiskFingerprintCurrent())
+      (await this.hasRebuildRequired(rebuildMarker ? [rebuildMarker] : [])) ||
+      !(await index.isDiskFingerprintCurrent())
     ) {
       index = await this.reload();
     }
     index.add(
-      buildExplicitCaptureDedupKey(
-        memory.content,
-        memory.frontmatter.category,
-        memory.frontmatter.sourceConnector,
-      ),
+      buildExplicitCaptureDedupKey(memory.content, memory.frontmatter.category, memory.frontmatter.sourceConnector)
     );
-    const marker = rebuildMarker ?? await this.markRebuildRequired(true);
+    const marker = rebuildMarker ?? (await this.markRebuildRequired(true));
     if (rebuildMarker) await this.markRebuildCommitted(rebuildMarker);
     await index.saveMergingWithDisk();
     await index.flushReconcileRetry();
@@ -487,7 +470,7 @@ export class TombstoneBlockedCaptureIndex {
 
   /** Rebuild the index after a blocked row changes or is removed. */
   async rebuildIfLoaded(ownedMarker?: string): Promise<void> {
-    const index = this.index ?? (await this.hasPersistedIndexOrMarkers() ? this.getIndex() : null);
+    const index = this.index ?? ((await this.hasPersistedIndexOrMarkers()) ? this.getIndex() : null);
     if (!index) return;
     const rebuildMarkers = await this.getRebuildMarkers();
     const rebuildMarker = await this.markRebuildRequired(true);
@@ -511,12 +494,12 @@ export class TombstoneBlockedCaptureIndex {
     const beforeKey = buildExplicitCaptureDedupKey(
       before.content,
       before.frontmatter.category,
-      before.frontmatter.sourceConnector,
+      before.frontmatter.sourceConnector
     );
     const afterKey = buildExplicitCaptureDedupKey(
       after.content,
       after.frontmatter.category,
-      after.frontmatter.sourceConnector,
+      after.frontmatter.sourceConnector
     );
     if (beforeBlocked && afterBlocked && beforeKey === afterKey) {
       if (rebuildMarker) {
@@ -526,7 +509,7 @@ export class TombstoneBlockedCaptureIndex {
       return;
     }
     const existingMarkers = await this.getRebuildMarkers();
-    const marker = rebuildMarker ?? await this.markRebuildRequired(true);
+    const marker = rebuildMarker ?? (await this.markRebuildRequired(true));
     if (rebuildMarker) await this.markRebuildCommitted(rebuildMarker);
     const rebuilt = await this.rebuild(await this.getIndex());
     if (rebuilt) {
@@ -556,11 +539,9 @@ export class TombstoneBlockedCaptureIndex {
     pathname: string,
     frontmatter: MemoryFrontmatter,
     content: string,
-    rebuildMarker?: string,
+    rebuildMarker?: string
   ): Promise<void> {
-    await this.failOpen("writeMemory", () =>
-      this.add({ path: pathname, frontmatter, content }, rebuildMarker),
-    );
+    await this.failOpen("writeMemory", () => this.add({ path: pathname, frontmatter, content }, rebuildMarker));
   }
 
   async rebuildAfterInvalidation(ownedMarker?: string): Promise<void> {
@@ -571,21 +552,17 @@ export class TombstoneBlockedCaptureIndex {
     before: MemoryFile,
     frontmatter: MemoryFrontmatter,
     content: string,
-    rebuildMarker?: string,
+    rebuildMarker?: string
   ): Promise<void> {
-    await this.failOpen("updateMemory", () =>
-      this.sync(before, { ...before, frontmatter, content }, rebuildMarker),
-    );
+    await this.failOpen("updateMemory", () => this.sync(before, { ...before, frontmatter, content }, rebuildMarker));
   }
 
   async syncUpdatedFrontmatter(
     before: MemoryFile,
     frontmatter: MemoryFrontmatter,
-    rebuildMarker?: string,
+    rebuildMarker?: string
   ): Promise<void> {
-    await this.failOpen("writeMemoryFrontmatter", () =>
-      this.sync(before, { ...before, frontmatter }, rebuildMarker),
-    );
+    await this.failOpen("writeMemoryFrontmatter", () => this.sync(before, { ...before, frontmatter }, rebuildMarker));
   }
   shouldRebuildAfterInvalidationForPath(filePath: string): boolean {
     const relative = path.relative(path.resolve(this.options.memoryDir), path.resolve(filePath));
@@ -601,21 +578,29 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected abstract writeStorageSecureFile(
     filePath: string,
     content: string | Buffer,
-    forceEncrypt?: boolean,
+    forceEncrypt?: boolean
   ): Promise<void>;
+  protected abstract readMemoryByPath(filePath: string): Promise<MemoryFile | null>;
+  protected abstract invalidateAllMemoriesCache(): void;
+  protected abstract invalidateKnowledgeIndexCache(): void;
+  protected abstract invalidateColdMemoriesCache(): void;
+  protected abstract bumpArtifactWriteVersion(): number;
+  protected abstract bumpMemoryStatusVersion(): void;
+  protected abstract markFactHashIndexNotAuthoritative(): void;
 
   protected getTombstoneBlockedCaptureIndex(): TombstoneBlockedCaptureIndex {
-    return this.tombstoneBlockedCaptureIndex ??= new TombstoneBlockedCaptureIndex(
-      this.tombstoneBlockedCaptureIndexOptions(),
-    );
+    if (this.tombstoneBlockedCaptureIndex === null) {
+      this.tombstoneBlockedCaptureIndex = new TombstoneBlockedCaptureIndex(this.tombstoneBlockedCaptureIndexOptions());
+    }
+    return this.tombstoneBlockedCaptureIndex;
   }
   async withTombstoneBlockedCaptureWriteLock<T>(
     task: () => Promise<T>,
-    identity?: string | readonly string[],
+    identity?: string | readonly string[]
   ): Promise<T> {
     return await this.getTombstoneBlockedCaptureIndex().withCaptureWriteLock(
       () => this.captureWriteLockContext.run(true, task),
-      identity,
+      identity
     );
   }
   private tombstoneBlocked(frontmatter: MemoryFrontmatter): boolean {
@@ -628,12 +613,10 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     fileContent: string,
     identity: string | readonly string[],
     updateIndex: (rebuildMarker?: string) => Promise<void>,
-    beforeIndexUpdate?: () => Promise<void>,
+    beforeIndexUpdate?: () => Promise<void>
   ): Promise<void> {
     const mutate = async (): Promise<void> => {
-      let rebuildMarker = blocked
-        ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
-        : undefined;
+      const rebuildMarker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
       try {
         await this.writeStorageSecureFile(pathname, fileContent);
       } catch (err) {
@@ -671,23 +654,15 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     pathname: string,
     fileContent: string,
     frontmatter: MemoryFrontmatter,
-    content: string,
+    content: string
   ): Promise<void> {
     await this.writeTombstoneBlockedMutation(
       this.tombstoneBlocked(frontmatter),
       pathname,
       fileContent,
-      buildExplicitCaptureDedupKey(
-        content,
-        frontmatter.category,
-        frontmatter.sourceConnector,
-      ),
-      (rebuildMarker) => this.getTombstoneBlockedCaptureIndex().addWrittenMemory(
-        pathname,
-        frontmatter,
-        content,
-        rebuildMarker,
-      ),
+      buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector),
+      (rebuildMarker) =>
+        this.getTombstoneBlockedCaptureIndex().addWrittenMemory(pathname, frontmatter, content, rebuildMarker)
     );
   }
 
@@ -696,7 +671,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     fileContent: string,
     frontmatter: MemoryFrontmatter,
     content: string,
-    beforeIndexUpdate?: () => Promise<void>,
+    beforeIndexUpdate?: () => Promise<void>
   ): Promise<void> {
     await this.writeTombstoneBlockedMutation(
       this.tombstoneBlocked(before.frontmatter) || this.tombstoneBlocked(frontmatter),
@@ -704,27 +679,21 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       fileContent,
       [
         ...(this.tombstoneBlocked(before.frontmatter)
-          ? [buildExplicitCaptureDedupKey(
-              before.content,
-              before.frontmatter.category,
-              before.frontmatter.sourceConnector,
-            )]
+          ? [
+              buildExplicitCaptureDedupKey(
+                before.content,
+                before.frontmatter.category,
+                before.frontmatter.sourceConnector
+              ),
+            ]
           : []),
         ...(this.tombstoneBlocked(frontmatter)
-          ? [buildExplicitCaptureDedupKey(
-              content,
-              frontmatter.category,
-              frontmatter.sourceConnector,
-            )]
+          ? [buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector)]
           : []),
       ],
-      (rebuildMarker) => this.getTombstoneBlockedCaptureIndex().syncUpdatedMemory(
-        before,
-        frontmatter,
-        content,
-        rebuildMarker,
-      ),
-      beforeIndexUpdate,
+      (rebuildMarker) =>
+        this.getTombstoneBlockedCaptureIndex().syncUpdatedMemory(before, frontmatter, content, rebuildMarker),
+      beforeIndexUpdate
     );
   }
 
@@ -732,7 +701,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     before: MemoryFile,
     fileContent: string,
     frontmatter: MemoryFrontmatter,
-    beforeIndexUpdate?: () => Promise<void>,
+    beforeIndexUpdate?: () => Promise<void>
   ): Promise<void> {
     await this.writeTombstoneBlockedMutation(
       this.tombstoneBlocked(before.frontmatter) || this.tombstoneBlocked(frontmatter),
@@ -740,27 +709,138 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       fileContent,
       [
         ...(this.tombstoneBlocked(before.frontmatter)
-          ? [buildExplicitCaptureDedupKey(
-              before.content,
-              before.frontmatter.category,
-              before.frontmatter.sourceConnector,
-            )]
+          ? [
+              buildExplicitCaptureDedupKey(
+                before.content,
+                before.frontmatter.category,
+                before.frontmatter.sourceConnector
+              ),
+            ]
           : []),
         ...(this.tombstoneBlocked(frontmatter)
-          ? [buildExplicitCaptureDedupKey(
-              before.content,
-              frontmatter.category,
-              frontmatter.sourceConnector,
-            )]
+          ? [buildExplicitCaptureDedupKey(before.content, frontmatter.category, frontmatter.sourceConnector)]
           : []),
       ],
-      (rebuildMarker) => this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(
-        before,
-        frontmatter,
-        rebuildMarker,
-      ),
-      beforeIndexUpdate,
+      (rebuildMarker) =>
+        this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(before, frontmatter, rebuildMarker),
+      beforeIndexUpdate
     );
+  }
+
+  private isTombstoneBlockedMemory(memory: MemoryFile | null): memory is MemoryFile {
+    return memory !== null && memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
+  }
+
+  private offlineSyncMemoryIdentity(memory: MemoryFile): string {
+    return buildExplicitCaptureDedupKey(
+      memory.content,
+      memory.frontmatter.category,
+      memory.frontmatter.sourceConnector
+    );
+  }
+
+  private async invalidateAfterOfflineSyncMutation(filePath: string, ownedMarker?: string): Promise<void> {
+    this.invalidateAllMemoriesCache();
+    this.invalidateKnowledgeIndexCache();
+    this.markFactHashIndexNotAuthoritative();
+    if (filePath.includes(`${path.sep}cold${path.sep}`)) {
+      this.invalidateColdMemoriesCache();
+    }
+    await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath, ownedMarker);
+    if (filePath.includes(`${path.sep}artifacts${path.sep}`)) {
+      this.bumpArtifactWriteVersion();
+    }
+    this.bumpMemoryStatusVersion();
+  }
+
+  protected async runTombstoneBlockedOfflineSyncMutation(
+    target: string,
+    after: MemoryFile | null,
+    write: () => Promise<void>
+  ): Promise<void> {
+    const before = await this.readMemoryByPath(target);
+    const blocked = this.isTombstoneBlockedMemory(before) || this.isTombstoneBlockedMemory(after);
+    const identities = [
+      ...(this.isTombstoneBlockedMemory(before) ? [this.offlineSyncMemoryIdentity(before)] : []),
+      ...(this.isTombstoneBlockedMemory(after) ? [this.offlineSyncMemoryIdentity(after)] : []),
+    ];
+    const mutate = async (): Promise<void> => {
+      const marker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
+      let durable = false;
+      try {
+        await write();
+        durable = true;
+        if (marker) {
+          try {
+            await this.getTombstoneBlockedCaptureIndex().commitWrite(marker);
+          } catch (err) {
+            this.getTombstoneBlockedCaptureIndex().markUntrusted();
+            log.warn(`storage.offlineSyncFile committed write marker failed: ${err}`);
+          }
+        }
+        await this.invalidateAfterOfflineSyncMutation(target, marker);
+      } catch (err) {
+        if (marker && !durable) {
+          try {
+            await this.getTombstoneBlockedCaptureIndex().discardWrite(marker);
+          } catch (cleanupError) {
+            this.getTombstoneBlockedCaptureIndex().markUntrusted();
+            log.warn(`storage.offlineSyncFile failed to clear write marker: ${cleanupError}`);
+          }
+        }
+        throw err;
+      }
+    };
+    if (!blocked) {
+      await mutate();
+      return;
+    }
+    await this.withTombstoneBlockedCaptureWriteLock(mutate, identities);
+  }
+
+  protected async writeTombstoneBlockedOfflineSyncFile(target: string, content: Buffer): Promise<void> {
+    await this.runTombstoneBlockedOfflineSyncMutation(
+      target,
+      this.tombstoneBlockedCaptureIndexOptions().parseMemory?.(target, content) ?? null,
+      () => this.writeStorageSecureFile(target, content)
+    );
+  }
+
+  protected async writeTombstoneBlockedOfflineSyncFileChunks(
+    target: string,
+    chunks: AsyncIterable<Buffer>,
+    writeChunks: (filePath: string, temporaryPath: string) => Promise<void>
+  ): Promise<void> {
+    const temporaryPath = `${target}.offline-sync-${randomUUID()}.tmp`;
+    try {
+      const handle = await open(temporaryPath, "w", 0o600);
+      try {
+        for await (const chunk of chunks) {
+          if (chunk.length > 0) await handle.write(chunk);
+        }
+      } finally {
+        await handle.close();
+      }
+      const content = await readFile(temporaryPath);
+      await this.runTombstoneBlockedOfflineSyncMutation(
+        target,
+        this.tombstoneBlockedCaptureIndexOptions().parseMemory?.(target, content) ?? null,
+        () => writeChunks(target, temporaryPath)
+      );
+    } finally {
+      await unlink(temporaryPath).catch((err: unknown) => {
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      });
+    }
+  }
+
+  protected async deleteTombstoneBlockedOfflineSyncFile(target: string): Promise<void> {
+    await this.runTombstoneBlockedOfflineSyncMutation(target, null, async () => {
+      await unlink(target).catch((error: unknown) => {
+        if (isErrnoCode(error, "ENOENT")) return;
+        throw error;
+      });
+    });
   }
 
   async checkTombstoneBlockedExplicitCapture(
@@ -779,7 +859,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
 
   protected async rebuildTombstoneBlockedCaptureAfterInvalidationForPath(
     filePath: string,
-    ownedMarker?: string,
+    ownedMarker?: string
   ): Promise<void> {
     const index = this.getTombstoneBlockedCaptureIndex();
     if (index.shouldRebuildAfterInvalidationForPath(filePath)) {

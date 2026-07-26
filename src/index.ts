@@ -32,6 +32,7 @@ import { EngramAccessHttpServer } from "./access-http.js";
 
 import {
   InlineExplicitCaptureProcessor,
+  mergeInlineCaptureDedupeKeys,
   shouldProcessInlineExplicitCapture,
   stripInlineExplicitCaptureNotes,
 } from "./explicit-capture.js";
@@ -2032,6 +2033,8 @@ const pluginDefinition = {
     const observedInboundMessageIdOrder: string[] = [];
     const observedInboundContentFingerprints = new Set<string>();
     const observedInboundContentFingerprintOrder: string[] = [];
+    const observedInboundCaptureContentFingerprints = new Set<string>();
+    const observedInboundCaptureContentFingerprintOrder: string[] = [];
     const pendingSparseInboundContentFingerprints = new Set<string>();
     const pendingSparseInboundContentFingerprintOrder: string[] = [];
     const inboundReplyMetadataByMessageKey = new Map<string, OpenClawTranscriptMetadata>();
@@ -2075,6 +2078,23 @@ const pluginDefinition = {
       ) {
         const expired = observedInboundContentFingerprintOrder.shift();
         if (expired) observedInboundContentFingerprints.delete(expired);
+      }
+    }
+
+    function rememberObservedInboundCaptureContentFingerprint(
+      contentFingerprint: string | null,
+    ): void {
+      if (!contentFingerprint) return;
+      if (!observedInboundCaptureContentFingerprints.has(contentFingerprint)) {
+        observedInboundCaptureContentFingerprints.add(contentFingerprint);
+        observedInboundCaptureContentFingerprintOrder.push(contentFingerprint);
+      }
+      while (
+        observedInboundCaptureContentFingerprintOrder.length >
+        MAX_OBSERVED_INBOUND_MESSAGE_IDS
+      ) {
+        const expired = observedInboundCaptureContentFingerprintOrder.shift();
+        if (expired) observedInboundCaptureContentFingerprints.delete(expired);
       }
     }
 
@@ -2142,10 +2162,7 @@ const pluginDefinition = {
       fallbackDedupeKeys: readonly (string | null)[] = [],
       sessionKey = "default",
     ) {
-      const dedupeKeys = new Set(messageKeys ?? []);
-      for (const key of fallbackDedupeKeys) {
-        if (key) dedupeKeys.add(key);
-      }
+      const dedupeKeys = mergeInlineCaptureDedupeKeys(messageKeys, fallbackDedupeKeys);
       const reviewNamespace =
         typeof orchestrator.resolveSelfNamespace === "function"
           ? orchestrator.resolveSelfNamespace(sessionKey)
@@ -4062,7 +4079,7 @@ const pluginDefinition = {
           );
           if (
             inlineCaptureContentFingerprint &&
-            observedInboundContentFingerprints.has(inlineCaptureContentFingerprint)
+            observedInboundCaptureContentFingerprints.has(inlineCaptureContentFingerprint)
           ) {
             return;
           }
@@ -4073,20 +4090,23 @@ const pluginDefinition = {
             sessionKey,
           );
           const transcriptContent = inlineCapture.content;
+          const inlineCaptureWasHandled =
+            inlineCapture.failed === 0 && (inlineCapture.processed > 0 || inlineCapture.content === cleaned);
           if (
             inboundContentFingerprint &&
             observedInboundContentFingerprints.has(inboundContentFingerprint)
           ) {
+            if (inlineCaptureWasHandled) {
+              rememberObservedInboundCaptureContentFingerprint(inlineCaptureContentFingerprint);
+            }
             return;
           }
           const processedExplicitNotes = inlineCapture.processed;
-          const inlineCaptureWasHandled =
-            inlineCapture.failed === 0 && (inlineCapture.processed > 0 || inlineCapture.content === cleaned);
           if (!orchestrator.config.transcriptEnabled || transcriptContent.length === 0) {
             rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             if (processedExplicitNotes > 0 && inlineCapture.failed === 0) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
-              rememberObservedInboundContentFingerprint(inlineCaptureContentFingerprint);
+              rememberObservedInboundCaptureContentFingerprint(inlineCaptureContentFingerprint);
               rememberObservedInboundContentFingerprint(inboundContentFingerprint);
               if (inboundMessageKeys.length === 0) {
                 rememberPendingSparseInboundContentFingerprint(sparseInboundContentFingerprint);
@@ -4108,10 +4128,10 @@ const pluginDefinition = {
               rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
             if (inlineCaptureWasHandled) {
-              rememberObservedInboundContentFingerprint(inlineCaptureContentFingerprint);
+              rememberObservedInboundCaptureContentFingerprint(inlineCaptureContentFingerprint);
             }
             rememberObservedInboundContentFingerprint(inboundContentFingerprint);
-            if (inboundMessageKeys.length === 0) {
+            if (inlineCapture.failed === 0 && inboundMessageKeys.length === 0) {
               rememberPendingSparseInboundContentFingerprint(sparseInboundContentFingerprint);
             }
           } catch (err) {
@@ -4319,11 +4339,15 @@ const pluginDefinition = {
                 ...(messageMetadata ? { metadata: messageMetadata } : {}),
               });
               if (role === "user") {
-                if (messageDedupeKey) {
-                  rememberObservedInboundMessageKeys(messageDedupeKeys);
-                }
-                if (inlineCaptureWasHandled) {
-                  rememberObservedInboundContentFingerprint(inlineCaptureContentFingerprint);
+                if (inlineCapture.failed === 0) {
+                  if (messageDedupeKey) {
+                    rememberObservedInboundMessageKeys(messageDedupeKeys);
+                  }
+                  if (inlineCaptureWasHandled) {
+                    rememberObservedInboundCaptureContentFingerprint(
+                      inlineCaptureContentFingerprint,
+                    );
+                  }
                 }
                 rememberObservedInboundContentFingerprint(messageContentFingerprint);
               }
