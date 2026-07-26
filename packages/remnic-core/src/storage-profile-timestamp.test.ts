@@ -316,6 +316,40 @@ test("writeProfile preserves timestamp prose before a setext underline", async (
     t.mock.timers.reset();
   }
 });
+test("writeProfile preserves timestamp prose before a hyphen setext underline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "*Last updated: literal example*",
+        "---",
+        "Body after the hyphen setext heading.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "*Last updated: literal example*",
+          "---",
+          "Body after the hyphen setext heading.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile recognizes case-insensitive raw HTML terminators", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -762,6 +796,29 @@ test("writeProfile preserves timestamp-shaped nested list content", async (t) =>
     t.mock.timers.reset();
   }
 });
+test("writeProfile recognizes a completed indented code block before metadata", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "    code example",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after indented code.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile recognizes standalone headers with Markdown indentation", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -867,6 +924,48 @@ test("writeProfile preserves metadata inside lists with lazy continuations", asy
           `  ${STALE_HEADER}`,
           "",
           "- Keeps lazy-list content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile carries list context across lazy continuations", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "- item",
+        "lazy one",
+        "lazy two",
+        "",
+        `  ${STALE_HEADER}`,
+        "",
+        "- Keeps multi-line lazy-list content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- item",
+          "lazy one",
+          "lazy two",
+          "",
+          `  ${STALE_HEADER}`,
+          "",
+          "- Keeps multi-line lazy-list content.",
           "",
         ].join("\n"),
       );
@@ -1344,6 +1443,44 @@ test("writeProfile recognizes escaped link-reference labels", async (t) => {
           "",
         ].join("\n"),
       );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile ignores malformed link-reference destinations", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      for (const destination of ["foo(bar", "foo<bar"]) {
+        const profile = [
+          "# Behavioral Profile",
+          "",
+          `[docs]: ${destination}`,
+          STALE_HEADER,
+          "",
+          "- Keeps malformed link-reference content.",
+          "",
+        ].join("\n");
+
+        await storage.writeProfile(profile);
+
+        assert.equal(
+          await storage.readProfile(),
+          [
+            "# Behavioral Profile",
+            "",
+            FRESH_HEADER,
+            "",
+            `[docs]: ${destination}`,
+            STALE_HEADER,
+            "",
+            "- Keeps malformed link-reference content.",
+            "",
+          ].join("\n"),
+        );
+      }
     });
   } finally {
     t.mock.timers.reset();

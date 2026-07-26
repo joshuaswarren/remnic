@@ -7,7 +7,7 @@ const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
 const MARKDOWN_LINK_REFERENCE =
-  /^\[(?:\\.|[^\\\]])+\]:\s*(?:<[^>\n]*>|[^\s]+)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?$/;
+  /^\[(?:\\.|[^\\\]])+\]:\s*(?:<[^>\n]*>|([^\s]+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?$/;
 const MARKDOWN_LINK_REFERENCE_LABEL = /^\[(?:\\.|[^\\\]])+\]:\s*$/;
 const MARKDOWN_LINK_REFERENCE_CONTINUATION =
   /^ {1,3}(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\))$/;
@@ -529,13 +529,37 @@ function visitProfileMetadataLines(
   }
 }
 
+function isCompletedIndentedCodeBlock(lines: ProfileLine[], index: number): boolean {
+  if (!isIndentedCodeLine(lines[index - 1]?.content ?? "")) return false;
+  let sawBlank = false;
+  for (let previousIndex = index - 2; previousIndex >= 0; previousIndex -= 1) {
+    const previousLine = lines[previousIndex]?.content ?? "";
+    if (previousLine.trim() === "") {
+      sawBlank = true;
+      continue;
+    }
+    if (isIndentedCodeLine(previousLine)) continue;
+    return sawBlank;
+  }
+  return true;
+}
+
 function isListContinuation(lines: ProfileLine[], index: number, indentation: number): boolean {
   for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
     const previousLine = lines[previousIndex]?.content ?? "";
     if (previousLine.trim() === "") return false;
     const previousIndentation = previousLine.length - previousLine.trimStart().length;
     if (previousIndentation > indentation) continue;
-    return MARKDOWN_LIST_ITEM.test(previousLine.trimStart());
+    const previousBoundaryLine = previousLine.trimStart();
+    if (MARKDOWN_LIST_ITEM.test(previousBoundaryLine)) return true;
+    if (
+      MARKDOWN_HEADING.test(previousBoundaryLine) ||
+      MARKDOWN_THEMATIC_BREAK.test(previousBoundaryLine) ||
+      MARKDOWN_BLOCK_QUOTE.test(previousBoundaryLine) ||
+      getFenceMarker(previousLine) !== null
+    ) {
+      return false;
+    }
   }
   return false;
 }
@@ -557,15 +581,40 @@ function isNestedListContent(lines: ProfileLine[], index: number, indentation: n
   return false;
 }
 
+function isValidBareLinkDestination(destination: string): boolean {
+  let parentheses = 0;
+  for (let index = 0; index < destination.length; index += 1) {
+    const character = destination[index];
+    if (character === "\\") {
+      if (index + 1 >= destination.length) return false;
+      index += 1;
+      continue;
+    }
+    if (character === "<" || character === ">") return false;
+    if (character === "(") {
+      parentheses += 1;
+    } else if (character === ")") {
+      if (parentheses === 0) return false;
+      parentheses -= 1;
+    }
+  }
+  return parentheses === 0;
+}
+
+function isMarkdownLinkReferenceDefinition(line: string): boolean {
+  const match = MARKDOWN_LINK_REFERENCE.exec(line);
+  return match !== null && (match[1] === undefined || isValidBareLinkDestination(match[1]));
+}
+
 function isMarkdownLinkReferenceDefinitionEnd(lines: ProfileLine[], index: number): boolean {
   const line = lines[index]?.content ?? "";
   const boundaryLine = /^ {0,3}(?=\S)/.test(line) ? line.trimStart() : line;
-  if (MARKDOWN_LINK_REFERENCE.test(boundaryLine)) return true;
+  if (isMarkdownLinkReferenceDefinition(boundaryLine)) return true;
   if (MARKDOWN_LINK_REFERENCE_CONTINUATION.test(line)) {
     const previousLine = lines[index - 1]?.content ?? "";
     const previousBoundaryLine =
       /^ {0,3}(?=\S)/.test(previousLine) ? previousLine.trimStart() : previousLine;
-    if (MARKDOWN_LINK_REFERENCE.test(previousBoundaryLine)) return true;
+    if (isMarkdownLinkReferenceDefinition(previousBoundaryLine)) return true;
     const destinationLine = lines[index - 1]?.content ?? "";
     if (!MARKDOWN_LINK_REFERENCE_DESTINATION_CONTINUATION.test(destinationLine)) return false;
     const labelLine = lines[index - 2]?.content ?? "";
@@ -600,24 +649,43 @@ function findProfileTitleIndex(lines: ProfileLine[]): number {
   return titleIndex;
 }
 
+function isSetextHeadingText(line: string): boolean {
+  const withoutBom = line.startsWith(UTF8_BOM) ? line.slice(1) : line;
+  const boundaryLine = withoutBom.trim();
+  return (
+    boundaryLine !== "" &&
+    !MARKDOWN_HEADING.test(boundaryLine) &&
+    !MARKDOWN_LIST_ITEM.test(boundaryLine) &&
+    !MARKDOWN_BLOCK_QUOTE.test(boundaryLine) &&
+    !MARKDOWN_THEMATIC_BREAK.test(boundaryLine) &&
+    !isMarkdownLinkReferenceDefinition(boundaryLine) &&
+    getFenceMarker(withoutBom) === null
+  );
+}
+
 function isMetadataBoundary(
   line: string,
   htmlTerminator = false,
   allowSetext = true,
   allowParagraphListInterrupt = false,
+  setextPreviousLine = "",
 ): boolean {
   const listPattern = allowParagraphListInterrupt
     ? MARKDOWN_LIST_ITEM_CAN_INTERRUPT
     : MARKDOWN_LIST_ITEM;
   const boundaryLine = /^ {0,3}(?=\S)/.test(line) ? line.trimStart() : line;
+  const isSetextUnderline =
+    !allowSetext &&
+    MARKDOWN_SETEXT_UNDERLINE.test(boundaryLine) &&
+    isSetextHeadingText(setextPreviousLine);
   return (
     line.trim() === "" ||
     MARKDOWN_HEADING.test(boundaryLine) ||
     listPattern.test(boundaryLine) ||
     (allowSetext && MARKDOWN_SETEXT_UNDERLINE.test(boundaryLine)) ||
-    MARKDOWN_THEMATIC_BREAK.test(boundaryLine) ||
+    (MARKDOWN_THEMATIC_BREAK.test(boundaryLine) && !isSetextUnderline) ||
     MARKDOWN_BLOCK_QUOTE.test(boundaryLine) ||
-    MARKDOWN_LINK_REFERENCE.test(boundaryLine) ||
+    isMarkdownLinkReferenceDefinition(boundaryLine) ||
     isLastUpdatedHeader(line) ||
     getFenceMarker(line) !== null ||
     htmlTerminator
@@ -643,6 +711,7 @@ function isStandaloneMetadataLine(
   const nextWithoutBom = nextLine.startsWith(UTF8_BOM) ? nextLine.slice(1) : nextLine;
   const previousLinkReferenceBoundary = isMarkdownLinkReferenceDefinitionEnd(lines, index - 1);
   const previousMetadataBoundary =
+    isCompletedIndentedCodeBlock(lines, index) ||
     previousLinkReferenceBoundary ||
     isMetadataBoundary(
       previousWithoutBom,
@@ -660,6 +729,7 @@ function isStandaloneMetadataLine(
       htmlTerminatorIndexes.has(index + 1),
       false,
       true,
+      currentWithoutBom,
     );
   const previousContainerMarker =
     !MARKDOWN_THEMATIC_BREAK.test(previousWithoutBom) &&
