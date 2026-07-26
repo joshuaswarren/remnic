@@ -494,3 +494,43 @@ test("#1434 persistExplicitCapture still rejects an unauthorized namespace when 
     "the policy allow-list guard must still apply to callers that do not pre-authorize",
   );
 });
+
+test("memory_store reports a duplicate for an existing blocked review row", async () => {
+  const orch = makeOrchestratorStub();
+  let writeCalls = 0;
+  const storage = withSealedWrite({
+    readAllMemories: async () => [
+      {
+        path: "/synthetic/remnic-coding-write/memories/blocked.md",
+        frontmatter: {
+          id: "blocked-existing",
+          category: "fact",
+          status: "pending_review",
+          blockedBy: "tombstone-1",
+          tags: [],
+        },
+        content: "durable blocked memory",
+      },
+    ],
+    writeMemory: async () => {
+      writeCalls += 1;
+      return { id: "unexpected-write", tombstoneBlocked: true };
+    },
+    appendMemoryLifecycleEvents: async () => {},
+  });
+  orch.getStorage = async () => storage as never;
+  const service = new EngramAccessService(orch);
+
+  const response = await service.memoryStore({
+    content: "durable blocked memory",
+    category: "fact",
+    confidence: 0.9,
+    tags: [],
+    authenticatedPrincipal: "alice",
+  } as never);
+
+  assert.equal(response.status, "duplicate");
+  assert.equal(response.queued, false);
+  assert.equal(response.duplicateOf, "blocked-existing");
+  assert.equal(writeCalls, 0);
+});

@@ -501,7 +501,7 @@ export class AccessObserveWriteSurface {
       // #1645 (review thread yG-): a tombstone-blocked capture is pending_review
       // (no active copy) — report it as queued_for_review so the HTTP/MCP caller
       // doesn't read it as a successfully stored active memory.
-      const blocked = result.tombstoneBlocked === true;
+      const blocked = result.tombstoneBlocked === true && result.duplicateOf === undefined;
       const response: EngramAccessWriteResponse = {
         schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
         operation: "memory_store",
