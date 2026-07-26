@@ -209,7 +209,12 @@ compares it against the local set, per namespace. Results appear in the `replica
 `GET /engram/v1/health` (the path this server serves) first, then `GET /remnic/v1/health`
 as a forward-compat fallback.
 
-Per peer, the reported state is one of:
+Per peer, the reported state is one of the following. They are evaluated in
+**evidence order, not severity order**: any condition that makes the comparison
+uncertifiable — an unreachable peer, an incomplete local census, an incomplete or
+malformed peer census, a namespace only one side can see — resolves to
+`unreachable`/`unknown` BEFORE `converged` or `diverged` is considered. A partial
+census therefore never reads as a definitive verdict in either direction:
 
 - `converged` — every shared namespace agrees within the configured thresholds, and the peer
   reported every namespace present locally. Convergence is certified only over the namespaces

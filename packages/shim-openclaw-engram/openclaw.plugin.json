@@ -3981,7 +3981,9 @@
                   "description": "Bearer token for the peer's authenticated /health. A literal string (supports ${ENV_VAR} expansion) or an OpenClaw SecretRef object resolved at poll time like agentAccessHttp.authToken (issue #757). Never logged.",
                   "anyOf": [
                     {
-                      "type": "string"
+                      "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
                     },
                     {
                       "type": "object",
@@ -4016,6 +4018,7 @@
           "requestTimeoutMs": {
             "type": "integer",
             "minimum": 1,
+          "maximum": 2147483647,
             "default": 10000,
             "description": "Per-peer HTTP request timeout, in ms. Finite integer >= 1. Default 10000 (10s)."
           },

@@ -557,8 +557,14 @@ export async function fetchPeerWatermarks(
     if (peerBody.corpusComplete !== undefined && typeof peerBody.corpusComplete !== "boolean") {
       return { kind: "unknown", reason: "malformed_corpus" };
     }
-    const peerComplete =
-      typeof peerBody.corpusComplete === "boolean" ? peerBody.corpusComplete : peerBody.replica?.censusComplete;
+    const legacyComplete = peerBody.replica?.censusComplete;
+    // The legacy flag needs the same boolean gate as its replacement: a string
+    // "false" bypasses the `=== false` branch below and certifies a partial
+    // census (round 10). Absent stays compatibility; present-but-wrong is corrupt.
+    if (peerBody.corpusComplete === undefined && legacyComplete !== undefined && typeof legacyComplete !== "boolean") {
+      return { kind: "unknown", reason: "malformed_corpus" };
+    }
+    const peerComplete = typeof peerBody.corpusComplete === "boolean" ? peerBody.corpusComplete : legacyComplete;
     if (peerComplete === false) {
       return { kind: "unknown", reason: "peer_census_incomplete" };
     }
@@ -874,7 +880,11 @@ export class ReplicaDivergenceMonitor {
       // (an incomplete local set cannot certify convergence) is the SAME shared
       // gate the doctor applies, so /health and doctor cannot disagree (round 6).
       const gated = gateReportByCensus(report, census.complete);
-      this.cached = { report: gated, expiresAt: this.clock() + config.pollIntervalMs };
+      // A poll interval longer than the freshness bound would keep certifying
+      // telemetry the freshness check would now reject (round 10). Cache for the
+      // shorter of the two so a cached `converged` can never outlive it.
+      const ttl = Math.min(config.pollIntervalMs, config.maxWatermarkAgeDeltaMs);
+      this.cached = { report: gated, expiresAt: this.clock() + ttl };
       this.nextAttemptAt = 0; // a successful poll clears any failure backoff
     })()
       .catch(() => {

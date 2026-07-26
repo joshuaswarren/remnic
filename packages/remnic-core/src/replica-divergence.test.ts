@@ -1394,3 +1394,58 @@ test("round 9 (codex P2): a token expanding to whitespace is rejected, not silen
     delete process.env.REMNIC_TEST_BLANK_PEER_TOKEN;
   }
 });
+
+test("round 10 (codex P2): a malformed LEGACY completeness flag is rejected too", async () => {
+  // The round-9 fix gated `corpusComplete`; the legacy fallback kept accepting
+  // a string, which slips past the `=== false` branch and certifies a partial.
+  const bad: FetchLike = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ corpus: [watermark("default")], replica: { censusComplete: "false" } }),
+  });
+  const status = await pollReplicaPeers({
+    config: parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } }),
+    localWatermarks: [watermark("default")],
+    fetchImpl: bad,
+  });
+  assert.equal(status.peers[0]?.state, "unknown");
+  assert.equal(status.peers[0]?.reason, "malformed_corpus");
+});
+
+test("round 10 (codex P2): an expanded peer URL is stored canonically", () => {
+  process.env.REMNIC_TEST_PEER_URL = "  http://127.0.0.1:4318  ";
+  try {
+    const config = parseReplicaPeersConfig({
+      replicaPeers: { enabled: true, peers: [{ url: "${REMNIC_TEST_PEER_URL}" }] },
+    });
+    // The health path is appended by concatenation, so retained whitespace would
+    // build " http://... /engram/v1/health" and read as an unreachable peer.
+    assert.equal(config.peers[0]?.url, "http://127.0.0.1:4318");
+  } finally {
+    delete process.env.REMNIC_TEST_PEER_URL;
+  }
+});
+
+test("round 10 (codex P2): a cached verdict cannot outlive the census freshness bound", async () => {
+  let now = 0;
+  const monitor = new ReplicaDivergenceMonitor({ clock: () => now, fetchImpl: async () => ({
+    ok: true, status: 200,
+    json: async () => ({ corpus: [watermark("default")], corpusComplete: true }),
+  }) });
+  // A poll interval far longer than the freshness bound: without the cap, a
+  // converged verdict would be served for a full day past its own staleness.
+  const config = parseReplicaPeersConfig({
+    replicaPeers: {
+      enabled: true, pollIntervalMs: 86_400_000, maxWatermarkAgeDeltaMs: 900_000,
+      peers: [{ url: "http://127.0.0.1:4318" }],
+    },
+  });
+  const census = async () => ({ watermarks: [watermark("default")], complete: true });
+  monitor.getReport({ config, computeLocalWatermarks: census });
+  await monitor.whenIdle();
+  let polls = 0;
+  const counting = async () => { polls += 1; return { watermarks: [watermark("default")], complete: true }; };
+  now += 900_001; // past the freshness bound, far short of the poll interval
+  monitor.getReport({ config, computeLocalWatermarks: counting });
+  await monitor.whenIdle();
+  assert.equal(polls, 1, "the cache must expire at the freshness bound, not the poll interval");
+});

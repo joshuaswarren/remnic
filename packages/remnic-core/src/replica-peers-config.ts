@@ -153,7 +153,11 @@ function parseReplicaPeer(value: unknown, index: number): ReplicaPeerConfig {
     throw new Error(`replicaPeers.peers[${index}].url must be a clean base URL (no query, fragment, or embedded credentials)`);
   }
   const token = parseReplicaPeerToken(record.token, index);
-  return token === undefined ? { url } : { url, token };
+  // Store the CANONICAL form: `new URL()` tolerates surrounding whitespace that
+  // the raw string keeps, and the health path is appended by concatenation - so
+  // " https://peer /engram/v1/health" reads as an unreachable healthy peer.
+  const canonical = parsed.toString().replace(/\/+$/, "");
+  return token === undefined ? { url: canonical } : { url: canonical, token };
 }
 
 /**
