@@ -825,6 +825,23 @@ export async function migrateLegacyEntityCanonicalIds(
         }
         return deps.readMigrationFingerprint?.();
       };
+      /**
+       * Drop blocked pairs from the working set. Discovery only refuses to
+       * ADD them; a mapping persisted by an earlier run would otherwise still
+       * be applied - migrating one claimant and rewriting every reference onto
+       * the canonical file, i.e. picking the winner this fix exists to avoid,
+       * off stale state rather than what is on disk.
+       */
+      const pruneBlocked = async (): Promise<void> => {
+        const current = state;
+        if (blocked.size === 0 || !current) return;
+        const remaining: Record<string, string> = Object.fromEntries(
+          Object.entries(current.mappings).filter(([legacyId]) => !blocked.has(legacyId)),
+        );
+        if (Object.keys(remaining).length === Object.keys(current.mappings).length) return;
+        state = { ...current, mappings: remaining };
+        await writeState(deps, state);
+      };
       const previousMappings = state.mappings;
       const collapsedMappings = collapseMappings(previousMappings);
       const mappingsChanged =
@@ -839,6 +856,7 @@ export async function migrateLegacyEntityCanonicalIds(
           state.mappings,
           await discoverMappings(deps, state.mappings, blocked),
         );
+        await pruneBlocked();
         const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
         if (state.complete && Object.keys(discoveredBefore).length === 0 && !mappingsChanged) {
           if (Object.keys(state.mappings).length === 0) return finish();
@@ -903,15 +921,7 @@ export async function migrateLegacyEntityCanonicalIds(
           }
           pendingMappings = deferredMappings;
         }
-        if (blocked.size > 0) {
-          const remaining: Record<string, string> = Object.fromEntries(
-            Object.entries(state.mappings).filter(([legacyId]) => !blocked.has(legacyId)),
-          );
-          if (Object.keys(remaining).length !== Object.keys(state.mappings).length) {
-            state = { ...state, mappings: remaining };
-            await writeState(deps, state);
-          }
-        }
+        await pruneBlocked();
 
         const rewroteColdMemory = await rewriteKnownReferences(
           deps,
@@ -928,6 +938,7 @@ export async function migrateLegacyEntityCanonicalIds(
           state.mappings,
           await discoverMappings(deps, state.mappings, blocked),
         );
+        await pruneBlocked();
         if (Object.keys(discoveredAfter).length === 0) {
           await writeState(deps, { ...state, complete: true });
           return finish();

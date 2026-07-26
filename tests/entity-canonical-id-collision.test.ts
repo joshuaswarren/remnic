@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { StorageManager, normalizeEntityName } from "../packages/remnic-core/src/storage.js";
 
@@ -78,6 +78,8 @@ test("a blocked collision does not stall the rest of the migration", async () =>
 
     const migrated = await readFile(path.join(dir, "entities", `${soloCanonical}.md`), "utf8");
     assert.match(migrated, /Runs Mondays\./, "an unblocked pair must still reach its canonical id");
+    // A copy that leaves the legacy file behind is not a migration.
+    await assert.rejects(() => readFile(path.join(dir, "entities", `${soloLegacy}.md`), "utf8"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -111,6 +113,56 @@ test("two legacy files claiming one canonical id block each other, deterministic
       );
     }
     await assert.rejects(() => readFile(path.join(dir, "entities", `${canonicalId}.md`), "utf8"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a mapping persisted by an earlier run cannot outvote a later block", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-stale-mapping-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const canonicalId = normalizeEntityName("Nightly Ingest", "automation-cron-job");
+    const firstLegacy = "automation-nightly-ingest";
+    const secondLegacy = "automation-legacy-nightly-ingest";
+    const entity = (id: string, body: string) =>
+      `---\nid: ${id}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# Nightly Ingest\n\n**Type:** automation-cron-job\n\n${body}\n`;
+    await writeFile(path.join(dir, "entities", `${firstLegacy}.md`), entity(firstLegacy, "First."), "utf8");
+    await writeFile(path.join(dir, "entities", `${secondLegacy}.md`), entity(secondLegacy, "Second."), "utf8");
+    // Journal from a build that had already chosen a winner. Discovery refuses
+    // to ADD a contested pair; the persisted entry must be dropped too, or the
+    // stale state picks the winner that disk-only discovery declined to pick.
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: true, mappings: { [firstLegacy]: canonicalId } }),
+      "utf8",
+    );
+
+    // The damage is not to the entity files - the completed-state path leaves
+    // those alone and rewrites REFERENCES, silently pointing memories at the
+    // canonical file, i.e. choosing the winner while both files sit preserved.
+    const factDir = path.join(dir, "facts", "2026-03-01");
+    await mkdir(factDir, { recursive: true });
+    await writeFile(
+      path.join(factDir, "fact-contested.md"),
+      `---\nid: fact-contested\ncategory: fact\nconfidence: 0.9\n`
+      + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+      + `entityRef: ${firstLegacy}\nstatus: active\n---\n\nThe ingest runs nightly.\n`,
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+
+    assert.match(await readFile(path.join(dir, "entities", `${firstLegacy}.md`), "utf8"), /First\./);
+    assert.match(await readFile(path.join(dir, "entities", `${secondLegacy}.md`), "utf8"), /Second\./);
+    await assert.rejects(() => readFile(path.join(dir, "entities", `${canonicalId}.md`), "utf8"));
+    assert.match(
+      await readFile(path.join(factDir, "fact-contested.md"), "utf8"),
+      new RegExp(`entityRef: ${firstLegacy}`),
+      "a blocked pair must not have its references redirected to the contested canonical id",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
