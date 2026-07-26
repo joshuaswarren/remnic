@@ -451,12 +451,20 @@ function hasRoleNormalizedGrounding(candidate: string, source: string): boolean 
 
   return sourceSentences(source).some((sentence) => {
     if (isInterrogativeSourceSentence(sentence)) return false;
-    const sourceTokens = new Set(groundingTokenSequence(sentence));
-    return claimTokens.every((token) => sourceTokens.has(token))
+    const sourceTokens = groundingTokenSequence(sentence);
+    const requiredSharedTokens = Math.min(GROUNDING_MIN_SHARED_TOKENS, claimTokens.length);
+    let sourceIndex = 0;
+    let sharedTokens = 0;
+    for (const claimToken of claimTokens) {
+      const matchingIndex = sourceTokens.indexOf(claimToken, sourceIndex);
+      if (matchingIndex === -1) continue;
+      sharedTokens += 1;
+      sourceIndex = matchingIndex + 1;
+    }
+    return sharedTokens >= requiredSharedTokens
       && !hasContradictoryPolarity(candidate, sentence);
   });
 }
-
 function isGroundedCandidate(
   candidate: string,
   source: string,
@@ -470,9 +478,12 @@ function isGroundedCandidate(
       && normalizeForExactMatch(assertionSource) !== normalizeForExactMatch(source)
     );
   const sourceGrounded = isSourceGrounded(candidate, source, allowInterrogativeSource);
-  if (!sourceGrounded && (!allowRoleNormalization || !hasRoleNormalizedGrounding(candidate, source))) {
-    return false;
-  }
+  const roleGrounded = allowRoleNormalization && hasRoleNormalizedGrounding(candidate, source);
+  const candidateTokens = groundingTokenSequence(candidate);
+  const roleNormalizedCandidate = allowRoleNormalization
+    && GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateTokens[0] ?? "");
+  if (roleNormalizedCandidate && !roleGrounded) return false;
+  if (!sourceGrounded && !roleGrounded) return false;
   if (assertionSource === undefined) return true;
   const clauses = candidateClauses(candidate);
   return clauses.length > 0
