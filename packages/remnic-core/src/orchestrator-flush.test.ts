@@ -203,6 +203,34 @@ test("flushSession rejects opaque buffers without trusted ownership", async () =
   );
   assert.equal(queued, false);
 });
+test("flushSession skips scoped ownership enforcement when namespaces are disabled", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let queued = false;
+  orchestrator.config = parseConfig({ namespacesEnabled: false });
+  orchestrator.buffer = {
+    flushPendingSave: async () => {},
+    findBufferKeysForSession: async () => ["provider-thread"],
+    getTurns: (bufferKey: string) =>
+      bufferKey === "provider-thread" ? [makeTurn("opaque-session", "remember gamma")] : [],
+  };
+  orchestrator.queueBufferedExtraction = async (
+    _turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queued = true;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("opaque-session", {
+    reason: "access_force_flush",
+    failOnExtractionFailure: true,
+    writeNamespaceOverride: "default",
+    principalOverride: "alice",
+  });
+
+  assert.equal(queued, true);
+});
 
 test("flushSession waits for queued extraction task completion", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;

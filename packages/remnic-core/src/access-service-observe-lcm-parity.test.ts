@@ -563,6 +563,93 @@ test("#2128: explicit namespace force-flush does not bind unrelated project cont
 
   assert.equal(probe.orch.getCodingContextForSession(sessionKey), null);
 });
+test("#2128: post-flush retained cleanup is best effort and receives lifecycle guards", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const abortController = new AbortController();
+  const cleanupCalls: Array<{
+    sessionKey: string;
+    ownerPrincipal?: string;
+    options?: { abortSignal?: AbortSignal; deadlineMs?: number };
+  }> = [];
+  (probe.orch as unknown as {
+    buffer: {
+      clearRetainedTurnsForSession(
+        sessionKey: string,
+        ownerPrincipal?: string,
+        options?: { abortSignal?: AbortSignal; deadlineMs?: number },
+      ): Promise<void>;
+    };
+  }).buffer = {
+    clearRetainedTurnsForSession: async (sessionKey, ownerPrincipal, options) => {
+      cleanupCalls.push({ sessionKey, ownerPrincipal, options });
+      throw new Error("retained cleanup unavailable");
+    },
+  };
+  const service = new EngramAccessService(probe.orch);
+  const deadlineMs = Date.now() + 10_000;
+
+  const response = await service.extractionForceFlush({
+    sessionKey: "pi-geek:cleanup-best-effort",
+    authenticatedPrincipal: "pi-geek",
+    abortSignal: abortController.signal,
+    deadlineMs,
+  });
+
+  assert.equal(response.flushed, true);
+  assert.deepEqual(cleanupCalls, [{
+    sessionKey: "pi-geek:cleanup-best-effort",
+    ownerPrincipal: "pi-geek",
+    options: { abortSignal: abortController.signal, deadlineMs },
+  }]);
+});
+
+test("#2128: post-flush retained cleanup stops on abort or deadline", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  (probe.orch as unknown as {
+    buffer: {
+      clearRetainedTurnsForSession(
+        sessionKey: string,
+        ownerPrincipal?: string,
+        options?: { abortSignal?: AbortSignal; deadlineMs?: number },
+      ): Promise<void>;
+    };
+  }).buffer = {
+    clearRetainedTurnsForSession: async () => new Promise<void>(() => {}),
+  };
+  const service = new EngramAccessService(probe.orch);
+  const abortController = new AbortController();
+  setTimeout(() => abortController.abort(), 5).unref();
+
+  await assert.rejects(
+    () =>
+      Promise.race([
+        service.extractionForceFlush({
+          sessionKey: "pi-geek:cleanup-abort",
+          authenticatedPrincipal: "pi-geek",
+          abortSignal: abortController.signal,
+        }),
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("abort cleanup test timed out")), 100),
+        ),
+      ]),
+    /extraction force-flush aborted/,
+  );
+
+  await assert.rejects(
+    () =>
+      Promise.race([
+        service.extractionForceFlush({
+          sessionKey: "pi-geek:cleanup-deadline",
+          authenticatedPrincipal: "pi-geek",
+          deadlineMs: Date.now() + 5,
+        }),
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("deadline cleanup test timed out")), 100),
+        ),
+      ]),
+    /replay extraction deadline exceeded \(retained_turn_cleanup\)/,
+  );
+});
 test("#2128: aborted or expired extraction force-flush never touches a buffer", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);

@@ -510,6 +510,31 @@ test("clearRetainedTurnsForSession drains only the authenticated owner", async (
 
   assert.deepEqual(buffer.getRetainedDeferredTurns("provider-thread"), [bobTurn]);
 });
+test("clearRetainedTurnsForSession discovers buffer keys inside the mutation", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const firstTurn = makeTurn("session-a", "first deferred context");
+  const lateTurn = makeTurn("session-a", "late deferred context");
+
+  await buffer.addTurn("provider-thread", firstTurn);
+  await buffer.retainDeferredTurns("provider-thread", [firstTurn]);
+  const originalFindBufferKeys = buffer.findBufferKeysForSession.bind(buffer);
+  (buffer as any).findBufferKeysForSession = async (sessionKey: string) => {
+    const keys = await originalFindBufferKeys(sessionKey);
+    await buffer.addTurn("late-provider-thread", lateTurn);
+    await buffer.retainDeferredTurns("late-provider-thread", [lateTurn]);
+    return keys;
+  };
+
+  await buffer.clearRetainedTurnsForSession("session-a");
+
+  assert.deepEqual(buffer.getRetainedDeferredTurns("provider-thread"), []);
+  assert.deepEqual(buffer.getRetainedDeferredTurns("late-provider-thread"), []);
+});
 
 test("retainDeferredTurns respects the max tail size", async () => {
   const storage = new FakeStorage({

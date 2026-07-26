@@ -1,4 +1,4 @@
-import { throwIfAborted } from "./abort-error.js";
+import { isAbortError, throwIfAborted } from "./abort-error.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import {
   type EngramAccessExtractionForceFlushRequest,
@@ -10,8 +10,9 @@ import {
 } from "./capabilities.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
 import type { AccessObserveWriteSurfaceDeps } from "./access-observe-write-surface.js";
+import { log } from "./logger.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
-import { SessionOwnershipError } from "./orchestration/session-context.js";
+import { SessionOwnershipError, awaitSessionFlushPhase } from "./orchestration/session-context.js";
 
 export async function extractionForceFlush(
   deps: AccessObserveWriteSurfaceDeps,
@@ -96,7 +97,34 @@ export async function extractionForceFlush(
     });
     const buffer = deps.orchestrator.buffer;
     if (buffer && typeof buffer.clearRetainedTurnsForSession === "function") {
-      await buffer.clearRetainedTurnsForSession(request.sessionKey, scope.principal);
+      try {
+        await awaitSessionFlushPhase(
+          () =>
+            buffer.clearRetainedTurnsForSession(
+              request.sessionKey,
+              scope.principal,
+              {
+                abortSignal: request.abortSignal,
+                deadlineMs: request.deadlineMs,
+              },
+            ),
+          {
+            abortSignal: request.abortSignal,
+            extractionDeadlineMs: request.deadlineMs,
+            reason: "access_force_flush",
+            deadlineStage: "retained_turn_cleanup",
+          },
+        );
+      } catch (cleanupError) {
+        if (isAbortError(cleanupError) || cleanupError instanceof ExtractionDeadlineError) {
+          throw cleanupError;
+        }
+        log.warn(
+          `extractionForceFlush: retained-turn cleanup failed after a successful flush, continuing: ${
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          }`,
+        );
+      }
     }
 
     return {

@@ -107,16 +107,18 @@ export class SessionOwnershipError extends Error {
 
 const MAX_SET_TIMEOUT_MS = 2_147_483_647;
 
-async function awaitSessionFlushPhase<T>(
+export async function awaitSessionFlushPhase<T>(
   task: () => Promise<T>,
-  options: Pick<SessionFlushOptions, "abortSignal" | "extractionDeadlineMs" | "reason">,
+  options: Pick<SessionFlushOptions, "abortSignal" | "extractionDeadlineMs" | "reason"> & {
+    deadlineStage?: string;
+  },
 ): Promise<T> {
   const abortMessage =
     options.reason === "access_force_flush" ? "extraction force-flush aborted" : "session flush aborted";
   throwIfAborted(options.abortSignal, abortMessage);
   const deadline = options.extractionDeadlineMs;
   if (typeof deadline === "number" && Date.now() >= deadline) {
-    throw new ExtractionDeadlineError("before_buffer_flush");
+    throw new ExtractionDeadlineError(options.deadlineStage ?? "before_buffer_flush");
   }
 
   const taskPromise = Promise.resolve().then(task);
@@ -138,7 +140,7 @@ async function awaitSessionFlushPhase<T>(
           const schedule = (): void => {
             const remainingMs = deadline - Date.now();
             if (remainingMs <= 0) {
-              reject(new ExtractionDeadlineError("before_buffer_flush"));
+              reject(new ExtractionDeadlineError(options.deadlineStage ?? "before_buffer_flush"));
               return;
             }
             deadlineTimer = setTimeout(schedule, Math.min(remainingMs, MAX_SET_TIMEOUT_MS));
@@ -443,19 +445,23 @@ export class SessionContextCoordinator {
         : typeof sessionKey === "string" && sessionKey.length > 0
           ? [sessionKey]
           : ["default"];
-    const scopedOwnership =
+    const namespacesEnabled =
+      this.deps.config === undefined ||
+      resolveNamespaceCapabilities(this.deps.config).namespaces === true;
+    const scopedRequest =
       typeof options.writeNamespaceOverride === "string" ||
       typeof options.principalOverride === "string";
+    const ownershipEnforced = namespacesEnabled && scopedRequest;
     const ownerPrincipal =
       typeof options.principalOverride === "string" && options.principalOverride.trim().length > 0
         ? options.principalOverride.trim()
         : undefined;
     const resolvedSessionPrincipal =
-      scopedOwnership && ownerPrincipal !== undefined && this.deps.config
+      ownershipEnforced && ownerPrincipal !== undefined && this.deps.config
         ? resolvePrincipal(sessionKey, this.deps.config)
         : undefined;
     const opaqueScopedSession =
-      scopedOwnership &&
+      ownershipEnforced &&
       ownerPrincipal !== undefined &&
       (resolvedSessionPrincipal === undefined || resolvedSessionPrincipal === "default");
     if (
@@ -472,10 +478,10 @@ export class SessionContextCoordinator {
     }
     for (const bufferKey of bufferKeys) {
       const turns = this.deps.buffer.getTurns(bufferKey);
-      const turnsForSession = scopedOwnership
+      const turnsForSession = scopedRequest
         ? turns.filter((turn) => {
             if (turn.sessionKey !== sessionKey) return false;
-            if (ownerPrincipal === undefined) return true;
+            if (!ownershipEnforced || ownerPrincipal === undefined) return true;
             if (turn.sessionOwnerPrincipal === ownerPrincipal) return true;
             return (
               turn.sessionOwnerPrincipal === undefined &&
@@ -496,7 +502,7 @@ export class SessionContextCoordinator {
           extractionDeadlineMs: options.extractionDeadlineMs,
           writeNamespaceOverride: options.writeNamespaceOverride,
           principalOverride: options.principalOverride,
-          clearMatchingTurns: options.clearMatchingTurns ?? scopedOwnership,
+          clearMatchingTurns: options.clearMatchingTurns ?? scopedRequest,
           onTaskSettled: (error) => (error ? reject(error) : resolve()),
         })
           .catch(reject);

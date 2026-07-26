@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import { throwIfAborted } from "./abort-error.js";
 import { scanSignals } from "./signal.js";
 import type { StorageManager } from "./storage.js";
 import type {
@@ -11,6 +12,7 @@ import type {
 } from "./types.js";
 import { resolvePresentationCapabilities } from "./capabilities.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
+import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import type { ExtractionBufferSnapshot } from "./extraction-liveness.js";
 import {
   bufferTurnArrayIsSuffixOfSnapshot,
@@ -28,6 +30,11 @@ export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering"
 export interface AddTurnOutcome {
   decision: TriggerDecision;
   extractionTurns?: BufferTurn[];
+}
+
+export interface RetainedTurnCleanupOptions {
+  abortSignal?: AbortSignal;
+  deadlineMs?: number;
 }
 
 /**
@@ -927,21 +934,34 @@ export class SmartBuffer {
    * extraction preserves these copies so a deferred candidate can be retried;
    * an explicit force flush is the caller's request to drain that context.
    */
-  async clearRetainedTurnsForSession(sessionKey: string, ownerPrincipal?: string): Promise<void> {
+  async clearRetainedTurnsForSession(
+    sessionKey: string,
+    ownerPrincipal?: string,
+    options: RetainedTurnCleanupOptions = {},
+  ): Promise<void> {
     if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
     const normalizedOwnerPrincipal =
       typeof ownerPrincipal === "string" && ownerPrincipal.trim().length > 0
         ? ownerPrincipal.trim()
         : undefined;
-    const bufferKeys = await this.findBufferKeysForSession(sessionKey);
-    if (bufferKeys.length === 0) return;
+    const assertLifecycle = (): void => {
+      throwIfAborted(options.abortSignal, "extraction force-flush aborted");
+      if (typeof options.deadlineMs === "number" && Date.now() >= options.deadlineMs) {
+        throw new ExtractionDeadlineError("retained_turn_cleanup");
+      }
+    };
+    assertLifecycle();
     await this.enqueueMutation(async () => {
+      assertLifecycle();
       const hadPendingSave = this.pendingSave;
       if (this.saveTimer) {
         clearTimeout(this.saveTimer);
         this.saveTimer = null;
       }
       await this.loadUnlocked();
+      assertLifecycle();
+      const bufferKeys = this.matchingSessionBufferKeysUnlocked(sessionKey);
+      if (bufferKeys.length === 0) return;
       let changed = false;
       const belongsToOwner = (turn: BufferTurn): boolean => {
         if (turn.sessionKey !== sessionKey) return false;
@@ -963,8 +983,10 @@ export class SmartBuffer {
         if (bufferKey === "default") this.state.turns = entry.turns;
       }
       if (changed || hadPendingSave) {
+        assertLifecycle();
         await this.saveNowRetainingPendingOnFailure("clearRetainedTurnsForSession");
       }
+      assertLifecycle();
     });
   }
 
@@ -973,11 +995,7 @@ export class SmartBuffer {
     return bufferKeys[0] ?? null;
   }
 
-  async findBufferKeysForSession(sessionKey: string): Promise<string[]> {
-    if (typeof sessionKey !== "string" || sessionKey.length === 0) return [];
-    await this.mutationChain.catch(() => {});
-    await this.load();
-
+  private matchingSessionBufferKeysUnlocked(sessionKey: string): string[] {
     const matches: string[] = [];
     const hasSessionTurns = (entry: BufferEntryState | null | undefined): boolean =>
       [...(entry?.turns ?? []), ...(entry?.retainedTurns ?? [])].some(
@@ -996,6 +1014,13 @@ export class SmartBuffer {
     }
 
     return matches;
+  }
+
+  async findBufferKeysForSession(sessionKey: string): Promise<string[]> {
+    if (typeof sessionKey !== "string" || sessionKey.length === 0) return [];
+    await this.mutationChain.catch(() => {});
+    await this.load();
+    return this.matchingSessionBufferKeysUnlocked(sessionKey);
   }
 
   async clearAfterExtraction(
