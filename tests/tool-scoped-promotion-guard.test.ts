@@ -257,3 +257,137 @@ test("capability gate: extractionScopeClassificationEnabled='false' (CLI string)
   const cfg = parseConfig({ openaiApiKey: "sk-test", extractionScopeClassificationEnabled: "false" });
   assert.equal(cfg.extractionScopeClassificationEnabled, false);
 });
+
+
+// ---------------------------------------------------------------------------
+// Auto-promotion path (#2183 follow-up): the post-write promoteMemoryToShared
+// call sites (chunked + non-chunked) must honour the SAME tool-scope primitive
+// as scope-routing, or autoPromoteToSharedEnabled / a serverShared scope-profile
+// target quietly re-leaks a tool-scoped fact into the shared namespace. The
+// primitive is applied ONCE inside promoteMemoryToShared, so both call sites are
+// covered by construction. These exercise the real Orchestrator.persistExtraction
+// and assert on the resolved namespace. scope="project" isolates the auto-promote
+// path from scope-routing (which only fires for scope="global").
+// ---------------------------------------------------------------------------
+
+function correctionFact(content: string, scope: "project" | "global" = "project"): ExtractionResult {
+  return {
+    facts: [{ content, category: "correction", confidence: 0.95, tags: [], scope }],
+    entities: [],
+    questions: [],
+    profileUpdates: [],
+  };
+}
+
+function autoPromoteConfig(memoryDir: string, extra: Record<string, unknown> = {}): PluginConfig {
+  return baseConfig(memoryDir, {
+    autoPromoteToSharedEnabled: true,
+    autoPromoteToSharedCategories: ["correction"],
+    autoPromoteMinConfidenceTier: "explicit",
+    ...extra,
+  });
+}
+
+test("auto-promote: tool-scoped correction fact WITH sourceConnector is NOT auto-promoted to shared (non-chunked)", async () => {
+  const memoryDir = tmpDir("tool-scoped-autopromo-withheld");
+  try {
+    const orchestrator = new Orchestrator(autoPromoteConfig(memoryDir));
+    stubBackgroundWork(orchestrator);
+    const defaultStorage = await orchestrator.getStorageForNamespace("default");
+    await defaultStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
+    await sharedStorage.ensureDirectories();
+
+    await orchestrator.persistExtraction(correctionFact(TOOL_FACT), defaultStorage, "thread-1", { sourceConnector: "pi" });
+
+    const sharedMems = await sharedStorage.readAllMemories();
+    const defaultMems = await defaultStorage.readAllMemories();
+    assert.equal(
+      sharedMems.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
+      false,
+      "tool-scoped fact must NOT be auto-promoted to shared even with autoPromoteToSharedEnabled",
+    );
+    assert.ok(
+      defaultMems.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
+      "tool-scoped fact stays in the session namespace",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-promote: same tool-scoped fact WITHOUT sourceConnector still auto-promotes (non-chunked)", async () => {
+  const memoryDir = tmpDir("tool-scoped-autopromo-no-connector");
+  try {
+    const orchestrator = new Orchestrator(autoPromoteConfig(memoryDir));
+    stubBackgroundWork(orchestrator);
+    const defaultStorage = await orchestrator.getStorageForNamespace("default");
+    await defaultStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
+    await sharedStorage.ensureDirectories();
+
+    await orchestrator.persistExtraction(correctionFact(TOOL_FACT), defaultStorage, "thread-1");
+
+    const sharedMems = await sharedStorage.readAllMemories();
+    assert.ok(
+      sharedMems.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
+      "unattributed tool-scoped fact still auto-promotes (no regression)",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-promote: portable correction fact WITH sourceConnector still auto-promotes (non-chunked)", async () => {
+  const memoryDir = tmpDir("tool-scoped-autopromo-portable");
+  try {
+    const orchestrator = new Orchestrator(autoPromoteConfig(memoryDir));
+    stubBackgroundWork(orchestrator);
+    const defaultStorage = await orchestrator.getStorageForNamespace("default");
+    await defaultStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
+    await sharedStorage.ensureDirectories();
+
+    await orchestrator.persistExtraction(correctionFact(PORTABLE_FACT), defaultStorage, "thread-1", { sourceConnector: "pi" });
+
+    const sharedMems = await sharedStorage.readAllMemories();
+    assert.ok(
+      sharedMems.some((m) => m.content?.includes(PORTABLE_FACT.slice(0, 20))),
+      "portable fact still auto-promotes with a sourceConnector (no regression)",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-promote: chunked path also withholds a tool-scoped fact with sourceConnector", async () => {
+  // Force the chunked write branch (the L2379 promoteMemoryToShared call site)
+  // so the guard inside promoteMemoryToShared is exercised via that path too.
+  const memoryDir = tmpDir("tool-scoped-autopromo-chunked");
+  try {
+    const orchestrator = new Orchestrator(
+      autoPromoteConfig(memoryDir, { chunkingEnabled: true, chunkingTargetTokens: 5, chunkingMinTokens: 1, chunkingOverlapSentences: 0 }),
+    );
+    stubBackgroundWork(orchestrator);
+    const defaultStorage = await orchestrator.getStorageForNamespace("default");
+    await defaultStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
+    await sharedStorage.ensureDirectories();
+
+    const longToolFact = `${TOOL_FACT} `.repeat(20).trim();
+    await orchestrator.persistExtraction(correctionFact(longToolFact), defaultStorage, "thread-1", { sourceConnector: "pi" });
+
+    const sharedMems = await sharedStorage.readAllMemories();
+    assert.equal(
+      sharedMems.some((m) => m.content?.includes("search tool")),
+      false,
+      "chunked tool-scoped fact must NOT be auto-promoted to shared (chunked call site guarded)",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

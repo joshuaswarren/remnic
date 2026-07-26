@@ -82,7 +82,7 @@ import {
   stripCitationForTemplate,
 } from "../source-attribution.js";
 import { classifyMemoryKind } from "../himem.js";
-import { shouldPromoteGlobalFactToShared } from "../tool-scoped-memory.js";
+import { shouldPromoteGlobalFactToShared, withholdToolScopedFromSharedNamespace } from "../tool-scoped-memory.js";
 import {
   buildBehaviorSignalsForMemory,
   dedupeBehaviorSignalsByMemoryAndHash,
@@ -609,10 +609,13 @@ export class ExtractionPersistCoordinator {
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
       source: string;
+      sourceConnector?: string;
       /** Claim-level provenance spans (issue #1575 PR 2). */
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
     }): Promise<void> => {
+      // #2183: never auto-promote a tool-scoped fact from a known integration to shared.
+      if (withholdToolScopedFromSharedNamespace({ content: options.content, sourceConnector: options.sourceConnector })) return;
       await promoteMemoryToProfileTargets(options);
       if (
         !shouldPromoteToShared(

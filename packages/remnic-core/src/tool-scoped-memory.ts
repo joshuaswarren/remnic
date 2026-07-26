@@ -115,6 +115,11 @@ export function referencesAgentSpecificTool(content: string): boolean {
   return TOOL_REFERENCE.test(content);
 }
 
+export interface ToolScopeWithholdInputs {
+  content: string;
+  sourceConnector?: string;
+}
+
 export interface GlobalFactPromotionInputs {
   scope: string | null | undefined;
   content: string;
@@ -122,30 +127,35 @@ export interface GlobalFactPromotionInputs {
 }
 
 /**
- * True when a `global`-scoped fact should be promoted to the shared namespace,
- * accounting for the #2183 tool-scope guard. This is the SINGLE decision point
- * called by BOTH the pre-judge namespace prediction AND the write-loop
- * scope-routing block in extraction-persist.ts, so the read path and the write
- * path can never diverge on the tool-scope decision (AGENTS.md namespace
- * invariant: both paths resolve through the same namespace resolver).
- *
- * The guard has no separate config knob: it is gated by the SAME
- * `extractionScopeClassificationEnabled` capability as the scope-routing block
- * it lives in — the guard only ever applies to facts the scope classifier
- * tagged `global`, so scope classification is both its input domain and its
- * escape hatch. Call this only inside a scope-classification-gated branch.
- *
- * Returns false (do not promote) for a tool-scoped fact produced by a known
- * integration; true otherwise.
+ * Primitive: true when a fact references a specific tool/command AND was
+ * produced by a known integration — the SINGLE definition of "tool-scoped and
+ * attributed". Every shared-namespace promotion path (scope-routing AND
+ * auto-promotion) consults this, so the tool-scope decision has exactly one
+ * implementation and cannot diverge across paths (issue #2183).
+ */
+export function withholdToolScopedFromSharedNamespace(
+  { content, sourceConnector }: ToolScopeWithholdInputs,
+): boolean {
+  return (
+    typeof sourceConnector === "string" &&
+    sourceConnector.length > 0 &&
+    referencesAgentSpecificTool(content)
+  );
+}
+
+/**
+ * Scope-routing composition: a `global`-scoped fact promotes to the shared
+ * namespace unless the tool-scope primitive withholds it. This is the SINGLE
+ * decision point called by BOTH the pre-judge namespace prediction AND the
+ * write-loop scope-routing block in extraction-persist.ts (AGENTS.md namespace
+ * invariant: read path and write path resolve through the same resolver), and
+ * it is gated by the enclosing extractionScopeClassificationEnabled
+ * capability — call this only inside a scope-classification-gated branch.
  */
 export function shouldPromoteGlobalFactToShared(inputs: GlobalFactPromotionInputs): boolean {
   if (inputs.scope !== "global") return false;
-  if (
-    typeof inputs.sourceConnector === "string" &&
-    inputs.sourceConnector.length > 0 &&
-    referencesAgentSpecificTool(inputs.content)
-  ) {
-    return false;
-  }
-  return true;
+  return !withholdToolScopedFromSharedNamespace({
+    content: inputs.content,
+    sourceConnector: inputs.sourceConnector,
+  });
 }

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   referencesAgentSpecificTool,
   shouldPromoteGlobalFactToShared,
+  withholdToolScopedFromSharedNamespace,
 } from "./tool-scoped-memory.js";
 
 // ---------------------------------------------------------------------------
@@ -156,5 +157,24 @@ const PROMOTION_CASES: Array<{ name: string; args: { scope: string | null | unde
 for (const { name, args, expected } of PROMOTION_CASES) {
   test(`shouldPromoteGlobalFactToShared: ${name}`, () => {
     assert.equal(shouldPromoteGlobalFactToShared(args), expected);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// withholdToolScopedFromSharedNamespace — the SINGLE primitive every shared-
+// namespace promotion path consults (scope-routing AND auto-promotion). No
+// scope condition: it is the one definition of "tool-scoped and attributed".
+// ---------------------------------------------------------------------------
+
+const WITHHOLD_CASES: Array<{ name: string; content: string; sourceConnector?: string; expected: boolean }> = [
+  { name: "tool-scoped + connector -> withhold", content: "Prefer the search tool when locating code.", sourceConnector: "pi", expected: true },
+  { name: "tool-scoped + empty connector -> do not withhold", content: "Prefer the search tool when locating code.", sourceConnector: "", expected: false },
+  { name: "tool-scoped + no connector -> do not withhold", content: "Prefer the search tool when locating code.", expected: false },
+  { name: "portable + connector -> do not withhold", content: "User prefers dark mode in all editors", sourceConnector: "pi", expected: false },
+];
+
+for (const { name, content, sourceConnector, expected } of WITHHOLD_CASES) {
+  test(`withholdToolScopedFromSharedNamespace: ${name}`, () => {
+    assert.equal(withholdToolScopedFromSharedNamespace({ content, sourceConnector }), expected);
   });
 }
