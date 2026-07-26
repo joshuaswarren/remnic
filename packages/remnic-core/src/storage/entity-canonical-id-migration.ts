@@ -861,41 +861,40 @@ export async function migrateLegacyEntityCanonicalIds(
       const pruneBlocked = async (): Promise<void> => {
         const current = state;
         if (!current) return;
-        const remaining: Record<string, string> = {};
+        // THIS scan's verdict wins over the journal: normalization can change
+        // between runs, so a stale parked target would otherwise be promoted
+        // later and rewrite references onto an id that does not exist.
         const parked: Record<string, string> = { ...(current.blocked ?? {}) };
+        const active: Record<string, string> = {};
         for (const [legacyId, canonicalId] of Object.entries(current.mappings)) {
-          if (blocked.has(legacyId)) parked[legacyId] = canonicalId;
-          else remaining[legacyId] = canonicalId;
+          if (!blocked.has(legacyId)) active[legacyId] = canonicalId;
         }
-        for (const [legacyId, canonicalId] of blocked) parked[legacyId] ??= canonicalId;
-        // A parked pair whose legacy file is gone was resolved by the operator
-        // keeping the canonical side. The rename no longer needs doing, but the
-        // REWRITE does - references still name the legacy id, and this record
-        // is the only thing that can still map them.
-        // Follow the chain: parking A -> B while B -> C migrates in the same
-        // run would leave the park pointing at an id that no longer exists.
-        for (const [legacyId, canonicalId] of Object.entries(parked)) {
-          let hop = canonicalId;
-          const seen = new Set<string>([legacyId]);
-          while (remaining[hop] !== undefined && !seen.has(hop)) {
-            seen.add(hop);
-            hop = remaining[hop];
-          }
-          parked[legacyId] = hop;
-        }
+        for (const [legacyId, canonicalId] of blocked) parked[legacyId] = canonicalId;
+        // A parked pair whose legacy file is gone was resolved by keeping the
+        // canonical side. The rename is moot; the reference rewrite is not, and
+        // this record is the only thing that can still perform it.
         for (const [legacyId, canonicalId] of Object.entries(parked)) {
           if (blocked.has(legacyId)) continue;
           const legacyPath = deps.resolveEntityFilePath(legacyId);
           if (legacyPath !== null && (await fileExists(legacyPath))) continue;
-          remaining[legacyId] = canonicalId;
+          active[legacyId] = canonicalId;
           delete parked[legacyId];
         }
-        const sameMappings = Object.keys(remaining).length === Object.keys(current.mappings).length
-          && Object.entries(remaining).every(([legacyId, canonicalId]) => current.mappings[legacyId] === canonicalId);
-        const samePark = Object.keys(parked).length === Object.keys(current.blocked ?? {}).length
-          && Object.entries(parked).every(([legacyId, canonicalId]) => current.blocked?.[legacyId] === canonicalId);
-        if (sameMappings && samePark) return;
-        state = { ...current, mappings: remaining, blocked: parked };
+        // Reviving a whole chain at once yields A -> B -> C, and each rewrite
+        // surface makes a different number of passes over it - so collapse
+        // transitively before anything consumes the set.
+        const collapsed = collapseMappings(active);
+        // Parked targets follow ACTIVE moves only: hopping over a still-blocked
+        // link would jump to an id the migration has not been allowed to reach.
+        for (const [legacyId, canonicalId] of Object.entries(parked)) {
+          const moved = collapsed[canonicalId];
+          if (moved !== undefined && moved !== legacyId) parked[legacyId] = moved;
+        }
+        const same = (a: Record<string, string>, b: Record<string, string>): boolean =>
+          Object.keys(a).length === Object.keys(b).length
+          && Object.entries(a).every(([key, value]) => b[key] === value);
+        if (same(collapsed, current.mappings) && same(parked, current.blocked ?? {})) return;
+        state = { ...current, mappings: collapsed, blocked: parked };
         await writeState(deps, state);
       };
       const previousMappings = state.mappings;

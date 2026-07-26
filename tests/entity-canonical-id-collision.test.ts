@@ -234,3 +234,41 @@ test("deleting the legacy side still rewrites references to the canonical id", a
   }
 });
 
+
+test("a re-normalized collision replaces the journal's stale target", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-stale-target-"));
+  try {
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    const stale = "automation-cron-job-obsolete-target";
+    // The journal remembers a target from before a normalization change. The
+    // pair is contested NOW against `canonical`, so that is the only target
+    // that may ever be promoted — the stale one names no file on disk.
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: {}, blocked: { [legacy]: stale } }),
+      "utf8",
+    );
+    const factDir = path.join(dir, "facts", "2026-03-01");
+    await mkdir(factDir, { recursive: true });
+    const factPath = path.join(factDir, "fact-stale-target.md");
+    await writeFile(
+      factPath,
+      `---\nid: fact-stale-target\ncategory: fact\nconfidence: 0.9\n`
+      + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+      + `entityRef: ${legacy}\nstatus: active\n---\n\nThe ingest runs nightly.\n`,
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    assert.equal(
+      /^entityRef: (.*)$/m.exec(await readFile(factPath, "utf8"))?.[1],
+      canonical,
+      "promotion must use the collision detected on disk, not a stale journal target",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
