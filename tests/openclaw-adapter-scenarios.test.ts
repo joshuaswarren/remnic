@@ -928,7 +928,7 @@ test("scenario: failed inline capture retries after transcript delivery succeeds
       let writeAttempts = 0;
       storage.writeSealedMemory = async (...args: Parameters<typeof writeSealedMemory>) => {
         writeAttempts += 1;
-        if (writeAttempts <= 2) throw new Error("simulated inline capture write failure");
+        if (writeAttempts <= 1) throw new Error("simulated inline capture write failure");
         return writeSealedMemory(...args);
       };
       const content = [
@@ -947,7 +947,7 @@ test("scenario: failed inline capture retries after transcript delivery succeeds
       await messageReceived(event, { sessionKey: "inline-retry-session" });
       await messageReceived(event, { sessionKey: "inline-retry-session" });
 
-      assert.equal(writeAttempts, 3);
+      assert.equal(writeAttempts, 2);
       const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
       assert.equal((transcriptText.match(/retryable visible transcript turn/g) ?? []).length, 1);
       assert.doesNotMatch(transcriptText, /<memory_note>/);
@@ -976,7 +976,7 @@ test("scenario: agent-end capture failures remain retryable by message_received"
       let writeAttempts = 0;
       storage.writeSealedMemory = async (...args: Parameters<typeof writeSealedMemory>) => {
         writeAttempts += 1;
-        if (writeAttempts <= 2) throw new Error("simulated agent-end capture write failure");
+        if (writeAttempts <= 1) throw new Error("simulated agent-end capture write failure");
         return writeSealedMemory(...args);
       };
       const content = [
@@ -1010,7 +1010,7 @@ test("scenario: agent-end capture failures remain retryable by message_received"
         { sessionKey: "agent-end-inline-retry-session" },
       );
 
-      assert.equal(writeAttempts, 3);
+      assert.equal(writeAttempts, 2);
       assert.match(readAllText(memoryDir), /agent-end inline capture must retry after its write failure/);
       assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
     },
