@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import {
@@ -28,6 +28,7 @@ type RebuildMarker = {
   pid?: number;
   ownerId?: string;
   createdAt?: number;
+  malformed?: boolean;
 };
 
 /**
@@ -113,7 +114,7 @@ export class TombstoneBlockedCaptureIndex {
 
   private async readRebuildMarkers(): Promise<RebuildMarker[]> {
     try {
-      const entries = await readdir(this.rebuildMarkerPath());
+      const entries = (await readdir(this.rebuildMarkerPath())).filter((entry) => !entry.startsWith("."));
       return (
         await Promise.all(
           entries.map(async (entry) => {
@@ -121,20 +122,39 @@ export class TombstoneBlockedCaptureIndex {
             try {
               const raw = (await readFile(markerPath, "utf8")).trim();
               if (raw === "committed") return { path: markerPath, committed: true };
+              let value: Record<string, unknown>;
+              let malformed = false;
               try {
-                const value = JSON.parse(raw) as Record<string, unknown>;
-                return {
-                  path: markerPath,
-                  committed: value.state === "committed",
-                  ...(Number.isInteger(value.pid) ? { pid: value.pid as number } : {}),
-                  ...(typeof value.ownerId === "string" ? { ownerId: value.ownerId } : {}),
-                  ...(typeof value.createdAt === "number" && Number.isFinite(value.createdAt)
-                    ? { createdAt: value.createdAt }
-                    : {}),
-                };
+                const parsed = JSON.parse(raw) as unknown;
+                if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                  malformed = true;
+                  value = {};
+                } else {
+                  value = parsed as Record<string, unknown>;
+                }
               } catch {
-                return { path: markerPath, committed: false };
+                malformed = true;
+                value = {};
               }
+              const state = value.state;
+              if (state !== "pending" && state !== "committed") malformed = true;
+              const markerStat = await stat(markerPath).catch(() => null);
+              const createdAt =
+                typeof value.createdAt === "number" && Number.isFinite(value.createdAt)
+                  ? value.createdAt
+                  : markerStat?.mtimeMs;
+              if (typeof value.pid !== "number" || !Number.isInteger(value.pid)) malformed = true;
+              if (typeof value.ownerId !== "string" || value.ownerId.length === 0) malformed = true;
+              return {
+                path: markerPath,
+                committed: state === "committed",
+                ...(typeof value.pid === "number" && Number.isInteger(value.pid) ? { pid: value.pid } : {}),
+                ...(typeof value.ownerId === "string" && value.ownerId.length > 0
+                  ? { ownerId: value.ownerId }
+                  : {}),
+                ...(typeof createdAt === "number" && Number.isFinite(createdAt) ? { createdAt } : {}),
+                ...(malformed ? { malformed: true } : {}),
+              };
             } catch (err) {
               if (isErrnoCode(err, "ENOENT")) return null;
               throw err;
@@ -147,6 +167,12 @@ export class TombstoneBlockedCaptureIndex {
       throw err;
     }
   }
+  private isAbandonedMarker(marker: RebuildMarker): boolean {
+    if (marker.committed || marker.createdAt === undefined) return false;
+    if (Date.now() - marker.createdAt < ABANDONED_MARKER_MIN_AGE_MS) return false;
+    if (marker.malformed) return true;
+    return marker.pid !== undefined && !this.isProcessAlive(marker.pid);
+  }
 
   private isProcessAlive(pid: number): boolean {
     try {
@@ -157,27 +183,30 @@ export class TombstoneBlockedCaptureIndex {
     }
   }
 
-  private isAbandonedMarker(marker: RebuildMarker): boolean {
-    return (
-      !marker.committed
-      && marker.pid !== undefined
-      && marker.createdAt !== undefined
-      && Date.now() - marker.createdAt >= ABANDONED_MARKER_MIN_AGE_MS
-      && !this.isProcessAlive(marker.pid)
-    );
-  }
 
   private async getRebuildMarkers(): Promise<RebuildMarker[]> {
     return await this.readRebuildMarkers();
   }
 
   // A pending marker protects the pre-commit gap; only committed markers are safe for another writer to clear.
+  private async writeMarkerAtomically(markerPath: string, payload: string): Promise<void> {
+    const temporaryPath = `${markerPath}.tmp-${process.pid}-${randomUUID()}`;
+    try {
+      await writeFile(temporaryPath, payload, "utf8");
+      await rename(temporaryPath, markerPath);
+    } finally {
+      await unlink(temporaryPath).catch((err: unknown) => {
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      });
+    }
+  }
+
   private async markRebuildRequired(committed = false): Promise<string> {
     const markerDir = this.rebuildMarkerPath();
     await mkdir(markerDir, { recursive: true });
     const ownerId = randomUUID();
     const markerPath = path.join(markerDir, ownerId);
-    await writeFile(
+    await this.writeMarkerAtomically(
       markerPath,
       `${JSON.stringify({
         state: committed ? "committed" : "pending",
@@ -185,13 +214,12 @@ export class TombstoneBlockedCaptureIndex {
         ownerId,
         createdAt: Date.now(),
       })}\n`,
-      "utf8",
     );
     return markerPath;
   }
 
   private async markRebuildCommitted(markerPath: string): Promise<void> {
-    await writeFile(
+    await this.writeMarkerAtomically(
       markerPath,
       `${JSON.stringify({
         state: "committed",
@@ -199,7 +227,6 @@ export class TombstoneBlockedCaptureIndex {
         ownerId: path.basename(markerPath),
         createdAt: Date.now(),
       })}\n`,
-      "utf8",
     );
   }
 
@@ -459,7 +486,7 @@ export class TombstoneBlockedCaptureIndex {
   }
 
   /** Rebuild the index after a blocked row changes or is removed. */
-  async rebuildIfLoaded(): Promise<void> {
+  async rebuildIfLoaded(ownedMarker?: string): Promise<void> {
     const index = this.index ?? (await this.hasPersistedIndexOrMarkers() ? this.getIndex() : null);
     if (!index) return;
     const rebuildMarkers = await this.getRebuildMarkers();
@@ -468,7 +495,7 @@ export class TombstoneBlockedCaptureIndex {
     if (rebuilt) {
       await this.clearRebuildRequired([
         ...rebuildMarkers
-          .filter((marker) => marker.committed || this.isAbandonedMarker(marker))
+          .filter((marker) => marker.committed || this.isAbandonedMarker(marker) || marker.path === ownedMarker)
           .map((marker) => marker.path),
         rebuildMarker,
       ]);
@@ -512,8 +539,6 @@ export class TombstoneBlockedCaptureIndex {
     }
     await this.setAuthoritative(rebuilt);
   }
-
-
   markUntrusted(): void {
     this.authoritative = false;
   }
@@ -538,8 +563,8 @@ export class TombstoneBlockedCaptureIndex {
     );
   }
 
-  async rebuildAfterInvalidation(): Promise<void> {
-    await this.failOpen("invalidateMemory", () => this.rebuildIfLoaded());
+  async rebuildAfterInvalidation(ownedMarker?: string): Promise<void> {
+    await this.failOpen("invalidateMemory", () => this.rebuildIfLoaded(ownedMarker));
   }
 
   async syncUpdatedMemory(
@@ -603,6 +628,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     fileContent: string,
     identity: string | readonly string[],
     updateIndex: (rebuildMarker?: string) => Promise<void>,
+    beforeIndexUpdate?: () => Promise<void>,
   ): Promise<void> {
     const mutate = async (): Promise<void> => {
       let rebuildMarker = blocked
@@ -625,11 +651,13 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         try {
           await this.getTombstoneBlockedCaptureIndex().commitWrite(rebuildMarker);
         } catch (err) {
+          // Retain the marker for the index hook: it can retry publication under
+          // the same ownership token and clear it after the durable index update.
           this.getTombstoneBlockedCaptureIndex().markUntrusted();
           log.warn(`storage.tombstoneBlocked committed write marker failed: ${err}`);
-          rebuildMarker = undefined;
         }
       }
+      if (rebuildMarker) await beforeIndexUpdate?.();
       await updateIndex(rebuildMarker);
     };
     if (!blocked || this.captureWriteLockContext.getStore() === true) {
@@ -668,6 +696,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     fileContent: string,
     frontmatter: MemoryFrontmatter,
     content: string,
+    beforeIndexUpdate?: () => Promise<void>,
   ): Promise<void> {
     await this.writeTombstoneBlockedMutation(
       this.tombstoneBlocked(before.frontmatter) || this.tombstoneBlocked(frontmatter),
@@ -695,6 +724,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         content,
         rebuildMarker,
       ),
+      beforeIndexUpdate,
     );
   }
 
@@ -702,6 +732,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     before: MemoryFile,
     fileContent: string,
     frontmatter: MemoryFrontmatter,
+    beforeIndexUpdate?: () => Promise<void>,
   ): Promise<void> {
     await this.writeTombstoneBlockedMutation(
       this.tombstoneBlocked(before.frontmatter) || this.tombstoneBlocked(frontmatter),
@@ -728,6 +759,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         frontmatter,
         rebuildMarker,
       ),
+      beforeIndexUpdate,
     );
   }
 
@@ -745,13 +777,16 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     return this.getTombstoneBlockedCaptureIndex().isAuthoritative();
   }
 
-  protected async rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath: string): Promise<void> {
+  protected async rebuildTombstoneBlockedCaptureAfterInvalidationForPath(
+    filePath: string,
+    ownedMarker?: string,
+  ): Promise<void> {
     const index = this.getTombstoneBlockedCaptureIndex();
     if (index.shouldRebuildAfterInvalidationForPath(filePath)) {
-      await this.rebuildTombstoneBlockedCaptureAfterInvalidation();
+      await this.rebuildTombstoneBlockedCaptureAfterInvalidation(ownedMarker);
     }
   }
-  protected async rebuildTombstoneBlockedCaptureAfterInvalidation(): Promise<void> {
-    await this.getTombstoneBlockedCaptureIndex().rebuildAfterInvalidation();
+  protected async rebuildTombstoneBlockedCaptureAfterInvalidation(ownedMarker?: string): Promise<void> {
+    await this.getTombstoneBlockedCaptureIndex().rebuildAfterInvalidation(ownedMarker);
   }
 }

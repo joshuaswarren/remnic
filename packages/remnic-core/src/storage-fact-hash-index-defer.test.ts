@@ -1507,6 +1507,49 @@ test("blocked rewrites reserve markers before durable mutation index hooks", asy
     }
   });
 });
+test("blocked rewrites rebuild the index from post-write memory cache state", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked rewrite must rebuild from the post-write cache state.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "post-write-cache-order",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+
+    await storage.readAllMemories();
+    const originalReadAllMemories = storage.readAllMemories.bind(storage);
+    const rebuiltContents: string[] = [];
+    storage.readAllMemories = async () => {
+      const memories = await originalReadAllMemories();
+      const memory = memories.find((candidate) => candidate.frontmatter.id === result.id);
+      if (memory) rebuiltContents.push(memory.content);
+      return memories;
+    };
+
+    const updatedContent = `${content} changed`;
+    assert.equal(await storage.updateMemory(result.id, updatedContent), true);
+    assert.ok(
+      rebuiltContents.includes(updatedContent),
+      "the blocked-index rebuild must read the durable post-write content, not the pre-write hot cache",
+    );
+  });
+});
+
 
 test("blocked chunk writes enter the targeted dedupe index", async () => {
   await withMemoryDir(async (dir) => {
@@ -2049,10 +2092,15 @@ test("blocked writes stay successful when post-commit marker publication fails",
       });
       assert.equal(result.tombstoneBlocked, true);
       assert.ok(await storage.getMemoryById(result.id), "the durable memory must remain readable");
-      assert.equal((await readdir(markerDir)).length > 0, true);
+      assert.deepEqual(await readdir(markerDir), [], "the index hook should clear the retried marker");
+      assert.equal(
+        await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+        true,
+        "the retried marker publication must leave the blocked identity indexed",
+      );
       assert.equal(
         await storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative(),
-        false,
+        true,
       );
     } finally {
       commitSpy.mock.restore();

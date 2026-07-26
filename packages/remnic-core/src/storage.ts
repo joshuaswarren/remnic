@@ -12,7 +12,7 @@ import {
   open,
 } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
 import path from "node:path";
 import { log } from "./logger.js";
@@ -181,7 +181,11 @@ import {
   CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS,
   type ContentHashIndexLockOptions,
 } from "./storage/content-hash-index.js";
-import { TombstoneBlockedCaptureIndexHost, type TombstoneBlockedCaptureIndexOptions } from "./storage/tombstone-blocked-capture-index.js";
+import {
+  TombstoneBlockedCaptureIndexHost,
+  buildExplicitCaptureDedupKey,
+  type TombstoneBlockedCaptureIndexOptions,
+} from "./storage/tombstone-blocked-capture-index.js";
 export { ContentHashIndex, FactHashIndexNotAuthoritativeError };
 export type { ContentHashIndexLockOptions };
 export {
@@ -2746,12 +2750,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       this.notifyCatalogWriteForPath(filePath);
     });
   }
-  private writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
-    const writeKey = this.resolveWriteKey();
-    return writeMaybeEncryptedFileFromChunks(filePath, chunks, writeKey, {}, this.baseDir).then(() => {
-      this.notifyCatalogWriteForPath(filePath);
-    });
-  }
 
   private assertManagedStoragePath(filePath: string, method: string): string {
     const resolved = path.resolve(filePath);
@@ -2925,10 +2923,82 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
+  private isTombstoneBlockedMemory(memory: MemoryFile | null): memory is MemoryFile {
+    return memory !== null && memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
+  }
+
+  private parseOfflineSyncMemory(filePath: string, content: Buffer): MemoryFile | null {
+    const parsed = parseFrontmatter(content.toString("utf8"));
+    if (!parsed) return null;
+    return {
+      path: filePath,
+      frontmatter: normalizeFrontmatterForPath(
+        parsed.frontmatter,
+        toMemoryPathRel(this.baseDir, filePath),
+        parsed.content,
+      ),
+      content: parsed.content,
+    };
+  }
+
+  private offlineSyncMemoryIdentity(memory: MemoryFile): string {
+    return buildExplicitCaptureDedupKey(
+      memory.content,
+      memory.frontmatter.category,
+      memory.frontmatter.sourceConnector,
+    );
+  }
+
+  private async runOfflineSyncMutation(
+    target: string,
+    after: MemoryFile | null,
+    write: () => Promise<void>,
+  ): Promise<void> {
+    const before = await this.readMemoryByPath(target);
+    const blocked = this.isTombstoneBlockedMemory(before) || this.isTombstoneBlockedMemory(after);
+    const identities = [
+      ...(this.isTombstoneBlockedMemory(before) ? [this.offlineSyncMemoryIdentity(before)] : []),
+      ...(this.isTombstoneBlockedMemory(after) ? [this.offlineSyncMemoryIdentity(after)] : []),
+    ];
+    const mutate = async (): Promise<void> => {
+      const marker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
+      let durable = false;
+      try {
+        await write();
+        durable = true;
+        if (marker) {
+          try {
+            await this.getTombstoneBlockedCaptureIndex().commitWrite(marker);
+          } catch (err) {
+            this.getTombstoneBlockedCaptureIndex().markUntrusted();
+            log.warn(`storage.offlineSyncFile committed write marker failed: ${err}`);
+          }
+        }
+        await this.invalidateAfterOfflineSyncMutation(target, marker);
+      } catch (err) {
+        if (marker && !durable) {
+          try {
+            await this.getTombstoneBlockedCaptureIndex().discardWrite(marker);
+          } catch (cleanupError) {
+            this.getTombstoneBlockedCaptureIndex().markUntrusted();
+            log.warn(`storage.offlineSyncFile failed to clear write marker: ${cleanupError}`);
+          }
+        }
+        throw err;
+      }
+    };
+    if (!blocked) {
+      await mutate();
+      return;
+    }
+    await this.withTombstoneBlockedCaptureWriteLock(mutate, identities);
+  }
+
   async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
-    await this.writeStorageSecureFile(target, content);
-    await this.invalidateAfterOfflineSyncMutation(target);
+    await this.runOfflineSyncMutation(target, this.parseOfflineSyncMemory(target, content), async () => {
+      await this.writeStorageSecureFile(target, content);
+    });
   }
 
   async writeOfflineSyncStagingFile(filePath: string, content: Buffer): Promise<void> {
@@ -2938,20 +3008,39 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
-    await this.writeStorageSecureFileChunks(target, chunks);
-    await this.invalidateAfterOfflineSyncMutation(target);
+    const temporaryPath = `${target}.offline-sync-${randomUUID()}.tmp`;
+    try {
+      const handle = await open(temporaryPath, "w", 0o600);
+      try {
+        for await (const chunk of chunks) {
+          if (chunk.length > 0) await handle.write(chunk);
+        }
+      } finally {
+        await handle.close();
+      }
+      const content = await readFile(temporaryPath);
+      await this.runOfflineSyncMutation(target, this.parseOfflineSyncMemory(target, content), async () => {
+        await writeMaybeEncryptedFileFromChunks(target, createReadStream(temporaryPath), this.resolveWriteKey(), {}, this.baseDir);
+        this.notifyCatalogWriteForPath(target);
+      });
+    } finally {
+      await unlink(temporaryPath).catch((err: unknown) => {
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      });
+    }
   }
 
   async deleteOfflineSyncFile(filePath: string): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.deleteOfflineSyncFile");
-    await unlink(target).catch((error: unknown) => {
-      if (isErrnoCode(error, "ENOENT")) return;
-      throw error;
+    await this.runOfflineSyncMutation(target, null, async () => {
+      await unlink(target).catch((error: unknown) => {
+        if (isErrnoCode(error, "ENOENT")) return;
+        throw error;
+      });
     });
-    await this.invalidateAfterOfflineSyncMutation(target);
   }
 
-  private async invalidateAfterOfflineSyncMutation(filePath: string): Promise<void> {
+  private async invalidateAfterOfflineSyncMutation(filePath: string, ownedMarker?: string): Promise<void> {
     // invalidateAllMemoriesCache() routes through the invalidateAllForDir()
     // chokepoint, which also covers the entity cache (issue #1535).
     this.invalidateAllMemoriesCache();
@@ -2962,7 +3051,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (filePath.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }
-    await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath);
+    await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath, ownedMarker);
     if (filePath.includes(`${path.sep}artifacts${path.sep}`)) {
       this.bumpArtifactWriteVersion();
     }
@@ -5138,7 +5227,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       log.warn(`updated memory content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
     }
     const fileContent = `${serializeFrontmatter(updated)}\n\n${sanitized.text}\n`;
-    await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text);
+    await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
+      this.invalidateAllMemoriesCache();
+    });
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
       memoryId: id,
@@ -5173,7 +5264,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const afterStatus = updated.status ?? "active";
 
     const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
-    await this.writeTombstoneBlockedFrontmatter(memory, fileContent, updated);
+    await this.writeTombstoneBlockedFrontmatter(memory, fileContent, updated, async () => {
+      this.invalidateAllMemoriesCache();
+    });
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     // If the target file lives in cold/, bump the cold-version sentinel so
     // other processes detect the change on their next readAllColdMemories()
