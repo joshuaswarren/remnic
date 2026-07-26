@@ -1636,6 +1636,58 @@ test("offline sync mutation rebuilds blocked index for every recall category", a
   });
 });
 
+test("offline sync invalidates cold cache before blocked index rebuild", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A cold blocked rewrite must rebuild from the post-sync cache.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-cold-sync",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      true,
+    );
+
+    const memory = await storage.getMemoryById(result.id);
+    assert.ok(memory, "blocked memory must be readable before tier migration");
+    const moved = await storage.migrateMemoryToTier(memory, "cold");
+    assert.equal(moved.changed, true);
+    await storage.readAllColdMemories();
+    const updatedFile = (await readFile(moved.targetPath, "utf8")).replace(
+      "sourceConnector: provider-a",
+      "sourceConnector: provider-b",
+    );
+    await storage.writeOfflineSyncFile(moved.targetPath, Buffer.from(updatedFile, "utf8"));
+
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      false,
+      "cold sync must remove the stale provider identity",
+    );
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
+      true,
+      "cold sync must index the post-mutation provider identity",
+    );
+  });
+});
+
 test("permanent capture lock failures stop retrying", async () => {
   await withMemoryDir(async (dir) => {
     let attempts = 0;

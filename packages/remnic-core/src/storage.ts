@@ -2959,10 +2959,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // Force a corpus rebuild of the fact-hash index on next use (round 11: no
     // on-disk ready marker — the in-memory authoritative flag is the only gate).
     this.factHashIndexAuthoritative = false;
-    await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath);
     if (filePath.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }
+    await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath);
     if (filePath.includes(`${path.sep}artifacts${path.sep}`)) {
       this.bumpArtifactWriteVersion();
     }
