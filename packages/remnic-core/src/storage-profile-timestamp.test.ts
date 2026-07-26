@@ -951,6 +951,42 @@ test("writeProfile preserves HTML blocks with multiline open tags", async (t) =>
     t.mock.timers.reset();
   }
 });
+test("writeProfile keeps profile metadata inside a multiline HTML opener opaque", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "<div",
+        "# Behavioral Profile",
+        STALE_HEADER,
+        ">",
+        "",
+        "- Keeps multiline opener content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          FRESH_HEADER,
+          "",
+          "<div",
+          "# Behavioral Profile",
+          STALE_HEADER,
+          ">",
+          "",
+          "- Keeps multiline opener content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile closes an active HTML block before skipping indented code", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
@@ -1258,6 +1294,41 @@ test("writeProfile recognizes comment, instruction, and CDATA terminators as bou
 
         assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
       }
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile preserves prose terminators outside HTML blocks", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const proseHeader = "*Last updated: literal example*";
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "This example mentions -->",
+        proseHeader,
+        "Plain prose remains content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "This example mentions -->",
+          proseHeader,
+          "Plain prose remains content.",
+          "",
+        ].join("\n"),
+      );
     });
   } finally {
     t.mock.timers.reset();

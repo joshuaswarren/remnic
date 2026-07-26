@@ -350,8 +350,8 @@ function findHtmlBlockStart(
   if (blockTag) {
     const completeTag =
       findCompleteHtmlTag(trimmedLine) ?? findHtmlTagPrefix(trimmedLine);
-    if (!completeTag) return null;
-    if (completeTag.isClosing) {
+    if (!completeTag) {
+      if (trimmedLine.slice(1).trim() !== blockTag) return null;
       return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
     }
     if (completeTag.isSelfClosing) {
@@ -425,11 +425,15 @@ function shouldCloseHtmlBlock(line: string, endMarker: string): boolean {
 function hasRawHtmlBlockEndMarker(line: string, endMarker: string): boolean {
   return line.includes(endMarker);
 }
-function canStartGenericHtmlBlock(lines: ProfileLine[], index: number): boolean {
+function canStartGenericHtmlBlock(
+  lines: ProfileLine[],
+  index: number,
+  previousHtmlTerminator: boolean,
+): boolean {
   const previousLine = lines[index - 1]?.content.trim() ?? "";
   if (previousLine === "") return true;
   return (
-    isMetadataBoundary(previousLine) &&
+    isMetadataBoundary(previousLine, previousHtmlTerminator) &&
     !MARKDOWN_LIST_ITEM.test(previousLine) &&
     !MARKDOWN_BLOCK_QUOTE.test(previousLine)
   );
@@ -438,8 +442,14 @@ function canStartGenericHtmlBlock(lines: ProfileLine[], index: number): boolean 
 function visitProfileMetadataLines(
   lines: ProfileLine[],
   visit: (line: string, index: number) => void,
+  onHtmlBlockTerminator?: (index: number) => void,
 ): void {
   const frontmatterEnd = findFrontmatterEnd(lines);
+  const htmlTerminatorIndexes = new Set<number>();
+  const markHtmlTerminator = (index: number): void => {
+    htmlTerminatorIndexes.add(index);
+    onHtmlBlockTerminator?.(index);
+  };
   let openFence: FenceMarker | null = null;
   let openHtmlBlock: HtmlBlock | null = null;
   for (let index = 0; index < lines.length; index += 1) {
@@ -459,11 +469,14 @@ function visitProfileMetadataLines(
         continue;
       }
       if (openHtmlBlock.tagName) {
-        openHtmlBlock = updateHtmlBlockDepth(openHtmlBlock, normalizedLine, false);
+        const nextHtmlBlock = updateHtmlBlockDepth(openHtmlBlock, normalizedLine, false);
+        if (!nextHtmlBlock) markHtmlTerminator(index);
+        openHtmlBlock = nextHtmlBlock;
         continue;
       }
       if (openHtmlBlock.endMarker && shouldCloseHtmlBlock(normalizedLine, openHtmlBlock.endMarker)) {
         openHtmlBlock = null;
+        markHtmlTerminator(index);
       }
       continue;
     }
@@ -475,14 +488,18 @@ function visitProfileMetadataLines(
     const htmlBlock = findHtmlBlockStart(
       normalizedLine,
       trimmedLine,
-      canStartGenericHtmlBlock(lines, index),
+      canStartGenericHtmlBlock(lines, index, htmlTerminatorIndexes.has(index - 1)),
     );
     if (htmlBlock) {
-      openHtmlBlock = htmlBlock.tagName
-        ? updateHtmlBlockDepth(htmlBlock, normalizedLine, true)
-        : htmlBlock.endMarker && shouldCloseHtmlBlock(normalizedLine, htmlBlock.endMarker)
-          ? null
-          : htmlBlock;
+      if (htmlBlock.tagName) {
+        openHtmlBlock = updateHtmlBlockDepth(htmlBlock, normalizedLine, true);
+        if (!openHtmlBlock) markHtmlTerminator(index);
+      } else if (htmlBlock.endMarker && shouldCloseHtmlBlock(normalizedLine, htmlBlock.endMarker)) {
+        openHtmlBlock = null;
+        markHtmlTerminator(index);
+      } else {
+        openHtmlBlock = htmlBlock;
+      }
       continue;
     }
     visit(line, index);
@@ -520,7 +537,7 @@ function findProfileTitleIndex(lines: ProfileLine[]): number {
   return titleIndex;
 }
 
-function isMetadataBoundary(line: string): boolean {
+function isMetadataBoundary(line: string, htmlTerminator = false): boolean {
   return (
     line === "" ||
     MARKDOWN_HEADING.test(line) ||
@@ -530,7 +547,7 @@ function isMetadataBoundary(line: string): boolean {
     MARKDOWN_BLOCK_QUOTE.test(line) ||
     isLastUpdatedHeader(line) ||
     getFenceMarker(line) !== null ||
-    isHtmlBlockTerminator(line)
+    (htmlTerminator && isHtmlBlockTerminator(line))
   );
 }
 
@@ -538,6 +555,7 @@ function isStandaloneMetadataLine(
   lines: ProfileLine[],
   index: number,
   frontmatterEnd: number,
+  htmlTerminatorIndexes: ReadonlySet<number>,
 ): boolean {
   const currentLine = lines[index]?.content ?? "";
   const currentWithoutBom = currentLine.startsWith(UTF8_BOM)
@@ -550,8 +568,14 @@ function isStandaloneMetadataLine(
     ? previousLine.slice(1)
     : previousLine;
   const nextWithoutBom = nextLine.startsWith(UTF8_BOM) ? nextLine.slice(1) : nextLine;
-  const previousMetadataBoundary = isMetadataBoundary(previousWithoutBom);
-  const nextMetadataBoundary = isMetadataBoundary(nextWithoutBom);
+  const previousMetadataBoundary = isMetadataBoundary(
+    previousWithoutBom,
+    htmlTerminatorIndexes.has(index - 1),
+  );
+  const nextMetadataBoundary = isMetadataBoundary(
+    nextWithoutBom,
+    htmlTerminatorIndexes.has(index + 1),
+  );
   const previousContainerMarker =
     !MARKDOWN_THEMATIC_BREAK.test(previousWithoutBom) &&
     (MARKDOWN_LIST_ITEM.test(previousWithoutBom) || MARKDOWN_BLOCK_QUOTE.test(previousWithoutBom));
@@ -570,14 +594,19 @@ function isStandaloneMetadataLine(
 function findProfileHeaderIndexes(lines: ProfileLine[]): number[] {
   const indexes: number[] = [];
   const frontmatterEnd = findFrontmatterEnd(lines);
-  visitProfileMetadataLines(lines, (line, index) => {
-    if (
-      isLastUpdatedHeader(line) &&
-      isStandaloneMetadataLine(lines, index, frontmatterEnd)
-    ) {
-      indexes.push(index);
-    }
-  });
+  const htmlTerminatorIndexes = new Set<number>();
+  visitProfileMetadataLines(
+    lines,
+    (line, index) => {
+      if (
+        isLastUpdatedHeader(line) &&
+        isStandaloneMetadataLine(lines, index, frontmatterEnd, htmlTerminatorIndexes)
+      ) {
+        indexes.push(index);
+      }
+    },
+    (index) => htmlTerminatorIndexes.add(index),
+  );
   return indexes;
 }
 
