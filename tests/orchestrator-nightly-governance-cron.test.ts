@@ -25,27 +25,35 @@ function buildConfig(
   });
 }
 
-function stubInitializeDependencies(orchestrator: any) {
-  orchestrator.storage = {
+function setTestDependency(orchestrator: Orchestrator, key: string, value: unknown): void {
+  Reflect.set(orchestrator, key, value);
+}
+
+function stubInitializeDependencies(
+  orchestrator: Orchestrator,
+  storageOverrides: Record<string, unknown> = {},
+) {
+  setTestDependency(orchestrator, "storage", {
     ensureDirectories: async () => {},
     loadAliases: async () => {},
     readAllMemories: async () => [],
     readAllEntityFiles: async () => [],
-  };
-  orchestrator.relevance = { load: async () => {} };
-  orchestrator.negatives = { load: async () => {} };
-  orchestrator.lastRecall = { load: async () => {} };
-  orchestrator.tierMigrationStatus = { load: async () => {} };
-  orchestrator.sessionObserver = { load: async () => {} };
-  orchestrator.policyRuntime = { loadRuntimeValues: async () => null };
-  orchestrator.transcript = { initialize: async () => {} };
-  orchestrator.summarizer = { initialize: async () => {} };
-  orchestrator.qmd = {
+    ...storageOverrides,
+  });
+  setTestDependency(orchestrator, "relevance", { load: async () => {} });
+  setTestDependency(orchestrator, "negatives", { load: async () => {} });
+  setTestDependency(orchestrator, "lastRecall", { load: async () => {} });
+  setTestDependency(orchestrator, "tierMigrationStatus", { load: async () => {} });
+  setTestDependency(orchestrator, "sessionObserver", { load: async () => {} });
+  setTestDependency(orchestrator, "policyRuntime", { loadRuntimeValues: async () => null });
+  setTestDependency(orchestrator, "transcript", { initialize: async () => {} });
+  setTestDependency(orchestrator, "summarizer", { initialize: async () => {} });
+  setTestDependency(orchestrator, "qmd", {
     probe: async () => false,
     isAvailable: () => false,
     debugStatus: () => "disabled",
-  };
-  orchestrator.buffer = { load: async () => {} };
+  });
+  setTestDependency(orchestrator, "buffer", { load: async () => {} });
 }
 
 test("initialize loads aliases before running storage migration", async () => {
@@ -53,18 +61,15 @@ test("initialize loads aliases before running storage migration", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-alias-before-migration-workspace-"));
   try {
     const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, false));
-    stubInitializeDependencies(orchestrator);
     const order: string[] = [];
-    orchestrator.storage = {
+    stubInitializeDependencies(orchestrator, {
       ensureDirectories: async () => {
         order.push("ensureDirectories");
       },
       loadAliases: async () => {
         order.push("loadAliases");
       },
-      readAllMemories: async () => [],
-      readAllEntityFiles: async () => [],
-    };
+    });
 
     await orchestrator.initialize();
     await orchestrator.deferredReady;
