@@ -867,6 +867,33 @@ test("writeProfile preserves timestamp-shaped generic HTML blocks", async (t) =>
   }
 });
 
+test("writeProfile keeps built-in closing blocks opaque after paragraph prose", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "Preamble prose.",
+        "</div>",
+        "# Literal heading",
+        "*Last updated: literal example*",
+        "",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps the real profile metadata.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile keeps generic HTML inline after paragraph prose", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

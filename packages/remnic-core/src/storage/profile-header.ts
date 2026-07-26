@@ -119,10 +119,12 @@ type HtmlBlock = {
 };
 
 function findHtmlBlockTag(line: string, tags: readonly string[]): string | null {
+  const isClosing = line.startsWith("</");
+  const nameStart = isClosing ? 2 : 1;
   for (const tag of tags) {
-    const nextCharacter = line[tag.length + 1];
+    const nextCharacter = line[nameStart + tag.length];
     if (
-      line.startsWith(`<${tag}`) &&
+      line.startsWith(`${isClosing ? "</" : "<"}${tag}`) &&
       (nextCharacter === undefined ||
         nextCharacter === ">" ||
         nextCharacter === "/" ||
@@ -345,6 +347,9 @@ function findHtmlBlockStart(
     const completeTag =
       findCompleteHtmlTag(trimmedLine) ?? findHtmlTagPrefix(trimmedLine);
     if (!completeTag) return null;
+    if (completeTag.isClosing) {
+      return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
+    }
     if (completeTag.isSelfClosing) {
       return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
     }
