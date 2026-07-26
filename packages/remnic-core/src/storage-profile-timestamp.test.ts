@@ -168,6 +168,33 @@ test("writeProfile recognizes raw HTML terminators with trailing text", async (t
     t.mock.timers.reset();
   }
 });
+test("writeProfile closes raw HTML blocks with spaced end markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "<pre>",
+        "# Literal heading",
+        "*Last updated: literal example*",
+        "code </pre>",
+        "",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps the real profile metadata.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile keeps raw HTML opening-line content out of metadata scanning", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

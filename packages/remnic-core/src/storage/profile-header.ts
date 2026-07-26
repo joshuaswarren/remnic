@@ -418,7 +418,8 @@ function hasRawHtmlBlockEndMarker(line: string, endMarker: string): boolean {
 
   if (markerIndex < 0) return false;
   if (markerIndex === 0) return true;
-  return !/\s/.test(line[markerIndex - 1] ?? "");
+  if (!/\s/.test(line[markerIndex - 1] ?? "")) return true;
+  return line.slice(markerIndex + endMarker.length).trim() === "";
 }
 function canStartGenericHtmlBlock(lines: ProfileLine[], index: number): boolean {
   const previousLine = lines[index - 1]?.content.trim() ?? "";
