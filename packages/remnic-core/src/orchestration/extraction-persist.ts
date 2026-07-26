@@ -634,7 +634,6 @@ export class ExtractionPersistCoordinator {
           this.deps.config.sharedNamespace,
         );
         // Dedup gate: canonicalize content before hashing.
-        //
         // Issue #369 (PR #401): When inline attribution is enabled,
         // `applyInlineCitation` appends a timestamp-bearing marker (e.g.
         // `[Source: ..., ts=2026-04-11T...]`).  Because the timestamp changes
@@ -663,7 +662,6 @@ export class ExtractionPersistCoordinator {
         // the raw form.  Computing dedupContent from sanitized.text here ensures
         // the hash lookup and the normalizedIncoming comparison both use the
         // same content that writeMemory will actually store.
-        //
         // Combined fix: strip any pre-existing citation FIRST to obtain
         // rawContent (the canonical body), then sanitize rawContent (not
         // options.content) when building dedupContent, so that citation
@@ -1363,7 +1361,8 @@ export class ExtractionPersistCoordinator {
             f.scope === "global" &&
             profileAllowsSharedWrites &&
             this.deps.storageDirNamespace(storage.dir) !== this.deps.config.sharedNamespace &&
-            shouldPromoteGlobalFactToShared({ scope: f.scope, content: f.content, sourceConnector })
+            shouldPromoteGlobalFactToShared({ scope: f.scope, content: f.content,
+              sourceConnector, procedureSteps: f.procedureSteps })
           ) {
             factNs = this.deps.config.sharedNamespace;
           }
@@ -1622,7 +1621,8 @@ export class ExtractionPersistCoordinator {
       ) {
         const currentNs = this.deps.storageDirNamespace(targetStorage.dir);
         if (currentNs !== this.deps.config.sharedNamespace && profileAllowsSharedWrites) {
-          if (shouldPromoteGlobalFactToShared({ scope: fact.scope, content: fact.content, sourceConnector })) {
+          if (shouldPromoteGlobalFactToShared({ scope: fact.scope, content: fact.content,
+            sourceConnector, procedureSteps: fact.procedureSteps })) {
             try {
               targetStorage = await this.deps.getStorageRouter().storageFor(
                 this.deps.config.sharedNamespace,

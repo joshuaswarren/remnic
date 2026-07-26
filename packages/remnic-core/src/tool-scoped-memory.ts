@@ -51,20 +51,17 @@ const IMM = "[\\s'\"" + BT + "]{1,4}";
 const CONN = "\\s+(?:named|called|aka)\\s+";
 
 // Imperative invocation: use/run/call/invoke immediately followed by a
-// backticked/quoted identifier — "Use `search`", "Run `rg`". The identifier is
-// restricted to the quoted form (not the generic name) so prose like "writers
-// use memory" or "I use search engines" does not fire.
-const INVOCATION = "\\b(?:use|run|call|invoke)\\b\\s+" + QUOTED_TOKEN;
-
-// Slash command: "/search", "/pr review" — a leading slash at a word boundary
-// (start or whitespace) so URL path segments ("/example.com/search") do not.
-const SLASH = "(?:^|\\s)/[a-z][a-z0-9_-]{0,40}\\b";
+// backticked/quoted identifier OR a slash command — "Use `search`",
+// "Run `rg`", "Use /search". The identifier is restricted to the quoted/slash
+// form (not the generic name) so prose like "writers use memory" does not fire,
+// and a bare absolute path ("from /etc/remnic/config.json") never qualifies.
+const INVOCATION = "\\b(?:use|run|call|invoke)\\b\\s+(?:" + QUOTED_TOKEN + "|/[a-z][a-z0-9_-]{0,40}\\b)";
 
 const TOOL_REFERENCE = new RegExp(
   "(?:" +
     IDENT + IMM + KEYWORD + "|" + KEYWORD + IMM + IDENT + "|" +
     KEYWORD + CONN + IDENT + "|" + IDENT + CONN + KEYWORD + "|" +
-    INVOCATION + "|" + SLASH +
+    INVOCATION +
   ")",
   "i",
 );
@@ -125,6 +122,7 @@ export interface GlobalFactPromotionInputs {
   scope: string | null | undefined;
   content: string;
   sourceConnector?: string;
+  procedureSteps?: ReadonlyArray<{ toolCall?: { kind?: string } }>;
 }
 
 /**
@@ -141,5 +139,6 @@ export function shouldPromoteGlobalFactToShared(inputs: GlobalFactPromotionInput
   return !withholdToolScopedFromSharedNamespace({
     content: inputs.content,
     sourceConnector: inputs.sourceConnector,
+    procedureSteps: inputs.procedureSteps,
   });
 }

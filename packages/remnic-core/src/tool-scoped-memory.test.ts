@@ -69,6 +69,9 @@ const EXTRA_NEGATIVE: string[] = [
   "I use search engines daily for research.",
   "Use memory wisely and rest often.",
   "Visit https://example.com/search for docs.",
+  "The service reads configuration from /etc/remnic/config.json",
+  "Logs live under /var/log/remnic",
+  "Restore the backup from /tmp/dump.sql",
 ];
 for (const content of EXTRA_NEGATIVE) {
   test(`referencesAgentSpecificTool ignores prose: "${content.slice(0, 44)}…"`, () => {
@@ -85,13 +88,14 @@ test("referencesAgentSpecificTool: empty/non-string input is false (no throw)", 
 // shouldPromoteGlobalFactToShared — composed scope-routing predicate.
 // ---------------------------------------------------------------------------
 
-const PROMOTION_CASES: Array<{ name: string; args: { scope: string | null | undefined; content: string; sourceConnector?: string }; expected: boolean }> = [
+const PROMOTION_CASES: Array<{ name: string; args: { scope: string | null | undefined; content: string; sourceConnector?: string; procedureSteps?: ReadonlyArray<{ intent?: string; toolCall?: { kind?: string; signature?: string } }> }; expected: boolean }> = [
   { name: "global portable fact, no connector -> promote", args: { scope: "global", content: "User prefers dark mode in all editors" }, expected: true },
   { name: "global tool-scoped fact WITH connector -> withhold (#2183)", args: { scope: "global", content: "Prefer the search tool when locating code.", sourceConnector: "pi" }, expected: false },
   { name: "global tool-scoped fact, no knob -> withheld when connector known", args: { scope: "global", content: "The exec tool requires an absolute cwd.", sourceConnector: "openclaw" }, expected: false },
   { name: "global tool-scoped fact WITHOUT connector -> promote (unattributed)", args: { scope: "global", content: "Prefer the search tool when locating code." }, expected: true },
   { name: "project-scoped fact -> never promote via this path", args: { scope: "project", content: "Prefer the search tool when locating code.", sourceConnector: "pi" }, expected: false },
   { name: "empty connector string is treated as unknown -> promote", args: { scope: "global", content: "Prefer the search tool when locating code.", sourceConnector: "" }, expected: true },
+  { name: "global portable-title procedure with tool-bearing steps + connector -> withhold (#2183 P2, scope-routing)", args: { scope: "global", content: "Workflow for locating implementation", sourceConnector: "pi", procedureSteps: [{ intent: "find the symbol", toolCall: { kind: "search", signature: "search('foo')" } }, { intent: "open the file", toolCall: { kind: "read", signature: "read('bar')" } }] }, expected: false },
 ];
 for (const { name, args, expected } of PROMOTION_CASES) {
   test(`shouldPromoteGlobalFactToShared: ${name}`, () => {

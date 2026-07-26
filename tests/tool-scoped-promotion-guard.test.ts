@@ -241,6 +241,11 @@ test("capability gate: extractionScopeClassificationEnabled=false makes the guar
     await orchestrator.persistExtraction(globalFact(PORTABLE_FACT), defaultStorage, "thread-2", { sourceConnector: "pi" });
 
     const sharedMems = await sharedStorage.readAllMemories();
+    const defaultMems = await defaultStorage.readAllMemories();
+    assert.ok(
+      defaultMems.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
+      "facts must actually be persisted in the session namespace (non-vacuous)",
+    );
     assert.equal(
       sharedMems.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20)) || m.content?.includes(PORTABLE_FACT.slice(0, 20))),
       false,
@@ -273,6 +278,30 @@ test("capability gate: extractionScopeClassificationEnabled='false' (CLI string)
 function correctionFact(content: string, scope: "project" | "global" = "project"): ExtractionResult {
   return {
     facts: [{ content, category: "correction", confidence: 0.95, tags: [], scope }],
+    entities: [],
+    questions: [],
+    profileUpdates: [],
+  };
+}
+
+// A procedure that passes validateProcedureExtraction (>=2 steps with intents
+// + trigger phrasing "Workflow") and carries tool-bearing steps. The title is
+// deliberately portable prose so the guard must rely on procedureSteps.
+function procedureResult(content: string, scope: "project" | "global"): ExtractionResult {
+  return {
+    facts: [
+      {
+        content,
+        category: "procedure",
+        confidence: 0.95,
+        tags: [],
+        scope,
+        procedureSteps: [
+          { order: 1, intent: "find the symbol", toolCall: { kind: "search", signature: "search('foo')" } },
+          { order: 2, intent: "open the file", toolCall: { kind: "read", signature: "read('bar.ts')" } },
+        ],
+      },
+    ],
     entities: [],
     questions: [],
     profileUpdates: [],
@@ -381,6 +410,11 @@ test("auto-promote: chunked path also withholds a tool-scoped fact with sourceCo
     await orchestrator.persistExtraction(correctionFact(longToolFact), defaultStorage, "thread-1", { sourceConnector: "pi" });
 
     const sharedMems = await sharedStorage.readAllMemories();
+    const defaultMems = await defaultStorage.readAllMemories();
+    assert.ok(
+      defaultMems.some((m) => m.content?.includes("search")),
+      "chunked fact must actually be persisted in the session namespace (non-vacuous)",
+    );
     assert.equal(
       sharedMems.some((m) => m.content?.includes("search tool")),
       false,
@@ -414,31 +448,50 @@ test("auto-promote: procedure with portable title + tool-bearing steps + connect
     const sharedStorage = await orchestrator.getStorageForNamespace("shared");
     await sharedStorage.ensureDirectories();
 
-    const result: ExtractionResult = {
-      facts: [
-        {
-          content: "When locating an implementation",
-          category: "procedure",
-          confidence: 0.95,
-          tags: [],
-          scope: "project",
-          procedureSteps: [
-            { order: 1, intent: "find the symbol", toolCall: { kind: "search", signature: "search('foo')" } },
-          ],
-        },
-      ],
-      entities: [],
-      questions: [],
-      profileUpdates: [],
-    };
-
-    await orchestrator.persistExtraction(result, defaultStorage, "thread-1", { sourceConnector: "pi" });
+    await orchestrator.persistExtraction(procedureResult("Workflow for locating an implementation", "project"), defaultStorage, "thread-1", { sourceConnector: "pi" });
 
     const sharedMems = await sharedStorage.readAllMemories();
+    const defaultMems = await defaultStorage.readAllMemories();
+    assert.ok(
+      defaultMems.some((m) => m.content?.includes("locating an implementation")),
+      "procedure must actually be persisted in the session namespace (non-vacuous)",
+    );
     assert.equal(
       sharedMems.some((m) => m.content?.includes("locating an implementation")),
       false,
       "procedure with tool-bearing steps must NOT be auto-promoted to shared when attributed",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("scope-routing: global procedure with portable title + tool-bearing steps + connector is NOT promoted to shared", async () => {
+  // auto-promote is OFF here, so the ONLY promotion path is scope routing
+  // (scope="global"). The guard must withhold on this path too, not just via
+  // auto-promote — proves shouldPromoteGlobalFactToShared consults procedureSteps.
+  const memoryDir = tmpDir("tool-scoped-procedure-scope-routing");
+  try {
+    const orchestrator = new Orchestrator(baseConfig(memoryDir));
+    stubBackgroundWork(orchestrator);
+    const defaultStorage = await orchestrator.getStorageForNamespace("default");
+    await defaultStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
+    await sharedStorage.ensureDirectories();
+
+    await orchestrator.persistExtraction(procedureResult("Workflow for locating an implementation", "global"), defaultStorage, "thread-1", { sourceConnector: "pi" });
+
+    const sharedMems = await sharedStorage.readAllMemories();
+    const defaultMems = await defaultStorage.readAllMemories();
+    assert.ok(
+      defaultMems.some((m) => m.content?.includes("locating an implementation")),
+      "global procedure must actually be persisted in the session namespace (non-vacuous)",
+    );
+    assert.equal(
+      sharedMems.some((m) => m.content?.includes("locating an implementation")),
+      false,
+      "global procedure with tool-bearing steps must NOT be scope-routed to shared when attributed",
     );
   } finally {
     StorageManager.clearAllStaticCaches();
