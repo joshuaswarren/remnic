@@ -156,3 +156,36 @@ export async function runExtractionPostPersistBestEffort(
     log.warn(`runExtraction: ${stage} failed after persistence (non-fatal)`, error);
   }
 }
+
+/**
+ * Applies deferred-judge retention only to live, non-shadow extraction runs.
+ * Replay/import paths must not synthesize live-buffer entries after persistence.
+ */
+export interface ExtractionDeferRetentionOptions {
+  clearBufferAfterExtraction: boolean;
+  extractionJudgeShadow: boolean;
+  getDeferredCount: () => number;
+  normalizedTurns: BufferTurn[];
+  bufferKey: string;
+  retainDeferredTurns: (bufferKey: string, turns: BufferTurn[], max: number) => Promise<void>;
+}
+
+export async function runExtractionDeferRetention(
+  runPostPersistBestEffort: (
+    stage: string,
+    operation: () => Promise<unknown>,
+    options?: { ignoreAbort?: boolean },
+  ) => Promise<void>,
+  options: ExtractionDeferRetentionOptions,
+): Promise<void> {
+  await runPostPersistBestEffort("during_defer_retention", async () => {
+    if (options.clearBufferAfterExtraction && !options.extractionJudgeShadow) {
+      const deferredCount = options.getDeferredCount();
+      if (deferredCount > 0 && options.normalizedTurns.length > 0) {
+        await options.retainDeferredTurns(options.bufferKey, options.normalizedTurns, 10);
+      } else {
+        await options.retainDeferredTurns(options.bufferKey, [], 0);
+      }
+    }
+  });
+}

@@ -130,6 +130,7 @@ import {
   computeExtractionRetryNextEligibleMs,
   deriveSourceConnector,
   deriveTopicsFromExtraction,
+  runExtractionDeferRetention,
   runExtractionPostPersistBestEffort,
   EXTRACTION_RETRY_STATE_MAX_ENTRIES,
 } from "./extraction-run-helpers.js";
@@ -1097,30 +1098,13 @@ export class ExtractionRunCoordinator {
     // same caller deadline and keep helper failures non-fatal.
     const runPostPersistBestEffort = runExtractionPostPersistBestEffort.bind(null, runDeadlineAware);
 
-    // Buffer retention for defer verdicts (issue #562, PR 2). When the judge
-    // deferred at least one candidate, retain the tail of the current turn
-    // window so the next extraction pass has the surrounding context that
-    // may disambiguate the deferred fact. Non-defer runs clear the slot.
-    //
-    // Gated on:
-    //   - `clearBufferAfterExtraction` — replay / bulk-import paths call
-    //     `runExtraction` with this false and do not operate on live buffer
-    //     state. Writing retention there would create synthetic buffer
-    //     entries and cross-contaminate future live extractions.
-    //   - NOT `extractionJudgeShadow` — in shadow mode the judge is only
-    //     advisory; facts are still persisted regardless of verdict, so
-    //     retaining the turn window on top of a persisted write would both
-    //     waste buffer space and cause the same facts to re-enter the
-    //     pipeline on the next pass.
-    await runPostPersistBestEffort("during_defer_retention", async () => {
-      if (clearBufferAfterExtraction && !this.config.extractionJudgeShadow) {
-        const deferredCount = this.deps.getLastPersistExtractionDeferredCount();
-        if (deferredCount > 0 && normalizedTurns.length > 0) {
-          await this.deps.getBuffer().retainDeferredTurns(bufferKey, normalizedTurns as BufferTurn[], 10);
-        } else {
-          await this.deps.getBuffer().retainDeferredTurns(bufferKey, [], 0);
-        }
-      }
+    await runExtractionDeferRetention(runPostPersistBestEffort, {
+      clearBufferAfterExtraction,
+      extractionJudgeShadow: this.config.extractionJudgeShadow,
+      getDeferredCount: () => this.deps.getLastPersistExtractionDeferredCount(),
+      normalizedTurns: normalizedTurns as BufferTurn[],
+      bufferKey,
+      retainDeferredTurns: (key, turns, max) => this.deps.getBuffer().retainDeferredTurns(key, turns, max),
     });
 
     await runPostPersistBestEffort(
