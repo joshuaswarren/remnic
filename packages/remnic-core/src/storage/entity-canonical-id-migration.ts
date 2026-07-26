@@ -63,6 +63,7 @@ export interface EntityCanonicalIdMigrationDependencies {
   invalidateAllMemoriesCache(): void;
   invalidateColdMemoriesCache(): void;
   bumpMemoryStatusVersion(): void;
+  readMigrationFingerprint?(): Promise<string>;
 }
 
 async function fingerprintPath(filePath: string): Promise<string> {
@@ -95,13 +96,17 @@ export async function validateRoots(
   stateDir: string,
   archiveDir: string,
 ): Promise<void> {
-  let memoryRoot: string;
+  let baseStat;
   try {
-    memoryRoot = await realpath(baseDir);
+    baseStat = await lstat(baseDir);
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) return;
     throw error;
   }
+  if (baseStat.isSymbolicLink() || !baseStat.isDirectory()) {
+    throw new Error(`Refusing entity canonical-id migration through unsafe memory root: ${baseDir}.`);
+  }
+  const memoryRoot = await realpath(baseDir);
   const roots = [
     entitiesDir,
     stateDir,
@@ -467,6 +472,8 @@ async function rewriteRelationshipTargets(
     if (!entry.endsWith(".md")) continue;
     const entityPath = deps.resolveEntityFilePath(entry.slice(0, -".md".length));
     if (entityPath === null) continue;
+    const observedEntityFingerprint = await fingerprintPath(entityPath);
+    if (observedEntityFingerprint === "missing") continue;
     const entity = deps.parseEntityFile(await deps.readStorageSecureFile(entityPath));
     const relationships = entity.relationships.map((relationship) => {
       const target = mappings[relationship.target];
@@ -475,13 +482,16 @@ async function rewriteRelationshipTargets(
     if (relationships.every((relationship, index) => relationship === entity.relationships[index])) continue;
     if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
     const latestEntity = deps.parseEntityFile(await deps.readStorageSecureFile(entityPath));
+    if ((await fingerprintPath(entityPath)) !== observedEntityFingerprint) continue;
     const latestRelationships = latestEntity.relationships.map((relationship) => {
       const target = mappings[relationship.target];
       return target ? { ...relationship, target } : relationship;
     });
     if (latestRelationships.every((relationship, index) => relationship === latestEntity.relationships[index])) continue;
     const entityEncrypted = await deps.isEncryptedStorageFile(entityPath);
+    if ((await fingerprintPath(entityPath)) !== observedEntityFingerprint) continue;
     await deps.snapshotBeforeWrite(entityPath, "write");
+    if ((await fingerprintPath(entityPath)) !== observedEntityFingerprint) continue;
     await deps.writeStorageSecureFile(
       entityPath,
       deps.serializeEntityFile({ ...latestEntity, relationships: latestRelationships }),
@@ -582,8 +592,10 @@ function collapseMappings(mappings: Readonly<Record<string, string>>): Record<st
   return collapsed;
 }
 
-export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMigrationDependencies): Promise<void> {
-  await withHeldFileLock(
+export async function migrateLegacyEntityCanonicalIds(
+  deps: EntityCanonicalIdMigrationDependencies,
+): Promise<string | undefined> {
+  return withHeldFileLock(
     lockPath(deps),
     {
       staleMs: ENTITY_CANONICAL_ID_MIGRATION_LOCK_STALE_MS,
@@ -617,7 +629,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
         );
         const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
         if (state.complete && Object.keys(discoveredBefore).length === 0 && !mappingsChanged) {
-          if (Object.keys(state.mappings).length === 0) return;
+          if (Object.keys(state.mappings).length === 0) return deps.readMigrationFingerprint?.();
           const rewroteColdMemory = await rewriteKnownReferences(
             deps,
             state.mappings,
@@ -627,7 +639,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
           deps.invalidateAllMemoriesCache();
           if (rewroteColdMemory) deps.invalidateColdMemoriesCache();
           deps.bumpMemoryStatusVersion();
-          return;
+          return deps.readMigrationFingerprint?.();
         }
         if (
           state.complete
@@ -645,7 +657,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
           );
           if (Object.keys(discoveredAfter).length === 0) {
             await writeState(deps, { ...state, complete: true });
-            return;
+            return deps.readMigrationFingerprint?.();
           }
           state = {
             ...state,
@@ -746,7 +758,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
         );
         if (Object.keys(discoveredAfter).length === 0) {
           await writeState(deps, { ...state, complete: true });
-          return;
+          return deps.readMigrationFingerprint?.();
         }
         state = {
           ...state,

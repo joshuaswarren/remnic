@@ -6,7 +6,7 @@ export class EntityCanonicalIdMigrationRunner {
 
   public constructor(
     private readonly canRun: () => boolean,
-    private readonly runMigration: () => Promise<void>,
+    private readonly runMigration: () => Promise<string | void>,
     private readonly readFingerprint: () => Promise<string> = async () => "static",
   ) {}
 
@@ -36,9 +36,10 @@ export class EntityCanonicalIdMigrationRunner {
     const fingerprintAtStart = await this.readFingerprint();
     if (this.migrationComplete && fingerprintAtStart === this.completedFingerprint) return;
 
-    await this.runMigration();
+    const completionFingerprint = await this.runMigration();
     this.migrationComplete = true;
-    this.completedFingerprint = fingerprintAtStart;
+    this.completedFingerprint =
+      typeof completionFingerprint === "string" ? completionFingerprint : fingerprintAtStart;
   }
 
   private clearInFlight(migration: Promise<void>): void {

@@ -1171,6 +1171,25 @@ test("ensureDirectories rejects symlinked entity roots and entries", async () =>
   }
 });
 
+test("ensureDirectories rejects a symlinked memory root", async () => {
+  const target = await mkdtemp(path.join(os.tmpdir(), "remnic-memory-root-target-"));
+  const parent = await mkdtemp(path.join(os.tmpdir(), "remnic-memory-root-parent-"));
+  const linkedRoot = path.join(parent, "linked-root");
+  try {
+    await symlink(target, linkedRoot);
+    await assert.rejects(
+      () => new StorageManager(linkedRoot).ensureDirectories(),
+      /unsafe memory root|symlink/i,
+    );
+  } finally {
+    await rm(linkedRoot, { force: true });
+    await Promise.all([
+      rm(target, { recursive: true, force: true }),
+      rm(parent, { recursive: true, force: true }),
+    ]);
+  }
+});
+
 test("ensureDirectories rejects symlinked memory scan roots", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-memory-root-symlink-"));
   try {

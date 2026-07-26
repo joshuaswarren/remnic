@@ -3616,8 +3616,10 @@ export class StorageManager {
     }
   }
 
-  private async runLegacyEntityCanonicalIdMigration(): Promise<void> {
-    await entityMigration.migrateLegacyEntityCanonicalIds({
+  private async runLegacyEntityCanonicalIdMigration(): Promise<string> {
+    const readMigrationFingerprint = () =>
+      entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => this.getCorpusScanVersion());
+    const completionFingerprint = await entityMigration.migrateLegacyEntityCanonicalIds({
       stateDir: this.stateDir, entitiesDir: this.entitiesDir,
       normalizeEntityName: this.normalizeEntityName.bind(this),
       resolveEntityFilePath: this.resolveEntityFilePath.bind(this),
@@ -3641,7 +3643,9 @@ export class StorageManager {
       invalidateAllMemoriesCache: this.invalidateAllMemoriesCache.bind(this),
       invalidateColdMemoriesCache: this.invalidateColdMemoriesCache.bind(this),
       bumpMemoryStatusVersion: this.bumpMemoryStatusVersion.bind(this),
+      readMigrationFingerprint,
     });
+    return completionFingerprint ?? readMigrationFingerprint();
   }
 
   async ensureDirectories(): Promise<void> {
