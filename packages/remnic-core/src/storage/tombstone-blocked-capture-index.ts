@@ -700,39 +700,57 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     updateIndex: (rebuildMarker?: string) => Promise<void>,
     beforeIndexUpdate?: () => Promise<void>
   ): Promise<void> {
-    const mutate = async (): Promise<void> => {
-      const rebuildMarker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
-      try {
-        await this.writeStorageSecureFile(pathname, fileContent);
-      } catch (err) {
-        if (rebuildMarker) {
-          try {
-            await this.getTombstoneBlockedCaptureIndex().discardWrite(rebuildMarker);
-          } catch (cleanupError) {
-            this.getTombstoneBlockedCaptureIndex().markUntrusted();
-            log.warn(`storage.tombstoneBlocked failed to clear write marker: ${cleanupError}`);
+    let lockIdentity: string | readonly string[] = identity;
+    for (;;) {
+      let retryIdentity: string | undefined;
+      const mutate = async (): Promise<void> => {
+        const current = blocked ? await this.readMemoryByPath(pathname) : null;
+        if (current && this.isTombstoneBlockedMemory(current)) {
+          const currentIdentity = this.offlineSyncMemoryIdentity(current);
+          const heldIdentities = Array.isArray(lockIdentity) ? lockIdentity : [lockIdentity];
+          if (!heldIdentities.includes(currentIdentity)) {
+            retryIdentity = currentIdentity;
+            return;
           }
         }
-        throw err;
-      }
-      if (rebuildMarker) {
+        const rebuildMarker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
         try {
-          await this.getTombstoneBlockedCaptureIndex().commitWrite(rebuildMarker);
+          await this.writeStorageSecureFile(pathname, fileContent);
         } catch (err) {
-          // Retain the marker for the index hook: it can retry publication under
-          // the same ownership token and clear it after the durable index update.
-          this.getTombstoneBlockedCaptureIndex().markUntrusted();
-          log.warn(`storage.tombstoneBlocked committed write marker failed: ${err}`);
+          if (rebuildMarker) {
+            try {
+              await this.getTombstoneBlockedCaptureIndex().discardWrite(rebuildMarker);
+            } catch (cleanupError) {
+              this.getTombstoneBlockedCaptureIndex().markUntrusted();
+              log.warn(`storage.tombstoneBlocked failed to clear write marker: ${cleanupError}`);
+            }
+          }
+          throw err;
         }
+        if (rebuildMarker) {
+          try {
+            await this.getTombstoneBlockedCaptureIndex().commitWrite(rebuildMarker);
+          } catch (err) {
+            // Retain the marker for the index hook: it can retry publication under
+            // the same ownership token and clear it after the durable index update.
+            this.getTombstoneBlockedCaptureIndex().markUntrusted();
+            log.warn(`storage.tombstoneBlocked committed write marker failed: ${err}`);
+          }
+        }
+        if (rebuildMarker) await beforeIndexUpdate?.();
+        await updateIndex(rebuildMarker);
+      };
+      if (!blocked || this.captureWriteLockContext.getStore() !== undefined) {
+        await mutate();
+      } else {
+        await this.withTombstoneBlockedCaptureWriteLock(mutate, lockIdentity);
       }
-      if (rebuildMarker) await beforeIndexUpdate?.();
-      await updateIndex(rebuildMarker);
-    };
-    if (!blocked || this.captureWriteLockContext.getStore() !== undefined) {
-      await mutate();
-      return;
+      if (retryIdentity === undefined || this.captureWriteLockContext.getStore() !== undefined) return;
+      const identities = Array.isArray(lockIdentity)
+        ? [...lockIdentity, retryIdentity]
+        : [lockIdentity, retryIdentity];
+      lockIdentity = [...new Set(identities)];
     }
-    await this.withTombstoneBlockedCaptureWriteLock(mutate, identity);
   }
 
   protected async writeTombstoneBlockedMemory(

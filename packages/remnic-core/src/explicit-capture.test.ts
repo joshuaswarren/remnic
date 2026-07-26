@@ -892,6 +892,35 @@ test("inline capture queues safe unsupported namespaces through the authorized r
   assert.match(probe.envelopes[0]?.content ?? "", /Requested namespace: unconfigured-inline/);
   assert.ok(probe.requestedNamespaces.every((namespace) => namespace === "default"));
 });
+test("inline capture allows a corrected namespace after unsupported review fallback", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const content = "A corrected namespace must not inherit the unsupported fallback replay key.";
+  const unsupported = await probe.processor.process({
+    captureMode: "hybrid",
+    content: [
+      "<memory_note>",
+      `content: ${content}`,
+      "category: fact",
+      "namespace: unsupported-inline-namespace",
+      "</memory_note>",
+    ].join("\n"),
+  });
+  const corrected = await probe.processor.process({
+    captureMode: "hybrid",
+    namespace: "default",
+    namespacePreResolved: true,
+    content: [
+      "<memory_note>",
+      `content: ${content}`,
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+  });
+
+  assert.equal(unsupported.queued, 1);
+  assert.equal(corrected.accepted, 1);
+  assert.equal(probe.envelopes.length, 2);
+});
 
 test("inline capture review fallback scans the default root when namespaces are disabled", async () => {
   const probe = createInlineCaptureProcessorProbe();

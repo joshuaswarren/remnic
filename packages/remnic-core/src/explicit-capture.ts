@@ -825,7 +825,11 @@ export class InlineExplicitCaptureProcessor {
         effectiveNamespace = fallbackNamespace;
       }
     }
-    const namespaceScope = fallbackNamespace ?? effectiveNamespace ?? this.orchestrator.config.defaultNamespace;
+    const requestedNamespace = asTrimmed(input.namespace);
+    const namespaceScope =
+      fallbackNamespace === undefined
+        ? effectiveNamespace ?? this.orchestrator.config.defaultNamespace
+        : `${fallbackNamespace}\u0000requested:${requestedNamespace ?? ""}`;
     const sourceConnectorScope = asTrimmed(input.sourceConnector) ?? "";
     const deliveryKeys = Array.from(
       new Set((dedupeKeys ?? []).map((key) => asTrimmed(key)).filter((key): key is string => key !== undefined))
