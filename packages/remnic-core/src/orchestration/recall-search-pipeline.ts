@@ -65,7 +65,7 @@ export interface RecallSearchPipelineDeps {
     results: QmdSearchResult[],
     namespaces: string[],
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
-  ): Promise<QmdSearchResult[]>;
+  ): Promise<{ results: QmdSearchResult[]; connectorByPath: Map<string, string> }>;
   applyTrustScoreRerank(
     results: QmdSearchResult[],
     namespaces: string[],
@@ -73,6 +73,7 @@ export interface RecallSearchPipelineDeps {
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
+    connectorByPath: Map<string, string> | null;
   }>;
   boostSearchResults(
     results: QmdSearchResult[],
@@ -736,6 +737,12 @@ export class RecallSearchPipelineCoordinator {
      without changing the cold pipeline's return type.
      */
     trustByPathSink?: { trustByPath: Map<string, TrustStageResultItem> | null };
+    /**
+     * Issue #2183 — out-parameter that receives the TrustScore stage's
+     * per-path source-connector map when the cold path runs. Mirrors
+     * trustByPathSink so cold-path memories get connector labels too.
+     */
+    connectorByPathSink?: { connectorByPath: Map<string, string> | null };
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
@@ -1075,6 +1082,7 @@ export class RecallSearchPipelineCoordinator {
         const trustOutcome = await this.deps.applyTrustScoreRerank(results, options.recallNamespaces, boostInput.memoryByPath);
         results = trustOutcome.results;
         if (options.trustByPathSink) options.trustByPathSink.trustByPath = trustOutcome.trustByPath;
+        if (options.connectorByPathSink) options.connectorByPathSink.connectorByPath = trustOutcome.connectorByPath;
       } catch (err) {
         log.debug("trust-score stage (cold) failed open", {
           error: (err as Error).message,
@@ -1082,7 +1090,9 @@ export class RecallSearchPipelineCoordinator {
       }
     } else if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
-        results = await this.deps.applyMemoryWorthRerank(results, options.recallNamespaces, boostInput.memoryByPath);
+        const mw = await this.deps.applyMemoryWorthRerank(results, options.recallNamespaces, boostInput.memoryByPath);
+        results = mw.results;
+        if (options.connectorByPathSink) options.connectorByPathSink.connectorByPath = mw.connectorByPath;
       } catch (err) {
         log.debug("memory-worth filter (cold) failed open", {
           error: (err as Error).message,

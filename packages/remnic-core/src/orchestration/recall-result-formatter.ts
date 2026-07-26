@@ -29,7 +29,7 @@ import type { HarmonicRetrievalResult } from "../harmonic-retrieval.js";
 import type { VerifiedEpisodeResult } from "../verified-recall.js";
 import type { VerifiedSemanticRuleResult } from "../semantic-rule-verifier.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
-import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
+import { trustResultFor, trustResultKey, type TrustStageResultItem } from "../trust-score-stage.js";
 import type {
   ContinuityIncidentRecord,
   IdentityInjectionMode,
@@ -38,6 +38,15 @@ import type {
   RecallPlanMode,
 } from "../types.js";
 
+/**
+ * Issue #2183 — strict allow-list for the `[agent: <connector>]` label. The
+ * connector is rendered into model-visible recall context, so a malformed
+ * `sourceConnector` (newline, instruction text, quotes) could inject text.
+ * Render the label only when the value matches this pattern; otherwise skip it
+ * (the memory is still injected, just unlabeled). Validated at the single
+ * render site so there is one resolver, not per-call-site rederivation.
+ */
+const CONNECTOR_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]*$/i;
 // ---------------------------------------------------------------------------
 // Identity injection mode helpers (moved verbatim from orchestrator.ts)
 // ---------------------------------------------------------------------------
@@ -192,6 +201,7 @@ export class RecallResultFormatter {
     results: QmdSearchResult[],
     sessionKey?: string,
     trustByPath?: Map<string, TrustStageResultItem> | null,
+    connectorByPath?: Map<string, string> | null,
   ): { heading: string; entries: string[] } {
     const handleByIndex = buildHandleIndexForResults(
       results,
@@ -202,6 +212,16 @@ export class RecallResultFormatter {
       trustByPath !== null &&
       trustByPath !== undefined;
     const hedgeMap = renderHedge ? trustByPath : null;
+    // Issue #2183: source-connector label. connectorByPath is keyed by the
+    // SAME composite identity as the trust map (trustResultKey) — never a bare
+    // path — so two same-path memories in different namespaces can't bleed a
+    // connector across namespaces. This is an additive, lossless annotation
+    // (it hides nothing), so it renders whenever a VALID connector is known
+    // (CONNECTOR_LABEL_PATTERN); a malformed value is skipped, never injected.
+    // Fixed head-line suffix order: handle -> [agent: <connector>] -> epistemic
+    // hedge (provenance, then trust), asserted in recall-source-connector-label tests.
+    const connectorMap =
+      connectorByPath !== null && connectorByPath !== undefined ? connectorByPath : null;
     const entries = results.map((r, i) => {
       const snippet = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
@@ -210,15 +230,22 @@ export class RecallResultFormatter {
       const source = typeof r.line === "number" ? `${displayPath}:${r.line}` : displayPath;
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
       const handle = handleByIndex.get(i);
-      const withHandle = handle ? `${head.trimEnd()} ${handle}` : head.trimEnd();
+      let line = head.trimEnd();
+      if (handle) line = `${line} ${handle}`;
+      if (connectorMap) {
+        const connector = connectorMap.get(trustResultKey(r));
+        if (connector && CONNECTOR_LABEL_PATTERN.test(connector)) {
+          line = `${line} [agent: ${connector}]`;
+        }
+      }
       if (hedgeMap) {
         const item = trustResultFor(hedgeMap, r);
         if (item) {
           const hedge = renderEpistemicHedge(item.trust);
-          if (hedge.length > 0) return `${withHandle} ${hedge}`;
+          if (hedge.length > 0) line = `${line} ${hedge}`;
         }
       }
-      return withHandle;
+      return line;
     });
     return { heading: `## ${title}`, entries };
   }
@@ -228,12 +255,14 @@ export class RecallResultFormatter {
     results: QmdSearchResult[],
     sessionKey?: string,
     trustByPath?: Map<string, TrustStageResultItem> | null,
+    connectorByPath?: Map<string, string> | null,
   ): string {
     const formatted = this.formatQmdResultEntries(
       title,
       results,
       sessionKey,
       trustByPath,
+      connectorByPath,
     );
     return [formatted.heading, ...formatted.entries].join("\n\n");
   }

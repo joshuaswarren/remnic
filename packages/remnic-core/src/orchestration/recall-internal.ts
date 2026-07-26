@@ -244,6 +244,10 @@ export class RecallInternalCoordinator {
     // (quarantine filtering on ALL paths), and the X-ray capture (trust
     // projection + quarantined-item visibility — rule 34).
     let recallTrustByPath: Map<string, TrustStageResultItem> | null = null;
+    // Issue #2183 — per-recall source-connector map, parallel to
+    // recallTrustByPath and captured by the same stages. Composite-keyed so
+    // same-path memories in different namespaces stay distinct.
+    let recallConnectorByPath: Map<string, string> | null = null;
     // Issue #1577 — sink for the cold-fallback pipeline's trust map. The cold
     // pipeline scores internally (applyColdFallbackPipeline) and writes its
     // per-path trust map here; each cold caller reads it back into
@@ -252,6 +256,11 @@ export class RecallInternalCoordinator {
     // (rule 41: the feature gate applies across ALL parallel recall paths).
     const trustByPathSink: { trustByPath: Map<string, TrustStageResultItem> | null } = {
       trustByPath: null,
+    };
+    // Issue #2183 — cold-pipeline sink for the source-connector map; mirrors
+    // trustByPathSink so cold-path memories get connector labels too.
+    const connectorByPathSink: { connectorByPath: Map<string, string> | null } = {
+      connectorByPath: null,
     };
     const lcmStructuredXrayResults: RecallXrayResult[] = [];
     // Per-branch pre-limit candidate pool size for the X-ray filter
@@ -4024,7 +4033,7 @@ export class RecallInternalCoordinator {
         // truth. awaitAssemblyStep injects a step signal that aborts the losing
         // task on deadline (or when the request disconnects), so an orphaned
         // corpus scan stops at its next loop boundary (#1905/#1907).
-        const trustFallback = { results: memoryResults, trustByPath: recallTrustByPath };
+        const trustFallback = { results: memoryResults, trustByPath: recallTrustByPath, connectorByPath: recallConnectorByPath };
         const trustOutcome = await awaitAssemblyStep(
           "trustStage",
           (stepSignal) =>
@@ -4041,6 +4050,7 @@ export class RecallInternalCoordinator {
         const trustFellBack = trustOutcome === trustFallback;
         memoryResults = trustOutcome.results;
         recallTrustByPath = trustOutcome.trustByPath;
+        recallConnectorByPath = trustOutcome.connectorByPath ?? null;
         recordRecallSectionMetric({
           section: "trustStage",
           priority: "enrichment",
@@ -4162,6 +4172,7 @@ export class RecallInternalCoordinator {
             truncated: identityInjectionTruncated,
           },
         trustByPath: recallTrustByPath,
+        connectorByPath: recallConnectorByPath,
         });
         recalledMemoryPaths = memoryResults
           .map((result) => result.path)
@@ -4225,7 +4236,7 @@ export class RecallInternalCoordinator {
           // the stage's corpus/direct-read fallback cover it — identical lookup
           // semantics (rule 41 parity).
           const trustT0 = Date.now();
-          const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
+          const trustFallback = { results: scoped, trustByPath: recallTrustByPath, connectorByPath: recallConnectorByPath };
           const trustOutcome = await awaitAssemblyStep(
             "trustStage",
             (stepSignal) =>
@@ -4242,6 +4253,7 @@ export class RecallInternalCoordinator {
           const trustFellBack = trustOutcome === trustFallback;
           scoped = trustOutcome.results;
           recallTrustByPath = trustOutcome.trustByPath;
+          recallConnectorByPath = trustOutcome.connectorByPath ?? null;
           recordRecallSectionMetric({
             section: "trustStage",
             priority: "enrichment",
@@ -4272,6 +4284,7 @@ export class RecallInternalCoordinator {
               truncated: identityInjectionTruncated,
             },
           trustByPath: recallTrustByPath,
+          connectorByPath: recallConnectorByPath,
           });
           recalledMemoryPaths = scoped
             .map((result) => result.path)
@@ -4292,6 +4305,7 @@ export class RecallInternalCoordinator {
             },
             xrayPoolSizeSink: xrayColdPoolSink,
             trustByPathSink,
+            connectorByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
@@ -4300,6 +4314,7 @@ export class RecallInternalCoordinator {
           // results feed X-ray + epistemic rendering + publisher quarantine
           // filtering (rule 41 parity; review: the sink was never read back).
           recallTrustByPath = trustByPathSink.trustByPath;
+          recallConnectorByPath = connectorByPathSink.connectorByPath;
           if (longTerm.length > 0) {
             if (shouldPersistGraphSnapshot) {
               graphSnapshotFinalResults = this.deps.buildGraphRecallRankedResults(
@@ -4321,6 +4336,7 @@ export class RecallInternalCoordinator {
                 truncated: identityInjectionTruncated,
               },
             trustByPath: recallTrustByPath,
+            connectorByPath: recallConnectorByPath,
             });
             recalledMemoryPaths = longTerm
               .map((result) => result.path)
@@ -4334,7 +4350,7 @@ export class RecallInternalCoordinator {
         this.deps.appendRecallSection(
           sectionBuckets,
           "workspace-context",
-          this.deps.formatQmdResults("Workspace Context", globalResults, sessionKey, recallTrustByPath),
+          this.deps.formatQmdResults("Workspace Context", globalResults, sessionKey, recallTrustByPath, recallConnectorByPath),
         );
       }
       recordRecallSectionMetric({
@@ -4417,7 +4433,7 @@ export class RecallInternalCoordinator {
         {
           // Deadline-bound (issue #1905); no preloaded map on this branch.
           const trustT0 = Date.now();
-          const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
+          const trustFallback = { results: scoped, trustByPath: recallTrustByPath, connectorByPath: recallConnectorByPath };
           const trustOutcome = await awaitAssemblyStep(
             "trustStage",
             (stepSignal) =>
@@ -4434,6 +4450,7 @@ export class RecallInternalCoordinator {
           const trustFellBack = trustOutcome === trustFallback;
           scoped = trustOutcome.results;
           recallTrustByPath = trustOutcome.trustByPath;
+          recallConnectorByPath = trustOutcome.connectorByPath ?? null;
           recordRecallSectionMetric({
             section: "trustStage",
             priority: "enrichment",
@@ -4464,6 +4481,7 @@ export class RecallInternalCoordinator {
             truncated: identityInjectionTruncated,
           },
         trustByPath: recallTrustByPath,
+        connectorByPath: recallConnectorByPath,
         });
         recalledMemoryPaths = scoped
           .map((result) => result.path)
@@ -4552,12 +4570,14 @@ export class RecallInternalCoordinator {
               },
               xrayPoolSizeSink: xrayColdPoolSink,
               trustByPathSink,
+              connectorByPathSink,
               deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
               asOfMs,
               ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
             });
             // Issue #1577 — read the cold pipeline's trust map back (rule 41).
             recallTrustByPath = trustByPathSink.trustByPath;
+            recallConnectorByPath = connectorByPathSink.connectorByPath;
             if (longTerm.length > 0) {
               recallSource = "cold_fallback";
               recalledMemoryCount = longTerm.length;
@@ -4573,6 +4593,7 @@ export class RecallInternalCoordinator {
                   truncated: identityInjectionTruncated,
                 },
               trustByPath: recallTrustByPath,
+              connectorByPath: recallConnectorByPath,
               });
               recalledMemoryPaths = longTerm
                 .map((result) => result.path)
@@ -4638,7 +4659,7 @@ export class RecallInternalCoordinator {
               const recentPreloaded = new Map<string, MemoryFile>(
                 queryAwareScopedMemories.filter((m) => m.path).map((m) => [m.path, m]),
               );
-              const trustFallback = { results: recent, trustByPath: recallTrustByPath };
+              const trustFallback = { results: recent, trustByPath: recallTrustByPath, connectorByPath: recallConnectorByPath };
               const trustOutcome = await awaitAssemblyStep(
                 "trustStage",
                 (stepSignal) =>
@@ -4655,6 +4676,7 @@ export class RecallInternalCoordinator {
               const trustFellBack = trustOutcome === trustFallback;
               recent = trustOutcome.results;
               recallTrustByPath = trustOutcome.trustByPath;
+              recallConnectorByPath = trustOutcome.connectorByPath ?? null;
               recordRecallSectionMetric({
                 section: "trustStage",
                 priority: "enrichment",
@@ -4685,6 +4707,7 @@ export class RecallInternalCoordinator {
                   truncated: identityInjectionTruncated,
                 },
               trustByPath: recallTrustByPath,
+              connectorByPath: recallConnectorByPath,
               });
               recalledMemoryPaths = recent
                 .map((result) => result.path)
@@ -4705,12 +4728,14 @@ export class RecallInternalCoordinator {
                 },
                 xrayPoolSizeSink: xrayColdPoolSink,
                 trustByPathSink,
+                connectorByPathSink,
                 deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                 asOfMs,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
               // Issue #1577 — read the cold pipeline's trust map back (rule 41).
               recallTrustByPath = trustByPathSink.trustByPath;
+              recallConnectorByPath = connectorByPathSink.connectorByPath;
               if (longTerm.length > 0) {
                 if (shouldPersistGraphSnapshot) {
                   graphSnapshotFinalResults =
@@ -4733,6 +4758,7 @@ export class RecallInternalCoordinator {
                     truncated: identityInjectionTruncated,
                   },
                 trustByPath: recallTrustByPath,
+                connectorByPath: recallConnectorByPath,
                 });
                 recalledMemoryPaths = longTerm
                   .map((result) => result.path)
@@ -4756,12 +4782,14 @@ export class RecallInternalCoordinator {
             },
             xrayPoolSizeSink: xrayColdPoolSink,
             trustByPathSink,
+            connectorByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
           // Issue #1577 — read the cold pipeline's trust map back (rule 41).
           recallTrustByPath = trustByPathSink.trustByPath;
+          recallConnectorByPath = connectorByPathSink.connectorByPath;
           if (longTerm.length > 0) {
             if (shouldPersistGraphSnapshot) {
               graphSnapshotFinalResults = this.deps.buildGraphRecallRankedResults(
@@ -4783,6 +4811,7 @@ export class RecallInternalCoordinator {
                 truncated: identityInjectionTruncated,
               },
             trustByPath: recallTrustByPath,
+            connectorByPath: recallConnectorByPath,
             });
             recalledMemoryPaths = longTerm
               .map((result) => result.path)

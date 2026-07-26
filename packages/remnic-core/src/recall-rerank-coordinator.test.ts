@@ -96,7 +96,7 @@ test("O(candidates): preloaded frontmatter covers candidates → no corpus scan,
     ["/facts/good.md", mem("good", 10, 0)],
   ]);
 
-  const reordered = await coord.applyMemoryWorthRerank(results, ["default"], preloaded);
+  const reordered = (await coord.applyMemoryWorthRerank(results, ["default"], preloaded)).results;
 
   assert.equal(corpus.calls.readAll, 0, "readAllMemories must NOT be called on the warm path");
   assert.equal(directReads, 0, "no per-candidate direct read when preloaded covers all candidates");
@@ -132,7 +132,7 @@ test("preloaded-but-neutral candidates do not trigger the corpus scan or direct 
     ["/facts/b.md", mem("b")],
   ]);
 
-  const out = await coord.applyMemoryWorthRerank(results, ["default"], preloaded);
+  const out = (await coord.applyMemoryWorthRerank(results, ["default"], preloaded)).results;
 
   assert.equal(corpus.calls.readAll, 0, "neutral preloaded candidates must not trigger readAllMemories");
   assert.equal(directReads, 0, "neutral preloaded candidates must not trigger direct reads");
@@ -155,7 +155,7 @@ test("golden parity: preloaded path ranks identically to the corpus-scan path (#
     getStorage: corpus.getStorage,
     readQmdResultMemory: async () => null,
   });
-  const viaCorpus = await corpusCoord.applyMemoryWorthRerank(results, ["default"]);
+  const viaCorpus = (await corpusCoord.applyMemoryWorthRerank(results, ["default"])).results;
   assert.equal(corpus.calls.readAll, 1, "corpus path performs exactly one scan");
 
   // Preloaded path: same counters supplied inline.
@@ -166,7 +166,7 @@ test("golden parity: preloaded path ranks identically to the corpus-scan path (#
     getStorage: warm.getStorage,
     readQmdResultMemory: async () => null,
   });
-  const viaPreloaded = await warmCoord.applyMemoryWorthRerank(results, ["default"], preloaded);
+  const viaPreloaded = (await warmCoord.applyMemoryWorthRerank(results, ["default"], preloaded)).results;
 
   assert.equal(warm.calls.readAll, 0, "preloaded path performs zero scans");
   assert.deepEqual(
@@ -206,7 +206,7 @@ test("cold-tier miss → bounded-parallel direct read (<=16 concurrent), counter
     },
   });
 
-  const reordered = await coord.applyMemoryWorthRerank(results, ["default"]);
+  const reordered = (await coord.applyMemoryWorthRerank(results, ["default"])).results;
   assert.ok(maxInFlight > 1, "direct reads run in parallel");
   assert.ok(maxInFlight <= 16, `direct-read concurrency must stay <=16 (saw ${maxInFlight})`);
   // Every even-index (high mw_success) candidate must outrank its odd-index
@@ -231,17 +231,17 @@ test("version-keyed cache: a corpus-version bump invalidates the cached counter 
     readQmdResultMemory: async () => null,
   });
 
-  const first = await coord.applyMemoryWorthRerank(results, ["default"]);
+  const first = (await coord.applyMemoryWorthRerank(results, ["default"])).results;
   assert.equal(corpus.calls.readAll, 1, "first recall scans");
 
   // Second recall, SAME version → served from cache (no new scan).
-  await coord.applyMemoryWorthRerank(results, ["default"]);
+  (await coord.applyMemoryWorthRerank(results, ["default"])).results;
   assert.equal(corpus.calls.readAll, 1, "same version → cache hit, no rescan");
 
   // Mutate the corpus (b becomes high-worth) and bump the version.
   corpus.state.memories = [mem("a", 0, 5), mem("b", 5, 0)];
   corpus.state.version += 1;
-  const third = await coord.applyMemoryWorthRerank(results, ["default"]);
+  const third = (await coord.applyMemoryWorthRerank(results, ["default"])).results;
   assert.equal(corpus.calls.readAll, 2, "version bump forces a rescan (no stale counters)");
 
   // Ordering must reflect the NEW counters: b now outranks a.
@@ -356,6 +356,7 @@ test("deadline-bound: a trust stage exceeding the assembly budget returns the pa
     const stuck = Promise.withResolvers<{
       results: QmdSearchResult[];
       trustByPath: null;
+      connectorByPath: null;
     }>();
     const realStage = orchestrator.recallRerankCoordinator.applyTrustScoreToBranch.bind(
       orchestrator.recallRerankCoordinator,
@@ -436,6 +437,7 @@ test("#1907: assembly deadline aborts the losing task's injected signal but not 
     const stuck = Promise.withResolvers<{
       results: QmdSearchResult[];
       trustByPath: null;
+      connectorByPath: null;
     }>();
     let capturedStepSignal: AbortSignal | undefined;
     const realStage = orchestrator.recallRerankCoordinator.applyTrustScoreToBranch.bind(

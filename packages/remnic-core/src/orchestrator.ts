@@ -3311,8 +3311,9 @@ export class Orchestrator {
     results: QmdSearchResult[],
     sessionKey?: string,
     trustByPath?: Map<string, TrustStageResultItem> | null,
+    connectorByPath?: Map<string, string> | null,
   ): string {
-    return this.recallResultFormatter.formatQmdResults(title, results, sessionKey, trustByPath);
+    return this.recallResultFormatter.formatQmdResults(title, results, sessionKey, trustByPath, connectorByPath);
   }
 
   private formatObjectiveStateResults(
@@ -3429,6 +3430,11 @@ export class Orchestrator {
      * formatQmdResults for the epistemic hedge.
      */
     trustByPath?: Map<string, TrustStageResultItem> | null;
+    /**
+     * Issue #2183 — per-recall source-connector map (keyed like trustByPath).
+     * Forwarded to RecallResultFormatter to render `[agent: <connector>]`.
+     */
+    connectorByPath?: Map<string, string> | null;
   }): void {
     return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
       selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
@@ -3468,7 +3474,7 @@ export class Orchestrator {
     results: QmdSearchResult[],
     namespaces: string[],
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
-  ): Promise<QmdSearchResult[]> {
+  ): Promise<{ results: QmdSearchResult[]; connectorByPath: Map<string, string> }> {
     return this.recallRerankCoordinator.applyMemoryWorthRerank(results, namespaces, preloadedFrontmatter);
   }
 
