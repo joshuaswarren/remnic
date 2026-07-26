@@ -873,20 +873,20 @@ export async function migrateLegacyEntityCanonicalIds(
         // A parked pair whose legacy file is gone was resolved by keeping the
         // canonical side. The rename is moot; the reference rewrite is not, and
         // this record is the only thing that can still perform it.
+        // A park survives ONLY while this scan re-establishes the collision.
+        // Anything else - the scan found a real migration, or found the source
+        // needs none (already canonical under a newer normalization) - makes
+        // the record obsolete, and keeping it lets a later deletion promote a
+        // target the entity never occupied.
         for (const [legacyId, canonicalId] of Object.entries(parked)) {
           if (blocked.has(legacyId)) continue;
-          // This scan found a real migration for the same legacy id, so the
-          // park is obsolete - and must not be revived over it. After the file
-          // moves, its absence would otherwise read as operator resolution and
-          // restore the stale target on top of the live one.
-          if (active[legacyId] !== undefined) {
-            delete parked[legacyId];
-            continue;
-          }
+          delete parked[legacyId];
+          if (active[legacyId] !== undefined) continue;
           const legacyPath = deps.resolveEntityFilePath(legacyId);
           if (legacyPath !== null && (await fileExists(legacyPath))) continue;
+          // Source gone: the rename is moot, but references still name it and
+          // this record is the only thing that can still rewrite them.
           active[legacyId] = canonicalId;
-          delete parked[legacyId];
         }
         // Reviving a whole chain at once yields A -> B -> C, and each rewrite
         // surface makes a different number of passes over it - so collapse

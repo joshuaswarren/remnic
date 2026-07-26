@@ -319,3 +319,55 @@ test("a stale park never outranks a migration this scan discovered", async () =>
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a park is dropped once its source needs no migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-self-canonical-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const selfCanonical = normalizeEntityName("Nightly Ingest", "automation");
+    const stale = "automation-cron-job-nightly-ingest";
+    // Under the current normalization this file IS its own canonical id, so the
+    // scan reports neither a mapping nor a collision. A park left from an older
+    // normalization must not survive that silence.
+    await writeFile(
+      path.join(dir, "entities", `${selfCanonical}.md`),
+      `---\nid: ${selfCanonical}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# Nightly Ingest\n\n**Type:** automation\n\nRuns at 02:00.\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(dir, "entities", `${stale}.md`),
+      `---\nid: ${stale}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# Nightly Ingest\n\n**Type:** automation-cron-job\n\nAn unrelated entity.\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: {}, blocked: { [selfCanonical]: stale } }),
+      "utf8",
+    );
+    const factDir = path.join(dir, "facts", "2026-03-01");
+    await mkdir(factDir, { recursive: true });
+    const factPath = path.join(factDir, "fact-self-canonical.md");
+    await writeFile(
+      factPath,
+      `---\nid: fact-self-canonical\ncategory: fact\nconfidence: 0.9\n`
+      + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+      + `entityRef: ${selfCanonical}\nstatus: active\n---\n\nThe ingest runs nightly.\n`,
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${selfCanonical}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    assert.equal(
+      /^entityRef: (.*)$/m.exec(await readFile(factPath, "utf8"))?.[1],
+      selfCanonical,
+      "deleting a self-canonical entity must not redirect its references to an unrelated one",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
