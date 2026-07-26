@@ -3,6 +3,7 @@ const PROFILE_TITLE = /^ {0,3}#\s+/;
 const MARKDOWN_HEADING = /^#{1,6}\s+/;
 const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d+[.)])\s+/;
 const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
+const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
 const UTF8_BOM = "\uFEFF";
 
@@ -206,8 +207,29 @@ function findCompleteHtmlTag(line: string): HtmlTag | null {
   }
   return null;
 }
+function findHtmlTagPrefix(line: string): HtmlTag | null {
+  let quote: string | null = null;
+  for (let index = 1; index < line.length; index += 1) {
+    const character = line[index]!;
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character !== ">") continue;
+    return findCompleteHtmlTag(line.slice(0, index + 1));
+  }
+  return null;
+}
+
 function isRawHtmlBlockTerminator(line: string): boolean {
-  return RAW_HTML_BLOCK_TAGS.some((name) => hasRawHtmlBlockEndMarker(line, `</${name}>`));
+  const normalizedLine = line.toLowerCase();
+  return RAW_HTML_BLOCK_TAGS.some((name) =>
+    hasRawHtmlBlockEndMarker(normalizedLine, `</${name}>`),
+  );
 }
 
 function findHtmlTags(line: string): HtmlTag[] {
@@ -284,7 +306,8 @@ function updateHtmlBlockDepth(
 function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBlock | null {
   const rawTag = findHtmlBlockTag(normalizedLine, RAW_HTML_BLOCK_TAGS);
   if (rawTag) {
-    const completeTag = findCompleteHtmlTag(trimmedLine);
+    const completeTag =
+      findCompleteHtmlTag(trimmedLine) ?? findHtmlTagPrefix(trimmedLine);
     if (!completeTag) return null;
     if (completeTag.isSelfClosing) {
       return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
@@ -315,7 +338,8 @@ function findHtmlBlockStart(normalizedLine: string, trimmedLine: string): HtmlBl
   }
   const blockTag = findHtmlBlockTag(normalizedLine, HTML_BLOCK_TAGS);
   if (blockTag) {
-    const completeTag = findCompleteHtmlTag(trimmedLine);
+    const completeTag =
+      findCompleteHtmlTag(trimmedLine) ?? findHtmlTagPrefix(trimmedLine);
     if (!completeTag) return null;
     if (completeTag.isSelfClosing) {
       return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
@@ -478,6 +502,7 @@ function isMetadataBoundary(line: string): boolean {
     MARKDOWN_HEADING.test(line) ||
     MARKDOWN_LIST_ITEM.test(line) ||
     MARKDOWN_THEMATIC_BREAK.test(line) ||
+    MARKDOWN_SETEXT_UNDERLINE.test(line) ||
     MARKDOWN_BLOCK_QUOTE.test(line) ||
     isLastUpdatedHeader(line) ||
     getFenceMarker(line) !== null ||
