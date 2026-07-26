@@ -2244,3 +2244,94 @@ test("grounding requires temporal evidence to answer when questions", () => {
   assert.deepEqual(unresolved.questions, [{ question, context: "", priority: 0.5 }]);
   assert.deepEqual(resolved.questions, []);
 });
+
+test("grounding rejects unsupported trailing fact modifiers", () => {
+  for (const content of [
+    "Alice works at Acme as CEO.",
+    "Alice works at Acme every Monday.",
+    "Alice works at Acme using Rust.",
+  ]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      "Alice works at Acme.",
+    );
+    assert.deepEqual(result.facts, []);
+  }
+});
+
+test("grounding binds procedure steps to the parent fact span", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "procedure",
+        content: "Alice deployed Acme.",
+        confidence: 0.9,
+        tags: [],
+        procedureSteps: [{ order: 1, intent: "delete backups" }],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice deployed Acme. Bob instructed operators to delete backups.",
+  );
+
+  assert.deepEqual(result.facts[0]?.procedureSteps ?? [], []);
+});
+
+test("grounding rejects propositions in non-assertive reporting scopes", () => {
+  for (const source of [
+    "Alice alleged that Bob stole funds.",
+    "Alice suspects Bob stole funds.",
+  ]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{ category: "fact", content: "Bob stole funds.", confidence: 0.9, tags: [] }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      source,
+    );
+    assert.deepEqual(result.facts, []);
+  }
+});
+
+test("grounding aligns predicates after medial source modifiers", () => {
+  for (const [source, content] of [
+    ["Alice currently works at Acme.", "Alice works at Acme."],
+    ["Alice successfully deployed Acme.", "Alice deployed Acme."],
+    ["Alice now works at Acme.", "Alice works at Acme."],
+  ]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      source,
+    );
+    assert.deepEqual(result.facts.map((fact) => fact.content), [content]);
+  }
+});
+
+test("grounding requires causal evidence before removing why questions", () => {
+  const question = { question: "Why did Alice deploy Acme?", context: "", priority: 0.5 };
+  const unanswered = filterExtractionResultBySource(
+    { facts: [], profileUpdates: [], entities: [], questions: [question] },
+    "Why did Alice deploy Acme?\nAlice deployed Acme.",
+  );
+  assert.deepEqual(unanswered.questions, [question]);
+
+  const answered = filterExtractionResultBySource(
+    { facts: [], profileUpdates: [], entities: [], questions: [question] },
+    "Why did Alice deploy Acme?\nAlice deployed Acme because customers requested it.",
+  );
+  assert.deepEqual(answered.questions, []);
+});

@@ -122,6 +122,7 @@ export const GROUNDING_STOPWORDS: Record<string, true> = {
   were: true,
   what: true,
   when: true,
+  why: true,
   where: true,
   which: true,
   who: true,

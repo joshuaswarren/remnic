@@ -99,6 +99,87 @@ const GROUNDING_DENIAL_REPORTING_VERBS = new Set([
 function isDenialReportingVerb(token: string): boolean {
   return GROUNDING_DENIAL_REPORTING_VERBS.has(token);
 }
+const GROUNDING_NON_ASSERTIVE_REPORTING_VERBS = new Set([
+  "allege",
+  "alleged",
+  "alleges",
+  "alleging",
+  "allegedly",
+  "assert",
+  "asserted",
+  "asserts",
+  "asserting",
+  "believe",
+  "believed",
+  "believes",
+  "believing",
+  "claim",
+  "claimed",
+  "claims",
+  "claiming",
+  "doubt",
+  "doubted",
+  "doubts",
+  "doubting",
+  "uncertain",
+  "unsure",
+  "unclear",
+  "unknown",
+  "possibly",
+  "probably",
+  "imagine",
+  "imagined",
+  "imagines",
+  "imagining",
+  "report",
+  "reported",
+  "reports",
+  "reporting",
+  "reportedly",
+  "say",
+  "said",
+  "says",
+  "saying",
+  "speculate",
+  "speculated",
+  "speculates",
+  "speculating",
+  "suspect",
+  "suspected",
+  "suspects",
+  "suspecting",
+  "suppose",
+  "supposed",
+  "supposes",
+  "supposing",
+  "supposedly",
+  "think",
+  "thought",
+  "thinks",
+  "thinking",
+]);
+
+function isNonAssertiveReportingVerb(token: string): boolean {
+  return GROUNDING_NON_ASSERTIVE_REPORTING_VERBS.has(token);
+}
+
+function isNonAssertiveReportingAt(tokens: ReadonlyArray<string>, index: number): boolean {
+  let boundary = 0;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (isGroundingClauseBoundary(tokens[cursor]!)) boundary = cursor + 1;
+  }
+  for (let cursor = index - 1; cursor >= boundary; cursor -= 1) {
+    if (
+      tokens[cursor] === "that"
+      && cursor > boundary
+      && isNonAssertiveReportingVerb(tokens[cursor - 1]!)
+    ) {
+      return true;
+    }
+    if (isNonAssertiveReportingVerb(tokens[cursor]!) && index - cursor <= 5) return true;
+  }
+  return false;
+}
 
 function isGroundingClauseBoundary(token: string): boolean {
   return token === "and"
@@ -151,7 +232,12 @@ function hasContradictoryPolarity(candidate: string, source: string): boolean {
         || isDeniedAt(candidateTokens, candidateIndex);
       const sourceNegated = isNegatedAt(sourceTokens, sourceIndex)
         || isDeniedAt(sourceTokens, sourceIndex);
-      if (candidateNegated !== sourceNegated) {
+      const candidateNonAssertive = isNonAssertiveReportingAt(candidateTokens, candidateIndex);
+      const sourceNonAssertive = isNonAssertiveReportingAt(sourceTokens, sourceIndex);
+      if (
+        candidateNegated !== sourceNegated
+        || candidateNonAssertive !== sourceNonAssertive
+      ) {
         contradiction = true;
       }
       sourceCursor = sourceIndex + 1;
@@ -183,7 +269,12 @@ function hasContradictoryPolarity(candidate: string, source: string): boolean {
       || isDeniedAt(candidateTokens, candidateIndex);
     const sourceNegated = isNegatedAt(sourceTokens, sourceIndex)
       || isDeniedAt(sourceTokens, sourceIndex);
-    if (candidateNegated !== sourceNegated) {
+    const candidateNonAssertive = isNonAssertiveReportingAt(candidateTokens, candidateIndex);
+    const sourceNonAssertive = isNonAssertiveReportingAt(sourceTokens, sourceIndex);
+    if (
+      candidateNegated !== sourceNegated
+      || candidateNonAssertive !== sourceNonAssertive
+    ) {
       return true;
     }
   }
@@ -228,6 +319,36 @@ function hasCopularPredicateEvidence(candidate: string, source: string): boolean
     && areGroundingTokensCompatible(candidateClaim.subject, sourceClaim.subject)
     && areGroundingTokensCompatible(candidateClaim.predicate, sourceClaim.predicate);
 }
+const GROUNDING_ALIGNMENT_MODIFIERS = new Set([
+  "actively",
+  "again",
+  "already",
+  "currently",
+  "eventually",
+  "finally",
+  "generally",
+  "mainly",
+  "newly",
+  "now",
+  "often",
+  "previously",
+  "primarily",
+  "quickly",
+  "recently",
+  "repeatedly",
+  "simply",
+  "slowly",
+  "sometimes",
+  "still",
+  "successfully",
+  "typically",
+  "usually",
+]);
+
+function isGroundingAlignmentModifier(token: string): boolean {
+  return GROUNDING_ALIGNMENT_MODIFIERS.has(token);
+}
+
 
 function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): boolean {
   const candidateTokens = normalizedGroundingAlignmentTokenSequence(candidate);
@@ -242,41 +363,36 @@ function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): b
     && /\b(?:not|rather\s+than|instead\s+of)\b/iu.test(source);
   for (let sourceSubjectIndex = 0; sourceSubjectIndex < sourceTokens.length; sourceSubjectIndex += 1) {
     if (!areGroundingTokensCompatible(candidateSubject, sourceTokens[sourceSubjectIndex]!)) continue;
+    let sourceCursor = sourceSubjectIndex + 1;
     let foundAlignedToken = false;
     let aligned = true;
-    const sharedLength = Math.min(
-      candidateTokens.length,
-      sourceTokens.length - sourceSubjectIndex,
-    );
-    for (let candidateIndex = 1; candidateIndex < sharedLength; candidateIndex += 1) {
-      if (
-        !areGroundingTokensCompatible(
-          candidateTokens[candidateIndex]!,
-          sourceTokens[sourceSubjectIndex + candidateIndex]!,
-        )
-      ) continue;
+    for (let candidateIndex = 1; candidateIndex < candidateTokens.length; candidateIndex += 1) {
+      const candidateToken = candidateTokens[candidateIndex]!;
+      const sourceIndex = sourceTokens.findIndex(
+        (sourceToken, index) =>
+          index >= sourceCursor && areGroundingTokensCompatible(candidateToken, sourceToken),
+      );
+      if (sourceIndex === -1) {
+        if (hasCorrectionReordering) continue;
+        aligned = false;
+        break;
+      }
       foundAlignedToken = true;
       const candidateNext = candidateTokens[candidateIndex + 1];
-      const sourceNext = sourceTokens[sourceSubjectIndex + candidateIndex + 1];
+      const sourceNext = sourceTokens[sourceIndex + 1];
       if (
         candidateNext !== undefined
         && sourceNext !== undefined
+        && !hasCorrectionReordering
         && !areGroundingTokensCompatible(candidateNext, sourceNext)
+        && !isGroundingAlignmentModifier(sourceNext)
       ) {
         aligned = false;
         break;
       }
+      sourceCursor = sourceIndex + 1;
     }
-    if (
-      aligned
-      && (areGroundingTokensCompatible(
-        candidateTokens[1]!,
-        sourceTokens[sourceSubjectIndex + 1]!,
-      ) || hasCorrectionReordering)
-      && foundAlignedToken
-    ) {
-      return true;
-    }
+    if (aligned && foundAlignedToken) return true;
   }
   return false;
 }
@@ -285,18 +401,24 @@ function groundedTokenScore(
   candidate: string,
   source: string,
   requireAlignedArguments = true,
+  requireAllCandidateTokensGrounded = true,
 ): number {
   const candidateTokens = tokenize(candidate);
   if (candidateTokens.size === 0) return 0;
   const sourceTokens = tokenize(source);
+  const allowCorrectionReordering = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate);
   let sharedTokens = 0;
+  let allCandidateTokensGrounded = true;
   for (const token of candidateTokens) {
     if ([...sourceTokens].some((sourceToken) => areGroundingTokensCompatible(token, sourceToken))) {
       sharedTokens += 1;
+    } else if (!allowCorrectionReordering && token !== "rather" && token !== "instead") {
+      allCandidateTokensGrounded = false;
     }
   }
   if (
-    sharedTokens < GROUNDING_MIN_SHARED_TOKENS
+    (requireAllCandidateTokensGrounded && !allCandidateTokensGrounded)
+    || sharedTokens < GROUNDING_MIN_SHARED_TOKENS
     || sharedTokens / candidateTokens.size < GROUNDING_MIN_COVERAGE
   ) {
     return 0;
@@ -354,7 +476,12 @@ function isSourceGroundedClause(
         bestContradictedScore = Math.max(bestContradictedScore, 1);
         continue;
       }
-      const score = groundedTokenScore(candidate, sourceSpan, !includeInterrogativeSource);
+      const score = groundedTokenScore(
+        candidate,
+        sourceSpan,
+        !includeInterrogativeSource,
+        !includeInterrogativeSource,
+      );
       if (score === 0) continue;
       if (hasContradictoryPolarity(candidate, sourceSpan)) {
         bestContradictedScore = Math.max(bestContradictedScore, score);
@@ -645,6 +772,31 @@ function buildFactSupportSource(
     .map((index) => sentences[index]!)
     .join(" ");
 }
+function buildProcedureSupportSource(
+  fact: ExtractionResult["facts"][number],
+  source: string,
+  factSupportSource: string,
+): string {
+  if (fact.category !== "procedure" || fact.procedureSteps === undefined) return factSupportSource;
+  const parentSupportSentences = new Set(
+    sourceSentences(factSupportSource).map((sentence) => normalizeForExactMatch(sentence)),
+  );
+  const parentGroundedSteps = fact.procedureSteps.filter((step) =>
+    isGroundedCandidate(step.intent, factSupportSource, undefined, false),
+  );
+  if (parentGroundedSteps.length === 0) return factSupportSource;
+  return sourceSentences(source)
+    .filter((sentence) => {
+      if (parentSupportSentences.has(normalizeForExactMatch(sentence))) return true;
+      const sentenceTokens = tokenize(sentence);
+      return parentGroundedSteps.some((step) =>
+        [...tokenize(step.intent)].some((token) =>
+          [...sentenceTokens].some((sourceToken) => areGroundingTokensCompatible(token, sourceToken)),
+        ),
+      );
+    })
+    .join(" ");
+}
 function filterGroundedFact(
   fact: ExtractionResult["facts"][number],
   source: string,
@@ -711,7 +863,11 @@ function filterGroundedFact(
         ),
     )
     : undefined;
-  const procedureGroundingSource = factContext.assertionSource ?? factContext.source;
+  const procedureGroundingSource = buildProcedureSupportSource(
+    fact,
+    factContext.assertionSource ?? factContext.source,
+    factSupportSource,
+  );
   const groundedProcedureSteps = fact.procedureSteps
     ? fact.procedureSteps.flatMap((step) => {
       if (!isGroundedCandidate(step.intent, procedureGroundingSource, undefined, false)) return [];
@@ -903,6 +1059,16 @@ const GROUNDING_TEMPORAL_DURATION_PATTERN = new RegExp(
 function isWhenQuestion(question: string): boolean {
   return /^(?:when|what\s+(?:time|date)|which\s+day)\b/iu.test(question.trim());
 }
+function isWhyQuestion(question: string): boolean {
+  return /^why\b/iu.test(question.trim());
+}
+
+function hasCausalAnswerEvidence(question: string, sentence: string): boolean {
+  if (!isWhyQuestion(question)) return true;
+  return /\b(?:because|since|due\s+to|owing\s+to|thanks\s+to|therefore|thus|hence|so)\b/iu.test(
+    sentence,
+  );
+}
 
 function hasTemporalAnswerEvidence(question: string, sentence: string): boolean {
   if (!isWhenQuestion(question)) return true;
@@ -985,6 +1151,7 @@ function isQuestionAnsweredBySource(
     const hasAnswerToken = [...sentenceTokens].some((token) => !questionTokens.has(token));
     return (isYesNoQuestion || hasAnswerToken)
       && hasTemporalAnswerEvidence(question, sentence)
+      && hasCausalAnswerEvidence(question, sentence)
       && hasWhAnswerRoleAlignment(question, sentence);
   });
 }
