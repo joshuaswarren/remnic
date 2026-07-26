@@ -72,7 +72,6 @@ const DEFAULT_MEMORY_DIR = path.join(
   "memory",
   "local",
 );
-
 const DEFAULT_WORKSPACE_DIR = path.join(
   resolveHomeDir(),
   ".openclaw",
