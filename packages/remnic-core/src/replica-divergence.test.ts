@@ -5,6 +5,7 @@ import test from "node:test";
 
 import { computeCorpusWatermark, type CorpusWatermark } from "./corpus-watermark.js";
 import {
+  MAX_PEER_RESPONSE_BYTES,
   ReplicaDivergenceMonitor,
   type FetchLike,
   type ReplicaDivergenceStatus,
@@ -1219,4 +1220,88 @@ test("round 6 (coderabbit): the dual-prefix fallback inherits the REMAINING shar
     true,
     "the fallback's signal is bounded by the REMAINING shared budget (aborted <150ms in), not a fresh 300ms one",
   );
+});
+
+test("round 7 (codex P2): an oversized peer body is refused, not buffered", async () => {
+  // A configured peer is a trust boundary: response.json() would buffer an
+  // unbounded corpus whole, and several peers are polled concurrently.
+  let delivered = 0;
+  const chunk = new TextEncoder().encode("x".repeat(1024 * 1024));
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ corpus: [] }),
+    body: {
+      getReader: () => ({
+        read: async () => {
+          delivered += chunk.byteLength;
+          // Far exceeds the cap; the reader must stop early, not run forever.
+          return delivered > MAX_PEER_RESPONSE_BYTES * 4
+            ? { done: true, value: undefined }
+            : { done: false, value: chunk };
+        },
+        cancel: async () => undefined,
+      }),
+    },
+  });
+  const status = await pollReplicaPeers({
+    config: parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } }),
+    localWatermarks: [watermark("default")],
+    fetchImpl,
+  });
+  assert.equal(status.peers[0]?.state, "unknown");
+  assert.equal(status.peers[0]?.reason, "response_too_large");
+  assert.ok(
+    delivered <= MAX_PEER_RESPONSE_BYTES + chunk.byteLength,
+    `must stop at the cap, buffered ${delivered} bytes`,
+  );
+});
+
+test("round 7 (codex P2): a noncanonical peer namespace key is malformed", async () => {
+  // "default " would compare as a DISTINCT namespace and manufacture phantom
+  // local_only/peer_only deltas for the same logical tenant.
+  for (const bad of ["default ", "../escape", "team\u0000a"]) {
+    const fetchImpl: FetchLike = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ corpus: [{ ...watermark("default"), namespace: bad }] }),
+    });
+    const status = await pollReplicaPeers({
+      config: parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } }),
+      localWatermarks: [watermark("default")],
+      fetchImpl,
+    });
+    assert.equal(status.peers[0]?.state, "unknown", `${JSON.stringify(bad)} must not be accepted`);
+    assert.equal(status.peers[0]?.reason, "malformed_corpus");
+  }
+});
+
+test("round 7 (codex P1): a peer advertising an incomplete census cannot converge", async () => {
+  // The peer omits corpus entries whose scan failed; a namespace present only
+  // on the peer could be missing, leaving the comparison seeing false agreement.
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ corpus: [watermark("default")], replica: { censusComplete: false } }),
+  });
+  const status = await pollReplicaPeers({
+    config: parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } }),
+    localWatermarks: [watermark("default")],
+    fetchImpl,
+  });
+  assert.equal(status.peers[0]?.state, "unknown");
+  assert.equal(status.peers[0]?.reason, "peer_census_incomplete");
+
+  // A peer that advertises a COMPLETE census still converges.
+  const healthy: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ corpus: [watermark("default")], replica: { censusComplete: true } }),
+  });
+  const ok = await pollReplicaPeers({
+    config: parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } }),
+    localWatermarks: [watermark("default")],
+    fetchImpl: healthy,
+  });
+  assert.equal(ok.peers[0]?.state, "converged");
 });

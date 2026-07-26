@@ -31,6 +31,7 @@
 import {
   capabilityAllowsNamespace,
   isCapabilityRestricted,
+  isValidNamespaceValue,
   type TokenCapabilities,
 } from "./access-token-capabilities.js";
 import type { CorpusWatermark } from "./corpus-watermark.js";
@@ -294,7 +295,56 @@ export type FetchLike = (input: string, init?: { headers?: Record<string, string
   ok: boolean;
   status: number;
   json(): Promise<unknown>;
+  /**
+   * Raw body stream when the transport exposes one (the global `fetch`
+   * Response does). Present so a peer payload can be size-bounded while it is
+   * read; a test double that omits it falls back to `json()`.
+   */
+  body?: unknown;
 }>;
+
+/**
+ * Cap on a peer's `/health` payload. A configured peer is a trust boundary: a
+ * compromised or malfunctioning one could otherwise stream an unbounded corpus
+ * that `json()` buffers whole, and up to `maxConcurrent` peers are polled at
+ * once, so the exposure multiplies (round 7, codex P2). Generous enough for a
+ * fleet-sized namespace census, small enough that four of them cannot exhaust
+ * the daemon.
+ */
+export const MAX_PEER_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+class PeerResponseTooLarge extends Error {}
+
+/** Read + parse a peer body, refusing to buffer more than the cap. */
+async function readBoundedJson(response: { json(): Promise<unknown>; body?: unknown }): Promise<unknown> {
+  const stream = response.body as { getReader?: () => ReadableStreamDefaultReader<Uint8Array> } | null | undefined;
+  if (!stream || typeof stream.getReader !== "function") {
+    // No stream to meter (test double, or a transport without one).
+    return response.json();
+  }
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_PEER_RESPONSE_BYTES) throw new PeerResponseTooLarge();
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(merged));
+}
 
 export interface FetchPeerOptions {
   timeoutMs: number;
@@ -345,7 +395,12 @@ function networkReason(error: unknown): string {
 function coerceCorpusWatermark(raw: unknown): CorpusWatermark | null {
   if (!raw || typeof raw !== "object") return null;
   const record = raw as Record<string, unknown>;
-  if (typeof record.namespace !== "string" || record.namespace.length === 0) return null;
+  // A peer's namespace key crosses a trust boundary: a noncanonical value
+  // ("default ", a path separator, a control character) would compare as a
+  // DISTINCT namespace and produce phantom local_only/peer_only deltas for the
+  // same logical tenant, and doctor interpolates it into terminal output. Use
+  // the same validator the rest of the namespace boundary uses (round 7).
+  if (!isValidNamespaceValue(record.namespace)) return null;
   // A file count must be a nonnegative integer: a negative/fractional count is
   // corrupted telemetry, not a valid corpus (codex P2). Rejecting it here routes
   // the whole peer response to `unknown` via the malformed_corpus guard.
@@ -453,8 +508,11 @@ export async function fetchPeerWatermarks(
     if (!response.ok) return { kind: "unreachable", reason: `http_${response.status}` };
     let body: unknown;
     try {
-      body = await response.json();
-    } catch {
+      body = await readBoundedJson(response);
+    } catch (error) {
+      if (error instanceof PeerResponseTooLarge) {
+        return { kind: "unknown", reason: "response_too_large" };
+      }
       return { kind: "unknown", reason: "invalid_json" };
     }
     if (!body || typeof body !== "object" || !("corpus" in body) || !Array.isArray(body.corpus)) {
@@ -475,6 +533,17 @@ export async function fetchPeerWatermarks(
     // matching one would certify `converged` (round 3, codex P2).
     if (new Set(corpus.map((watermark) => watermark.namespace)).size !== corpus.length) {
       return { kind: "unknown", reason: "malformed_corpus" };
+    }
+    // A peer that ADVERTISES an incomplete census omitted corpus entries whose
+    // scan failed or whose cache is warming. Its partial array must not be read
+    // as a complete one: a namespace that exists only on the peer but was
+    // omitted would leave the comparison seeing agreement (round 7, codex P1).
+    // A peer that does not advertise the field at all predates it — documented
+    // as a mixed-version limitation rather than pinning every older peer to
+    // `unknown` forever.
+    const peerReplica = (body as { replica?: { censusComplete?: unknown } }).replica;
+    if (peerReplica && peerReplica.censusComplete === false) {
+      return { kind: "unknown", reason: "peer_census_incomplete" };
     }
     // A peer census whose `computedAt` is too far from the poll time in EITHER
     // direction cannot certify convergence — treat it as `unknown`, not health
