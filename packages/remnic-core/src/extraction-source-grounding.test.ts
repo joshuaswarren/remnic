@@ -508,6 +508,7 @@ test("grounding excludes auxiliary fields sourced only from questions", () => {
     "The deployment finished.",
   );
 
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["The deployment finished."]);
   assert.equal(result.facts[0]?.structuredAttributes, undefined);
 });
 
@@ -1522,4 +1523,55 @@ test("grounding rejects colon-suffixed unresolved questions", () => {
   );
 
   assert.deepEqual(result.facts, []);
+});
+test("grounding accepts doubled-consonant verb inflection paraphrases", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice runs Redis.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice is running Redis.",
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["Alice runs Redis."]);
+});
+
+test("grounding accepts qualified affirmative answers", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Does Alice work at Acme?\nYes, absolutely.",
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["Alice works at Acme."]);
+});
+
+test("grounding answers object wh-questions with aligned evidence", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{ question: "What database does Alice use?", context: "", priority: 0.5 }],
+    },
+    "What database does Alice use?\nAlice uses PostgreSQL as the database.",
+  );
+
+  assert.deepEqual(result.questions, []);
 });

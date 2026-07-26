@@ -291,9 +291,18 @@ const GROUNDING_MIN_COVERAGE = 0.5;
 
 function stemToken(token: string, preserveTerminalS = false): string {
   if (token.endsWith("'s")) return token.slice(0, -2);
-  if (token.length > 5 && token.endsWith("ing")) return token.slice(0, -3);
+  if (token.length > 5 && token.endsWith("ing")) {
+    const stem = token.slice(0, -3);
+    return /(.)\1$/u.test(stem) ? stem.slice(0, -1) : stem;
+  }
   if (token.length > 4 && token.endsWith("ed")) return token.slice(0, -2);
-  if (!preserveTerminalS && token.length > 3 && token.endsWith("s") && !token.endsWith("ss")) {
+  if (
+    !preserveTerminalS
+    && token.length > 3
+    && token.endsWith("s")
+    && !token.endsWith("ss")
+    && GROUNDING_COMMON_VERB_FORMS.has(token)
+  ) {
     return token.slice(0, -1);
   }
   return token;
@@ -431,7 +440,7 @@ function isSourceGroundedClause(
   const sentences = sourceSentences(source);
   for (let index = 0; index < sentences.length; index += 1) {
     const sentence = sentences[index];
-    if (isBareYesNoAnswer(sentence)) {
+    if (isYesNoAnswer(sentence)) {
       const precedingSentence = sentences[index - 1];
       const answerToken = tokenSequence(sentence)[0];
       const contradictoryPolarity = precedingSentence !== undefined
@@ -828,17 +837,33 @@ function isUnknownAnswerSentence(sentence: string): boolean {
     .test(sentence);
 }
 
-function isBareYesNoAnswer(sentence: string): boolean {
-  return /^(?:yes|no)[.!]?$/iu.test(sentence.trim());
+function isYesNoAnswer(sentence: string): boolean {
+  return /^(?:yes|no)\b(?:[,:;.!?]|\s|$)/iu.test(sentence.trim());
 }
 
-function hasWhSubjectAnswerAlignment(question: string, sentence: string): boolean {
-  const match = /^(?:who|what)\s+([^\s?]+)\s+(.+?)\??$/iu.exec(question.trim());
-  if (match === null) return true;
-  const predicateTokens = groundingTokenSequence(match[1] ?? "");
-  const objectTokens = groundingTokenSequence(match[2] ?? "");
-  if (predicateTokens.length === 0 || objectTokens.length === 0) return true;
+function hasWhAnswerRoleAlignment(question: string, sentence: string): boolean {
+  const normalizedQuestion = question.trim();
+  const objectQuestionMatch = /^(?:what|which)\s+.+?\s+(?:is|are|was|were|do|does|did|can|could|will|would|should|has|have|had)\s+(.+?)\s+([^\s?]+)\??$/iu
+    .exec(normalizedQuestion);
   const sourceTokens = normalizedGroundingTokenSequence(sentence);
+  if (objectQuestionMatch !== null) {
+    const subjectTokens = groundingTokenSequence(objectQuestionMatch[1] ?? "");
+    const predicateTokens = groundingTokenSequence(objectQuestionMatch[2] ?? "");
+    if (subjectTokens.length === 0 || predicateTokens.length === 0) return true;
+    let sourceIndex = 0;
+    for (const token of [...subjectTokens, ...predicateTokens]) {
+      const matchedIndex = sourceTokens.indexOf(token, sourceIndex);
+      if (matchedIndex === -1) return false;
+      sourceIndex = matchedIndex + 1;
+    }
+    return true;
+  }
+
+  const subjectQuestionMatch = /^(?:who|what)\s+([^\s?]+)\s+(.+?)\??$/iu.exec(normalizedQuestion);
+  if (subjectQuestionMatch === null) return true;
+  const predicateTokens = groundingTokenSequence(subjectQuestionMatch[1] ?? "");
+  const objectTokens = groundingTokenSequence(subjectQuestionMatch[2] ?? "");
+  if (predicateTokens.length === 0 || objectTokens.length === 0) return true;
   const predicateStart = sourceTokens.indexOf(predicateTokens[0]!);
   if (predicateStart === -1) return false;
   let sourceIndex = predicateStart + predicateTokens.length;
@@ -858,18 +883,18 @@ function isQuestionAnsweredBySource(question: string, source: string): boolean {
   const sentences = sourceSentences(source);
   return sentences.some((sentence, index) => {
     if (isInterrogativeSourceSentence(sentence)) return false;
-    if (isBareYesNoAnswer(sentence)) {
+    if (isYesNoAnswer(sentence)) {
       const precedingSentence = sentences[index - 1];
       return precedingSentence !== undefined
         && isInterrogativeSourceSentence(precedingSentence)
         && groundedTokenScore(question, precedingSentence) === 1;
     }
     if (isUnknownAnswerSentence(sentence)) return false;
-    const score = groundedTokenScore(question, sentence);
+    const score = groundedTokenScore(question, sentence, false);
     if (score !== 1) return false;
     const sentenceTokens = tokenize(sentence);
     const hasAnswerToken = [...sentenceTokens].some((token) => !questionTokens.has(token));
-    return (isYesNoQuestion || hasAnswerToken) && hasWhSubjectAnswerAlignment(question, sentence);
+    return (isYesNoQuestion || hasAnswerToken) && hasWhAnswerRoleAlignment(question, sentence);
   });
 }
 
