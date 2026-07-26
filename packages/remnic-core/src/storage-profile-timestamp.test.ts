@@ -2359,6 +2359,89 @@ test("writeProfile recognizes heading and fence metadata boundaries", async (t) 
     t.mock.timers.reset();
   }
 });
+test("writeProfile closes list-contained fences when the list ends", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "- item",
+        "  ```",
+        "  code",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after a list fence.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile preserves consecutive timestamp-shaped prose", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "Plain prose.",
+        "*Last updated: literal one*",
+        "*Last updated: literal two*",
+        "",
+        "- Keeps prose.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace("\n\nPlain prose.", `\n\n${FRESH_HEADER}\n\nPlain prose.`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile preserves timestamp prose before a heading with a nonbreaking space", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "*Last updated: literal*",
+        "#\u00a0continued",
+        "",
+        "- Keeps heading prose.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace(
+          "\n\n*Last updated: literal*",
+          `\n\n${FRESH_HEADER}\n\n*Last updated: literal*`,
+        ),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 
 test("writeProfile recognizes whitespace-only metadata gaps", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
