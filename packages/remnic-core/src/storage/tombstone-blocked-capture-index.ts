@@ -370,6 +370,13 @@ export class TombstoneBlockedCaptureIndex {
   async withCaptureWriteLockHashes<T>(task: () => Promise<T>, identityHashes: readonly string[]): Promise<T> {
     return await this.captureWriteLock.withCaptureWriteLockHashes(task, identityHashes);
   }
+  async withCaptureWriteLockAndHashes<T>(
+    task: () => Promise<T>,
+    identity: string | readonly string[] | undefined,
+    identityHashes: readonly string[]
+  ): Promise<T> {
+    return await this.captureWriteLock.withCaptureWriteLockAndHashes(task, identity, identityHashes);
+  }
 
   private async reload(): Promise<ContentHashIndex> {
     if (!this.refreshPromise) {

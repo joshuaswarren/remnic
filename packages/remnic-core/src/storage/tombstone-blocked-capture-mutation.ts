@@ -102,38 +102,61 @@ export class TombstoneBlockedCaptureWriteLock {
   ): Promise<T> {
     const identities =
       Array.isArray(identity) && identity.length > 0 ? identity : [typeof identity === "string" ? identity : ""];
-    const current = this.context.getStore();
-    const hashToken = (key: string): string =>
-      `\u0000${key.length === 0 ? "" : createHash("sha256").update(key).digest("hex")}`;
-    const physicalMissing = current
-      ? identities.filter((key) => !current.has(key) && !current.has(hashToken(key)))
-      : identities;
-    const next = new Set(current);
-    for (const key of identities) {
-      next.add(key);
-      next.add(hashToken(key));
-    }
-    const run = () => this.context.run(next, task);
-    if (physicalMissing.length === 0) return await run();
-    return await this.withPhysicalCaptureWriteLocks(
-      run,
-      physicalMissing.map((key) => (key.length === 0 ? "" : createHash("sha256").update(key).digest("hex")))
-    );
+    return await this.withCaptureWriteLocks(task, identities, []);
   }
 
   async withCaptureWriteLockHashes<T>(
     task: () => Promise<T>,
     identityHashes: readonly string[]
   ): Promise<T> {
-    const hashes = [...new Set(identityHashes)];
+    return await this.withCaptureWriteLocks(task, [], identityHashes);
+  }
+
+  async withCaptureWriteLockAndHashes<T>(
+    task: () => Promise<T>,
+    identity: string | readonly string[] | undefined,
+    identityHashes: readonly string[]
+  ): Promise<T> {
+    const identities =
+      Array.isArray(identity) && identity.length > 0 ? identity : [typeof identity === "string" ? identity : ""];
+    return await this.withCaptureWriteLocks(task, identities, identityHashes);
+  }
+
+  private async withCaptureWriteLocks<T>(
+    task: () => Promise<T>,
+    identities: readonly string[],
+    identityHashes: readonly string[]
+  ): Promise<T> {
     const current = this.context.getStore();
-    const token = (hash: string): string => `\u0000${hash}`;
-    const missing = current ? hashes.filter((hash) => !current.has(token(hash))) : hashes;
+    const hashToken = (key: string): string =>
+      `\u0000${key.length === 0 ? "" : createHash("sha256").update(key).digest("hex")}`;
+    const identityHash = (key: string): string =>
+      key.length === 0 ? "" : createHash("sha256").update(key).digest("hex");
+    const identityKeys = [...new Set(identities)];
+    const hashes = [...new Set(identityHashes)];
+    const missingIdentityHashes = identityKeys
+      .filter((key) => !current || (!current.has(key) && !current.has(hashToken(key))))
+      .map(identityHash);
+    const missingHashes = hashes.filter((hash) => !current || !current.has(`\u0000${hash}`));
+    const physicalMissing = [...new Set([...missingIdentityHashes, ...missingHashes])];
+    if (current && physicalMissing.length > 0) {
+      const heldLockPaths = [...current]
+        .filter((token) => token.startsWith("\u0000"))
+        .map((token) => this.captureWriteLockPathForHash(token.slice(1)));
+      const requestedLockPaths = physicalMissing.map((hash) => this.captureWriteLockPathForHash(hash));
+      if (heldLockPaths.some((held) => requestedLockPaths.some((requested) => requested < held))) {
+        throw new Error(CAPTURE_WRITE_LOCK_BUSY_MESSAGE);
+      }
+    }
     const next = new Set(current);
-    for (const hash of hashes) next.add(token(hash));
+    for (const key of identityKeys) {
+      next.add(key);
+      next.add(hashToken(key));
+    }
+    for (const hash of hashes) next.add(`\u0000${hash}`);
     const run = () => this.context.run(next, task);
-    if (missing.length === 0) return await run();
-    return await this.withPhysicalCaptureWriteLocks(run, missing);
+    if (physicalMissing.length === 0) return await run();
+    return await this.withPhysicalCaptureWriteLocks(run, physicalMissing);
   }
 }
 

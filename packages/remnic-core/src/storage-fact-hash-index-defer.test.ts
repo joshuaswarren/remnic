@@ -10,6 +10,7 @@ import {
   buildExplicitCaptureDedupKey,
   TombstoneBlockedCaptureIndex,
 } from "./storage/tombstone-blocked-capture-index.js";
+import { TombstoneBlockedCaptureWriteLock } from "./storage/tombstone-blocked-capture-mutation.js";
 import type { MemoryFile } from "./types.js";
 
 // Issue #1909 (Part B): writeMemory("fact") used to rewrite the whole
@@ -27,6 +28,31 @@ async function withMemoryDir(run: (dir: string) => Promise<void>): Promise<void>
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+test("capture write locks combine streamed hashes in canonical order", async () => {
+  await withMemoryDir(async (dir) => {
+    const acquired: string[] = [];
+    const lock = new TombstoneBlockedCaptureWriteLock({
+      stateDir: dir,
+      withHeldFileLock: (async (lockPath, _options, task) => {
+        acquired.push(lockPath);
+        return await task(true, { refresh: async () => true });
+      }) as typeof import("./utils/serialize-mutations.js").withHeldFileLock,
+    });
+
+    await lock.withCaptureWriteLockAndHashes(async () => {}, "outer identity", ["0".repeat(64)]);
+
+    assert.equal(acquired.length, 2);
+    assert.deepEqual(acquired, [...acquired].sort());
+    await assert.rejects(
+      lock.withCaptureWriteLock(
+        () => lock.withCaptureWriteLockHashes(async () => {}, ["0".repeat(64)]),
+        "outer identity"
+      ),
+      /tombstone-blocked capture write lock remained busy/
+    );
+  });
+});
 
 test("deferred fact writes do NO per-fact index saves; a single flush persists all", async () => {
   await withMemoryDir(async (dir) => {
