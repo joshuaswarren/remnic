@@ -1693,6 +1693,69 @@ test("chunked offline sync reserves the incoming blocked identity before streami
   });
 });
 
+test("chunked offline sync rechecks blocked identity after buffering", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "Chunked offline sync must recheck after acquiring the identity lock.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "chunked-recheck",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const incomingFile = [
+      "---",
+      "id: incoming-sync",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${tombstoneId}`,
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      const split = Math.floor(incomingFile.length / 2);
+      yield Buffer.from(incomingFile.slice(0, split), "utf8");
+      entered.resolve();
+      await release.promise;
+      yield Buffer.from(incomingFile.slice(split), "utf8");
+    })();
+    const target = path.join(dir, "facts", "2026-01-01", "incoming.md");
+    const pending = storage.writeOfflineSyncFileChunks(target, chunks);
+    await entered.promise;
+
+    const duplicate = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(duplicate.tombstoneBlocked, true);
+    release.resolve();
+    await pending;
+
+    assert.equal(existsSync(target), false, "sync must not publish a duplicate blocked row");
+    const matches = (await storage.readAllMemories()).filter((memory) => memory.content === content);
+    assert.equal(matches.length, 1, "the explicit capture remains the sole blocked row");
+  });
+});
+
 test("chunked offline sync streams non-memory files through the host writer", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);

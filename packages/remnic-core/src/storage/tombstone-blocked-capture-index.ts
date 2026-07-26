@@ -817,7 +817,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         throw err;
       }
     };
-    if (!blocked) {
+    if (!blocked || this.captureWriteLockContext.getStore() === true) {
       await mutate();
       return;
     }
@@ -867,12 +867,41 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     const prepared = coordinate
       ? await this.prepareTombstoneBlockedOfflineSyncChunks(target, chunks)
       : { after: null, chunks };
-    await this.runTombstoneBlockedOfflineSyncMutation(
-      target,
-      prepared.after,
-      () => this.writeStorageSecureFileChunks(target, prepared.chunks),
-      coordinate
-    );
+    const incoming = this.isTombstoneBlockedMemory(prepared.after) ? prepared.after : null;
+    const incomingIdentity = incoming ? this.offlineSyncMemoryIdentity(incoming) : null;
+    const identities = [
+      ...(incomingIdentity ? [incomingIdentity] : []),
+      ...(coordinate ? [target] : []),
+      ...(coordinate && prepared.after === null ? [""] : []),
+    ];
+    const mutate = async (): Promise<void> => {
+      if (incoming) {
+        const before = await this.readMemoryByPath(target);
+        const duplicate = await this.getTombstoneBlockedCaptureIndex().has(
+          incoming.content,
+          incoming.frontmatter.category,
+          incoming.frontmatter.sourceConnector
+        );
+        if (
+          duplicate &&
+          (!this.isTombstoneBlockedMemory(before) ||
+            this.offlineSyncMemoryIdentity(before) !== incomingIdentity)
+        ) {
+          return;
+        }
+      }
+      await this.runTombstoneBlockedOfflineSyncMutation(
+        target,
+        prepared.after,
+        () => this.writeStorageSecureFileChunks(target, prepared.chunks),
+        coordinate
+      );
+    };
+    if (!coordinate) {
+      await mutate();
+      return;
+    }
+    await this.withTombstoneBlockedCaptureWriteLock(mutate, identities);
   }
 
   async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
