@@ -103,7 +103,13 @@ test("applyProactiveQuestionPass answers proactive questions into additive memor
     ],
   };
 
-  const result = await (engine as any).applyProactiveQuestionPass("conversation", base);
+  const observedSource = "Alex committed to ship the review on Friday. Alex owns the review timeline.";
+  const result = await (engine as any).applyProactiveQuestionPass(
+    "conversation",
+    base,
+    observedSource,
+    observedSource,
+  );
   assert.equal(result.facts.length, 2);
   assert.equal(result.facts[1]?.source, "proactive");
   assert.equal(result.facts[1]?.promptedByQuestion, "What deadline did they commit to?");
@@ -489,13 +495,19 @@ test("applyProactiveQuestionPass enforces a single total addition budget across 
     questions: [],
   });
 
-  const result = await (engine as any).applyProactiveQuestionPass("conversation", {
-    facts: [],
-    profileUpdates: [],
-    entities: [],
-    relationships: [],
-    questions: [],
-  });
+  const observedSource = "Alex committed to ship on Friday. The team chose the safer rollout.";
+  const result = await (engine as any).applyProactiveQuestionPass(
+    "conversation",
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      relationships: [],
+      questions: [],
+    },
+    observedSource,
+    observedSource,
+  );
 
   const totalAdditions = result.facts.length
     + result.entities.length
