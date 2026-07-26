@@ -135,6 +135,7 @@ async function readBindingFile(filePath: string): Promise<NamespaceBindingFile> 
     !parsed ||
     typeof parsed !== "object" ||
     Array.isArray(parsed) ||
+    parsed.version !== 1 ||
     !parsed.entries ||
     typeof parsed.entries !== "object" ||
     Array.isArray(parsed.entries)

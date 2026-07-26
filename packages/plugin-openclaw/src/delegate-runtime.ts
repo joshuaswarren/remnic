@@ -695,13 +695,16 @@ export function registerDelegateRuntime(
       const flushIndividually = async (): Promise<boolean> => {
         const outcomes = await Promise.allSettled(namespaces.map(flushNamespace));
         return outcomes.every(
-          (outcome) => outcome.status === "fulfilled" && outcome.value?.flushed !== false,
+          (outcome) =>
+            outcome.status === "fulfilled" &&
+            outcome.value !== null &&
+            outcome.value.flushed === true,
         );
       };
       if (namespaces.length <= 1 || (await supportsBatchFlush(remainingTimeout()))) {
         if (namespaces.length <= 1) {
           const response = await flushNamespace(namespaces[0]);
-          return response?.flushed !== false;
+          return response !== null && response.flushed === true;
         }
         try {
           const response = await postJson(
@@ -733,7 +736,7 @@ export function registerDelegateRuntime(
             invalidateCachedBatchFlushSupport();
             return flushIndividually();
           }
-          if (response.flushed === false) {
+          if (response.flushed !== true) {
             invalidateCachedBatchFlushSupport();
             return false;
           }

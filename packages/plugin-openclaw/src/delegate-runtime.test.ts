@@ -61,7 +61,7 @@ async function startDaemonStub(
   respond: (
     pathname: string,
     body: Record<string, unknown>,
-  ) => Record<string, unknown> | Promise<Record<string, unknown>>,
+  ) => Record<string, unknown> | Promise<Record<string, unknown> | null> | null,
   options: {
     batchFlush?: boolean;
     batchResponse?: boolean;
@@ -102,6 +102,7 @@ async function startDaemonStub(
                   if (requestedNamespaces === undefined || options.batchResponse === false) {
                     return { status: 200, body: response };
                   }
+                  if (response === null) return { status: 200, body: null };
                   return {
                     status: 200,
                     body: {
@@ -330,6 +331,23 @@ test("delegate flush fires on compaction, reset, and session end", async () => {
       flushes.map((call) => call.body.sessionKey),
       ["s1", "s2", "s3"],
       "each lifecycle boundary flushes its own session",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate fails closed when a singular flush response is null", async () => {
+  const stub = await startDaemonStub((pathname) =>
+    pathname === "/engram/v1/lcm/compaction/flush" ? null : { accepted: true },
+  );
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+
+    assert.equal(
+      await invoke(api, "before_compaction", {}, { sessionKey: "null-flush-session" }),
+      false,
     );
   } finally {
     await stub.close();

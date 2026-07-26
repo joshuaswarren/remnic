@@ -54,6 +54,36 @@ test("session namespace bindings reject structurally invalid files without overw
   }
 });
 
+test("session namespace bindings reject unsupported file versions without overwriting them", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
+  const filePath = path.join(directory, "session-namespace-bindings.json");
+  const updatedAt = new Date().toISOString();
+  const validEntry = { namespaces: ["team-known"], updatedAt };
+  const invalidFiles = [
+    { entries: { "versionless-session": validEntry } },
+    { version: 2, entries: { "newer-version-session": validEntry } },
+  ];
+  try {
+    for (const file of invalidFiles) {
+      const raw = JSON.stringify(file);
+      await writeFile(filePath, raw, "utf8");
+      const store = createFileSessionNamespaceBindingStore(filePath);
+
+      await assert.rejects(
+        () => store.namespacesFor("unsupported-version-session"),
+        /invalid structure/,
+      );
+      await assert.rejects(
+        () => store.remember("unsupported-version-session", "team-known"),
+        /invalid structure/,
+      );
+      assert.equal(await readFile(filePath, "utf8"), raw);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("session namespace bindings reject malformed persisted entries", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-namespace-bindings-"));
   const filePath = path.join(directory, "session-namespace-bindings.json");
