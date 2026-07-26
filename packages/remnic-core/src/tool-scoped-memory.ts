@@ -24,26 +24,33 @@
 // the template-literal delimiters used to build the patterns below.
 const BT = "`";
 
-// Generic tool/command names the issue calls out. Word-anchored so the "search"
-// inside "research" and the "read" inside "reads" do not match.
+// Generic tool names the issue calls out, plus common CLI tokens that actually
+// appear in extracted memories. Both are matched case-insensitively as known
+// tool/command names (an explicit allow-list — the bare-token SHAPE rule is NOT
+// relaxed to admit arbitrary 4+ char words).
 const GENERIC_TOOL_NAMES = ["read", "write", "search", "fetch", "browser", "exec", "shell", "memory"];
+const KNOWN_CLI_NAMES = [
+  "grep", "curl", "git", "npm", "pnpm", "sed", "awk", "jq", "cat", "ssh",
+  "docker", "kubectl", "make", "rg", "ls", "cd",
+];
 const GENERIC_NAMES_ALT = GENERIC_TOOL_NAMES.join("|");
-const GENERIC = "\\b(?:" + GENERIC_NAMES_ALT + ")\\b";
+const KNOWN_NAMES_ALT = [...GENERIC_TOOL_NAMES, ...KNOWN_CLI_NAMES].join("|");
 
-// Backticked or quoted short token. Bounded {1,60} keeps the match linear
-// (CodeQL js/polynomial-redos — see source-attribution.ts for the house
-// pattern): no unbounded `+` over hostile text, no overlapping quantifier.
+// Quoted/backticked identifier — contents must be TOKEN-LIKE (no whitespace,
+// identifier-shaped) so a quoted multi-word phrase ("least privilege",
+// "database migrations") reads as prose, not a tool. Bounded {1,60} keeps the
+// match linear (CodeQL js/polynomial-redos — see source-attribution.ts).
+const IDENT_CHARS = "[A-Za-z0-9_./-]";
 const QUOTED_TOKEN =
-  "(?:" + BT + "[^" + BT + "\\n]{1,60}" + BT + "|\"[^\"\\n]{1,60}\"|'[^'\\n]{1,60}')";
+  "(?:" + BT + "(?:" + IDENT_CHARS + "{1,60})" + BT + "|\"(?:" + IDENT_CHARS + "{1,60})\"|'(?:" + IDENT_CHARS + "{1,60})')";
 
 // Tool/command keywords, word-anchored so "tooling"/"commander"/"commanded" do
 // not match on the `tool`/`command` prefix.
 const KEYWORD = "\\b(?:mcp[ _]tool|slash[ _]command|cli[ _]flag|subcommand|tool|command)\\b";
 
-// Identifier admitted next to a keyword: a quoted/backticked token or a generic
-// tool name (both anchored). Bare words are NOT admitted — "research tool",
-// "marketing command" are ordinary prose, not tool refs.
-const IDENT = "(?:" + QUOTED_TOKEN + "|" + GENERIC + ")";
+// Identifier admitted next to a keyword: a token-like quoted identifier or a
+// generic tool name (both anchored). Bare words are NOT admitted here.
+const IDENT = "(?:" + QUOTED_TOKEN + "|" + "\\b(?:" + GENERIC_NAMES_ALT + ")\\b" + ")";
 
 // Immediate adjacency: identifier and keyword separated only by a short run of
 // whitespace/quotes/backticks. Bounded {1,4} — no unbounded quantifier.
@@ -51,41 +58,57 @@ const IMM = "[\\s'\"" + BT + "]{1,4}";
 // Explicit named/called/aka connective (longer reach, identifier on the far side).
 const CONN = "\\s+(?:named|called|aka)\\s+";
 
-// Imperative invocation: use/run/call/invoke immediately followed by a tool
-// identifier. A quoted/backticked identifier is unambiguous on its own ("Use
-// `search`", "Run `rg`"). A tool-like bare identifier (see BARE_LIKE) or generic name — or a slash
-// command naming a generic tool ("/search") — is only admitted when a clause
-// boundary follows (end, punctuation, or a preposition/subordinator), so prose
-// continuations into a noun phrase do not fire: "search **when**" and
-// "memory_store **to**" match, but "search **engines**" and "memory **and**"
-// do not. A slash token is restricted to a generic tool name so absolute paths
-// ("/etc/remnic/config.json", "/health") never qualify.
+// Imperative invocation verb and the clause boundary that must follow a bare
+// identifier (end, punctuation, or a preposition/subordinator).
 const VERB = "\\b(?:use|run|call|invoke)\\b";
-// Bare tool-like identifier: snake_case/kebab-case, or a short all-lowercase
-// token (<=3 chars). Word-bounded so the short form does not match a prefix
-// of a longer word ("rgba"). Capitalised product names and plain nouns do
-// not qualify — only tool-like tokens reach the clause-boundary test.
-const BARE_LIKE = "(?:(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+)|(?:[a-z]{1,3}))\\b";
-const SLASH_GENERIC = "/(?:" + GENERIC_NAMES_ALT + ")\\b";
 const CLAUSE_BOUNDARY = "(?:$|[.,;:]|(?:when|before|after|to|with|for|on|in|if|unless|whenever)\\b)";
-const INVOCATION_IDENT_PLAIN = "(?:" + GENERIC + "|" + BARE_LIKE + "|" + SLASH_GENERIC + ")";
-const INVOCATION =
-  VERB + "\\s+(?:" + QUOTED_TOKEN + "|" + INVOCATION_IDENT_PLAIN + "(?=\\s*" + CLAUSE_BOUNDARY + "))";
 
-const TOOL_REFERENCE = new RegExp(
+// Build a case-insensitive alternation WITHOUT the /i flag, so it can live in a
+// case-sensitive regex (the short-bare-token branch below must stay lowercase-
+// only — a blanket /i would let it match capitalised tech names like SQL/API/Go).
+function caseInsensitiveAlt(words: string[]): string {
+  return "(?:" + words
+    .map((w) => w.split("").map((c) => `[${c.toLowerCase()}${c.toUpperCase()}]`).join(""))
+    .join("|") + ")";
+}
+
+// Case-INSENSITIVE invocation: verb + (token-like quoted identifier | known
+// tool/CLI name | slash command naming a generic tool) + clause boundary.
+const KNOWN_NAMES_CI = "\\b(?:" + KNOWN_NAMES_ALT + ")\\b";
+const SLASH_GENERIC = "/(?:" + GENERIC_NAMES_ALT + ")\\b";
+const INVOCATION_CI =
+  VERB + "\\s+(?:" + QUOTED_TOKEN + "|" + KNOWN_NAMES_CI + "|" + SLASH_GENERIC + ")(?=\\s*" + CLAUSE_BOUNDARY + ")";
+
+const TOOL_REFERENCE_CI = new RegExp(
   "(?:" +
     IDENT + IMM + KEYWORD + "|" + KEYWORD + IMM + IDENT + "|" +
     KEYWORD + CONN + IDENT + "|" + IDENT + CONN + KEYWORD + "|" +
-    INVOCATION +
+    INVOCATION_CI +
   ")",
   "i",
 );
 
+// Case-SENSITIVE bare invocation: a bare identifier that is tool-LIKE —
+// snake_case/kebab-case, or a short all-lowercase token (<=3 chars). The verb
+// and clause boundary are matched case-insensitively via character classes; the
+// IDENTIFIER itself is lowercase-only, so capitalised product/tech names do not
+// qualify. This is split from TOOL_REFERENCE_CI because a single /i flag would
+// defeat the lowercase discriminator.
+const VERB_CS = "\\b" + caseInsensitiveAlt(["use", "run", "call", "invoke"]) + "\\b";
+const CLAUSE_BOUNDARY_CS =
+  "(?:$|[.,;:]|" + caseInsensitiveAlt([
+    "when", "before", "after", "to", "with", "for", "on", "in", "if", "unless", "whenever",
+  ]) + "\\b)";
+const BARE_LIKE = "(?:(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+)|(?:[a-z]{1,3}))\\b";
+const SHORT_BARE_INVOCATION_CS = new RegExp(
+  VERB_CS + "\\s+" + BARE_LIKE + "(?=\\s*" + CLAUSE_BOUNDARY_CS + ")",
+);
+
 /**
  * Returns true when `content` references a specific tool or command invocation
- * (e.g. "use the search tool", "the `read` tool", "Use search when locating
- * code", "Run `rg` before editing", "Use /search with a path") rather than
- * portable, agent-agnostic knowledge.
+ * (e.g. "use the search tool", "the `read` tool", "Use search when…",
+ * "Run `rg` before editing", "Run grep before editing", "Use curl to fetch",
+ * "Use /search with a path") rather than portable, agent-agnostic knowledge.
  *
  * Pure and dependency-free. Biased toward detection: a false positive only
  * narrows the namespace (safe default), while a false negative is the
@@ -93,7 +116,7 @@ const TOOL_REFERENCE = new RegExp(
  */
 export function referencesAgentSpecificTool(content: string): boolean {
   if (typeof content !== "string" || content.length === 0) return false;
-  return TOOL_REFERENCE.test(content);
+  return TOOL_REFERENCE_CI.test(content) || SHORT_BARE_INVOCATION_CS.test(content);
 }
 
 export interface ToolScopeWithholdInputs {

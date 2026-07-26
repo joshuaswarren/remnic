@@ -50,6 +50,8 @@ const EXTRA_POSITIVE: string[] = [
   "Use search when locating implementation",
   "Run rg before editing",
   "Call memory_store to persist the result",
+  "Run grep before editing",
+  "Use curl to fetch the URL",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {
@@ -81,6 +83,11 @@ const EXTRA_NEGATIVE: string[] = [
   "Use TypeScript in new packages",
   "Run migrations after deployment",
   "Use Redis for caching",
+  "Use 'least privilege' when designing authorization",
+  'Run "database migrations" after deployment',
+  "Use SQL for analytics",
+  "Use API for integration",
+  "Use Go for backend services",
 ];
 for (const content of EXTRA_NEGATIVE) {
   test(`referencesAgentSpecificTool ignores prose: "${content.slice(0, 44)}…"`, () => {
