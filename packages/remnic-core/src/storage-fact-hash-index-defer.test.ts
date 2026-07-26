@@ -11,6 +11,7 @@ import {
   TombstoneBlockedCaptureIndex,
 } from "./storage/tombstone-blocked-capture-index.js";
 import { TombstoneBlockedCaptureWriteLock } from "./storage/tombstone-blocked-capture-mutation.js";
+import { isEncryptedFile } from "./secure-store/secure-fs.js";
 import type { MemoryFile } from "./types.js";
 
 // Issue #1909 (Part B): writeMemory("fact") used to rewrite the whole
@@ -2233,6 +2234,81 @@ test("chunked offline sync reserves the incoming blocked identity before streami
     await held;
     await pending;
     assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"), true);
+  });
+});
+
+test("chunked offline sync encrypts oversized staging files when secure storage is enabled", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setSecureStoreKey(Buffer.alloc(32, 7));
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = `Oversized encrypted staging content ${"x".repeat(1_048_576)}`;
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "encrypted-staging-memory",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory);
+
+    const incomingFile = [
+      "---",
+      `id: ${memory.frontmatter.id}`,
+      "category: fact",
+      `created: ${memory.frontmatter.created}`,
+      `updated: ${new Date(Date.now() + 1_000).toISOString()}`,
+      `source: ${memory.frontmatter.source}`,
+      `confidence: ${memory.frontmatter.confidence}`,
+      `confidenceTier: ${memory.frontmatter.confidenceTier}`,
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${memory.frontmatter.blockedBy}`,
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n");
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (let offset = 0; offset < incomingFile.length; offset += 32 * 1024) {
+        yield Buffer.from(incomingFile.slice(offset, offset + 32 * 1024), "utf8");
+      }
+    })();
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const releaseState = Promise.withResolvers<void>();
+    const enteredState = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      enteredState.resolve();
+      await releaseState.promise;
+    }, identity);
+    await enteredState.promise;
+
+    const pending = storage.writeOfflineSyncFileChunks(memory.path, chunks);
+    const stagingDir = path.join(dir, "state", "tombstone-blocked-capture", "offline-sync-staging");
+    let stagePath: string | undefined;
+    for (let attempt = 0; attempt < 20 && stagePath === undefined; attempt += 1) {
+      const entries = await readdir(stagingDir).catch(() => []);
+      if (entries.length > 0) stagePath = path.join(stagingDir, entries[0]);
+      else await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(stagePath, "oversized sync must create a staging file before waiting for its lock");
+    assert.equal(isEncryptedFile(await readFile(stagePath)), true);
+    releaseState.resolve();
+    await held;
+    await pending;
   });
 });
 

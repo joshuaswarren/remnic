@@ -1,12 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open as openFile, unlink } from "node:fs/promises";
+import { unlink } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
+import {
+  readMaybeEncryptedFileFromChunks,
+  writeMaybeEncryptedFileFromChunks,
+} from "../secure-store/secure-fs.js";
 import {
   buildExplicitCaptureDedupKey,
   captureIdentityHash,
@@ -71,25 +74,24 @@ function createExplicitContentNormalizer(onChunk: (chunk: string) => void): {
 async function forEachStagedTextChunk(
   stagePath: string,
   offset: number,
-  onText: (text: string) => void
+  onText: (text: string) => void,
+  key: Buffer | null,
+  memoryDir: string
 ): Promise<void> {
-  const handle = await openFile(stagePath, "r");
-  const buffer = Buffer.alloc(OFFLINE_SYNC_STAGE_READ_BYTES);
   const decoder = new TextDecoder("utf-8");
-  let position = offset;
-  try {
-    for (;;) {
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
-      if (bytesRead === 0) break;
-      position += bytesRead;
-      const text = decoder.decode(buffer.subarray(0, bytesRead), { stream: true });
-      if (text.length > 0) onText(text);
-    }
-    const finalText = decoder.decode();
-    if (finalText.length > 0) onText(finalText);
-  } finally {
-    await handle.close();
+  let remaining = offset;
+  for await (const chunk of readMaybeEncryptedFileFromChunks(stagePath, key, memoryDir)) {
+    const textChunk =
+      remaining >= chunk.length
+        ? null
+        : chunk.subarray(remaining);
+    remaining = Math.max(0, remaining - chunk.length);
+    if (textChunk === null || textChunk.length === 0) continue;
+    const text = decoder.decode(textChunk, { stream: true });
+    if (text.length > 0) onText(text);
   }
+  const finalText = decoder.decode();
+  if (finalText.length > 0) onText(finalText);
 }
 
 export type OfflineSyncMemoryParser = (filePath: string, content: Buffer) => MemoryFile | null;
@@ -596,44 +598,19 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     const iterator = chunks[Symbol.asyncIterator]();
     const buffered: Buffer[] = [];
     let bufferedBytes = 0;
-    let stagePath: string | undefined;
-    let stageHandle: Awaited<ReturnType<typeof openFile>> | null = null;
-    const writeStageChunk = async (chunk: Buffer): Promise<void> => {
-      if (stageHandle === null) {
-        const stageDir = path.join(
-          this.tombstoneBlockedCaptureIndexOptions().stateDir,
-          "tombstone-blocked-capture",
-          "offline-sync-staging"
-        );
-        await mkdir(stageDir, { recursive: true });
-        stagePath = path.join(stageDir, `${randomUUID()}.stage`);
-        stageHandle = await openFile(stagePath, "w", 0o600);
-        for (const prior of buffered) await stageHandle.write(prior);
-        buffered.length = 0;
+    let firstOverflow: Buffer | undefined;
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) break;
+      if (bufferedBytes + next.value.length > OFFLINE_SYNC_BUFFER_LIMIT_BYTES) {
+        firstOverflow = next.value;
+        break;
       }
-      await stageHandle.write(chunk);
-    };
-
-    try {
-      for (;;) {
-        const next = await iterator.next();
-        if (next.done) break;
-        bufferedBytes += next.value.length;
-        if (stageHandle !== null || bufferedBytes > OFFLINE_SYNC_BUFFER_LIMIT_BYTES) {
-          await writeStageChunk(next.value);
-        } else {
-          buffered.push(next.value);
-        }
-      }
-    } catch (err) {
-      const failedStageHandle = stageHandle as Awaited<ReturnType<typeof openFile>> | null;
-      if (failedStageHandle !== null) await failedStageHandle.close().catch(() => {});
-      if (stagePath !== undefined) await unlink(stagePath).catch(() => {});
-      throw err;
+      bufferedBytes += next.value.length;
+      buffered.push(next.value);
     }
-    const completedStageHandle = stageHandle as Awaited<ReturnType<typeof openFile>> | null;
-    if (completedStageHandle !== null) await completedStageHandle.close();
-    if (stagePath === undefined) {
+    const overflow = firstOverflow;
+    if (overflow === undefined) {
       let after: MemoryFile | null = null;
       try {
         after = parseMemory(target, Buffer.concat(buffered));
@@ -645,7 +622,31 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       })();
       return { after, chunks: replay };
     }
+
+    const options = this.tombstoneBlockedCaptureIndexOptions();
+    const stagePath = path.join(
+      options.stateDir,
+      "tombstone-blocked-capture",
+      "offline-sync-staging",
+      `${randomUUID()}.stage`
+    );
+    const stagedChunks = (async function* (): AsyncIterable<Buffer> {
+      for (const chunk of buffered) yield chunk;
+      yield overflow;
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) break;
+        yield next.value;
+      }
+    })();
     try {
+      await writeMaybeEncryptedFileFromChunks(
+        stagePath,
+        stagedChunks,
+        options.secureStoreWriteKeyProvider(),
+        { atomic: false },
+        options.memoryDir
+      );
       return await this.describeStagedOfflineSyncChunks(target, stagePath, parseMemory);
     } catch (err) {
       await unlink(stagePath).catch(() => {});
@@ -658,16 +659,22 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     stagePath: string,
     parseMemory: OfflineSyncMemoryParser
   ): Promise<PreparedOfflineSyncChunks> {
-    const handle = await openFile(stagePath, "r");
-    const prefix = Buffer.alloc(OFFLINE_SYNC_FRONTMATTER_LIMIT_BYTES);
-    let bytesRead = 0;
-    try {
-      ({ bytesRead } = await handle.read(prefix, 0, prefix.length, 0));
-    } finally {
-      await handle.close();
+    const options = this.tombstoneBlockedCaptureIndexOptions();
+    const prefixChunks: Buffer[] = [];
+    let prefixBytes = 0;
+    for await (const chunk of readMaybeEncryptedFileFromChunks(
+      stagePath,
+      options.secureStoreKeyProvider(),
+      options.memoryDir
+    )) {
+      const length = Math.min(chunk.length, OFFLINE_SYNC_FRONTMATTER_LIMIT_BYTES - prefixBytes);
+      if (length > 0) prefixChunks.push(chunk.subarray(0, length));
+      prefixBytes += length;
+      if (prefixBytes >= OFFLINE_SYNC_FRONTMATTER_LIMIT_BYTES) break;
     }
+    const prefix = Buffer.concat(prefixChunks, prefixBytes);
     const delimiter = Buffer.from("\n---\n", "utf8");
-    const delimiterStart = prefix.subarray(0, bytesRead).indexOf(delimiter, 4);
+    const delimiterStart = prefix.indexOf(delimiter, 4);
     if (delimiterStart < 0) {
       return { after: null, chunks: this.readStagedOfflineSyncChunks(stagePath), stagePath };
     }
@@ -699,7 +706,15 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     const countNormalizer = createExplicitContentNormalizer((chunk) => {
       normalizedLength += chunk.length;
     });
-    await forEachStagedTextChunk(stagePath, bodyOffset, (text) => countNormalizer.push(text));
+    const options = this.tombstoneBlockedCaptureIndexOptions();
+    const key = options.secureStoreKeyProvider();
+    await forEachStagedTextChunk(
+      stagePath,
+      bodyOffset,
+      (text) => countNormalizer.push(text),
+      key,
+      options.memoryDir
+    );
     countNormalizer.finish();
 
     const category = after.frontmatter.category;
@@ -710,7 +725,13 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     const identityHash = createHash("sha256");
     identityHash.update(identityPrefix);
     const identityNormalizer = createExplicitContentNormalizer((chunk) => identityHash.update(chunk));
-    await forEachStagedTextChunk(stagePath, bodyOffset, (text) => identityNormalizer.push(text));
+    await forEachStagedTextChunk(
+      stagePath,
+      bodyOffset,
+      (text) => identityNormalizer.push(text),
+      key,
+      options.memoryDir
+    );
     identityNormalizer.finish();
     return {
       identityHash: identityHash.digest("hex"),
@@ -718,16 +739,13 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   }
 
   private async *readStagedOfflineSyncChunks(stagePath: string): AsyncIterable<Buffer> {
-    const handle = await openFile(stagePath, "r");
-    const buffer = Buffer.alloc(OFFLINE_SYNC_STAGE_READ_BYTES);
-    try {
-      for (;;) {
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
-        if (bytesRead === 0) break;
-        yield Buffer.from(buffer.subarray(0, bytesRead));
-      }
-    } finally {
-      await handle.close();
+    const options = this.tombstoneBlockedCaptureIndexOptions();
+    for await (const chunk of readMaybeEncryptedFileFromChunks(
+      stagePath,
+      options.secureStoreKeyProvider(),
+      options.memoryDir
+    )) {
+      yield chunk;
     }
   }
 
