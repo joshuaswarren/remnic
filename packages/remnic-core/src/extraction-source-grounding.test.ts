@@ -2002,3 +2002,84 @@ test("grounding keeps unresolved questions when only context answers them", () =
     priority: 0.5,
   }]);
 });
+
+test("grounding aligns supported facts after leading modifiers", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice runs Redis.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Currently, Alice is running Redis.",
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["Alice runs Redis."]);
+});
+
+test("grounding binds structured attributes to the fact support span", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice deployed Acme successfully.",
+        confidence: 0.9,
+        tags: [],
+        structuredAttributes: { status: "failed" },
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice deployed Acme successfully. Bob reported status: failed.",
+  );
+
+  assert.equal(result.facts[0]?.structuredAttributes, undefined);
+});
+
+test("grounding binds fact entity references to the fact support span", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice deployed Acme.",
+        confidence: 0.9,
+        tags: [],
+        entityRef: "person-bob",
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice deployed Acme. Bob joined the meeting.",
+  );
+
+  assert.equal(result.facts[0]?.entityRef, undefined);
+});
+
+test("grounding preserves paraphrased conjunctions across source clauses", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme but does not work at Globex.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice worked at Acme but did not work at Globex.",
+  );
+
+  assert.deepEqual(
+    result.facts.map((fact) => fact.content),
+    ["Alice works at Acme but does not work at Globex."],
+  );
+});

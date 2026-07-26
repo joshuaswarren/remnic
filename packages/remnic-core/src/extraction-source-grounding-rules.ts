@@ -173,27 +173,49 @@ function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): b
     return hasCopularPredicateEvidence(candidate, source);
   }
 
-  const subjectAligned = areGroundingTokensCompatible(candidateTokens[0]!, sourceTokens[0]!);
+  const candidateSubject = candidateTokens[0];
+  if (candidateSubject === undefined) return false;
   const hasCorrectionReordering = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
     && /\b(?:not|rather\s+than|instead\s+of)\b/iu.test(source);
-  let foundAlignedToken = false;
-  const sharedLength = Math.min(candidateTokens.length, sourceTokens.length);
-  for (let index = 1; index < sharedLength; index += 1) {
-    if (!areGroundingTokensCompatible(candidateTokens[index]!, sourceTokens[index]!)) continue;
-    foundAlignedToken = true;
-    const candidateNext = candidateTokens[index + 1];
-    const sourceNext = sourceTokens[index + 1];
+  for (let sourceSubjectIndex = 0; sourceSubjectIndex < sourceTokens.length; sourceSubjectIndex += 1) {
+    if (!areGroundingTokensCompatible(candidateSubject, sourceTokens[sourceSubjectIndex]!)) continue;
+    let foundAlignedToken = false;
+    let aligned = true;
+    const sharedLength = Math.min(
+      candidateTokens.length,
+      sourceTokens.length - sourceSubjectIndex,
+    );
+    for (let candidateIndex = 1; candidateIndex < sharedLength; candidateIndex += 1) {
+      if (
+        !areGroundingTokensCompatible(
+          candidateTokens[candidateIndex]!,
+          sourceTokens[sourceSubjectIndex + candidateIndex]!,
+        )
+      ) continue;
+      foundAlignedToken = true;
+      const candidateNext = candidateTokens[candidateIndex + 1];
+      const sourceNext = sourceTokens[sourceSubjectIndex + candidateIndex + 1];
+      if (
+        candidateNext !== undefined
+        && sourceNext !== undefined
+        && !areGroundingTokensCompatible(candidateNext, sourceNext)
+      ) {
+        aligned = false;
+        break;
+      }
+    }
     if (
-      candidateNext !== undefined
-      && sourceNext !== undefined
-      && !areGroundingTokensCompatible(candidateNext, sourceNext)
+      aligned
+      && (areGroundingTokensCompatible(
+        candidateTokens[1]!,
+        sourceTokens[sourceSubjectIndex + 1]!,
+      ) || hasCorrectionReordering)
+      && foundAlignedToken
     ) {
-      return false;
+      return true;
     }
   }
-  return subjectAligned
-    && (areGroundingTokensCompatible(candidateTokens[1]!, sourceTokens[1]!) || hasCorrectionReordering)
-    && foundAlignedToken;
+  return false;
 }
 
 function groundedTokenScore(
@@ -253,19 +275,29 @@ function isSourceGroundedClause(
       }
       continue;
     }
-    if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence)) continue;
     const sentenceText = normalizeForExactMatch(sentence);
-    if (containsExactTokenSequence(candidate, sentenceText)) {
-      if (!hasContradictoryPolarity(candidate, sentence)) return true;
-      bestContradictedScore = Math.max(bestContradictedScore, 1);
+    const isExplanatoryLabel = sentenceText.startsWith(`${normalizeForExactMatch(candidate)}:`)
+      && !sentence.trim().endsWith("?");
+    if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence) && !isExplanatoryLabel) {
       continue;
     }
-    const score = groundedTokenScore(candidate, sentence, !includeInterrogativeSource);
-    if (score === 0) continue;
-    if (hasContradictoryPolarity(candidate, sentence)) {
-      bestContradictedScore = Math.max(bestContradictedScore, score);
-    } else {
-      bestSupportedScore = Math.max(bestSupportedScore, score);
+    const sourceSpans = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
+      ? [sentence]
+      : splitGroundingClauses([sentence]);
+    for (const sourceSpan of sourceSpans) {
+      const sourceSpanText = normalizeForExactMatch(sourceSpan);
+      if (containsExactTokenSequence(candidate, sourceSpanText)) {
+        if (!hasContradictoryPolarity(candidate, sourceSpan)) return true;
+        bestContradictedScore = Math.max(bestContradictedScore, 1);
+        continue;
+      }
+      const score = groundedTokenScore(candidate, sourceSpan, !includeInterrogativeSource);
+      if (score === 0) continue;
+      if (hasContradictoryPolarity(candidate, sourceSpan)) {
+        bestContradictedScore = Math.max(bestContradictedScore, score);
+      } else {
+        bestSupportedScore = Math.max(bestSupportedScore, score);
+      }
     }
   }
   return bestSupportedScore > bestContradictedScore;
@@ -289,11 +321,9 @@ function isSourceGrounded(
   if (hasSupportedExactMatch) return true;
 
   const clauses = candidateClauses(candidateText);
-  if (
-    clauses.length > 1
-    && clauses.some((clause) => !isSourceGroundedClause(clause, sourceText, includeInterrogativeSource))
-  ) {
-    return false;
+  if (clauses.length > 1) {
+    return clauses.every((clause) =>
+      isSourceGroundedClause(clause, sourceText, includeInterrogativeSource));
   }
   return isSourceGroundedClause(candidateText, sourceText, includeInterrogativeSource);
 }
@@ -343,12 +373,17 @@ function hasGroundingAnchor(
 ): boolean {
   return sourceSentences(assertionSource).some((sentence) => {
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence)) return false;
-    const exactMatch = containsExactTokenSequence(candidate, sentence)
-      && !hasContradictoryPolarity(candidate, sentence);
-    if (exactMatch) return true;
-    if (requirePredicateSupport && !hasGroundedPredicateAnchor(candidate, sentence)) return false;
-    return groundedTokenScore(candidate, sentence) > 0
-      || hasRoleNormalizedGrounding(candidate, sentence);
+    const sourceSpans = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
+      ? [sentence]
+      : splitGroundingClauses([sentence]);
+    return sourceSpans.some((sourceSpan) => {
+      const exactMatch = containsExactTokenSequence(candidate, sourceSpan)
+        && !hasContradictoryPolarity(candidate, sourceSpan);
+      if (exactMatch) return true;
+      if (requirePredicateSupport && !hasGroundedPredicateAnchor(candidate, sourceSpan)) return false;
+      return groundedTokenScore(candidate, sourceSpan) > 0
+        || hasRoleNormalizedGrounding(candidate, sourceSpan);
+    });
   });
 }
 
@@ -507,6 +542,34 @@ function isGroundedCandidate(
     );
 }
 
+function buildFactSupportSource(
+  source: string,
+  supportingSentences: ReadonlyArray<string>,
+): string {
+  const sentences = sourceSentences(source);
+  const selectedIndices = new Set<number>();
+  for (const supportingSentence of supportingSentences) {
+    const supportIndex = sentences.indexOf(supportingSentence);
+    if (supportIndex < 0) continue;
+    let endIndex = supportIndex;
+    while (
+      endIndex < sentences.length - 1
+      && sentences[endIndex]!.trimEnd().endsWith(";")
+      && /^(?:its|their|this|that|these|those)\b/iu.test(
+        sentences[endIndex + 1]!.trimStart(),
+      )
+    ) {
+      endIndex += 1;
+    }
+    for (let index = supportIndex; index <= endIndex; index += 1) {
+      selectedIndices.add(index);
+    }
+  }
+  return [...selectedIndices]
+    .sort((left, right) => left - right)
+    .map((index) => sentences[index]!)
+    .join(" ");
+}
 function filterGroundedFact(
   fact: ExtractionResult["facts"][number],
   source: string,
@@ -555,28 +618,22 @@ function filterGroundedFact(
     ? factContext.assertionSource
     : undefined;
 
+  const factSupportSource = buildFactSupportSource(
+    factContext.assertionSource ?? factContext.source,
+    factSupportingSentences,
+  );
   const groundedAttributes = fact.structuredAttributes
     ? Object.fromEntries(
       Object.entries(fact.structuredAttributes)
-        .filter(([key, value]) => {
-          const attribute = `${key}: ${value}`;
-          const attributeContext = selectGroundingContext(
-            attribute,
-            resolveGroundingContext(
-              attribute,
-              source,
-              assertionSource,
-              roleAssertionSources,
-            ),
-          );
-          return isGroundedCandidate(
-            attribute,
-            attributeContext.source,
-            attributeContext.assertionSource,
+        .filter(([key, value]) =>
+          isGroundedCandidate(
+            `${key}: ${value}`,
+            factSupportSource,
+            undefined,
             false,
-            attributeContext.allowRoleNormalization,
-          );
-        }),
+            factContext.allowRoleNormalization,
+          ),
+        ),
     )
     : undefined;
   const procedureGroundingSource = factContext.assertionSource ?? factContext.source;
@@ -640,9 +697,8 @@ function filterGroundedFact(
     && isGroundedCandidate(groundedFactEventTime, eventTimeSource, eventTimeAssertionSource)
     ? factEventTime
     : undefined;
-  const entityRefSource = factContext.assertionSource ?? factContext.source;
   const groundedEntityRef = fact.entityRef !== undefined
-    && isGroundedEntityName(fact.entityRef, entityRefSource)
+    && isGroundedEntityName(fact.entityRef, factSupportSource)
     ? fact.entityRef
     : undefined;
   const {
