@@ -34,6 +34,10 @@ import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
+import {
+  runLegacyEntityCanonicalIdMigration,
+  type EntityCanonicalIdMigrationHost,
+} from "./storage/entity-canonical-id-migration-adapter.js";
 import { EntityCanonicalIdMigrationRunner } from "./storage/entity-canonical-id-migration-runner.js";
 export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
@@ -195,10 +199,6 @@ import {
   readProjectedMemoryTimeline,
   updateProjectedMemoryPath,
 } from "./memory-projection-store.js";
-import {
-  rewriteProjectedEntityReferences,
-  rewriteProjectedMemoryEntityReference,
-} from "./memory-projection-mutations.js";
 import {
   inferMemoryStatus,
   isArchivedMemoryPath,
@@ -3616,36 +3616,13 @@ export class StorageManager {
     }
   }
 
-  private async runLegacyEntityCanonicalIdMigration(): Promise<string> {
-    const readMigrationFingerprint = () =>
-      entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => this.getCorpusScanVersion());
-    const completionFingerprint = await entityMigration.migrateLegacyEntityCanonicalIds({
-      stateDir: this.stateDir, entitiesDir: this.entitiesDir,
-      normalizeEntityName: this.normalizeEntityName.bind(this),
-      resolveEntityFilePath: this.resolveEntityFilePath.bind(this),
-      readStorageSecureFile: this.readStorageSecureFile.bind(this),
-      writeStorageSecureFile: this.writeStorageSecureFile.bind(this),
-      isEncryptedStorageFile: this.isEncryptedFileHeader.bind(this),
-      snapshotBeforeWrite: this.snapshotBeforeWrite.bind(this),
-      parseEntityFile: (content) => parseEntityFile(content, this.entitySchemas),
-      serializeEntityFile: (entity) => serializeEntityFile(entity, this.entitySchemas),
-      serializeMemoryWithEntityRef: (memory, entityRef) =>
-        `${serializeFrontmatter({ ...memory.frontmatter, entityRef })}\n\n${memory.content}\n`,
-      readMemoryByPath: this.readMemoryByPath.bind(this), readAllMemories: this.readAllMemories.bind(this),
-      readAllColdMemories: this.readAllColdMemories.bind(this),
-      readArchivedMemories: this.readArchivedMemories.bind(this),
-      validateMemoryScanRoots: () =>
-        entityMigration.validateRoots(this.baseDir, this.entitiesDir, this.stateDir, this.archiveDir),
-      rewriteProjectedEntityReferences: (mappings) => rewriteProjectedEntityReferences(this.baseDir, mappings),
-      rewriteProjectedMemoryEntityReference: (memoryId, previousEntityRef, nextEntityRef) =>
-        rewriteProjectedMemoryEntityReference(this.baseDir, memoryId, previousEntityRef, nextEntityRef),
-      invalidateKnowledgeIndexCache: this.invalidateKnowledgeIndexCache.bind(this),
-      invalidateAllMemoriesCache: this.invalidateAllMemoriesCache.bind(this),
-      invalidateColdMemoriesCache: this.invalidateColdMemoriesCache.bind(this),
-      bumpMemoryStatusVersion: this.bumpMemoryStatusVersion.bind(this),
-      readMigrationFingerprint,
-    });
-    return completionFingerprint ?? readMigrationFingerprint();
+  private runLegacyEntityCanonicalIdMigration(): Promise<string> {
+    return runLegacyEntityCanonicalIdMigration(
+      this as unknown as EntityCanonicalIdMigrationHost,
+      (content) => parseEntityFile(content, this.entitySchemas),
+      (entity) => serializeEntityFile(entity, this.entitySchemas),
+      (memory, entityRef) => `${serializeFrontmatter({ ...memory.frontmatter, entityRef })}\n\n${memory.content}\n`,
+    );
   }
 
   async ensureDirectories(): Promise<void> {
