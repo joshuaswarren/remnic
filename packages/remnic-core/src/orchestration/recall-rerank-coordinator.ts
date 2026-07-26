@@ -388,11 +388,12 @@ export class RecallRerankCoordinator {
     // Cold-tier direct-fallback reader: resolve once, reuse for every missing
     // candidate (mirrors the memory-worth filter's reader selection).
     let fallbackReader: StorageManager | null = null;
-    // Issue #2183 — capture the persisted sourceConnector from the SAME
-    // frontmatter this stage already loads (preloaded map + direct-read
-    // callback), keyed by the composite trustResultKey so same-path memories
-    // in different namespaces stay distinct. No new I/O, no effect on
-    // TrustSignals: only a field read off objects already materialized.
+    // Issue #2183 — capture the persisted sourceConnector from frontmatter this
+    // stage materialises at EVERY point (preloaded map, direct-read callback,
+    // and the corpus scan), keyed by the composite trustResultKey so same-path
+    // memories in different namespaces stay distinct. No new I/O, no effect on
+    // TrustSignals: only a field read off objects already materialised, via one
+    // shared recordConnector so any future frontmatter source captures for free.
     const connectorByPath = new Map<string, string>();
     this.seedConnectorsFromPreloaded(connectorByPath, results, preloadedFrontmatter);
     const recordConnector = (key: string, connector: string | undefined) => {
@@ -410,7 +411,26 @@ export class RecallRerankCoordinator {
       })),
       namespaces,
       {
-        readNamespaceMemories: async (ns) => (await this.getStorage(ns)).readAllMemories(),
+        readNamespaceMemories: async (ns) => {
+          // Issue #2183 — capture sourceConnector from the SAME corpus memories
+          // this scan materialises (composite-keyed by result identity), so the
+          // trust corpus-scan path surfaces labels too — not only the preloaded
+          // map and direct-read callback. No new I/O; same recordConnector.
+          const memories = await (await this.getStorage(ns)).readAllMemories();
+          if (memories.length > 0) {
+            const connectorByPathNS = new Map<string, string | undefined>();
+            for (const m of memories) {
+              if (m.frontmatter.sourceConnector) {
+                connectorByPathNS.set(m.path, m.frontmatter.sourceConnector);
+              }
+            }
+            for (const r of results) {
+              if (r.namespace !== undefined && r.namespace !== ns) continue;
+              recordConnector(trustResultKey(r), connectorByPathNS.get(r.path));
+            }
+          }
+          return memories;
+        },
         readMemoryFrontmatter: async (path, preferredNamespace) => {
           if (!fallbackReader) {
             for (const ns of namespaces) {

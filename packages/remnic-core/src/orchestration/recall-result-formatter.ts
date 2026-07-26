@@ -30,6 +30,7 @@ import type { VerifiedEpisodeResult } from "../verified-recall.js";
 import type { VerifiedSemanticRuleResult } from "../semantic-rule-verifier.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
 import { trustResultFor, trustResultKey, type TrustStageResultItem } from "../trust-score-stage.js";
+import { CONNECTOR_ID_PATTERN } from "../connectors/index.js";
 import type {
   ContinuityIncidentRecord,
   IdentityInjectionMode,
@@ -39,14 +40,21 @@ import type {
 } from "../types.js";
 
 /**
- * Issue #2183 — strict allow-list for the `[agent: <connector>]` label. The
- * connector is rendered into model-visible recall context, so a malformed
- * `sourceConnector` (newline, instruction text, quotes) could inject text.
- * Render the label only when the value matches this pattern; otherwise skip it
- * (the memory is still injected, just unlabeled). Validated at the single
- * render site so there is one resolver, not per-call-site rederivation.
+ * Issue #2183 — the connector renders into model-visible recall context, so a
+ * malformed `sourceConnector` (newline, instruction text, quotes) or an
+ * unbounded-length value could inject text or bloat the prompt. Reuse the
+ * canonical persisted-ID charset (CONNECTOR_ID_PATTERN — so IDs the system
+ * already accepts and persists, including '.' and '_', keep their label) plus a
+ * length bound; skip the label when the value fails (the memory is still
+ * injected, just unlabeled). Validated at the single render site so there is one
+ * resolver, not per-call-site rederivation. The #2184 lesson: an injection
+ * vector AND an unbounded-length vector both apply to a rendered value.
  */
-const CONNECTOR_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]*$/i;
+const CONNECTOR_LABEL_MAX_LENGTH = 64;
+const isRenderableConnector = (value: string): boolean =>
+  value.length > 0 &&
+  value.length <= CONNECTOR_LABEL_MAX_LENGTH &&
+  CONNECTOR_ID_PATTERN.test(value);
 // ---------------------------------------------------------------------------
 // Identity injection mode helpers (moved verbatim from orchestrator.ts)
 // ---------------------------------------------------------------------------
@@ -234,7 +242,7 @@ export class RecallResultFormatter {
       if (handle) line = `${line} ${handle}`;
       if (connectorMap) {
         const connector = connectorMap.get(trustResultKey(r));
-        if (connector && CONNECTOR_LABEL_PATTERN.test(connector)) {
+        if (connector && isRenderableConnector(connector)) {
           line = `${line} [agent: ${connector}]`;
         }
       }

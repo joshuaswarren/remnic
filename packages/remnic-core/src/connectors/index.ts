@@ -569,7 +569,7 @@ const BUILTIN_CONNECTORS: ConnectorManifest[] = [
 
 // ── Registry management ───────────────────────────────────────────────────
 
-const CONNECTOR_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export const CONNECTOR_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function isValidConnectorId(connectorId: unknown): connectorId is string {
   return typeof connectorId === "string" && CONNECTOR_ID_PATTERN.test(connectorId);

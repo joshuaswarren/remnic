@@ -203,6 +203,15 @@ test("formatQmdResults: (validation) a malformed connector is skipped, never inj
     const ok = result("fact-2183000007-ok");
     const out2 = formatter.formatQmdResults("Relevant Memories", [ok], undefined, null, connectorMap([[ok, "chatgpt"]]));
     assert.match(out2, /\[agent: chatgpt\]/, "a valid connector still renders");
+    // The canonical persisted-ID charset (CONNECTOR_ID_PATTERN) allows '.' and
+    // '_', so a custom connector id keeps its label — no silent attribution loss.
+    const dotted = result("fact-2183000008-dot");
+    const out3 = formatter.formatQmdResults("Relevant Memories", [dotted], undefined, null, connectorMap([[dotted, "my.tool_id"]]));
+    assert.match(out3, /\[agent: my\.tool_id\]/, "a connector id with '.' and '_' renders (canonical charset)");
+    // Length bound: an over-long value is skipped (unbounded-length injection vector).
+    const longId = result("fact-2183000009-long");
+    const out4 = formatter.formatQmdResults("Relevant Memories", [longId], undefined, null, connectorMap([[longId, "a".repeat(65)]]));
+    assert.doesNotMatch(out4, /\[agent:/, "an over-length connector is skipped");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -245,6 +254,7 @@ async function writeConnectorFact(
   memoryDir: string,
   body: string,
   connector: string,
+  extraFrontmatter: string[] = [],
 ): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
   const id = `fact-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -259,6 +269,7 @@ async function writeConnectorFact(
     "confidenceTier: high",
     "tags: []",
     `sourceConnector: ${connector}`,
+    ...extraFrontmatter,
     "---",
   ];
   const factsDir = path.join(memoryDir, "facts", today);
@@ -311,3 +322,29 @@ test("recall (TrustScore ON): the trust branch also populates the connector (#21
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("recall (corpus-scan path, no preloaded map): connector still reaches rendered context (#2183)", async () => {
+  // TrustScore ON, QMD OFF → no preloaded frontmatter map. The memory carries
+  // mw counters, so its trust signal is filled by the namespace CORPUS scan
+  // (not the preloaded map, not the direct-read callback). Before the corpus-
+  // scan capture the label was silently omitted here; it must now reach context.
+  const { orchestrator, memoryDir } = await makeOrchestrator({ trustScoreEnabled: true });
+  try {
+    await writeConnectorFact(
+      memoryDir,
+      "Connector-scoped rule: the cache key includes the connector id.",
+      "chatgpt",
+      ["mw_success: 5", "mw_fail: 0"],
+    );
+    const context = await orchestrator.recall("cache key connector", "sess-conn-label-corpus");
+    assert.ok(typeof context === "string", "recall returns a context string");
+    assert.ok(
+      context.includes("[agent: chatgpt]"),
+      "a connector whose trust signal comes from the corpus scan must still reach rendered context",
+    );
+  } finally {
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
