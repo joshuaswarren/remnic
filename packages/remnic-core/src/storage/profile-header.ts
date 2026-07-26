@@ -7,8 +7,11 @@ const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
 const MARKDOWN_LINK_REFERENCE = /^\[[^\]]+\]:\s*\S/;
+const MARKDOWN_LINK_REFERENCE_LABEL = /^\[[^\]]+\]:\s*$/;
 const MARKDOWN_LINK_REFERENCE_CONTINUATION =
   /^ {1,3}(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\))$/;
+const MARKDOWN_LINK_REFERENCE_DESTINATION_CONTINUATION =
+  /^ {1,3}(?:<[^>\n]*>|(?!["'(])[^\s]+(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?)$/;
 const UTF8_BOM = "\uFEFF";
 
 type FenceMarker = {
@@ -77,6 +80,8 @@ const HTML_BLOCK_TAGS = [
   "figure",
   "footer",
   "form",
+  "frame",
+  "frameset",
   "h1",
   "h2",
   "h3",
@@ -552,11 +557,23 @@ function isMarkdownLinkReferenceDefinitionEnd(lines: ProfileLine[], index: numbe
   const line = lines[index]?.content ?? "";
   const boundaryLine = /^ {0,3}(?=\S)/.test(line) ? line.trimStart() : line;
   if (MARKDOWN_LINK_REFERENCE.test(boundaryLine)) return true;
-  if (!MARKDOWN_LINK_REFERENCE_CONTINUATION.test(line)) return false;
+  if (MARKDOWN_LINK_REFERENCE_CONTINUATION.test(line)) {
+    const previousLine = lines[index - 1]?.content ?? "";
+    const previousBoundaryLine =
+      /^ {0,3}(?=\S)/.test(previousLine) ? previousLine.trimStart() : previousLine;
+    if (MARKDOWN_LINK_REFERENCE.test(previousBoundaryLine)) return true;
+    const destinationLine = lines[index - 1]?.content ?? "";
+    if (!MARKDOWN_LINK_REFERENCE_DESTINATION_CONTINUATION.test(destinationLine)) return false;
+    const labelLine = lines[index - 2]?.content ?? "";
+    const labelBoundaryLine =
+      /^ {0,3}(?=\S)/.test(labelLine) ? labelLine.trimStart() : labelLine;
+    return MARKDOWN_LINK_REFERENCE_LABEL.test(labelBoundaryLine);
+  }
+  if (!MARKDOWN_LINK_REFERENCE_DESTINATION_CONTINUATION.test(line)) return false;
   const previousLine = lines[index - 1]?.content ?? "";
   const previousBoundaryLine =
     /^ {0,3}(?=\S)/.test(previousLine) ? previousLine.trimStart() : previousLine;
-  return MARKDOWN_LINK_REFERENCE.test(previousBoundaryLine);
+  return MARKDOWN_LINK_REFERENCE_LABEL.test(previousBoundaryLine);
 }
 
 function isProfileTitleLine(lines: ProfileLine[], index: number, line: string): boolean {
