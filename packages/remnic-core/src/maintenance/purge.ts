@@ -20,7 +20,7 @@
  */
 
 import path from "node:path";
-import { appendFile, mkdir, unlink } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 import type { StorageManager } from "../storage.js";
 import type { MemoryFile } from "../types.js";
 import { markProjectedMemoryPathInvalid } from "../memory-projection-store.js";
@@ -168,7 +168,7 @@ export async function purgeMemories(
 
   // Build candidate list
   const candidates: PurgeCandidate[] = [];
-  const candidateMemoriesById = new Map<string, MemoryFile>();
+  const candidateMemoriesByPath = new Map<string, MemoryFile>();
   for (const { memory, resolvedTier } of poolEntries) {
     const ts = resolveTimestamp(memory);
     if (ts.length === 0) continue;
@@ -193,7 +193,7 @@ export async function purgeMemories(
       updatedOrCreated: ts,
       ageMs,
     });
-    candidateMemoriesById.set(memory.frontmatter.id, memory);
+    candidateMemoriesByPath.set(memory.path, memory);
   }
 
   if (dryRun) {
@@ -234,13 +234,19 @@ export async function purgeMemories(
 
   for (const candidate of candidates) {
     try {
-      await unlink(candidate.path);
-      actuallyPurged.push(candidate);
-      addCollectionForCandidate(candidate);
-      markProjectedMemoryPathInvalid(storage.dir, candidate.id);
+      const memory = candidateMemoriesByPath.get(candidate.path);
+      if (!memory) throw new Error(`purge candidate memory missing: ${candidate.id}`);
+      const removed = await storage.deleteMemoryForMaintenance(memory);
+      if (removed) {
+        actuallyPurged.push(candidate);
+        addCollectionForCandidate(candidate);
+      } else {
+        alreadyAbsent.push(candidate);
+        addCollectionForCandidate(candidate);
+        markProjectedMemoryPathInvalid(storage.dir, candidate.id);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // ENOENT is fine — already gone
       if (hasErrorCode(err, "ENOENT")) {
         alreadyAbsent.push(candidate);
         addCollectionForCandidate(candidate);
@@ -302,7 +308,7 @@ export async function purgeMemories(
   }
 
   const purgedFactMemories = resolvedPurges
-    .map((candidate) => candidateMemoriesById.get(candidate.id))
+    .map((candidate) => candidateMemoriesByPath.get(candidate.path))
     .filter((memory): memory is MemoryFile => memory?.frontmatter.category === "fact");
   if (purgedFactMemories.length > 0) {
     const removeFactHashes = (

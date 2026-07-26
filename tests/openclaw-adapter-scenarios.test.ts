@@ -10,6 +10,7 @@ import {
   restoreRegisterMigrationForCaptureTest,
   saveAndResetOpenClawRegistrationGlobals,
 } from "./helpers/openclaw-registration-harness.js";
+import { mergeInlineCaptureDedupeKeys } from "../src/explicit-capture.js";
 
 const SERVICE_ID = "openclaw-remnic";
 const ORCHESTRATOR_KEY = `__openclawEngramOrchestrator::${SERVICE_ID}`;
@@ -568,6 +569,122 @@ test("scenario: message_received persists inline explicit captures without agent
   );
 });
 
+test("scenario: message_received preserves configured inline namespace routing", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      await messageReceived(
+        {
+          content: [
+            "Remember the configured namespace request.",
+            "<memory_note>",
+            "content: This configured shared namespace should persist directly.",
+            "category: fact",
+            "namespace: shared",
+            "</memory_note>",
+          ].join("\n"),
+          messageId: "msg-inline-configured-namespace",
+        },
+        { sessionKey: "alice:configured-namespace-session" },
+      );
+      await messageReceived(
+        {
+          content: [
+            "Remember the configured namespace review request.",
+            "<memory_note>",
+            "content: This configured shared namespace review should retain its scope.",
+            "category: fact",
+            "confidence: invalid",
+            "namespace: shared",
+            "</memory_note>",
+          ].join("\n"),
+          messageId: "msg-inline-configured-namespace-review",
+        },
+        { sessionKey: "alice:configured-namespace-review-session" },
+      );
+
+      const sharedStorage = await orchestrator.getStorage("shared");
+      const aliceStorage = await orchestrator.getStorage("alice");
+      const sharedMemories = await sharedStorage.readAllMemories();
+      const aliceMemories = await aliceStorage.readAllMemories();
+      const sharedText = sharedMemories.map((memory: { content: string }) => memory.content).join("\n");
+      const aliceText = aliceMemories.map((memory: { content: string }) => memory.content).join("\n");
+      assert.match(sharedText, /configured shared namespace should persist directly/);
+      assert.match(sharedText, /Explicit capture queued for review/);
+      assert.match(sharedText, /configured shared namespace review should retain its scope/);
+      assert.doesNotMatch(aliceText, /configured shared namespace should persist directly/);
+      assert.doesNotMatch(aliceText, /configured shared namespace review should retain its scope/);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+        sharedNamespace: "shared",
+        principalFromSessionKeyMode: "prefix",
+        principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+        namespacePolicies: [
+          { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+          { name: "shared", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+        ],
+      },
+    },
+  );
+});
+
+test("scenario: unsupported inline namespace replay stays isolated by session principal", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const note = [
+        "Remember the isolated namespace review.",
+        "<memory_note>",
+        "content: The same unsupported namespace review must reach each principal.",
+        "category: fact",
+        "namespace: unconfigured-inline",
+        "</memory_note>",
+      ].join("\n");
+
+      await messageReceived(
+        { content: note, messageId: "msg-inline-alice-unconfigured" },
+        { sessionKey: "alice:unconfigured-namespace-session" },
+      );
+      await messageReceived(
+        { content: note, messageId: "msg-inline-bob-unconfigured" },
+        { sessionKey: "bob:unconfigured-namespace-session" },
+      );
+
+      const aliceStorage = await orchestrator.getStorage("alice");
+      const bobStorage = await orchestrator.getStorage("bob");
+      const aliceMemories = await aliceStorage.readAllMemories();
+      const bobMemories = await bobStorage.readAllMemories();
+      const aliceText = aliceMemories.map((memory: { content: string }) => memory.content).join("\n");
+      const bobText = bobMemories.map((memory: { content: string }) => memory.content).join("\n");
+      assert.equal(aliceMemories.length, 1);
+      assert.equal(bobMemories.length, 1);
+      assert.match(aliceText, /same unsupported namespace review must reach each principal/);
+      assert.match(bobText, /same unsupported namespace review must reach each principal/);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+        sharedNamespace: "shared",
+        principalFromSessionKeyMode: "prefix",
+        principalFromSessionKeyRules: [
+          { match: "alice:", principal: "alice" },
+          { match: "bob:", principal: "bob" },
+        ],
+        namespacePolicies: [
+          { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+          { name: "bob", readPrincipals: ["bob"], writePrincipals: ["bob"] },
+        ],
+      },
+    },
+  );
+});
+
 test("scenario: message_received persists sparse inline explicit captures without agent_end", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir, orchestrator }) => {
@@ -691,6 +808,294 @@ test("scenario: message_received inline captures are not duplicated by agent_end
         transcriptEnabled: true,
       },
     },
+  );
+});
+
+test("scenario: id-less inline captures do not duplicate tombstone review entries at agent_end", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const storage = await orchestrator.getStorage();
+      const writeSealedMemory = storage.writeSealedMemory.bind(storage);
+      storage.writeSealedMemory = async (...args: Parameters<typeof writeSealedMemory>) => {
+        const result = await writeSealedMemory(...args);
+        const memory = await storage.getMemoryById(result.id);
+        if (memory) await storage.writeMemoryFrontmatter(memory, { status: "pending_review" });
+        return { ...result, tombstoneBlocked: true };
+      };
+      const content = [
+        "Remember the id-less tombstone capture.",
+        "<memory_note>",
+        "content: This pending review capture must only be written once.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+
+      await messageReceived({ content }, { sessionKey: "inline-tombstone-idless" });
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            { role: "user", content },
+            { role: "assistant", content: "I will remember that." },
+          ],
+        },
+        { sessionKey: "inline-tombstone-idless" },
+      );
+
+      assert.deepEqual(maintenanceTools, ["inline.memory_note.review"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: false,
+      },
+    },
+  );
+});
+
+test("scenario: inline markup changes do not duplicate the stripped transcript", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const visibleTurn = "Remember this shared visible transcript turn.";
+      const first = [
+        visibleTurn,
+        "<memory_note>",
+        "content: The first explicit detail must be captured.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+      const second = [
+        visibleTurn,
+        "<memory_note>",
+        "content: The second explicit detail must also be captured.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+
+      await messageReceived(
+        {
+          content: first,
+          messageId: "visible-dedupe-one",
+          runId: "visible-dedupe-run",
+          timestamp: 1_780_000_000_000,
+        },
+        { sessionKey: "visible-dedupe-session" },
+      );
+      await messageReceived(
+        {
+          content: second,
+          messageId: "visible-dedupe-two",
+          runId: "visible-dedupe-run",
+          timestamp: 1_780_000_000_000,
+        },
+        { sessionKey: "visible-dedupe-session" },
+      );
+
+      assert.deepEqual(maintenanceTools, ["inline.memory_note", "inline.memory_note"]);
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal((transcriptText.match(/shared visible transcript turn/g) ?? []).length, 1);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
+test("scenario: stable inbound IDs bypass capture fingerprints after a deleted capture", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const content = [
+        "Remember the retryable stable delivery note.",
+        "<memory_note>",
+        "content: A stable delivery ID must allow recapture after deletion.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+      const context = { sessionKey: "stable-delivery-retry-session" };
+
+      await messageReceived(
+        {
+          content,
+          messageId: "stable-delivery-one",
+          runId: "stable-delivery-run",
+          timestamp: 1_780_000_000_000,
+        },
+        context,
+      );
+      const storage = await orchestrator.getStorage();
+      const captured = (await storage.readAllMemories()).find((memory: { content: string }) =>
+        memory.content.includes("A stable delivery ID must allow recapture after deletion."),
+      );
+      assert.ok(captured);
+      assert.equal(await storage.invalidateMemory(captured.frontmatter.id), true);
+
+      await messageReceived(
+        {
+          content,
+          messageId: "stable-delivery-two",
+          runId: "stable-delivery-run",
+          timestamp: 1_780_000_000_000,
+        },
+        context,
+      );
+
+      assert.deepEqual(maintenanceTools, ["inline.memory_note", "inline.memory_note"]);
+      const recaptured = (await storage.readAllMemories()).filter((memory: { content: string }) =>
+        memory.content.includes("A stable delivery ID must allow recapture after deletion."),
+      );
+      assert.equal(recaptured.length, 1);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: false,
+      },
+    },
+  );
+});
+
+test("scenario: failed inline capture retries after transcript delivery succeeds", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const storage = await orchestrator.getStorage();
+      const writeSealedMemory = storage.writeSealedMemory.bind(storage);
+      let writeAttempts = 0;
+      storage.writeSealedMemory = async (...args: Parameters<typeof writeSealedMemory>) => {
+        writeAttempts += 1;
+        if (writeAttempts <= 1) throw new Error("simulated inline capture write failure");
+        return writeSealedMemory(...args);
+      };
+      const content = [
+        "Remember this retryable visible transcript turn.",
+        "<memory_note>",
+        "content: This inline capture must retry after its first write failure.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+      const event = {
+        content,
+        messageId: "inline-retry-message",
+        runId: "inline-retry-run",
+        timestamp: 1_780_000_200_000,
+      };
+      await messageReceived(event, { sessionKey: "inline-retry-session" });
+      await messageReceived(event, { sessionKey: "inline-retry-session" });
+
+      assert.equal(writeAttempts, 2);
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal((transcriptText.match(/retryable visible transcript turn/g) ?? []).length, 1);
+      assert.doesNotMatch(transcriptText, /<memory_note>/);
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
+test("scenario: agent-end capture failures remain retryable by message_received", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const agentEnd = registeredHook(capture, "agent_end");
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const storage = await orchestrator.getStorage();
+      const writeSealedMemory = storage.writeSealedMemory.bind(storage);
+      let writeAttempts = 0;
+      storage.writeSealedMemory = async (...args: Parameters<typeof writeSealedMemory>) => {
+        writeAttempts += 1;
+        if (writeAttempts <= 1) throw new Error("simulated agent-end capture write failure");
+        return writeSealedMemory(...args);
+      };
+      const content = [
+        "Remember this agent-end retryable visible transcript turn.",
+        "<memory_note>",
+        "content: This agent-end inline capture must retry after its write failure.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+      const timestamp = 1_780_000_300_000;
+
+      await agentEnd(
+        {
+          success: true,
+          runId: "agent-end-inline-retry-run",
+          timestamp,
+          messages: [
+            { role: "user", content, messageId: "agent-end-inline-retry-message" },
+            { role: "assistant", content: "I will retry that capture." },
+          ],
+        },
+        { sessionKey: "agent-end-inline-retry-session" },
+      );
+      await messageReceived(
+        {
+          content,
+          messageId: "agent-end-inline-retry-message",
+          runId: "agent-end-inline-retry-run",
+          timestamp,
+        },
+        { sessionKey: "agent-end-inline-retry-session" },
+      );
+
+      assert.equal(writeAttempts, 2);
+      assert.match(readAllText(memoryDir), /agent-end inline capture must retry after its write failure/);
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
+test("scenario: message_received uses delivery IDs before content fallbacks", () => {
+  const fallbackKeys = [
+    "delivery-key-session\u0000content\u0000run\u0000timestamp\u0000hash",
+    "delivery-key-session\u0000sparse-content\u0000hash",
+  ];
+
+  assert.deepEqual(
+    mergeInlineCaptureDedupeKeys(["delivery-key-session\u0000run\u0000message-id"], fallbackKeys),
+    ["delivery-key-session\u0000run\u0000message-id"],
+    "delivery-key requests must not add content fallbacks",
+  );
+  assert.deepEqual(
+    mergeInlineCaptureDedupeKeys([], fallbackKeys),
+    fallbackKeys,
+    "ID-less requests should retain content fallback identity",
   );
 });
 
@@ -1036,9 +1441,19 @@ test("scenario: agent_end records repeated user transcript content without messa
 
 test("scenario: message_received dedupes same delivery content with changed messageId", async () => {
   await withScenarioRegistration(
-    async ({ capture, memoryDir }) => {
+    async ({ capture, memoryDir, orchestrator }) => {
       const messageReceived = registeredHook(capture, "message_received");
-      const content = "Remember the same delivery changed id inbound message.";
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const content = [
+        "Remember the same delivery changed id inbound message.",
+        "<memory_note>",
+        "content: The changed-id inline capture should only persist once.",
+        "category: preference",
+        "</memory_note>",
+      ].join("\n");
       const sharedTimestamp = 1_780_000_000_000;
 
       await messageReceived(
@@ -1060,6 +1475,7 @@ test("scenario: message_received dedupes same delivery content with changed mess
         { sessionKey: "same-delivery-inbound-session" },
       );
 
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
       const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
       assert.equal(
         (transcriptText.match(/same delivery changed id inbound message/g) ?? []).length,
@@ -1068,6 +1484,7 @@ test("scenario: message_received dedupes same delivery content with changed mess
     },
     {
       pluginConfig: {
+        captureMode: "hybrid",
         transcriptEnabled: true,
       },
     },

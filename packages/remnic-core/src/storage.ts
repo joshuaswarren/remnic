@@ -45,10 +45,7 @@ export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
-import {
-  qmdCollectionPathParts,
-  qmdResultPathCandidates,
-} from "./orchestration/qmd-result-resolver.js";
+import { qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 import {
   clearMemoryCache,
   getCachedEntities,
@@ -90,7 +87,6 @@ import {
   readMaybeEncryptedFileBuffer,
   readMaybeEncryptedFile,
   writeMaybeEncryptedFile,
-  writeMaybeEncryptedFileFromChunks,
 } from "./secure-store/secure-fs.js";
 import {
   isConsolidationOperator,
@@ -181,6 +177,12 @@ import {
   CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS,
   type ContentHashIndexLockOptions,
 } from "./storage/content-hash-index.js";
+import {
+  TombstoneBlockedCaptureIndexHost,
+  buildExplicitCaptureDedupKey,
+  parseTombstoneBlockedOfflineSyncMemory,
+  type TombstoneBlockedCaptureIndexOptions,
+} from "./storage/tombstone-blocked-capture-index.js";
 export { ContentHashIndex, FactHashIndexNotAuthoritativeError };
 export type { ContentHashIndexLockOptions };
 export {
@@ -201,11 +203,7 @@ import {
   readProjectedMemoryTimeline,
   updateProjectedMemoryPath,
 } from "./memory-projection-store.js";
-import {
-  inferMemoryStatus,
-  isArchivedMemoryPath,
-  toMemoryPathRel,
-} from "./memory-lifecycle-ledger-utils.js";
+import { inferMemoryStatus, isArchivedMemoryPath, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
 import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import {
@@ -652,8 +650,10 @@ function quotedArrayValues(raw: string): string[] {
     while (i < inner.length) {
       const ch = inner[i++];
       if (ch === "\\" && i < inner.length) value += ch + inner[i++];
-      else if (ch === '"') { values.push(value); break; }
-      else value += ch;
+      else if (ch === '"') {
+        values.push(value);
+        break;
+      } else value += ch;
     }
   }
   return values;
@@ -1698,6 +1698,8 @@ export interface MemoryWriteResult {
   tombstoneBlocked: boolean;
   /** The tombstone id that blocked the write, when `tombstoneBlocked`. */
   blockedBy?: string;
+  /** Existing pending-review memory id when a blocked write coalesced with it. */
+  duplicateOf?: string;
 }
 
 /**
@@ -1706,9 +1708,7 @@ export interface MemoryWriteResult {
  * loader: unknown/legacy shapes are dropped, never thrown on. Uses `in`/typeof
  * narrowing (no inline casts) so a malformed entry can't slip through typed.
  */
-function parseExtractionRetryStateEntries(
-  raw: unknown,
-): NonNullable<MetaState["extractionRetryState"]> {
+function parseExtractionRetryStateEntries(raw: unknown): NonNullable<MetaState["extractionRetryState"]> {
   if (!Array.isArray(raw)) return [];
   const valid: NonNullable<MetaState["extractionRetryState"]> = [];
   for (const entry of raw) {
@@ -1821,17 +1821,10 @@ export interface WriteMemoryOptions {
  */
 export type SealedWriteExtras = Omit<
   WriteMemoryOptions,
-  | "confidence"
-  | "tags"
-  | "entityRef"
-  | "source"
-  | "expiresAt"
-  | "validAt"
-  | "structuredAttributes"
-  | "sourceConnector"
+  "confidence" | "tags" | "entityRef" | "source" | "expiresAt" | "validAt" | "structuredAttributes" | "sourceConnector"
 >;
 
-export class StorageManager {
+export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
   private artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null = null;
   /** Read by storage/entity-store.ts (decomposition), hence not `private`. */
@@ -2031,7 +2024,7 @@ export class StorageManager {
    * OUTSIDE `stateDir`, so a data write always touches; a write under `stateDir`
    * is a pure state write and is skipped unless `touchStateWrites` is enabled.
    */
-  private notifyCatalogWriteForPath(filePath: string): void {
+  protected notifyCatalogWriteForPath(filePath: string): void {
     if (!this.touchStateWrites && this.isStateFilePath(filePath)) return;
     this.notifyCatalogWrite();
   }
@@ -2180,10 +2173,7 @@ export class StorageManager {
   private isColdOrArchiveTierPath(p: string): boolean {
     const rel = path.relative(this.baseDir, p);
     return (
-      rel === "cold" ||
-      rel === "archive" ||
-      rel.startsWith(`cold${path.sep}`) ||
-      rel.startsWith(`archive${path.sep}`)
+      rel === "cold" || rel === "archive" || rel.startsWith(`cold${path.sep}`) || rel.startsWith(`archive${path.sep}`)
     );
   }
 
@@ -2302,8 +2292,9 @@ export class StorageManager {
      * (falling back to the process-wide default); pass an explicit boolean to
      * override per-instance (tests, memory-constrained readers).
      */
-    hotMemoriesCacheEnabledOverride?: boolean,
+    hotMemoriesCacheEnabledOverride?: boolean
   ) {
+    super();
     this.hotMemoriesCacheEnabled =
       hotMemoriesCacheEnabledOverride ??
       StorageManager.hotMemoriesCacheDefaultByDir.get(baseDir) ??
@@ -2323,11 +2314,7 @@ export class StorageManager {
    *  StorageManager, including ephemeral recall-sub-stage instances. Only an
    *  explicit `false` disables; `undefined` (e.g. a cast test config missing
    *  the field) leaves the cache on. */
-  static setHotMemoriesCacheDefault(
-    memoryDir: string,
-    enabled: boolean | undefined,
-    ttlMs?: number,
-  ): void {
+  static setHotMemoriesCacheDefault(memoryDir: string, enabled: boolean | undefined, ttlMs?: number): void {
     // Register per-dir so each orchestrator's config reaches every
     // StorageManager built over its own memory dir (Codex P2). The per-dir map
     // is authoritative for every registered dir.
@@ -2459,7 +2446,7 @@ export class StorageManager {
     }
   }
 
-  private bumpMemoryStatusVersion(): void {
+  protected bumpMemoryStatusVersion(): void {
     this.bumpSharedVersion("memory-status", StorageManager.memoryStatusVersionByDir);
     // Also bump the corpus sentinel so peer processes rescan the hot-memories
     // cache after status/lifecycle/bulk mutations (issue #1902). invalidateAllForDir
@@ -2491,7 +2478,7 @@ export class StorageManager {
     return this.readSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
   }
 
-  private bumpMemoryCorpusVersion(): void {
+  protected bumpMemoryCorpusVersion(): void {
     // Bump only — unlike bumpMemoryStatusVersion this must NOT invalidateAllForDir
     // (that would drop the very hot entry the write path just patched).
     this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
@@ -2534,7 +2521,7 @@ export class StorageManager {
     }
   }
 
-  private bumpArtifactWriteVersion(): number {
+  protected bumpArtifactWriteVersion(): number {
     return this.bumpSharedVersion("artifact-write", StorageManager.artifactWriteVersionByDir);
   }
 
@@ -2735,7 +2722,7 @@ export class StorageManager {
   private readStorageSecureFile(filePath: string): Promise<string> {
     return readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
   }
-  private writeStorageSecureFile(filePath: string, content: string | Buffer, forceEncrypt = false): Promise<void> {
+  protected writeStorageSecureFile(filePath: string, content: string | Buffer, forceEncrypt = false): Promise<void> {
     const writeKey = this.resolveWriteKey(forceEncrypt);
     return writeMaybeEncryptedFile(filePath, content, writeKey, {}, this.baseDir).then(() => {
       // No manual sniff-cache update needed (issue #1909 round 10): this rewrite
@@ -2745,14 +2732,8 @@ export class StorageManager {
       this.notifyCatalogWriteForPath(filePath);
     });
   }
-  private writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
-    const writeKey = this.resolveWriteKey();
-    return writeMaybeEncryptedFileFromChunks(filePath, chunks, writeKey, {}, this.baseDir).then(() => {
-      this.notifyCatalogWriteForPath(filePath);
-    });
-  }
 
-  private assertManagedStoragePath(filePath: string, method: string): string {
+  protected assertManagedStoragePath(filePath: string, method: string): string {
     const resolved = path.resolve(filePath);
     const base = path.resolve(this.baseDir);
     const rel = path.relative(base, resolved);
@@ -2924,47 +2905,9 @@ export class StorageManager {
     }
   }
 
-  async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
-    const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
-    await this.writeStorageSecureFile(target, content);
-    await this.invalidateAfterOfflineSyncMutation(target);
-  }
-
   async writeOfflineSyncStagingFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncStagingFile");
     await this.writeStorageSecureFile(target, content);
-  }
-
-  async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
-    const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
-    await this.writeStorageSecureFileChunks(target, chunks);
-    await this.invalidateAfterOfflineSyncMutation(target);
-  }
-
-  async deleteOfflineSyncFile(filePath: string): Promise<void> {
-    const target = this.assertManagedStoragePath(filePath, "storage.deleteOfflineSyncFile");
-    await unlink(target).catch((error: unknown) => {
-      if (isErrnoCode(error, "ENOENT")) return;
-      throw error;
-    });
-    await this.invalidateAfterOfflineSyncMutation(target);
-  }
-
-  private async invalidateAfterOfflineSyncMutation(filePath: string): Promise<void> {
-    // invalidateAllMemoriesCache() routes through the invalidateAllForDir()
-    // chokepoint, which also covers the entity cache (issue #1535).
-    this.invalidateAllMemoriesCache();
-    this.invalidateKnowledgeIndexCache();
-    // Force a corpus rebuild of the fact-hash index on next use (round 11: no
-    // on-disk ready marker — the in-memory authoritative flag is the only gate).
-    this.factHashIndexAuthoritative = false;
-    if (filePath.includes(`${path.sep}cold${path.sep}`)) {
-      this.invalidateColdMemoriesCache();
-    }
-    if (filePath.includes(`${path.sep}artifacts${path.sep}`)) {
-      this.bumpArtifactWriteVersion();
-    }
-    this.bumpMemoryStatusVersion();
   }
 
   createContentHashIndex(): ContentHashIndex {
@@ -2973,7 +2916,7 @@ export class StorageManager {
       () => this._secureStoreKey,
       () => this.resolveWriteKey(),
       this.baseDir,
-      this.factHashIndexLockOptions,
+      this.factHashIndexLockOptions
     );
   }
 
@@ -3262,7 +3205,29 @@ export class StorageManager {
     });
     return await store.rebuild(retired);
   }
-
+  protected markFactHashIndexNotAuthoritative(): void {
+    this.factHashIndexAuthoritative = false;
+  }
+  protected tombstoneBlockedCaptureIndexOptions(): TombstoneBlockedCaptureIndexOptions {
+    return {
+      stateDir: this.stateDir,
+      memoryDir: this.baseDir,
+      secureStoreKeyProvider: () => this._secureStoreKey,
+      secureStoreWriteKeyProvider: () => this.resolveWriteKey(),
+      lockOptions: () => this.factHashIndexLockOptions,
+      parseMemory: (filePath, content) =>
+        parseTombstoneBlockedOfflineSyncMemory(
+          filePath,
+          content,
+          this.baseDir,
+          parseFrontmatter,
+          normalizeFrontmatterForPath,
+          toMemoryPathRel
+        ),
+      readAllMemories: () => this.readAllMemories(),
+      readAllColdMemories: () => this.readAllColdMemories(),
+    };
+  }
   private async getFactHashIndex(): Promise<ContentHashIndex> {
     if (this.factHashIndex) {
       return this.factHashIndex;
@@ -3282,7 +3247,6 @@ export class StorageManager {
     }
     return this.factHashIndexLoadPromise;
   }
-
   /**
    * Return the fact-hash index after ensuring it is authoritative — i.e. rebuilt
    * from the durable fact corpus (issue #1909 review round 12). This is the ONE
@@ -3298,7 +3262,6 @@ export class StorageManager {
     }
     return this.getFactHashIndex();
   }
-
   /**
    * Return the shared fact-hash index instance, corpus-rebuilt under the lock
    * when the lock is free. Unlike {@link getAuthoritativeFactHashIndex} this
@@ -3312,7 +3275,6 @@ export class StorageManager {
     await this.ensureFactHashIndexAuthoritative();
     return this.getFactHashIndex();
   }
-
   private async ensureFactHashIndexAuthoritative(): Promise<boolean> {
     if (this.factHashIndexAuthoritative === true) {
       // PR #2016 review: authority is NOT permanent. A peer process can advance
@@ -3332,7 +3294,6 @@ export class StorageManager {
     if (this.factHashIndexAuthoritativePromise) {
       return this.factHashIndexAuthoritativePromise;
     }
-
     this.factHashIndexAuthoritative = false;
     this.factHashIndexAuthoritativePromise = (async () => {
       // Round 11: ALWAYS rebuild the fact-hash index from the durable corpus on
@@ -3352,15 +3313,11 @@ export class StorageManager {
       // hasFactContentHash()/isFactContentHashAuthoritative() fall back to the
       // durable corpus so a stale loaded snapshot never answers as current.
       const factHashIndex = await this.getFactHashIndex();
-      const maxAttempts =
-        this.factHashIndexLockOptions.retryMaxAttempts ?? FACT_HASH_INDEX_REBUILD_MAX_ATTEMPTS;
-      const baseMs =
-        this.factHashIndexLockOptions.retryBaseMs ?? FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS;
+      const maxAttempts = this.factHashIndexLockOptions.retryMaxAttempts ?? FACT_HASH_INDEX_REBUILD_MAX_ATTEMPTS;
+      const baseMs = this.factHashIndexLockOptions.retryBaseMs ?? FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS;
       let published = false;
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-        published = await factHashIndex.rebuildUnderLock(() =>
-          this.rebuildFactHashIndexFromCorpus(factHashIndex),
-        );
+        published = await factHashIndex.rebuildUnderLock(() => this.rebuildFactHashIndexFromCorpus(factHashIndex));
         if (published || attempt === maxAttempts - 1) break;
         const wait = Math.min(baseMs * 2 ** attempt, CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS);
         await new Promise<void>((resolve) => setTimeout(resolve, wait));
@@ -3369,7 +3326,7 @@ export class StorageManager {
       if (!published) {
         log.warn(
           `ensureFactHashIndexAuthoritative: fact-hash index lock unavailable after ${maxAttempts} attempt(s); ` +
-            `index left non-authoritative (reads verify against the durable corpus; next use retries the locked rebuild)`,
+            `index left non-authoritative (reads verify against the durable corpus; next use retries the locked rebuild)`
         );
       }
       return published;
@@ -3378,7 +3335,6 @@ export class StorageManager {
     });
     return this.factHashIndexAuthoritativePromise;
   }
-
   /**
    * Repopulate `factHashIndex` in memory from the durable HOT+COLD corpus. Runs
    * WHILE the per-index cross-process lock is held (see
@@ -3401,10 +3357,7 @@ export class StorageManager {
     // survive the corpus rebuild, or a restart would drop the hash and let the
     // next extraction re-create the demoted memory. Matches the hot+cold union
     // that removeFactContentHashesForMemories already reconciles against.
-    const existing = [
-      ...(await this.readAllMemories()),
-      ...(await this.readAllColdMemories()),
-    ];
+    const existing = [...(await this.readAllMemories()), ...(await this.readAllColdMemories())];
     let legacyRecovered = 0;
     for (const memory of existing) {
       // #1909 review round 15 (PR #2016): the content-hash dedup index is
@@ -3444,7 +3397,6 @@ export class StorageManager {
       );
     }
   }
-
   /**
    * The content-hash the corpus rebuild registers for `memory`, or null when the
    * body carries a citation from an unknown/custom template that cannot be
@@ -3536,9 +3488,7 @@ export class StorageManager {
    * every append. A foreign write changes size/mtime, forcing a reload; this
    * process's own appends refresh the identity in place. null => reload.
    */
-  private behaviorSignalsKeyCache:
-    | { identity: { size: number; mtimeMs: number }; keys: Set<string> }
-    | null = null;
+  private behaviorSignalsKeyCache: { identity: { size: number; mtimeMs: number }; keys: Set<string> } | null = null;
   /**
    * Per-instance serializer for `appendBehaviorSignals` (issue #1909 review
    * round 3). The read→dedup→append→cache-commit transaction must run to
@@ -3700,6 +3650,26 @@ export class StorageManager {
     return path.join(datedDir, `${id}.md`);
   }
 
+  private async findExistingTombstoneBlockedMemory(
+    content: string,
+    category: MemoryCategory,
+    sourceConnector?: string
+  ): Promise<MemoryFile | null> {
+    const identity = buildExplicitCaptureDedupKey(content, category, sourceConnector);
+    const memories = [...(await this.readAllMemories()), ...(await this.readAllColdMemories())];
+    return (
+      memories.find((memory) => {
+        if (memory.frontmatter.status !== "pending_review" || !memory.frontmatter.blockedBy) return false;
+        return (
+          buildExplicitCaptureDedupKey(
+            memory.content,
+            memory.frontmatter.category,
+            memory.frontmatter.sourceConnector
+          ) === identity
+        );
+      }) ?? null
+    );
+  }
   async writeMemory(
     category: MemoryCategory,
     content: string,
@@ -3869,9 +3839,31 @@ export class StorageManager {
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
-
-    await this.snapshotBeforeWrite(filePath, "write");
-    await this.writeStorageSecureFile(filePath, fileContent);
+    const persistFile = async (): Promise<MemoryFile | null> => {
+      if (tombstoneBlocked) {
+        const duplicate = await this.findExistingTombstoneBlockedMemory(sanitized.text, category, fm.sourceConnector);
+        if (duplicate) return duplicate;
+      }
+      await this.snapshotBeforeWrite(filePath, "write");
+      await this.writeTombstoneBlockedMemory(filePath, fileContent, fm, sanitized.text, async () => {
+        this.invalidateAllMemoriesCache();
+      });
+      return null;
+    };
+    const duplicateBlocked = tombstoneBlocked
+      ? await this.withTombstoneBlockedCaptureWriteLock(
+          persistFile,
+          buildExplicitCaptureDedupKey(sanitized.text, category, fm.sourceConnector)
+        )
+      : await persistFile();
+    if (duplicateBlocked) {
+      return {
+        id: duplicateBlocked.frontmatter.id,
+        tombstoneBlocked: true,
+        blockedBy: duplicateBlocked.frontmatter.blockedBy,
+        duplicateOf: duplicateBlocked.frontmatter.id,
+      };
+    }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
@@ -3948,13 +3940,10 @@ export class StorageManager {
    * `envelope.sourceReason` is access-layer metadata with no frontmatter
    * field and is deliberately not persisted here.
    */
-  async writeSealedMemory(
-    envelope: SealedMemoryEnvelope,
-    extras: SealedWriteExtras = {},
-  ): Promise<MemoryWriteResult> {
+  async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: SealedWriteExtras = {}): Promise<MemoryWriteResult> {
     if (!isSealedMemoryEnvelope(envelope)) {
       throw new Error(
-        "writeSealedMemory: value is not a valid sealed memory envelope (fails the composeMemoryEnvelope contract)",
+        "writeSealedMemory: value is not a valid sealed memory envelope (fails the composeMemoryEnvelope contract)"
       );
     }
     const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
@@ -3986,10 +3975,7 @@ export class StorageManager {
   }
 
   private async factContentHashPresentInCorpus(targetHash: string): Promise<boolean> {
-    const existing = [
-      ...(await this.readAllMemories()),
-      ...(await this.readAllColdMemories()),
-    ];
+    const existing = [...(await this.readAllMemories()), ...(await this.readAllColdMemories())];
     for (const memory of existing) {
       if (memory.frontmatter.category !== "fact") continue;
       if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
@@ -4341,7 +4327,7 @@ export class StorageManager {
         this.baseDir,
         this.getMemoryCorpusVersion(),
         this.hotCacheKeyId(),
-        this.hotCacheTtlMs(),
+        this.hotCacheTtlMs()
       );
       // Null-check, not truthiness (kilo WARNING): getCachedMemories returns []
       // for a cached EMPTY corpus, which is falsy — a truthiness guard would
@@ -4372,11 +4358,7 @@ export class StorageManager {
       // during the scan. The version guard prevents clobbering a newer patched +
       // re-keyed entry; the keyId guard prevents publishing this key's decrypted
       // corpus under a since-changed identity (Codex Medium, #1902).
-      if (
-        this.hotMemoriesCacheEnabled &&
-        this.getMemoryCorpusVersion() === version &&
-        this.hotCacheKeyId() === keyId
-      ) {
+      if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === version && this.hotCacheKeyId() === keyId) {
         setCachedMemories(this.baseDir, memories, version, keyId, this.hotCacheTtlMs());
       }
       return memories;
@@ -4455,7 +4437,7 @@ export class StorageManager {
    *  exclusively by invalidateColdMemoriesCache(), which is called only when
    *  cold content actually changes (hot→cold demotions, writeMemoryFileAtomic
    *  inside cold/, archiveMemory, etc.). */
-  private invalidateAllMemoriesCache(): void {
+  protected invalidateAllMemoriesCache(): void {
     deleteInFlightReadsForDir(this.baseDir);
     // Bulk/ambiguous mutations drop the hot layer wholesale (below); bump the
     // corpus sentinel too so PEER processes rescan instead of serving a warm
@@ -4506,19 +4488,17 @@ export class StorageManager {
    */
   private async patchHotMemoriesCache(
     opts: { addedPath?: string; removedPath?: string },
-    scope: "memory-create" | "memory-mutate" = "memory-mutate",
+    scope: "memory-create" | "memory-mutate" = "memory-mutate"
   ): Promise<void> {
     const prevVersion = this.getMemoryCorpusVersion();
     // Snapshot the key identity once (issue #1902, Codex Medium): a mid-await
     // setSecureStoreKey change would otherwise let the post-await patch/re-key
     // store this key's decrypted memory under a since-changed identity.
     const keyId = this.hotCacheKeyId();
-    const warm = this.hotMemoriesCacheEnabled && getCachedMemories(this.baseDir, prevVersion, keyId, this.hotCacheTtlMs()) !== null;
-    if (
-      warm &&
-      opts.removedPath !== undefined &&
-      !this.isColdOrArchiveTierPath(opts.removedPath)
-    ) {
+    const warm =
+      this.hotMemoriesCacheEnabled &&
+      getCachedMemories(this.baseDir, prevVersion, keyId, this.hotCacheTtlMs()) !== null;
+    if (warm && opts.removedPath !== undefined && !this.isColdOrArchiveTierPath(opts.removedPath)) {
       updateCacheOnDelete(this.baseDir, opts.removedPath, keyId);
     }
     // Bump the corpus sentinel AND drop the in-flight slot BEFORE the awaited
@@ -4532,11 +4512,7 @@ export class StorageManager {
     const { produced, exclusive } = this.bumpMemoryCorpusVersionExclusive();
     deleteInFlightReadsForDir(this.baseDir);
     let patchedOk = warm;
-    if (
-      warm &&
-      opts.addedPath !== undefined &&
-      !this.isColdOrArchiveTierPath(opts.addedPath)
-    ) {
+    if (warm && opts.addedPath !== undefined && !this.isColdOrArchiveTierPath(opts.addedPath)) {
       // Re-read + parse the ONE just-written file so the cached object is
       // exactly what a fresh disk scan would yield — serialize→parse normalizes
       // fields (e.g. an empty array becomes undefined), and the in-memory write
@@ -4566,7 +4542,13 @@ export class StorageManager {
         patchedOk = false;
       }
     }
-    if (patchedOk && exclusive && produced === prevVersion + 1 && this.getMemoryCorpusVersion() === produced && this.hotCacheKeyId() === keyId) {
+    if (
+      patchedOk &&
+      exclusive &&
+      produced === prevVersion + 1 &&
+      this.getMemoryCorpusVersion() === produced &&
+      this.hotCacheKeyId() === keyId
+    ) {
       // Re-key the patched entry (still tagged prevVersion) to the version THIS
       // mutation produced — ONLY if no peer appended between prevVersion capture
       // and our bump (produced === prevVersion + 1), our bump was exclusive, and
@@ -4609,7 +4591,7 @@ export class StorageManager {
    * Finding UvUy (PR #402 round-11): bumping the sentinel here makes the
    * per-process in-memory cache safe across process boundaries.
    */
-  private invalidateColdMemoriesCache(): void {
+  protected invalidateColdMemoriesCache(): void {
     const coldRoot = path.join(this.baseDir, "cold");
     StorageManager.coldMemoriesCache.delete(coldRoot);
     this.bumpColdWriteVersion();
@@ -4981,51 +4963,49 @@ export class StorageManager {
    * Returns the new file path on success, null on failure.
    */
   async archiveMemory(memory: MemoryFile, lifecycle?: MemoryLifecycleEventWriteOptions): Promise<string | null> {
-    try {
-      const now = lifecycle?.at ?? new Date();
-      const today = now.toISOString().slice(0, 10);
-      const destDir = path.join(this.archiveDir, today);
-      await mkdir(destDir, { recursive: true });
-
-      // Update frontmatter to reflect archived status
-      const updatedFm: MemoryFrontmatter = {
-        ...memory.frontmatter,
-        status: "archived",
-        archivedAt: now.toISOString(),
-        updated: now.toISOString(),
-      };
-
-      const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
-      const destPath = path.join(destDir, path.basename(memory.path));
-
-      // Write to archive location first (encrypted if applicable), then remove original.
-      await this.writeStorageSecureFile(destPath, fileContent);
-      await unlink(memory.path);
-      markProjectedMemoryPathInvalid(this.baseDir, memory.frontmatter.id);
-      this.invalidateAllMemoriesCache();
-      await this.appendGeneratedMemoryLifecycleEventFailOpen(
-        "storage.archiveMemory",
-        {
-          memoryId: memory.frontmatter.id,
-          eventType: "archived",
-          timestamp: updatedFm.archivedAt ?? updatedFm.updated,
-          actor: lifecycle?.actor ?? "storage.archiveMemory",
-          reasonCode: lifecycle?.reasonCode,
-          before: this.summarizeLifecycleState(memory.frontmatter, memory.path),
-          after: this.summarizeLifecycleState(updatedFm, destPath),
-          relatedMemoryIds: lifecycle?.relatedMemoryIds,
-          correlationId: lifecycle?.correlationId,
-        },
-        lifecycle?.ruleVersion
-      );
-      this.bumpMemoryStatusVersion();
-
-      log.debug(`archived memory ${memory.frontmatter.id} → ${destPath}`);
-      return destPath;
-    } catch (err) {
-      log.warn(`failed to archive memory ${memory.frontmatter.id}: ${err}`);
-      return null;
-    }
+    const archiveCurrent = async (current: MemoryFile, markDurable: () => void): Promise<string | null> => {
+      try {
+        const now = lifecycle?.at ?? new Date();
+        const today = now.toISOString().slice(0, 10);
+        const destDir = path.join(this.archiveDir, today);
+        await mkdir(destDir, { recursive: true });
+        const updatedFm: MemoryFrontmatter = {
+          ...current.frontmatter,
+          status: "archived",
+          archivedAt: now.toISOString(),
+          updated: now.toISOString(),
+        };
+        const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
+        const destPath = path.join(destDir, path.basename(current.path));
+        await this.writeStorageSecureFile(destPath, fileContent);
+        await unlink(current.path);
+        markDurable();
+        markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
+        this.invalidateAllMemoriesCache();
+        await this.appendGeneratedMemoryLifecycleEventFailOpen(
+          "storage.archiveMemory",
+          {
+            memoryId: current.frontmatter.id,
+            eventType: "archived",
+            timestamp: updatedFm.archivedAt ?? updatedFm.updated,
+            actor: lifecycle?.actor ?? "storage.archiveMemory",
+            reasonCode: lifecycle?.reasonCode,
+            before: this.summarizeLifecycleState(current.frontmatter, current.path),
+            after: this.summarizeLifecycleState(updatedFm, destPath),
+            relatedMemoryIds: lifecycle?.relatedMemoryIds,
+            correlationId: lifecycle?.correlationId,
+          },
+          lifecycle?.ruleVersion
+        );
+        this.bumpMemoryStatusVersion();
+        log.debug(`archived memory ${current.frontmatter.id} → ${destPath}`);
+        return destPath;
+      } catch (err) {
+        log.warn(`failed to archive memory ${current.frontmatter.id}: ${err}`);
+        return null;
+      }
+    };
+    return await this.runTombstoneBlockedArchive(memory, archiveCurrent);
   }
 
   async readEntities(): Promise<string[]> {
@@ -5095,21 +5075,25 @@ export class StorageManager {
     return null;
   }
 
+
   async invalidateMemory(id: string): Promise<boolean> {
     const memories = await this.readAllMemories();
-    const memory = memories.find((m) => m.frontmatter.id === id);
+    const memory = memories.find((candidate) => candidate.frontmatter.id === id);
     if (!memory) return false;
 
-    try {
-      await unlink(memory.path);
-      markProjectedMemoryPathInvalid(this.baseDir, id);
-      this.invalidateAllMemoriesCache();
-      this.bumpMemoryStatusVersion();
-      log.debug(`invalidated memory ${id}`);
-      return true;
-    } catch {
-      return false;
-    }
+    return await this.runTombstoneBlockedInvalidation(
+      memory,
+      async (current, rebuildMarker, markDurable) => {
+        await unlink(current.path);
+        markDurable();
+        markProjectedMemoryPathInvalid(this.baseDir, id);
+        this.invalidateAllMemoriesCache();
+        await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
+        this.bumpMemoryStatusVersion();
+        log.debug(`invalidated memory ${id}`);
+        return true;
+      }
+    );
   }
 
   async updateMemory(
@@ -5139,7 +5123,9 @@ export class StorageManager {
       log.warn(`updated memory content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
     }
     const fileContent = `${serializeFrontmatter(updated)}\n\n${sanitized.text}\n`;
-    await this.writeStorageSecureFile(memory.path, fileContent);
+    await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
+      this.invalidateAllMemoriesCache();
+    });
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
       memoryId: id,
@@ -5174,11 +5160,14 @@ export class StorageManager {
     const afterStatus = updated.status ?? "active";
 
     const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
-    await this.writeStorageSecureFile(memory.path, fileContent);
+    await this.writeTombstoneBlockedFrontmatter(memory, fileContent, updated, async () => {
+      this.invalidateAllMemoriesCache();
+      // Rebuild the blocked index from the post-write cold-tier cache.
+      if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
+        this.invalidateColdMemoriesCache();
+      }
+    });
     await this.patchHotMemoriesCache({ addedPath: memory.path });
-    // If the target file lives in cold/, bump the cold-version sentinel so
-    // other processes detect the change on their next readAllColdMemories()
-    // call (Finding UvUy fix).
     if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }
@@ -5238,19 +5227,16 @@ export class StorageManager {
     for (const m of memories) {
       if (!m.frontmatter.expiresAt) continue;
       const expiresAt = new Date(m.frontmatter.expiresAt).getTime();
-      if (expiresAt < now) {
-        try {
-          await unlink(m.path);
-          markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
-          // Bump per deletion so a concurrent readAllMemories mid-loop rescans
-          // and never re-caches a partially-cleaned corpus (Cursor Medium,
-          // #1902); invalidateAllMemoriesCache below still runs at loop end.
-          this.bumpMemoryCorpusVersion();
-          deleted.push(m);
-          log.debug(`cleaned expired memory ${m.frontmatter.id} (TTL expired)`);
-        } catch {
-          // Ignore
-        }
+      if (expiresAt >= now) continue;
+      const removed = await this.deleteMemoryForMaintenance(m, (current) => {
+        const currentExpiresAt = current.frontmatter.expiresAt
+          ? new Date(current.frontmatter.expiresAt).getTime()
+          : Number.NaN;
+        return Number.isFinite(currentExpiresAt) && currentExpiresAt < now;
+      });
+      if (removed) {
+        deleted.push(removed);
+        log.debug(`cleaned expired memory ${removed.frontmatter.id} (TTL expired)`);
       }
     }
 
@@ -5355,7 +5341,7 @@ export class StorageManager {
       this.memoryLifecycleLedgerPath,
       (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),
       serializeLifecycleAppendPayload(events),
-      { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) },
+      { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) }
     );
     return events.length;
   }
@@ -5367,7 +5353,7 @@ export class StorageManager {
       this.memoryLifecycleLedgerPath,
       { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) },
       (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),
-      () => this.ensureDirectories(),
+      () => this.ensureDirectories()
     );
   }
 
@@ -5380,20 +5366,15 @@ export class StorageManager {
       this.memoryLifecycleLedgerPath,
       { writeSecure: (p, c) => this.writeStorageSecureFile(p, c), readSecure: (p) => this.readStorageSecureFile(p) },
       (p) => this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, p),
-      () => this.ensureDirectories(),
+      () => this.ensureDirectories()
     );
   }
 
   /** Drain pending lifecycle spills for any ledger inside this storage root.
    * The offline CLI uses this path-aware variant for per-namespace ledgers so
    * secure-store encryption and path-bound authentication remain consistent. */
-  async drainPendingMemoryLifecycleEventsForSyncAt(
-    ledgerPath: string,
-  ): Promise<DrainPendingLifecycleForSyncResult> {
-    const target = this.assertManagedStoragePath(
-      ledgerPath,
-      "storage.drainPendingMemoryLifecycleEventsForSyncAt",
-    );
+  async drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath: string): Promise<DrainPendingLifecycleForSyncResult> {
+    const target = this.assertManagedStoragePath(ledgerPath, "storage.drainPendingMemoryLifecycleEventsForSyncAt");
     return drainPendingLifecycleLedgerForSync(
       target,
       {
@@ -5403,7 +5384,7 @@ export class StorageManager {
       (payload) => this.appendStorageSecureFile(target, payload),
       async () => {
         await mkdir(path.dirname(target), { recursive: true });
-      },
+      }
     );
   }
 
@@ -5416,7 +5397,7 @@ export class StorageManager {
   async writeMemoryLifecycleLedgerContent(
     content: string | Buffer,
     targetPath: string = this.memoryLifecycleLedgerPath,
-    forceEncrypt = false,
+    forceEncrypt = false
   ): Promise<void> {
     await this.ensureDirectories();
     await this.writeStorageSecureFile(targetPath, content, forceEncrypt);
@@ -5664,20 +5645,19 @@ export class StorageManager {
   }
   async readAllMemoryLifecycleEventsForCompaction(): Promise<MemoryLifecycleEvent[]> {
     if (!(await probeEncryptedRegularFileHeader(this.memoryLifecycleLedgerPath))) {
-      return readAllLifecycleEventsFromLedger(
-        this.memoryLifecycleLedgerPath,
-        (p) => this.readStorageSecureFile(p),
-      );
+      return readAllLifecycleEventsFromLedger(this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p));
     }
-    return readAllLifecycleEventsFromLedgerBuffer(
-      this.memoryLifecycleLedgerPath,
-      (p) => readMaybeEncryptedFileBuffer(p, this._secureStoreKey, this.baseDir),
+    return readAllLifecycleEventsFromLedgerBuffer(this.memoryLifecycleLedgerPath, (p) =>
+      readMaybeEncryptedFileBuffer(p, this._secureStoreKey, this.baseDir)
     );
   }
 
   async readMemoryLifecycleEvents(limit: number = 200): Promise<MemoryLifecycleEvent[]> {
     return readBoundedLifecycleEventsFromLedger(
-      this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p), limit);
+      this.memoryLifecycleLedgerPath,
+      (p) => this.readStorageSecureFile(p),
+      limit
+    );
   }
 
   async writeCompressionGuidelines(content: string): Promise<void> {
@@ -6366,20 +6346,19 @@ export class StorageManager {
       if (!isResolved) continue;
 
       const updatedAt = new Date(m.frontmatter.updated).getTime();
-      if (updatedAt < cutoff) {
-        // Remove the file
-        try {
-          await unlink(m.path);
-          markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
-          // Bump per deletion so a concurrent readAllMemories mid-loop rescans
-          // and never re-caches a partially-cleaned corpus (Cursor Medium,
-          // #1902); bumpMemoryStatusVersion below still runs at loop end.
-          this.bumpMemoryCorpusVersion();
-          deleted.push(m);
-          log.debug(`cleaned expired commitment ${m.frontmatter.id}`);
-        } catch {
-          // Ignore
+      if (updatedAt >= cutoff) continue;
+      try {
+        const removed = await this.deleteMemoryForMaintenance(m, (current) => {
+          const currentResolved = current.frontmatter.tags.some((tag) => tag === "fulfilled" || tag === "expired");
+          const currentUpdatedAt = new Date(current.frontmatter.updated).getTime();
+          return currentResolved && currentUpdatedAt < cutoff;
+        });
+        if (removed) {
+          deleted.push(removed);
+          log.debug(`cleaned expired commitment ${removed.frontmatter.id}`);
         }
+      } catch {
+        // Ignore
       }
     }
 
@@ -6416,7 +6395,8 @@ export class StorageManager {
     // different identity than the one that decrypted this corpus.
     const keyId = this.hotCacheKeyId();
     const warm =
-      this.hotMemoriesCacheEnabled && getCachedMemories(this.baseDir, prevVersion, keyId, this.hotCacheTtlMs()) !== null;
+      this.hotMemoriesCacheEnabled &&
+      getCachedMemories(this.baseDir, prevVersion, keyId, this.hotCacheTtlMs()) !== null;
     // Record each applied patch so the end-of-flush re-key can re-apply them on
     // top of whatever is cached at prevVersion — robust to a concurrent scan
     // that republished an UNpatched corpus mid-flush (Cursor Medium #1902).
@@ -6469,7 +6449,13 @@ export class StorageManager {
       // and could republish it at the old version, clobbering our patches. New
       // readers now start a fresh scan at the bumped version.
       deleteInFlightReadsForDir(this.baseDir);
-      if (warm && exclusive && produced === prevVersion + 1 && this.getMemoryCorpusVersion() === produced && this.hotCacheKeyId() === keyId) {
+      if (
+        warm &&
+        exclusive &&
+        produced === prevVersion + 1 &&
+        this.getMemoryCorpusVersion() === produced &&
+        this.hotCacheKeyId() === keyId
+      ) {
         const cur = getCachedMemories(this.baseDir, prevVersion, keyId);
         if (cur) {
           // Re-apply our patches on top of whatever is cached at prevVersion
@@ -6482,7 +6468,10 @@ export class StorageManager {
           const reapplied = cur.map((m) => {
             const patch = appliedPatches.get(path.resolve(m.path));
             return patch
-              ? { ...m, frontmatter: { ...m.frontmatter, accessCount: patch.accessCount, lastAccessed: patch.lastAccessed } }
+              ? {
+                  ...m,
+                  frontmatter: { ...m.frontmatter, accessCount: patch.accessCount, lastAccessed: patch.lastAccessed },
+                }
               : m;
           });
           setCachedMemories(this.baseDir, reapplied, produced, keyId, this.hotCacheTtlMs());
@@ -6516,7 +6505,7 @@ export class StorageManager {
    */
   async findExistingMemoryPaths(
     ids: string[],
-    preferredPaths: Map<string, string[]> = new Map(),
+    preferredPaths: Map<string, string[]> = new Map()
   ): Promise<Map<string, string[]>> {
     if (ids.length === 0) return new Map();
     const wantedIds = new Set(ids);
@@ -6535,12 +6524,8 @@ export class StorageManager {
       const preferred = preferredPaths.get(id) ?? [];
       const preferredMatches: string[] = [];
       for (const preferredPath of preferred) {
-        const directCandidates = new Set(
-          qmdResultPathCandidates(this.baseDir, preferredPath),
-        );
-        const directMatch = existingPaths.find((filePath) =>
-          directCandidates.has(path.resolve(filePath)),
-        );
+        const directCandidates = new Set(qmdResultPathCandidates(this.baseDir, preferredPath));
+        const directMatch = existingPaths.find((filePath) => directCandidates.has(path.resolve(filePath)));
         if (directMatch) {
           preferredMatches.push(directMatch);
           continue;
@@ -6642,7 +6627,11 @@ export class StorageManager {
       return `projection ${age} stale, last rebuilt ${rebuiltAt}`;
     });
     return readBoundedLifecycleEventsFromLedger(
-      this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p), cappedLimit, memoryId);
+      this.memoryLifecycleLedgerPath,
+      (p) => this.readStorageSecureFile(p),
+      cappedLimit,
+      memoryId
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -6742,12 +6731,19 @@ export class StorageManager {
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
 
-    await this.writeStorageSecureFile(filePath, fileContent);
-    // Keep the version-keyed hot-memories cache coherent with the new chunk
-    // file (issue #1902) — same single-file patch path writeMemory uses.
-    await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
-    log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
-    return id;
+    return await this.writeTombstoneBlockedChunk(
+      filePath,
+      fileContent,
+      fm,
+      sanitized.text,
+      () => this.findExistingTombstoneBlockedMemory(sanitized.text, category, fm.sourceConnector),
+      async () => {
+        // Keep the version-keyed hot-memories cache coherent with the new chunk
+        // file (issue #1902) — same single-file patch path writeMemory uses.
+        await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
+        log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
+      }
+    );
   }
 
   /**
@@ -6835,7 +6831,12 @@ export class StorageManager {
 
       // Audit-trail correction — sealed even INSIDE the engine (#2022 review).
       const auditBody = `Superseded: ${oldMemory.content}\n\nReason: ${reason}`;
-      const auditInput = { content: auditBody, category: "correction" as const, confidence: 1.0, tags: ["supersession", "auto-resolved"] };
+      const auditInput = {
+        content: auditBody,
+        category: "correction" as const,
+        confidence: 1.0,
+        tags: ["supersession", "auto-resolved"],
+      };
       const auditEnvelope = composeMemoryEnvelope(auditInput, { source: "contradiction-detection" });
       await this.writeSealedMemory(auditEnvelope, { lineage: [oldMemoryId, newMemoryId] });
 

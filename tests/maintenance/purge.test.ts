@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 
 import { purgeMemories, type PurgeMemoriesOptions } from "../../packages/remnic-core/src/maintenance/purge.js";
 import type { MemoryFile, MemoryFrontmatter } from "../../packages/remnic-core/src/types.js";
@@ -45,6 +45,10 @@ function makeStorageStub(
     readAllColdMemories: async () => memories.cold ?? [],
     readArchivedMemories: async () => memories.archived ?? [],
     invalidateAllMemoriesCache: () => {},
+    deleteMemoryForMaintenance: async (memory: MemoryFile) => {
+      unlinked.push(memory.path);
+      return memory;
+    },
   } as unknown as StorageManager;
   return { stub, unlinked };
 }
@@ -264,6 +268,10 @@ test("purgeMemories: missing file records already-absent outcome and refreshes Q
     });
     const stub = {
       dir,
+      deleteMemoryForMaintenance: async () => {
+        const error = Object.assign(new Error("missing file"), { code: "ENOENT" });
+        throw error;
+      },
       readAllMemories: async () => [],
       readAllColdMemories: async () => [missing],
       readArchivedMemories: async () => [],
@@ -355,6 +363,10 @@ test("purgeMemories: archive purges invalidate archive tier without refreshing h
     });
     const invalidatedTiers: string[] = [];
     const storage = {
+      deleteMemoryForMaintenance: async (memory: MemoryFile) => {
+        await unlink(memory.path);
+        return memory;
+      },
       dir,
       readAllMemories: async () => [],
       readAllColdMemories: async () => [],

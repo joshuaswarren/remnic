@@ -230,6 +230,12 @@ export interface HeldFileLockController {
    * `false`) this always resolves `false` — there is no lock to hold.
    */
   refresh(): Promise<boolean>;
+  /**
+   * Why the lock was not acquired. `timeout` means a busy peer consumed the
+   * bounded wait; `error` means acquisition failed due to filesystem setup or
+   * I/O and must not be retried as contention.
+   */
+  readonly failure?: "timeout" | "error";
 }
 
 /** Default bounded acquisition wait, mirroring the catalog. */
@@ -249,6 +255,7 @@ interface HeldLock {
   readonly path: string;
   readonly ownerId: string;
 }
+type LockAcquisitionFailure = { readonly failure: "timeout" | "error" };
 
 /**
  * Run `task` under an exclusive on-disk lock at `lockPath`.
@@ -264,13 +271,11 @@ interface HeldLock {
  * id / timestamp, so its content differs and is left untouched.
  *
  * `task` receives `acquired: boolean` — `true` when we hold the lock, `false`
- * when acquisition timed out (best-effort). The signature takes
- * `(acquired) => Promise<T>` rather than the issue's sketched `() => Promise<T>`
- * so this can be the SINGLE lock home (issue: "do NOT leave two lock
- * implementations; pick one home"): the catalog's touch path needs to DROP on
- * timeout, which requires knowing whether the lock was acquired. A caller that
- * ignores the flag is still assignable (`() => Promise<T>` ⊆
- * `(acquired: boolean) => Promise<T>` in TypeScript).
+ * when acquisition is unavailable. The controller's `failure` field
+ * distinguishes a bounded busy-lock timeout from a permanent filesystem
+ * acquisition error.
+ * This explicit callback keeps the lock utility as the single lock home while
+ * allowing callers to choose their timeout and failure policy.
  *
  * Release is ownership-checked: we only `unlink` a lock whose content still
  * identifies THIS acquirer (same owner id), so a replacement created after we
@@ -344,13 +349,11 @@ export async function withHeldFileLock<T>(
   const ownerId = randomUUID();
   const lockDir = path.dirname(lockPath);
 
-  const held = await acquireLock(lockPath, lockDir, ownerId, opts, maxWaitMs, pollMs);
-  if (!held) {
-    // Best-effort: run the task WITHOUT the lock. The caller decides what to
-    // do (the catalog touch path will drop its append); we never crash the
-    // primary op on contention.
-    return task(false, { refresh: async () => false });
+  const acquisition = await acquireLock(lockPath, lockDir, ownerId, opts, maxWaitMs, pollMs);
+  if ("failure" in acquisition) {
+    return task(false, { refresh: async () => false, failure: acquisition.failure });
   }
+  const held = acquisition;
 
   // Heartbeat: while WE hold the lock, refresh its mtime so age-based stale
   // detection sees an active holder and does not break us out from under
@@ -437,10 +440,9 @@ function formatInvalidNumber(value: unknown): string {
 }
 
 /**
- * Atomically create the lock file, looping until acquired/stale-broken/timeout.
- * Returns the held-lock handle on success, or `undefined` on bounded-timeout.
- * Unexpected FS errors proceed best-effort (return undefined) rather than
- * crashing the guarded op, matching the catalog.
+ * Atomically create the lock file, looping until acquired or the bounded
+ * deadline. Reports `timeout` for a busy lock and `error` for permanent
+ * filesystem setup/I/O failures so callers can choose the safe policy.
  */
 async function acquireLock(
   lockPath: string,
@@ -449,15 +451,12 @@ async function acquireLock(
   opts: HeldFileLockOptions,
   maxWaitMs: number,
   pollMs: number,
-): Promise<HeldLock | undefined> {
+): Promise<HeldLock | LockAcquisitionFailure> {
   try {
     await mkdir(lockDir, { recursive: true });
   } catch {
-    // Lock-directory setup failure (e.g. an intermediate path is a file, or
-    // permissions deny mkdir) must NOT crash the guarded op — the advisory
-    // lock contract is best-effort. Return undefined so task(false) runs
-    // instead of rejecting (codex P2 review).
-    return undefined;
+    // Lock-directory setup failure is a permanent acquisition error.
+    return { failure: "error" };
   }
   const deadline = Date.now() + maxWaitMs;
   for (;;) {
@@ -486,18 +485,18 @@ async function acquireLock(
       }
       if (!wroteMeta) {
         await unlink(lockPath).catch(() => undefined);
-        return undefined;
+        return { failure: "error" };
       }
       return { path: lockPath, ownerId };
     } catch (err) {
       if ((err as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") {
-        // Unexpected FS error — proceed best-effort without the lock.
-        return undefined;
+        // Unexpected filesystem errors are permanent acquisition failures.
+        return { failure: "error" };
       }
       // Lock exists: break it if stale, then poll. breakStaleLock is
       // replacement-safe (NG7Bg) and never throws.
       await breakStaleLock(lockPath, opts.staleMs, opts.onBeforeBreakStaleUnlinkForTest);
-      if (Date.now() >= deadline) return undefined;
+      if (Date.now() >= deadline) return { failure: "timeout" };
       // Cap the sleep to the remaining budget so a large pollMs cannot block
       // acquisition far past maxWaitMs (e.g. maxWaitMs=1000, pollMs=60000
       // would otherwise block ~60s instead of 1s — codex P2).

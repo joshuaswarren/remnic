@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { mock } from "node:test";
 
 import { ContentHashIndex, FactHashIndexNotAuthoritativeError, StorageManager } from "./storage.js";
+import {
+  buildExplicitCaptureDedupKey,
+  TombstoneBlockedCaptureIndex,
+} from "./storage/tombstone-blocked-capture-index.js";
+import { TombstoneBlockedCaptureWriteLock } from "./storage/tombstone-blocked-capture-mutation.js";
+import { isEncryptedFile } from "./secure-store/secure-fs.js";
 import type { MemoryFile } from "./types.js";
 
 // Issue #1909 (Part B): writeMemory("fact") used to rewrite the whole
@@ -24,6 +30,31 @@ async function withMemoryDir(run: (dir: string) => Promise<void>): Promise<void>
   }
 }
 
+test("capture write locks combine streamed hashes in canonical order", async () => {
+  await withMemoryDir(async (dir) => {
+    const acquired: string[] = [];
+    const lock = new TombstoneBlockedCaptureWriteLock({
+      stateDir: dir,
+      withHeldFileLock: (async (lockPath, _options, task) => {
+        acquired.push(lockPath);
+        return await task(true, { refresh: async () => true });
+      }) as typeof import("./utils/serialize-mutations.js").withHeldFileLock,
+    });
+
+    await lock.withCaptureWriteLockAndHashes(async () => {}, "outer identity", ["0".repeat(64)]);
+
+    assert.equal(acquired.length, 2);
+    assert.deepEqual(acquired, [...acquired].sort());
+    await assert.rejects(
+      lock.withCaptureWriteLock(
+        () => lock.withCaptureWriteLockHashes(async () => {}, ["0".repeat(64)]),
+        "outer identity"
+      ),
+      /tombstone-blocked capture write lock remained busy/
+    );
+  });
+});
+
 test("deferred fact writes do NO per-fact index saves; a single flush persists all", async () => {
   await withMemoryDir(async (dir) => {
     const saveSpy = mock.method(ContentHashIndex.prototype, "save");
@@ -41,7 +72,7 @@ test("deferred fact writes do NO per-fact index saves; a single flush persists a
       assert.equal(
         saveSpy.mock.callCount(),
         0,
-        "deferred fact writes must not flush the index per fact (was 10 flushes)",
+        "deferred fact writes must not flush the index per fact (was 10 flushes)"
       );
 
       // All 10 hashes are live in the in-memory index (dirty), so same-session
@@ -53,9 +84,11 @@ test("deferred fact writes do NO per-fact index saves; a single flush persists a
       // One authoritative batch save (mirrors saveContentHashIndexes) persists
       // the whole superset in a single rewrite.
       saveSpy.mock.resetCalls();
-      const index = await (storage as unknown as {
-        getFactHashIndex: () => Promise<ContentHashIndex>;
-      }).getFactHashIndex.call(storage);
+      const index = await (
+        storage as unknown as {
+          getFactHashIndex: () => Promise<ContentHashIndex>;
+        }
+      ).getFactHashIndex.call(storage);
       await index.save();
       assert.equal(saveSpy.mock.callCount(), 1, "exactly one batch save, down from 10+");
     } finally {
@@ -68,7 +101,7 @@ test("deferred fact writes do NO per-fact index saves; a single flush persists a
       assert.equal(
         await reopened.hasFactContentHash(`deferred fact number ${i}`),
         true,
-        "batch-saved hashes survive into a new session",
+        "batch-saved hashes survive into a new session"
       );
     }
   });
@@ -88,13 +121,9 @@ test("direct writeMemory('fact') without the flag persists the hash via the LOCK
       await storage.writeMemory("fact", "single write fact", { source: "manual" });
       assert.ok(
         reconcileSpy.mock.callCount() >= 1,
-        "single-write callers flush via the locked reconcile (saveMergingWithDisk)",
+        "single-write callers flush via the locked reconcile (saveMergingWithDisk)"
       );
-      assert.equal(
-        saveSpy.mock.callCount(),
-        0,
-        "the direct write must NOT use the unlocked whole-file save()",
-      );
+      assert.equal(saveSpy.mock.callCount(), 0, "the direct write must NOT use the unlocked whole-file save()");
       assert.equal(await storage.hasFactContentHash("single write fact"), true);
     } finally {
       saveSpy.mock.restore();
@@ -148,7 +177,7 @@ test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's c
     assert.equal(
       s.factOnlyHashes.has(sentinel),
       true,
-      "a fact hash added during the rebuild scan must survive publication (lost under reassign)",
+      "a fact hash added during the rebuild scan must survive publication (lost under reassign)"
     );
     // The corpus fact is present too — the in-place repopulate did not drop it.
     assert.equal(await storage.hasFactContentHash("alpha established fact"), true);
@@ -198,7 +227,7 @@ test("#2016 thread PRRT_kwDORJXyws6SEBri: a hash added during rebuildUnderLock's
     await fresh.load();
     assert.ok(
       fresh.has(lateContent),
-      "a hash added during the locked rebuild save must reach disk (lost under the unconditional clear)",
+      "a hash added during the locked rebuild save must reach disk (lost under the unconditional clear)"
     );
     // The rebuilt corpus set survives too — the late-delta handling did not drop it.
     assert.ok(fresh.has("corpus fact one"), "corpus hash one survives the rebuild+reconcile");
@@ -226,7 +255,7 @@ test("promotion-style immediate write survives restart even with fact-hashes.rea
     assert.equal(
       await restarted.hasFactContentHash("promoted profile fact"),
       true,
-      "the promoted hash is on disk and found after restart — no duplicate re-creation",
+      "the promoted hash is on disk and found after restart — no duplicate re-creation"
     );
   });
 });
@@ -254,7 +283,7 @@ test("durability: deferred writes with NO batch save are rebuildable from on-dis
       assert.equal(
         await recovered.hasFactContentHash(`crash fact ${i}`),
         true,
-        "a lost hash is rebuilt from the durable fact corpus — never a data loss",
+        "a lost hash is rebuilt from the durable fact corpus — never a data loss"
       );
     }
   });
@@ -273,9 +302,11 @@ test("concurrent deferred fact writes both land in the index (no lost update)", 
         deferHashIndexSave: true,
       }),
     ]);
-    const index = await (storage as unknown as {
-      getFactHashIndex: () => Promise<ContentHashIndex>;
-    }).getFactHashIndex.call(storage);
+    const index = await (
+      storage as unknown as {
+        getFactHashIndex: () => Promise<ContentHashIndex>;
+      }
+    ).getFactHashIndex.call(storage);
     await index.save();
 
     const reopened = new StorageManager(dir);
@@ -303,7 +334,7 @@ test("#1909 round 11: a deferred write with no batch save is rebuilt from the co
     assert.equal(
       await restarted.hasFactContentHash("windowed fact"),
       true,
-      "the fact is rebuilt from the corpus — never lost from dedup",
+      "the fact is rebuilt from the corpus — never lost from dedup"
     );
   });
 });
@@ -396,7 +427,7 @@ test("#1909: removing a hash and reconcile-saving drops it from disk (no resurre
     assert.equal(
       fresh.has("archived fact body"),
       false,
-      "removed hash stays gone → re-extraction of that content is allowed",
+      "removed hash stays gone → re-extraction of that content is allowed"
     );
   });
 });
@@ -482,9 +513,7 @@ test("#1909: rebuild indexes ACTIVE cold-tier facts; a demoted fact's hash survi
     await storage.writeMemory("fact", "cold tier fact was demoted", { source: "manual" });
 
     storage.invalidateAllMemoriesCacheForDir();
-    const demoted = (await storage.readAllMemories()).find(
-      (m) => m.content.includes("cold tier fact was demoted"),
-    );
+    const demoted = (await storage.readAllMemories()).find((m) => m.content.includes("cold tier fact was demoted"));
     assert.ok(demoted, "the fact to demote must be readable in hot before migration");
     await storage.migrateMemoryToTier(demoted!, "cold");
 
@@ -499,12 +528,12 @@ test("#1909: rebuild indexes ACTIVE cold-tier facts; a demoted fact's hash survi
     assert.equal(
       await reopened.hasFactContentHash("cold tier fact was demoted"),
       true,
-      "a fact demoted to cold must survive the corpus rebuild (hot+cold union)",
+      "a fact demoted to cold must survive the corpus rebuild (hot+cold union)"
     );
     assert.equal(
       await reopened.hasFactContentHash("hot tier fact stays put"),
       true,
-      "the hot-tier fact must also survive the rebuild",
+      "the hot-tier fact must also survive the rebuild"
     );
   });
 });
@@ -565,7 +594,11 @@ test("#2016: a lock-timed-out append is NOT silently dropped and eventually pers
     // Disk is untouched while the lock is held — proves it did not write unlocked.
     const early = new ContentHashIndex(stateDir);
     await early.load();
-    assert.equal(early.has("deferred-under-contended-lock"), false, "no unlocked publish while the peer holds the lock");
+    assert.equal(
+      early.has("deferred-under-contended-lock"),
+      false,
+      "no unlocked publish while the peer holds the lock"
+    );
     // In-memory dedup still works this session (dirty addition retained).
     assert.equal(idx.has("deferred-under-contended-lock"), true, "addition stays live in-memory");
 
@@ -578,7 +611,7 @@ test("#2016: a lock-timed-out append is NOT silently dropped and eventually pers
     await fresh.load();
     assert.ok(
       fresh.has("deferred-under-contended-lock"),
-      "the deferred addition eventually reached disk via the durable retry",
+      "the deferred addition eventually reached disk via the durable retry"
     );
   });
 });
@@ -606,13 +639,21 @@ test("#2016: exhausting retries under a permanently held lock is best-effort, ne
     // Let the bounded retry chain run to exhaustion (lock is never released).
     await withRetryLoopAlive(() => idx.whenReconcileRetrySettled());
 
-    assert.equal(idx.hasPendingReconcileRetry, false, "retries are bounded — the chain gives up, it does not spin forever");
+    assert.equal(
+      idx.hasPendingReconcileRetry,
+      false,
+      "retries are bounded — the chain gives up, it does not spin forever"
+    );
     // The addition is still held in-memory (dedup stays correct this session);
     // disk stays empty, so the corpus-rebuild-on-restart safety net covers it.
     assert.equal(idx.has("never-persistable-while-locked"), true, "addition retained in-memory after giving up");
     const fresh = new ContentHashIndex(stateDir);
     await fresh.load();
-    assert.equal(fresh.has("never-persistable-while-locked"), false, "nothing written unlocked while the lock stayed held");
+    assert.equal(
+      fresh.has("never-persistable-while-locked"),
+      false,
+      "nothing written unlocked while the lock stayed held"
+    );
   });
 });
 
@@ -750,7 +791,7 @@ test("#2016: a rebuild serializes with a concurrent locked writer — the peer's
     assert.equal(
       peerBlockedDuringRebuild,
       true,
-      "the peer could not acquire the lock while the rebuild held it (serialized)",
+      "the peer could not acquire the lock while the rebuild held it (serialized)"
     );
 
     // The peer's deferred retry lands after the rebuild releases the lock and
@@ -762,7 +803,7 @@ test("#2016: a rebuild serializes with a concurrent locked writer — the peer's
     assert.ok(fresh.has("rebuilt-corpus-fact"), "the rebuild's set was published");
     assert.ok(
       fresh.has("peer-append-during-rebuild"),
-      "the peer's concurrent addition survived — reconciled on top of the rebuild, never clobbered",
+      "the peer's concurrent addition survived — reconciled on top of the rebuild, never clobbered"
     );
   });
 });
@@ -780,7 +821,7 @@ test("#2016: a peer's committed fact survives a fresh-session authoritative rebu
     assert.equal(
       await rebuilder.hasFactContentHash("durable multiprocess fact"),
       true,
-      "the peer's fact is deduped after a fresh-session locked rebuild",
+      "the peer's fact is deduped after a fresh-session locked rebuild"
     );
   });
 });
@@ -818,17 +859,17 @@ test("#2016 finding 1: a lock-contended miss is verified against the corpus, nev
       assert.equal(
         await reader.isFactContentHashAuthoritative(),
         false,
-        "index cannot be authoritative while the peer holds the rebuild lock",
+        "index cannot be authoritative while the peer holds the rebuild lock"
       );
       assert.equal(
         await reader.hasFactContentHash("durable fact under contention"),
         true,
-        "a miss on the empty loaded snapshot is verified against the durable corpus — no false dedup miss",
+        "a miss on the empty loaded snapshot is verified against the durable corpus — no false dedup miss"
       );
       assert.equal(
         await reader.hasFactContentHash("was never written anywhere"),
         false,
-        "a genuine miss is still a miss under contention (corpus confirms absence)",
+        "a genuine miss is still a miss under contention (corpus confirms absence)"
       );
     } finally {
       await rm(lockPath, { force: true });
@@ -848,12 +889,12 @@ test("#2016 finding 2: getAuthoritativeFactHashIndex fails explicitly instead of
       await assert.rejects(
         () => storage.getAuthoritativeFactHashIndex(),
         (err: unknown) => err instanceof FactHashIndexNotAuthoritativeError,
-        "must throw rather than return a stale/non-authoritative index",
+        "must throw rather than return a stale/non-authoritative index"
       );
       assert.equal(
         await storage.isFactContentHashAuthoritative(),
         false,
-        "the non-authoritative state is propagated, not masked as authoritative",
+        "the non-authoritative state is propagated, not masked as authoritative"
       );
     } finally {
       await rm(lockPath, { force: true });
@@ -894,8 +935,35 @@ test("#2016 finding 3: flushReconcileRetry drains a deferred lock-timeout append
     await fresh.load();
     assert.ok(
       fresh.has("deferred-drained-on-shutdown"),
-      "the deferred hash reached disk via the inline shutdown drain",
+      "the deferred hash reached disk via the inline shutdown drain"
     );
+  });
+});
+
+test("#2016 fingerprint detects same-size same-mtime index replacement", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    const indexPath = path.join(stateDir, "fact-hashes.txt");
+    await mkdir(stateDir, { recursive: true });
+    const original = `${"a".repeat(64)}\n`;
+    const replacement = `${"b".repeat(64)}\n`;
+    const fixedSeconds = 1_700_000_000;
+    await writeFile(indexPath, original, "utf8");
+    await utimes(indexPath, fixedSeconds, fixedSeconds);
+
+    const index = new ContentHashIndex(stateDir);
+    await index.load();
+    assert.equal(await index.isDiskFingerprintCurrent(), true);
+    const baseline = await stat(indexPath);
+
+    const replacementPath = `${indexPath}.replacement`;
+    await writeFile(replacementPath, replacement, "utf8");
+    await utimes(replacementPath, fixedSeconds, fixedSeconds);
+    await rename(replacementPath, indexPath);
+    const replaced = await stat(indexPath);
+    assert.equal(replaced.size, baseline.size);
+    assert.equal(replaced.mtimeMs, baseline.mtimeMs);
+    assert.equal(await index.isDiskFingerprintCurrent(), false);
   });
 });
 
@@ -959,13 +1027,9 @@ test("#2016 thread SDzOP: a storage fact-hash removal reconciles under the lock,
       await storage.removeFactContentHashesForMemories([beta!]);
       assert.ok(
         reconcileSpy.mock.callCount() >= 1,
-        "the removal flushes via the locked reconcile (saveMergingWithDisk)",
+        "the removal flushes via the locked reconcile (saveMergingWithDisk)"
       );
-      assert.equal(
-        saveSpy.mock.callCount(),
-        0,
-        "the removal must NOT use the unlocked whole-file save()",
-      );
+      assert.equal(saveSpy.mock.callCount(), 0, "the removal must NOT use the unlocked whole-file save()");
     } finally {
       saveSpy.mock.restore();
       reconcileSpy.mock.restore();
@@ -974,14 +1038,10 @@ test("#2016 thread SDzOP: a storage fact-hash removal reconciles under the lock,
     const fresh = new ContentHashIndex(stateDir);
     await fresh.load();
     assert.ok(fresh.has("alpha stays active"), "the surviving fact's hash is intact");
-    assert.equal(
-      fresh.has("beta gets archived"),
-      false,
-      "the archived fact's hash is dropped — no resurrection",
-    );
+    assert.equal(fresh.has("beta gets archived"), false, "the archived fact's hash is dropped — no resurrection");
     assert.ok(
       fresh.has("peer concurrent append"),
-      "the concurrent peer append survives the removal (locked reconcile, not unlocked overwrite)",
+      "the concurrent peer append survives the removal (locked reconcile, not unlocked overwrite)"
     );
   });
 });
@@ -1039,7 +1099,7 @@ test("#2016 thread SD7Tj: a hash added while a reconcile save awaits disk is not
     assert.ok(fresh.has("added-before-save"), "pre-save addition still durable after drain");
     assert.ok(
       fresh.has("added-during-save"),
-      "the mid-save addition reached disk — the mid-flight delta was preserved, not dropped",
+      "the mid-save addition reached disk — the mid-flight delta was preserved, not dropped"
     );
   });
 });
@@ -1073,7 +1133,7 @@ test("#2016 thread SD7Tk: a direct fact write drains its deferred hash retry bef
       // called flushReconcileRetry — so this count was 0.
       assert.ok(
         flushSpy.mock.callCount() >= 1,
-        "direct writeMemory drains the deferred hash retry (flushReconcileRetry) before returning",
+        "direct writeMemory drains the deferred hash retry (flushReconcileRetry) before returning"
       );
     } finally {
       flushSpy.mock.restore();
@@ -1116,7 +1176,7 @@ test("#2016 thread SD-nG: a direct re-add of a hash the local snapshot still hol
     assert.equal(
       reader.has(CONTENT),
       true,
-      "the reintroduced hash is durably republished for peers (stale re-add recorded as a delta)",
+      "the reintroduced hash is durably republished for peers (stale re-add recorded as a delta)"
     );
   });
 });
@@ -1159,7 +1219,7 @@ test("#2016 thread PRRT_kwDORJXyws6SEHve: addByHash re-add of a hash the local s
     assert.equal(
       reader.has("reactivated-fact-body"),
       true,
-      "addByHash on a stale local hit must republish the hash durably for peers",
+      "addByHash on a stale local hit must republish the hash durably for peers"
     );
   });
 });
@@ -1186,15 +1246,2798 @@ test("#2016 thread PRRT_kwDORJXyws6SEHvh: reactivation drains the deferred recon
       await storage.restoreFactHashAfterApproval(id);
       assert.ok(
         reconcileSpy.mock.callCount() >= 1,
-        "reactivation publishes via the locked reconcile (saveMergingWithDisk)",
+        "reactivation publishes via the locked reconcile (saveMergingWithDisk)"
       );
       assert.ok(
         flushSpy.mock.callCount() >= 1,
-        "reactivation drains the deferred lock-timeout retry inline (flushReconcileRetry) — same durability guarantee as writeMemory",
+        "reactivation drains the deferred lock-timeout retry inline (flushReconcileRetry) — same durability guarantee as writeMemory"
       );
     } finally {
       reconcileSpy.mock.restore();
       flushSpy.mock.restore();
+    }
+  });
+});
+
+test("tombstone blocked index rebuilds after a failed publish survives restart", async () => {
+  await withMemoryDir(async (dir) => {
+    const blocked = {
+      path: path.join(dir, "facts", "blocked.md"),
+      frontmatter: {
+        id: "blocked-1",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: ["review"],
+        status: "pending_review",
+        blockedBy: "tombstone-1",
+      },
+      content: "A blocked capture must remain deduplicable after an index publish failure.",
+    } as MemoryFile;
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 1, retryBaseMs: 1 }),
+      readAllMemories: async () => [blocked],
+      readAllColdMemories: async () => [],
+    };
+    const index = new TombstoneBlockedCaptureIndex(options);
+    const saveSpy = mock.method(ContentHashIndex.prototype, "saveMergingWithDisk", async () => {});
+    try {
+      await index.add(blocked);
+      assert.equal(
+        existsSync(path.join(dir, "tombstone-blocked-capture", "rebuild-required")),
+        true,
+        "failed publish must leave a durable rebuild marker"
+      );
+    } finally {
+      saveSpy.mock.restore();
+    }
+
+    const restarted = new TombstoneBlockedCaptureIndex(options);
+    assert.equal(
+      await restarted.has(blocked.content, "fact"),
+      true,
+      "restart must rebuild from durable blocked rows instead of trusting stale index data"
+    );
+    assert.deepEqual(
+      await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required")),
+      [],
+      "successful rebuild clears the marker owned by the restarted index"
+    );
+  });
+});
+
+test("token-specific blocked index markers survive peer interleaving and restart", async () => {
+  await withMemoryDir(async (dir) => {
+    const blocked = {
+      path: path.join(dir, "facts", "blocked.md"),
+      frontmatter: {
+        id: "blocked-peer-1",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: ["review"],
+        status: "pending_review",
+        blockedBy: "tombstone-peer-1",
+      },
+      content: "A peer marker must survive another writer's successful index publish.",
+    } as MemoryFile;
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 1, retryBaseMs: 1 }),
+      readAllMemories: async () => [blocked],
+      readAllColdMemories: async () => [],
+    };
+    const writer = new TombstoneBlockedCaptureIndex(options);
+    const peer = new TombstoneBlockedCaptureIndex(options);
+    const peerInternals = peer as unknown as {
+      markRebuildRequired: () => Promise<string>;
+      markRebuildCommitted: (markerPath: string) => Promise<void>;
+    };
+    const originalSave = ContentHashIndex.prototype.saveMergingWithDisk;
+    let peerMarker: string | undefined;
+    const saveSpy = mock.method(
+      ContentHashIndex.prototype,
+      "saveMergingWithDisk",
+      async function (this: ContentHashIndex) {
+        if (!peerMarker) {
+          peerMarker = await peerInternals.markRebuildRequired();
+        }
+        return originalSave.call(this);
+      }
+    );
+    try {
+      await writer.add(blocked);
+      assert.ok(peerMarker);
+      assert.equal(
+        (await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required"))).length,
+        1,
+        "writer success must clear only its marker and preserve the peer marker"
+      );
+    } finally {
+      saveSpy.mock.restore();
+    }
+
+    if (!peerMarker) throw new Error("peer marker was not created");
+    await peerInternals.markRebuildCommitted(peerMarker);
+
+    const restarted = new TombstoneBlockedCaptureIndex(options);
+    assert.equal(await restarted.has(blocked.content, "fact"), true);
+    assert.deepEqual(
+      await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required")),
+      [],
+      "restart rebuild clears the peer marker after incorporating durable rows"
+    );
+  });
+});
+
+test("tombstone blocked index sync failure persists a rebuild marker across restart", async () => {
+  await withMemoryDir(async (dir) => {
+    const before = {
+      path: path.join(dir, "facts", "before.md"),
+      frontmatter: {
+        id: "sync-before",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: ["review"],
+        status: "pending_review",
+        blockedBy: "tombstone-sync",
+        sourceConnector: "provider-a",
+      },
+      content: "A blocked capture changes provider identity during an unavailable index rebuild.",
+    } as MemoryFile;
+    const after = {
+      ...before,
+      path: path.join(dir, "facts", "after.md"),
+      frontmatter: {
+        ...before.frontmatter,
+        id: "sync-after",
+        sourceConnector: "provider-b",
+      },
+    };
+    const memories = [before];
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 1, retryBaseMs: 1 }),
+      readAllMemories: async () => memories,
+      readAllColdMemories: async () => [],
+    };
+    const index = new TombstoneBlockedCaptureIndex(options);
+    await index.add(before);
+    memories[0] = after;
+
+    const rebuildSpy = mock.method(ContentHashIndex.prototype, "rebuildUnderLock", async () => false);
+    try {
+      await index.sync(before, after);
+      assert.equal(
+        (await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required"))).length > 0,
+        true,
+        "a failed identity rebuild must leave durable rebuild intent"
+      );
+    } finally {
+      rebuildSpy.mock.restore();
+    }
+
+    const restarted = new TombstoneBlockedCaptureIndex(options);
+    assert.equal(await restarted.has(after.content, "fact", "provider-b"), true);
+    assert.equal(await restarted.has(before.content, "fact", "provider-a"), false);
+    assert.deepEqual(await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required")), []);
+  });
+});
+
+test("tombstone-blocked writes reserve rebuild intent before post-write index work", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked write must remain deduplicable if its index hook fails.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-blocked-write",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+
+    const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
+    const addSpy = mock.method(TombstoneBlockedCaptureIndex.prototype, "addWrittenMemory", async () => {
+      throw new Error("simulated post-write index failure");
+    });
+    try {
+      await assert.rejects(
+        storage.writeMemory("fact", content, { source: "test", sourceConnector: "provider-a" }),
+        /simulated post-write index failure/
+      );
+      assert.equal(
+        (await readdir(markerDir)).length > 0,
+        true,
+        "blocked memory persistence must leave a durable marker before its index hook"
+      );
+    } finally {
+      addSpy.mock.restore();
+    }
+
+    const restarted = new StorageManager(dir);
+    restarted.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    assert.equal(
+      await restarted.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      true,
+      "restart must rebuild the blocked identity from the durable memory"
+    );
+    assert.deepEqual(await readdir(markerDir), [], "successful restart rebuild clears the marker");
+  });
+});
+
+test("blocked rewrites reserve markers before durable mutation index hooks", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked rewrite must remain deduplicable across an index hook failure.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-rewrite",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
+    const syncMemorySpy = mock.method(TombstoneBlockedCaptureIndex.prototype, "syncUpdatedMemory", async () => {});
+    try {
+      assert.equal(await storage.updateMemory(result.id, `${content} changed`), true);
+      assert.equal((await readdir(markerDir)).length, 1, "blocked update must leave a committed marker for its hook");
+    } finally {
+      syncMemorySpy.mock.restore();
+    }
+
+    const restarted = new StorageManager(dir);
+    restarted.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    assert.equal(await restarted.hasTombstoneBlockedExplicitCapture(`${content} changed`, "fact", "provider-a"), true);
+    const memory = await restarted.getMemoryById(result.id);
+    assert.ok(memory, "updated blocked memory must be readable");
+    const syncFrontmatterSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "syncUpdatedFrontmatter",
+      async () => {}
+    );
+    try {
+      assert.equal(await restarted.writeMemoryFrontmatter(memory, { sourceConnector: "provider-b" }), true);
+      assert.equal((await readdir(markerDir)).length, 1, "blocked frontmatter rewrite must reserve a marker");
+    } finally {
+      syncFrontmatterSpy.mock.restore();
+    }
+  });
+});
+test("blocked rewrites rebuild the index from post-write memory cache state", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked rewrite must rebuild from the post-write cache state.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "post-write-cache-order",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+
+    await storage.readAllMemories();
+    const originalReadAllMemories = storage.readAllMemories.bind(storage);
+    const rebuiltContents: string[] = [];
+    storage.readAllMemories = async () => {
+      const memories = await originalReadAllMemories();
+      const memory = memories.find((candidate) => candidate.frontmatter.id === result.id);
+      if (memory) rebuiltContents.push(memory.content);
+      return memories;
+    };
+
+    const updatedContent = `${content} changed`;
+    assert.equal(await storage.updateMemory(result.id, updatedContent), true);
+    assert.ok(
+      rebuiltContents.includes(updatedContent),
+      "the blocked-index rebuild must read the durable post-write content, not the pre-write hot cache"
+    );
+  });
+});
+
+test("blocked chunk writes enter the targeted dedupe index", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const content = "A blocked chunk must remain visible to explicit-capture dedupe.";
+    await storage.writeChunk("chunk-parent", 0, 1, "fact", content, {
+      status: "pending_review",
+      blockedBy: "tombstone-chunk",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      true,
+      "blocked chunk content must be indexed with its connector identity"
+    );
+  });
+});
+
+test("blocked chunk writes recheck identity after waiting on the capture lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked chunk must reuse a capture committed while it waited.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "blocked-chunk-lock-recheck",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const captureResult = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(captureResult.tombstoneBlocked, true);
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      entered.resolve();
+      await release.promise;
+    }, identity);
+    await entered.promise;
+
+    const chunk = storage.writeChunk("chunk-parent", 0, 1, "fact", content, {
+      source: "chunking",
+      sourceConnector: "provider-a",
+      status: "pending_review",
+      blockedBy: tombstoneId,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    release.resolve();
+
+    const chunkId = await chunk;
+    await held;
+    assert.equal(chunkId, captureResult.id);
+    const matches = (await storage.readAllMemories()).filter((memory) => memory.content === content);
+    assert.equal(matches.length, 1, "the capture and waiting chunk must share one durable row");
+  });
+});
+
+test("offline sync rechecks blocked identity after waiting on the capture lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A buffer sync must not publish a duplicate after waiting on capture.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "offline-buffer-lock-recheck",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const captureResult = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(captureResult.tombstoneBlocked, true);
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      entered.resolve();
+      await release.promise;
+    }, identity);
+    await entered.promise;
+
+    const incomingFile = [
+      "---",
+      "id: incoming-buffer-sync",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${tombstoneId}`,
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n");
+    const target = path.join(dir, "facts", "2026-01-01", "incoming-buffer.md");
+    const pending = storage.writeOfflineSyncFile(target, Buffer.from(incomingFile, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    release.resolve();
+
+    await pending;
+    await held;
+    assert.equal(existsSync(target), false, "sync must not publish a duplicate blocked row");
+    const matches = (await storage.readAllMemories()).filter((memory) => memory.content === content);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0]?.frontmatter.id, captureResult.id);
+  });
+});
+test("offline sync reacquires a rewritten blocked target identity", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const peer = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await peer.ensureDirectories();
+    const tombstoneConfig = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    };
+    storage.setTombstonesConfig(tombstoneConfig);
+    peer.setTombstonesConfig(tombstoneConfig);
+    const contentA = "Offline sync incoming identity must replace the target.";
+    const contentB = "The target identity is stale before the sync lock is acquired.";
+    const contentC = "A peer rewrote the target identity while sync waited.";
+    const tombstones = await Promise.all(
+      [contentA, contentB, contentC].map((rawContent, index) =>
+        storage.appendTombstone({
+          reason: "correction",
+          createdBy: "user_correction",
+          sourceMemoryId: `offline-sync-reloaded-target-${index}`,
+          rawContent,
+        })
+      )
+    );
+    assert.ok(tombstones.every(Boolean));
+    const target = await storage.writeMemory("fact", contentB, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(target.tombstoneBlocked, true);
+    const incomingFile = [
+      "---",
+      "id: incoming-reloaded-target",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${tombstones[0]}`,
+      "---",
+      "",
+      contentA,
+      "",
+    ].join("\n");
+    const targetMemory = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.id === target.id
+    );
+    assert.ok(targetMemory);
+    const identityA = buildExplicitCaptureDedupKey(contentA, "fact", "provider-a");
+    const identityB = buildExplicitCaptureDedupKey(contentB, "fact", "provider-a");
+    const identityC = buildExplicitCaptureDedupKey(contentC, "fact", "provider-a");
+    const storageWithOverride = storage as unknown as {
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<unknown>,
+        identity?: string | readonly string[],
+      ) => Promise<unknown>;
+    };
+    const originalLock = storageWithOverride.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    const capturedIdentities: Array<string | readonly string[] | undefined> = [];
+    let firstLock = true;
+    let pauseNextPrepare = false;
+    const markerEntered = Promise.withResolvers<void>();
+    const releaseMarker = Promise.withResolvers<void>();
+    storageWithOverride.withTombstoneBlockedCaptureWriteLock = async (task, identity) => {
+      capturedIdentities.push(identity);
+      if (firstLock) {
+        firstLock = false;
+        await peer.updateMemory(target.id, contentC, { sourceConnector: "provider-a" });
+        pauseNextPrepare = true;
+      }
+      return await originalLock(task, identity);
+    };
+    const originalPrepare = TombstoneBlockedCaptureIndex.prototype.prepareWrite;
+    const prepareSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "prepareWrite",
+      async function (this: TombstoneBlockedCaptureIndex) {
+        const marker = await originalPrepare.call(this);
+        if (pauseNextPrepare) {
+          pauseNextPrepare = false;
+          markerEntered.resolve();
+          await releaseMarker.promise;
+        }
+        return marker;
+      },
+    );
+
+    const sync = storage.writeOfflineSyncFile(targetMemory.path, Buffer.from(incomingFile, "utf8"));
+    try {
+      await markerEntered.promise;
+      const firstKeys = capturedIdentities[0];
+      const secondKeys = capturedIdentities[1];
+      assert.ok(
+        (Array.isArray(firstKeys) ? firstKeys : [firstKeys]).includes(identityB),
+        "sync must first observe the original target identity",
+      );
+      assert.ok(
+        (Array.isArray(secondKeys) ? secondKeys : [secondKeys]).includes(identityC),
+        "sync must reacquire the rewritten target identity",
+      );
+      let recaptureCompleted = false;
+      const recapture = peer
+        .writeMemory("fact", contentC, {
+          source: "test",
+          sourceConnector: "provider-a",
+        })
+        .then((result) => {
+          recaptureCompleted = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(recaptureCompleted, false, "recapture must wait for the current target identity lock");
+      releaseMarker.resolve();
+      await sync;
+      const recaptured = await recapture;
+      assert.equal(recaptured.tombstoneBlocked, true);
+      const after = await peer.readAllMemories();
+      assert.equal(
+        after.find((memory) => memory.path === targetMemory.path)?.content,
+        contentA,
+        "offline sync must replace the target after holding its current identity lock",
+      );
+      assert.equal(after.filter((memory) => memory.content === contentC).length, 1);
+    } finally {
+      releaseMarker.resolve();
+      prepareSpy.mock.restore();
+      storageWithOverride.withTombstoneBlockedCaptureWriteLock = originalLock;
+      await sync.catch(() => undefined);
+    }
+  });
+});
+
+test("offline sync verifies blocked-index hits against exact identities", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const existingContent = "Remember cats.";
+    const incomingContent = "Remember cats!";
+    const existingTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "exact-identity-existing",
+      rawContent: existingContent,
+    });
+    const incomingTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "exact-identity-incoming",
+      rawContent: incomingContent,
+    });
+    assert.ok(existingTombstone);
+    assert.ok(incomingTombstone);
+    const existing = await storage.writeMemory("fact", existingContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(existing.tombstoneBlocked, true);
+    const incomingFile = [
+      "---",
+      "id: exact-identity-incoming",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${incomingTombstone}`,
+      "---",
+      "",
+      incomingContent,
+      "",
+    ].join("\n");
+    const target = path.join(dir, "facts", "2026-01-01", "exact-identity-incoming.md");
+    await storage.writeOfflineSyncFile(target, Buffer.from(incomingFile, "utf8"));
+    assert.equal(existsSync(target), true);
+    assert.equal((await storage.readAllMemories()).filter((memory) => memory.content === incomingContent).length, 1);
+  });
+});
+
+test("offline sync replaces a blocked target when the incoming identity exists elsewhere", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const incomingContent = "Replica canonical content.";
+    const targetContent = "Replica stale content.";
+    const incomingTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "target-replacement-incoming",
+      rawContent: incomingContent,
+    });
+    const targetTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "target-replacement-target",
+      rawContent: targetContent,
+    });
+    assert.ok(incomingTombstone);
+    assert.ok(targetTombstone);
+    const incoming = await storage.writeMemory("fact", incomingContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const target = await storage.writeMemory("fact", targetContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(incoming.tombstoneBlocked, true);
+    assert.equal(target.tombstoneBlocked, true);
+    const incomingFile = [
+      "---",
+      "id: target-replacement-incoming",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${incomingTombstone}`,
+      "---",
+      "",
+      incomingContent,
+      "",
+    ].join("\n");
+    const targetMemory = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === target.id);
+    assert.ok(targetMemory);
+    await storage.writeOfflineSyncFile(targetMemory.path, Buffer.from(incomingFile, "utf8"));
+    const replaced = (await storage.readAllMemories()).find((memory) => memory.path === targetMemory.path);
+    assert.ok(replaced);
+    assert.equal(replaced.content, incomingContent);
+    assert.equal(replaced.frontmatter.id, "target-replacement-incoming");
+  });
+});
+
+test("offline sync replaces a non-blocked target when the incoming identity exists elsewhere", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const incomingContent = "Replica canonical content for an active target.";
+    const targetContent = "Replica stale content for an active target.";
+    const incomingTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "nonblocked-target-incoming",
+      rawContent: incomingContent,
+    });
+    assert.ok(incomingTombstone);
+    const incoming = await storage.writeMemory("fact", incomingContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const target = await storage.writeMemory("fact", targetContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(incoming.tombstoneBlocked, true);
+    assert.equal(target.tombstoneBlocked, false);
+    const targetMemory = await storage.getMemoryById(target.id);
+    assert.ok(targetMemory);
+    const incomingFile = [
+      "---",
+      "id: nonblocked-target-incoming",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${incomingTombstone}`,
+      "---",
+      "",
+      incomingContent,
+      "",
+    ].join("\n");
+    await storage.writeOfflineSyncFile(targetMemory.path, Buffer.from(incomingFile, "utf8"));
+    const replaced = (await storage.readAllMemories()).find((memory) => memory.path === targetMemory.path);
+    assert.ok(replaced);
+    assert.equal(replaced.content, incomingContent);
+    assert.equal(replaced.frontmatter.id, "nonblocked-target-incoming");
+  });
+});
+
+test("offline sync applies same-identity durable metadata updates", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "Replica metadata needs to stay synchronized.";
+    const firstTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "same-identity-before",
+      rawContent: content,
+    });
+    const secondTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "same-identity-after",
+      rawContent: content,
+    });
+    assert.ok(firstTombstone);
+    assert.ok(secondTombstone);
+    const initial = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(initial.tombstoneBlocked, true);
+    const before = await storage.getMemoryById(initial.id);
+    assert.ok(before);
+    const incomingFile = [
+      "---",
+      "id: same-identity-after",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-02-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.95",
+      "confidenceTier: explicit",
+      'tags: ["synced"]',
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${secondTombstone}`,
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n");
+    await storage.writeOfflineSyncFile(before.path, Buffer.from(incomingFile, "utf8"));
+    const after = await storage.getMemoryById("same-identity-after");
+    assert.ok(after);
+    assert.equal(after.content, content);
+    assert.equal(after.frontmatter.tags.join(","), "synced");
+    assert.equal(after.frontmatter.confidence, 0.95);
+    assert.equal(after.frontmatter.confidenceTier, "explicit");
+    assert.equal(after.frontmatter.updated, "2026-02-01T00:00:00.000Z");
+    assert.equal(after.frontmatter.blockedBy, secondTombstone);
+  });
+});
+
+test("offline sync mutation rebuilds a loaded tombstone-blocked index", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "An offline sync update changes the blocked provider identity.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-offline-sync",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"), true);
+
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory, "blocked memory must be readable before offline sync");
+    const updatedAt = new Date(Date.now() + 1_000).toISOString();
+    const updatedFile = [
+      "---",
+      `id: ${memory.frontmatter.id}`,
+      "category: fact",
+      `created: ${memory.frontmatter.created}`,
+      `updated: ${updatedAt}`,
+      `source: ${memory.frontmatter.source}`,
+      `confidence: ${memory.frontmatter.confidence}`,
+      `confidenceTier: ${memory.frontmatter.confidenceTier}`,
+      "tags: []",
+      "sourceConnector: provider-b",
+      "status: pending_review",
+      `blockedBy: ${memory.frontmatter.blockedBy}`,
+      "---",
+      "",
+      memory.content,
+      "",
+    ].join("\n");
+    await storage.writeOfflineSyncFile(memory.path, Buffer.from(updatedFile, "utf8"));
+
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      false,
+      "offline sync must remove the stale provider identity from the loaded index"
+    );
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
+      true,
+      "offline sync must add the updated provider identity"
+    );
+  });
+});
+
+test("chunked offline sync reserves the incoming blocked identity before streaming", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "Chunked offline sync must coordinate its incoming blocked identity.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "chunked-incoming-identity",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory);
+
+    const updatedFile = [
+      "---",
+      `id: ${memory.frontmatter.id}`,
+      "category: fact",
+      `created: ${memory.frontmatter.created}`,
+      `updated: ${new Date(Date.now() + 1_000).toISOString()}`,
+      `source: ${memory.frontmatter.source}`,
+      `confidence: ${memory.frontmatter.confidence}`,
+      `confidenceTier: ${memory.frontmatter.confidenceTier}`,
+      "tags: []",
+      "sourceConnector: provider-b",
+      "status: pending_review",
+      `blockedBy: ${memory.frontmatter.blockedBy}`,
+      "---",
+      "",
+      memory.content,
+      "",
+    ].join("\n");
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (let offset = 0; offset < updatedFile.length; offset += 31) {
+        yield Buffer.from(updatedFile.slice(offset, offset + 31), "utf8");
+      }
+    })();
+    const identity = buildExplicitCaptureDedupKey(memory.content, "fact", "provider-b");
+    const releaseState = Promise.withResolvers<void>();
+    const enteredState = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      enteredState.resolve();
+      await releaseState.promise;
+    }, identity);
+    await enteredState.promise;
+
+    let completed = false;
+    const pending = storage.writeOfflineSyncFileChunks(memory.path, chunks).then(() => {
+      completed = true;
+    });
+    const delayState = Promise.withResolvers<void>();
+    setTimeout(delayState.resolve, 50);
+    await delayState.promise;
+    assert.equal(completed, false, "chunked sync must wait for the incoming identity lock");
+    releaseState.resolve();
+    await held;
+    await pending;
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"), true);
+  });
+});
+
+test("chunked offline sync scans oversized frontmatter before locking its identity", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = `Oversized frontmatter sync ${"x".repeat(900_000)}`;
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "oversized-frontmatter-sync",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory);
+
+    const largeTags = Array.from({ length: 22_000 }, (_, index) => `"tag-${index}"`).join(", ");
+    const updatedFile = [
+      "---",
+      `id: ${memory.frontmatter.id}`,
+      "category: fact",
+      `created: ${memory.frontmatter.created}`,
+      `updated: ${new Date(Date.now() + 1_000).toISOString()}`,
+      `source: ${memory.frontmatter.source}`,
+      `confidence: ${memory.frontmatter.confidence}`,
+      `confidenceTier: ${memory.frontmatter.confidenceTier}`,
+      `tags: [${largeTags}]`,
+      "sourceConnector: provider-b",
+      "status: pending_review",
+      `blockedBy: ${memory.frontmatter.blockedBy}`,
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n");
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (let offset = 0; offset < updatedFile.length; offset += 32 * 1024) {
+        yield Buffer.from(updatedFile.slice(offset, offset + 32 * 1024), "utf8");
+      }
+    })();
+    const incomingIdentity = buildExplicitCaptureDedupKey(content, "fact", "provider-b");
+    const releaseState = Promise.withResolvers<void>();
+    const enteredState = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      enteredState.resolve();
+      await releaseState.promise;
+    }, incomingIdentity);
+    await enteredState.promise;
+
+    let completed = false;
+    const pending = storage.writeOfflineSyncFileChunks(memory.path, chunks).then(() => {
+      completed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(completed, false, "oversized frontmatter sync must wait for its incoming identity lock");
+    releaseState.resolve();
+    await held;
+    await pending;
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"), true);
+  });
+});
+
+test("chunked offline sync encrypts oversized staging files when secure storage is enabled", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setSecureStoreKey(Buffer.alloc(32, 7));
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = `Oversized encrypted staging content ${"x".repeat(1_048_576)}`;
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "encrypted-staging-memory",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory);
+
+    const incomingFile = [
+      "---",
+      `id: ${memory.frontmatter.id}`,
+      "category: fact",
+      `created: ${memory.frontmatter.created}`,
+      `updated: ${new Date(Date.now() + 1_000).toISOString()}`,
+      `source: ${memory.frontmatter.source}`,
+      `confidence: ${memory.frontmatter.confidence}`,
+      `confidenceTier: ${memory.frontmatter.confidenceTier}`,
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${memory.frontmatter.blockedBy}`,
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n");
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (let offset = 0; offset < incomingFile.length; offset += 32 * 1024) {
+        yield Buffer.from(incomingFile.slice(offset, offset + 32 * 1024), "utf8");
+      }
+    })();
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const releaseState = Promise.withResolvers<void>();
+    const enteredState = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      enteredState.resolve();
+      await releaseState.promise;
+    }, identity);
+    await enteredState.promise;
+
+    const pending = storage.writeOfflineSyncFileChunks(memory.path, chunks);
+    const stagingDir = path.join(dir, "state", "tombstone-blocked-capture", "offline-sync-staging");
+    let stagePath: string | undefined;
+    for (let attempt = 0; attempt < 20 && stagePath === undefined; attempt += 1) {
+      const entries = await readdir(stagingDir).catch(() => []);
+      if (entries.length > 0) stagePath = path.join(stagingDir, entries[0]);
+      else await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(stagePath, "oversized sync must create a staging file before waiting for its lock");
+    assert.equal(isEncryptedFile(await readFile(stagePath)), true);
+    releaseState.resolve();
+    await held;
+    await pending;
+  });
+});
+
+test("chunked offline sync rechecks blocked identity after buffering", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "Chunked offline sync must recheck after acquiring the identity lock.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "chunked-recheck",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const incomingFile = [
+      "---",
+      "id: incoming-sync",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${tombstoneId}`,
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      const split = Math.floor(incomingFile.length / 2);
+      yield Buffer.from(incomingFile.slice(0, split), "utf8");
+      entered.resolve();
+      await release.promise;
+      yield Buffer.from(incomingFile.slice(split), "utf8");
+    })();
+    const target = path.join(dir, "facts", "2026-01-01", "incoming.md");
+    const pending = storage.writeOfflineSyncFileChunks(target, chunks);
+    await entered.promise;
+
+    const duplicate = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(duplicate.tombstoneBlocked, true);
+    release.resolve();
+    await pending;
+
+    assert.equal(existsSync(target), false, "sync must not publish a duplicate blocked row");
+    const matches = (await storage.readAllMemories()).filter((memory) => memory.content === content);
+    assert.equal(matches.length, 1, "the explicit capture remains the sole blocked row");
+  });
+});
+test("chunked offline sync acquires a target identity discovered in a nested recheck", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const peer = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await peer.ensureDirectories();
+    const tombstoneConfig = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    };
+    storage.setTombstonesConfig(tombstoneConfig);
+    peer.setTombstonesConfig(tombstoneConfig);
+    const targetContent = "The chunk target becomes blocked after its outer lock recheck.";
+    const incomingContent = "The incoming chunk replaces the newly blocked target.";
+    const incomingTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "chunk-nested-incoming",
+      rawContent: incomingContent,
+    });
+    assert.ok(incomingTombstone);
+    const target = await storage.writeMemory("fact", targetContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const targetTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "chunk-nested-target",
+      rawContent: targetContent,
+    });
+    assert.ok(targetTombstone);
+    assert.equal(target.tombstoneBlocked, false);
+    const targetMemory = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.id === target.id
+    );
+    assert.ok(targetMemory);
+    const incomingFile = [
+      "---",
+      "id: chunk-nested-incoming",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${incomingTombstone}`,
+      "---",
+      "",
+      incomingContent,
+      "",
+    ].join("\n");
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (let offset = 0; offset < incomingFile.length; offset += 23) {
+        yield Buffer.from(incomingFile.slice(offset, offset + 23), "utf8");
+      }
+    })();
+    const identityC = buildExplicitCaptureDedupKey(targetContent, "fact", "provider-a");
+    const storageWithOverrides = storage as unknown as {
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<unknown>,
+        identity?: string | readonly string[],
+      ) => Promise<unknown>;
+      runTombstoneBlockedOfflineSyncMutation: (
+        target: string,
+        after: MemoryFile | null,
+        write: () => Promise<void>,
+        coordinate?: boolean,
+      ) => Promise<void>;
+    };
+    const originalLock = storageWithOverrides.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    const originalRun = storageWithOverrides.runTombstoneBlockedOfflineSyncMutation.bind(storage);
+    const capturedIdentities: Array<string | readonly string[] | undefined> = [];
+    storageWithOverrides.withTombstoneBlockedCaptureWriteLock = async (task, identity) => {
+      capturedIdentities.push(identity);
+      return await originalLock(task, identity);
+    };
+    let rewroteTarget = false;
+    let pauseNextPrepare = false;
+    const markerEntered = Promise.withResolvers<void>();
+    const releaseMarker = Promise.withResolvers<void>();
+    storageWithOverrides.runTombstoneBlockedOfflineSyncMutation = async (
+      syncTarget,
+      after,
+      write,
+      coordinate,
+    ) => {
+      if (!rewroteTarget) {
+        rewroteTarget = true;
+        const current = (await peer.readAllMemories()).find(
+          (memory) => memory.frontmatter.id === target.id
+        );
+        assert.ok(current);
+        await peer.writeMemoryFrontmatter(current, {
+          status: "pending_review",
+          blockedBy: targetTombstone,
+        });
+        pauseNextPrepare = true;
+      }
+      return await originalRun(syncTarget, after, write, coordinate);
+    };
+    const originalPrepare = TombstoneBlockedCaptureIndex.prototype.prepareWrite;
+    const prepareSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "prepareWrite",
+      async function (this: TombstoneBlockedCaptureIndex) {
+        const marker = await originalPrepare.call(this);
+        if (pauseNextPrepare) {
+          pauseNextPrepare = false;
+          markerEntered.resolve();
+          await releaseMarker.promise;
+        }
+        return marker;
+      },
+    );
+
+    const sync = storage.writeOfflineSyncFileChunks(targetMemory.path, chunks);
+    try {
+      await markerEntered.promise;
+      assert.ok(
+        capturedIdentities.some((identity) =>
+          (Array.isArray(identity) ? identity : [identity]).includes(identityC)
+        ),
+        "nested chunk sync must acquire the identity discovered after the outer recheck",
+      );
+      let recaptureCompleted = false;
+      const recapture = peer
+        .writeMemory("fact", targetContent, {
+          source: "test",
+          sourceConnector: "provider-a",
+        })
+        .then((result) => {
+          recaptureCompleted = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(recaptureCompleted, false, "recapture must wait for the nested target identity lock");
+      releaseMarker.resolve();
+      await sync;
+      const recaptured = await recapture;
+      assert.equal(recaptured.tombstoneBlocked, true);
+      const after = await peer.readAllMemories();
+      assert.equal(
+        after.find((memory) => memory.path === targetMemory.path)?.content,
+        incomingContent,
+        "chunk sync must replace the target only while holding its current identity lock",
+      );
+      assert.equal(after.filter((memory) => memory.content === targetContent).length, 1);
+    } finally {
+      releaseMarker.resolve();
+      prepareSpy.mock.restore();
+      storageWithOverrides.withTombstoneBlockedCaptureWriteLock = originalLock;
+      storageWithOverrides.runTombstoneBlockedOfflineSyncMutation = originalRun;
+      await sync.catch(() => undefined);
+    }
+  });
+});
+
+test("chunked offline sync streams non-memory files through the host writer", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const target = path.join(dir, "state", "streamed.bin");
+    const input = ["first chunk\n", "second chunk\n"];
+    let consumed = 0;
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (const value of input) {
+        consumed += 1;
+        yield Buffer.from(value, "utf8");
+      }
+    })();
+
+    await storage.writeOfflineSyncFileChunks(target, chunks);
+
+    assert.equal(consumed, input.length);
+    assert.equal(await readFile(target, "utf8"), input.join(""));
+  });
+});
+
+test("large blocked offline sync streams through bounded staging and deduplicates", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const largeContent = "large stream duplicate ".repeat(60_000);
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "large-stream-duplicate",
+      rawContent: largeContent,
+    });
+    assert.ok(tombstoneId);
+    const existing = await storage.writeMemory("fact", largeContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(existing.tombstoneBlocked, true);
+    const incomingFile = Buffer.from(
+      [
+        "---",
+        "id: large-stream-incoming",
+        "category: fact",
+        "created: 2026-01-01T00:00:00.000Z",
+        "updated: 2026-01-01T00:00:00.000Z",
+        "source: offline-sync",
+        "confidence: 0.8",
+        "confidenceTier: implied",
+        "tags: []",
+        "sourceConnector: provider-a",
+        "status: pending_review",
+        `blockedBy: ${tombstoneId}`,
+        "---",
+        "",
+        largeContent,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    assert.ok(incomingFile.byteLength > 1_048_576);
+    const target = path.join(dir, "cold", "large-stream-incoming.md");
+    let consumedBytes = 0;
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (let offset = 0; offset < incomingFile.byteLength; offset += 32 * 1024) {
+        const chunk = incomingFile.subarray(offset, offset + 32 * 1024);
+        consumedBytes += chunk.byteLength;
+        yield chunk;
+      }
+    })();
+
+    await storage.writeOfflineSyncFileChunks(target, chunks);
+
+    assert.equal(consumedBytes, incomingFile.byteLength);
+    assert.equal(existsSync(target), false, "a streamed blocked duplicate must not publish a new row");
+    const matches = [
+      ...(await storage.readAllMemories()),
+      ...(await storage.readAllColdMemories()),
+    ].filter((memory) => memory.frontmatter.id === existing.id);
+    assert.equal(matches.length, 1, "the existing blocked row remains the sole durable duplicate");
+  });
+});
+
+test("offline sync mutation rebuilds blocked index for every recall category", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A decision-category sync update must refresh blocked capture identity.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-decision-sync",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"), true);
+
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory, "blocked memory must be readable before offline sync");
+    const movedPath = path.join(dir, "decisions", "2026-01-01", "moved.md");
+    await mkdir(path.dirname(movedPath), { recursive: true });
+    await rename(memory.path, movedPath);
+    const updatedFile = (await readFile(movedPath, "utf8")).replace(
+      "sourceConnector: provider-a",
+      "sourceConnector: provider-b"
+    );
+    await storage.writeOfflineSyncFile(movedPath, Buffer.from(updatedFile, "utf8"));
+
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      false,
+      "offline sync must remove the stale provider identity from every recall category"
+    );
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
+      true,
+      "offline sync must add the updated provider identity in every recall category"
+    );
+  });
+});
+
+test("offline sync invalidates cold cache before blocked index rebuild", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A cold blocked rewrite must rebuild from the post-sync cache.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-cold-sync",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"), true);
+
+    const memory = await storage.getMemoryById(result.id);
+    assert.ok(memory, "blocked memory must be readable before tier migration");
+    const moved = await storage.migrateMemoryToTier(memory, "cold");
+    assert.equal(moved.changed, true);
+    await storage.readAllColdMemories();
+    const updatedFile = (await readFile(moved.targetPath, "utf8")).replace(
+      "sourceConnector: provider-a",
+      "sourceConnector: provider-b"
+    );
+    await storage.writeOfflineSyncFile(moved.targetPath, Buffer.from(updatedFile, "utf8"));
+
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      false,
+      "cold sync must remove the stale provider identity"
+    );
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
+      true,
+      "cold sync must index the post-mutation provider identity"
+    );
+  });
+});
+
+test("frontmatter rewrites invalidate cold cache before blocked index sync", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A cold frontmatter rewrite must publish its new blocked identity.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-cold-frontmatter",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const memory = await storage.getMemoryById(result.id);
+    assert.ok(memory, "blocked memory must be readable before tier migration");
+    const moved = await storage.migrateMemoryToTier(memory, "cold");
+    assert.equal(moved.changed, true);
+    const coldMemory = (await storage.readAllColdMemories()).find(
+      (candidate) => candidate.frontmatter.id === result.id
+    );
+    assert.ok(coldMemory, "migrated blocked memory must be readable from cold tier");
+
+    assert.equal(
+      await storage.writeMemoryFrontmatter(coldMemory, { sourceConnector: "provider-b" }),
+      true
+    );
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      false,
+      "frontmatter rewrite must remove the stale cold identity"
+    );
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
+      true,
+      "frontmatter rewrite must index the updated cold identity"
+    );
+  });
+});
+
+test("memory invalidation rebuilds an unloaded persisted blocked index", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "An invalidated blocked row must leave the persisted index.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-invalidation",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"), true);
+
+    const restarted = new StorageManager(dir);
+    restarted.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    assert.equal(await restarted.invalidateMemory(result.id), true);
+    assert.equal(
+      await restarted.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      false,
+      "memory invalidation must rebuild a persisted index before its first lookup"
+    );
+  });
+});
+
+test("permanent capture lock failures stop retrying", async () => {
+  await withMemoryDir(async (dir) => {
+    let attempts = 0;
+    const index = new TombstoneBlockedCaptureIndex({
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 2, retryBaseMs: 1 }),
+      readAllMemories: async () => [],
+      readAllColdMemories: async () => [],
+      withHeldFileLock: async (_lockPath, _options, task) => {
+        attempts += 1;
+        return await task(false, {
+          failure: "error",
+          refresh: async () => false,
+        });
+      },
+    });
+
+    await assert.rejects(
+      index.withCaptureWriteLock(async () => "unreachable"),
+      /capture write lock acquisition failed/
+    );
+    assert.equal(attempts, 1, "permanent filesystem failures must not retry as contention");
+  });
+});
+
+test("pre-load blocked index invalidation rebuilds a persisted index", async () => {
+  await withMemoryDir(async (dir) => {
+    const content = "A pre-load invalidation must refresh blocked capture identity.";
+    const before: MemoryFile = {
+      path: path.join(dir, "facts", "blocked.md"),
+      frontmatter: {
+        id: "preload-blocked",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "pending_review",
+        blockedBy: "preload-tombstone",
+        sourceConnector: "provider-a",
+      },
+      content,
+    };
+    const after: MemoryFile = {
+      ...before,
+      frontmatter: {
+        ...before.frontmatter,
+        sourceConnector: "provider-b",
+      },
+    };
+    const memories = [before];
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 2, retryBaseMs: 1 }),
+      readAllMemories: async () => memories,
+      readAllColdMemories: async () => [],
+    };
+
+    const initial = new TombstoneBlockedCaptureIndex(options);
+    await initial.add(before);
+    memories[0] = after;
+
+    const restarted = new TombstoneBlockedCaptureIndex(options);
+    await restarted.rebuildIfLoaded();
+    assert.equal(await restarted.has(content, "fact", "provider-a"), false);
+    assert.equal(await restarted.has(content, "fact", "provider-b"), true);
+  });
+});
+
+test("abandoned pending blocked-index markers rebuild and are reaped", async () => {
+  await withMemoryDir(async (dir) => {
+    const content = "An abandoned blocked-index writer must not suppress dedupe forever.";
+    const memory: MemoryFile = {
+      path: path.join(dir, "facts", "abandoned.md"),
+      frontmatter: {
+        id: "abandoned-blocked",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "pending_review",
+        blockedBy: "abandoned-tombstone",
+        sourceConnector: "provider-a",
+      },
+      content,
+    };
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 2, retryBaseMs: 1 }),
+      readAllMemories: async () => [memory],
+      readAllColdMemories: async () => [],
+    };
+    const markerDir = path.join(dir, "tombstone-blocked-capture", "rebuild-required");
+    await mkdir(markerDir, { recursive: true });
+    await writeFile(
+      path.join(markerDir, "abandoned-writer"),
+      `${JSON.stringify({
+        state: "pending",
+        pid: process.pid,
+        ownerId: "abandoned-writer",
+        createdAt: Date.now() - 120_000,
+        processStartedAtMs: 1,
+      })}\n`,
+      "utf8"
+    );
+
+    const index = new TombstoneBlockedCaptureIndex(options);
+    assert.equal(await index.has(content, "fact", "provider-a"), true);
+    assert.deepEqual(await readdir(markerDir), []);
+  });
+});
+
+test("truncated pending blocked-index markers retain filesystem age and are reaped", async () => {
+  await withMemoryDir(async (dir) => {
+    const content = "A truncated blocked-index marker must not suppress dedupe forever.";
+    const memory: MemoryFile = {
+      path: path.join(dir, "facts", "truncated.md"),
+      frontmatter: {
+        id: "truncated-blocked",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "pending_review",
+        blockedBy: "truncated-tombstone",
+      },
+      content,
+    };
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 2, retryBaseMs: 1 }),
+      readAllMemories: async () => [memory],
+      readAllColdMemories: async () => [],
+    };
+    const markerDir = path.join(dir, "tombstone-blocked-capture", "rebuild-required");
+    await mkdir(markerDir, { recursive: true });
+    const markerPath = path.join(markerDir, "truncated-writer");
+    await writeFile(markerPath, "{", "utf8");
+    const staleAt = new Date(Date.now() - 120_000);
+    await utimes(markerPath, staleAt, staleAt);
+
+    const index = new TombstoneBlockedCaptureIndex(options);
+    assert.equal(await index.has(content, "fact"), true);
+    assert.deepEqual(await readdir(markerDir), []);
+  });
+});
+
+test("explicit capture write locks serialize identities without head-of-line blocking", async () => {
+  await withMemoryDir(async (dir) => {
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 2, retryBaseMs: 1 }),
+      readAllMemories: async () => [],
+      readAllColdMemories: async () => [],
+    };
+    const index = new TombstoneBlockedCaptureIndex(options);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const firstReleaseState = Promise.withResolvers<void>();
+    const firstRelease = firstReleaseState.promise;
+    const releaseFirst = firstReleaseState.resolve;
+    const firstEnteredState = Promise.withResolvers<void>();
+    const firstEnteredSignal = firstEnteredState.promise;
+    const firstEntered = firstEnteredState.resolve;
+    const otherEnteredState = Promise.withResolvers<void>();
+    const otherEnteredSignal = otherEnteredState.promise;
+    const otherEntered = otherEnteredState.resolve;
+    const first = index.withCaptureWriteLock(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      firstEntered();
+      await firstRelease;
+      inFlight -= 1;
+    }, "capture-a");
+    await firstEnteredSignal;
+    const queued = Promise.all(
+      Array.from({ length: 3 }, () =>
+        index.withCaptureWriteLock(async () => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          inFlight -= 1;
+        }, "capture-a")
+      )
+    );
+    const other = index.withCaptureWriteLock(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      otherEntered();
+      inFlight -= 1;
+    }, "capture-b");
+    const all = Promise.all([first, queued, other]);
+    const timeoutState = Promise.withResolvers<void>();
+    setTimeout(timeoutState.resolve, 100);
+    try {
+      await Promise.race([otherEnteredSignal, timeoutState.promise]);
+      assert.equal(maxInFlight, 2, "an unrelated capture identity must not wait behind a slow capture");
+    } finally {
+      releaseFirst();
+      await all;
+    }
+  });
+});
+test("blocked generic writes share their explicit-capture identity lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "Generic blocked writes must coordinate with explicit captures.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "generic-lock-coordination",
+      rawContent: content,
+    });
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const firstResult = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const releaseHeldState = Promise.withResolvers<void>();
+    const releaseHeld = releaseHeldState.promise;
+    const release = releaseHeldState.resolve;
+    const enteredState = Promise.withResolvers<void>();
+    const enteredSignal = enteredState.promise;
+    const entered = enteredState.resolve;
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      entered();
+      await releaseHeld;
+    }, identity);
+    await enteredSignal;
+    let completed = false;
+    const pending = storage
+      .writeMemory("fact", content, {
+        source: "test",
+        sourceConnector: "provider-a",
+      })
+      .then((result) => {
+        completed = true;
+        return result;
+      });
+    const delayState = Promise.withResolvers<void>();
+    setTimeout(delayState.resolve, 50);
+    await delayState.promise;
+    assert.equal(completed, false, "a matching generic write must wait for the capture lock");
+    release();
+    await held;
+    const result = await pending;
+    assert.ok(firstResult);
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(result.id, firstResult.id, "the waiting writer must recheck identity after lock acquisition");
+    assert.equal(result.duplicateOf, firstResult.id, "the coalesced blocked write must identify its duplicate");
+    assert.equal((await storage.readAllMemories()).length, 1, "the duplicate row must not be persisted");
+  });
+});
+
+test("blocked invalidation reserves the index marker before deleting under the identity lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const peer = new StorageManager(dir);
+    await peer.ensureDirectories();
+    peer.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "Invalidating a blocked row must serialize with recapture.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "blocked-invalidation-lock",
+      rawContent: content,
+    });
+    const first = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(first.tombstoneBlocked, true);
+    await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a");
+    await peer.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a");
+
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const storageWithOverride = storage as unknown as {
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<boolean>,
+        identity?: string | readonly string[],
+      ) => Promise<boolean>;
+    };
+    let capturedIdentity: string | readonly string[] | undefined;
+    const originalLock = storageWithOverride.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    storageWithOverride.withTombstoneBlockedCaptureWriteLock = async (task, lockIdentity) => {
+      capturedIdentity = lockIdentity;
+      return originalLock(task, lockIdentity);
+    };
+    const originalPrepare = TombstoneBlockedCaptureIndex.prototype.prepareWrite;
+    let paused = false;
+    const prepareSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "prepareWrite",
+      async function (this: TombstoneBlockedCaptureIndex) {
+        const marker = await originalPrepare.call(this);
+        if (!paused) {
+          paused = true;
+          entered.resolve();
+          await release.promise;
+        }
+        return marker;
+      },
+    );
+
+    const invalidation = storage.invalidateMemory(first.id);
+    try {
+      const enteredBeforeTimeout = await Promise.race([
+        entered.promise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+      ]);
+      assert.equal(
+        enteredBeforeTimeout,
+        true,
+        "blocked invalidation must reserve its rebuild marker before unlinking",
+      );
+      assert.equal(capturedIdentity, identity);
+      assert.ok(
+        (await readdir(path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required"))).length > 0,
+        "blocked invalidation must publish its rebuild marker before unlinking",
+      );
+
+      let peerCompleted = false;
+      const recapture = peer
+        .writeMemory("fact", content, {
+          source: "test",
+          sourceConnector: "provider-a",
+        })
+        .then((result) => {
+          peerCompleted = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(peerCompleted, false, "recapture must wait while invalidation owns the identity lock");
+      release.resolve();
+      assert.equal(await invalidation, true);
+      const second = await recapture;
+      assert.equal(second.tombstoneBlocked, true);
+      assert.notEqual(second.id, first.id);
+      assert.equal(
+        (await peer.readAllMemories()).filter((memory) => memory.content === content).length,
+        1,
+      );
+    } finally {
+      release.resolve();
+      prepareSpy.mock.restore();
+      await invalidation.catch(() => false);
+    }
+  });
+});
+
+test("blocked archive serializes capture scans with the archive transition", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const peer = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await peer.ensureDirectories();
+    const tombstoneConfig = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    };
+    storage.setTombstonesConfig(tombstoneConfig);
+    peer.setTombstonesConfig(tombstoneConfig);
+    const content = "Archiving a blocked row must serialize with recapture.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "blocked-archive-lock",
+      rawContent: content,
+    });
+    const first = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(first.tombstoneBlocked, true);
+    const firstMemory = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === first.id);
+    assert.ok(firstMemory);
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a");
+    await peer.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a");
+
+    const storageWithOverride = storage as unknown as {
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<unknown>,
+        identity?: string | readonly string[],
+      ) => Promise<unknown>;
+    };
+    const originalLock = storageWithOverride.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    let capturedIdentity: string | readonly string[] | undefined;
+    storageWithOverride.withTombstoneBlockedCaptureWriteLock = async (task, lockIdentity) => {
+      capturedIdentity = lockIdentity;
+      return await originalLock(task, lockIdentity);
+    };
+
+    const markerEntered = Promise.withResolvers<void>();
+    const releaseMarker = Promise.withResolvers<void>();
+    const originalPrepare = TombstoneBlockedCaptureIndex.prototype.prepareWrite;
+    let paused = false;
+    const prepareSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "prepareWrite",
+      async function (this: TombstoneBlockedCaptureIndex) {
+        const marker = await originalPrepare.call(this);
+        if (!paused) {
+          paused = true;
+          markerEntered.resolve();
+          await releaseMarker.promise;
+        }
+        return marker;
+      },
+    );
+
+    const archive = storage.archiveMemory(firstMemory);
+    try {
+      const enteredBeforeTimeout = await Promise.race([
+        markerEntered.promise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+      ]);
+      assert.equal(enteredBeforeTimeout, true, "archive must reserve its marker under the capture lock");
+      assert.equal(capturedIdentity, identity);
+
+      let recaptureCompleted = false;
+      const recapture = peer
+        .writeMemory("fact", content, {
+          source: "test",
+          sourceConnector: "provider-a",
+        })
+        .then((result) => {
+          recaptureCompleted = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(recaptureCompleted, false, "recapture must wait while archive owns the identity lock");
+
+      releaseMarker.resolve();
+      const archivePath = await archive;
+      assert.ok(archivePath);
+      const second = await recapture;
+      assert.equal(second.tombstoneBlocked, true);
+      assert.notEqual(second.id, first.id);
+      assert.equal(
+        (await peer.readAllMemories()).filter((memory) => memory.content === content).length,
+        1,
+        "recapture must recreate the review row after archive removes the old row",
+      );
+      assert.equal(
+        await peer.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+        true,
+        "the recreated review row must remain indexed",
+      );
+    } finally {
+      releaseMarker.resolve();
+      prepareSpy.mock.restore();
+      storageWithOverride.withTombstoneBlockedCaptureWriteLock = originalLock;
+      await archive.catch(() => null);
+    }
+  });
+});
+
+test("blocked archive failures discard their uncommitted rebuild marker", async () => {
+  await withMemoryDir(async (dir) => {
+    class FailingArchiveStorageManager extends StorageManager {
+      failArchiveWrites = false;
+
+      protected override writeStorageSecureFile(
+        filePath: string,
+        content: string | Buffer,
+        forceEncrypt = false,
+      ): Promise<void> {
+        if (this.failArchiveWrites && filePath.includes(`${path.sep}archive${path.sep}`)) {
+          return Promise.reject(new Error("simulated archive write failure"));
+        }
+        return super.writeStorageSecureFile(filePath, content, forceEncrypt);
+      }
+    }
+
+    const storage = new FailingArchiveStorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A failed blocked archive must not poison rebuild state.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "failed-blocked-archive",
+      rawContent: content,
+    });
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory);
+    await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a");
+    const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
+    storage.failArchiveWrites = true;
+
+    assert.equal(await storage.archiveMemory(memory), null);
+    assert.deepEqual(await readdir(markerDir), []);
+    assert.equal(await storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative(), true);
+  });
+});
+test("blocked invalidation reacquires the reloaded identity lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const peer = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await peer.ensureDirectories();
+    const tombstoneConfig = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    };
+    storage.setTombstonesConfig(tombstoneConfig);
+    peer.setTombstonesConfig(tombstoneConfig);
+    const contentA = "Blocked invalidation must follow a rewritten identity.";
+    const contentB = "The peer rewrites the blocked row before invalidation acquires its lock.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "reloaded-identity-lock",
+      rawContent: contentA,
+    });
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "reloaded-identity-lock-b",
+      rawContent: contentB,
+    });
+    const first = await storage.writeMemory("fact", contentA, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(first.tombstoneBlocked, true);
+    const identityA = buildExplicitCaptureDedupKey(contentA, "fact", "provider-a");
+    const identityB = buildExplicitCaptureDedupKey(contentB, "fact", "provider-a");
+    await storage.hasTombstoneBlockedExplicitCapture(contentA, "fact", "provider-a");
+    await peer.hasTombstoneBlockedExplicitCapture(contentA, "fact", "provider-a");
+
+    const storageWithOverride = storage as unknown as {
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<unknown>,
+        identity?: string | readonly string[],
+      ) => Promise<unknown>;
+    };
+    const originalLock = storageWithOverride.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    const capturedIdentities: Array<string | readonly string[] | undefined> = [];
+    let firstLock = true;
+    let pauseNextPrepare = false;
+    const markerEntered = Promise.withResolvers<void>();
+    const releaseMarker = Promise.withResolvers<void>();
+    storageWithOverride.withTombstoneBlockedCaptureWriteLock = async (task, identity) => {
+      capturedIdentities.push(identity);
+      if (firstLock) {
+        firstLock = false;
+        await peer.updateMemory(first.id, contentB, { sourceConnector: "provider-a" });
+        pauseNextPrepare = true;
+      }
+      return await originalLock(task, identity);
+    };
+    const originalPrepare = TombstoneBlockedCaptureIndex.prototype.prepareWrite;
+    const prepareSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "prepareWrite",
+      async function (this: TombstoneBlockedCaptureIndex) {
+        const marker = await originalPrepare.call(this);
+        if (pauseNextPrepare) {
+          pauseNextPrepare = false;
+          markerEntered.resolve();
+          await releaseMarker.promise;
+        }
+        return marker;
+      },
+    );
+
+    const invalidation = storage.invalidateMemory(first.id);
+    try {
+      await markerEntered.promise;
+      assert.deepEqual(capturedIdentities, [identityA, identityB]);
+      let recaptureCompleted = false;
+      const recapture = peer
+        .writeMemory("fact", contentB, {
+          source: "test",
+          sourceConnector: "provider-a",
+        })
+        .then((result) => {
+          recaptureCompleted = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(recaptureCompleted, false, "recapture must wait for the reloaded identity lock");
+      releaseMarker.resolve();
+      assert.equal(await invalidation, true);
+      const second = await recapture;
+      assert.equal(second.tombstoneBlocked, true);
+      assert.notEqual(second.id, first.id);
+      assert.equal(
+        (await peer.readAllMemories()).filter((memory) => memory.content === contentB).length,
+        1,
+      );
+    } finally {
+      releaseMarker.resolve();
+      prepareSpy.mock.restore();
+      storageWithOverride.withTombstoneBlockedCaptureWriteLock = originalLock;
+      await invalidation.catch(() => false);
+    }
+  });
+});
+test("blocked rewrites reacquire a target identity changed before update", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const peer = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await peer.ensureDirectories();
+    const tombstoneConfig = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    };
+    storage.setTombstonesConfig(tombstoneConfig);
+    peer.setTombstonesConfig(tombstoneConfig);
+    const contentA = "Blocked update starts with identity A.";
+    const contentB = "A peer rewrites the target to identity B before update locks.";
+    const contentC = "The update itself must publish identity C.";
+    for (const [sourceMemoryId, rawContent] of [
+      ["blocked-update-a", contentA],
+      ["blocked-update-b", contentB],
+      ["blocked-update-c", contentC],
+    ] as const) {
+      assert.ok(
+        await storage.appendTombstone({
+          reason: "correction",
+          createdBy: "user_correction",
+          sourceMemoryId,
+          rawContent,
+        }),
+      );
+    }
+    const target = await storage.writeMemory("fact", contentA, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(target.tombstoneBlocked, true);
+    const targetMemory = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.id === target.id
+    );
+    assert.ok(targetMemory);
+    const identityA = buildExplicitCaptureDedupKey(contentA, "fact", "provider-a");
+    const identityB = buildExplicitCaptureDedupKey(contentB, "fact", "provider-a");
+    const identityC = buildExplicitCaptureDedupKey(contentC, "fact", "provider-a");
+    const storageWithOverride = storage as unknown as {
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<unknown>,
+        identity?: string | readonly string[],
+      ) => Promise<unknown>;
+    };
+    const originalLock = storageWithOverride.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    const capturedIdentities: Array<string | readonly string[] | undefined> = [];
+    let firstLock = true;
+    let pauseNextPrepare = false;
+    const markerEntered = Promise.withResolvers<void>();
+    const releaseMarker = Promise.withResolvers<void>();
+    storageWithOverride.withTombstoneBlockedCaptureWriteLock = async (task, identity) => {
+      capturedIdentities.push(identity);
+      if (firstLock) {
+        firstLock = false;
+        await peer.updateMemory(target.id, contentB, { sourceConnector: "provider-a" });
+        pauseNextPrepare = true;
+      }
+      return await originalLock(task, identity);
+    };
+    const originalPrepare = TombstoneBlockedCaptureIndex.prototype.prepareWrite;
+    const prepareSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "prepareWrite",
+      async function (this: TombstoneBlockedCaptureIndex) {
+        const marker = await originalPrepare.call(this);
+        if (pauseNextPrepare) {
+          pauseNextPrepare = false;
+          markerEntered.resolve();
+          await releaseMarker.promise;
+        }
+        return marker;
+      },
+    );
+
+    const update = storage.updateMemory(target.id, contentC, { sourceConnector: "provider-a" });
+    try {
+      await markerEntered.promise;
+      assert.equal(capturedIdentities.length, 2);
+      const firstKeys = capturedIdentities[0];
+      const secondKeys = capturedIdentities[1];
+      assert.ok(
+        (Array.isArray(firstKeys) ? firstKeys : [firstKeys]).includes(identityA),
+        "update must first lock the identity read before the peer rewrite",
+      );
+      assert.ok(
+        (Array.isArray(secondKeys) ? secondKeys : [secondKeys]).includes(identityB),
+        "update must reacquire the rewritten target identity",
+      );
+      let recaptureCompleted = false;
+      const recapture = peer
+        .writeMemory("fact", contentB, {
+          source: "test",
+          sourceConnector: "provider-a",
+        })
+        .then((result) => {
+          recaptureCompleted = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(recaptureCompleted, false, "recapture must wait for the rewritten target identity lock");
+      releaseMarker.resolve();
+      assert.equal(await update, true);
+      const recaptured = await recapture;
+      assert.equal(recaptured.tombstoneBlocked, true);
+      const after = await peer.readAllMemories();
+      assert.equal(
+        after.find((memory) => memory.path === targetMemory.path)?.content,
+        contentC,
+        "update must write only after holding the current target identity lock",
+      );
+      assert.equal(after.filter((memory) => memory.content === contentB).length, 1);
+    } finally {
+      releaseMarker.resolve();
+      prepareSpy.mock.restore();
+      storageWithOverride.withTombstoneBlockedCaptureWriteLock = originalLock;
+      await update.catch(() => false);
+    }
+  });
+});
+
+test("blocked explicit writes reuse the active identity lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked explicit write must not reacquire its identity lock.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "reentrant-explicit-lock",
+      rawContent: content,
+    });
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+
+    const result = await storage.withTombstoneBlockedCaptureWriteLock(
+      () =>
+        storage.writeMemory("fact", content, {
+          source: "explicit",
+          sourceConnector: "provider-a",
+        }),
+      identity
+    );
+
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal((await storage.readAllMemories()).length, 1);
+  });
+});
+
+test("blocked dedupe preserves punctuation and connector identity", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "identity-preservation",
+      rawContent: "Remember cats.",
+    });
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "connector-preservation",
+      rawContent: "Remember dogs.",
+    });
+
+    const punctuationA = await storage.writeMemory("fact", "Remember cats.", {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const punctuationB = await storage.writeMemory("fact", "Remember cats!", {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const connectorA = await storage.writeMemory("fact", "Remember dogs.", {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const connectorB = await storage.writeMemory("fact", "Remember dogs.", {
+      source: "test",
+      sourceConnector: "provider.a",
+    });
+
+    assert.equal(punctuationA.tombstoneBlocked, true);
+    assert.equal(punctuationB.tombstoneBlocked, true);
+    assert.equal(connectorA.tombstoneBlocked, true);
+    assert.equal(connectorB.tombstoneBlocked, true);
+    assert.notEqual(punctuationA.id, punctuationB.id);
+    assert.notEqual(connectorA.id, connectorB.id);
+    assert.equal((await storage.readAllMemories()).length, 4);
+  });
+});
+
+test("blocked write failures clear their uncommitted rebuild marker", async () => {
+  await withMemoryDir(async (dir) => {
+    class FailingStorageManager extends StorageManager {
+      failWrites = false;
+
+      protected override writeStorageSecureFile(
+        filePath: string,
+        content: string | Buffer,
+        forceEncrypt = false
+      ): Promise<void> {
+        if (this.failWrites) return Promise.reject(new Error("simulated durable write failure"));
+        return super.writeStorageSecureFile(filePath, content, forceEncrypt);
+      }
+    }
+
+    const storage = new FailingStorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A failed blocked write must not poison the rebuild state.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "failed-blocked-write",
+      rawContent: content,
+    });
+    const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
+    storage.failWrites = true;
+    await assert.rejects(
+      storage.writeMemory("fact", content, {
+        source: "test",
+        sourceConnector: "provider-a",
+      }),
+      /simulated durable write failure/
+    );
+    assert.deepEqual(await readdir(markerDir), []);
+  });
+});
+
+test("blocked writes stay successful when post-commit marker publication fails", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A durable blocked write must survive marker publication failure.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "marker-publication-failure",
+      rawContent: content,
+    });
+    const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
+    const commitSpy = mock.method(TombstoneBlockedCaptureIndex.prototype, "commitWrite", async () => {
+      throw new Error("simulated marker publication failure");
+    });
+    try {
+      const result = await storage.writeMemory("fact", content, {
+        source: "test",
+        sourceConnector: "provider-a",
+      });
+      assert.equal(result.tombstoneBlocked, true);
+      assert.ok(await storage.getMemoryById(result.id), "the durable memory must remain readable");
+      assert.deepEqual(await readdir(markerDir), [], "the index hook should clear the retried marker");
+      assert.equal(
+        await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+        true,
+        "the retried marker publication must leave the blocked identity indexed"
+      );
+      assert.equal(await storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative(), true);
+    } finally {
+      commitSpy.mock.restore();
+    }
+  });
+});
+
+test("blocked additions exclude their own marker from rebuild checks", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A blocked addition should update the index incrementally.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "incremental-blocked-add",
+      rawContent: content,
+    });
+    await storage.hasTombstoneBlockedExplicitCapture("unrelated", "fact", "provider-a");
+    let rebuilds = 0;
+    const rebuildSpy = mock.method(ContentHashIndex.prototype, "rebuildUnderLock", async () => {
+      rebuilds += 1;
+      return true;
+    });
+    try {
+      const result = await storage.writeMemory("fact", content, {
+        source: "test",
+        sourceConnector: "provider-a",
+      });
+      assert.equal(result.tombstoneBlocked, true);
+      assert.equal(rebuilds, 0);
+    } finally {
+      rebuildSpy.mock.restore();
+    }
+  });
+});
+
+test("queued-review dispositions coordinate with explicit capture dedupe", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const content = "A queued-review disposition must hold its capture identity lock.";
+    const result = await storage.writeMemory("fact", content, {
+      source: "explicit-inline-review",
+      sourceConnector: "provider-a",
+      status: "pending_review",
+      tags: ["explicit-capture", "queued-review"],
+    });
+    const memory = await storage.getMemoryById(result.id);
+    assert.ok(memory);
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      entered.resolve();
+      await release.promise;
+    }, identity);
+    const disposition = (async () => {
+      await entered.promise;
+      let completed = false;
+      const update = storage.writeMemoryFrontmatter(memory, { status: "rejected" }).then((value) => {
+        completed = true;
+        return value;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(completed, false, "queued-review disposition must wait for the capture identity lock");
+      release.resolve();
+      assert.equal(await update, true);
+    })();
+    try {
+      await disposition;
+      await held;
+      assert.equal((await storage.getMemoryById(result.id))?.frontmatter.status, "rejected");
+    } finally {
+      release.resolve();
+      await held.catch(() => undefined);
+      await disposition.catch(() => undefined);
+    }
+  });
+});
+
+test("active rewrites recheck a target that becomes blocked before the unlocked write", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const peer = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await peer.ensureDirectories();
+    const tombstoneConfig = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    };
+    storage.setTombstonesConfig(tombstoneConfig);
+    peer.setTombstonesConfig(tombstoneConfig);
+    const contentA = "An active target becomes blocked before an update writes.";
+    const contentB = "The rewritten blocked target identity must be locked.";
+    const contentC = "The stale update must publish only after locking identity B.";
+    const tombstoneId = await peer.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "active-rewrite-recheck",
+      rawContent: contentB,
+    });
+    assert.ok(tombstoneId);
+    const target = await storage.writeMemory("fact", contentA, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const targetMemory = await storage.getMemoryById(target.id);
+    assert.ok(targetMemory);
+    assert.equal(targetMemory.frontmatter.status, "active");
+    const identityB = buildExplicitCaptureDedupKey(contentB, "fact", "provider-a");
+    await storage.hasTombstoneBlockedExplicitCapture(contentB, "fact", "provider-a");
+
+    const storageWithOverrides = storage as unknown as {
+      readMemoryByPath: (filePath: string) => Promise<MemoryFile | null>;
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<unknown>,
+        identity?: string | readonly string[],
+      ) => Promise<unknown>;
+    };
+    const originalRead = storageWithOverrides.readMemoryByPath.bind(storage);
+    let rewriteOnRead = true;
+    storageWithOverrides.readMemoryByPath = async (filePath) => {
+      const current = await originalRead(filePath);
+      if (rewriteOnRead) {
+        rewriteOnRead = false;
+        assert.ok(current);
+        assert.equal(await peer.updateMemory(target.id, contentB, { sourceConnector: "provider-a" }), true);
+        const rewritten = await peer.getMemoryById(target.id);
+        assert.ok(rewritten);
+        assert.equal(
+          await peer.writeMemoryFrontmatter(rewritten, {
+            status: "pending_review",
+            blockedBy: tombstoneId,
+          }),
+          true,
+        );
+        pauseNextPrepare = true;
+        return await originalRead(filePath);
+      }
+      return current;
+    };
+    const originalLock = storageWithOverrides.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    const capturedIdentities: Array<string | readonly string[] | undefined> = [];
+    storageWithOverrides.withTombstoneBlockedCaptureWriteLock = async (task, identity) => {
+      capturedIdentities.push(identity);
+      return await originalLock(task, identity);
+    };
+    const releaseMarker = Promise.withResolvers<void>();
+    const markerEntered = Promise.withResolvers<void>();
+    let pauseNextPrepare = false;
+    const originalPrepare = TombstoneBlockedCaptureIndex.prototype.prepareWrite;
+    const prepareSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "prepareWrite",
+      async function (this: TombstoneBlockedCaptureIndex) {
+        const marker = await originalPrepare.call(this);
+        if (pauseNextPrepare) {
+          pauseNextPrepare = false;
+          markerEntered.resolve();
+          await releaseMarker.promise;
+        }
+        return marker;
+      }
+    );
+
+    const update = storage.updateMemory(target.id, contentC, { sourceConnector: "provider-a" });
+    try {
+      await markerEntered.promise;
+      assert.ok(
+        capturedIdentities.some((identity) =>
+          (Array.isArray(identity) ? identity : [identity]).includes(identityB)
+        ),
+        "active rewrite must reacquire the current blocked target identity",
+      );
+      let recaptureCompleted = false;
+      const recapture = peer
+        .writeMemory("fact", contentB, {
+          source: "test",
+          sourceConnector: "provider-a",
+        })
+        .then((result) => {
+          recaptureCompleted = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(recaptureCompleted, false, "recapture must wait for the current target identity lock");
+      releaseMarker.resolve();
+      assert.equal(await update, true);
+      assert.equal((await recapture).tombstoneBlocked, true);
+      const after = await peer.readAllMemories();
+      assert.equal(
+        after.find((memory) => memory.path === targetMemory.path)?.content,
+        contentC,
+        "the stale update must write the requested content",
+      );
+      assert.equal(await peer.hasTombstoneBlockedExplicitCapture(contentB, "fact", "provider-a"), true);
+    } finally {
+      releaseMarker.resolve();
+      prepareSpy.mock.restore();
+      storageWithOverrides.readMemoryByPath = originalRead;
+      storageWithOverrides.withTombstoneBlockedCaptureWriteLock = originalLock;
+      await update.catch(() => false);
     }
   });
 });

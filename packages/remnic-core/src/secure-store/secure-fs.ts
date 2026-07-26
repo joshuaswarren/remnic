@@ -43,7 +43,7 @@
  * Naming: `secure-fs.ts` (not `vault-fs.ts`) — see `kdf.ts` naming note.
  */
 
-import { createCipheriv, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { lstat, mkdir, open as openFile, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -413,6 +413,83 @@ export async function writeMaybeEncryptedFileFromChunks(
     if (!completed && atomic) {
       await unlink(writePath).catch(() => {});
     }
+  }
+}
+
+/**
+ * Stream a file through the secure-store reader without buffering the whole
+ * payload. Plaintext files are passed through unchanged; encrypted files are
+ * authenticated and decrypted incrementally.
+ */
+export async function* readMaybeEncryptedFileFromChunks(
+  filePath: string,
+  key: Buffer | null,
+  memoryDir?: string,
+  chunkSize = 64 * 1024
+): AsyncIterable<Buffer> {
+  const handle = await openFile(filePath, "r");
+  const headerSize = MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE;
+  try {
+    const prefix = Buffer.alloc(headerSize);
+    const { bytesRead: prefixBytes } = await handle.read(prefix, 0, prefix.length, 0);
+    const prefixView = prefix.subarray(0, prefixBytes);
+    if (!isEncryptedFile(prefixView)) {
+      if (prefixBytes > 0) yield Buffer.from(prefixView);
+      let position = prefixBytes;
+      const buffer = Buffer.alloc(chunkSize);
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+        if (bytesRead === 0) break;
+        position += bytesRead;
+        yield Buffer.from(buffer.subarray(0, bytesRead));
+      }
+      return;
+    }
+    if (prefixBytes < headerSize) {
+      throw new Error(`encrypted file header is truncated: ${filePath}`);
+    }
+    if (key === null) {
+      throw new SecureStoreLockedError(
+        `secure-store is locked — cannot read encrypted file at ${filePath}. ` +
+          "Run `remnic secure-store unlock` to decrypt."
+      );
+    }
+    const envelope = prefix.subarray(MAGIC_HEADER_SIZE);
+    const version = envelope.readUInt8(ENVELOPE_LAYOUT.version);
+    if (version !== ENVELOPE_VERSION) {
+      throw new Error(`secure-store: unsupported envelope version ${version}`);
+    }
+    const salt = envelope.subarray(
+      ENVELOPE_LAYOUT.salt,
+      ENVELOPE_LAYOUT.salt + ENVELOPE_SALT_LENGTH
+    );
+    const iv = envelope.subarray(ENVELOPE_LAYOUT.iv, ENVELOPE_LAYOUT.iv + IV_LENGTH);
+    const authTag = envelope.subarray(
+      ENVELOPE_LAYOUT.authTag,
+      ENVELOPE_LAYOUT.authTag + AUTH_TAG_LENGTH
+    );
+    const decipher = createDecipheriv("aes-256-gcm", key, iv, { authTagLength: AUTH_TAG_LENGTH });
+    decipher.setAAD(Buffer.concat([buildHeaderAad(salt), filePathAad(filePath, memoryDir)]));
+    decipher.setAuthTag(authTag);
+    let position = headerSize;
+    const buffer = Buffer.alloc(chunkSize);
+    try {
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+        if (bytesRead === 0) break;
+        position += bytesRead;
+        const plain = decipher.update(buffer.subarray(0, bytesRead));
+        if (plain.length > 0) yield plain;
+      }
+      const final = decipher.final();
+      if (final.length > 0) yield final;
+    } catch (err) {
+      if (err instanceof SecureStoreDecryptError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new SecureStoreDecryptError(`secure-store decryption failed: ${message}`);
+    }
+  } finally {
+    await handle.close();
   }
 }
 
