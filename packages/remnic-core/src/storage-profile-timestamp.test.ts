@@ -819,6 +819,38 @@ test("writeProfile recognizes a completed indented code block before metadata", 
     t.mock.timers.reset();
   }
 });
+test("writeProfile treats generic HTML after completed indented code as opaque", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "    code example",
+        "<custom>",
+        "# Embedded heading",
+        "",
+        "*Last updated: literal inside HTML*",
+        "</custom>",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps metadata after generic HTML.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace(STALE_HEADER, FRESH_HEADER),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile recognizes standalone headers with Markdown indentation", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -1256,6 +1288,42 @@ test("writeProfile recognizes link reference definitions as metadata boundaries"
           FRESH_HEADER,
           "",
           "- Keeps link-reference content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile ignores non-breaking spaces as link-reference separators", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "[docs]:\u00a0/url",
+        STALE_HEADER,
+        "",
+        "- Keeps ordinary paragraph content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "[docs]:\u00a0/url",
+          STALE_HEADER,
+          "",
+          "- Keeps ordinary paragraph content.",
           "",
         ].join("\n"),
       );

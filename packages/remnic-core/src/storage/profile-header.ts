@@ -7,12 +7,12 @@ const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
 const MARKDOWN_LINK_REFERENCE =
-  /^\[(?:\\.|[^\\\[\]])+\]:\s*(?:<[^>\n]*>|([^\s]+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?$/;
-const MARKDOWN_LINK_REFERENCE_LABEL = /^\[(?:\\.|[^\\\[\]])+\]:\s*$/;
+  /^\[(?:\\.|[^\\\[\]])+\]:[ \t]*(?:<[^>\n]*>|([^\s]+))(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?$/;
+const MARKDOWN_LINK_REFERENCE_LABEL = /^\[(?:\\.|[^\\\[\]])+\]:[ \t]*$/;
 const MARKDOWN_LINK_REFERENCE_CONTINUATION =
   /^ {1,3}(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\))$/;
 const MARKDOWN_LINK_REFERENCE_DESTINATION_CONTINUATION =
-  /^ {1,3}(?:<[^>\n]*>|(?!["'(])[^\s]+(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?)$/;
+  /^ {1,3}(?:<[^>\n]*>|(?!["'(])[^\s]+(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?)$/;
 const UTF8_BOM = "\uFEFF";
 
 type FenceMarker = {
@@ -440,10 +440,11 @@ function canStartGenericHtmlBlock(
   const previousLine = lines[index - 1]?.content.trim() ?? "";
   if (previousLine === "") return true;
   return (
-    isMetadataBoundary(previousLine, previousHtmlTerminator) &&
-    !isLastUpdatedHeader(previousLine) &&
-    !MARKDOWN_LIST_ITEM.test(previousLine) &&
-    !MARKDOWN_BLOCK_QUOTE.test(previousLine)
+    isCompletedIndentedCodeBlock(lines, index) ||
+    (isMetadataBoundary(previousLine, previousHtmlTerminator) &&
+      !isLastUpdatedHeader(previousLine) &&
+      !MARKDOWN_LIST_ITEM.test(previousLine) &&
+      !MARKDOWN_BLOCK_QUOTE.test(previousLine))
   );
 }
 
