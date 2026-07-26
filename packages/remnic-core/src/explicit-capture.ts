@@ -600,7 +600,7 @@ function explicitCaptureReviewNamespaces(
   queueNamespace: string | undefined
 ): Array<string | undefined> {
   const config = orchestrator.config;
-  return [asTrimmed(queueNamespace) ?? asTrimmed(config.defaultNamespace)];
+  return [asTrimmed(queueNamespace) ?? asTrimmed(config?.defaultNamespace)];
 }
 
 async function findQueuedExplicitCaptureDuplicate(
