@@ -1688,6 +1688,50 @@ test("offline sync invalidates cold cache before blocked index rebuild", async (
   });
 });
 
+test("memory invalidation rebuilds an unloaded persisted blocked index", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "An invalidated blocked row must leave the persisted index.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-invalidation",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      true,
+    );
+
+    const restarted = new StorageManager(dir);
+    restarted.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    assert.equal(await restarted.invalidateMemory(result.id), true);
+    assert.equal(
+      await restarted.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      false,
+      "memory invalidation must rebuild a persisted index before its first lookup",
+    );
+  });
+});
+
 test("permanent capture lock failures stop retrying", async () => {
   await withMemoryDir(async (dir) => {
     let attempts = 0;

@@ -655,6 +655,6 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     }
   }
   protected async rebuildTombstoneBlockedCaptureAfterInvalidation(): Promise<void> {
-    await this.tombstoneBlockedCaptureIndex?.rebuildAfterInvalidation();
+    await this.getTombstoneBlockedCaptureIndex().rebuildAfterInvalidation();
   }
 }
