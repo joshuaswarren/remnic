@@ -5076,20 +5076,45 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async invalidateMemory(id: string): Promise<boolean> {
     const memories = await this.readAllMemories();
-    const memory = memories.find((m) => m.frontmatter.id === id);
+    const memory = memories.find((candidate) => candidate.frontmatter.id === id);
     if (!memory) return false;
 
-    try {
-      await unlink(memory.path);
-      markProjectedMemoryPathInvalid(this.baseDir, id);
-      this.invalidateAllMemoriesCache();
-      await this.rebuildTombstoneBlockedCaptureAfterInvalidation();
-      this.bumpMemoryStatusVersion();
-      log.debug(`invalidated memory ${id}`);
-      return true;
-    } catch {
-      return false;
-    }
+    const initiallyBlocked =
+      memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
+    const invalidate = async (): Promise<boolean> => {
+      const current = (await this.readAllMemories()).find((candidate) => candidate.frontmatter.id === id);
+      if (!current) return false;
+      const blocked =
+        current.frontmatter.status === "pending_review" && Boolean(current.frontmatter.blockedBy);
+      const blockedIndex = blocked ? this.getTombstoneBlockedCaptureIndex() : null;
+      let rebuildMarker: string | undefined;
+      let durable = false;
+      try {
+        if (blockedIndex) rebuildMarker = await blockedIndex.prepareWrite();
+        await unlink(current.path);
+        durable = true;
+        markProjectedMemoryPathInvalid(this.baseDir, id);
+        this.invalidateAllMemoriesCache();
+        await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
+        this.bumpMemoryStatusVersion();
+        log.debug(`invalidated memory ${id}`);
+        return true;
+      } catch {
+        if (rebuildMarker && !durable && blockedIndex) {
+          try {
+            await blockedIndex.discardWrite(rebuildMarker);
+          } catch {
+            blockedIndex.markUntrusted();
+          }
+        }
+        return false;
+      }
+    };
+    if (!initiallyBlocked) return invalidate();
+    return await this.withTombstoneBlockedCaptureWriteLock(
+      invalidate,
+      buildExplicitCaptureDedupKey(memory.content, memory.frontmatter.category, memory.frontmatter.sourceConnector)
+    );
   }
 
   async updateMemory(

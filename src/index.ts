@@ -4078,6 +4078,7 @@ const pluginDefinition = {
             sessionKey,
           );
           if (
+            inboundMessageKeys.length === 0 &&
             inlineCaptureContentFingerprint &&
             observedInboundCaptureContentFingerprints.has(inlineCaptureContentFingerprint)
           ) {

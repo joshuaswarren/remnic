@@ -915,6 +915,64 @@ test("scenario: inline markup changes do not duplicate the stripped transcript",
   );
 });
 
+test("scenario: stable inbound IDs bypass capture fingerprints after a deleted capture", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const content = [
+        "Remember the retryable stable delivery note.",
+        "<memory_note>",
+        "content: A stable delivery ID must allow recapture after deletion.",
+        "category: fact",
+        "</memory_note>",
+      ].join("\n");
+      const context = { sessionKey: "stable-delivery-retry-session" };
+
+      await messageReceived(
+        {
+          content,
+          messageId: "stable-delivery-one",
+          runId: "stable-delivery-run",
+          timestamp: 1_780_000_000_000,
+        },
+        context,
+      );
+      const storage = await orchestrator.getStorage();
+      const captured = (await storage.readAllMemories()).find((memory: { content: string }) =>
+        memory.content.includes("A stable delivery ID must allow recapture after deletion."),
+      );
+      assert.ok(captured);
+      assert.equal(await storage.invalidateMemory(captured.frontmatter.id), true);
+
+      await messageReceived(
+        {
+          content,
+          messageId: "stable-delivery-two",
+          runId: "stable-delivery-run",
+          timestamp: 1_780_000_000_000,
+        },
+        context,
+      );
+
+      assert.deepEqual(maintenanceTools, ["inline.memory_note", "inline.memory_note"]);
+      const recaptured = (await storage.readAllMemories()).filter((memory: { content: string }) =>
+        memory.content.includes("A stable delivery ID must allow recapture after deletion."),
+      );
+      assert.equal(recaptured.length, 1);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: false,
+      },
+    },
+  );
+});
+
 test("scenario: failed inline capture retries after transcript delivery succeeds", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir, orchestrator }) => {
