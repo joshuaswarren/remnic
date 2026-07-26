@@ -57,6 +57,8 @@ const EXTRA_POSITIVE: string[] = [
   "Call memory_store() to persist the result",
   "Use search() when locating code",
   "Run rg() to find symbols",
+  "Use --force when reinstalling",
+  "The --format cli flag selects JSON",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {
@@ -98,6 +100,8 @@ const EXTRA_NEGATIVE: string[] = [
   "Call me before you leave",
   "Use it to simplify the workflow",
   "Run in before deploying",
+  "Use 2024-2025 data for the baseline",
+  "The tool — a recent addition — is optional",
 ];
 for (const content of EXTRA_NEGATIVE) {
   test(`referencesAgentSpecificTool ignores prose: "${content.slice(0, 44)}…"`, () => {
@@ -149,6 +153,8 @@ const WITHHOLD_CASES: Array<{
   { name: "portable title + connector + steps without toolCall -> do not withhold", args: { content: "When locating implementation", sourceConnector: "pi", procedureSteps: [{ intent: "read the docs" }] }, expected: false },
   { name: "portable title + connector + steps with empty kind -> do not withhold", args: { content: "When locating implementation", sourceConnector: "pi", procedureSteps: [{ intent: "x", toolCall: { kind: "  ", signature: "y" } }] }, expected: false },
   { name: "tool-bearing steps but NO connector -> do not withhold (unattributed)", args: { content: "When locating implementation", procedureSteps: [{ intent: "find", toolCall: { kind: "search", signature: "search('foo')" } }] }, expected: false },
+  { name: "portable title + intent-only tool step + connector -> withhold (#2183 intent text)", args: { content: "Workflow for locating implementation", sourceConnector: "pi", procedureSteps: [{ intent: "Run grep before editing" }] }, expected: true },
+  { name: "portable title + all-portable steps + connector -> do not withhold", args: { content: "Workflow for code review", sourceConnector: "pi", procedureSteps: [{ intent: "Read the changes carefully" }, { intent: "Approve the work" }] }, expected: false },
 ];
 for (const { name, args, expected } of WITHHOLD_CASES) {
   test(`withholdToolScopedFromSharedNamespace: ${name}`, () => {

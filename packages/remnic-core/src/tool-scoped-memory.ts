@@ -61,11 +61,17 @@ const KEYWORD = "\\b(?:mcp[ _]tool|slash[ _]command|cli[ _]flag|subcommand|tool|
 // set, not a heuristic.
 const BARE_SNAKE_KEBAB = "(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+)\\b";
 
+// CLI flag (--force, -f, --no-color): a LEADING -- or - then a letter +
+// alphanum/kebab segments. A leading dash distinguishes a flag from an inline
+// hyphenated prose word ("2024-2025", "well-tested") or an em-dash; admitted
+// only beside a tool/command keyword or after an invocation verb.
+const FLAG = "(?:--|-)[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*\\b";
+
 // Identifier admitted NEXT TO an explicit tool/command keyword: a token-like
 // quoted identifier, a known tool/CLI name, or a snake/kebab bare identifier.
 // The keyword itself is the corroborating context, so a quoted/pre-known token
 // is not required here.
-const IDENT = "(?:" + QUOTED_TOKEN + "|" + KNOWN_NAMES_CI + "|" + BARE_SNAKE_KEBAB + ")";
+const IDENT = "(?:" + QUOTED_TOKEN + "|" + KNOWN_NAMES_CI + "|" + BARE_SNAKE_KEBAB + "|" + FLAG + ")";
 
 // Immediate adjacency: identifier and keyword separated only by a short run of
 // whitespace/quotes/backticks. Bounded {1,4} — no unbounded quantifier.
@@ -84,7 +90,7 @@ const CLAUSE_BOUNDARY = "(?:$|[.,;(:]|(?:when|before|after|to|with|for|on|in|if|
 // Imperative invocation: verb + (token-like quoted identifier | known tool/CLI
 // name | snake/kebab bare identifier | slash command) + clause boundary.
 const INVOCATION =
-  VERB + "\\s+(?:" + QUOTED_TOKEN + "|" + KNOWN_NAMES_CI + "|" + BARE_SNAKE_KEBAB + "|" + SLASH_GENERIC + ")(?=\\s*" + CLAUSE_BOUNDARY + ")";
+  VERB + "\\s+(?:" + QUOTED_TOKEN + "|" + KNOWN_NAMES_CI + "|" + BARE_SNAKE_KEBAB + "|" + SLASH_GENERIC + "|" + FLAG + ")(?=\\s*" + CLAUSE_BOUNDARY + ")";
 
 const TOOL_REFERENCE = new RegExp(
   "(?:" +
@@ -121,7 +127,7 @@ export interface ToolScopeWithholdInputs {
    * prose ("When locating implementation" + `toolCall.kind: "search"`). Only
    * the tool-call kinds are consulted.
    */
-  procedureSteps?: ReadonlyArray<{ toolCall?: { kind?: string } }>;
+  procedureSteps?: ReadonlyArray<{ intent?: string; expectedOutcome?: string; toolCall?: { kind?: string } }>;
 }
 
 /**
@@ -143,7 +149,14 @@ export function withholdToolScopedFromSharedNamespace({
   if (
     procedureSteps?.some((s) => {
       const kind = s.toolCall?.kind;
-      return typeof kind === "string" && kind.trim().length > 0;
+      if (typeof kind === "string" && kind.trim().length > 0) return true;
+      // Intent-only step (no toolCall): its text may name a tool/command, e.g.
+      // "Run grep before editing". Reuse the text predicate so any improvement
+      // to it covers procedure steps too.
+      const stepText = [s.intent, s.expectedOutcome]
+        .filter((t): t is string => typeof t === "string" && t.length > 0)
+        .join(" ");
+      return stepText.length > 0 && referencesAgentSpecificTool(stepText);
     })
   ) {
     return true;
@@ -155,7 +168,7 @@ export interface GlobalFactPromotionInputs {
   scope: string | null | undefined;
   content: string;
   sourceConnector?: string;
-  procedureSteps?: ReadonlyArray<{ toolCall?: { kind?: string } }>;
+  procedureSteps?: ReadonlyArray<{ intent?: string; expectedOutcome?: string; toolCall?: { kind?: string } }>;
 }
 
 /**
