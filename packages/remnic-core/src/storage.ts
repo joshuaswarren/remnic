@@ -5225,27 +5225,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       const expiresAt = new Date(m.frontmatter.expiresAt).getTime();
       if (expiresAt >= now) continue;
 
-      await this.runTombstoneBlockedInvalidation(
+      await this.runTombstoneBlockedExpiredTTL(
         m,
-        async (current, rebuildMarker, markDurable) => {
-          const currentExpiresAt = current.frontmatter.expiresAt
-            ? new Date(current.frontmatter.expiresAt).getTime()
-            : Number.NaN;
-          if (!Number.isFinite(currentExpiresAt) || currentExpiresAt >= now) return false;
-          try {
-            await unlink(current.path);
-            markDurable();
-            markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
-            this.bumpMemoryCorpusVersion();
-            deleted.push(current);
-            if (rebuildMarker !== undefined) {
-              await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
-            }
-            log.debug(`cleaned expired memory ${current.frontmatter.id} (TTL expired)`);
-            return true;
-          } catch {
-            return false;
-          }
+        now,
+        async (current, markDurable) => {
+          await unlink(current.path);
+          markDurable();
+          markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
+          this.bumpMemoryCorpusVersion();
+          deleted.push(current);
+          log.debug(`cleaned expired memory ${current.frontmatter.id} (TTL expired)`);
         }
       );
     }
