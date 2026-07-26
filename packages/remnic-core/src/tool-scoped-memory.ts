@@ -53,7 +53,7 @@ const CONN = "\\s+(?:named|called|aka)\\s+";
 
 // Imperative invocation: use/run/call/invoke immediately followed by a tool
 // identifier. A quoted/backticked identifier is unambiguous on its own ("Use
-// `search`", "Run `rg`"). A bare identifier or generic name — or a slash
+// `search`", "Run `rg`"). A tool-like bare identifier (see BARE_LIKE) or generic name — or a slash
 // command naming a generic tool ("/search") — is only admitted when a clause
 // boundary follows (end, punctuation, or a preposition/subordinator), so prose
 // continuations into a noun phrase do not fire: "search **when**" and
@@ -61,10 +61,14 @@ const CONN = "\\s+(?:named|called|aka)\\s+";
 // do not. A slash token is restricted to a generic tool name so absolute paths
 // ("/etc/remnic/config.json", "/health") never qualify.
 const VERB = "\\b(?:use|run|call|invoke)\\b";
-const BARE_IDENT = "[A-Za-z_][A-Za-z0-9_-]{0,40}";
+// Bare tool-like identifier: snake_case/kebab-case, or a short all-lowercase
+// token (<=3 chars). Word-bounded so the short form does not match a prefix
+// of a longer word ("rgba"). Capitalised product names and plain nouns do
+// not qualify — only tool-like tokens reach the clause-boundary test.
+const BARE_LIKE = "(?:(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+)|(?:[a-z]{1,3}))\\b";
 const SLASH_GENERIC = "/(?:" + GENERIC_NAMES_ALT + ")\\b";
 const CLAUSE_BOUNDARY = "(?:$|[.,;:]|(?:when|before|after|to|with|for|on|in|if|unless|whenever)\\b)";
-const INVOCATION_IDENT_PLAIN = "(?:" + GENERIC + "|" + BARE_IDENT + "|" + SLASH_GENERIC + ")";
+const INVOCATION_IDENT_PLAIN = "(?:" + GENERIC + "|" + BARE_LIKE + "|" + SLASH_GENERIC + ")";
 const INVOCATION =
   VERB + "\\s+(?:" + QUOTED_TOKEN + "|" + INVOCATION_IDENT_PLAIN + "(?=\\s*" + CLAUSE_BOUNDARY + "))";
 

@@ -77,6 +77,10 @@ const EXTRA_NEGATIVE: string[] = [
   "Restore the backup from /tmp/dump.sql",
   "Use /etc/remnic/config.json for configuration",
   "The service should use /health for readiness checks",
+  "Use PostgreSQL for durable storage",
+  "Use TypeScript in new packages",
+  "Run migrations after deployment",
+  "Use Redis for caching",
 ];
 for (const content of EXTRA_NEGATIVE) {
   test(`referencesAgentSpecificTool ignores prose: "${content.slice(0, 44)}…"`, () => {
