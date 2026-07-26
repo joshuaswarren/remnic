@@ -413,14 +413,9 @@ function isHtmlBlockTerminator(line: string): boolean {
     line.includes("]]>")
   );
 }
-function shouldCloseHtmlBlock(lines: ProfileLine[], index: number, endMarker: string): boolean {
-  const normalizedLine = lines[index]?.content.trimStart().toLowerCase() ?? "";
-  const normalizedMarker = endMarker.toLowerCase();
-  if (!normalizedLine.includes(normalizedMarker)) return false;
-  if (normalizedLine.trim() === normalizedMarker || normalizedMarker.startsWith("</")) return true;
-  return !lines
-    .slice(index + 1)
-    .some((line) => line.content.trim().toLowerCase() === normalizedMarker);
+function shouldCloseHtmlBlock(line: string, endMarker: string): boolean {
+  const normalizedLine = line.trimStart().toLowerCase();
+  return normalizedLine.includes(endMarker.toLowerCase());
 }
 
 
@@ -464,7 +459,7 @@ function visitProfileMetadataLines(
         openHtmlBlock = updateHtmlBlockDepth(openHtmlBlock, normalizedLine, false);
         continue;
       }
-      if (openHtmlBlock.endMarker && shouldCloseHtmlBlock(lines, index, openHtmlBlock.endMarker)) {
+      if (openHtmlBlock.endMarker && shouldCloseHtmlBlock(normalizedLine, openHtmlBlock.endMarker)) {
         openHtmlBlock = null;
       }
       continue;
@@ -482,7 +477,7 @@ function visitProfileMetadataLines(
     if (htmlBlock) {
       openHtmlBlock = htmlBlock.tagName
         ? updateHtmlBlockDepth(htmlBlock, normalizedLine, true)
-        : htmlBlock.endMarker && shouldCloseHtmlBlock(lines, index, htmlBlock.endMarker)
+        : htmlBlock.endMarker && shouldCloseHtmlBlock(normalizedLine, htmlBlock.endMarker)
           ? null
           : htmlBlock;
       continue;
@@ -491,7 +486,7 @@ function visitProfileMetadataLines(
   }
 }
 
-function isNestedListTitle(lines: ProfileLine[], index: number, indentation: number): boolean {
+function isNestedListContent(lines: ProfileLine[], index: number, indentation: number): boolean {
   for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
     const previousLine = lines[previousIndex]?.content ?? "";
     if (previousLine.trim() === "") continue;
@@ -509,7 +504,7 @@ function isProfileTitleLine(lines: ProfileLine[], index: number, line: string): 
   if (indentation === 0 || index === 0) return true;
   const previousLine = lines[index - 1]?.content.trim() ?? "";
   return previousLine === ""
-    ? !isNestedListTitle(lines, index, indentation)
+    ? !isNestedListContent(lines, index, indentation)
     : previousLine === "---" || previousLine === "...";
 }
 
@@ -541,6 +536,11 @@ function isStandaloneMetadataLine(
   index: number,
   frontmatterEnd: number,
 ): boolean {
+  const currentLine = lines[index]?.content ?? "";
+  const currentWithoutBom = currentLine.startsWith(UTF8_BOM)
+    ? currentLine.slice(1)
+    : currentLine;
+  const indentation = currentWithoutBom.length - currentWithoutBom.trimStart().length;
   const previousLine = lines[index - 1]?.content.trim() ?? "";
   const nextLine = lines[index + 1]?.content.trim() ?? "";
   const previousWithoutBom = previousLine.startsWith(UTF8_BOM)
@@ -552,9 +552,12 @@ function isStandaloneMetadataLine(
   const previousContainerMarker =
     !MARKDOWN_THEMATIC_BREAK.test(previousWithoutBom) &&
     (MARKDOWN_LIST_ITEM.test(previousWithoutBom) || MARKDOWN_BLOCK_QUOTE.test(previousWithoutBom));
+  const nestedListContent =
+    indentation > 0 && isNestedListContent(lines, index, indentation);
   const startsBlock =
     (index === 0 || index === frontmatterEnd + 1 || previousMetadataBoundary) &&
-    !previousContainerMarker;
+    !previousContainerMarker &&
+    !nestedListContent;
   const endsBlock = index === lines.length - 1 || nextMetadataBoundary;
   const compactHeaderAfterTitle = isProfileTitleLine(lines, index - 1, previousWithoutBom);
   const compactHeaderAfterHeader = isLastUpdatedHeader(previousWithoutBom);

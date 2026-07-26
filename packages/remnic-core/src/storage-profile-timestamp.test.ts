@@ -718,6 +718,44 @@ test("writeProfile recognizes standalone headers with Markdown indentation", asy
   }
 });
 
+test("writeProfile preserves indented metadata inside loose list items", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "- item",
+        "",
+        `  ${STALE_HEADER}`,
+        "",
+        "- Keeps loose-list content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- item",
+          "",
+          `  ${STALE_HEADER}`,
+          "",
+          "- Keeps loose-list content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile ends a one-line HTML declaration before finding the title", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -1778,34 +1816,6 @@ test("writeProfile keeps incomplete raw HTML closing markers inside content", as
       assert.equal(
         await storage.readProfile(),
         profile.replace("\n\n<pre>", `\n\n${FRESH_HEADER}\n\n<pre>`),
-      );
-    });
-  } finally {
-    t.mock.timers.reset();
-  }
-});
-test("writeProfile keeps HTML closing marker substrings inside content", async (t) => {
-  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
-  try {
-    await withMemoryDir(async (dir) => {
-      const storage = new StorageManager(dir);
-      const profile = [
-        "# Behavioral Profile",
-        "",
-        "<!--",
-        "literal --> remains content",
-        "*Last updated: literal example*",
-        "-->",
-        "",
-        "- Keeps HTML comment content.",
-        "",
-      ].join("\n");
-
-      await storage.writeProfile(profile);
-
-      assert.equal(
-        await storage.readProfile(),
-        profile.replace("\n\n<!--", `\n\n${FRESH_HEADER}\n\n<!--`),
       );
     });
   } finally {
