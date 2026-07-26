@@ -391,3 +391,85 @@ test("auto-promote: chunked path also withholds a tool-scoped fact with sourceCo
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// Structured procedure tool identity (#2183 P2): a procedure with a portable
+// title but tool-bearing steps is tool-scoped. The primitive consults
+// procedureSteps[].toolCall.kind; promoteMemoryToShared forwards the steps, so
+// such a procedure is withheld from the shared namespace on the auto-promote
+// path. autoPromoteToSharedCategories includes "procedure" so the control case
+// (no connector) actually promotes.
+// ---------------------------------------------------------------------------
+
+test("auto-promote: procedure with portable title + tool-bearing steps + connector is NOT auto-promoted", async () => {
+  const memoryDir = tmpDir("tool-scoped-procedure-withheld");
+  try {
+    const orchestrator = new Orchestrator(
+      autoPromoteConfig(memoryDir, { autoPromoteToSharedCategories: ["correction", "procedure"] }),
+    );
+    stubBackgroundWork(orchestrator);
+    const defaultStorage = await orchestrator.getStorageForNamespace("default");
+    await defaultStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
+    await sharedStorage.ensureDirectories();
+
+    const result: ExtractionResult = {
+      facts: [
+        {
+          content: "When locating an implementation",
+          category: "procedure",
+          confidence: 0.95,
+          tags: [],
+          scope: "project",
+          procedureSteps: [
+            { order: 1, intent: "find the symbol", toolCall: { kind: "search", signature: "search('foo')" } },
+          ],
+        },
+      ],
+      entities: [],
+      questions: [],
+      profileUpdates: [],
+    };
+
+    await orchestrator.persistExtraction(result, defaultStorage, "thread-1", { sourceConnector: "pi" });
+
+    const sharedMems = await sharedStorage.readAllMemories();
+    assert.equal(
+      sharedMems.some((m) => m.content?.includes("locating an implementation")),
+      false,
+      "procedure with tool-bearing steps must NOT be auto-promoted to shared when attributed",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("auto-promote: capability off (extractionScopeClassificationEnabled=false) makes the tool-scope guard inert on the auto-promote path", async () => {
+  // Disabling scope classification is the escape hatch: the tool-scope guard
+  // must be inert on EVERY path, so a tool-scoped attributed fact auto-promotes
+  // again (byte-identical to pre-feature behavior).
+  const memoryDir = tmpDir("tool-scoped-autopromo-capoff");
+  try {
+    const orchestrator = new Orchestrator(
+      autoPromoteConfig(memoryDir, { extractionScopeClassificationEnabled: false }),
+    );
+    stubBackgroundWork(orchestrator);
+    const defaultStorage = await orchestrator.getStorageForNamespace("default");
+    await defaultStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
+    await sharedStorage.ensureDirectories();
+
+    await orchestrator.persistExtraction(correctionFact(TOOL_FACT), defaultStorage, "thread-1", { sourceConnector: "pi" });
+
+    const sharedMems = await sharedStorage.readAllMemories();
+    assert.ok(
+      sharedMems.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
+      "with scope classification off, the tool-scope guard is inert and the fact auto-promotes (escape hatch)",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

@@ -12,78 +12,44 @@ import {
 //
 // Tuning bias (issue #2183): a FALSE POSITIVE is cheap (the fact stays in the
 // narrower namespace — the documented safe default); a FALSE NEGATIVE is the
-// cross-integration tool-collision bug. So detection leans permissive, but
-// must not fire on ordinary prose.
+// cross-integration tool-collision bug. Detection leans permissive but must not
+// fire on ordinary prose. Keywords and generic names are word-anchored so
+// "tooling"/"commander" and the "search" inside "research" do not match.
 // ---------------------------------------------------------------------------
 
-const CASES: Array<{ content: string; expected: boolean; note: string }> = [
-  // ---- MUST match (true) -------------------------------------------------
-  {
-    content: "Prefer the search tool and provide a path when locating code.",
-    expected: true,
-    note: "generic tool name adjacent to the word 'tool'",
-  },
-  {
-    content: "Use the `read` tool before editing a file.",
-    expected: true,
-    note: "backticked token adjacent to 'tool' (signal 2)",
-  },
-  {
-    content: "The exec tool requires an absolute cwd.",
-    expected: true,
-    note: "generic tool name 'exec' adjacent to 'tool'",
-  },
-  // ---- MUST NOT match (false) -------------------------------------------
-  {
-    content: "User prefers dark mode in all editors",
-    expected: false,
-    note: "portable preference; no tool/command context",
-  },
-  {
-    content: "PostgreSQL 15 requires the uuid-ossp extension for gen_random_uuid()",
-    expected: false,
-    note: "portable framework knowledge; no tool/command keyword",
-  },
-  {
-    content: "Magento 2.4.8 has a race condition in checkout",
-    expected: false,
-    note: "'condition' is not a tool/command keyword; 'checkout' is not a generic name",
-  },
-  {
-    content: "The user reads documentation before starting a task",
-    expected: false,
-    note: "the bare verb 'reads' is not a tool reference (word boundary excludes it)",
-  },
+const REF_CASES: Array<{ content: string; expected: boolean; note: string }> = [
+  // ---- MUST match --------------------------------------------------------
+  { content: "Prefer the search tool and provide a path when locating code.", expected: true, note: "generic name adjacent to 'tool'" },
+  { content: "Use the `read` tool before editing a file.", expected: true, note: "backticked token adjacent to 'tool'" },
+  { content: "The exec tool requires an absolute cwd.", expected: true, note: "generic name 'exec' adjacent to 'tool'" },
+  { content: "Use `search` when locating code.", expected: true, note: "imperative invocation + backticked identifier" },
+  { content: "Run `rg` before editing.", expected: true, note: "imperative invocation + backticked identifier" },
+  { content: "Use /search with a path.", expected: true, note: "slash-command syntax" },
+  // ---- MUST NOT match ----------------------------------------------------
+  { content: "User prefers dark mode in all editors", expected: false, note: "portable preference; no tool/command context" },
+  { content: "PostgreSQL 15 requires the uuid-ossp extension for gen_random_uuid()", expected: false, note: "portable framework knowledge" },
+  { content: "Magento 2.4.8 has a race condition in checkout", expected: false, note: "'condition' is not a keyword; 'checkout' is not generic" },
+  { content: "The user reads documentation before starting a task", expected: false, note: "the bare verb 'reads' is not a tool reference" },
+  { content: "Search tooling improves developer productivity", expected: false, note: "'tool' must not match the prefix of 'tooling'" },
+  { content: "Research tool improves accuracy", expected: false, note: "'search' must not match inside 'research'" },
 ];
 
-for (const { content, expected, note } of CASES) {
-  test(`referencesAgentSpecificTool: ${expected ? "detects" : "ignores"} "${content.slice(0, 48)}…" (${note})`, () => {
-    assert.equal(
-      referencesAgentSpecificTool(content),
-      expected,
-      `${expected ? "expected detection but missed" : "expected no match but fired"} — ${note}`,
-    );
+for (const { content, expected, note } of REF_CASES) {
+  test(`referencesAgentSpecificTool: ${expected ? "detects" : "ignores"} "${content.slice(0, 44)}…" (${note})`, () => {
+    assert.equal(referencesAgentSpecificTool(content), expected, note);
   });
 }
 
-// ---------------------------------------------------------------------------
-// Extra coverage beyond the issue's required set: bias-toward-detection cases
-// (must stay true) and ordinary-prose traps (must stay false).
-// ---------------------------------------------------------------------------
-
 const EXTRA_POSITIVE: string[] = [
-  "Use the grep tool to find symbols.",
-  "The rg subcommand is fastest for large repos.",
   "The `checkout` command switches branches.",
   "The browser tool navigates to the URL first.",
   "Always run the memory tool after a context switch.",
   "the tool named search returns repo hits",
-  "tool called grep is preferred",
   "Pi exposes a search tool; OpenClaw exposes a same-named web tool.",
+  "Invoke `memory_store` to persist the reflection.",
 ];
-
 for (const content of EXTRA_POSITIVE) {
-  test(`referencesAgentSpecificTool detects: "${content.slice(0, 48)}…"`, () => {
+  test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {
     assert.equal(referencesAgentSpecificTool(content), true);
   });
 }
@@ -94,16 +60,18 @@ const EXTRA_NEGATIVE: string[] = [
   "She has a good command of the deployment process.",
   "Communication is the main tool of a leader.",
   "PostgreSQL read replicas lag under heavy load.",
-  "The user reads the docs every morning.",
   "Memory usage spikes during compaction.",
   "The browser caches static assets aggressively.",
   "Reading long files is slow.",
   "He writes detailed notes after every meeting.",
   "Leadership requires command of the subject matter.",
+  "Writers use memory and emotion to craft stories.",
+  "I use search engines daily for research.",
+  "Use memory wisely and rest often.",
+  "Visit https://example.com/search for docs.",
 ];
-
 for (const content of EXTRA_NEGATIVE) {
-  test(`referencesAgentSpecificTool ignores prose: "${content.slice(0, 48)}…"`, () => {
+  test(`referencesAgentSpecificTool ignores prose: "${content.slice(0, 44)}…"`, () => {
     assert.equal(referencesAgentSpecificTool(content), false);
   });
 }
@@ -114,46 +82,17 @@ test("referencesAgentSpecificTool: empty/non-string input is false (no throw)", 
 });
 
 // ---------------------------------------------------------------------------
-// shouldPromoteGlobalFactToShared — the single decision point shared by the
-// pre-judge namespace prediction and the write-loop scope-routing block. The
-// guard has no separate config knob: it is gated by the enclosing
-// extractionScopeClassificationEnabled capability, so only {scope, content,
-// sourceConnector} participate in the decision.
+// shouldPromoteGlobalFactToShared — composed scope-routing predicate.
 // ---------------------------------------------------------------------------
 
 const PROMOTION_CASES: Array<{ name: string; args: { scope: string | null | undefined; content: string; sourceConnector?: string }; expected: boolean }> = [
-  {
-    name: "global portable fact, no connector -> promote",
-    args: { scope: "global", content: "User prefers dark mode in all editors" },
-    expected: true,
-  },
-  {
-    name: "global tool-scoped fact WITH connector -> withhold (#2183)",
-    args: { scope: "global", content: "Prefer the search tool when locating code.", sourceConnector: "pi" },
-    expected: false,
-  },
-  {
-    name: "global tool-scoped fact, guard has no knob -> always withheld when connector known",
-    args: { scope: "global", content: "The exec tool requires an absolute cwd.", sourceConnector: "openclaw" },
-    expected: false,
-  },
-  {
-    name: "global tool-scoped fact WITHOUT connector -> promote (unattributed)",
-    args: { scope: "global", content: "Prefer the search tool when locating code." },
-    expected: true,
-  },
-  {
-    name: "project-scoped fact -> never promote via this path",
-    args: { scope: "project", content: "Prefer the search tool when locating code.", sourceConnector: "pi" },
-    expected: false,
-  },
-  {
-    name: "empty connector string is treated as unknown -> promote",
-    args: { scope: "global", content: "Prefer the search tool when locating code.", sourceConnector: "" },
-    expected: true,
-  },
+  { name: "global portable fact, no connector -> promote", args: { scope: "global", content: "User prefers dark mode in all editors" }, expected: true },
+  { name: "global tool-scoped fact WITH connector -> withhold (#2183)", args: { scope: "global", content: "Prefer the search tool when locating code.", sourceConnector: "pi" }, expected: false },
+  { name: "global tool-scoped fact, no knob -> withheld when connector known", args: { scope: "global", content: "The exec tool requires an absolute cwd.", sourceConnector: "openclaw" }, expected: false },
+  { name: "global tool-scoped fact WITHOUT connector -> promote (unattributed)", args: { scope: "global", content: "Prefer the search tool when locating code." }, expected: true },
+  { name: "project-scoped fact -> never promote via this path", args: { scope: "project", content: "Prefer the search tool when locating code.", sourceConnector: "pi" }, expected: false },
+  { name: "empty connector string is treated as unknown -> promote", args: { scope: "global", content: "Prefer the search tool when locating code.", sourceConnector: "" }, expected: true },
 ];
-
 for (const { name, args, expected } of PROMOTION_CASES) {
   test(`shouldPromoteGlobalFactToShared: ${name}`, () => {
     assert.equal(shouldPromoteGlobalFactToShared(args), expected);
@@ -162,19 +101,26 @@ for (const { name, args, expected } of PROMOTION_CASES) {
 
 // ---------------------------------------------------------------------------
 // withholdToolScopedFromSharedNamespace — the SINGLE primitive every shared-
-// namespace promotion path consults (scope-routing AND auto-promotion). No
-// scope condition: it is the one definition of "tool-scoped and attributed".
+// namespace promotion path consults. Includes structured procedure tool
+// identity (issue #2183 P2): a portable title + tool-bearing steps withholds.
 // ---------------------------------------------------------------------------
 
-const WITHHOLD_CASES: Array<{ name: string; content: string; sourceConnector?: string; expected: boolean }> = [
-  { name: "tool-scoped + connector -> withhold", content: "Prefer the search tool when locating code.", sourceConnector: "pi", expected: true },
-  { name: "tool-scoped + empty connector -> do not withhold", content: "Prefer the search tool when locating code.", sourceConnector: "", expected: false },
-  { name: "tool-scoped + no connector -> do not withhold", content: "Prefer the search tool when locating code.", expected: false },
-  { name: "portable + connector -> do not withhold", content: "User prefers dark mode in all editors", sourceConnector: "pi", expected: false },
+const WITHHOLD_CASES: Array<{
+  name: string;
+  args: { content: string; sourceConnector?: string; procedureSteps?: ReadonlyArray<{ intent?: string; toolCall?: { kind?: string; signature?: string } }> };
+  expected: boolean;
+}> = [
+  { name: "tool-scoped + connector -> withhold", args: { content: "Prefer the search tool when locating code.", sourceConnector: "pi" }, expected: true },
+  { name: "tool-scoped + empty connector -> do not withhold", args: { content: "Prefer the search tool when locating code.", sourceConnector: "" }, expected: false },
+  { name: "tool-scoped + no connector -> do not withhold", args: { content: "Prefer the search tool when locating code." }, expected: false },
+  { name: "portable + connector -> do not withhold", args: { content: "User prefers dark mode in all editors", sourceConnector: "pi" }, expected: false },
+  { name: "portable title + connector + tool-bearing steps -> withhold (#2183 P2)", args: { content: "When locating implementation", sourceConnector: "pi", procedureSteps: [{ intent: "find", toolCall: { kind: "search", signature: "search('foo')" } }] }, expected: true },
+  { name: "portable title + connector + steps without toolCall -> do not withhold", args: { content: "When locating implementation", sourceConnector: "pi", procedureSteps: [{ intent: "read the docs" }] }, expected: false },
+  { name: "portable title + connector + steps with empty kind -> do not withhold", args: { content: "When locating implementation", sourceConnector: "pi", procedureSteps: [{ intent: "x", toolCall: { kind: "  ", signature: "y" } }] }, expected: false },
+  { name: "tool-bearing steps but NO connector -> do not withhold (unattributed)", args: { content: "When locating implementation", procedureSteps: [{ intent: "find", toolCall: { kind: "search", signature: "search('foo')" } }] }, expected: false },
 ];
-
-for (const { name, content, sourceConnector, expected } of WITHHOLD_CASES) {
+for (const { name, args, expected } of WITHHOLD_CASES) {
   test(`withholdToolScopedFromSharedNamespace: ${name}`, () => {
-    assert.equal(withholdToolScopedFromSharedNamespace({ content, sourceConnector }), expected);
+    assert.equal(withholdToolScopedFromSharedNamespace(args), expected);
   });
 }

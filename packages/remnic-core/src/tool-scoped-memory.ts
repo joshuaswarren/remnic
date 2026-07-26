@@ -4,79 +4,45 @@
  * A tool-related fact extracted from a specific agent integration carries an
  * UNQUALIFIED tool name — "use the search tool" — with no agent identity
  * attached (the conversation handed to the extraction LLM is rendered as
- * `[role] content` only). The scope classifier can tag such a fact `global`,
- * which promotes it to the shared namespace, where a DIFFERENT integration
- * that exposes a same-named but incompatible tool (Pi `search` = repo code
- * search vs OpenClaw `search` = web search) picks it up and applies the wrong
- * rule.
+ * `[role] content` only). Promoting such a fact to the shared namespace lets a
+ * DIFFERENT integration that exposes a same-named but incompatible tool (Pi
+ * `search` = repo code search vs OpenClaw `search` = web search) consume it.
  *
  * `referencesAgentSpecificTool` flags fact text that references a specific
  * tool/command invocation rather than portable knowledge. The promotion guard
  * in `orchestration/extraction-persist.ts` uses it — when the producing
  * integration is known (`sourceConnector`) — to keep such a fact in that
- * integration's own namespace instead of promoting it to the shared one.
+ * integration's own namespace.
  *
- * Tuning bias: a FALSE POSITIVE is cheap — the fact simply stays in the
- * narrower namespace, which the codebase documents as the safe default
- * ("When in doubt, prefer project"). A FALSE NEGATIVE is the actual bug, so
- * detection leans permissive — but it must not light up on ordinary prose.
+ * Tuning bias: a FALSE POSITIVE is cheap — the fact stays in the narrower
+ * namespace, the documented safe default. A FALSE NEGATIVE is the actual
+ * cross-integration collision bug, so detection leans permissive — but it must
+ * not fire on ordinary prose.
  */
 
 // Backtick as a plain char in a double-quoted string so it never collides with
 // the template-literal delimiters used to build the patterns below.
 const BT = "`";
 
-// Generic tool/command names the issue calls out. Matched as standalone,
-// word-boundary tokens ONLY when a tool/command keyword is adjacent — the bare
-// verb "reads documentation" must not fire, because `\bread\b` does not match
-// inside "reads".
+// Generic tool/command names the issue calls out. Word-anchored so the "search"
+// inside "research" and the "read" inside "reads" do not match.
 const GENERIC_TOOL_NAMES = ["read", "write", "search", "fetch", "browser", "exec", "shell", "memory"];
+const GENERIC = "\\b(?:" + GENERIC_TOOL_NAMES.join("|") + ")\\b";
 
-// Backticked or quoted short token (signal 2 carrier). Bounded {1,60} keeps the
-// match linear (CodeQL js/polynomial-redos — see source-attribution.ts for the
-// house pattern): no unbounded `+` over hostile text, no overlapping quantifier.
+// Backticked or quoted short token. Bounded {1,60} keeps the match linear
+// (CodeQL js/polynomial-redos — see source-attribution.ts for the house
+// pattern): no unbounded `+` over hostile text, no overlapping quantifier.
 const QUOTED_TOKEN =
   "(?:" + BT + "[^" + BT + "\\n]{1,60}" + BT + "|\"[^\"\\n]{1,60}\"|'[^'\\n]{1,60}')";
 
-// Function words + common prose adjectives that sit next to "tool"/"command" in
-// ordinary writing ("a useful tool", "the main tool of", "command of") but are
-// not tool identifiers. Blocks the bare-ident branch via lookahead so prose
-// does not fire while "use the grep tool" does.
-const PROSE_FILLER_WORDS = [
-  // articles / determiners
-  "the", "a", "an", "this", "that", "these", "those", "every", "any", "some", "no",
-  "another", "other", "same", "such", "each", "all", "many", "few", "several", "one",
-  "two", "three", "both", "either", "neither", "own",
-  // adjectives
-  "useful", "helpful", "great", "good", "new", "old", "powerful", "simple", "complex",
-  "basic", "advanced", "single", "multiple", "different", "similar", "main", "only",
-  "first", "last", "next", "previous", "primary", "secondary", "default", "common",
-  "general", "specific", "particular", "certain", "whole", "full", "partial", "real",
-  "virtual", "key", "core",
-  // prepositions / conjunctions (the "tool of/for/with" prose pattern)
-  "of", "for", "to", "in", "with", "and", "or", "on", "at", "by", "from", "into",
-  "over", "under", "via", "per", "than", "as", "if", "because", "while", "when",
-  "where", "upon", "within", "without", "across", "about", "between", "among",
-  "through", "during", "before", "after", "since", "until", "against", "toward",
-  "towards",
-  // pronouns / possessives
-  "its", "his", "her", "their", "our", "your", "my", "we", "you", "they", "he",
-  "she", "it", "i", "us", "them", "who", "whom", "whose", "which", "what",
-];
-const NOT_PROSE_FILLER = "(?!(?:" + PROSE_FILLER_WORDS.join("|") + ")\\b)";
+// Tool/command keywords, word-anchored so "tooling"/"commander"/"commanded" do
+// not match on the `tool`/`command` prefix.
+const KEYWORD = "\\b(?:mcp[ _]tool|slash[ _]command|cli[ _]flag|subcommand|tool|command)\\b";
 
-// A bare code-ish identifier (signal 1 carrier) — a short token starting with a
-// letter, word-anchored on BOTH sides so the match cannot slide into a word
-// mid-spelling (which would let "useful" be entered as "seful" and dodge the
-// filler lookahead), and gated by the filler lookahead.
-const BARE_IDENT = "\\b" + NOT_PROSE_FILLER + "[A-Za-z][A-Za-z0-9_-]{1,40}\\b";
-
-// Tool-flavored context keywords. The bare word "command" is handled by
-// COMMAND_KW below, where ordinary prose ("command line", "chain of command",
-// "command of the subject") makes a bare-word identifier next to it too noisy —
-// only quoted/generic identifiers are admitted there.
-const TOOL_KW = "(?:mcp[ _]tool|slash[ _]command|cli[ _]flag|subcommand|tool)";
-const COMMAND_KW = "(?:mcp[ _]tool|slash[ _]command|cli[ _]flag|subcommand|command)";
+// Identifier admitted next to a keyword: a quoted/backticked token or a generic
+// tool name (both anchored). Bare words are NOT admitted — "research tool",
+// "marketing command" are ordinary prose, not tool refs.
+const IDENT = "(?:" + QUOTED_TOKEN + "|" + GENERIC + ")";
 
 // Immediate adjacency: identifier and keyword separated only by a short run of
 // whitespace/quotes/backticks. Bounded {1,4} — no unbounded quantifier.
@@ -84,27 +50,29 @@ const IMM = "[\\s'\"" + BT + "]{1,4}";
 // Explicit named/called/aka connective (longer reach, identifier on the far side).
 const CONN = "\\s+(?:named|called|aka)\\s+";
 
-// Identifier admitted next to a tool-flavored keyword: a quoted token, a known
-// generic tool name, or a bare code identifier (prose filler blocked).
-const IDENT_FOR_TOOL = "(?:" + QUOTED_TOKEN + "|" + GENERIC_TOOL_NAMES.join("|") + "|" + BARE_IDENT + ")";
-// Identifier admitted next to the bare "command" keyword: quoted token or known
-// generic name only. Bare words are NOT admitted here — "command line",
-// "command pattern", "chain of command" are ordinary prose, not tool refs.
-const IDENT_FOR_COMMAND = "(?:" + QUOTED_TOKEN + "|" + GENERIC_TOOL_NAMES.join("|") + ")";
+// Imperative invocation: use/run/call/invoke immediately followed by a
+// backticked/quoted identifier — "Use `search`", "Run `rg`". The identifier is
+// restricted to the quoted form (not the generic name) so prose like "writers
+// use memory" or "I use search engines" does not fire.
+const INVOCATION = "\\b(?:use|run|call|invoke)\\b\\s+" + QUOTED_TOKEN;
+
+// Slash command: "/search", "/pr review" — a leading slash at a word boundary
+// (start or whitespace) so URL path segments ("/example.com/search") do not.
+const SLASH = "(?:^|\\s)/[a-z][a-z0-9_-]{0,40}\\b";
 
 const TOOL_REFERENCE = new RegExp(
   "(?:" +
-    IDENT_FOR_TOOL + IMM + TOOL_KW + "|" + TOOL_KW + IMM + IDENT_FOR_TOOL + "|" +
-    IDENT_FOR_COMMAND + IMM + COMMAND_KW + "|" + COMMAND_KW + IMM + IDENT_FOR_COMMAND + "|" +
-    "(?:tool|command)" + CONN + IDENT_FOR_TOOL + "|" + IDENT_FOR_TOOL + CONN + "(?:tool|command)" +
+    IDENT + IMM + KEYWORD + "|" + KEYWORD + IMM + IDENT + "|" +
+    KEYWORD + CONN + IDENT + "|" + IDENT + CONN + KEYWORD + "|" +
+    INVOCATION + "|" + SLASH +
   ")",
   "i",
 );
 
 /**
  * Returns true when `content` references a specific tool or command invocation
- * (e.g. "use the search tool", "the `read` tool", "the exec tool requires an
- * absolute cwd") rather than portable, agent-agnostic knowledge.
+ * (e.g. "use the search tool", "the `read` tool", "Run `rg`", "Use /search")
+ * rather than portable, agent-agnostic knowledge.
  *
  * Pure and dependency-free. Biased toward detection: a false positive only
  * narrows the namespace (safe default), while a false negative is the
@@ -118,29 +86,45 @@ export function referencesAgentSpecificTool(content: string): boolean {
 export interface ToolScopeWithholdInputs {
   content: string;
   sourceConnector?: string;
+  /**
+   * Structured procedure steps (issue #2183 P2). A procedure whose steps
+   * invoke a specific tool is tool-scoped even when the title is portable
+   * prose ("When locating implementation" + `toolCall.kind: "search"`). Only
+   * the tool-call kinds are consulted.
+   */
+  procedureSteps?: ReadonlyArray<{ toolCall?: { kind?: string } }>;
+}
+
+/**
+ * Primitive — the SINGLE definition of "tool-scoped and attributed". True when
+ * a fact was produced by a known integration (`sourceConnector`) AND either its
+ * text references a specific tool/command or one of its structured procedure
+ * steps invokes a tool. Every shared-namespace promotion path (scope-routing
+ * AND auto-promotion) consults this, so the tool-scope decision cannot diverge
+ * across paths (issue #2183).
+ */
+export function withholdToolScopedFromSharedNamespace({
+  content,
+  sourceConnector,
+  procedureSteps,
+}: ToolScopeWithholdInputs): boolean {
+  if (typeof sourceConnector !== "string" || sourceConnector.length === 0) return false;
+  if (referencesAgentSpecificTool(content)) return true;
+  if (
+    procedureSteps?.some((s) => {
+      const kind = s.toolCall?.kind;
+      return typeof kind === "string" && kind.trim().length > 0;
+    })
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export interface GlobalFactPromotionInputs {
   scope: string | null | undefined;
   content: string;
   sourceConnector?: string;
-}
-
-/**
- * Primitive: true when a fact references a specific tool/command AND was
- * produced by a known integration — the SINGLE definition of "tool-scoped and
- * attributed". Every shared-namespace promotion path (scope-routing AND
- * auto-promotion) consults this, so the tool-scope decision has exactly one
- * implementation and cannot diverge across paths (issue #2183).
- */
-export function withholdToolScopedFromSharedNamespace(
-  { content, sourceConnector }: ToolScopeWithholdInputs,
-): boolean {
-  return (
-    typeof sourceConnector === "string" &&
-    sourceConnector.length > 0 &&
-    referencesAgentSpecificTool(content)
-  );
 }
 
 /**

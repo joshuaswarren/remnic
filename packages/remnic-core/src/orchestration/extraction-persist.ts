@@ -610,12 +610,12 @@ export class ExtractionPersistCoordinator {
       eventTimeSource?: "extracted" | "assumed";
       source: string;
       sourceConnector?: string;
+      procedureSteps?: ReadonlyArray<{ toolCall?: { kind?: string } }>;
       /** Claim-level provenance spans (issue #1575 PR 2). */
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
     }): Promise<void> => {
-      // #2183: never auto-promote a tool-scoped fact from a known integration to shared.
-      if (withholdToolScopedFromSharedNamespace({ content: options.content, sourceConnector: options.sourceConnector })) return;
+      if (lifecycleCaps.extractionScopeClassification && withholdToolScopedFromSharedNamespace(options)) return;
       await promoteMemoryToProfileTargets(options);
       if (
         !shouldPromoteToShared(
@@ -644,7 +644,6 @@ export class ExtractionPersistCoordinator {
         // `fact.content`, which can already carry an inline citation (e.g. a
         // relayed or reprocessed fact).  Strip any pre-existing citation so the
         // dedup key matches the hash stored from the original un-cited write.
-        //
         // PR #402 round-6 (Fix #2 / chatgpt-codex P1 PRRT_kwDORJXyws56U74n):
         // Compute the enriched content before the hash-dedup check so the
         // lookup uses the same content that writeMemory will actually store.
@@ -657,7 +656,6 @@ export class ExtractionPersistCoordinator {
         // key order and casing are canonical — identical to the enrichment
         // applied by storage.writeMemory — preventing spurious hash misses
         // when attribute maps arrive with different insertion orders or casing.
-        //
         // Fix #4 (Low PRRT_kwDORJXyws56VHth): sanitize the base content before
         // building dedupContent.  writeMemory runs sanitizeMemoryContent on the
         // enriched body before hashing; if sanitization redacts the content to
@@ -2403,6 +2401,7 @@ export class ExtractionPersistCoordinator {
               : {}),
             source: extractionWriteSource,
             ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+            ...(fact.procedureSteps && fact.procedureSteps.length ? { procedureSteps: fact.procedureSteps } : {}),
             ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
             ...(fact.provenance ? { provenance: fact.provenance } : {}),
           });
@@ -2703,6 +2702,7 @@ export class ExtractionPersistCoordinator {
             : {}),
           source: extractionWriteSource,
           ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+          ...(fact.procedureSteps && fact.procedureSteps.length ? { procedureSteps: fact.procedureSteps } : {}),
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
         });
