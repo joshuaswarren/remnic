@@ -848,6 +848,35 @@ test("#2128 cancellation after tombstone commit terminalizes the correction plan
   });
 });
 
+test("#2128 late cancellation before any mutation restores an applying plan to pending", async () => {
+  await withTempDir(async (dir) => {
+    const state: FakeState = {
+      memories: new Map(),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const planner = new CorrectionPlanner(makePlannerDeps(dir, new Map()));
+    const plan = await planner.plan({ text: "nothing matches" }, ["default"]);
+    const abortController = new AbortController();
+    const deps = makeExecutorDeps(state);
+    const appendAuditRecord = deps.appendAuditRecord;
+    deps.appendAuditRecord = async (namespace, record, signal) => {
+      abortController.abort(new Error("caller disconnected"));
+      return appendAuditRecord(namespace, record, signal);
+    };
+    const executor = new CorrectionExecutor(deps, planner);
+
+    await assert.rejects(
+      () => executor.apply("default", plan.planId, { confirm: true, abortSignal: abortController.signal }),
+      /caller disconnected/,
+    );
+    assert.equal((await planner.loadPlan("default", plan.planId))?.status, "pending");
+  });
+});
+
 test("#2128 cancellation before retract mutation restores a plan to pending", async () => {
   await withTempDir(async (dir) => {
     const candidates = new Map<string, PlannerCandidate>([

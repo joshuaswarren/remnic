@@ -182,6 +182,43 @@ test("flushSession preserves scoped force-drain routing and deadline options", a
   assert.equal(queuedOptions?.clearBufferAfterExtraction, true);
 });
 
+test("flushSession preserves retained context for other scoped sessions", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let retainedTurns = [
+    makeTurn("session-z", "old session A context", "alice"),
+    makeTurn("session-y", "session B context", "bob"),
+  ];
+  orchestrator.config = parseConfig({ namespacesEnabled: true });
+  orchestrator.buffer = {
+    flushPendingSave: async () => {},
+    findBufferKeysForSession: async () => ["provider-thread"],
+    getTurns: (bufferKey: string) =>
+      bufferKey === "provider-thread" ? [makeTurn("session-z", "active session A", "alice")] : [],
+    getRetainedDeferredTurns: (bufferKey: string) =>
+      bufferKey === "provider-thread" ? retainedTurns : [],
+    retainDeferredTurns: async (_bufferKey: string, turns: BufferTurn[]) => {
+      retainedTurns = turns;
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    _queuedTurns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    retainedTurns = [makeTurn("session-z", "new session A context", "alice")];
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("session-z", {
+    reason: "access_force_flush",
+    writeNamespaceOverride: "alice-project",
+    principalOverride: "alice",
+  });
+
+  assert.ok(retainedTurns.some((turn) => turn.content === "session B context"));
+  assert.ok(retainedTurns.some((turn) => turn.content === "new session A context"));
+});
+
 
 test("flushSession rejects opaque buffers without trusted ownership", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;

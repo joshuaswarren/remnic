@@ -474,6 +474,16 @@ export class SessionContextCoordinator {
       ownershipEnforced &&
       ownerPrincipal !== undefined &&
       (resolvedSessionPrincipal === undefined || resolvedSessionPrincipal === "default");
+    const belongsToSession = (turn: BufferTurn): boolean => {
+      if (turn.sessionKey !== sessionKey) return false;
+      if (!ownershipEnforced || ownerPrincipal === undefined) return true;
+      if (turn.sessionOwnerPrincipal === ownerPrincipal) return true;
+      return (
+        turn.sessionOwnerPrincipal === undefined &&
+        this.deps.config !== undefined &&
+        resolvePrincipal(turn.sessionKey, this.deps.config) === ownerPrincipal
+      );
+    };
     if (
       opaqueScopedSession &&
       bufferKeys.some((bufferKey) =>
@@ -488,37 +498,56 @@ export class SessionContextCoordinator {
     }
     for (const bufferKey of bufferKeys) {
       const turns = this.deps.buffer.getTurns(bufferKey);
-      const turnsForSession = scopedRequest
-        ? turns.filter((turn) => {
-            if (turn.sessionKey !== sessionKey) return false;
-            if (!ownershipEnforced || ownerPrincipal === undefined) return true;
-            if (turn.sessionOwnerPrincipal === ownerPrincipal) return true;
-            return (
-              turn.sessionOwnerPrincipal === undefined &&
-              this.deps.config !== undefined &&
-              resolvePrincipal(turn.sessionKey, this.deps.config) === ownerPrincipal
-            );
-          })
-        : turns;
+      const turnsForSession = scopedRequest ? turns.filter(belongsToSession) : turns;
       if (turnsForSession.length === 0) continue;
-      await new Promise<void>((resolve, reject) => {
-        void this.deps.queueBufferedExtraction(turnsForSession, "trigger_mode", {
-          bufferKey,
-          clearBufferAfterExtraction: true,
-          skipDedupeCheck: true,
-          failOnExtractionFailure: options.failOnExtractionFailure === true,
-          forceExtractionAttempt: true,
-          abortSignal: options.abortSignal,
-          extractionDeadlineMs: options.extractionDeadlineMs,
-          writeNamespaceOverride: options.writeNamespaceOverride,
-          principalOverride: options.principalOverride,
-          scopeProfileWritePlan: options.scopeProfileWritePlan,
-          clearMatchingTurns: options.clearMatchingTurns ?? scopedRequest,
-          onDurableCommit: options.onCommitted,
-          onTaskSettled: (error) => (error ? reject(error) : resolve()),
-        })
-          .catch(reject);
-      });
+      const retainedTurnsForOtherSessions =
+        scopedRequest && typeof this.deps.buffer.getRetainedDeferredTurns === "function"
+          ? this.deps.buffer
+              .getRetainedDeferredTurns(bufferKey)
+              .filter((turn) => !belongsToSession(turn))
+          : [];
+      try {
+        await new Promise<void>((resolve, reject) => {
+          void this.deps.queueBufferedExtraction(turnsForSession, "trigger_mode", {
+            bufferKey,
+            clearBufferAfterExtraction: true,
+            skipDedupeCheck: true,
+            failOnExtractionFailure: options.failOnExtractionFailure === true,
+            forceExtractionAttempt: true,
+            abortSignal: options.abortSignal,
+            extractionDeadlineMs: options.extractionDeadlineMs,
+            writeNamespaceOverride: options.writeNamespaceOverride,
+            principalOverride: options.principalOverride,
+            scopeProfileWritePlan: options.scopeProfileWritePlan,
+            clearMatchingTurns: options.clearMatchingTurns ?? scopedRequest,
+            onDurableCommit: options.onCommitted,
+            onTaskSettled: (error) => (error ? reject(error) : resolve()),
+          })
+            .catch(reject);
+        });
+      } finally {
+        if (
+          retainedTurnsForOtherSessions.length > 0 &&
+          typeof this.deps.buffer.retainDeferredTurns === "function"
+        ) {
+          const retainedAfterExtraction = this.deps.buffer.getRetainedDeferredTurns(bufferKey);
+          await this.deps.buffer
+            .retainDeferredTurns(
+              bufferKey,
+              [
+                ...retainedTurnsForOtherSessions,
+                ...retainedAfterExtraction.filter((turn) => belongsToSession(turn)),
+              ],
+              10,
+            )
+            .catch((error: unknown) => {
+              log.warn(
+                `session flush could not restore retained turns for other sessions in ${bufferKey}`,
+                error,
+              );
+            });
+        }
+      }
     }
   }
 

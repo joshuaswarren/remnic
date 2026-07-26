@@ -33,6 +33,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
+import { PendingObserveExtractionTracker } from "./access-observe-helpers.js";
+
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { resolveAuthorizedNamespaceWritablePreflight } from "./access-namespace-preflight.js";
 import { Orchestrator } from "./orchestrator.js";
@@ -214,6 +216,31 @@ test("#1495 projectTag: LCM, extraction, objective-state, and response all agree
     probe.objectiveStateNamespaces.every((ns) => ns === expected),
     `objective-state target must be the effective namespace, got ${JSON.stringify(probe.objectiveStateNamespaces)}`,
   );
+});
+
+test("#2128 pending observe preparation is a force-flush barrier", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const preparation = tracker.reserve("session-z");
+  let releaseExtraction!: () => void;
+  const extraction = new Promise<void>((resolve) => {
+    releaseExtraction = resolve;
+  });
+  let waited = false;
+  const waitPromise = tracker.wait("session-z", "alice", "team-project").then(() => {
+    waited = true;
+  });
+
+  await Promise.resolve();
+  assert.equal(waited, false, "a force flush must wait while observe is still resolving scope");
+
+  tracker.track(tracker.key("session-z", "alice", "team-project"), extraction, new AbortController());
+  preparation.release();
+  await Promise.resolve();
+  assert.equal(waited, false, "registration must remain a barrier until extraction settles");
+
+  releaseExtraction();
+  await waitPromise;
+  assert.equal(waited, true);
 });
 
 test("#2128 concurrent scope plans do not share temporary coding context", async () => {

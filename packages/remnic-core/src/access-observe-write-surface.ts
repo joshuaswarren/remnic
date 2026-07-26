@@ -670,6 +670,9 @@ export class AccessObserveWriteSurface {
     //    self base leaves NO coding context bound to the session, matching how
     //    `memory_store` resolves its full scoped write namespace before any
     //    session mutation.
+    const observePreparation = this.pendingObserveExtractions.reserve(request.sessionKey);
+    try {
+
     let scope: MemoryScopePlan;
     try {
       scope = await this.deps.resolveMemoryScopePlan(request);
@@ -828,6 +831,8 @@ export class AccessObserveWriteSurface {
       // limits concurrency (one extraction at a time per session via
       // queueBufferedExtraction). Fire-and-forget here just decouples
       // the HTTP response from the queue drain.
+      if (!observePreparation.isCancelled()) {
+
       try {
         const observeAbortController = new AbortController();
         const extractionPromise = this.deps.orchestrator.ingestReplayBatch(turns, {
@@ -853,6 +858,8 @@ export class AccessObserveWriteSurface {
         log.error(`access-observe extraction enqueue failed: ${err}`);
       }
     }
+      }
+
 
     log.info(
       `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued}`
@@ -878,6 +885,9 @@ export class AccessObserveWriteSurface {
       lcmArchived,
       extractionQueued,
     };
+    } finally {
+      observePreparation.release();
+  }
   }
 
   async extractionForceFlush(

@@ -313,6 +313,16 @@ export class CorrectionExecutor {
         throwIfAborted(abortSignal, "correction apply aborted");
       }
     };
+    const throwIfAbortedBeforeCommitAndReset = async (): Promise<void> => {
+      try {
+        throwIfAbortedBeforeCommit();
+      } catch (error) {
+        if (!mutationCommitted) await resetApplying();
+        const reason = abortSignal?.reason;
+        if (reason instanceof Error && reason.name !== "AbortError") throw reason;
+        throw error;
+      }
+    };
 
     // ── Phase 1: replacement / edit writes (new state first) ───────────────
     // For each supersede with a replacement, write the replacement FIRST. If
@@ -518,7 +528,7 @@ export class CorrectionExecutor {
         throw err;
       }
     }
-    throwIfAbortedBeforeCommit();
+    await throwIfAbortedBeforeCommitAndReset();
 
     // ── Phase 3: propagation (post-write reindex + graph) ─────────────────
     // Best-effort: a propagation failure is recorded as a warning on the
@@ -533,7 +543,7 @@ export class CorrectionExecutor {
       }
     }
 
-    throwIfAbortedBeforeCommit();
+    await throwIfAbortedBeforeCommitAndReset();
     // ── Phase 4: audit record ─────────────────────────────────────────────
     const anyFailed = results.some((r) => r.status === "failed");
     const status: CorrectionOutcome["status"] = anyFailed ? "partial" : "applied";
@@ -570,7 +580,7 @@ export class CorrectionExecutor {
         `audit record write failed (non-fatal): ${errMsg(err)}`,
       ];
     }
-    throwIfAbortedBeforeCommit();
+    await throwIfAbortedBeforeCommitAndReset();
 
     // ── Phase 5: mark plan consumed ───────────────────────────────────────
     // Corrections are already applied (phases 1-4 succeeded). A markConsumed
