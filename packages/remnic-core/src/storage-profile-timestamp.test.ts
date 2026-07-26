@@ -282,6 +282,40 @@ test("writeProfile recognizes setext underlines as metadata boundaries", async (
     t.mock.timers.reset();
   }
 });
+test("writeProfile preserves timestamp prose before a setext underline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "*Last updated: literal example*",
+        "===",
+        "Body after the setext heading.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "*Last updated: literal example*",
+          "===",
+          "Body after the setext heading.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile recognizes case-insensitive raw HTML terminators", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -500,7 +534,7 @@ test("writeProfile rejects malformed HTML attributes before the profile title", 
     t.mock.timers.reset();
   }
 });
-test("writeProfile rejects malformed built-in HTML attributes before the profile title", async (t) => {
+test("writeProfile keeps malformed built-in HTML blocks opaque before the profile title", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
     await withMemoryDir(async (dir) => {
@@ -516,7 +550,7 @@ test("writeProfile rejects malformed built-in HTML attributes before the profile
 
       await storage.writeProfile(profile);
 
-      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+      assert.equal(await storage.readProfile(), `${FRESH_HEADER}\n\n${profile}`);
     });
   } finally {
     t.mock.timers.reset();
@@ -770,13 +804,13 @@ test("writeProfile preserves indented metadata inside loose list items", async (
         "# Behavioral Profile",
         "",
         "- item",
+        "  continuation",
         "",
-        `  ${STALE_HEADER}`,
+        `   ${STALE_HEADER}`,
         "",
         "- Keeps loose-list content.",
         "",
       ].join("\n");
-
       await storage.writeProfile(profile);
 
       assert.equal(
@@ -787,8 +821,9 @@ test("writeProfile preserves indented metadata inside loose list items", async (
           FRESH_HEADER,
           "",
           "- item",
+          "  continuation",
           "",
-          `  ${STALE_HEADER}`,
+          `   ${STALE_HEADER}`,
           "",
           "- Keeps loose-list content.",
           "",
@@ -1378,6 +1413,43 @@ test("writeProfile replaces a noncanonical metadata header", async (t) => {
       assert.equal(
         await storage.readProfile(),
         profile.replace("*Last updated: before launch*", FRESH_HEADER),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile preserves timestamp prose before a noninterrupting ordered list", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "*Last updated: literal example*",
+        "2. continuation",
+        "",
+        "- Keeps prose content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "*Last updated: literal example*",
+          "2. continuation",
+          "",
+          "- Keeps prose content.",
+          "",
+        ].join("\n"),
       );
     });
   } finally {

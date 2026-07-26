@@ -2,6 +2,7 @@ const LAST_UPDATED_HEADER = /^\*Last updated:[^*]*\*$/;
 const PROFILE_TITLE = /^ {0,3}#(?:\s+|$)/;
 const MARKDOWN_HEADING = /^#{1,6}(?:\s+|$)/;
 const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d{1,9}[.)])\s+/;
+const MARKDOWN_LIST_ITEM_CAN_INTERRUPT = /^(?:[-+*]|1[.)])\s+/;
 const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
@@ -351,7 +352,6 @@ function findHtmlBlockStart(
     const completeTag =
       findCompleteHtmlTag(trimmedLine) ?? findHtmlTagPrefix(trimmedLine);
     if (!completeTag) {
-      if (trimmedLine.slice(1).trim() !== blockTag) return null;
       return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
     }
     if (completeTag.isSelfClosing) {
@@ -512,7 +512,8 @@ function isNestedListContent(lines: ProfileLine[], index: number, indentation: n
     if (previousLine.trim() === "") continue;
     const previousIndentation = previousLine.length - previousLine.trimStart().length;
     if (previousIndentation >= indentation) continue;
-    return MARKDOWN_LIST_ITEM.test(previousLine.trimStart());
+    if (MARKDOWN_LIST_ITEM.test(previousLine.trimStart())) return true;
+    if (previousIndentation === 0) return false;
   }
   return false;
 }
@@ -537,13 +538,21 @@ function findProfileTitleIndex(lines: ProfileLine[]): number {
   return titleIndex;
 }
 
-function isMetadataBoundary(line: string, htmlTerminator = false): boolean {
+function isMetadataBoundary(
+  line: string,
+  htmlTerminator = false,
+  allowSetext = true,
+  allowParagraphListInterrupt = false,
+): boolean {
+  const listPattern = allowParagraphListInterrupt
+    ? MARKDOWN_LIST_ITEM_CAN_INTERRUPT
+    : MARKDOWN_LIST_ITEM;
   return (
     line === "" ||
     MARKDOWN_HEADING.test(line) ||
-    MARKDOWN_LIST_ITEM.test(line) ||
+    listPattern.test(line) ||
+    (allowSetext && MARKDOWN_SETEXT_UNDERLINE.test(line)) ||
     MARKDOWN_THEMATIC_BREAK.test(line) ||
-    MARKDOWN_SETEXT_UNDERLINE.test(line) ||
     MARKDOWN_BLOCK_QUOTE.test(line) ||
     isLastUpdatedHeader(line) ||
     getFenceMarker(line) !== null ||
@@ -575,6 +584,8 @@ function isStandaloneMetadataLine(
   const nextMetadataBoundary = isMetadataBoundary(
     nextWithoutBom,
     htmlTerminatorIndexes.has(index + 1),
+    false,
+    true,
   );
   const previousContainerMarker =
     !MARKDOWN_THEMATIC_BREAK.test(previousWithoutBom) &&
