@@ -984,3 +984,67 @@ test("grounding rejects subject-swapped overlap claims", () => {
   assert.deepEqual(result.facts, []);
   assert.deepEqual(result.profileUpdates, []);
 });
+
+test("grounding rejects structured attributes sourced only from unanswered questions", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "The deployment finished.",
+        confidence: 0.9,
+        tags: [],
+        structuredAttributes: { owner: "Alice" },
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "The deployment finished. Is Alice the owner?",
+  );
+
+  assert.deepEqual(result.facts, [{
+    category: "fact",
+    content: "The deployment finished.",
+    confidence: 0.9,
+    tags: [],
+  }]);
+});
+
+test("grounding removes unsupported fact entity references", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+        entityRef: "person-bob",
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice works at Acme.",
+  );
+
+  assert.deepEqual(result.facts, [{
+    category: "fact",
+    content: "Alice works at Acme.",
+    confidence: 0.9,
+    tags: [],
+  }]);
+});
+
+test("grounding preserves short role-normalized profile traits", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: ["The user is vegan."],
+      entities: [],
+      questions: [],
+    },
+    "I am vegan.",
+  );
+
+  assert.deepEqual(result.profileUpdates, ["The user is vegan."]);
+});

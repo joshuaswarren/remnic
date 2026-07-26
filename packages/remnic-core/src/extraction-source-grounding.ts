@@ -435,18 +435,38 @@ function hasAffirmativeAnswerSupport(
   });
 }
 
+const GROUNDING_ROLE_SUBJECT_TOKENS = new Set(["assistant", "user"]);
+
+function hasRoleNormalizedGrounding(candidate: string, source: string): boolean {
+  const candidateTokens = groundingTokenSequence(candidate);
+  if (!GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateTokens[0] ?? "")) return false;
+  const claimTokens = candidateTokens.slice(1);
+  if (claimTokens.length === 0) return false;
+
+  return sourceSentences(source).some((sentence) => {
+    if (isInterrogativeSourceSentence(sentence)) return false;
+    const sourceTokens = new Set(groundingTokenSequence(sentence));
+    return claimTokens.every((token) => sourceTokens.has(token))
+      && !hasContradictoryPolarity(candidate, sentence);
+  });
+}
+
 function isGroundedCandidate(
   candidate: string,
   source: string,
   assertionSource: string | undefined,
   includeInterrogativeSource = false,
+  allowRoleNormalization = false,
 ): boolean {
   const allowInterrogativeSource = includeInterrogativeSource
     || (
       assertionSource !== undefined
       && normalizeForExactMatch(assertionSource) !== normalizeForExactMatch(source)
     );
-  if (!isSourceGrounded(candidate, source, allowInterrogativeSource)) return false;
+  const sourceGrounded = isSourceGrounded(candidate, source, allowInterrogativeSource);
+  if (!sourceGrounded && (!allowRoleNormalization || !hasRoleNormalizedGrounding(candidate, source))) {
+    return false;
+  }
   if (assertionSource === undefined) return true;
   const clauses = candidateClauses(candidate);
   return clauses.length > 0
@@ -466,7 +486,7 @@ function filterGroundedFact(
   const groundedAttributes = fact.structuredAttributes
     ? Object.fromEntries(
       Object.entries(fact.structuredAttributes)
-        .filter(([key, value]) => isGroundedCandidate(`${key}: ${value}`, source, assertionSource, true)),
+        .filter(([key, value]) => isGroundedCandidate(`${key}: ${value}`, source, assertionSource)),
     )
     : undefined;
   const groundedProcedureSteps = fact.procedureSteps
@@ -511,7 +531,12 @@ function filterGroundedFact(
     && isGroundedCandidate(fact.eventTime, source, assertionSource)
     ? fact.eventTime
     : undefined;
+  const groundedEntityRef = fact.entityRef !== undefined
+    && isGroundedEntityName(fact.entityRef, source)
+    ? fact.entityRef
+    : undefined;
   const {
+    entityRef: _entityRef,
     structuredAttributes: _structuredAttributes,
     procedureSteps: _procedureSteps,
     reasoningTrace: _reasoningTrace,
@@ -520,6 +545,7 @@ function filterGroundedFact(
   } = fact;
   return {
     ...factWithoutGroundingFields,
+    ...(groundedEntityRef !== undefined ? { entityRef: groundedEntityRef } : {}),
     ...(groundedAttributes && Object.keys(groundedAttributes).length > 0
       ? { structuredAttributes: groundedAttributes }
       : {}),
@@ -658,7 +684,7 @@ export function filterExtractionResultBySource(
   const profileGroundingSource = roleAssertionSources?.profile ?? source;
   const profileAssertionSource = roleAssertionSources?.profile ?? assertionSource;
   const profileUpdates = result.profileUpdates.filter((update) =>
-    isGroundedCandidate(update, profileGroundingSource, profileAssertionSource),
+    isGroundedCandidate(update, profileGroundingSource, profileAssertionSource, false, true),
   );
   const entities = result.entities.flatMap((entity) => {
     const grounded = filterGroundedEntity(entity, source, assertionSource);
@@ -674,7 +700,13 @@ export function filterExtractionResultBySource(
   const identityGroundingSource = roleAssertionSources?.identity ?? source;
   const identityAssertionSource = roleAssertionSources?.identity ?? assertionSource;
   const identityReflection = result.identityReflection
-    && isGroundedCandidate(result.identityReflection, identityGroundingSource, identityAssertionSource)
+    && isGroundedCandidate(
+      result.identityReflection,
+      identityGroundingSource,
+      identityAssertionSource,
+      false,
+      true,
+    )
     ? result.identityReflection
     : undefined;
 
