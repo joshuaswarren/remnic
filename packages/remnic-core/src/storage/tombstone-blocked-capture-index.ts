@@ -25,6 +25,7 @@ const CAPTURE_WRITE_LOCK_MAX_ATTEMPTS = 3;
 const CAPTURE_WRITE_LOCK_RETRY_BASE_MS = 25;
 const ABANDONED_MARKER_MIN_AGE_MS = 60_000;
 const MARKER_PROCESS_START_TOLERANCE_MS = 2_000;
+const DOTNET_UNIX_EPOCH_TICKS = 621_355_968_000_000_000;
 const MARKER_PROCESS_STARTED_AT_MS = Date.now() - process.uptime() * 1000;
 const CAPTURE_WRITE_LOCK_BUSY_MESSAGE = "tombstone-blocked capture write lock remained busy";
 
@@ -223,9 +224,23 @@ export class TombstoneBlockedCaptureIndex {
     if (runningStartedAtMs === null) return true;
     return runningStartedAtMs <= processStartedAtMs + MARKER_PROCESS_START_TOLERANCE_MS;
   }
-
   private async readProcessStartedAtMs(pid: number): Promise<number | null> {
     try {
+      if (process.platform === "win32") {
+        const { stdout } = await execFileAsync(
+          "powershell.exe",
+          [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+          ],
+          { encoding: "utf8", timeout: 1_000 }
+        );
+        const ticks = Number(stdout.trim());
+        return Number.isFinite(ticks) ? (ticks - DOTNET_UNIX_EPOCH_TICKS) / 10_000 : null;
+      }
       const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="], {
         encoding: "utf8",
         timeout: 1_000,
@@ -932,54 +947,70 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     write: () => Promise<void>,
     coordinate = false
   ): Promise<void> {
-    const before = await this.readMemoryByPath(target);
-    const blocked = coordinate || this.isTombstoneBlockedMemory(before) || this.isTombstoneBlockedMemory(after);
-    const identities = [
-      ...(this.isTombstoneBlockedMemory(before) ? [this.offlineSyncMemoryIdentity(before)] : []),
-      ...(this.isTombstoneBlockedMemory(after) ? [this.offlineSyncMemoryIdentity(after)] : []),
-      ...(coordinate ? [target] : []),
-      // A coordinate stream that cannot be parsed has no incoming identity
-      // yet; hold the global capture lock while the durable stream is in flight.
-      ...(coordinate && after === null ? [""] : []),
-    ];
-    const mutate = async (): Promise<void> => {
-      if (
-        this.isTombstoneBlockedMemory(after) &&
-        (await this.isDuplicateTombstoneBlockedOfflineSync(target, after))
-      ) {
-        return;
-      }
-      const marker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
-      let durable = false;
-      try {
-        await write();
-        durable = true;
-        if (marker) {
-          try {
-            await this.getTombstoneBlockedCaptureIndex().commitWrite(marker);
-          } catch (err) {
-            this.getTombstoneBlockedCaptureIndex().markUntrusted();
-            log.warn(`storage.offlineSyncFile committed write marker failed: ${err}`);
+    for (;;) {
+      const before = await this.readMemoryByPath(target);
+      const targetIdentity = this.isTombstoneBlockedMemory(before)
+        ? this.offlineSyncMemoryIdentity(before)
+        : undefined;
+      const blocked = coordinate || targetIdentity !== undefined || this.isTombstoneBlockedMemory(after);
+      const identities = [
+        ...(targetIdentity === undefined ? [] : [targetIdentity]),
+        ...(this.isTombstoneBlockedMemory(after) ? [this.offlineSyncMemoryIdentity(after)] : []),
+        ...(coordinate ? [target] : []),
+        // A coordinate stream that cannot be parsed has no incoming identity
+        // yet; hold the global capture lock while the durable stream is in flight.
+        ...(coordinate && after === null ? [""] : []),
+      ];
+      let retryIdentity: string | undefined;
+      const mutate = async (): Promise<void> => {
+        const current = await this.readMemoryByPath(target);
+        if (this.isTombstoneBlockedMemory(current)) {
+          const currentIdentity = this.offlineSyncMemoryIdentity(current);
+          if (currentIdentity !== targetIdentity) {
+            retryIdentity = currentIdentity;
+            return;
           }
         }
-        await this.invalidateAfterOfflineSyncMutation(target, marker);
-      } catch (err) {
-        if (marker && !durable) {
-          try {
-            await this.getTombstoneBlockedCaptureIndex().discardWrite(marker);
-          } catch (cleanupError) {
-            this.getTombstoneBlockedCaptureIndex().markUntrusted();
-            log.warn(`storage.offlineSyncFile failed to clear write marker: ${cleanupError}`);
-          }
+        if (
+          this.isTombstoneBlockedMemory(after) &&
+          (await this.isDuplicateTombstoneBlockedOfflineSync(target, after))
+        ) {
+          return;
         }
-        throw err;
+        const marker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
+        let durable = false;
+        try {
+          await write();
+          durable = true;
+          if (marker) {
+            try {
+              await this.getTombstoneBlockedCaptureIndex().commitWrite(marker);
+            } catch (err) {
+              this.getTombstoneBlockedCaptureIndex().markUntrusted();
+              log.warn(`storage.offlineSyncFile committed write marker failed: ${err}`);
+            }
+          }
+          await this.invalidateAfterOfflineSyncMutation(target, marker);
+        } catch (err) {
+          if (marker && !durable) {
+            try {
+              await this.getTombstoneBlockedCaptureIndex().discardWrite(marker);
+            } catch (cleanupError) {
+              this.getTombstoneBlockedCaptureIndex().markUntrusted();
+              log.warn(`storage.offlineSyncFile failed to clear write marker: ${cleanupError}`);
+            }
+          }
+          throw err;
+        }
+      };
+      if (!blocked || this.captureWriteLockContext.getStore() !== undefined) {
+        await mutate();
+      } else {
+        await this.withTombstoneBlockedCaptureWriteLock(mutate, identities);
       }
-    };
-    if (!blocked || this.captureWriteLockContext.getStore() !== undefined) {
-      await mutate();
+      if (retryIdentity !== undefined && this.captureWriteLockContext.getStore() === undefined) continue;
       return;
     }
-    await this.withTombstoneBlockedCaptureWriteLock(mutate, identities);
   }
 
   protected async writeTombstoneBlockedOfflineSyncFile(target: string, content: Buffer): Promise<void> {
@@ -1027,11 +1058,6 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       : { after: null, chunks };
     const incoming = this.isTombstoneBlockedMemory(prepared.after) ? prepared.after : null;
     const incomingIdentity = incoming ? this.offlineSyncMemoryIdentity(incoming) : null;
-    const identities = [
-      ...(incomingIdentity ? [incomingIdentity] : []),
-      ...(coordinate ? [target] : []),
-      ...(coordinate && prepared.after === null ? [""] : []),
-    ];
     const mutate = async (): Promise<void> => {
       await this.runTombstoneBlockedOfflineSyncMutation(
         target,
@@ -1044,7 +1070,34 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       await mutate();
       return;
     }
-    await this.withTombstoneBlockedCaptureWriteLock(mutate, identities);
+    for (;;) {
+      const before = await this.readMemoryByPath(target);
+      const targetIdentity = this.isTombstoneBlockedMemory(before)
+        ? this.offlineSyncMemoryIdentity(before)
+        : undefined;
+      const identities = [
+        ...(incomingIdentity ? [incomingIdentity] : []),
+        ...(targetIdentity ? [targetIdentity] : []),
+        target,
+        ...(prepared.after === null ? [""] : []),
+      ];
+      let retryIdentity: string | undefined;
+      await this.withTombstoneBlockedCaptureWriteLock(
+        async () => {
+          const current = await this.readMemoryByPath(target);
+          if (this.isTombstoneBlockedMemory(current)) {
+            const currentIdentity = this.offlineSyncMemoryIdentity(current);
+            if (currentIdentity !== targetIdentity) {
+              retryIdentity = currentIdentity;
+              return;
+            }
+          }
+          await mutate();
+        },
+        identities
+      );
+      if (retryIdentity === undefined) return;
+    }
   }
 
   async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {

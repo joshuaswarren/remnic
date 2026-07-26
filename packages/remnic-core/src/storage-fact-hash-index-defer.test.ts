@@ -1671,6 +1671,144 @@ test("offline sync rechecks blocked identity after waiting on the capture lock",
     assert.equal(matches[0]?.frontmatter.id, captureResult.id);
   });
 });
+test("offline sync reacquires a rewritten blocked target identity", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const peer = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await peer.ensureDirectories();
+    const tombstoneConfig = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    };
+    storage.setTombstonesConfig(tombstoneConfig);
+    peer.setTombstonesConfig(tombstoneConfig);
+    const contentA = "Offline sync incoming identity must replace the target.";
+    const contentB = "The target identity is stale before the sync lock is acquired.";
+    const contentC = "A peer rewrote the target identity while sync waited.";
+    const tombstones = await Promise.all(
+      [contentA, contentB, contentC].map((rawContent, index) =>
+        storage.appendTombstone({
+          reason: "correction",
+          createdBy: "user_correction",
+          sourceMemoryId: `offline-sync-reloaded-target-${index}`,
+          rawContent,
+        })
+      )
+    );
+    assert.ok(tombstones.every(Boolean));
+    const target = await storage.writeMemory("fact", contentB, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(target.tombstoneBlocked, true);
+    const incomingFile = [
+      "---",
+      "id: incoming-reloaded-target",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${tombstones[0]}`,
+      "---",
+      "",
+      contentA,
+      "",
+    ].join("\n");
+    const targetMemory = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.id === target.id
+    );
+    assert.ok(targetMemory);
+    const identityA = buildExplicitCaptureDedupKey(contentA, "fact", "provider-a");
+    const identityB = buildExplicitCaptureDedupKey(contentB, "fact", "provider-a");
+    const identityC = buildExplicitCaptureDedupKey(contentC, "fact", "provider-a");
+    const storageWithOverride = storage as unknown as {
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<unknown>,
+        identity?: string | readonly string[],
+      ) => Promise<unknown>;
+    };
+    const originalLock = storageWithOverride.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    const capturedIdentities: Array<string | readonly string[] | undefined> = [];
+    let firstLock = true;
+    let pauseNextPrepare = false;
+    const markerEntered = Promise.withResolvers<void>();
+    const releaseMarker = Promise.withResolvers<void>();
+    storageWithOverride.withTombstoneBlockedCaptureWriteLock = async (task, identity) => {
+      capturedIdentities.push(identity);
+      if (firstLock) {
+        firstLock = false;
+        await peer.updateMemory(target.id, contentC, { sourceConnector: "provider-a" });
+        pauseNextPrepare = true;
+      }
+      return await originalLock(task, identity);
+    };
+    const originalPrepare = TombstoneBlockedCaptureIndex.prototype.prepareWrite;
+    const prepareSpy = mock.method(
+      TombstoneBlockedCaptureIndex.prototype,
+      "prepareWrite",
+      async function (this: TombstoneBlockedCaptureIndex) {
+        const marker = await originalPrepare.call(this);
+        if (pauseNextPrepare) {
+          pauseNextPrepare = false;
+          markerEntered.resolve();
+          await releaseMarker.promise;
+        }
+        return marker;
+      },
+    );
+
+    const sync = storage.writeOfflineSyncFile(targetMemory.path, Buffer.from(incomingFile, "utf8"));
+    try {
+      await markerEntered.promise;
+      const firstKeys = capturedIdentities[0];
+      const secondKeys = capturedIdentities[1];
+      assert.ok(
+        (Array.isArray(firstKeys) ? firstKeys : [firstKeys]).includes(identityB),
+        "sync must first observe the original target identity",
+      );
+      assert.ok(
+        (Array.isArray(secondKeys) ? secondKeys : [secondKeys]).includes(identityC),
+        "sync must reacquire the rewritten target identity",
+      );
+      let recaptureCompleted = false;
+      const recapture = peer
+        .writeMemory("fact", contentC, {
+          source: "test",
+          sourceConnector: "provider-a",
+        })
+        .then((result) => {
+          recaptureCompleted = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(recaptureCompleted, false, "recapture must wait for the current target identity lock");
+      releaseMarker.resolve();
+      await sync;
+      const recaptured = await recapture;
+      assert.equal(recaptured.tombstoneBlocked, true);
+      const after = await peer.readAllMemories();
+      assert.equal(
+        after.find((memory) => memory.path === targetMemory.path)?.content,
+        contentA,
+        "offline sync must replace the target after holding its current identity lock",
+      );
+      assert.equal(after.filter((memory) => memory.content === contentC).length, 1);
+    } finally {
+      releaseMarker.resolve();
+      prepareSpy.mock.restore();
+      storageWithOverride.withTombstoneBlockedCaptureWriteLock = originalLock;
+      await sync.catch(() => undefined);
+    }
+  });
+});
 
 test("offline sync verifies blocked-index hits against exact identities", async () => {
   await withMemoryDir(async (dir) => {
