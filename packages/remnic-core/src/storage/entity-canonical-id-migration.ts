@@ -454,6 +454,40 @@ async function rewriteRelationshipTargets(
   return rewritten;
 }
 
+function wouldCreateMappingCycle(
+  mappings: Readonly<Record<string, string>>,
+  legacyId: string,
+  canonicalId: string,
+): boolean {
+  let current = canonicalId;
+  const seen = new Set<string>();
+  while (true) {
+    if (current === legacyId) return true;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    const next = mappings[current];
+    if (!next || next === current) return false;
+    current = next;
+  }
+}
+
+function rejectMappingCycles(
+  existing: Readonly<Record<string, string>>,
+  discovered: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const accepted: Record<string, string> = {};
+  const merged = { ...existing };
+  for (const [legacyId, canonicalId] of Object.entries(discovered)) {
+    if (
+      merged[legacyId] === undefined &&
+      wouldCreateMappingCycle(merged, legacyId, canonicalId)
+    ) continue;
+    accepted[legacyId] = canonicalId;
+    merged[legacyId] = canonicalId;
+  }
+  return accepted;
+}
+
 function mergeDiscoveredMappings(
   existing: Readonly<Record<string, string>>,
   discovered: Readonly<Record<string, string>>,
@@ -465,6 +499,7 @@ function mergeDiscoveredMappings(
     if (previousMapping !== undefined && previousMapping !== canonicalId) {
       throw new Error(`Legacy entity id ${legacyId} changed canonical target during migration.`);
     }
+    if (previousMapping === undefined && wouldCreateMappingCycle(merged, legacyId, canonicalId)) continue;
     const previousOwner = canonicalOwners.get(canonicalId);
     if (previousOwner !== undefined && previousOwner !== legacyId) {
       throw new Error(
@@ -524,7 +559,10 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
       state = { ...state, mappings: collapsedMappings };
       for (let migrationPass = 0; migrationPass < ENTITY_MAPPING_RESCAN_MAX_PASSES; migrationPass += 1) {
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
-        const discoveredBefore = await discoverMappings(deps, state.mappings);
+        const discoveredBefore = rejectMappingCycles(
+          state.mappings,
+          await discoverMappings(deps, state.mappings),
+        );
         const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
         if (state.complete && Object.keys(discoveredBefore).length === 0 && !mappingsChanged) return;
         if (
@@ -537,7 +575,10 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
         }
         if (Object.keys(state.mappings).length === 0) {
           if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
-          const discoveredAfter = await discoverMappings(deps, state.mappings);
+          const discoveredAfter = rejectMappingCycles(
+            state.mappings,
+            await discoverMappings(deps, state.mappings),
+          );
           if (Object.keys(discoveredAfter).length === 0) {
             await writeState(deps, { ...state, complete: true });
             return;
@@ -634,7 +675,10 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
         deps.bumpMemoryStatusVersion();
 
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
-        const discoveredAfter = await discoverMappings(deps, state.mappings);
+        const discoveredAfter = rejectMappingCycles(
+          state.mappings,
+          await discoverMappings(deps, state.mappings),
+        );
         if (Object.keys(discoveredAfter).length === 0) {
           await writeState(deps, { ...state, complete: true });
           return;

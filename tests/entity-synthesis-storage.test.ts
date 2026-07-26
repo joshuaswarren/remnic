@@ -910,7 +910,7 @@ test("ensureDirectories processes intermediate canonical-id mappings before coll
   }
 });
 
-test("ensureDirectories reruns migration when aliases change", async () => {
+test("ensureDirectories reruns migration when aliases change and ignores reversals", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-alias-fingerprint-"));
   try {
     const storage = new StorageManager(dir);
@@ -926,6 +926,11 @@ test("ensureDirectories reruns migration when aliases change", async () => {
 
     await storage.ensureDirectories();
 
+    assert.match(await readFile(path.join(dir, "entities", `${nextCanonical}.md`), "utf-8"), /# Café/);
+    await assert.rejects(() => readFile(path.join(dir, "entities", `${previousCanonical}.md`)), { code: "ENOENT" });
+    await rm(path.join(dir, "config", "aliases.json"));
+    await storage.loadAliases();
+    await storage.ensureDirectories();
     assert.match(await readFile(path.join(dir, "entities", `${nextCanonical}.md`), "utf-8"), /# Café/);
     await assert.rejects(() => readFile(path.join(dir, "entities", `${previousCanonical}.md`)), { code: "ENOENT" });
   } finally {

@@ -178,6 +178,46 @@ test("entity retrieval resolves non-ASCII canonical and alias mentions without p
   }
 });
 
+test("entity retrieval rejects Japanese name prefixes before kana words", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-prefix");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const shortName = await writeEntity(
+    storage,
+    "山田",
+    "person",
+    ["Short-name fact."],
+    "Short-name summary.",
+  );
+  const fullName = await writeEntity(
+    storage,
+    "山田はるか",
+    "person",
+    ["Full-name fact."],
+    "Full-name summary.",
+  );
+  await Promise.all([
+    storage.writeMemory("fact", "山田の検証コードは Short-314 です。", {
+      entityRef: shortName,
+      confidence: 1,
+    }),
+    storage.writeMemory("fact", "山田はるかの検証コードは Full-271 です。", {
+      entityRef: fullName,
+      confidence: 1,
+    }),
+  ]);
+
+  const section = await buildSection(config, storage, "山田はるかについて教えてください。");
+  assert.ok(section);
+  assert.match(section!, /target: 山田はるか \(person\)/);
+  assert.match(section!, /Full-271/);
+  assert.doesNotMatch(section!, /target: 山田 \(person\)|Short-314/);
+});
+
 test("entity retrieval resolves Korean grammatical particles after Unicode mentions", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-korean-names");
   t.after(async () => {

@@ -101,7 +101,18 @@ function lastUnicodeCharacter(value: string): string {
   return codePoint ?? "";
 }
 const JAPANESE_PARTICLE_RE = /^[のはがをにへともやかでだ]$/u;
-const JAPANESE_MULTI_CHARACTER_PARTICLES = ["って"] as const;
+const JAPANESE_MULTI_CHARACTER_PARTICLES = [
+  "について",
+  "にとって",
+  "によって",
+  "に関して",
+  "に対して",
+  "とは",
+  "では",
+  "には",
+  "にも",
+  "って",
+] as const;
 const KOREAN_PARTICLES = [
   "에서", "에게", "한테", "으로", "까지", "부터", "보다", "처럼", "같이",
   "이나", "라도", "밖에", "마다", "조차", "이랑", "하고", "은", "는",
@@ -117,6 +128,25 @@ const HANGUL_RUN_RE = /^[\p{Script=Hangul}]+/u;
 
 const UNICODE_WORD_SEGMENTER =
   typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "word" }) : null;
+
+const JAPANESE_WORD_SEGMENTER =
+  typeof Intl.Segmenter === "function" ? new Intl.Segmenter("ja", { granularity: "word" }) : null;
+const JAPANESE_KANA_RE = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
+
+function isJapaneseParticleBoundary(suffix: string): boolean {
+  const firstSegment = JAPANESE_WORD_SEGMENTER?.segment(suffix).containing(0)?.segment;
+  if (firstSegment !== undefined) {
+    if (JAPANESE_MULTI_CHARACTER_PARTICLES.some((particle) => particle === firstSegment)) return true;
+    return JAPANESE_PARTICLE_RE.test(firstSegment);
+  }
+  const firstCharacter = firstUnicodeCharacter(suffix);
+  return (
+    JAPANESE_MULTI_CHARACTER_PARTICLES.some((particle) => suffix.startsWith(particle)) ||
+    (JAPANESE_PARTICLE_RE.test(firstCharacter) &&
+      !UNICODE_WORD_OR_NUMBER_RE.test(firstUnicodeCharacter(suffix.slice(firstCharacter.length))))
+  );
+}
+
 
 function isIntlWordBoundary(source: string, index: number): boolean {
   if (index <= 0 || index >= source.length) return true;
@@ -157,9 +187,10 @@ function isUnicodePhraseBoundary(
   return (
     character.length === 0 ||
     !UNICODE_WORD_OR_NUMBER_RE.test(character) ||
-    JAPANESE_PARTICLE_RE.test(character) ||
-    JAPANESE_MULTI_CHARACTER_PARTICLES.some((particle) => suffix.startsWith(particle)) ||
-    (boundaryIndex >= 0 && isIntlWordBoundary(source, boundaryIndex)) ||
+    isJapaneseParticleBoundary(suffix) ||
+    (boundaryIndex >= 0 &&
+      !JAPANESE_KANA_RE.test(suffix) &&
+      isIntlWordBoundary(source, boundaryIndex)) ||
     isKoreanParticleBoundary(suffix)
   );
 }
