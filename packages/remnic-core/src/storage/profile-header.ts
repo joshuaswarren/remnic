@@ -1,6 +1,6 @@
 const LAST_UPDATED_HEADER = /^\*Last updated:[^*]*\*$/;
 const PROFILE_TITLE = /^ {0,3}#(?:\s+|$)/;
-const MARKDOWN_HEADING = /^#{1,6}(?:\s+|$)/;
+const MARKDOWN_HEADING = /^ {0,3}#{1,6}(?:\s+|$)/;
 const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d{1,9}[.)])\s+/;
 const MARKDOWN_LIST_ITEM_CAN_INTERRUPT = /^(?:[-+*]|1[.)])\s+/;
 const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
@@ -343,9 +343,7 @@ function findHtmlBlockStart(
     declarationFirst >= "A" &&
     declarationFirst <= "Z"
   ) {
-    return trimmedLine.trimEnd().endsWith(">")
-      ? null
-      : { endMarker: ">", endsAtBlankLine: false, tagName: null, depth: 0 };
+    return { endMarker: ">", endsAtBlankLine: false, tagName: null, depth: 0 };
   }
   const blockTag = findHtmlBlockTag(normalizedLine, HTML_BLOCK_TAGS);
   if (blockTag) {
@@ -408,14 +406,6 @@ function hasHtmlBlockEndMarker(line: string, endMarker: string): boolean {
   return line.includes(endMarker);
 }
 
-function isHtmlBlockTerminator(line: string): boolean {
-  return (
-    isRawHtmlBlockTerminator(line) ||
-    line.includes("-->") ||
-    line.includes("?>") ||
-    line.includes("]]>")
-  );
-}
 function shouldCloseHtmlBlock(line: string, endMarker: string): boolean {
   const normalizedLine = line.trimStart().toLowerCase();
   return normalizedLine.includes(endMarker.toLowerCase());
@@ -513,7 +503,6 @@ function isNestedListContent(lines: ProfileLine[], index: number, indentation: n
     const previousIndentation = previousLine.length - previousLine.trimStart().length;
     if (previousIndentation >= indentation) continue;
     if (MARKDOWN_LIST_ITEM.test(previousLine.trimStart())) return true;
-    if (previousIndentation === 0) return false;
   }
   return false;
 }
@@ -548,7 +537,7 @@ function isMetadataBoundary(
     ? MARKDOWN_LIST_ITEM_CAN_INTERRUPT
     : MARKDOWN_LIST_ITEM;
   return (
-    line === "" ||
+    line.trim() === "" ||
     MARKDOWN_HEADING.test(line) ||
     listPattern.test(line) ||
     (allowSetext && MARKDOWN_SETEXT_UNDERLINE.test(line)) ||
@@ -556,7 +545,7 @@ function isMetadataBoundary(
     MARKDOWN_BLOCK_QUOTE.test(line) ||
     isLastUpdatedHeader(line) ||
     getFenceMarker(line) !== null ||
-    (htmlTerminator && isHtmlBlockTerminator(line))
+    htmlTerminator
   );
 }
 
@@ -571,7 +560,7 @@ function isStandaloneMetadataLine(
     ? currentLine.slice(1)
     : currentLine;
   const indentation = currentWithoutBom.length - currentWithoutBom.trimStart().length;
-  const previousLine = lines[index - 1]?.content.trim() ?? "";
+  const previousLine = lines[index - 1]?.content.trimEnd() ?? "";
   const nextLine = lines[index + 1]?.content.trimEnd() ?? "";
   const previousWithoutBom = previousLine.startsWith(UTF8_BOM)
     ? previousLine.slice(1)

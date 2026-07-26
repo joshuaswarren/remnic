@@ -834,6 +834,47 @@ test("writeProfile preserves indented metadata inside loose list items", async (
     t.mock.timers.reset();
   }
 });
+
+test("writeProfile preserves metadata inside lists with lazy continuations", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "- item",
+        "lazy continuation",
+        "",
+        `  ${STALE_HEADER}`,
+        "",
+        "- Keeps lazy-list content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- item",
+          "lazy continuation",
+          "",
+          `  ${STALE_HEADER}`,
+          "",
+          "- Keeps lazy-list content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile ends a one-line HTML declaration before finding the title", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -861,6 +902,28 @@ test("writeProfile ends a one-line HTML declaration before finding the title", a
           "",
         ].join("\n"),
       );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile treats a single-line declaration as a metadata boundary", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "<!DOCTYPE html>",
+        STALE_HEADER,
+        "",
+        "- Keeps declaration metadata.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
     });
   } finally {
     t.mock.timers.reset();
@@ -1485,6 +1548,69 @@ test("writeProfile preserves timestamp prose before indented code", async (t) =>
           "    # code example",
           "",
           "- Keeps prose content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile recognizes one-to-three-space headings after metadata", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "  ## Section",
+        "",
+        "- Keeps heading content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile preserves timestamp prose after indented paragraph content", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "Plain prose",
+        "    # code example",
+        STALE_HEADER,
+        "",
+        "- Keeps paragraph content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "Plain prose",
+          "    # code example",
+          STALE_HEADER,
+          "",
+          "- Keeps paragraph content.",
           "",
         ].join("\n"),
       );
