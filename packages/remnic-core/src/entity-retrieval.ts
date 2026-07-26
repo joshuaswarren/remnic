@@ -522,17 +522,20 @@ async function buildEntityMentionIndex(
     Promise.all(storages.map((scopedStorage) => scopedStorage.readAllMemories())),
     nativeChunksOverride ? Promise.resolve(nativeChunksOverride) : readNativeChunks(config, recallNamespaces),
   ]);
-  // Pair each entity with the alias table of the store it came from (#1534):
-  // canonical ids must reflect the owning store's aliases, never another
+  // Pair each entity with the storage that owns it (#1534): canonical ids must
+  // reflect that store's aliases and historical migration mappings, never another
   // namespace's.
   const entityRecords = entityFileSets.flatMap((set, index) =>
-    set.map((entity) => ({ entity, aliases: storages[index]!.entityAliases })),
+    set.map((entity) => ({ entity, storage: storages[index]! })),
   );
   const memories = memorySets.flat();
 
   const entities = new Map<string, EntityMentionIndexEntry>();
-  for (const { entity, aliases } of entityRecords) {
-    const canonicalId = normalizeEntityName(entity.name, entity.type, aliases);
+  for (const { entity, storage: entityStorage } of entityRecords) {
+    const canonicalId =
+      typeof entityStorage.normalizeEntityName === "function"
+        ? entityStorage.normalizeEntityName(entity.name, entity.type)
+        : normalizeEntityName(entity.name, entity.type, entityStorage.entityAliases);
     const rawStructuredSections = entity.structuredSections ?? [];
     const rawBeliefLedgerFactKeys = beliefLedgerFactKeys(rawStructuredSections);
     const sanitizedFacts = entity.facts

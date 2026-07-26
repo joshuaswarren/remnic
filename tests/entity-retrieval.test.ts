@@ -134,6 +134,43 @@ test("entity retrieval resolves explicit canonical and alias mentions in Japanes
   }
 });
 
+test("entity retrieval preserves migrated canonical memory links after aliases are removed", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-alias-removal");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+
+  const previousCanonical = await writeEntity(
+    storage,
+    "Café",
+    "project",
+    ["Café is a synthetic migration target."],
+    "Café is a synthetic migration target.",
+  );
+  await storage.writeMemory("fact", "Alias-removal migration memory.", {
+    entityRef: previousCanonical,
+    confidence: 1,
+  });
+
+  await writeFile(path.join(memoryDir, "config", "aliases.json"), JSON.stringify({ "café": "coffee" }), "utf-8");
+  await storage.loadAliases();
+  const canonical = storage.normalizeEntityName("Café", "project");
+  assert.notEqual(previousCanonical, canonical);
+  await storage.ensureDirectories();
+
+  await rm(path.join(memoryDir, "config", "aliases.json"));
+  await storage.loadAliases();
+  assert.equal(storage.normalizeEntityName("Café", "project"), canonical);
+
+  const section = await buildSection(config, storage, "Who is Café?");
+  assert.ok(section);
+  assert.match(section!, /target: Café \(project\)/);
+  assert.match(section!, /Alias-removal migration memory/);
+});
+
 test("entity retrieval resolves non-ASCII canonical and alias mentions without prefix collisions", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-names");
   t.after(async () => {
