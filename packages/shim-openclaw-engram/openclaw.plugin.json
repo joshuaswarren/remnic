@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.27.0",
+  "version": "9.28.0",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -3975,8 +3975,8 @@
               "properties": {
                 "url": {
                   "type": "string",
-                "minLength": 1,
-                "pattern": "\\S",
+                  "minLength": 1,
+                  "pattern": "\\S",
                   "description": "Base URL of the peer's agent-access HTTP server (http or https). Supports ${ENV_VAR} expansion."
                 },
                 "token": {
@@ -3984,8 +3984,8 @@
                   "anyOf": [
                     {
                       "type": "string",
-                "minLength": 1,
-                "pattern": "\\S"
+                      "minLength": 1,
+                      "pattern": "\\S"
                     },
                     {
                       "type": "object",
@@ -4020,7 +4020,7 @@
           "requestTimeoutMs": {
             "type": "integer",
             "minimum": 1,
-          "maximum": 2147483647,
+            "maximum": 2147483647,
             "default": 10000,
             "description": "Per-peer HTTP request timeout, in ms. Finite integer >= 1. Default 10000 (10s)."
           },
