@@ -1,8 +1,8 @@
 const LAST_UPDATED_HEADER = /^\*Last updated:[^*]*\*$/;
 const PROFILE_TITLE = /^ {0,3}#(?:[ \t]+|$)/;
 const MARKDOWN_HEADING = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
-const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d{1,9}[.)])\s+/;
-const MARKDOWN_LIST_ITEM_CAN_INTERRUPT = /^(?:[-+*]|1[.)])\s+/;
+const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d{1,9}[.)])[ \t]+/;
+const MARKDOWN_LIST_ITEM_CAN_INTERRUPT = /^(?:[-+*]|1[.)])[ \t]+/;
 const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
@@ -129,6 +129,9 @@ type HtmlBlock = {
   endsAtBlankLine: boolean;
   tagName: string | null;
   depth: number;
+};
+type OpenHtmlBlock = HtmlBlock & {
+  listIndentation: number | null;
 };
 
 function findHtmlBlockTag(line: string, tags: readonly string[]): string | null {
@@ -295,10 +298,10 @@ function findHtmlTags(line: string): HtmlTag[] {
 }
 
 function updateHtmlBlockDepth(
-  htmlBlock: HtmlBlock,
+  htmlBlock: OpenHtmlBlock,
   line: string,
   skipFirstOpening: boolean,
-): HtmlBlock | null {
+): OpenHtmlBlock | null {
   if (!htmlBlock.tagName) return htmlBlock;
   let depth = htmlBlock.depth;
   let skippedFirstOpening = !skipFirstOpening;
@@ -316,7 +319,7 @@ function updateHtmlBlockDepth(
   }
   if (depth > 0) return { ...htmlBlock, depth };
   return htmlBlock.endsAtBlankLine
-    ? { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 }
+    ? { ...htmlBlock, endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 }
     : null;
 }
 
@@ -476,7 +479,7 @@ function visitProfileMetadataLines(
     onHtmlBlockTerminator?.(index);
   };
   let openFence: (FenceMarker & { listIndentation: number | null }) | null = null;
-  let openHtmlBlock: HtmlBlock | null = null;
+  let openHtmlBlock: OpenHtmlBlock | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]?.content ?? "";
     const parserLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
@@ -498,21 +501,30 @@ function visitProfileMetadataLines(
     const trimmedLine = parserLine.trimStart();
     const normalizedLine = trimmedLine.toLowerCase();
     if (openHtmlBlock) {
-      if (openHtmlBlock.endsAtBlankLine && normalizedLine === "") {
-        openHtmlBlock = null;
+      const indentation = parserLine.length - parserLine.trimStart().length;
+      const leavesListContainer =
+        openHtmlBlock.listIndentation !== null &&
+        parserLine.trim() !== "" &&
+        indentation < openHtmlBlock.listIndentation;
+      if (!leavesListContainer) {
+        if (openHtmlBlock.endsAtBlankLine && normalizedLine === "") {
+          openHtmlBlock = null;
+          continue;
+        }
+        if (openHtmlBlock.tagName) {
+          const nextHtmlBlock = updateHtmlBlockDepth(openHtmlBlock, normalizedLine, false);
+          if (!nextHtmlBlock) markHtmlTerminator(index);
+          openHtmlBlock = nextHtmlBlock;
+          continue;
+        }
+        if (openHtmlBlock.endMarker && shouldCloseHtmlBlock(normalizedLine, openHtmlBlock.endMarker)) {
+          openHtmlBlock = null;
+          markHtmlTerminator(index);
+        }
         continue;
       }
-      if (openHtmlBlock.tagName) {
-        const nextHtmlBlock = updateHtmlBlockDepth(openHtmlBlock, normalizedLine, false);
-        if (!nextHtmlBlock) markHtmlTerminator(index);
-        openHtmlBlock = nextHtmlBlock;
-        continue;
-      }
-      if (openHtmlBlock.endMarker && shouldCloseHtmlBlock(normalizedLine, openHtmlBlock.endMarker)) {
-        openHtmlBlock = null;
-        markHtmlTerminator(index);
-      }
-      continue;
+      openHtmlBlock = null;
+      if (index > 0) markHtmlTerminator(index - 1);
     }
     if (isIndentedCodeLine(parserLine)) continue;
     if (fence) {
@@ -531,14 +543,19 @@ function visitProfileMetadataLines(
     );
     if (htmlBlock) {
       markHtmlTerminator(index);
+      const indentation = parserLine.length - parserLine.trimStart().length;
+      const htmlBlockWithContainer = {
+        ...htmlBlock,
+        listIndentation: isNestedListContent(lines, index, indentation) ? indentation : null,
+      };
       if (htmlBlock.tagName) {
-        openHtmlBlock = updateHtmlBlockDepth(htmlBlock, normalizedLine, true);
+        openHtmlBlock = updateHtmlBlockDepth(htmlBlockWithContainer, normalizedLine, true);
         if (!openHtmlBlock) markHtmlTerminator(index);
       } else if (htmlBlock.endMarker && shouldCloseHtmlBlock(normalizedLine, htmlBlock.endMarker)) {
         openHtmlBlock = null;
         markHtmlTerminator(index);
       } else {
-        openHtmlBlock = htmlBlock;
+        openHtmlBlock = htmlBlockWithContainer;
       }
       continue;
     }
