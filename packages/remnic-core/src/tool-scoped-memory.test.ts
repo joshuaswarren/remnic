@@ -52,6 +52,8 @@ const EXTRA_POSITIVE: string[] = [
   "Call memory_store to persist the result",
   "Run grep before editing",
   "Use curl to fetch the URL",
+  "The memory_store tool persists results",
+  "Use the grep command to search files",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {
@@ -88,6 +90,8 @@ const EXTRA_NEGATIVE: string[] = [
   "Use SQL for analytics",
   "Use API for integration",
   "Use Go for backend services",
+  "Use `/etc/remnic/config.json` for configuration",
+  "Run `/var/log/remnic` cleanup",
 ];
 for (const content of EXTRA_NEGATIVE) {
   test(`referencesAgentSpecificTool ignores prose: "${content.slice(0, 44)}…"`, () => {

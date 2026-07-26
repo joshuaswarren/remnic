@@ -36,21 +36,48 @@ const KNOWN_CLI_NAMES = [
 const GENERIC_NAMES_ALT = GENERIC_TOOL_NAMES.join("|");
 const KNOWN_NAMES_ALT = [...GENERIC_TOOL_NAMES, ...KNOWN_CLI_NAMES].join("|");
 
+// Filesystem roots — a quoted/unquoted slash token rooted here is a path, not a
+// command, regardless of quoting (so `/etc/remnic/config.json` never reads as a
+// tool). Grouped so a following \b binds to the whole set.
+const FS_ROOTS = "(?:etc|var|usr|tmp|home|opt|srv|proc|dev)";
+
+// Build a case-insensitive alternation WITHOUT the /i flag, so it can live in a
+// case-sensitive regex (the short-bare-token branch below must stay lowercase-
+// only — a blanket /i would let it match capitalised tech names like SQL/API/Go).
+function caseInsensitiveAlt(words: string[]): string {
+  return "(?:" + words
+    .map((w) => w.split("").map((c) => `[${c.toLowerCase()}${c.toUpperCase()}]`).join(""))
+    .join("|") + ")";
+}
+
 // Quoted/backticked identifier — contents must be TOKEN-LIKE (no whitespace,
 // identifier-shaped) so a quoted multi-word phrase ("least privilege",
-// "database migrations") reads as prose, not a tool. Bounded {1,60} keeps the
-// match linear (CodeQL js/polynomial-redos — see source-attribution.ts).
-const IDENT_CHARS = "[A-Za-z0-9_./-]";
+// "database migrations") reads as prose. A slash form is allowed only as a
+// single segment that is NOT a filesystem root, so a quoted path
+// (`/etc/remnic/config.json`, `/var/log/remnic`) never qualifies (issue #2183
+// round 8). Bounded {1,60} keeps the match linear (CodeQL js/polynomial-redos).
+const NO_SLASH_TOKEN = "[A-Za-z0-9_.-]{1,60}";
+const SLASH_CMD_TOKEN = "/(?!" + FS_ROOTS + "\\b)[A-Za-z0-9_.-]{1,60}";
+const QUOTED_CONTENT = "(?:" + NO_SLASH_TOKEN + "|" + SLASH_CMD_TOKEN + ")";
 const QUOTED_TOKEN =
-  "(?:" + BT + "(?:" + IDENT_CHARS + "{1,60})" + BT + "|\"(?:" + IDENT_CHARS + "{1,60})\"|'(?:" + IDENT_CHARS + "{1,60})')";
+  "(?:" + BT + QUOTED_CONTENT + BT + "|\"" + QUOTED_CONTENT + "\"|'" + QUOTED_CONTENT + "')";
 
 // Tool/command keywords, word-anchored so "tooling"/"commander"/"commanded" do
 // not match on the `tool`/`command` prefix.
 const KEYWORD = "\\b(?:mcp[ _]tool|slash[ _]command|cli[ _]flag|subcommand|tool|command)\\b";
 
-// Identifier admitted next to a keyword: a token-like quoted identifier or a
-// generic tool name (both anchored). Bare words are NOT admitted here.
-const IDENT = "(?:" + QUOTED_TOKEN + "|" + "\\b(?:" + GENERIC_NAMES_ALT + ")\\b" + ")";
+// Bare snake_case/kebab-case identifier (lowercase). The short all-lowercase
+// (<=3 chars) shape is deliberately NOT admitted next to a keyword: it would
+// match function words ("command of", "tool of", "command is") — every short
+// real tool is already in KNOWN_CLI_NAMES, so the short shape adds only false
+// positives there.
+const BARE_SNAKE_KEBAB = "(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+)\\b";
+
+// Identifier admitted NEXT TO an explicit tool/command keyword: a token-like
+// quoted identifier, a known tool/CLI name, or a snake/kebab bare identifier.
+// The keyword itself is the corroborating context, so a pre-known or quoted
+// token is not required here (unlike the bare invocation arm).
+const IDENT = "(?:" + QUOTED_TOKEN + "|\\b(?:" + KNOWN_NAMES_ALT + ")\\b|" + BARE_SNAKE_KEBAB + ")";
 
 // Immediate adjacency: identifier and keyword separated only by a short run of
 // whitespace/quotes/backticks. Bounded {1,4} — no unbounded quantifier.
@@ -62,20 +89,11 @@ const CONN = "\\s+(?:named|called|aka)\\s+";
 // identifier (end, punctuation, or a preposition/subordinator).
 const VERB = "\\b(?:use|run|call|invoke)\\b";
 const CLAUSE_BOUNDARY = "(?:$|[.,;:]|(?:when|before|after|to|with|for|on|in|if|unless|whenever)\\b)";
-
-// Build a case-insensitive alternation WITHOUT the /i flag, so it can live in a
-// case-sensitive regex (the short-bare-token branch below must stay lowercase-
-// only — a blanket /i would let it match capitalised tech names like SQL/API/Go).
-function caseInsensitiveAlt(words: string[]): string {
-  return "(?:" + words
-    .map((w) => w.split("").map((c) => `[${c.toLowerCase()}${c.toUpperCase()}]`).join(""))
-    .join("|") + ")";
-}
+const SLASH_GENERIC = "/(?:" + GENERIC_NAMES_ALT + ")\\b";
 
 // Case-INSENSITIVE invocation: verb + (token-like quoted identifier | known
 // tool/CLI name | slash command naming a generic tool) + clause boundary.
 const KNOWN_NAMES_CI = "\\b(?:" + KNOWN_NAMES_ALT + ")\\b";
-const SLASH_GENERIC = "/(?:" + GENERIC_NAMES_ALT + ")\\b";
 const INVOCATION_CI =
   VERB + "\\s+(?:" + QUOTED_TOKEN + "|" + KNOWN_NAMES_CI + "|" + SLASH_GENERIC + ")(?=\\s*" + CLAUSE_BOUNDARY + ")";
 
@@ -92,14 +110,14 @@ const TOOL_REFERENCE_CI = new RegExp(
 // snake_case/kebab-case, or a short all-lowercase token (<=3 chars). The verb
 // and clause boundary are matched case-insensitively via character classes; the
 // IDENTIFIER itself is lowercase-only, so capitalised product/tech names do not
-// qualify. This is split from TOOL_REFERENCE_CI because a single /i flag would
-// defeat the lowercase discriminator.
+// qualify. Split from TOOL_REFERENCE_CI because a single /i flag would defeat
+// the lowercase discriminator.
 const VERB_CS = "\\b" + caseInsensitiveAlt(["use", "run", "call", "invoke"]) + "\\b";
 const CLAUSE_BOUNDARY_CS =
   "(?:$|[.,;:]|" + caseInsensitiveAlt([
     "when", "before", "after", "to", "with", "for", "on", "in", "if", "unless", "whenever",
   ]) + "\\b)";
-const BARE_LIKE = "(?:(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+)|(?:[a-z]{1,3}))\\b";
+const BARE_LIKE = "(?:" + BARE_SNAKE_KEBAB + "|(?:[a-z]{1,3}))\\b";
 const SHORT_BARE_INVOCATION_CS = new RegExp(
   VERB_CS + "\\s+" + BARE_LIKE + "(?=\\s*" + CLAUSE_BOUNDARY_CS + ")",
 );
@@ -108,6 +126,7 @@ const SHORT_BARE_INVOCATION_CS = new RegExp(
  * Returns true when `content` references a specific tool or command invocation
  * (e.g. "use the search tool", "the `read` tool", "Use search when…",
  * "Run `rg` before editing", "Run grep before editing", "Use curl to fetch",
+ * "The memory_store tool persists results", "Use the grep command",
  * "Use /search with a path") rather than portable, agent-agnostic knowledge.
  *
  * Pure and dependency-free. Biased toward detection: a false positive only
