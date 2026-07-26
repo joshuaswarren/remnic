@@ -1673,25 +1673,6 @@ export class EngramAccessHttpServer {
       this.lifecycleFlushDeps(req, res), req.method, pathname, abortSignal,
     )) return;
 
-    if (
-      req.method === "POST" &&
-      (pathname === "/engram/v1/lcm/compaction/record" || pathname === "/remnic/v1/lcm/compaction/record")
-    ) {
-      this.enforceTokenOp("lcm_compaction_record"); // boundary dispatch (issue #1525)
-      const body = await this.readValidatedBody(req, "lcmCompactionRecord");
-      this.ensureWriteRateLimitAvailable(req);
-      const response = await this.service.lcmCompactionRecord({
-        sessionKey: body.sessionKey,
-        namespace: this.resolveNamespace(req, body.namespace),
-        tokensBefore: body.tokensBefore,
-        tokensAfter: body.tokensAfter,
-        authenticatedPrincipal: this.resolveRequestPrincipal(req),
-      });
-      this.recordWriteRateLimitHit(req);
-      this.respondJson(res, 200, response);
-      return;
-    }
-
     if (req.method === "GET" && pathname === "/engram/v1/lcm/status") {
       this.enforceTokenOp("lcm_status"); // boundary dispatch (issue #1525)
       this.respondJson(res, 200, await this.service.lcmStatus());
@@ -3635,9 +3616,10 @@ export class EngramAccessHttpServer {
     throw new EngramAccessInputError(`${name} header must be one of: true, false`);
   }
   private lifecycleFlushDeps(req: IncomingMessage, res: ServerResponse): LifecycleFlushHttpDeps {
+    const readValidatedBody = ((schemaName: SchemaName) => this.readValidatedBody(req, schemaName)) as LifecycleFlushHttpDeps["readValidatedBody"];
     return { service: this.service, defaultNamespace: this.service.configRef?.defaultNamespace,
       enforceTokenOp: (op) => this.enforceTokenOp(op),
-      readValidatedBody: (schemaName) => this.readValidatedBody(req, schemaName),
+      readValidatedBody,
       ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
       resolveNamespace: (namespace) => this.resolveNamespace(req, namespace),
       resolveRequestPrincipal: () => this.resolveRequestPrincipal(req),

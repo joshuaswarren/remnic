@@ -52,7 +52,7 @@ import { wrapWorkLayerContext } from "./work/boundary.js";
 import { WorkStorage } from "./work/storage.js";
 import { buildAccessWriteRequestFingerprint } from "./write-envelope.js";
 import { type QuarantineOperation, WriteQuarantineStore } from "./write-quarantine.js";
-
+import { PendingObserveExtractionTracker } from "./access-observe-helpers.js";
 export interface AccessObserveWriteSurfaceDeps {
   attachCodingContextAfterScopedWrite(
     request: CodingScopedWriteInput & { namespace?: string; sessionKey?: string }
@@ -129,109 +129,14 @@ export interface AccessObserveWriteSurfaceDeps {
 
 export class AccessObserveWriteSurface {
   private quarantineStoreInstance?: WriteQuarantineStore;
-  private readonly pendingObserveExtractions = new Map<
-    string,
-    {
-      promise: Promise<void>;
-      controllers: Set<AbortController>;
-    }
-  >();
+  private readonly pendingObserveExtractions = new PendingObserveExtractionTracker();
 
-  private pendingObserveExtractionKey(
-    sessionKey: string,
-    principal: string | undefined,
-    namespace: string | undefined,
-  ): string {
-    return `${sessionKey}\u0000${principal ?? ""}\u0000${namespace ?? ""}`;
-  }
-
-  private trackPendingObserveExtraction(
-    key: string,
-    extraction: Promise<void>,
-    controller: AbortController,
-  ): void {
-    const previous = this.pendingObserveExtractions.get(key);
-    const trackedPromise =
-      previous
-        ? Promise.allSettled([previous.promise, extraction]).then((results) => {
-            const rejected = results.find(
-              (result): result is PromiseRejectedResult => result.status === "rejected",
-            );
-            if (rejected) throw rejected.reason;
-          })
-        : extraction;
-    const entry = {
-      promise: trackedPromise,
-      controllers: new Set(previous ? [...previous.controllers, controller] : [controller]),
-    };
-    this.pendingObserveExtractions.set(key, entry);
-    void trackedPromise.then(() => {
-      if (this.pendingObserveExtractions.get(key) === entry) {
-        this.pendingObserveExtractions.delete(key);
-      }
-    }).catch(() => {
-      // Keep a failed barrier visible to the next lifecycle flush. Dropping
-      // it would turn a failed fire-and-forget observe into flushed:true.
-    });
-  }
-
-  cancelPendingObserveExtractions(
+  public cancelPendingObserveExtractions(
     sessionKey: string,
     principal?: string,
     namespace?: string,
   ): void {
-    for (const [key, entry] of this.pendingObserveExtractions) {
-      const [entrySessionKey, entryPrincipal, entryNamespace] = key.split("\u0000");
-      if (
-        entrySessionKey !== sessionKey ||
-        (principal !== undefined && entryPrincipal !== (principal ?? "")) ||
-        (namespace !== undefined && entryNamespace !== (namespace ?? ""))
-      ) {
-        continue;
-      }
-      for (const controller of entry.controllers) {
-        controller.abort();
-      }
-    }
-  }
-
-  private async waitForPendingObserveExtraction(
-    sessionKey: string,
-    principal: string | undefined,
-    namespace: string | undefined,
-    abortSignal?: AbortSignal,
-    registerCancellation?: (cancel: () => void) => void,
-  ): Promise<void> {
-    const key = this.pendingObserveExtractionKey(sessionKey, principal, namespace);
-    const abortTracked = (): void => {
-      const entry = this.pendingObserveExtractions.get(key);
-      for (const controller of entry?.controllers ?? []) {
-        controller.abort(abortSignal?.reason);
-      }
-    };
-    registerCancellation?.(abortTracked);
-    abortSignal?.addEventListener("abort", abortTracked, { once: true });
-    try {
-      while (true) {
-        const entry = this.pendingObserveExtractions.get(key);
-        if (!entry) return;
-        try {
-          await entry.promise;
-        } catch (error) {
-          // A newer observe may have replaced this entry while the older
-          // extraction was settling. Continue with the current barrier so a
-          // force flush never leaves newly-added work running in the
-          // background; only the current failed barrier rejects the flush.
-          if (this.pendingObserveExtractions.get(key) !== entry) continue;
-          throw error;
-        }
-        if (this.pendingObserveExtractions.get(key) !== entry) continue;
-        this.pendingObserveExtractions.delete(key);
-        return;
-      }
-    } finally {
-      abortSignal?.removeEventListener("abort", abortTracked);
-    }
+    this.pendingObserveExtractions.cancel(sessionKey, principal, namespace);
   }
   constructor(private readonly deps: AccessObserveWriteSurfaceDeps) {}
 
@@ -937,8 +842,8 @@ export class AccessObserveWriteSurface {
         extractionPromise.catch((err) => {
           log.error(`access-observe background extraction failed: ${err}`);
         });
-        this.trackPendingObserveExtraction(
-          this.pendingObserveExtractionKey(request.sessionKey, scope.principal, writeNamespace),
+        this.pendingObserveExtractions.track(
+          this.pendingObserveExtractions.key(request.sessionKey, scope.principal, writeNamespace),
           extractionPromise,
           observeAbortController,
         );
@@ -982,7 +887,13 @@ export class AccessObserveWriteSurface {
       this.deps,
       request,
       (sessionKey, principal, namespace, abortSignal, registerCancellation) =>
-        this.waitForPendingObserveExtraction(sessionKey, principal, namespace, abortSignal, registerCancellation),
+        this.pendingObserveExtractions.wait(
+          sessionKey,
+          principal,
+          namespace,
+          abortSignal,
+          registerCancellation,
+        ),
     );
   }
   async workTask(request: {

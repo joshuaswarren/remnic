@@ -1,4 +1,5 @@
-import type { BufferTurn, ExtractionFailureClass, ExtractionResult } from "../types.js";
+import type { BufferTurn, ExtractionFailureClass, ExtractionResult, MetaState } from "../types.js";
+import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
 
 export function combineExtractionAbortSignals(
@@ -192,4 +193,117 @@ export async function runExtractionDeferRetention(
       }
     }
   });
+}
+
+export interface ExtractionPostPersistOptions {
+  result: ExtractionResult;
+  storage: StorageManager;
+  meta?: MetaState;
+  extractionFingerprint?: string;
+  shouldPersistProcessedFingerprint: boolean;
+  recordProcessedExtractionFingerprint: (
+    storage: StorageManager,
+    fingerprint: string,
+    meta: MetaState,
+  ) => Promise<void>;
+  runDeadlineAware: (
+    operation: () => Promise<unknown>,
+    phase: string,
+    clearTimerOnError?: boolean,
+    options?: { ignoreAbort?: boolean; ignoreDeadline?: boolean },
+  ) => Promise<unknown>;
+  isDeadlineError: (error: unknown) => boolean;
+  createDeadlineError: (stage: string) => Error;
+  deadlineMs?: number;
+  clearBufferAfterExtraction: boolean;
+  runPostPersistBestEffort: (
+    stage: string,
+    operation: () => Promise<unknown>,
+    options?: { ignoreAbort?: boolean; ignoreDeadline?: boolean; propagateErrors?: boolean },
+  ) => Promise<void>;
+  extractionJudgeShadow: boolean;
+  getDeferredCount: () => number;
+  normalizedTurns: BufferTurn[];
+  bufferKey: string;
+  retainDeferredTurns: (bufferKey: string, turns: BufferTurn[], max: number) => Promise<void>;
+  clearBuffer: (options?: { ignoreAbort?: boolean }) => Promise<void>;
+  failOnExtractionFailure: boolean;
+}
+
+export interface ExtractionPostPersistResult {
+  meta?: MetaState;
+  metadataFailed: boolean;
+}
+
+export async function runExtractionPostPersist(
+  options: ExtractionPostPersistOptions,
+): Promise<ExtractionPostPersistResult> {
+  let metadataFailed = false;
+  let deadlineError: Error | undefined;
+  const recordFailure = (stage: string, error: unknown): void => {
+    metadataFailed = true;
+    if (options.isDeadlineError(error) && deadlineError === undefined) {
+      deadlineError = error as Error;
+    }
+    log.warn(`runExtraction: ${stage} failed after durable persistence; continuing with buffer clear`, error);
+  };
+  let meta = options.meta;
+  try {
+    meta ??= (await options.runDeadlineAware(
+      () => options.storage.loadMeta(),
+      "during_post_persist_load_meta",
+      false,
+    )) as MetaState;
+  } catch (error) {
+    recordFailure("metadata load", error);
+  }
+  if (meta && options.extractionFingerprint && options.shouldPersistProcessedFingerprint) {
+    try {
+      await options.runDeadlineAware(
+        () => options.recordProcessedExtractionFingerprint(options.storage, options.extractionFingerprint!, meta!),
+        "during_post_persist_fingerprint",
+        false,
+      );
+    } catch (error) {
+      recordFailure("processed fingerprint", error);
+    }
+  }
+  if (meta) {
+    meta.extractionCount += 1;
+    meta.lastExtractionAt = new Date().toISOString();
+    meta.totalMemories += Array.isArray(options.result.facts) ? options.result.facts.length : 0;
+    meta.totalEntities += Array.isArray(options.result.entities) ? options.result.entities.length : 0;
+    try {
+      await options.runDeadlineAware(
+        () => options.storage.saveMeta(meta!),
+        "during_post_persist_meta_save",
+        false,
+      );
+    } catch (error) {
+      recordFailure("metadata save", error);
+    }
+  }
+  const runBestEffort = options.runPostPersistBestEffort;
+  await runExtractionDeferRetention(runBestEffort, {
+    clearBufferAfterExtraction: options.clearBufferAfterExtraction,
+    extractionJudgeShadow: options.extractionJudgeShadow,
+    getDeferredCount: options.getDeferredCount,
+    normalizedTurns: options.normalizedTurns,
+    bufferKey: options.bufferKey,
+    retainDeferredTurns: options.retainDeferredTurns,
+  });
+  await runBestEffort(
+    "during_buffer_clear",
+    () => options.clearBuffer({ ignoreAbort: true }),
+    {
+      ignoreAbort: true,
+      ignoreDeadline: options.failOnExtractionFailure,
+      propagateErrors: options.failOnExtractionFailure,
+    },
+  );
+  if (options.failOnExtractionFailure && typeof options.deadlineMs === "number" && Date.now() >= options.deadlineMs) {
+    throw options.createDeadlineError("during_buffer_clear");
+  }
+  if (deadlineError) throw deadlineError;
+  return { meta, metadataFailed };
 }

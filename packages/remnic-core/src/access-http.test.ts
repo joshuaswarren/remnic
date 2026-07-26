@@ -203,6 +203,72 @@ test("HTTP batch LCM flush isolates namespace failures and charges one write quo
   }
 });
 
+test("HTTP LCM compaction record uses the lifecycle route and write quota", async () => {
+  const calls: unknown[] = [];
+  const service = {
+    lcmCompactionRecord: async (request: unknown) => {
+      calls.push(request);
+      return { enabled: true, recorded: true, sessionKey: "record-session" };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/record`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "record-session",
+        namespace: "team-a",
+        tokensBefore: 100,
+        tokensAfter: 40,
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      enabled: true,
+      recorded: true,
+      sessionKey: "record-session",
+    });
+    assert.deepEqual(calls, [
+      {
+        sessionKey: "record-session",
+        namespace: "team-a",
+        tokensBefore: 100,
+        tokensAfter: 40,
+        authenticatedPrincipal: undefined,
+      },
+    ]);
+
+    const rateLimited = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/record`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "record-session",
+        tokensBefore: 120,
+        tokensAfter: 60,
+      }),
+    });
+    assert.equal(rateLimited.status, 429);
+    assert.equal(calls.length, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP batch LCM flush deduplicates aliases after effective namespace resolution", async () => {
   const calls: Array<{ namespace?: string; sessionKey: string; authenticatedPrincipal?: string }> = [];
   const service = {

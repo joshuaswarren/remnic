@@ -130,7 +130,7 @@ import {
   computeExtractionRetryNextEligibleMs,
   deriveSourceConnector,
   deriveTopicsFromExtraction,
-  runExtractionDeferRetention,
+  runExtractionPostPersist,
   runExtractionPostPersistBestEffort,
   EXTRACTION_RETRY_STATE_MAX_ENTRIES,
 } from "./extraction-run-helpers.js";
@@ -1085,80 +1085,31 @@ export class ExtractionRunCoordinator {
     } catch (error) {
       log.warn("runExtraction: durable-commit callback failed", error);
     }
-
-    let postPersistMetadataFailed = false;
-    let postPersistDeadlineError: ExtractionDeadlineError | undefined;
-    const recordPostPersistMetadataFailure = (stage: string, error: unknown): void => {
-      postPersistMetadataFailed = true;
-      if (error instanceof ExtractionDeadlineError && postPersistDeadlineError === undefined) {
-        postPersistDeadlineError = error;
-      }
-      log.warn(`runExtraction: ${stage} failed after durable persistence; continuing with buffer clear`, error);
-    };
-    try {
-      meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_post_persist_load_meta", false);
-    } catch (error) {
-      recordPostPersistMetadataFailure("metadata load", error);
-    }
-    if (meta && extractionFingerprint && shouldPersistProcessedFingerprint) {
-      try {
-        await runDeadlineAware(
-          () => this.deps.recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta!),
-          "during_post_persist_fingerprint",
-          false,
-        );
-      } catch (error) {
-        recordPostPersistMetadataFailure("processed fingerprint", error);
-      }
-    }
-    // Persist extraction counters and processed fingerprints before running
-    // follow-on helpers so replay dedupe survives any later non-essential
-    // failure. If this aggregate meta write fails, still clear the buffer:
-    // durable memories are already written and replaying the same turns would
-    // duplicate them.
-    if (meta) {
-      meta.extractionCount += 1;
-      meta.lastExtractionAt = new Date().toISOString();
-      meta.totalMemories += Array.isArray(result?.facts) ? result.facts.length : 0;
-      meta.totalEntities += Array.isArray(result?.entities) ? result.entities.length : 0;
-      try {
-        await runDeadlineAware(() => storage.saveMeta(meta!), "during_post_persist_meta_save", false);
-      } catch (error) {
-        recordPostPersistMetadataFailure("metadata save", error);
-      }
-    }
-
-
-    // Durable memories are already committed; bound every later helper by the
-    // same caller deadline and keep helper failures non-fatal.
     const runPostPersistBestEffort = runExtractionPostPersistBestEffort.bind(null, runDeadlineAware);
-
-    await runExtractionDeferRetention(runPostPersistBestEffort, {
+    const postPersist = await runExtractionPostPersist({
+      result,
+      storage,
+      meta: meta ?? undefined,
+      extractionFingerprint: extractionFingerprint ?? undefined,
+      shouldPersistProcessedFingerprint,
+      recordProcessedExtractionFingerprint: this.deps.recordProcessedExtractionFingerprint,
+      runDeadlineAware,
+      isDeadlineError: (error) => error instanceof ExtractionDeadlineError,
+      createDeadlineError: (stage) => new ExtractionDeadlineError(stage),
+      deadlineMs,
       clearBufferAfterExtraction,
+      runPostPersistBestEffort,
       extractionJudgeShadow: this.config.extractionJudgeShadow,
       getDeferredCount: () => this.deps.getLastPersistExtractionDeferredCount(),
       normalizedTurns: normalizedTurns as BufferTurn[],
       bufferKey,
-      retainDeferredTurns: (key, turns, max) => this.deps.getBuffer().retainDeferredTurns(key, turns, max),
+      retainDeferredTurns: (key, retainedTurns, max) =>
+        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max),
+      clearBuffer,
+      failOnExtractionFailure: options.failOnExtractionFailure === true,
     });
-
-    await runPostPersistBestEffort(
-      "during_buffer_clear",
-      () => clearBuffer({ ignoreAbort: true }),
-      {
-        ignoreAbort: true,
-        // Once durable outputs exist, a force flush must still clear the
-        // committed turns even when the absolute deadline fired during
-        // persistence. Ordinary extraction keeps the existing best-effort
-        // deadline behavior.
-        ignoreDeadline: options.failOnExtractionFailure === true,
-        propagateErrors: options.failOnExtractionFailure === true,
-      },
-    );
-    if (options.failOnExtractionFailure === true && typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
-      throw new ExtractionDeadlineError("during_buffer_clear");
-    }
-    if (postPersistDeadlineError) throw postPersistDeadlineError;
+    meta = postPersist.meta ?? null;
+    const postPersistMetadataFailed = postPersist.metadataFailed;
 
     // Passive correction capture (issue #1581) — detect corrections expressed
     // passively in the extracted turns and route to the Correction Contract.

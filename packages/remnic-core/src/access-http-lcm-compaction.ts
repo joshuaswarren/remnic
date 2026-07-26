@@ -1,9 +1,13 @@
 import type { ServerResponse } from "node:http";
 
-import type { LcmCompactionFlushRequest } from "./access-schema.js";
-import type { EngramAccessLcmCompactionFlushResponse, EngramAccessService } from "./access-service.js";
+import type { LcmCompactionFlushRequest, LcmCompactionRecordRequest } from "./access-schema.js";
+import type {
+  EngramAccessLcmCompactionFlushResponse,
+  EngramAccessLcmCompactionRecordResponse,
+  EngramAccessService,
+} from "./access-service.js";
 
-type LcmCompactionService = Pick<EngramAccessService, "lcmCompactionFlush">;
+type LcmCompactionService = Pick<EngramAccessService, "lcmCompactionFlush" | "lcmCompactionRecord">;
 type JsonResponder = (res: ServerResponse, status: number, payload: unknown) => void;
 
 export interface LcmCompactionFlushHttpOptions {
@@ -157,4 +161,33 @@ export async function handleLcmCompactionFlushHttp({
     resolveRequestPrincipal,
   });
   respondJson(response, 200, result);
+}
+
+export interface LcmCompactionRecordHttpOptions {
+  body: LcmCompactionRecordRequest;
+  service: LcmCompactionService;
+  ensureWriteRateLimitAvailable: () => void;
+  recordWriteRateLimitHit: () => void;
+  resolveNamespace: (namespace?: string) => string | undefined;
+  resolveRequestPrincipal: () => string | undefined;
+}
+
+export async function runLcmCompactionRecordHttp({
+  body,
+  service,
+  ensureWriteRateLimitAvailable,
+  recordWriteRateLimitHit,
+  resolveNamespace,
+  resolveRequestPrincipal,
+}: LcmCompactionRecordHttpOptions): Promise<EngramAccessLcmCompactionRecordResponse> {
+  ensureWriteRateLimitAvailable();
+  const response = await service.lcmCompactionRecord({
+    sessionKey: body.sessionKey,
+    namespace: resolveNamespace(body.namespace),
+    tokensBefore: body.tokensBefore,
+    tokensAfter: body.tokensAfter,
+    authenticatedPrincipal: resolveRequestPrincipal(),
+  });
+  recordWriteRateLimitHit();
+  return response;
 }
