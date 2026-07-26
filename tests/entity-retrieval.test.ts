@@ -7,6 +7,7 @@ import { parseConfig } from "../src/config.js";
 import { buildEntityRecallSection, entityIndexVersion, readRecentEntityTranscriptEntries } from "../src/entity-retrieval.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { StorageManager, normalizeEntityName } from "../src/storage.js";
+import { SecureStoreLockedError } from "../src/secure-store/index.js";
 import type { PluginConfig, TranscriptEntry } from "../src/types.js";
 
 async function buildHarness(prefix: string, overrides: Record<string, unknown> = {}) {
@@ -825,6 +826,65 @@ test("entity retrieval caches namespace-scoped negative lookups by corpus versio
   assert.equal(await buildEntityRecallSection(options), null);
   assert.equal(await buildEntityRecallSection(options), null);
   assert.equal(entityReads, 2);
+
+  await aliceStorage.writeMemory("fact", "A corpus-only change invalidates namespace indexes.");
+  assert.equal(await buildEntityRecallSection(options), null);
+  assert.equal(entityReads, 4);
+});
+
+test("entity retrieval does not reuse a namespace index across secure-store identities", async (t) => {
+  const { memoryDir, workspaceDir, config } = await buildHarness("engram-entity-namespace-secure-cache", {
+    namespacesEnabled: true,
+    defaultNamespace: "alice",
+    sharedNamespace: "shared",
+  });
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+
+  const namespaceDir = path.join(memoryDir, "namespaces", "alice");
+  const key = Buffer.alloc(32, 0x5a);
+  const unlockedStorage = new StorageManager(namespaceDir, config.entitySchemas);
+  unlockedStorage.setSecureStoreRequired(true);
+  unlockedStorage.setSecureStoreKey(key, true);
+  await unlockedStorage.ensureDirectories();
+  await writeEntity(
+    unlockedStorage,
+    "Encrypted Alice",
+    "person",
+    ["Encrypted Alice owns a private namespace fact."],
+    "Encrypted Alice is an encrypted namespace entity.",
+  );
+
+  const options = {
+    config,
+    storage: unlockedStorage,
+    namespaceStorage: async () => unlockedStorage,
+    recallNamespaces: ["alice"],
+    query: "Who is Encrypted Alice?",
+    recentTurns: 6,
+    maxHints: 2,
+    maxSupportingFacts: 6,
+    maxRelatedEntities: 3,
+    maxChars: 2400,
+    transcriptEntries: [],
+  } satisfies Parameters<typeof buildEntityRecallSection>[0];
+  assert.ok(await buildEntityRecallSection(options));
+
+  const lockedStorage = new StorageManager(namespaceDir, config.entitySchemas);
+  lockedStorage.setSecureStoreRequired(true);
+  const lockedOptions = {
+    ...options,
+    storage: lockedStorage,
+    namespaceStorage: async () => lockedStorage,
+  } satisfies Parameters<typeof buildEntityRecallSection>[0];
+  await assert.rejects(
+    () => buildEntityRecallSection(lockedOptions),
+    (error: unknown) => error instanceof SecureStoreLockedError,
+  );
 });
 
 test("entity retrieval preserves mention-index updatedAt when entity state is unchanged", async () => {

@@ -412,7 +412,10 @@ function namespaceEntityIndexCacheKey(
     .map((scopedStorage) => {
       const aliases = Object.entries(scopedStorage.entityAliases)
         .sort(([left], [right]) => left.localeCompare(right));
-      return `${path.resolve(scopedStorage.dir)}@${scopedStorage.getMemoryStatusVersion()}:${JSON.stringify(aliases)}`;
+      return (
+        `${path.resolve(scopedStorage.dir)}@${scopedStorage.getMemoryStatusVersion()}` +
+        `:${scopedStorage.getMemoryCorpusVersion()}:${scopedStorage.hotCacheKeyId()}:${JSON.stringify(aliases)}`
+      );
     })
     .sort()
     .join("\u001f");
