@@ -2449,7 +2449,7 @@ export class EngramMcpServer {
           jsonrpc: "2.0",
           id,
           result: {
-            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify(result ?? null, null, 2) }],
             ...(result !== null && result !== undefined ? { structuredContent: result } : {}),
             isError: false,
           },

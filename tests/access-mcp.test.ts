@@ -276,10 +276,46 @@ function createFakeService(): EngramAccessService {
     }),
     peerDelete: async () => ({ ok: true, deleted: true }),
     peerProfileGet: async () => ({ found: false }),
-    wearablesSync: async () => [],
-    wearablesTranscriptDay: async () => [],
-    wearablesTranscriptSearch: async () => [],
-    wearablesTranscriptMemories: async () => [],
+    wearablesSync: async () => [
+      {
+        source: "limitless",
+        days: ["2026-07-11"],
+        conversations: 1,
+        segmentsKept: 1,
+        segmentsDropped: 0,
+        redactions: 0,
+        correctionsApplied: 0,
+        transcriptsWritten: ["2026-07-11"],
+        memoriesCreated: 1,
+        memoriesPromoted: 0,
+        memoriesDemoted: 0,
+        memoriesSkipped: 0,
+        memoriesBlocked: 0,
+        nativeMemoriesImported: 0,
+        warnings: [],
+      },
+    ],
+    wearablesTranscriptDay: async () => [
+      {
+        source: "limitless",
+        date: "2026-07-11",
+        meta: null,
+        body: "A test transcript.",
+        overlapsWith: [],
+      },
+    ],
+    wearablesTranscriptSearch: async () => [
+      { source: "limitless", date: "2026-07-11", score: 0.9, snippet: "test transcript", backend: "scan" as const },
+    ],
+    wearablesTranscriptMemories: async () => [
+      {
+        id: "memory-1",
+        source: "limitless",
+        date: "2026-07-11",
+        content: "A test memory.",
+        created: "2026-07-11T12:00:00.000Z",
+      },
+    ],
     consoleState: async () => ({
       capturedAt: "2026-04-27T00:00:00.000Z",
       bufferState: { turnsCount: 0, byteCount: 0 },
@@ -810,6 +846,36 @@ test("MCP day_summary omits structuredContent when the service returns null", as
   assert.equal("structuredContent" in result, false);
   assert.equal(result?.content?.[0]?.text, "null");
 });
+test("MCP day_summary serializes undefined service results as null text", async () => {
+  const service = {
+    ...createFakeService(),
+    daySummary: async () => undefined,
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "engram.day_summary",
+      arguments: {
+        namespace: "global",
+        timeZone: "America/Chicago",
+      },
+    },
+  });
+
+  const result = response?.result as {
+    isError?: boolean;
+    structuredContent?: unknown;
+    content?: Array<{ type: string; text: string }>;
+  };
+  assert.equal(result?.isError, false);
+  assert.equal("structuredContent" in result, false);
+  assert.equal(result?.content?.[0]?.text, "null");
+});
+
 
 test("engram.dreams_status rejects invalid windowHours without calling service", async () => {
   let capturedWindowHours: number | undefined;
@@ -1564,6 +1630,28 @@ test("AJV: structuredContent validates against declared outputSchema for represe
     // Complex nested object (console state)
     { name: "engram.console_state", args: {} },
   ];
+  const expectedWrapperResults: Record<string, { key: string; args: Record<string, unknown> }> = {
+    "engram.wearables_sync": { key: "summaries", args: {} },
+    "engram.transcript_day": { key: "transcripts", args: { date: "2026-07-11" } },
+    "engram.transcript_search": { key: "results", args: { query: "meeting" } },
+    "engram.transcript_memories": { key: "memories", args: {} },
+  };
+
+  for (const [name, { key, args }] of Object.entries(expectedWrapperResults)) {
+    const response = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+    const result = fieldOf(response, "result");
+    assert.notEqual(fieldOf(result, "isError"), true, `${name}: must not return an error`);
+    const structuredContent = fieldOf(result, "structuredContent");
+    assert.deepEqual(Object.keys(structuredContent as Record<string, unknown>).sort(), [key]);
+    const wrapped = fieldOf(structuredContent, key);
+    assert.ok(Array.isArray(wrapped), `${name}: ${key} must be an array`);
+    assert.ok(wrapped.length > 0, `${name}: ${key} must contain representative data`);
+  }
 
   for (const { name, args } of cases) {
     const resp = await server.handleRequest({
