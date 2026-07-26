@@ -872,6 +872,43 @@ test("ensureDirectories removes identical legacy content when canonical entity a
   }
 });
 
+test("ensureDirectories processes intermediate canonical-id mappings before collapsed ancestors", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-chain-"));
+  try {
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    const previousCanonical = normalizeEntityName("Café", "project");
+    const nextCanonical = "project-coffee";
+    await seed.writeEntity("Café", "project", ["Canonical chain source."]);
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({
+        version: 1,
+        complete: true,
+        mappings: {
+          "project-cafe": previousCanonical,
+        },
+      }),
+      "utf-8",
+    );
+    await writeFile(path.join(dir, "config", "aliases.json"), JSON.stringify({ "café": "coffee" }), "utf-8");
+
+    await new StorageManager(dir).ensureDirectories();
+
+    const migratedContent = await readFile(path.join(dir, "entities", `${nextCanonical}.md`), "utf-8");
+    assert.match(migratedContent, /# Café/);
+    await assert.rejects(() => readFile(path.join(dir, "entities", `${previousCanonical}.md`)), { code: "ENOENT" });
+    const state = JSON.parse(
+      await readFile(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), "utf-8"),
+    ) as { complete?: unknown; mappings?: Record<string, string> };
+    assert.equal(state.complete, true);
+    assert.equal(state.mappings?.["project-cafe"], nextCanonical);
+    assert.equal(state.mappings?.[previousCanonical], nextCanonical);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories rejects symlinked entity roots and entries", async () => {
   const entryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-symlink-entry-"));
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-symlink-root-"));
@@ -902,6 +939,38 @@ test("ensureDirectories rejects symlinked entity roots and entries", async () =>
       rm(entryDir, { recursive: true, force: true }),
       rm(rootDir, { recursive: true, force: true }),
     ]);
+  }
+});
+
+test("ensureDirectories rejects symlinked memory scan roots", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-memory-root-symlink-"));
+  try {
+    await new StorageManager(dir).ensureDirectories();
+    for (const rootName of ["facts", "cold", "archive"]) {
+      const root = path.join(dir, rootName);
+      const realRoot = `${root}-real`;
+      let existed = true;
+      try {
+        await lstat(root);
+      } catch {
+        existed = false;
+      }
+      if (existed) await rename(root, realRoot);
+      const outside = await mkdtemp(path.join(os.tmpdir(), `remnic-outside-${rootName}-`));
+      try {
+        await symlink(outside, root);
+        await assert.rejects(
+          () => new StorageManager(dir).ensureDirectories(),
+          /unsafe memory root|outside memoryDir|symlink/i,
+        );
+      } finally {
+        await rm(root, { force: true });
+        await rm(outside, { recursive: true, force: true });
+        if (existed) await rename(realRoot, root);
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

@@ -36,16 +36,22 @@ test("entity migration runner waits for an in-flight migration during directory 
   assert.equal(runCount, 1);
 });
 
-test("entity migration runner rechecks after an in-process completion", async () => {
+test("entity migration runner caches a stable completion and reruns after a fingerprint change", async () => {
   let runCount = 0;
+  let fingerprint = "initial";
   const runner = new EntityCanonicalIdMigrationRunner(
     () => true,
     async () => {
       runCount += 1;
     },
+    async () => fingerprint,
   );
 
   await runner.markDirectoriesInitialized();
+  await runner.ensure();
+  assert.equal(runCount, 1);
+
+  fingerprint = "changed";
   await runner.ensure();
   assert.equal(runCount, 2);
 });
