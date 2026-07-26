@@ -858,12 +858,14 @@ export async function migrateLegacyEntityCanonicalIds(
        * the canonical file, i.e. picking the winner this fix exists to avoid,
        * off stale state rather than what is on disk.
        */
-      const pruneBlocked = async (): Promise<void> => {
+      /** @returns true when a park was promoted back into the mapping set. */
+      const pruneBlocked = async (): Promise<boolean> => {
         const current = state;
-        if (!current) return;
+        if (!current) return false;
         // THIS scan's verdict wins over the journal: normalization can change
         // between runs, so a stale parked target would otherwise be promoted
         // later and rewrite references onto an id that does not exist.
+        let revived = false;
         const parked: Record<string, string> = { ...(current.blocked ?? {}) };
         const active: Record<string, string> = {};
         for (const [legacyId, canonicalId] of Object.entries(current.mappings)) {
@@ -887,6 +889,7 @@ export async function migrateLegacyEntityCanonicalIds(
           // Source gone: the rename is moot, but references still name it and
           // this record is the only thing that can still rewrite them.
           active[legacyId] = canonicalId;
+          revived = true;
         }
         // Reviving a whole chain at once yields A -> B -> C, and each rewrite
         // surface makes a different number of passes over it - so collapse
@@ -901,9 +904,10 @@ export async function migrateLegacyEntityCanonicalIds(
         const same = (a: Record<string, string>, b: Record<string, string>): boolean =>
           Object.keys(a).length === Object.keys(b).length
           && Object.entries(a).every(([key, value]) => b[key] === value);
-        if (same(collapsed, current.mappings) && same(parked, current.blocked ?? {})) return;
+        if (same(collapsed, current.mappings) && same(parked, current.blocked ?? {})) return revived;
         state = { ...current, mappings: collapsed, blocked: parked };
         await writeState(deps, state);
+        return revived;
       };
       const previousMappings = state.mappings;
       const collapsedMappings = collapseMappings(previousMappings);
@@ -952,8 +956,8 @@ export async function migrateLegacyEntityCanonicalIds(
           // park (another writer removed the legacy file), and completing
           // without promoting it strands its references behind a fingerprint
           // that already reflects the deletion - so no later run revisits it.
-          await pruneBlocked();
-          if (Object.keys(discoveredAfter).length === 0 && Object.keys(state.mappings).length === 0) {
+          const revivedInRescan = await pruneBlocked();
+          if (Object.keys(discoveredAfter).length === 0 && !revivedInRescan) {
             await writeState(deps, { ...state, complete: true });
             return finish();
           }
@@ -1006,8 +1010,12 @@ export async function migrateLegacyEntityCanonicalIds(
           state.mappings,
           await discoverMappings(deps, state.mappings, blocked),
         );
-        await pruneBlocked();
-        if (Object.keys(discoveredAfter).length === 0) {
+        // A park resolved after the rewrite pass is promoted here, and a
+        // promotion still has to be APPLIED. Completing on `discoveredAfter`
+        // alone fingerprints the post-deletion corpus, so the runner never
+        // retries and those references stay stranded.
+        const revivedAfterRewrite = await pruneBlocked();
+        if (Object.keys(discoveredAfter).length === 0 && !revivedAfterRewrite) {
           await writeState(deps, { ...state, complete: true });
           return finish();
         }
