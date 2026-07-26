@@ -1787,3 +1787,22 @@ test("extraction grounds de-linearized facts after resolving coreferences", asyn
 
   assert.deepEqual(result.facts, []);
 });
+
+test("grounding rejects topical overlap for short copular claims", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice is vegan.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice likes vegan food.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});

@@ -138,6 +138,17 @@ const GROUNDING_AUXILIARY_TOKENS = new Set([
   "should",
 ]);
 
+const GROUNDING_COPULAR_FORMS = new Set([
+  "am",
+  "are",
+  "be",
+  "been",
+  "being",
+  "is",
+  "was",
+  "were",
+]);
+
 const GROUNDING_SUBJECT_PRONOUNS = new Set([
   "he",
   "she",
@@ -397,10 +408,50 @@ function areGroundingTokensCompatible(left: string, right: string): boolean {
   return left === right || `${left}e` === right || left === `${right}e`;
 }
 
+interface GroundingCopularClaim {
+  subject: string;
+  predicate: string;
+}
+
+function groundingCopularClaim(text: string): GroundingCopularClaim | undefined {
+  const lexemes = groundingLexemes(text);
+  const copulaIndex = lexemes.findIndex(({ token }) => GROUNDING_COPULAR_FORMS.has(token));
+  if (copulaIndex <= 0) return undefined;
+
+  let subjectIndex = copulaIndex - 1;
+  while (
+    subjectIndex >= 0
+    && GROUNDING_AUXILIARY_TOKENS.has(lexemes[subjectIndex]!.token)
+  ) {
+    subjectIndex -= 1;
+  }
+  const subjectLexeme = lexemes[subjectIndex];
+  const predicateLexeme = lexemes
+    .slice(copulaIndex + 1)
+    .find(({ token }) => GROUNDING_STOPWORDS[token] !== true);
+  if (subjectLexeme === undefined || predicateLexeme === undefined) return undefined;
+
+  return {
+    subject: stemToken(subjectLexeme.token, subjectLexeme.preserveTerminalS),
+    predicate: stemToken(predicateLexeme.token, predicateLexeme.preserveTerminalS),
+  };
+}
+
+function hasCopularPredicateEvidence(candidate: string, source: string): boolean {
+  const candidateClaim = groundingCopularClaim(candidate);
+  if (candidateClaim === undefined) return true;
+  const sourceClaim = groundingCopularClaim(source);
+  return sourceClaim !== undefined
+    && areGroundingTokensCompatible(candidateClaim.subject, sourceClaim.subject)
+    && areGroundingTokensCompatible(candidateClaim.predicate, sourceClaim.predicate);
+}
+
 function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): boolean {
   const candidateTokens = normalizedGroundingAlignmentTokenSequence(candidate);
   const sourceTokens = normalizedGroundingAlignmentTokenSequence(source);
-  if (candidateTokens.length < 3 || sourceTokens.length < 3) return true;
+  if (candidateTokens.length < 3 || sourceTokens.length < 3) {
+    return hasCopularPredicateEvidence(candidate, source);
+  }
 
   const subjectAligned = areGroundingTokensCompatible(candidateTokens[0]!, sourceTokens[0]!);
   const hasCorrectionReordering = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
