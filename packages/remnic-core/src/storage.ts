@@ -5164,6 +5164,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
     });
     await this.patchHotMemoriesCache({ addedPath: memory.path });
+    if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
+      this.invalidateColdMemoriesCache();
+    }
     try {
       await this.syncFactHashIndexAfterRewrite(memory, {
         ...memory,
