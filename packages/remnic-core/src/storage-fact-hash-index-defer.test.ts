@@ -2456,6 +2456,73 @@ test("chunked offline sync streams non-memory files through the host writer", as
   });
 });
 
+test("large blocked offline sync streams through bounded staging and deduplicates", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const largeContent = "large stream duplicate ".repeat(60_000);
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "large-stream-duplicate",
+      rawContent: largeContent,
+    });
+    assert.ok(tombstoneId);
+    const existing = await storage.writeMemory("fact", largeContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(existing.tombstoneBlocked, true);
+    const incomingFile = Buffer.from(
+      [
+        "---",
+        "id: large-stream-incoming",
+        "category: fact",
+        "created: 2026-01-01T00:00:00.000Z",
+        "updated: 2026-01-01T00:00:00.000Z",
+        "source: offline-sync",
+        "confidence: 0.8",
+        "confidenceTier: implied",
+        "tags: []",
+        "sourceConnector: provider-a",
+        "status: pending_review",
+        `blockedBy: ${tombstoneId}`,
+        "---",
+        "",
+        largeContent,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    assert.ok(incomingFile.byteLength > 1_048_576);
+    const target = path.join(dir, "cold", "large-stream-incoming.md");
+    let consumedBytes = 0;
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (let offset = 0; offset < incomingFile.byteLength; offset += 32 * 1024) {
+        const chunk = incomingFile.subarray(offset, offset + 32 * 1024);
+        consumedBytes += chunk.byteLength;
+        yield chunk;
+      }
+    })();
+
+    await storage.writeOfflineSyncFileChunks(target, chunks);
+
+    assert.equal(consumedBytes, incomingFile.byteLength);
+    assert.equal(existsSync(target), false, "a streamed blocked duplicate must not publish a new row");
+    const matches = [
+      ...(await storage.readAllMemories()),
+      ...(await storage.readAllColdMemories()),
+    ].filter((memory) => memory.frontmatter.id === existing.id);
+    assert.equal(matches.length, 1, "the existing blocked row remains the sole durable duplicate");
+  });
+});
+
 test("offline sync mutation rebuilds blocked index for every recall category", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);

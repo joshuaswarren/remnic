@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open as openFile, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { log } from "../logger.js";
@@ -34,6 +34,21 @@ const MARKER_PROCESS_START_TOLERANCE_MS = 2_000;
 const DOTNET_UNIX_EPOCH_TICKS = 621_355_968_000_000_000;
 const MARKER_PROCESS_STARTED_AT_MS = Date.now() - process.uptime() * 1000;
 const CAPTURE_WRITE_LOCK_BUSY_MESSAGE = "tombstone-blocked capture write lock remained busy";
+
+const OFFLINE_SYNC_BUFFER_LIMIT_BYTES = 1_048_576;
+const OFFLINE_SYNC_STAGE_READ_BYTES = 64 * 1024;
+const OFFLINE_SYNC_FRONTMATTER_LIMIT_BYTES = 128 * 1024;
+
+type StreamedOfflineSyncIdentity = {
+  identityHash: string;
+};
+
+type PreparedOfflineSyncChunks = {
+  after: MemoryFile | null;
+  chunks: AsyncIterable<Buffer>;
+  stagePath?: string;
+  streamedIdentity?: StreamedOfflineSyncIdentity;
+};
 
 export function isTombstoneBlockedCaptureWriteLockBusy(error: unknown): boolean {
   return error instanceof Error && error.message === CAPTURE_WRITE_LOCK_BUSY_MESSAGE;
@@ -75,6 +90,69 @@ export function buildExplicitCaptureDedupKey(
     encode("connector", sourceConnector?.trim() ?? ""),
     encode("content", normalizeExplicitCaptureContent(content)),
   ].join(" ");
+}
+
+function captureIdentityHash(memory: MemoryFile): string {
+  return createHash("sha256")
+    .update(buildExplicitCaptureDedupKey(memory.content, memory.frontmatter.category, memory.frontmatter.sourceConnector))
+    .digest("hex");
+}
+
+function createExplicitContentNormalizer(onChunk: (chunk: string) => void): {
+  push: (text: string) => void;
+  finish: () => void;
+} {
+  let started = false;
+  let pendingSpace = false;
+  let output = "";
+  const flush = () => {
+    if (output.length > 0) {
+      onChunk(output);
+      output = "";
+    }
+  };
+  return {
+    push(text) {
+      for (const character of text.toLowerCase()) {
+        if (/\s/u.test(character)) {
+          if (started) pendingSpace = true;
+          continue;
+        }
+        if (pendingSpace) {
+          output += " ";
+          pendingSpace = false;
+        }
+        output += character;
+        started = true;
+        if (output.length >= OFFLINE_SYNC_STAGE_READ_BYTES) flush();
+      }
+    },
+    finish: flush,
+  };
+}
+
+async function forEachStagedTextChunk(
+  stagePath: string,
+  offset: number,
+  onText: (text: string) => void
+): Promise<void> {
+  const handle = await openFile(stagePath, "r");
+  const buffer = Buffer.alloc(OFFLINE_SYNC_STAGE_READ_BYTES);
+  const decoder = new TextDecoder("utf-8");
+  let position = offset;
+  try {
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      position += bytesRead;
+      const text = decoder.decode(buffer.subarray(0, bytesRead), { stream: true });
+      if (text.length > 0) onText(text);
+    }
+    const finalText = decoder.decode();
+    if (finalText.length > 0) onText(finalText);
+  } finally {
+    await handle.close();
+  }
 }
 
 export type OfflineSyncMemoryParser = (filePath: string, content: Buffer) => MemoryFile | null;
@@ -407,12 +485,18 @@ export class TombstoneBlockedCaptureIndex {
     return this.loadPromise;
   }
 
-  private captureWriteLockPath(identity: string): string {
+  private captureWriteLockPathForHash(identityHash: string): string {
     const filename =
-      identity.length === 0
+      identityHash.length === 0
         ? "explicit-capture-write.lock"
-        : `explicit-capture-write-${createHash("sha256").update(identity).digest("hex")}.lock`;
+        : `explicit-capture-write-${identityHash}.lock`;
     return path.join(this.options.stateDir, "tombstone-blocked-capture", filename);
+  }
+
+  private captureWriteLockPath(identity: string): string {
+    return this.captureWriteLockPathForHash(
+      identity.length === 0 ? "" : createHash("sha256").update(identity).digest("hex")
+    );
   }
 
   private async withSingleCaptureWriteLock<T>(lockPath: string, task: () => Promise<T>): Promise<T> {
@@ -448,7 +532,14 @@ export class TombstoneBlockedCaptureIndex {
   async withCaptureWriteLock<T>(task: () => Promise<T>, identity?: string | readonly string[]): Promise<T> {
     const identities =
       Array.isArray(identity) && identity.length > 0 ? identity : [typeof identity === "string" ? identity : ""];
-    const lockPaths = [...new Set(identities.map((key) => this.captureWriteLockPath(key)))].sort();
+    return await this.withCaptureWriteLockHashes(
+      task,
+      identities.map((key) => (key.length === 0 ? "" : createHash("sha256").update(key).digest("hex")))
+    );
+  }
+
+  async withCaptureWriteLockHashes<T>(task: () => Promise<T>, identityHashes: readonly string[]): Promise<T> {
+    const lockPaths = [...new Set(identityHashes.map((hash) => this.captureWriteLockPathForHash(hash)))].sort();
     const run = async (index: number): Promise<T> => {
       if (index === lockPaths.length) return await task();
       return await this.withSingleCaptureWriteLock(lockPaths[index], () => run(index + 1));
@@ -683,16 +774,34 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     const identities =
       Array.isArray(identity) && identity.length > 0 ? identity : [typeof identity === "string" ? identity : ""];
     const current = this.captureWriteLockContext.getStore();
-    const missing = current ? identities.filter((key) => !current.has(key)) : identities;
-    if (missing.length === 0) {
-      return await task();
-    }
+    const hashToken = (key: string): string =>
+      `\u0000${key.length === 0 ? "" : createHash("sha256").update(key).digest("hex")}`;
+    const physicalMissing = current
+      ? identities.filter((key) => !current.has(key) && !current.has(hashToken(key)))
+      : identities;
     const next = new Set(current);
-    for (const key of identities) next.add(key);
-    return await this.getTombstoneBlockedCaptureIndex().withCaptureWriteLock(
-      () => this.captureWriteLockContext.run(next, task),
-      missing
-    );
+    for (const key of identities) {
+      next.add(key);
+      next.add(hashToken(key));
+    }
+    const run = () => this.captureWriteLockContext.run(next, task);
+    if (physicalMissing.length === 0) return await run();
+    return await this.getTombstoneBlockedCaptureIndex().withCaptureWriteLock(run, physicalMissing);
+  }
+
+  protected async withTombstoneBlockedCaptureWriteLockHashes<T>(
+    task: () => Promise<T>,
+    identityHashes: readonly string[]
+  ): Promise<T> {
+    const hashes = [...new Set(identityHashes)];
+    const current = this.captureWriteLockContext.getStore();
+    const token = (hash: string): string => `\u0000${hash}`;
+    const missing = current ? hashes.filter((hash) => !current.has(token(hash))) : hashes;
+    const next = new Set(current);
+    for (const hash of hashes) next.add(token(hash));
+    const run = () => this.captureWriteLockContext.run(next, task);
+    if (missing.length === 0) return await run();
+    return await this.getTombstoneBlockedCaptureIndex().withCaptureWriteLockHashes(run, missing);
   }
   private async writeTombstoneBlockedMutation(
     blocked: boolean,
@@ -872,25 +981,36 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       memory.frontmatter.sourceConnector
     );
   }
-  private async isDuplicateTombstoneBlockedOfflineSync(target: string, incoming: MemoryFile): Promise<boolean> {
+  private async isDuplicateTombstoneBlockedOfflineSync(
+    target: string,
+    incoming: MemoryFile,
+    streamedIdentity?: StreamedOfflineSyncIdentity
+  ): Promise<boolean> {
     const before = await this.readMemoryByPath(target);
-    const duplicate = await this.getTombstoneBlockedCaptureIndex().has(
-      incoming.content,
-      incoming.frontmatter.category,
-      incoming.frontmatter.sourceConnector
-    );
+    const duplicate = streamedIdentity
+      ? true
+      : await this.getTombstoneBlockedCaptureIndex().has(
+          incoming.content,
+          incoming.frontmatter.category,
+          incoming.frontmatter.sourceConnector
+        );
     if (!duplicate) return false;
-    const incomingIdentity = this.offlineSyncMemoryIdentity(incoming);
+    const incomingIdentity = streamedIdentity?.identityHash ?? this.offlineSyncMemoryIdentity(incoming);
     const options = this.tombstoneBlockedCaptureIndexOptions();
     const existing = [...(await options.readAllMemories()), ...(await options.readAllColdMemories())];
     const exactMatch = existing.some(
-      (memory) => this.isTombstoneBlockedMemory(memory) && this.offlineSyncMemoryIdentity(memory) === incomingIdentity
+      (memory) =>
+        this.isTombstoneBlockedMemory(memory) &&
+        (streamedIdentity ? captureIdentityHash(memory) : this.offlineSyncMemoryIdentity(memory)) === incomingIdentity
     );
     if (!exactMatch) return false;
     if (before === null) return true;
     if (!this.isTombstoneBlockedMemory(before)) return false;
-    if (this.offlineSyncMemoryIdentity(before) !== incomingIdentity) return false;
-    return before.content === incoming.content && isDeepStrictEqual(before.frontmatter, incoming.frontmatter);
+    const beforeIdentity = streamedIdentity ? captureIdentityHash(before) : this.offlineSyncMemoryIdentity(before);
+    if (beforeIdentity !== incomingIdentity) return false;
+    return streamedIdentity
+      ? isDeepStrictEqual(before.frontmatter, incoming.frontmatter)
+      : before.content === incoming.content && isDeepStrictEqual(before.frontmatter, incoming.frontmatter);
   }
 
   private async invalidateAfterOfflineSyncMutation(filePath: string, ownedMarker?: string): Promise<void> {
@@ -911,7 +1031,9 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     memory: MemoryFile,
     task: (current: MemoryFile, markDurable: () => void) => Promise<string | null>
   ): Promise<string | null> {
-    if (!this.isTombstoneBlockedMemory(memory)) return await task(memory, () => {});
+    if (!this.isTombstoneBlockedMemory(memory) && !isQueuedReviewMemory(memory)) {
+      return await task(memory, () => {});
+    }
     let archivedPath: string | null = null;
     const archived = await this.runTombstoneBlockedInvalidation(
       memory,
@@ -942,17 +1064,21 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       markDurable: () => void
     ) => Promise<boolean>
   ): Promise<boolean> {
-    let lockIdentity = this.isTombstoneBlockedMemory(memory)
-      ? this.offlineSyncMemoryIdentity(memory)
-      : undefined;
+    let lockIdentity =
+      this.isTombstoneBlockedMemory(memory) || isQueuedReviewMemory(memory)
+        ? this.offlineSyncMemoryIdentity(memory)
+        : undefined;
     for (;;) {
       const attempt = async () => {
-        const current = (await this.tombstoneBlockedCaptureIndexOptions().readAllMemories()).find(
-          (candidate) => candidate.frontmatter.id === memory.frontmatter.id
-        );
+        const options = this.tombstoneBlockedCaptureIndexOptions();
+        const current =
+          (await options.readAllMemories()).find((candidate) => candidate.frontmatter.id === memory.frontmatter.id) ??
+          (await this.readMemoryByPath(memory.path)) ??
+          (await options.readAllColdMemories()).find((candidate) => candidate.frontmatter.id === memory.frontmatter.id);
         if (!current) return { result: false };
         const blocked = this.isTombstoneBlockedMemory(current);
-        if (blocked) {
+        const queuedReview = isQueuedReviewMemory(current);
+        if (blocked || queuedReview) {
           const currentIdentity = this.offlineSyncMemoryIdentity(current);
           if (lockIdentity !== currentIdentity) return { retryIdentity: currentIdentity };
         }
@@ -992,7 +1118,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     target: string,
     after: MemoryFile | null,
     write: () => Promise<void>,
-    coordinate = false
+    coordinate = false,
+    streamedIdentity?: StreamedOfflineSyncIdentity
   ): Promise<void> {
     for (;;) {
       const before = await this.readMemoryByPath(target);
@@ -1002,11 +1129,11 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       const blocked = coordinate || targetIdentity !== undefined || this.isTombstoneBlockedMemory(after);
       const identities = [
         ...(targetIdentity === undefined ? [] : [targetIdentity]),
-        ...(this.isTombstoneBlockedMemory(after) ? [this.offlineSyncMemoryIdentity(after)] : []),
+        ...(!streamedIdentity && this.isTombstoneBlockedMemory(after)
+          ? [this.offlineSyncMemoryIdentity(after)]
+          : []),
         ...(coordinate ? [target] : []),
-        // A coordinate stream that cannot be parsed has no incoming identity
-        // yet; hold the global capture lock while the durable stream is in flight.
-        ...(coordinate && after === null ? [""] : []),
+        ...(coordinate && after === null && streamedIdentity === undefined ? [""] : []),
       ];
       let retryIdentity: string | undefined;
       const mutate = async (): Promise<void> => {
@@ -1020,7 +1147,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         }
         if (
           this.isTombstoneBlockedMemory(after) &&
-          (await this.isDuplicateTombstoneBlockedOfflineSync(target, after))
+          (await this.isDuplicateTombstoneBlockedOfflineSync(target, after, streamedIdentity))
         ) {
           return;
         }
@@ -1053,7 +1180,10 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       if (!blocked) {
         await mutate();
       } else {
-        await this.withTombstoneBlockedCaptureWriteLock(mutate, identities);
+        const lockMutation = streamedIdentity
+          ? () => this.withTombstoneBlockedCaptureWriteLockHashes(mutate, [streamedIdentity.identityHash])
+          : mutate;
+        await this.withTombstoneBlockedCaptureWriteLock(lockMutation, identities);
       }
       if (retryIdentity !== undefined) continue;
       return;
@@ -1071,28 +1201,146 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   private async prepareTombstoneBlockedOfflineSyncChunks(
     target: string,
     chunks: AsyncIterable<Buffer>
-  ): Promise<{ after: MemoryFile | null; chunks: AsyncIterable<Buffer> }> {
+  ): Promise<PreparedOfflineSyncChunks> {
     const parseMemory = this.tombstoneBlockedCaptureIndexOptions().parseMemory;
     if (!parseMemory) return { after: null, chunks };
 
     const iterator = chunks[Symbol.asyncIterator]();
     const buffered: Buffer[] = [];
-    while (true) {
-      const next = await iterator.next();
-      if (next.done) break;
-      buffered.push(next.value);
-    }
+    let bufferedBytes = 0;
+    let stagePath: string | undefined;
+    let stageHandle: Awaited<ReturnType<typeof openFile>> | null = null;
+    const writeStageChunk = async (chunk: Buffer): Promise<void> => {
+      if (stageHandle === null) {
+        const stageDir = path.join(
+          this.tombstoneBlockedCaptureIndexOptions().stateDir,
+          "tombstone-blocked-capture",
+          "offline-sync-staging"
+        );
+        await mkdir(stageDir, { recursive: true });
+        stagePath = path.join(stageDir, `${randomUUID()}.stage`);
+        stageHandle = await openFile(stagePath, "w", 0o600);
+        for (const prior of buffered) await stageHandle.write(prior);
+        buffered.length = 0;
+      }
+      await stageHandle.write(chunk);
+    };
 
+    try {
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) break;
+        bufferedBytes += next.value.length;
+        if (stageHandle !== null || bufferedBytes > OFFLINE_SYNC_BUFFER_LIMIT_BYTES) {
+          await writeStageChunk(next.value);
+        } else {
+          buffered.push(next.value);
+        }
+      }
+    } catch (err) {
+      const failedStageHandle = stageHandle as Awaited<ReturnType<typeof openFile>> | null;
+      if (failedStageHandle !== null) await failedStageHandle.close().catch(() => {});
+      if (stagePath !== undefined) await unlink(stagePath).catch(() => {});
+      throw err;
+    }
+    const completedStageHandle = stageHandle as Awaited<ReturnType<typeof openFile>> | null;
+    if (completedStageHandle !== null) await completedStageHandle.close();
+    if (stagePath === undefined) {
+      let after: MemoryFile | null = null;
+      try {
+        after = parseMemory(target, Buffer.concat(buffered));
+      } catch {
+        after = null;
+      }
+      const replay = (async function* (): AsyncIterable<Buffer> {
+        for (const chunk of buffered) yield chunk;
+      })();
+      return { after, chunks: replay };
+    }
+    try {
+      return await this.describeStagedOfflineSyncChunks(target, stagePath, parseMemory);
+    } catch (err) {
+      await unlink(stagePath).catch(() => {});
+      throw err;
+    }
+  }
+
+  private async describeStagedOfflineSyncChunks(
+    target: string,
+    stagePath: string,
+    parseMemory: OfflineSyncMemoryParser
+  ): Promise<PreparedOfflineSyncChunks> {
+    const handle = await openFile(stagePath, "r");
+    const prefix = Buffer.alloc(OFFLINE_SYNC_FRONTMATTER_LIMIT_BYTES);
+    let bytesRead = 0;
+    try {
+      ({ bytesRead } = await handle.read(prefix, 0, prefix.length, 0));
+    } finally {
+      await handle.close();
+    }
+    const delimiter = Buffer.from("\n---\n", "utf8");
+    const delimiterStart = prefix.subarray(0, bytesRead).indexOf(delimiter, 4);
+    if (delimiterStart < 0) {
+      return { after: null, chunks: this.readStagedOfflineSyncChunks(stagePath), stagePath };
+    }
+    const bodyOffset = delimiterStart + delimiter.length;
     let after: MemoryFile | null = null;
     try {
-      after = parseMemory(target, Buffer.concat(buffered));
+      after = parseMemory(target, prefix.subarray(0, bodyOffset));
     } catch {
       after = null;
     }
-    const replay = (async function* (): AsyncIterable<Buffer> {
-      for (const chunk of buffered) yield chunk;
-    })();
-    return { after, chunks: replay };
+    if (after === null) {
+      return { after: null, chunks: this.readStagedOfflineSyncChunks(stagePath), stagePath };
+    }
+    const streamedIdentity = await this.computeStagedOfflineSyncIdentity(stagePath, bodyOffset, after);
+    return {
+      after,
+      chunks: this.readStagedOfflineSyncChunks(stagePath),
+      stagePath,
+      streamedIdentity,
+    };
+  }
+
+  private async computeStagedOfflineSyncIdentity(
+    stagePath: string,
+    bodyOffset: number,
+    after: MemoryFile
+  ): Promise<StreamedOfflineSyncIdentity> {
+    let normalizedLength = 0;
+    const countNormalizer = createExplicitContentNormalizer((chunk) => {
+      normalizedLength += chunk.length;
+    });
+    await forEachStagedTextChunk(stagePath, bodyOffset, (text) => countNormalizer.push(text));
+    countNormalizer.finish();
+
+    const category = after.frontmatter.category;
+    const connector = after.frontmatter.sourceConnector?.trim() ?? "";
+    const encode = (label: string, value: string): string => `${label} ${value.length} ${value}`;
+    const identityPrefix =
+      [encode("category", category), encode("connector", connector), `content ${normalizedLength} `].join(" ");
+    const identityHash = createHash("sha256");
+    identityHash.update(identityPrefix);
+    const identityNormalizer = createExplicitContentNormalizer((chunk) => identityHash.update(chunk));
+    await forEachStagedTextChunk(stagePath, bodyOffset, (text) => identityNormalizer.push(text));
+    identityNormalizer.finish();
+    return {
+      identityHash: identityHash.digest("hex"),
+    };
+  }
+
+  private async *readStagedOfflineSyncChunks(stagePath: string): AsyncIterable<Buffer> {
+    const handle = await openFile(stagePath, "r");
+    const buffer = Buffer.alloc(OFFLINE_SYNC_STAGE_READ_BYTES);
+    try {
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        if (bytesRead === 0) break;
+        yield Buffer.from(buffer.subarray(0, bytesRead));
+      }
+    } finally {
+      await handle.close();
+    }
   }
 
   protected async writeTombstoneBlockedOfflineSyncFileChunks(
@@ -1100,18 +1348,25 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     chunks: AsyncIterable<Buffer>
   ): Promise<void> {
     const coordinate = this.getTombstoneBlockedCaptureIndex().shouldRebuildAfterInvalidationForPath(target);
-    const prepared = coordinate
+    const prepared: PreparedOfflineSyncChunks = coordinate
       ? await this.prepareTombstoneBlockedOfflineSyncChunks(target, chunks)
       : { after: null, chunks };
     const incoming = this.isTombstoneBlockedMemory(prepared.after) ? prepared.after : null;
-    const incomingIdentity = incoming ? this.offlineSyncMemoryIdentity(incoming) : null;
+    const streamedIdentity = prepared.streamedIdentity;
+    const incomingIdentity =
+      streamedIdentity?.identityHash ?? (incoming ? this.offlineSyncMemoryIdentity(incoming) : null);
     const mutate = async (): Promise<void> => {
-      await this.runTombstoneBlockedOfflineSyncMutation(
-        target,
-        prepared.after,
-        () => this.writeStorageSecureFileChunks(target, prepared.chunks),
-        coordinate
-      );
+      try {
+        await this.runTombstoneBlockedOfflineSyncMutation(
+          target,
+          prepared.after,
+          () => this.writeStorageSecureFileChunks(target, prepared.chunks),
+          coordinate,
+          streamedIdentity
+        );
+      } finally {
+        if (prepared.stagePath !== undefined) await unlink(prepared.stagePath).catch(() => {});
+      }
     };
     if (!coordinate) {
       await mutate();
@@ -1123,26 +1378,27 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         ? this.offlineSyncMemoryIdentity(before)
         : undefined;
       const identities = [
-        ...(incomingIdentity ? [incomingIdentity] : []),
+        ...(!streamedIdentity && incomingIdentity ? [incomingIdentity] : []),
         ...(targetIdentity ? [targetIdentity] : []),
         target,
-        ...(prepared.after === null ? [""] : []),
+        ...(prepared.after === null && streamedIdentity === undefined ? [""] : []),
       ];
       let retryIdentity: string | undefined;
-      await this.withTombstoneBlockedCaptureWriteLock(
-        async () => {
-          const current = await this.readMemoryByPath(target);
-          if (this.isTombstoneBlockedMemory(current)) {
-            const currentIdentity = this.offlineSyncMemoryIdentity(current);
-            if (currentIdentity !== targetIdentity) {
-              retryIdentity = currentIdentity;
-              return;
-            }
+      const checkAndMutate = async (): Promise<void> => {
+        const current = await this.readMemoryByPath(target);
+        if (this.isTombstoneBlockedMemory(current)) {
+          const currentIdentity = this.offlineSyncMemoryIdentity(current);
+          if (currentIdentity !== targetIdentity) {
+            retryIdentity = currentIdentity;
+            return;
           }
-          await mutate();
-        },
-        identities
-      );
+        }
+        await mutate();
+      };
+      const lockTask = streamedIdentity
+        ? () => this.withTombstoneBlockedCaptureWriteLockHashes(checkAndMutate, [streamedIdentity.identityHash])
+        : checkAndMutate;
+      await this.withTombstoneBlockedCaptureWriteLock(lockTask, identities);
       if (retryIdentity === undefined) return;
     }
   }

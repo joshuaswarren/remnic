@@ -5223,20 +5223,31 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     for (const m of memories) {
       if (!m.frontmatter.expiresAt) continue;
       const expiresAt = new Date(m.frontmatter.expiresAt).getTime();
-      if (expiresAt < now) {
-        try {
-          await unlink(m.path);
-          markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
-          // Bump per deletion so a concurrent readAllMemories mid-loop rescans
-          // and never re-caches a partially-cleaned corpus (Cursor Medium,
-          // #1902); invalidateAllMemoriesCache below still runs at loop end.
-          this.bumpMemoryCorpusVersion();
-          deleted.push(m);
-          log.debug(`cleaned expired memory ${m.frontmatter.id} (TTL expired)`);
-        } catch {
-          // Ignore
+      if (expiresAt >= now) continue;
+
+      await this.runTombstoneBlockedInvalidation(
+        m,
+        async (current, rebuildMarker, markDurable) => {
+          const currentExpiresAt = current.frontmatter.expiresAt
+            ? new Date(current.frontmatter.expiresAt).getTime()
+            : Number.NaN;
+          if (!Number.isFinite(currentExpiresAt) || currentExpiresAt >= now) return false;
+          try {
+            await unlink(current.path);
+            markDurable();
+            markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
+            this.bumpMemoryCorpusVersion();
+            deleted.push(current);
+            if (rebuildMarker !== undefined) {
+              await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
+            }
+            log.debug(`cleaned expired memory ${current.frontmatter.id} (TTL expired)`);
+            return true;
+          } catch {
+            return false;
+          }
         }
-      }
+      );
     }
 
     if (deleted.length > 0) {
