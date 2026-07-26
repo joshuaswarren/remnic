@@ -1,0 +1,897 @@
+const LAST_UPDATED_HEADER = /^\*Last updated:[^*]*\*$/;
+const PROFILE_TITLE = /^ {0,3}#(?:[ \t]+|$)/;
+const MARKDOWN_HEADING = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
+const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d{1,9}[.)])[ \t]+/;
+const MARKDOWN_LIST_ITEM_CAN_INTERRUPT = /^(?:[-+*]|1[.)])[ \t]+/;
+const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
+const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
+const MARKDOWN_BLOCK_QUOTE = /^>/;
+const MARKDOWN_LINK_REFERENCE =
+  /^\[(?:\\.|[^\\\[\]])+\]:\s*(?:<[^>\n]*>|([^\s]+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?$/;
+const MARKDOWN_LINK_REFERENCE_LABEL = /^\[(?:\\.|[^\\\[\]])+\]:\s*$/;
+const MARKDOWN_LINK_REFERENCE_CONTINUATION =
+  /^ {1,3}(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\))$/;
+const MARKDOWN_LINK_REFERENCE_DESTINATION_CONTINUATION =
+  /^ {1,3}(?:<[^>\n]*>|(?!["'(])[^\s]+(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?)$/;
+const UTF8_BOM = "\uFEFF";
+
+type FenceMarker = {
+  indentation: number;
+  character: string;
+  length: number;
+  trailing: string;
+};
+
+function isLastUpdatedHeader(line: string): boolean {
+  const withoutBom = line.startsWith(UTF8_BOM) ? line.slice(1) : line;
+  if (isIndentedCodeLine(withoutBom)) return false;
+  return LAST_UPDATED_HEADER.test(withoutBom.trim());
+}
+
+function isIndentedCodeLine(line: string): boolean {
+  let indentation = 0;
+  while (line[indentation] === " ") indentation += 1;
+  return indentation >= 4 || line[indentation] === "\t";
+}
+
+function getFenceMarker(line: string): FenceMarker | null {
+  let indentation = 0;
+  while (line[indentation] === " ") indentation += 1;
+  if (indentation > 3 || line[indentation] === "\t") return null;
+  const trimmed = line.slice(indentation);
+  const character = trimmed[0];
+  if (character !== "`" && character !== "~") return null;
+  let length = 0;
+  while (trimmed[length] === character) length += 1;
+  if (length < 3) return null;
+  const trailing = trimmed.slice(length);
+  if (character === "`" && trailing.includes("`")) return null;
+  return { indentation, character, length, trailing };
+}
+
+function isClosingFence(fence: FenceMarker, openFence: FenceMarker): boolean {
+  return (
+    fence.character === openFence.character &&
+    fence.length >= openFence.length &&
+    fence.trailing.trim() === ""
+  );
+}
+
+const RAW_HTML_BLOCK_TAGS = ["pre", "textarea", "script", "style"] as const;
+const HTML_BLOCK_TAGS = [
+  "address",
+  "article",
+  "aside",
+  "base",
+  "basefont",
+  "blockquote",
+  "body",
+  "caption",
+  "center",
+  "col",
+  "colgroup",
+  "dd",
+  "details",
+  "dialog",
+  "dir",
+  "div",
+  "dl",
+  "dt",
+  "fieldset",
+  "figcaption",
+  "figure",
+  "footer",
+  "form",
+  "frame",
+  "frameset",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "head",
+  "header",
+  "hgroup",
+  "hr",
+  "html",
+  "iframe",
+  "legend",
+  "li",
+  "link",
+  "main",
+  "menu",
+  "menuitem",
+  "nav",
+  "noframes",
+  "ol",
+  "optgroup",
+  "option",
+  "p",
+  "param",
+  "search",
+  "section",
+  "summary",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "title",
+  "tr",
+  "track",
+  "ul",
+] as const;
+
+type HtmlBlock = {
+  endMarker: string | null;
+  endsAtBlankLine: boolean;
+  tagName: string | null;
+  depth: number;
+};
+type OpenHtmlBlock = HtmlBlock & {
+  listIndentation: number | null;
+};
+
+function findHtmlBlockTag(line: string, tags: readonly string[]): string | null {
+  const isClosing = line.startsWith("</");
+  const nameStart = isClosing ? 2 : 1;
+  for (const tag of tags) {
+    const nextCharacter = line[nameStart + tag.length];
+    const isSelfClosingSlash =
+      !isClosing && nextCharacter === "/" && line[nameStart + tag.length + 1] === ">";
+    if (
+      line.startsWith(`${isClosing ? "</" : "<"}${tag}`) &&
+      (nextCharacter === undefined ||
+        nextCharacter === ">" ||
+        isSelfClosingSlash ||
+        nextCharacter === " " ||
+        nextCharacter === "\t")
+    ) {
+      return tag;
+    }
+  }
+  return null;
+}
+
+type HtmlTag = {
+  name: string;
+  isClosing: boolean;
+  isSelfClosing: boolean;
+};
+
+function isAsciiLetter(character: string): boolean {
+  return (
+    (character >= "a" && character <= "z") ||
+    (character >= "A" && character <= "Z")
+  );
+}
+
+function isHtmlTagNameCharacter(character: string): boolean {
+  return (
+    isAsciiLetter(character) ||
+    (character >= "0" && character <= "9") ||
+    character === "-"
+  );
+}
+const HTML_ATTRIBUTES =
+  /^(?:[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*$/;
+
+function hasValidHtmlTagAttributes(attributeText: string, isClosing: boolean): boolean {
+  const trimmed = attributeText.trim();
+  if (isClosing || trimmed === "") return trimmed === "";
+  const withoutSelfClosingSlash = trimmed.endsWith("/")
+    ? trimmed.slice(0, -1).trimEnd()
+    : trimmed;
+  return withoutSelfClosingSlash === "" || HTML_ATTRIBUTES.test(withoutSelfClosingSlash);
+}
+
+function findCompleteHtmlTag(line: string): HtmlTag | null {
+  let index = 1;
+  const isClosing = line[index] === "/";
+  if (isClosing) index += 1;
+  const nameStart = index;
+  if (!isAsciiLetter(line[index] ?? "")) return null;
+  while (isHtmlTagNameCharacter(line[index] ?? "")) index += 1;
+  const nextCharacter = line[index] ?? "";
+  if (
+    nextCharacter !== ">" &&
+    nextCharacter !== "/" &&
+    nextCharacter !== " " &&
+    nextCharacter !== "\t"
+  ) {
+    return null;
+  }
+  const name = line.slice(nameStart, index).toLowerCase();
+  let quote: string | null = null;
+  for (; index < line.length; index += 1) {
+    const character = line[index]!;
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === ">" && line.slice(index + 1).trim() === "") {
+      const tagBody = line.slice(nameStart, index).trimEnd();
+      if (!hasValidHtmlTagAttributes(tagBody.slice(name.length), isClosing)) return null;
+      return {
+        name,
+        isClosing,
+        isSelfClosing: !isClosing && tagBody.endsWith("/"),
+      };
+    }
+  }
+  return null;
+}
+function findHtmlTagPrefix(line: string): HtmlTag | null {
+  let quote: string | null = null;
+  for (let index = 1; index < line.length; index += 1) {
+    const character = line[index]!;
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character !== ">") continue;
+    return findCompleteHtmlTag(line.slice(0, index + 1));
+  }
+  return null;
+}
+
+function isRawHtmlBlockTerminator(line: string): boolean {
+  const normalizedLine = line.toLowerCase();
+  return RAW_HTML_BLOCK_TAGS.some((name) =>
+    hasRawHtmlBlockEndMarker(normalizedLine, `</${name}>`),
+  );
+}
+
+function findHtmlTags(line: string): HtmlTag[] {
+  const tags: HtmlTag[] = [];
+  let index = 0;
+  while (index < line.length) {
+    if (line[index] !== "<") {
+      index += 1;
+      continue;
+    }
+
+    let cursor = index + 1;
+    const isClosing = line[cursor] === "/";
+    if (isClosing) cursor += 1;
+    const nameStart = cursor;
+    if (!isAsciiLetter(line[cursor] ?? "")) {
+      index += 1;
+      continue;
+    }
+    while (isHtmlTagNameCharacter(line[cursor] ?? "")) cursor += 1;
+    const name = line.slice(nameStart, cursor).toLowerCase();
+    let quote: string | null = null;
+    for (; cursor < line.length; cursor += 1) {
+      const character = line[cursor] ?? "";
+      if (quote) {
+        if (character === quote) quote = null;
+        continue;
+      }
+      if (character === "\"" || character === "'") {
+        quote = character;
+        continue;
+      }
+      if (character !== ">") continue;
+      const tagBody = line.slice(nameStart, cursor).trimEnd();
+      tags.push({
+        name,
+        isClosing,
+        isSelfClosing: !isClosing && tagBody.endsWith("/"),
+      });
+      index = cursor + 1;
+      break;
+    }
+    if (cursor >= line.length) break;
+  }
+  return tags;
+}
+
+function updateHtmlBlockDepth(
+  htmlBlock: OpenHtmlBlock,
+  line: string,
+  skipFirstOpening: boolean,
+): OpenHtmlBlock | null {
+  if (!htmlBlock.tagName) return htmlBlock;
+  let depth = htmlBlock.depth;
+  let skippedFirstOpening = !skipFirstOpening;
+  for (const tag of findHtmlTags(line)) {
+    if (tag.name !== htmlBlock.tagName) continue;
+    if (tag.isClosing) {
+      depth -= 1;
+    } else if (!tag.isSelfClosing) {
+      if (!skippedFirstOpening) {
+        skippedFirstOpening = true;
+        continue;
+      }
+      depth += 1;
+    }
+  }
+  if (depth > 0) return { ...htmlBlock, depth };
+  return htmlBlock.endsAtBlankLine
+    ? { ...htmlBlock, endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 }
+    : null;
+}
+
+function hasSpacedSelfClosingSlash(line: string): boolean {
+  return /\s\/\s*>/.test(line);
+}
+function findHtmlBlockStart(
+  normalizedLine: string,
+  trimmedLine: string,
+  allowGenericHtmlBlock: boolean,
+): HtmlBlock | null {
+  const rawTag = findHtmlBlockTag(normalizedLine, RAW_HTML_BLOCK_TAGS);
+  if (rawTag) {
+    const completeTag =
+      findCompleteHtmlTag(trimmedLine) ?? findHtmlTagPrefix(trimmedLine);
+    if (!completeTag && normalizedLine.startsWith("</")) return null;
+    if (completeTag?.isSelfClosing && !hasSpacedSelfClosingSlash(trimmedLine)) return null;
+    const endMarker = `</${rawTag}>`;
+    if (hasHtmlBlockEndMarker(normalizedLine, endMarker)) {
+      if (!completeTag || completeTag.isClosing) return null;
+      return { endMarker, endsAtBlankLine: false, tagName: null, depth: 0 };
+    }
+    return { endMarker, endsAtBlankLine: false, tagName: null, depth: 0 };
+  }
+  if (normalizedLine.startsWith("<!--")) {
+    return { endMarker: "-->", endsAtBlankLine: false, tagName: null, depth: 0 };
+  }
+  if (normalizedLine.startsWith("<?")) {
+    return { endMarker: "?>", endsAtBlankLine: false, tagName: null, depth: 0 };
+  }
+  if (trimmedLine.startsWith("<![CDATA[")) {
+    return { endMarker: "]]>", endsAtBlankLine: false, tagName: null, depth: 0 };
+  }
+  const declarationFirst = trimmedLine[2];
+  if (
+    trimmedLine.startsWith("<!") &&
+    declarationFirst &&
+    declarationFirst >= "A" &&
+    declarationFirst <= "Z"
+  ) {
+    return { endMarker: ">", endsAtBlankLine: false, tagName: null, depth: 0 };
+  }
+  const blockTag = findHtmlBlockTag(normalizedLine, HTML_BLOCK_TAGS);
+  if (blockTag) {
+    const completeTag =
+      findCompleteHtmlTag(trimmedLine) ?? findHtmlTagPrefix(trimmedLine);
+    if (!completeTag) {
+      return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
+    }
+    if (completeTag.isSelfClosing) {
+      return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
+    }
+    return { endMarker: `</${blockTag}>`, endsAtBlankLine: true, tagName: blockTag, depth: 1 };
+  }
+  if (!allowGenericHtmlBlock) return null;
+  const genericTag = findCompleteHtmlTag(trimmedLine);
+  if (!genericTag) return null;
+  if (genericTag.isClosing || genericTag.isSelfClosing) {
+    return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
+  }
+  return { endMarker: `</${genericTag.name}>`, endsAtBlankLine: true, tagName: genericTag.name, depth: 1 };
+}
+
+
+type ProfileLine = {
+  content: string;
+  ending: string;
+};
+
+function parseProfileLines(content: string): ProfileLine[] {
+  const segments = content.split(/(\r\n|\n|\r)/);
+  const lines: ProfileLine[] = [];
+  for (let index = 0; index < segments.length; index += 2) {
+    lines.push({
+      content: segments[index] ?? "",
+      ending: segments[index + 1] ?? "",
+    });
+  }
+  return lines;
+}
+
+function renderProfileLines(lines: ProfileLine[]): string {
+  let rendered = "";
+  for (const line of lines) {
+    rendered += line.content + line.ending;
+  }
+  return rendered;
+}
+
+function findFrontmatterEnd(lines: ProfileLine[]): number {
+  const firstLine = lines[0]?.content.startsWith(UTF8_BOM) ? lines[0].content.slice(1) : lines[0]?.content;
+  if (firstLine !== "---") return -1;
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index]?.content.trimEnd();
+    if (line === "---" || line === "...") return index;
+  }
+  return -1;
+}
+
+function hasHtmlBlockEndMarker(line: string, endMarker: string): boolean {
+  return line.includes(endMarker);
+}
+
+function shouldCloseHtmlBlock(line: string, endMarker: string): boolean {
+  const normalizedLine = line.trimStart().toLowerCase();
+  return normalizedLine.includes(endMarker.toLowerCase());
+}
+
+
+function hasRawHtmlBlockEndMarker(line: string, endMarker: string): boolean {
+  return line.includes(endMarker);
+}
+function canStartGenericHtmlBlock(
+  lines: ProfileLine[],
+  index: number,
+  previousHtmlTerminator: boolean,
+): boolean {
+  const previousLine = lines[index - 1]?.content.trim() ?? "";
+  if (previousLine === "") return true;
+  return (
+    isMetadataBoundary(previousLine, previousHtmlTerminator) &&
+    !isLastUpdatedHeader(previousLine) &&
+    !MARKDOWN_LIST_ITEM.test(previousLine) &&
+    !MARKDOWN_BLOCK_QUOTE.test(previousLine)
+  );
+}
+
+function isHtmlBlockBoundary(
+  lines: ProfileLine[],
+  index: number,
+  htmlTerminatorIndexes: ReadonlySet<number>,
+): boolean {
+  if (htmlTerminatorIndexes.has(index)) return true;
+  const line = lines[index]?.content ?? "";
+  const parserLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
+  if (isIndentedCodeLine(parserLine) || getFenceMarker(parserLine)) return false;
+  const trimmedLine = parserLine.trimStart();
+  return (
+    findHtmlBlockStart(
+      trimmedLine.toLowerCase(),
+      trimmedLine,
+      canStartGenericHtmlBlock(lines, index, htmlTerminatorIndexes.has(index - 1)),
+    ) !== null
+  );
+}
+
+function visitProfileMetadataLines(
+  lines: ProfileLine[],
+  visit: (line: string, index: number) => void,
+  onHtmlBlockTerminator?: (index: number) => void,
+  onFenceBlockTerminator?: (index: number) => void,
+): void {
+  const frontmatterEnd = findFrontmatterEnd(lines);
+  const htmlTerminatorIndexes = new Set<number>();
+  const markHtmlTerminator = (index: number): void => {
+    htmlTerminatorIndexes.add(index);
+    onHtmlBlockTerminator?.(index);
+  };
+  let openFence: (FenceMarker & { listIndentation: number | null }) | null = null;
+  let openHtmlBlock: OpenHtmlBlock | null = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.content ?? "";
+    const parserLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
+    if (index <= frontmatterEnd) continue;
+    const fence = getFenceMarker(parserLine);
+    if (openFence) {
+      const indentation = parserLine.length - parserLine.trimStart().length;
+      const leavesListContainer =
+        openFence.listIndentation !== null &&
+        parserLine.trim() !== "" &&
+        indentation < openFence.listIndentation;
+      if (!leavesListContainer) {
+        if (fence && isClosingFence(fence, openFence)) openFence = null;
+        continue;
+      }
+      openFence = null;
+      if (index > 0) onFenceBlockTerminator?.(index - 1);
+    }
+    const trimmedLine = parserLine.trimStart();
+    const normalizedLine = trimmedLine.toLowerCase();
+    if (openHtmlBlock) {
+      const indentation = parserLine.length - parserLine.trimStart().length;
+      const leavesListContainer =
+        openHtmlBlock.listIndentation !== null &&
+        parserLine.trim() !== "" &&
+        indentation < openHtmlBlock.listIndentation;
+      if (!leavesListContainer) {
+        if (openHtmlBlock.endsAtBlankLine && normalizedLine === "") {
+          openHtmlBlock = null;
+          continue;
+        }
+        if (openHtmlBlock.tagName) {
+          const nextHtmlBlock = updateHtmlBlockDepth(openHtmlBlock, normalizedLine, false);
+          if (!nextHtmlBlock) markHtmlTerminator(index);
+          openHtmlBlock = nextHtmlBlock;
+          continue;
+        }
+        if (openHtmlBlock.endMarker && shouldCloseHtmlBlock(normalizedLine, openHtmlBlock.endMarker)) {
+          openHtmlBlock = null;
+          markHtmlTerminator(index);
+        }
+        continue;
+      }
+      openHtmlBlock = null;
+      if (index > 0) markHtmlTerminator(index - 1);
+    }
+    if (isIndentedCodeLine(parserLine)) continue;
+    if (fence) {
+      openFence = {
+        ...fence,
+        listIndentation: isNestedListContent(lines, index, fence.indentation)
+          ? fence.indentation
+          : null,
+      };
+      continue;
+    }
+    const htmlBlock = findHtmlBlockStart(
+      normalizedLine,
+      trimmedLine,
+      canStartGenericHtmlBlock(lines, index, htmlTerminatorIndexes.has(index - 1)),
+    );
+    if (htmlBlock) {
+      markHtmlTerminator(index);
+      const indentation = parserLine.length - parserLine.trimStart().length;
+      const htmlBlockWithContainer = {
+        ...htmlBlock,
+        listIndentation: isNestedListContent(lines, index, indentation) ? indentation : null,
+      };
+      if (htmlBlock.tagName) {
+        openHtmlBlock = updateHtmlBlockDepth(htmlBlockWithContainer, normalizedLine, true);
+        if (!openHtmlBlock) markHtmlTerminator(index);
+      } else if (htmlBlock.endMarker && shouldCloseHtmlBlock(normalizedLine, htmlBlock.endMarker)) {
+        openHtmlBlock = null;
+        markHtmlTerminator(index);
+      } else {
+        openHtmlBlock = htmlBlockWithContainer;
+      }
+      continue;
+    }
+    visit(line, index);
+  }
+}
+
+function isCompletedIndentedCodeBlock(lines: ProfileLine[], index: number): boolean {
+  if (!isIndentedCodeLine(lines[index - 1]?.content ?? "")) return false;
+  let sawBlank = false;
+  for (let previousIndex = index - 2; previousIndex >= 0; previousIndex -= 1) {
+    const previousLine = lines[previousIndex]?.content ?? "";
+    if (previousLine.trim() === "") {
+      sawBlank = true;
+      continue;
+    }
+    if (isIndentedCodeLine(previousLine)) continue;
+    return sawBlank;
+  }
+  return true;
+}
+
+function isListContinuation(lines: ProfileLine[], index: number, indentation: number): boolean {
+  for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+    const previousLine = lines[previousIndex]?.content ?? "";
+    if (previousLine.trim() === "") return false;
+    const previousIndentation = previousLine.length - previousLine.trimStart().length;
+    if (previousIndentation > indentation) continue;
+    const previousBoundaryLine = previousLine.trimStart();
+    if (MARKDOWN_LIST_ITEM.test(previousBoundaryLine)) return true;
+    if (
+      MARKDOWN_HEADING.test(previousBoundaryLine) ||
+      MARKDOWN_THEMATIC_BREAK.test(previousBoundaryLine) ||
+      MARKDOWN_BLOCK_QUOTE.test(previousBoundaryLine) ||
+      getFenceMarker(previousLine) !== null
+    ) {
+      return false;
+    }
+  }
+  return false;
+}
+
+function isNestedListContent(lines: ProfileLine[], index: number, indentation: number): boolean {
+  for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+    const previousLine = lines[previousIndex]?.content ?? "";
+    if (previousLine.trim() === "") continue;
+    const previousIndentation = previousLine.length - previousLine.trimStart().length;
+    if (previousIndentation >= indentation) continue;
+    if (
+      MARKDOWN_LIST_ITEM.test(previousLine.trimStart()) ||
+      isListContinuation(lines, previousIndex, indentation)
+    ) {
+      return true;
+    }
+    break;
+  }
+  return false;
+}
+
+function isValidBareLinkDestination(destination: string): boolean {
+  let parentheses = 0;
+  for (let index = 0; index < destination.length; index += 1) {
+    const character = destination[index];
+    if (character === "\\") {
+      if (index + 1 >= destination.length) return false;
+      index += 1;
+      continue;
+    }
+    if (character === "<" || character === ">") return false;
+    if (character === "(") {
+      parentheses += 1;
+    } else if (character === ")") {
+      if (parentheses === 0) return false;
+      parentheses -= 1;
+    }
+  }
+  return parentheses === 0;
+}
+
+function isMarkdownLinkReferenceDefinition(line: string): boolean {
+  const match = MARKDOWN_LINK_REFERENCE.exec(line);
+  return match !== null && (match[1] === undefined || isValidBareLinkDestination(match[1]));
+}
+
+function isMarkdownLinkReferenceDefinitionEnd(lines: ProfileLine[], index: number): boolean {
+  const line = lines[index]?.content ?? "";
+  const boundaryLine = /^ {0,3}(?=\S)/.test(line) ? line.trimStart() : line;
+  if (isMarkdownLinkReferenceDefinition(boundaryLine)) return true;
+  if (MARKDOWN_LINK_REFERENCE_CONTINUATION.test(line)) {
+    const previousLine = lines[index - 1]?.content ?? "";
+    const previousBoundaryLine =
+      /^ {0,3}(?=\S)/.test(previousLine) ? previousLine.trimStart() : previousLine;
+    if (isMarkdownLinkReferenceDefinition(previousBoundaryLine)) return true;
+    const destinationLine = lines[index - 1]?.content ?? "";
+    if (!MARKDOWN_LINK_REFERENCE_DESTINATION_CONTINUATION.test(destinationLine)) return false;
+    const labelLine = lines[index - 2]?.content ?? "";
+    const labelBoundaryLine =
+      /^ {0,3}(?=\S)/.test(labelLine) ? labelLine.trimStart() : labelLine;
+    return MARKDOWN_LINK_REFERENCE_LABEL.test(labelBoundaryLine);
+  }
+  if (!MARKDOWN_LINK_REFERENCE_DESTINATION_CONTINUATION.test(line)) return false;
+  const previousLine = lines[index - 1]?.content ?? "";
+  const previousBoundaryLine =
+    /^ {0,3}(?=\S)/.test(previousLine) ? previousLine.trimStart() : previousLine;
+  return MARKDOWN_LINK_REFERENCE_LABEL.test(previousBoundaryLine);
+}
+
+function isProfileTitleLine(lines: ProfileLine[], index: number, line: string): boolean {
+  const titleLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
+  if (!PROFILE_TITLE.test(titleLine)) return false;
+  const indentation = titleLine.length - titleLine.trimStart().length;
+  if (indentation === 0 || index === 0) return true;
+  const previousLine = lines[index - 1]?.content.trim() ?? "";
+  return previousLine === ""
+    ? !isNestedListContent(lines, index, indentation)
+    : previousLine === "---" || previousLine === "...";
+}
+
+function findProfileTitleIndex(lines: ProfileLine[]): number {
+  let titleIndex = -1;
+  visitProfileMetadataLines(lines, (line, index) => {
+    if (titleIndex >= 0) return;
+    if (isProfileTitleLine(lines, index, line)) titleIndex = index;
+  });
+  return titleIndex;
+}
+
+function isSetextHeadingText(line: string): boolean {
+  const withoutBom = line.startsWith(UTF8_BOM) ? line.slice(1) : line;
+  const boundaryLine = withoutBom.trim();
+  return (
+    boundaryLine !== "" &&
+    !MARKDOWN_HEADING.test(boundaryLine) &&
+    !MARKDOWN_LIST_ITEM.test(boundaryLine) &&
+    !MARKDOWN_BLOCK_QUOTE.test(boundaryLine) &&
+    !MARKDOWN_THEMATIC_BREAK.test(boundaryLine) &&
+    !isMarkdownLinkReferenceDefinition(boundaryLine) &&
+    getFenceMarker(withoutBom) === null
+  );
+}
+
+function isMetadataBoundary(
+  line: string,
+  htmlTerminator = false,
+  allowSetext = true,
+  allowParagraphListInterrupt = false,
+  setextPreviousLine = "",
+): boolean {
+  const listPattern = allowParagraphListInterrupt
+    ? MARKDOWN_LIST_ITEM_CAN_INTERRUPT
+    : MARKDOWN_LIST_ITEM;
+  const boundaryLine = /^ {0,3}(?=\S)/.test(line) ? line.trimStart() : line;
+  const isSetextUnderline =
+    !allowSetext &&
+    MARKDOWN_SETEXT_UNDERLINE.test(boundaryLine) &&
+    isSetextHeadingText(setextPreviousLine);
+  return (
+    line.trim() === "" ||
+    MARKDOWN_HEADING.test(boundaryLine) ||
+    listPattern.test(boundaryLine) ||
+    (allowSetext && MARKDOWN_SETEXT_UNDERLINE.test(boundaryLine)) ||
+    (MARKDOWN_THEMATIC_BREAK.test(boundaryLine) && !isSetextUnderline) ||
+    MARKDOWN_BLOCK_QUOTE.test(boundaryLine) ||
+    isMarkdownLinkReferenceDefinition(boundaryLine) ||
+    isLastUpdatedHeader(line) ||
+    getFenceMarker(line) !== null ||
+    htmlTerminator
+  );
+}
+
+function isStandaloneMetadataLine(
+  lines: ProfileLine[],
+  index: number,
+  frontmatterEnd: number,
+  htmlTerminatorIndexes: ReadonlySet<number>,
+  fenceTerminatorIndexes: ReadonlySet<number>,
+  standaloneHeaderIndexes: ReadonlySet<number>,
+): boolean {
+  const currentLine = lines[index]?.content ?? "";
+  const currentWithoutBom = currentLine.startsWith(UTF8_BOM)
+    ? currentLine.slice(1)
+    : currentLine;
+  const indentation = currentWithoutBom.length - currentWithoutBom.trimStart().length;
+  const previousLine = lines[index - 1]?.content.trimEnd() ?? "";
+  const nextLine = lines[index + 1]?.content.trimEnd() ?? "";
+  const previousWithoutBom = previousLine.startsWith(UTF8_BOM)
+    ? previousLine.slice(1)
+    : previousLine;
+  const nextWithoutBom = nextLine.startsWith(UTF8_BOM) ? nextLine.slice(1) : nextLine;
+  const previousLinkReferenceBoundary = isMarkdownLinkReferenceDefinitionEnd(lines, index - 1);
+  const previousMetadataBoundary =
+    isCompletedIndentedCodeBlock(lines, index) ||
+    previousLinkReferenceBoundary ||
+    fenceTerminatorIndexes.has(index - 1) ||
+    (isMetadataBoundary(
+      previousWithoutBom,
+      htmlTerminatorIndexes.has(index - 1),
+    ) &&
+      (!isLastUpdatedHeader(previousWithoutBom) || standaloneHeaderIndexes.has(index - 1)));
+  const nextHtmlBlockBoundary = isHtmlBlockBoundary(
+    lines,
+    index + 1,
+    htmlTerminatorIndexes,
+  );
+  const nextMetadataBoundary =
+    nextHtmlBlockBoundary ||
+    isMetadataBoundary(
+      nextWithoutBom,
+      htmlTerminatorIndexes.has(index + 1),
+      false,
+      true,
+      currentWithoutBom,
+    );
+  const previousContainerMarker =
+    !MARKDOWN_THEMATIC_BREAK.test(previousWithoutBom) &&
+    (MARKDOWN_LIST_ITEM.test(previousWithoutBom) || MARKDOWN_BLOCK_QUOTE.test(previousWithoutBom));
+  const nestedListContent =
+    indentation > 0 && isNestedListContent(lines, index, indentation);
+  const startsBlock =
+    (index === 0 || index === frontmatterEnd + 1 || previousMetadataBoundary) &&
+    !previousContainerMarker &&
+    !nestedListContent;
+  const endsBlock = index === lines.length - 1 || nextMetadataBoundary;
+  const compactHeaderAfterTitle = isProfileTitleLine(lines, index - 1, previousWithoutBom);
+  const compactHeaderAfterHeader =
+    isLastUpdatedHeader(previousWithoutBom) && standaloneHeaderIndexes.has(index - 1);
+  return startsBlock && (endsBlock || compactHeaderAfterTitle || compactHeaderAfterHeader);
+}
+
+function findProfileHeaderIndexes(lines: ProfileLine[]): number[] {
+  const indexes: number[] = [];
+  const frontmatterEnd = findFrontmatterEnd(lines);
+  const htmlTerminatorIndexes = new Set<number>();
+  const fenceTerminatorIndexes = new Set<number>();
+  const standaloneHeaderIndexes = new Set<number>();
+  visitProfileMetadataLines(
+    lines,
+    (line, index) => {
+      if (
+        isLastUpdatedHeader(line) &&
+        isStandaloneMetadataLine(
+          lines,
+          index,
+          frontmatterEnd,
+          htmlTerminatorIndexes,
+          fenceTerminatorIndexes,
+          standaloneHeaderIndexes,
+        )
+      ) {
+        indexes.push(index);
+        standaloneHeaderIndexes.add(index);
+      }
+    },
+    (index) => htmlTerminatorIndexes.add(index),
+    (index) => fenceTerminatorIndexes.add(index),
+  );
+  return indexes;
+}
+
+function insertHeaderAfter(lines: ProfileLine[], index: number, header: string): void {
+  const insertAt = index + 1;
+  const ending = lines[index]?.ending || lines[insertAt]?.ending || "\n";
+  if (lines[insertAt]?.content.trim() === "") {
+    lines.splice(
+      insertAt + 1,
+      0,
+      { content: header, ending },
+      { content: "", ending },
+    );
+  } else {
+    lines.splice(
+      insertAt,
+      0,
+      { content: "", ending },
+      { content: header, ending },
+      { content: "", ending },
+    );
+  }
+}
+
+function prependHeader(lines: ProfileLine[], header: string): string {
+  const frontmatterEnd = findFrontmatterEnd(lines);
+  if (frontmatterEnd >= 0) {
+    insertHeaderAfter(lines, frontmatterEnd, header);
+    return renderProfileLines(lines);
+  }
+  const ending = lines[0]?.ending || "\n";
+  if (lines[0]?.content.startsWith(UTF8_BOM)) {
+    lines[0].content = lines[0].content.slice(1);
+    lines.unshift(
+      { content: `${UTF8_BOM}${header}`, ending },
+      { content: "", ending },
+    );
+    return renderProfileLines(lines);
+  }
+  lines.unshift(
+    { content: header, ending },
+    { content: "", ending },
+  );
+  return renderProfileLines(lines);
+}
+
+export function renderProfileWithLastUpdated(content: string, updatedAt: string): string {
+  const lines = parseProfileLines(content);
+  const header = `*Last updated: ${updatedAt}*`;
+  const titleIndex = findProfileTitleIndex(lines);
+  const headerIndexes = findProfileHeaderIndexes(lines);
+
+  if (headerIndexes.length > 0) {
+    const firstHeaderIndex = headerIndexes[0];
+    if (firstHeaderIndex === undefined) return renderProfileLines(lines);
+    const canonicalIndex =
+      titleIndex >= 0
+        ? headerIndexes.find((index) => index > titleIndex) ?? firstHeaderIndex
+        : firstHeaderIndex;
+    const preserveBomAtFileStart = headerIndexes.some((index) =>
+      lines[index].content.startsWith(UTF8_BOM),
+    );
+    const bomPrefix =
+      canonicalIndex === 0 && lines[canonicalIndex].content.startsWith(UTF8_BOM)
+        ? UTF8_BOM
+        : "";
+    lines[canonicalIndex].content = `${bomPrefix}${header}`;
+    for (let index = headerIndexes.length - 1; index >= 0; index -= 1) {
+      const headerIndex = headerIndexes[index];
+      if (headerIndex === undefined || headerIndex === canonicalIndex) continue;
+      lines.splice(headerIndex, 1);
+    }
+    if (preserveBomAtFileStart && !lines[0].content.startsWith(UTF8_BOM)) {
+      lines[0].content = `${UTF8_BOM}${lines[0].content}`;
+    }
+    return renderProfileLines(lines);
+  }
+
+  if (titleIndex < 0) return prependHeader(lines, header);
+
+  insertHeaderAfter(lines, titleIndex, header);
+  return renderProfileLines(lines);
+}

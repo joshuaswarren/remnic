@@ -20,6 +20,7 @@ import path from "node:path";
 import { log } from "./logger.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
+import { renderProfileWithLastUpdated } from "./storage/profile-header.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import {
   appendLifecycleEventsSerialized,
@@ -4251,15 +4252,13 @@ export class StorageManager {
   }
 
   async writeProfile(content: string): Promise<void> {
+    const stampedContent = renderProfileWithLastUpdated(content, new Date().toISOString());
     await this.ensureDirectories();
     await this.snapshotBeforeWrite(this.profilePath, "consolidation");
-    await this.writeStorageSecureFile(this.profilePath, content);
+    await this.writeStorageSecureFile(this.profilePath, stampedContent);
     log.debug("updated profile.md");
   }
 
-  /**
-   * Normalize a string for fuzzy profile dedup: lowercase, strip punctuation, collapse whitespace.
-   */
   private static normalizeForDedup(s: string): string {
     if (typeof s !== "string") return "";
     return s
@@ -4308,15 +4307,13 @@ export class StorageManager {
       const content = [
         "# Behavioral Profile",
         "",
-        `*Last updated: ${new Date().toISOString()}*`,
-        "",
         ...newBullets.map((b) => `- ${b}`),
         "",
       ].join("\n");
       await this.writeProfile(content);
     } else {
-      const updatedTimestamp = existing.replace(/\*Last updated:.*\*/, `*Last updated: ${new Date().toISOString()}*`);
-      const withBullets = updatedTimestamp.trimEnd() + "\n" + newBullets.map((b) => `- ${b}`).join("\n") + "\n";
+      const withBullets =
+        existing.trimEnd() + "\n" + newBullets.map((b) => `- ${b}`).join("\n") + "\n";
       await this.writeProfile(withBullets);
     }
   }
