@@ -1520,6 +1520,104 @@ test("delegate bounds completed legacy migration sessions and rechecks evicted k
   }
 });
 
+
+test("delegate preserves legacy bindings while the legacy adapter is active", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: true }));
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-bindings-"));
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  const sessionKey = "active-legacy-adapter-session";
+  const legacyPath = path.join(
+    memoryDir,
+    "state",
+    "plugins",
+    "openclaw-engram",
+    "session-namespace-bindings.json",
+  );
+  try {
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    process.env.REMNIC_PORT = String(stub.port);
+    const common = {
+      configBridgeMode: "delegate",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir,
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (text: string) => text,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+    };
+    const api = recordingApi();
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        api,
+        { ...common, serviceId: "openclaw-engram" },
+        { checkHealth: () => true },
+      ),
+      true,
+    );
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        api,
+        { ...common, serviceId: "openclaw-remnic" },
+        { checkHealth: () => true },
+      ),
+      true,
+    );
+
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+    fs.writeFileSync(
+      legacyPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [encodeURIComponent(sessionKey)]: {
+            namespaces: ["team-legacy"],
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      }),
+    );
+
+    const agentEndHandlers = api.handlers.get("agent_end");
+    assert.equal(agentEndHandlers?.length, 2);
+    const canonicalAgentEnd = agentEndHandlers?.at(-1);
+    assert.ok(canonicalAgentEnd);
+    await canonicalAgentEnd(
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "capture the canonical session namespace" },
+          { role: "assistant", content: "the namespace is bound" },
+        ],
+      },
+      { sessionKey, runtime: { agent: { session: { namespace: "team-canonical" } } } },
+    );
+
+    const persistedLegacy = JSON.parse(fs.readFileSync(legacyPath, "utf8")) as {
+      entries: Record<string, { namespaces: string[] }>;
+    };
+    assert.deepEqual(
+      persistedLegacy.entries[encodeURIComponent(sessionKey)]?.namespaces,
+      ["team-legacy"],
+    );
+  } finally {
+    if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) Reflect.deleteProperty(process.env, "REMNIC_HOST");
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) Reflect.deleteProperty(process.env, "REMNIC_PORT");
+    else process.env.REMNIC_PORT = priorPort;
+    await rm(memoryDir, { recursive: true, force: true });
+    await stub.close();
+  }
+});
 test("delegate passive mode registers no hooks", async () => {
   const api = recordingApi();
   registerDelegateRuntime(api, optionsFor(1, { passive: true }));

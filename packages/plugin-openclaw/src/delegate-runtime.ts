@@ -837,6 +837,7 @@ const queueDelegateNamespaceMigration = <T>(
 function createDelegateNamespaceBindingStore(
   memoryDir: string,
   serviceId: string,
+  isLegacyAdapterActive: () => boolean,
 ): SessionNamespaceBindingStore {
   const bindingPath = (pluginId: string): string =>
     path.join(memoryDir, "state", "plugins", pluginId, "session-namespace-bindings.json");
@@ -903,10 +904,12 @@ function createDelegateNamespaceBindingStore(
     }
   };
   const completeLegacyMigration = async (sessionKey: string): Promise<void> => {
-    try {
-      await legacy.replace?.(sessionKey, []);
-    } catch (err) {
-      log.warn(`[${serviceId}] delegate legacy namespace cleanup failed: ${String(err)}`);
+    if (!isLegacyAdapterActive()) {
+      try {
+        await legacy.replace?.(sessionKey, []);
+      } catch (err) {
+        log.warn(`[${serviceId}] delegate legacy namespace cleanup failed: ${String(err)}`);
+      }
     }
     rememberMigratedLegacySession(sessionKey);
   };
@@ -1056,7 +1059,11 @@ export function maybeRegisterDelegateRuntime(
     serviceId: options.serviceId,
     target,
     namespace: "",
-    namespaceBindings: createDelegateNamespaceBindingStore(options.memoryDir, options.serviceId),
+    namespaceBindings: createDelegateNamespaceBindingStore(
+      options.memoryDir,
+      options.serviceId,
+      () => delegateHookApiServices.get(api)?.has(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID) === true,
+    ),
     allowPromptInjection: options.allowPromptInjection,
     passive: options.passive,
     gateHeartbeatTurns: options.gateHeartbeatTurns,
