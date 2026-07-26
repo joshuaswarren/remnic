@@ -1557,10 +1557,11 @@ test("delegate preserves legacy bindings while the legacy adapter is active", as
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
     };
-    const api = recordingApi();
+    const legacyApi = recordingApi();
+    const canonicalApi = recordingApi();
     assert.equal(
       maybeRegisterDelegateRuntime(
-        api,
+        legacyApi,
         { ...common, serviceId: "openclaw-engram" },
         { checkHealth: () => true },
       ),
@@ -1568,12 +1569,14 @@ test("delegate preserves legacy bindings while the legacy adapter is active", as
     );
     assert.equal(
       maybeRegisterDelegateRuntime(
-        api,
+        canonicalApi,
         { ...common, serviceId: "openclaw-remnic" },
         { checkHealth: () => true },
       ),
       true,
     );
+    assert.equal(legacyApi.handlers.get("agent_end")?.length, 1);
+    assert.equal(canonicalApi.handlers.get("agent_end")?.length, 1);
 
     fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
     fs.writeFileSync(
@@ -1589,9 +1592,7 @@ test("delegate preserves legacy bindings while the legacy adapter is active", as
       }),
     );
 
-    const agentEndHandlers = api.handlers.get("agent_end");
-    assert.equal(agentEndHandlers?.length, 2);
-    const canonicalAgentEnd = agentEndHandlers?.at(-1);
+    const canonicalAgentEnd = canonicalApi.handlers.get("agent_end")?.[0];
     assert.ok(canonicalAgentEnd);
     await canonicalAgentEnd(
       {

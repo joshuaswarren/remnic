@@ -954,6 +954,9 @@ function createDelegateNamespaceBindingStore(
 // service must get its own binding exactly once (double-register of one
 // service would double-fire every handler).
 const delegateHookApiServices = new WeakMap<object, Set<string>>();
+// Service registration can span distinct OpenClaw api objects. Keep the active
+// service IDs process-scoped so migration callbacks see sibling registrations.
+const delegateActiveServiceIds = new Set<string>();
 // Apis that previously fell back to embedded because the daemon was down. A
 // later register() on the SAME api must NOT switch to delegate — the embedded
 // hooks from the fallback are still bound (OpenClaw exposes no unregister), so
@@ -1035,6 +1038,7 @@ export function maybeRegisterDelegateRuntime(
     (boundServices ?? delegateHookApiServices.set(api, new Set()).get(api))?.add(
       options.serviceId,
     );
+    delegateActiveServiceIds.add(options.serviceId);
   }
   // Embedded toggle-store parity: same primary path (per-service plugin state)
   // and optional bundled active-memory secondary read.
@@ -1060,7 +1064,7 @@ export function maybeRegisterDelegateRuntime(
     namespaceBindings: createDelegateNamespaceBindingStore(
       options.memoryDir,
       options.serviceId,
-      () => delegateHookApiServices.get(api)?.has(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID) === true,
+      () => delegateActiveServiceIds.has(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID),
     ),
     allowPromptInjection: options.allowPromptInjection,
     passive: options.passive,
