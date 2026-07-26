@@ -414,12 +414,7 @@ function isHtmlBlockTerminator(line: string): boolean {
 }
 
 function hasRawHtmlBlockEndMarker(line: string, endMarker: string): boolean {
-  const markerIndex = line.indexOf(endMarker);
-
-  if (markerIndex < 0) return false;
-  if (markerIndex === 0) return true;
-  if (!/\s/.test(line[markerIndex - 1] ?? "")) return true;
-  return line.slice(markerIndex + endMarker.length).trim() === "";
+  return line.includes(endMarker);
 }
 function canStartGenericHtmlBlock(lines: ProfileLine[], index: number): boolean {
   const previousLine = lines[index - 1]?.content.trim() ?? "";

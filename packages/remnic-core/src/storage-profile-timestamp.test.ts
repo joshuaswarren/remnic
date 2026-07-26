@@ -168,7 +168,7 @@ test("writeProfile recognizes raw HTML terminators with trailing text", async (t
     t.mock.timers.reset();
   }
 });
-test("writeProfile closes raw HTML blocks with spaced end markers", async (t) => {
+test("writeProfile closes raw HTML blocks with spaced end markers and trailing text", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
     await withMemoryDir(async (dir) => {
@@ -177,7 +177,7 @@ test("writeProfile closes raw HTML blocks with spaced end markers", async (t) =>
         "<pre>",
         "# Literal heading",
         "*Last updated: literal example*",
-        "code </pre>",
+        "code </pre> trailing",
         "",
         "# Behavioral Profile",
         "",
@@ -1724,7 +1724,7 @@ test("writeProfile keeps self-closing raw HTML blocks opaque", async (t) => {
     t.mock.timers.reset();
   }
 });
-test("writeProfile keeps raw HTML closing substrings inside content", async (t) => {
+test("writeProfile keeps incomplete raw HTML closing markers inside content", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
     await withMemoryDir(async (dir) => {
@@ -1733,7 +1733,7 @@ test("writeProfile keeps raw HTML closing substrings inside content", async (t) 
         "# Behavioral Profile",
         "",
         "<pre>",
-        "literal </pre> remains content",
+        "literal </pre remains content",
         "*Last updated: literal example*",
         "</pre>",
         "",
