@@ -1733,98 +1733,27 @@ export class EngramAccessService {
       this.orchestrator.config,
     );
 
-    // Resolve the coding overlay through the SAME orchestrator method recall and
-    // the buffer-flush write path use (`applyCodingNamespaceOverlay`), NOT a
-    // private re-implementation. Routing through the one shared method (rule 22 /
-    // 42) means a project-scoped observe writes to byte-for-byte the namespace a
-    // same-session recall reads — and that the read/write overlay logic cannot
-    // drift (the #1495 drift this PR exists to close). The orchestrator method
-    // already gates on `namespacesEnabled` + a bound/derivable coding context, so
-    // it returns the base unchanged when no overlay applies.
-    //
-    // `applyCodingNamespaceOverlay` reads the session's ATTACHED context. The
-    // scope plan runs BEFORE `maybeAttachCodingContext` (resolve-before-mutate),
-    // so when nothing is attached yet we seed the per-call cwd/projectTag context
-    // first — identical to what attach would bind — so the overlay is the same
-    // either way (Codex review precedence: session context first, per-call
-    // fallback).
-    const hasSession =
-      typeof request.sessionKey === "string" && request.sessionKey.length > 0;
-    const overlayEligible =
-      hasSession &&
-      resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true &&
-      this.orchestrator.config.codingMode?.projectScope === true;
-
-    // Resolve the coding context the overlay must use: the session's ATTACHED
-    // context first (so a bound session wins), else the per-call cwd/projectTag —
-    // identical precedence to recall and to `resolveCodingScopedWriteNamespace`.
-    let attachedContext = hasSession
-      ? this.orchestrator.getCodingContextForSession(request.sessionKey)
-      : null;
-    // Track whether WE seeded the per-call context so we can leave the session
-    // exactly as we found it on any rejection (read-only contract / no-orphan
-    // guard, observe-scope "unauthorized overlay self-base" test).
-    let seededContext = false;
-    if (overlayEligible && !attachedContext) {
-      attachedContext = await this.resolveCodingContextFromOptions(request);
-      if (attachedContext) {
-        // Seed the per-call context so the shared
-        // `applyCodingNamespaceOverlay` (which reads ATTACHED session context)
-        // overlays it through the ONE method recall/buffer-flush use (rule 22 /
-        // 42) — no private re-implementation that could drift. On the happy
-        // path `maybeAttachCodingContext` re-binds the identical context after
-        // auth passes; on a rejection we clear the seed below, so the session is
-        // untouched either way.
-        this.orchestrator.setCodingContextForSession(
-          request.sessionKey!,
-          attachedContext,
-        );
-        seededContext = true;
-      }
-    }
-
-    // Clear a seed we added, used only on the rejection paths so a failed
-    // observe never leaves an orphaned project binding (read-only contract).
-    const clearSeededContext = (): void => {
-      if (seededContext && hasSession) {
-        this.orchestrator.setCodingContextForSession(request.sessionKey!, null);
-      }
-    };
-    const assertWriteNamespaceAllowed = (namespace: string): void => {
-      try {
-        this.assertTokenCanWriteNamespace(namespace);
-      } catch (error) {
-        clearSeededContext();
-        throw error;
-      }
-    };
-
-
-    const overlaidBase = this.orchestrator.applyCodingNamespaceOverlay(
-      request.sessionKey,
-      baseNamespace,
-    );
+    // Resolve the coding context and overlay through the shared read-only
+    // resolver used by the other scoped access paths. It applies the same
+    // session-first, per-call fallback precedence without mutating session
+    // state, so concurrent requests cannot observe temporary context.
+    const {
+      overlay: codingOverlay,
+      profilePlan,
+    } = await this.resolveCodingScopeInputs(request);
+    const overlaidBase = codingOverlay
+      ? combineNamespaces(baseNamespace, codingOverlay.namespace)
+      : baseNamespace;
     const codingOverlayApplied = overlaidBase !== baseNamespace;
-    const codingOverlay = overlayEligible
-      ? resolveCodingNamespaceOverlay(
-          attachedContext,
-          this.orchestrator.config.codingMode,
-          this.orchestrator.config.defaultNamespace,
-        )
-      : null;
-    const profilePlan = resolveScopeProfilePlan({
-      config: this.orchestrator.config,
-      principal,
-      codingContext: attachedContext,
-      codingOverlay,
-    });
+    const assertWriteNamespaceAllowed = (namespace: string): void => {
+      this.assertTokenCanWriteNamespace(namespace);
+    };
     if (profilePlan) {
       const selectedLayer = profilePlan.layers.find((layer) => layer.id === profilePlan.writeLayer);
       const writeNamespaceReadable =
         profilePlan.writeNamespace.length > 0 &&
         profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
       if (!selectedLayer?.writable || !writeNamespaceReadable) {
-        clearSeededContext();
         throw new NamespaceNotWritableError(profilePlan.writeNamespace, principal,
           `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`);
       }
@@ -1900,7 +1829,6 @@ export class EngramAccessService {
         resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true &&
         !canWriteNamespace(principal, baseNamespace, this.orchestrator.config)
       ) {
-        clearSeededContext();
         throw new NamespaceNotWritableError(baseNamespace, principal);
       }
       assertWriteNamespaceAllowed(writeNamespace);
@@ -1928,15 +1856,13 @@ export class EngramAccessService {
     // (the overlay is a principal-owned `project-*` sub-namespace derived from
     // it, so it needs no separate write policy — rule 42 / 47 / 48).
     if (!canWriteNamespace(principal, baseNamespace, this.orchestrator.config)) {
-      clearSeededContext();
       throw new NamespaceNotWritableError(baseNamespace, principal);
     }
     const writeNamespace = overlaidBase;
     const readNamespaces = [writeNamespace];
     // Include read fallbacks (branch→project→root) so the diagnostic readNamespaces
-    // matches what a same-session recall searches. Resolved through the pure
-    // overlay helper to enumerate fallbacks; the write namespace itself already
-    // came from `applyCodingNamespaceOverlay` so the two agree.
+    // matches what a same-session recall searches. They come from the shared pure
+    // coding-scope resolver, so the write namespace and read fallbacks agree.
     for (const fallback of codingOverlay?.readFallbacks ?? []) {
       const ns = combineNamespaces(baseNamespace, fallback);
       if (!readNamespaces.includes(ns)) readNamespaces.push(ns);

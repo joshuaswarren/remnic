@@ -216,6 +216,43 @@ test("#1495 projectTag: LCM, extraction, objective-state, and response all agree
   );
 });
 
+test("#2128 concurrent scope plans do not share temporary coding context", async () => {
+  const probe = makeObserveProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const internals = service as unknown as {
+    resolveMemoryScopePlan: (request: EngramAccessObserveRequest) => Promise<{
+      writeNamespace: string;
+    }>;
+  };
+
+  const firstProject = projectTagProjectId("Acme/Webshop");
+  const secondProject = projectTagProjectId("Contoso/Portal");
+  const [firstPlan, secondPlan] = await Promise.all([
+    internals.resolveMemoryScopePlan.call(
+      service,
+      observeRequest({ sessionKey: "pi-geek:concurrent", projectTag: "Acme/Webshop" }),
+    ),
+    internals.resolveMemoryScopePlan.call(
+      service,
+      observeRequest({ sessionKey: "pi-geek:concurrent", projectTag: "Contoso/Portal" }),
+    ),
+  ]);
+
+  assert.equal(
+    firstPlan.writeNamespace,
+    combineNamespaces("pi-geek", projectNamespaceName(firstProject)),
+  );
+  assert.equal(
+    secondPlan.writeNamespace,
+    combineNamespaces("pi-geek", projectNamespaceName(secondProject)),
+  );
+  assert.equal(
+    probe.contexts.get("pi-geek:concurrent"),
+    undefined,
+    "scope planning must not bind temporary coding context visible to concurrent calls",
+  );
+});
+
 test("#1501 scope profile exposes layered read/write/promotion diagnostics without changing user-project write default", async () => {
   const probe = makeObserveProbe({
     namespacePolicies: [
