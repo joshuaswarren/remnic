@@ -293,6 +293,46 @@ test("supersede retires the loser atomically when cancellation arrives after rep
   });
 });
 
+test("cancellation after marking a plan applying restores it to pending", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-old", { memoryId: "mem-old", path: "facts/mem-old.md", content: "old", excerpt: "old", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([["mem-old", fakeMemory({ memoryId: "mem-old", content: "old" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const planner = new CorrectionPlanner(makePlannerDeps(dir, candidates));
+    const plan = await planner.plan({ text: "old", targetIds: ["mem-old"] }, ["default"]);
+    const abortController = new AbortController();
+    const originalMarkConsumed = planner.markConsumed.bind(planner);
+    planner.markConsumed = async (namespace, planId, status) => {
+      await originalMarkConsumed(namespace, planId, status);
+      if (status === "applying") abortController.abort();
+    };
+
+    const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
+    await assert.rejects(
+      executor.apply("default", plan.planId, {
+        confirm: true,
+        abortSignal: abortController.signal,
+      }),
+      /correction apply aborted/,
+    );
+
+    const reloaded = await planner.loadPlan("default", plan.planId);
+    assert.equal(reloaded?.status, "pending");
+    assert.ok(
+      (await planner.listPending("default")).some((pending) => pending.planId === plan.planId),
+      "cancelled plan must remain pending",
+    );
+  });
+});
+
 test("supersede retries loser retirement after a transient failure", async () => {
   await withTempDir(async (dir) => {
     const candidates = new Map<string, PlannerCandidate>([

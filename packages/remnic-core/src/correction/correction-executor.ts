@@ -26,6 +26,7 @@
 
 import { throwIfAborted } from "../abort-error.js";
 import { serializeMutations } from "../utils/serialize-mutations.js";
+import { log } from "../logger.js";
 import type { CorrectionPlanner } from "./correction-planner.js";
 import {
   CorrectionContractError,
@@ -280,11 +281,11 @@ export class CorrectionExecutor {
     // Optimistically mark the plan `applying` BEFORE any mutation (review
     // thread OgIqt). If the process dies mid-apply — or the final
     // markConsumed("applied"|"partial") fails — the plan stays `applying`
-    // and is NOT silently retryable. A partially-applied plan must never be
-    // re-applied wholesale: re-running succeeded actions would duplicate
-    // replacements, tombstones, and audits. The operator inspects the
-    // outcome and files a NEW plan for any failed actions. This mark runs
-    // inside the serializeMutations lock so concurrent applies serialize.
+    // and is NOT silently retryable. If cancellation arrives before the
+    // first mutation, reset the plan to `pending` so it remains actionable.
+    // A partially-applied plan must never be re-applied wholesale: re-running
+    // succeeded actions would duplicate replacements, tombstones, and audits.
+    // This mark runs inside the serializeMutations lock so concurrent applies serialize.
     throwIfAborted(abortSignal, "correction apply aborted");
     try {
       await this.planner.markConsumed(namespace, planId, "applying");
@@ -295,7 +296,20 @@ export class CorrectionExecutor {
         `Correction plan ${planId}: cannot mark in-progress (filesystem unwritable?) — aborting before any mutation.`,
       );
     }
-    throwIfAborted(abortSignal, "correction apply aborted");
+    try {
+      throwIfAborted(abortSignal, "correction apply aborted");
+    } catch (error) {
+      try {
+        await this.planner.resetApplying(namespace, planId);
+      } catch (resetError) {
+        log.warn(
+          `Correction plan ${planId}: cancellation reset failed; leaving plan applying: ${
+            resetError instanceof Error ? resetError.message : String(resetError)
+          }`,
+        );
+      }
+      throw error;
+    }
 
     const results: CorrectionActionResult[] = [];
     const appliedTouched: string[] = [];

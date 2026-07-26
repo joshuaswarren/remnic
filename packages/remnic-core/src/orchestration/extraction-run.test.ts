@@ -92,6 +92,7 @@ interface Harness {
   engineCalls: () => number;
   setRespond: (fn: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult>) => void;
   setPassiveCapture: (fn: () => void | Promise<void>) => void;
+  setMemoryBox: (fn: () => void | Promise<void>) => void;
   recordedProcessedCount: () => number;
   run: (
     coord: ExtractionRunCoordinator,
@@ -135,6 +136,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   let respond: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult> = () => successResult();
   let passiveCaptureHandler: () => void | Promise<void> = async () => {};
   let passiveCapture: { principal?: string; namespace?: string } | null = null;
+  let memoryBoxHandler: () => void | Promise<void> = async () => {};
   let recordedProcessedCount = 0;
 
   let threadingBlocked = false;
@@ -169,7 +171,11 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     resolveSelfNamespace: () => "default",
     getCodingContextForSession: () => null,
     applyCodingNamespaceOverlay: () => "default",
-    boxBuilderFor: () => ({ onExtraction: async () => {} }),
+    boxBuilderFor: () => ({
+      onExtraction: async () => {
+        await memoryBoxHandler();
+      },
+    }),
     appendPersistedThreadEpisodes: async () => {},
     maybeScheduleConsolidation: () => {},
     requestQmdMaintenance: () => {},
@@ -197,6 +203,9 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     },
     setPassiveCapture: (fn) => {
       passiveCaptureHandler = fn;
+    },
+    setMemoryBox: (fn) => {
+      memoryBoxHandler = fn;
     },
     recordedProcessedCount: () => recordedProcessedCount,
     passiveCapture: () => passiveCapture,
@@ -357,6 +366,26 @@ test("runExtraction bounds storage preparation by its deadline", async () => {
     } finally {
       await harness.cleanup();
     }
+  }
+});
+
+test("runExtraction does not wait past its deadline for post-persist memory boxes", async () => {
+  const harness = await makeHarness({ memoryBoxesEnabled: true });
+  try {
+    harness.setMemoryBox(() => new Promise<void>(() => {}));
+    const startedAt = Date.now();
+    const result = await harness.newCoordinator().runExtraction(makeTurns("deadline-memory-box"), {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: false,
+      bufferKey: "deadline-memory-box",
+      deadlineMs: startedAt + 200,
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(harness.persistCalls(), 1, "durable persistence must complete before helper timeout");
+    assert.ok(Date.now() - startedAt < 1_500, "post-persist helper must not hold the extraction indefinitely");
+  } finally {
+    await harness.cleanup();
   }
 });
 

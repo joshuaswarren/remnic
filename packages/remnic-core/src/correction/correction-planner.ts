@@ -525,6 +525,31 @@ export class CorrectionPlanner {
       await rename(tmp, file);
     });
   }
+  /**
+   * Return an applying plan to the pending queue when cancellation arrives
+   * before its first correction mutation.
+   */
+  async resetApplying(namespace: string, planId: string): Promise<void> {
+    assertSafePlanId(planId);
+    const file = path.join(await this.pendingDir(namespace), `${planId}.json`);
+    await serializeMutations(`correction-plan:${file}`, async () => {
+      let raw: string;
+      try {
+        raw = await readFile(file, "utf-8");
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === "ENOENT") return;
+        throw err;
+      }
+      const plan = parsePlan(raw);
+      if (!plan || plan.status !== "applying") return;
+      plan.status = "pending";
+      delete plan.applyingAt;
+      const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
+      await writeFile(tmp, `${JSON.stringify(plan)}\n`, "utf-8");
+      await rename(tmp, file);
+    });
+  }
 
   async deletePlan(namespace: string, planId: string): Promise<void> {
     assertSafePlanId(planId);

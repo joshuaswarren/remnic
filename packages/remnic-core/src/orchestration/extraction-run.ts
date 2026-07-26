@@ -506,15 +506,17 @@ export class ExtractionRunCoordinator {
         namespace: string;
         bufferKey: string;
         isLiveSession: boolean;
+        abortSignal?: AbortSignal;
       },
     ): Promise<void> => {
       const deadlineController =
         typeof deadlineMs === "number" && Number.isFinite(deadlineMs) ? new AbortController() : undefined;
+      const captureAbortSignal = captureOptions.abortSignal ?? options.abortSignal;
       const captureSignal = deadlineController
-        ? options.abortSignal
-          ? AbortSignal.any([options.abortSignal, deadlineController.signal])
+        ? captureAbortSignal
+          ? AbortSignal.any([captureAbortSignal, deadlineController.signal])
           : deadlineController.signal
-        : options.abortSignal;
+        : captureAbortSignal;
       let deadlineTimer: NodeJS.Timeout | undefined;
       if (deadlineController && typeof deadlineMs === "number") {
         const scheduleDeadlineAbort = (): void => {
@@ -742,7 +744,11 @@ export class ExtractionRunCoordinator {
         extractionDeadlineTimer = undefined;
       }
     };
-    const runDeadlineAware = async <T>(operation: () => Promise<T>, phase: string): Promise<T> => {
+    const runDeadlineAware = async <T>(
+      operation: () => Promise<T>,
+      phase: string,
+      clearTimerOnError = true,
+    ): Promise<T> => {
       try {
         return await raceRecallAbort(
           operation(),
@@ -750,7 +756,7 @@ export class ExtractionRunCoordinator {
           `extraction aborted (${phase})`,
         );
       } catch (error) {
-        clearExtractionDeadlineTimer();
+        if (clearTimerOnError) clearExtractionDeadlineTimer();
         if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
           throw new ExtractionDeadlineError(phase);
         }
@@ -1081,6 +1087,19 @@ export class ExtractionRunCoordinator {
     const durableOutputCount =
       result.facts.length + result.entities.length + result.questions.length + result.profileUpdates.length;
 
+    // Durable memories are already committed; bound every later helper by the
+    // same caller deadline and keep helper failures non-fatal.
+    const runPostPersistBestEffort = async (
+      stage: string,
+      operation: () => Promise<unknown>,
+    ): Promise<void> => {
+      try {
+        await runDeadlineAware(operation, stage, false);
+      } catch (error) {
+        log.warn(`runExtraction: ${stage} failed after persistence (non-fatal)`, error);
+      }
+    };
+
     // Buffer retention for defer verdicts (issue #562, PR 2). When the judge
     // deferred at least one candidate, retain the tail of the current turn
     // window so the next extraction pass has the surrounding context that
@@ -1096,7 +1115,7 @@ export class ExtractionRunCoordinator {
     //     retaining the turn window on top of a persisted write would both
     //     waste buffer space and cause the same facts to re-enter the
     //     pipeline on the next pass.
-    try {
+    await runPostPersistBestEffort("during_defer_retention", async () => {
       if (clearBufferAfterExtraction && !this.config.extractionJudgeShadow) {
         const deferredCount = this.deps.getLastPersistExtractionDeferredCount();
         if (deferredCount > 0 && normalizedTurns.length > 0) {
@@ -1105,32 +1124,25 @@ export class ExtractionRunCoordinator {
           await this.deps.getBuffer().retainDeferredTurns(bufferKey, [], 0);
         }
       }
-    } catch (err) {
-      // Fail-open: retention is a nice-to-have. If it fails the judge will
-      // still cap deferrals and convert to reject on the next pass.
-      log.debug(
-        `extraction-judge: defer retention failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
+    });
 
-    await clearBuffer({ ignoreAbort: true });
+    await runPostPersistBestEffort("during_buffer_clear", () => clearBuffer({ ignoreAbort: true }));
 
     // Passive correction capture (issue #1581) — detect corrections expressed
     // passively in the extracted turns and route to the Correction Contract.
     // Runs AFTER persistence + buffer clear so a capture failure never blocks
     // the extraction return. `clearBufferAfterExtraction` gates live-session
     // auto-apply (replay/import → queue-only).
-    try {
-      await runPassiveCapture(normalizedTurns as BufferTurn[], {
+    await runPostPersistBestEffort("during_post_persist_passive_capture", () =>
+      runPassiveCapture(normalizedTurns as BufferTurn[], {
         sessionKey,
         principal,
         namespace: selfNamespace,
         bufferKey,
         isLiveSession: clearBufferAfterExtraction,
-      });
-    } catch (captureErr) {
-      log.debug("runExtraction: post-persist passive correction capture failed (non-fatal)", captureErr);
-    }
+        abortSignal: extractionAbortSignal,
+      }),
+    );
 
     // Build memory box from this extraction (v8.0 Phase 2A)
     // Topics are derived from the current extraction's facts and entities only —
@@ -1141,31 +1153,30 @@ export class ExtractionRunCoordinator {
       // Derive episodic metadata from buffer turns (REMem-inspired)
       const firstUserTurn = turns.find((t) => t.role === "user");
       const boxGoal = firstUserTurn?.content?.slice(0, 100)?.trim() || undefined;
-      await this.deps
-        .boxBuilderFor(storage)
-        .onExtraction({
+      await runPostPersistBestEffort("during_memory_box", () =>
+        this.deps.boxBuilderFor(storage).onExtraction({
           topics: extractionTopics,
           memoryIds: persistedIds,
           timestamp: new Date().toISOString(),
           goal: boxGoal,
-        })
-        .catch((err) => log.warn("[boxes] onExtraction failed (non-fatal)", err));
+        }),
+      );
     }
 
     // Batch-append persisted IDs so non-fact memories (entities/questions) are
     // always attached to the thread. The helper excludes pending_review ids (#1635).
     if (resolvePresentationCapabilities(this.config).threading && threadIdForExtraction && persistedIds.length > 0) {
-      await this.deps.appendPersistedThreadEpisodes(threadIdForExtraction, persistedIds);
+      await runPostPersistBestEffort("during_thread_episode_append", () =>
+        this.deps.appendPersistedThreadEpisodes(threadIdForExtraction, persistedIds),
+      );
     }
 
     // Thread title update for the already-established thread context.
     if (resolvePresentationCapabilities(this.config).threading && threadIdForExtraction) {
       const conversationContent = turns.map((t) => t.content).join(" ");
-      try {
-        await this.deps.getThreading().updateThreadTitle(threadIdForExtraction, conversationContent);
-      } catch (err) {
-        log.warn("[threading] updateThreadTitle failed after persistence (non-fatal)", err);
-      }
+      await runPostPersistBestEffort("during_thread_title_update", () =>
+        this.deps.getThreading().updateThreadTitle(threadIdForExtraction, conversationContent),
+      );
     }
 
     // Check if consolidation is needed (debounced + non-zero gated).
@@ -1184,11 +1195,9 @@ export class ExtractionRunCoordinator {
       log.warn("runExtraction: QMD maintenance scheduling failed after persistence (non-fatal)", err);
     }
 
-    try {
-      await this.deps.runTierMigrationCycle(storage, "extraction");
-    } catch (err) {
-      log.warn("runExtraction: tier migration failed after persistence (non-fatal)", err);
-    }
+    await runPostPersistBestEffort("during_tier_migration", () =>
+      this.deps.runTierMigrationCycle(storage, "extraction"),
+    );
 
     return {
       status: "completed",
