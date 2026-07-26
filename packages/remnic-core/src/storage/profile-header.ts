@@ -14,8 +14,9 @@ type FenceMarker = {
 };
 
 function isLastUpdatedHeader(line: string): boolean {
-  const content = (line.startsWith(UTF8_BOM) ? line.slice(1) : line).trimEnd();
-  return LAST_UPDATED_HEADER.test(content);
+  const withoutBom = line.startsWith(UTF8_BOM) ? line.slice(1) : line;
+  if (isIndentedCodeLine(withoutBom)) return false;
+  return LAST_UPDATED_HEADER.test(withoutBom.trim());
 }
 
 function isIndentedCodeLine(line: string): boolean {
@@ -407,11 +408,21 @@ function hasHtmlBlockEndMarker(line: string, endMarker: string): boolean {
 function isHtmlBlockTerminator(line: string): boolean {
   return (
     isRawHtmlBlockTerminator(line) ||
-    line.endsWith("-->") ||
-    line.endsWith("?>") ||
-    line.endsWith("]]>")
+    line.includes("-->") ||
+    line.includes("?>") ||
+    line.includes("]]>")
   );
 }
+function shouldCloseHtmlBlock(lines: ProfileLine[], index: number, endMarker: string): boolean {
+  const normalizedLine = lines[index]?.content.trimStart().toLowerCase() ?? "";
+  const normalizedMarker = endMarker.toLowerCase();
+  if (!normalizedLine.includes(normalizedMarker)) return false;
+  if (normalizedLine.trim() === normalizedMarker || normalizedMarker.startsWith("</")) return true;
+  return !lines
+    .slice(index + 1)
+    .some((line) => line.content.trim().toLowerCase() === normalizedMarker);
+}
+
 
 function hasRawHtmlBlockEndMarker(line: string, endMarker: string): boolean {
   return line.includes(endMarker);
@@ -453,12 +464,7 @@ function visitProfileMetadataLines(
         openHtmlBlock = updateHtmlBlockDepth(openHtmlBlock, normalizedLine, false);
         continue;
       }
-      if (
-        openHtmlBlock.endMarker &&
-        (openHtmlBlock.endMarker.startsWith("</")
-          ? hasRawHtmlBlockEndMarker(normalizedLine, openHtmlBlock.endMarker)
-          : hasHtmlBlockEndMarker(normalizedLine, openHtmlBlock.endMarker))
-      ) {
+      if (openHtmlBlock.endMarker && shouldCloseHtmlBlock(lines, index, openHtmlBlock.endMarker)) {
         openHtmlBlock = null;
       }
       continue;
@@ -476,7 +482,7 @@ function visitProfileMetadataLines(
     if (htmlBlock) {
       openHtmlBlock = htmlBlock.tagName
         ? updateHtmlBlockDepth(htmlBlock, normalizedLine, true)
-        : htmlBlock.endMarker && hasHtmlBlockEndMarker(normalizedLine, htmlBlock.endMarker)
+        : htmlBlock.endMarker && shouldCloseHtmlBlock(lines, index, htmlBlock.endMarker)
           ? null
           : htmlBlock;
       continue;

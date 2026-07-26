@@ -659,7 +659,7 @@ test("writeProfile preserves timestamp-shaped nested list content", async (t) =>
       const profile = [
         "# Behavioral Profile",
         "",
-        "  *Last updated: literal example*",
+        "  - *Last updated: literal example*",
         "",
         "- Keeps list content.",
         "",
@@ -674,9 +674,41 @@ test("writeProfile preserves timestamp-shaped nested list content", async (t) =>
           "",
           FRESH_HEADER,
           "",
-          "  *Last updated: literal example*",
+          "  - *Last updated: literal example*",
           "",
           "- Keeps list content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile recognizes standalone headers with Markdown indentation", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        `  ${STALE_HEADER}`,
+        "",
+        "- Keeps the indented metadata header canonical.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- Keeps the indented metadata header canonical.",
           "",
         ].join("\n"),
       );
@@ -1865,6 +1897,30 @@ test("writeProfile preserves timestamp-shaped HTML comments", async (t) => {
   }
 });
 
+test("writeProfile recognizes HTML terminators before trailing text", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<!--",
+        "comment --> trailing",
+        STALE_HEADER,
+        "",
+        "- Keeps comment terminators as metadata boundaries.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(await storage.readProfile(), profile.replace(STALE_HEADER, FRESH_HEADER));
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile preserves code examples that mention Last updated", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
