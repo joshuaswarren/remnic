@@ -27,16 +27,18 @@ import {
 } from "@remnic/core";
 import { log } from "@remnic/core/logger";
 import {
-  type SessionNamespaceBindingStore,
+  SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
   SESSION_NAMESPACE_BINDING_MAX_NAMESPACES,
+  SESSION_NAMESPACE_BINDING_MAX_NAMESPACE_LENGTH,
+  type SessionNamespaceBindingStore,
   createFileSessionNamespaceBindingStore,
 } from "@remnic/core/session-namespace-bindings";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
+  type DaemonAuthToken,
   checkDaemonHealthSync,
   loadDaemonAuth,
   resolveBridgeMode,
-  type DaemonAuthToken,
 } from "./bridge.js";
 import {
   REMNIC_OPENCLAW_LEGACY_PLUGIN_ID,
@@ -105,10 +107,8 @@ export interface DelegateHookApi {
   // builder parameter is a wider SDK union — remains assignable.
   registerMemoryPromptSection?(builder: (params: { sessionKey?: string }) => string[] | null): void;
 }
-
 const MEMORY_CONTEXT_HEADER = "## Memory Context (Remnic)";
-const DELEGATE_NAMESPACE_MAX_LENGTH = 256;
-const DELEGATE_BATCH_FLUSH_NEGATIVE_CACHE_TTL_MS = 30_000;
+const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
 
 const DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS = [
   "recall",
@@ -352,9 +352,9 @@ async function rememberNamespace(
   namespace: string,
   namespaceBindings: SessionNamespaceBindingStore,
 ): Promise<void> {
-  if (namespace.length > DELEGATE_NAMESPACE_MAX_LENGTH) {
+  if (namespace.length > SESSION_NAMESPACE_BINDING_MAX_NAMESPACE_LENGTH) {
     throw new Error(
-      `delegate session namespace exceeds the daemon limit of ${DELEGATE_NAMESPACE_MAX_LENGTH} characters`,
+      `delegate session namespace exceeds the daemon limit of ${SESSION_NAMESPACE_BINDING_MAX_NAMESPACE_LENGTH} characters`,
     );
   }
   try {
@@ -621,13 +621,11 @@ export function registerDelegateRuntime(
   };
   const cacheBatchFlushSupport = (supported: boolean): void => {
     cachedBatchFlushSupport = supported;
-    cachedBatchFlushSupportExpiresAt = supported
-      ? Number.POSITIVE_INFINITY
-      : now() + DELEGATE_BATCH_FLUSH_NEGATIVE_CACHE_TTL_MS;
+    cachedBatchFlushSupportExpiresAt = now() + DELEGATE_BATCH_FLUSH_CACHE_TTL_MS;
   };
   const supportsBatchFlush = (timeoutMs: number): Promise<boolean> => {
     if (cachedBatchFlushSupport !== undefined) {
-      if (cachedBatchFlushSupport || now() < cachedBatchFlushSupportExpiresAt) {
+      if (now() < cachedBatchFlushSupportExpiresAt) {
         return Promise.resolve(cachedBatchFlushSupport);
       }
       invalidateCachedBatchFlushSupport();
@@ -850,6 +848,15 @@ function createDelegateNamespaceBindingStore(
     bindingPath(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID),
   );
   const migratedLegacySessions = new Set<string>();
+  const rememberMigratedLegacySession = (sessionKey: string): void => {
+    if (migratedLegacySessions.has(sessionKey)) return;
+    migratedLegacySessions.add(sessionKey);
+    while (migratedLegacySessions.size > SESSION_NAMESPACE_BINDING_MAX_ENTRIES) {
+      const oldest = migratedLegacySessions.values().next().value;
+      if (oldest === undefined) return;
+      migratedLegacySessions.delete(oldest);
+    }
+  };
   const queueSessionMigration = <T>(
     sessionKey: string,
     operation: () => Promise<T>,
@@ -861,7 +868,7 @@ function createDelegateNamespaceBindingStore(
     if (migratedLegacySessions.has(sessionKey)) return [];
     try {
       const previous = await legacy.namespacesFor(sessionKey);
-      if (previous.length === 0) migratedLegacySessions.add(sessionKey);
+      if (previous.length === 0) rememberMigratedLegacySession(sessionKey);
       return previous;
     } catch (err) {
       if (current.length > 0) {
@@ -901,7 +908,7 @@ function createDelegateNamespaceBindingStore(
     } catch (err) {
       log.warn(`[${serviceId}] delegate legacy namespace cleanup failed: ${String(err)}`);
     }
-    migratedLegacySessions.add(sessionKey);
+    rememberMigratedLegacySession(sessionKey);
   };
   return {
     async namespacesFor(sessionKey: string): Promise<string[]> {

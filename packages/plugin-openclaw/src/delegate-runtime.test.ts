@@ -16,6 +16,7 @@ import {
 } from "./delegate-runtime.js";
 import { loadDaemonAuth, resolveBridgeMode } from "./bridge.js";
 import {
+  SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
   createFileSessionNamespaceBindingStore,
   createInMemorySessionNamespaceBindingStore,
 } from "@remnic/core/session-namespace-bindings";
@@ -951,6 +952,54 @@ test("delegate revalidates cached negative batch support after expiry", async ()
     await stub.close();
   }
 });
+
+test("delegate revalidates cached positive batch support after expiry", async () => {
+  let now = 0;
+  const stub = await startDaemonStub(
+    () => ({ flushed: true }),
+    {
+      capabilityResponses: [
+        { status: 200, body: { lcmCompactionFlushBatch: true } },
+        { status: 200, body: { lcmCompactionFlushBatch: false } },
+      ],
+    },
+  );
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { now: () => now }));
+    const sessionKey = "positive-capability-expiry-session";
+
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} session namespace` },
+            { role: "assistant", content: "the namespace is bound" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+
+    await invoke(api, "before_compaction", { sessionKey });
+    now = Number.POSITIVE_INFINITY;
+    await invoke(api, "before_reset", { sessionKey });
+
+    const capabilityCalls = stub.calls.filter((call) => call.pathname === "/engram/v1/capabilities");
+    assert.equal(capabilityCalls.length, 2);
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.deepEqual(flushes[0]?.body.namespaces, ["team-first", "team-second"]);
+    assert.deepEqual(
+      flushes.slice(1).map((call) => call.body.namespace).sort(),
+      ["team-first", "team-second"],
+    );
+  } finally {
+    await stub.close();
+  }
+});
 test("delegate reprobes batch support after daemon replacement", async () => {
   let replaced = false;
   const stub = await startDaemonStub(
@@ -1363,6 +1412,102 @@ test("delegate restores full canonical history during concurrent explicit legacy
       entries: Record<string, unknown>;
     };
     assert.deepEqual(migratedLegacy.entries, {});
+  } finally {
+    if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) Reflect.deleteProperty(process.env, "REMNIC_HOST");
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) Reflect.deleteProperty(process.env, "REMNIC_PORT");
+    else process.env.REMNIC_PORT = priorPort;
+    await rm(memoryDir, { recursive: true, force: true });
+    await stub.close();
+  }
+});
+
+test("delegate bounds completed legacy migration sessions and rechecks evicted keys", async () => {
+  const stub = await startDaemonStub(() => ({ accepted: true }));
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-bindings-"));
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  const sessionKey = "evicted-legacy-session";
+  const primaryPath = path.join(
+    memoryDir,
+    "state",
+    "plugins",
+    "openclaw-remnic",
+    "session-namespace-bindings.json",
+  );
+  const legacyPath = path.join(
+    memoryDir,
+    "state",
+    "plugins",
+    "openclaw-engram",
+    "session-namespace-bindings.json",
+  );
+  try {
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    process.env.REMNIC_PORT = String(stub.port);
+    const common = {
+      serviceId: "openclaw-remnic",
+      configBridgeMode: "delegate",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir,
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (text: string) => text,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+    };
+    const api = recordingApi();
+    assert.equal(maybeRegisterDelegateRuntime(api, common, { checkHealth: () => true }), true);
+    const observe = async (key: string, namespace: string): Promise<void> => {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} session namespace` },
+            { role: "assistant", content: "the namespace is bound" },
+          ],
+        },
+        { sessionKey: key, runtime: { agent: { session: { namespace } } } },
+      );
+    };
+
+    await observe(sessionKey, "team-initial");
+    for (let index = 0; index < SESSION_NAMESPACE_BINDING_MAX_ENTRIES; index += 1) {
+      await observe(`legacy-cache-${index}`, `team-${index}`);
+    }
+
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+    fs.writeFileSync(
+      legacyPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [encodeURIComponent(sessionKey)]: {
+            namespaces: ["team-recovered"],
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      }),
+    );
+    await observe(sessionKey, "team-after");
+
+    const persisted = JSON.parse(fs.readFileSync(primaryPath, "utf8")) as {
+      entries: Record<string, { namespaces: string[] }>;
+    };
+    assert.deepEqual(
+      persisted.entries[encodeURIComponent(sessionKey)]?.namespaces,
+      ["team-recovered", "team-after"],
+    );
   } finally {
     if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorMode;

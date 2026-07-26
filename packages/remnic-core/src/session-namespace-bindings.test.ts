@@ -9,6 +9,7 @@ import {
   createInMemorySessionNamespaceBindingStore,
   SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
   SESSION_NAMESPACE_BINDING_MAX_NAMESPACES,
+  SESSION_NAMESPACE_BINDING_MAX_NAMESPACE_LENGTH,
 } from "./session-namespace-bindings.js";
 
 test("session namespace bindings persist prototype-named session keys", async () => {
@@ -93,6 +94,12 @@ test("session namespace bindings reject malformed persisted entries", async () =
     { "missing-namespaces": { updatedAt } },
     { "missing-updated-at": { namespaces: ["team-known"] } },
     { "invalid-namespaces": { namespaces: ["team-known", null], updatedAt } },
+    {
+      "oversized-namespace": {
+        namespaces: ["x".repeat(SESSION_NAMESPACE_BINDING_MAX_NAMESPACE_LENGTH + 1)],
+        updatedAt,
+      },
+    },
   ];
   try {
     for (const entries of invalidEntries) {

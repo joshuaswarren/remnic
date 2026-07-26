@@ -10,6 +10,7 @@ export interface SessionNamespaceBindingStore {
 
 export const SESSION_NAMESPACE_BINDING_MAX_ENTRIES = 1_000;
 export const SESSION_NAMESPACE_BINDING_MAX_NAMESPACES = 64;
+export const SESSION_NAMESPACE_BINDING_MAX_NAMESPACE_LENGTH = 256;
 export const SESSION_NAMESPACE_BINDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 interface NamespaceBindingEntry {
@@ -154,7 +155,9 @@ async function readBindingFile(filePath: string): Promise<NamespaceBindingFile> 
       !Array.isArray(entry.namespaces) ||
       entry.namespaces.length === 0 ||
       entry.namespaces.some(
-        (namespace) => typeof namespace !== "string",
+        (namespace) =>
+          typeof namespace !== "string" ||
+          namespace.trim().length > SESSION_NAMESPACE_BINDING_MAX_NAMESPACE_LENGTH,
       )
     ) {
       throw new Error("session namespace binding entry has invalid structure");
