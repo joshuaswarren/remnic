@@ -15,7 +15,11 @@ import remnicPiExtension, {
   stripSessionOwnedRuntimeFields,
   toPiToolParametersSchema,
 } from "./index.js";
+import type { PiApi } from "./index.js";
 import type { RemnicPiConfig } from "./config.js";
+
+type TestPiEventHandler = Parameters<PiApi["on"]>[1];
+type TestPiCommandHandler = Parameters<PiApi["registerCommand"]>[1]["handler"];
 
 test("stripSessionOwnedSchemaFields hides session routing fields from Pi tools", () => {
   const schema = stripSessionOwnedSchemaFields({
@@ -1365,21 +1369,23 @@ function baseConfig(): RemnicPiConfig {
     observeMaxBytes: 102400,
     observeMaxRetries: 2,
     daemonCooldownMs: 5000,
+    recallTimeoutThreshold: 7,
+    recallTimeoutWindow: 10,
   };
 }
 
 function makePiHarness(): {
-  pi: Record<string, unknown>;
+  pi: PiApi;
   emit: (event: string, payload: unknown, ctx: unknown) => Promise<unknown>;
   runCommand: (name: string, args: string, ctx: unknown) => Promise<void>;
 } {
-  const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown | Promise<unknown>>>();
-  const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
-  const pi = {
-    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown | Promise<unknown>) => {
+  const handlers = new Map<string, TestPiEventHandler[]>();
+  const commands = new Map<string, TestPiCommandHandler>();
+  const pi: PiApi = {
+    on: (event, handler) => {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
-    registerCommand: (name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
+    registerCommand: (name, options) => {
       commands.set(name, options.handler);
     },
     registerTool: () => undefined,

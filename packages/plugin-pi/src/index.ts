@@ -11,7 +11,7 @@ import {
   toObserveMessage,
 } from "./messages.js";
 
-type PiApi = {
+export type PiApi = {
   on(event: string, handler: (event: any, ctx: any) => unknown | Promise<unknown>): void;
   registerCommand(name: string, options: { description?: string; handler: (args: string, ctx: any) => Promise<void> }): void;
   registerTool(tool: Record<string, unknown>): void;
@@ -59,6 +59,10 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
   const config = options.config ?? loadConfig(options);
   const client = new RemnicClient(config);
   const sessionStates = new Map<string, PiSessionState>();
+  const recallTimeoutBreaker = new RecallTimeoutBreaker({
+    threshold: config.recallTimeoutThreshold,
+    window: config.recallTimeoutWindow,
+  });
 
   return async function remnicPiExtension(pi: PiApi): Promise<void> {
     pi.on("session_start", async (_event, ctx) => {
@@ -196,9 +200,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       };
     });
 
-    registerCommands(pi, client, config);
+    registerCommands(pi, client, config, recallTimeoutBreaker);
     if (config.mcpToolsEnabled && config.authToken) {
-      await registerMcpTools(pi, client, config);
+      await registerMcpTools(pi, client, config, recallTimeoutBreaker);
     }
   };
 }
@@ -207,10 +211,19 @@ export default async function remnicPiExtension(pi: PiApi): Promise<void> {
   await createRemnicPiExtension()(pi);
 }
 
-function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfig): void {
+function registerCommands(
+  pi: PiApi,
+  client: RemnicClient,
+  config: RemnicPiConfig,
+  recallTimeoutBreaker: RecallTimeoutBreaker,
+): void {
   pi.registerCommand("remnic-status", {
     description: "Check Remnic daemon status",
     handler: commandHandler(async (_args, _ctx, session) => {
+      if (recallTimeoutBreaker.isTripped()) {
+        notifyRecallDisabled(session);
+        return;
+      }
       const health = await client.health();
       // The daemon responded (any HTTP result), so clear any stale cooldown a
       // prior timeout left on the shared client (cursor review).
@@ -227,15 +240,21 @@ function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfi
         session.notify("Usage: /remnic-recall <query>", "warning");
         return;
       }
-      // Pass the general request budget so requestWithRetry shares ONE deadline
-      // across retries (total <= requestTimeoutMs) instead of looping through
-      // observeMaxRetries full timeouts and blocking the interactive command
-      // for several minutes on a flaky connection (cursor review).
-      const result = await client.recall(query, session.sessionKey, session.cwd, {
-        timeoutMs: config.requestTimeoutMs,
-      });
-      // The daemon responded, so clear any stale cooldown a prior timeout left
-      // on the shared client (cursor review).
+      if (recallTimeoutBreaker.isTripped()) {
+        notifyRecallDisabled(session);
+        return;
+      }
+      const result = await executeRecallWithBreaker(
+        (signal) =>
+          client.recall(query, session.sessionKey, session.cwd, {
+            timeoutMs: config.requestTimeoutMs,
+            signal,
+          }),
+        recallTimeoutBreaker,
+        pi,
+        session,
+        config,
+      );
       client.markReachable();
       session.notify(trimContext(result.context ?? "(no Remnic context)", MAX_CONTEXT_CHARS), "info");
     }),
@@ -270,6 +289,10 @@ function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfi
   pi.registerCommand("remnic-why", {
     description: "Explain the last Remnic recall",
     handler: commandHandler(async (_args, _ctx, session) => {
+      if (recallTimeoutBreaker.isTripped()) {
+        notifyRecallDisabled(session);
+        return;
+      }
       const result = await client.recallExplain(session.sessionKey);
       session.notify(JSON.stringify(result, null, 2), "info");
     }),
@@ -298,7 +321,12 @@ function commandHandler(
   };
 }
 
-async function registerMcpTools(pi: PiApi, client: RemnicClient, config: RemnicPiConfig): Promise<void> {
+async function registerMcpTools(
+  pi: PiApi,
+  client: RemnicClient,
+  config: RemnicPiConfig,
+  recallTimeoutBreaker: RecallTimeoutBreaker,
+): Promise<void> {
   let tools: McpTool[] = [];
   try {
     tools = await client.mcpListTools({ timeoutMs: config.startupRequestTimeoutMs });
@@ -319,6 +347,13 @@ async function registerMcpTools(pi: PiApi, client: RemnicClient, config: RemnicP
           return {
             content: [{ type: "text", text: "Remnic tool skipped because the Pi context is no longer active." }],
             details: { skipped: true, reason: "stale_context" },
+          };
+        }
+        if (recallTimeoutBreaker.isTripped() && isRecallToolName(tool.name)) {
+          const message = notifyRecallDisabled(session);
+          return {
+            content: [{ type: "text", text: message }],
+            details: { skipped: true, reason: "recall_timeout_breaker" },
           };
         }
         const safeParams = stripSessionOwnedRuntimeFields(params ?? {}) as Record<string, unknown>;
@@ -850,6 +885,68 @@ export function isDaemonUnreachableError(err: unknown): boolean {
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+function notifyRecallDisabled(session: PiContextSnapshot): string {
+  const message =
+    "Remnic recall is disabled for this process because timeouts delayed operations; " +
+    "memory recall is unavailable until restart.";
+  session.notify(message, "warning");
+  return message;
+}
+
+function isRecallToolName(name: string): boolean {
+  return (
+    name === "remnic.recall" ||
+    name.startsWith("remnic.recall_") ||
+    name.startsWith("remnic.recall.") ||
+    name === "engram.recall" ||
+    name.startsWith("engram.recall_") ||
+    name.startsWith("engram.recall.")
+  );
+}
+function emitRecallTimeoutTrip(pi: PiApi, session: PiContextSnapshot, config: RemnicPiConfig, err: unknown): void {
+  const message =
+    `Remnic recall has been disabled for this session because repeated timeouts were delaying operations. ` +
+    `Memory recall is unavailable until restart (${config.recallTimeoutThreshold} timeouts in the last ` +
+    `${config.recallTimeoutWindow} recall attempts).`;
+  session.notify(message, "warning");
+  if (config.statusEnabled) {
+    session.setStatus("remnic", "Remnic recall disabled until restart (timeouts delayed operations)");
+  }
+  pi.appendEntry(STATE_CUSTOM_TYPE, {
+    level: "warning",
+    code: "RECALL_TIMEOUT_TRIP",
+    threshold: config.recallTimeoutThreshold,
+    window: config.recallTimeoutWindow,
+    reason: "Recall disabled until restart because timeouts delayed operations",
+    message,
+    error: errorMessage(err),
+    disabledAt: new Date().toISOString(),
+    persistent: true,
+  });
+}
+
+async function executeRecallWithBreaker<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  breaker: RecallTimeoutBreaker,
+  pi: PiApi,
+  session: PiContextSnapshot,
+  config: RemnicPiConfig,
+): Promise<T> {
+  try {
+    const result = await operation(breaker.signal);
+    breaker.recordSuccess();
+    if (breaker.isTripped()) throw new RemnicRequestAbortedError();
+    return result;
+  } catch (err) {
+    if (!(breaker.isTripped() && err instanceof RemnicRequestAbortedError)) {
+      const tripped = breaker.record(isRecallTimeoutError(err) ? "timeout" : "failure");
+      if (tripped) emitRecallTimeoutTrip(pi, session, config, err);
+    }
+    throw err;
+  }
+}
+
 
 function finiteTokenCount(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;

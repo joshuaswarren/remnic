@@ -261,6 +261,8 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
         statusEnabled: true,
         requestTimeoutMs: 60000,
         startupRequestTimeoutMs: 1000,
+        recallTimeoutThreshold: 7,
+        recallTimeoutWindow: 10,
         ...priorConfig,
         remnicDaemonUrl: resolveDaemonUrl(ctx),
       };

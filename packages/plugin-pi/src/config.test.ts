@@ -128,6 +128,8 @@ test("loadConfig defaults request timeout high enough for warmed-up recall", () 
 
     assert.equal(config.requestTimeoutMs, 60000);
     assert.equal(config.startupRequestTimeoutMs, 1000);
+    assert.equal(config.recallTimeoutThreshold, 7);
+    assert.equal(config.recallTimeoutWindow, 10);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -149,6 +151,8 @@ test("loadConfig merges file values and coerces boolean-like strings", () => {
         recallTopK: "50",
         requestTimeoutMs: "10",
         startupRequestTimeoutMs: "20",
+        recallTimeoutThreshold: "3",
+        recallTimeoutWindow: "5",
       }),
     );
 
@@ -163,6 +167,8 @@ test("loadConfig merges file values and coerces boolean-like strings", () => {
     assert.equal(config.recallTopK, 50);
     assert.equal(config.requestTimeoutMs, 10);
     assert.equal(config.startupRequestTimeoutMs, 20);
+    assert.equal(config.recallTimeoutThreshold, 3);
+    assert.equal(config.recallTimeoutWindow, 5);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -307,6 +313,23 @@ test("loadConfig fails closed on invalid numeric values", () => {
     assert.throws(
       () => loadConfig({ configPath, env: {} }),
       /Invalid numeric value for Remnic Pi config field recallTopK/,
+    );
+    fs.writeFileSync(configPath, JSON.stringify({ recallTimeoutThreshold: 0 }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid numeric value for Remnic Pi config field recallTimeoutThreshold/,
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({ recallTimeoutWindow: "slow" }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid numeric value for Remnic Pi config field recallTimeoutWindow/,
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({ recallTimeoutThreshold: 6, recallTimeoutWindow: 5 }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /threshold \(6\) cannot exceed window \(5\)/,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

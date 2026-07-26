@@ -78,6 +78,8 @@ function baseConfig(): RemnicPiConfig {
     observeMaxBytes: 102400,
     observeMaxRetries: 2,
     daemonCooldownMs: 5000,
+    recallTimeoutThreshold: 7,
+    recallTimeoutWindow: 10,
   };
 }
 
