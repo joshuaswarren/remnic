@@ -277,13 +277,12 @@ test("supersede retires the loser atomically when cancellation arrives after rep
     };
 
     const executor = new CorrectionExecutor(deps, planner);
-    await assert.rejects(
-      executor.apply("default", plan.planId, {
-        confirm: true,
-        abortSignal: abortController.signal,
-      }),
-      /correction apply aborted/,
-    );
+    const outcome = await executor.apply("default", plan.planId, {
+      confirm: true,
+      abortSignal: abortController.signal,
+    });
+    assert.equal(outcome.status, "applied");
+    assert.equal((await planner.loadPlan("default", plan.planId))?.status, "applied");
 
     const loser = state.memories.get("mem-old");
     assert.equal(loser?.status, "superseded");
@@ -808,7 +807,7 @@ test("PG9: tombstone failure does NOT retire the source memory (write tombstone 
   });
 });
 
-test("#2128 cancellation after tombstone commit still retires the source", async () => {
+test("#2128 cancellation after tombstone commit terminalizes the correction plan", async () => {
   await withTempDir(async (dir) => {
     const candidates = new Map<string, PlannerCandidate>([
       ["mem-old", { memoryId: "mem-old", path: "facts/mem-old.md", content: "stale", excerpt: "stale", score: 1 }],
@@ -837,13 +836,12 @@ test("#2128 cancellation after tombstone commit still retires the source", async
     const plan = await planner.plan({ text: "stale", targetIds: ["mem-old"] }, ["default"]);
     const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
 
-    await assert.rejects(
-      () => executor.apply("default", plan.planId, {
-        confirm: true,
-        abortSignal: abortController.signal,
-      }),
-      /correction apply aborted/,
-    );
+    const outcome = await executor.apply("default", plan.planId, {
+      confirm: true,
+      abortSignal: abortController.signal,
+    });
+    assert.equal(outcome.status, "applied");
+    assert.equal((await planner.loadPlan("default", plan.planId))?.status, "applied");
     assert.equal(state.tombstones.length, 1);
     assert.equal(state.retireCalls, 1, "retirement must complete after tombstone commit");
     assert.equal(state.memories.get("mem-old")?.status, "retracted");

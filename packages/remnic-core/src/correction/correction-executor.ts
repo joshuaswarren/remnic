@@ -380,6 +380,7 @@ export class CorrectionExecutor {
             retirementResult.status === "applied"
           ) {
             retiredReplacementActions.add(action);
+            cancellationSafeAfterCommit = true;
           }
         } catch (err) {
           if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
@@ -444,7 +445,10 @@ export class CorrectionExecutor {
           { supersededBy: replacementResult?.memoryId },
           cancellationSafeAfterCommit ? undefined : abortSignal
         );
-        if (results.at(-1)?.status === "applied") mutationCommitted = true;
+        if (results.at(-1)?.status === "applied") {
+          mutationCommitted = true;
+          cancellationSafeAfterCommit = true;
+        }
         if (results.at(-1)?.action === action && results.at(-1)?.status === "applied") {
           removeFailedResultsFor(action);
         }
@@ -458,7 +462,10 @@ export class CorrectionExecutor {
           {},
           cancellationSafeAfterCommit ? undefined : abortSignal
         );
-        if (results.at(-1)?.status === "applied") mutationCommitted = true;
+        if (results.at(-1)?.status === "applied") {
+          mutationCommitted = true;
+          cancellationSafeAfterCommit = true;
+        }
         if (results.at(-1)?.action === action && results.at(-1)?.status === "applied") {
           removeFailedResultsFor(action);
         }
