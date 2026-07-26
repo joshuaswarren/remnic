@@ -1,4 +1,41 @@
 import type { ExtractionResult } from "./types.js";
+import { anchorTemporalExpressions } from "./delinearize.js";
+
+export interface ExtractionSourceGroundingOptions {
+  sourceGrounding: boolean;
+  anchorTemporalExpressions: boolean;
+}
+
+export function applyExtractionSourceGrounding(
+  result: ExtractionResult,
+  sourceText: string,
+  assertionSourceText: string = sourceText,
+  roleAssertionSources: ExtractionGroundingRoleSources | undefined,
+  messageTimestamp: Date | undefined,
+  options: ExtractionSourceGroundingOptions,
+): ExtractionResult {
+  if (!options.sourceGrounding) return result;
+  const anchorSource = (source: string): string =>
+    options.anchorTemporalExpressions
+      ? anchorTemporalExpressions(source, messageTimestamp ?? new Date())
+      : source;
+  const anchoredRoleSources = roleAssertionSources === undefined
+    ? undefined
+    : {
+      profile: roleAssertionSources.profile === undefined
+        ? undefined
+        : anchorSource(roleAssertionSources.profile),
+      identity: roleAssertionSources.identity === undefined
+        ? undefined
+        : anchorSource(roleAssertionSources.identity),
+    };
+  return filterExtractionResultBySource(
+    result,
+    anchorSource(sourceText),
+    anchorSource(assertionSourceText),
+    anchoredRoleSources,
+  );
+}
 
 export interface ExtractionGroundingRoleSources {
   profile?: string;

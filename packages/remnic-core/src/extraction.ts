@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { log } from "./logger.js";
-import { anchorTemporalExpressions, delinearize } from "./delinearize.js";
+import { delinearize } from "./delinearize.js";
 import { LocalLlmClient } from "./local-llm.js";
 import { shouldRunProactivePass } from "./proactive-contention.js";
 import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig, gatewayTaskChainOptions } from "./fallback-llm.js";
@@ -40,7 +40,7 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
-import { filterExtractionResultBySource, type ExtractionGroundingRoleSources } from "./extraction-source-grounding.js";
+import { applyExtractionSourceGrounding, type ExtractionGroundingRoleSources } from "./extraction-source-grounding.js";
 import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
@@ -1151,27 +1151,17 @@ export class ExtractionEngine {
     roleAssertionSources?: ExtractionGroundingRoleSources,
     messageTimestamp?: Date,
   ): ExtractionResult {
-    if (!resolvePipelineProcessingCapabilities(this.config).sourceGrounding) return result;
-    const shouldAnchorTemporalSource = resolvePipelineProcessingCapabilities(this.config).delinearize;
-    const anchorSource = (source: string): string =>
-      shouldAnchorTemporalSource
-        ? anchorTemporalExpressions(source, messageTimestamp ?? new Date())
-        : source;
-    const anchoredRoleSources = roleAssertionSources === undefined
-      ? undefined
-      : {
-        profile: roleAssertionSources.profile === undefined
-          ? undefined
-          : anchorSource(roleAssertionSources.profile),
-        identity: roleAssertionSources.identity === undefined
-          ? undefined
-          : anchorSource(roleAssertionSources.identity),
-      };
-    return filterExtractionResultBySource(
+    const capabilities = resolvePipelineProcessingCapabilities(this.config);
+    return applyExtractionSourceGrounding(
       result,
-      anchorSource(sourceText),
-      anchorSource(assertionSourceText),
-      anchoredRoleSources,
+      sourceText,
+      assertionSourceText,
+      roleAssertionSources,
+      messageTimestamp,
+      {
+        sourceGrounding: capabilities.sourceGrounding,
+        anchorTemporalExpressions: capabilities.delinearize,
+      },
     );
   }
 
