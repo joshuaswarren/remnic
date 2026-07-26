@@ -271,18 +271,9 @@ export class RecallEntryCoordinator {
      * also threaded to formatQmdResultEntries for the epistemic hedge.
      */
     trustByPath?: Map<string, TrustStageResultItem> | null;
-    /**
-     * Issue #2183 — per-recall source-connector map, keyed identically to
-     * trustByPath. When a result's key resolves to a non-empty connector,
-     * formatQmdResultEntries appends an `[agent: <connector>]` suffix so an
-     * agent can tell a recalled rule originated from a different integration.
-     * Populated from frontmatter already loaded by the trust stage — no new I/O.
-     */
-    connectorByPath?: Map<string, string> | null;
   }): void {
     const sectionId = "memories";
     const trustByPath = options.trustByPath ?? null;
-    const connectorByPath = options.connectorByPath ?? null;
     const injectable = trustByPath
       ? options.results.filter((r) => !trustResultFor(trustByPath, r)?.quarantined)
       : options.results;
@@ -293,7 +284,6 @@ export class RecallEntryCoordinator {
       injectable,
       options.sessionKey,
       trustByPath,
-      connectorByPath,
     );
     this.deps.appendRecallSection(
       options.sectionBuckets,

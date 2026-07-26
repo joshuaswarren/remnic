@@ -65,7 +65,7 @@ export interface RecallSearchPipelineDeps {
     results: QmdSearchResult[],
     namespaces: string[],
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
-  ): Promise<{ results: QmdSearchResult[]; connectorByPath: Map<string, string> }>;
+  ): Promise<QmdSearchResult[]>;
   applyTrustScoreRerank(
     results: QmdSearchResult[],
     namespaces: string[],
@@ -73,7 +73,6 @@ export interface RecallSearchPipelineDeps {
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
-    connectorByPath: Map<string, string> | null;
   }>;
   boostSearchResults(
     results: QmdSearchResult[],
@@ -737,12 +736,6 @@ export class RecallSearchPipelineCoordinator {
      without changing the cold pipeline's return type.
      */
     trustByPathSink?: { trustByPath: Map<string, TrustStageResultItem> | null };
-    /**
-     * Issue #2183 — out-parameter that receives the TrustScore stage's
-     * per-path source-connector map when the cold path runs. Mirrors
-     * trustByPathSink so cold-path memories get connector labels too.
-     */
-    connectorByPathSink?: { connectorByPath: Map<string, string> | null };
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
@@ -1082,7 +1075,6 @@ export class RecallSearchPipelineCoordinator {
         const trustOutcome = await this.deps.applyTrustScoreRerank(results, options.recallNamespaces, boostInput.memoryByPath);
         results = trustOutcome.results;
         if (options.trustByPathSink) options.trustByPathSink.trustByPath = trustOutcome.trustByPath;
-        if (options.connectorByPathSink) options.connectorByPathSink.connectorByPath = trustOutcome.connectorByPath;
       } catch (err) {
         log.debug("trust-score stage (cold) failed open", {
           error: (err as Error).message,
@@ -1090,9 +1082,7 @@ export class RecallSearchPipelineCoordinator {
       }
     } else if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
-        const mw = await this.deps.applyMemoryWorthRerank(results, options.recallNamespaces, boostInput.memoryByPath);
-        results = mw.results;
-        if (options.connectorByPathSink) options.connectorByPathSink.connectorByPath = mw.connectorByPath;
+        results = await this.deps.applyMemoryWorthRerank(results, options.recallNamespaces, boostInput.memoryByPath);
       } catch (err) {
         log.debug("memory-worth filter (cold) failed open", {
           error: (err as Error).message,
@@ -1252,6 +1242,13 @@ export class RecallSearchPipelineCoordinator {
       }
       const memory = memoryForResult(memoryByPath, r);
       if (memory) {
+        // Issue #2183 — carry the persisted sourceConnector on the result here,
+        // at the single point the result meets its hydrated memory, so it flows
+        // through every downstream branch (hot QMD, embedding, cold fallback)
+        // and the renderer reads it directly — no per-branch side-channel map.
+        if (memory.frontmatter.sourceConnector) {
+          r.sourceConnector = memory.frontmatter.sourceConnector;
+        }
         // Review-lifecycle statuses never enter active recall injection
         // (forgotten, pending_review, rejected, quarantined). Superseded and
         // archived have dedicated filters below. #1576: the faithfulness gate

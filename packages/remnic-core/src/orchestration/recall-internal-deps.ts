@@ -81,7 +81,6 @@ export interface RecallInternalDeps {
      without changing the cold pipeline's return type.
      */
     trustByPathSink?: { trustByPath: Map<string, TrustStageResultItem> | null };
-    connectorByPathSink?: { connectorByPath: Map<string, string> | null };
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
@@ -96,7 +95,6 @@ export interface RecallInternalDeps {
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
-    connectorByPath: Map<string, string> | null;
   }>;
   assembleRecallSections(
     sectionBuckets: RecallSectionBuckets,
@@ -256,7 +254,6 @@ export interface RecallInternalDeps {
     results: QmdSearchResult[],
     sessionKey?: string,
     trustByPath?: Map<string, TrustStageResultItem> | null,
-    connectorByPath?: Map<string, string> | null,
   ): string;
   formatTrustZoneResults(results: TrustZoneSearchResult[]): string;
   formatVerifiedEpisodeResults(
@@ -324,7 +321,6 @@ export interface RecallInternalDeps {
      * formatQmdResults for the epistemic hedge.
      */
     trustByPath?: Map<string, TrustStageResultItem> | null;
-    connectorByPath?: Map<string, string> | null;
   }): void;
   readonly qmd: SearchBackend;
   queueEvalShadowRecall(

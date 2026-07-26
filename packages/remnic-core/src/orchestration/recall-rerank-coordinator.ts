@@ -61,11 +61,7 @@ export class RecallRerankCoordinator {
   // derived map is still current and can be served; a mismatch re-derives.
   private readonly memoryWorthCounterCache = new Map<
     string,
-    {
-      version: number;
-      counters: ReadonlyMap<string, MemoryWorthCounters>;
-      connectors: ReadonlyMap<string, string>;
-    }
+    { version: number; counters: ReadonlyMap<string, MemoryWorthCounters> }
   >();
 
   private readonly trustSignalCache = new Map<
@@ -112,27 +108,6 @@ export class RecallRerankCoordinator {
     this.readQmdResultMemory = options.readQmdResultMemory;
   }
 
-  /**
-   * Issue #2183 — seed a composite-keyed connector map from frontmatter already
-   * loaded on the hot recall path. In-memory only (no I/O). Composite
-   * trustResultKey identity so same-path memories in different namespaces stay
-   * distinct (#2020). Shared by every recall branch so connector labels render
-   * independent of which scoring stage runs.
-   */
-  private seedConnectorsFromPreloaded(
-    connectorByPath: Map<string, string>,
-    results: readonly QmdSearchResult[],
-    preloadedFrontmatter: ReadonlyMap<string, MemoryFile> | undefined,
-  ): void {
-    if (!preloadedFrontmatter) return;
-    for (const r of results) {
-      const mem =
-        preloadedFrontmatter.get(memoryMapKey(r)) ?? preloadedFrontmatter.get(r.path);
-      const connector = mem?.frontmatter.sourceConnector;
-      if (connector) connectorByPath.set(trustResultKey(r), connector);
-    }
-  }
-
   async applyMemoryWorthRerank(
     results: QmdSearchResult[],
     namespaces: string[],
@@ -143,7 +118,7 @@ export class RecallRerankCoordinator {
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
     // Cooperative cancellation (issue #1905, Codex); additive + last.
     abortSignal?: AbortSignal,
-  ): Promise<{ results: QmdSearchResult[]; connectorByPath: Map<string, string> }> {
+  ): Promise<QmdSearchResult[]> {
     const config = this.getConfig();
     const counters = new Map<string, MemoryWorthCounters>();
     // Paths examined via preloaded frontmatter (issue #1905, Codex). A candidate
@@ -153,10 +128,6 @@ export class RecallRerankCoordinator {
     // the O(candidates) fast path is defeated. Track preloaded paths separately
     // from counters and exclude them from every fallback.
     const preloadedPaths = new Set<string>();
-    // Issue #2183 — connector map, composite-keyed (trustResultKey), captured
-    // from the SAME frontmatter this filter already loads so connector labels
-    // render on the default (memory-worth) path, not only under TrustScore.
-    const connectorByPath = new Map<string, string>();
 
     // O(candidates) fast path (issue #1905): seed counters directly from
     // frontmatter already loaded on the hot path. The
@@ -173,7 +144,6 @@ export class RecallRerankCoordinator {
         if (!mem) continue;
         preloadedPaths.add(key);
         const fm = mem.frontmatter;
-        if (fm.sourceConnector) connectorByPath.set(trustResultKey(r), fm.sourceConnector);
         if (fm.mw_success === undefined && fm.mw_fail === undefined) continue;
         counters.set(key, {
           mw_success: fm.mw_success,
@@ -202,40 +172,26 @@ export class RecallRerankCoordinator {
           const version = storage.getMemoryCorpusVersion();
           const cached = this.memoryWorthCounterCache.get(ns);
           let nsMap: ReadonlyMap<string, MemoryWorthCounters>;
-          let nsConnectors: ReadonlyMap<string, string>;
           if (cached && cached.version === version) {
             nsMap = cached.counters;
-            nsConnectors = cached.connectors;
           } else {
             const memories = await storage.readAllMemories();
             nsMap = buildMemoryWorthCounterMap(memories);
-            const builtConnectors = new Map<string, string>();
-            for (const m of memories) {
-              const sc = m.frontmatter.sourceConnector;
-              if (sc) builtConnectors.set(m.path, sc);
-            }
-            nsConnectors = builtConnectors;
-            this.memoryWorthCounterCache.set(ns, { version, counters: nsMap, connectors: nsConnectors });
+            this.memoryWorthCounterCache.set(ns, { version, counters: nsMap });
             RecallRerankCoordinator.capCache(
               this.memoryWorthCounterCache,
               RecallRerankCoordinator.CORPUS_FALLBACK_CACHE_MAX_NAMESPACES,
             );
           }
           for (const r of results) {
+            // Skip candidates already satisfied by a counter OR already examined
+            // via preloaded frontmatter (neutral prior — no corpus lookup needed).
             const key = memoryMapKey(r);
+            if (counters.has(key) || preloadedPaths.has(key)) continue;
             // A namespaced result belongs to exactly one namespace: never seed
-            // its counters/connector from a different namespace's corpus, or two
+            // its counters from a different namespace's corpus map, or two
             // same-path results in different namespaces collapse (#2020).
             if (r.namespace !== undefined && r.namespace !== ns) continue;
-            // Capture the connector from the SAME already-loaded corpus
-            // (composite-keyed) for every result in this namespace, independent
-            // of whether it carries counters. Preloaded results were already
-            // captured above, so skip them here.
-            if (!preloadedPaths.has(key)) {
-              const conn = nsConnectors.get(r.path);
-              if (conn) connectorByPath.set(trustResultKey(r), conn);
-            }
-            if (counters.has(key) || preloadedPaths.has(key)) continue;
             const c = nsMap.get(r.path);
             if (c) counters.set(key, c);
           }
@@ -285,7 +241,6 @@ export class RecallRerankCoordinator {
                 );
                 if (!memory) return;
                 const fm = memory.frontmatter;
-                if (fm.sourceConnector) connectorByPath.set(trustResultKey(r), fm.sourceConnector);
                 if (fm.mw_success === undefined && fm.mw_fail === undefined) return;
                 counters.set(memoryMapKey(r), {
                   mw_success: fm.mw_success,
@@ -306,7 +261,7 @@ export class RecallRerankCoordinator {
 
     // If no memory in the candidate set has any counter data, the filter
     // would be a no-op — skip the reorder to avoid spurious log spam.
-    if (counters.size === 0) return { results, connectorByPath };
+    if (counters.size === 0) return results;
 
     // Preserve upstream ordering (reranker, specialized tiers, etc.) for
     // neutral candidates. The upstream stages set `memoryResults` in their
@@ -345,7 +300,7 @@ export class RecallRerankCoordinator {
       const original = byPath.get(item.path);
       if (original) reordered.push(original);
     }
-    return { results: reordered, connectorByPath };
+    return reordered;
   }
 
   /**
@@ -376,9 +331,8 @@ export class RecallRerankCoordinator {
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
-    connectorByPath: Map<string, string>;
   }> {
-    if (results.length === 0) return { results, trustByPath: null, connectorByPath: new Map() };
+    if (results.length === 0) return { results, trustByPath: null };
     const config = this.getConfig();
     const now = new Date();
     const halfLifeDays =
@@ -388,17 +342,6 @@ export class RecallRerankCoordinator {
     // Cold-tier direct-fallback reader: resolve once, reuse for every missing
     // candidate (mirrors the memory-worth filter's reader selection).
     let fallbackReader: StorageManager | null = null;
-    // Issue #2183 — capture the persisted sourceConnector from frontmatter this
-    // stage materialises at EVERY point (preloaded map, direct-read callback,
-    // and the corpus scan), keyed by the composite trustResultKey so same-path
-    // memories in different namespaces stay distinct. No new I/O, no effect on
-    // TrustSignals: only a field read off objects already materialised, via one
-    // shared recordConnector so any future frontmatter source captures for free.
-    const connectorByPath = new Map<string, string>();
-    this.seedConnectorsFromPreloaded(connectorByPath, results, preloadedFrontmatter);
-    const recordConnector = (key: string, connector: string | undefined) => {
-      if (connector) connectorByPath.set(key, connector);
-    };
     const signals = await buildTrustSignalsForRerank(
       results.map((r) => ({
         path: r.path,
@@ -411,26 +354,7 @@ export class RecallRerankCoordinator {
       })),
       namespaces,
       {
-        readNamespaceMemories: async (ns) => {
-          // Issue #2183 — capture sourceConnector from the SAME corpus memories
-          // this scan materialises (composite-keyed by result identity), so the
-          // trust corpus-scan path surfaces labels too — not only the preloaded
-          // map and direct-read callback. No new I/O; same recordConnector.
-          const memories = await (await this.getStorage(ns)).readAllMemories();
-          if (memories.length > 0) {
-            const connectorByPathNS = new Map<string, string | undefined>();
-            for (const m of memories) {
-              if (m.frontmatter.sourceConnector) {
-                connectorByPathNS.set(m.path, m.frontmatter.sourceConnector);
-              }
-            }
-            for (const r of results) {
-              if (r.namespace !== undefined && r.namespace !== ns) continue;
-              recordConnector(trustResultKey(r), connectorByPathNS.get(r.path));
-            }
-          }
-          return memories;
-        },
+        readNamespaceMemories: async (ns) => (await this.getStorage(ns)).readAllMemories(),
         readMemoryFrontmatter: async (path, preferredNamespace) => {
           if (!fallbackReader) {
             for (const ns of namespaces) {
@@ -449,12 +373,6 @@ export class RecallRerankCoordinator {
             namespaces,
             preferredNamespace,
           );
-          if (memory) {
-            recordConnector(
-              trustResultKey({ path, namespace: preferredNamespace }),
-              memory.frontmatter.sourceConnector,
-            );
-          }
           return memory ? memory.frontmatter : null;
         },
         // Corpus version bumps on every memory mutation (including mw counter
@@ -473,7 +391,7 @@ export class RecallRerankCoordinator {
       },
     );
     if (signals.size === 0) {
-      return { results, trustByPath: null, connectorByPath };
+      return { results, trustByPath: null };
     }
     // Synthetic monotone-decreasing rank so the multiplier rebias is applied
     const rankedInputs = results.map((r, i) => ({
@@ -505,7 +423,7 @@ export class RecallRerankCoordinator {
         return results.find((result) => result.path === item.path);
       })
       .filter((r): r is QmdSearchResult => r !== undefined);
-    return { results: admitted, trustByPath, connectorByPath };
+    return { results: admitted, trustByPath };
   }
 
   /**
@@ -534,7 +452,6 @@ export class RecallRerankCoordinator {
   ): Promise<{
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
-    connectorByPath: Map<string, string> | null;
   }> {
     if (caps.recallTrustScore && results.length > 0) {
       try {
@@ -546,25 +463,20 @@ export class RecallRerankCoordinator {
       }
     } else if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
-        const mw = await this.applyMemoryWorthRerank(
+        const filtered = await this.applyMemoryWorthRerank(
           results,
           namespaces,
           preloadedFrontmatter,
           abortSignal,
         );
-        return { results: mw.results, trustByPath: null, connectorByPath: mw.connectorByPath };
+        return { results: filtered, trustByPath: null };
       } catch (err) {
         log.debug(`memory-worth filter (${label}) failed open`, {
           error: (err as Error).message,
         });
       }
     }
-    // No scoring stage ran (both gates off, or empty input). Still surface
-    // connectors from frontmatter already loaded on the hot path so labels
-    // render independent of scoring. Composite-keyed; in-memory only.
-    const connectorByPath = new Map<string, string>();
-    this.seedConnectorsFromPreloaded(connectorByPath, results, preloadedFrontmatter);
-    return { results, trustByPath: null, connectorByPath };
+    return { results, trustByPath: null };
   }
 
   diversifyAndLimitRecallResults(
