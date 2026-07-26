@@ -535,8 +535,8 @@ export class SessionContextCoordinator {
             .retainDeferredTurns(
               bufferKey,
               [
-                ...retainedTurnsForOtherSessions,
                 ...retainedAfterExtraction.filter((turn) => belongsToSession(turn)),
+                ...retainedTurnsForOtherSessions,
               ],
               10,
             )

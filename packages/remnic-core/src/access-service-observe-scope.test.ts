@@ -256,6 +256,17 @@ test("#2128 scoped observe preparation cancellation preserves another project", 
   projectB.release();
 });
 
+
+test("#2128 cancellation matches resolved scope despite a different request hint", () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const preparation = tracker.reserve("session-z", "cwd:/workspace/project/src");
+  preparation.setScope("alice", "alice-project");
+
+  tracker.cancel("session-z", "alice", "alice-project", "projectTag:Acme/Webshop");
+
+  assert.equal(preparation.isCancelled(), true);
+  preparation.release();
+});
 test("#2128 concurrent scope plans do not share temporary coding context", async () => {
   const probe = makeObserveProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);

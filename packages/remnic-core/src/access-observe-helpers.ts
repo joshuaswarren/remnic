@@ -110,16 +110,22 @@ export class PendingObserveExtractionTracker {
     scopeHint?: string,
   ): void {
     for (const reservation of this.preparations.get(sessionKey) ?? []) {
-      if (
+      const principalMatches =
+        principal === undefined ||
+        reservation.principal === undefined ||
+        reservation.principal === principal;
+      const namespaceMatches =
+        namespace === undefined ||
+        reservation.namespace === undefined ||
+        reservation.namespace === namespace;
+      const resolvedScopeMatches =
+        namespace !== undefined &&
+        reservation.namespace === namespace &&
+        principalMatches;
+      const scopeHintMismatch =
         (reservation.scopeHint !== undefined && reservation.scopeHint !== scopeHint) ||
-        (reservation.scopeHint === undefined && scopeHint !== undefined) ||
-        (principal !== undefined &&
-          reservation.principal !== undefined &&
-          reservation.principal !== principal) ||
-        (namespace !== undefined &&
-          reservation.namespace !== undefined &&
-          reservation.namespace !== namespace)
-      ) {
+        (reservation.scopeHint === undefined && scopeHint !== undefined);
+      if ((!resolvedScopeMatches && scopeHintMismatch) || !principalMatches || !namespaceMatches) {
         continue;
       }
       reservation.cancelled = true;
