@@ -1698,7 +1698,7 @@ test("runExtraction preserves empty-result buffers when fingerprint persistence 
   assert.equal(clearCalls, 0);
 });
 
-test("runExtraction preserves deduped buffers when the caller aborts before clearing", async () => {
+test("runExtraction preserves deduped buffers when the caller aborts during meta load", async () => {
   const config = parseConfig({});
   config.extractionMinChars = 0;
   config.extractionMinUserTurns = 1;
@@ -1765,7 +1765,7 @@ test("runExtraction preserves deduped buffers when the caller aborts before clea
         abortSignal: abortController.signal,
       },
     ),
-    /extraction aborted \(before_clear_buffer\)/,
+    /extraction aborted \(during_load_meta\)/,
   );
 
   assert.equal(clearCalls, 0);
