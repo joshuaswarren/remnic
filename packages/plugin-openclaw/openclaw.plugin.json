@@ -3975,6 +3975,8 @@
               "properties": {
                 "url": {
                   "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
                   "description": "Base URL of the peer's agent-access HTTP server (http or https). Supports ${ENV_VAR} expansion."
                 },
                 "token": {

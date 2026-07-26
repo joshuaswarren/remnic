@@ -1449,3 +1449,27 @@ test("round 10 (codex P2): a cached verdict cannot outlive the census freshness 
   await monitor.whenIdle();
   assert.equal(polls, 1, "the cache must expire at the freshness bound, not the poll interval");
 });
+
+test("round 11: maxWatermarkAgeDeltaMs=0 disables the freshness cap, it does not zero the cache", async () => {
+  // 0 is the documented strict write-age mode. Reading it as a zero-length TTL
+  // re-scans the whole corpus on every probe (§17 zero footgun).
+  let now = 0;
+  const monitor = new ReplicaDivergenceMonitor({ clock: () => now, fetchImpl: async () => ({
+    ok: true, status: 200,
+    json: async () => ({ corpus: [watermark("default")], corpusComplete: true }),
+  }) });
+  const config = parseReplicaPeersConfig({
+    replicaPeers: {
+      enabled: true, pollIntervalMs: 300_000, maxWatermarkAgeDeltaMs: 0,
+      peers: [{ url: "http://127.0.0.1:4318" }],
+    },
+  });
+  let polls = 0;
+  const census = async () => { polls += 1; return { watermarks: [watermark("default")], complete: true }; };
+  monitor.getReport({ config, computeLocalWatermarks: census });
+  await monitor.whenIdle();
+  now += 1_000; // well inside pollIntervalMs
+  monitor.getReport({ config, computeLocalWatermarks: census });
+  await monitor.whenIdle();
+  assert.equal(polls, 1, "the cache must still honor pollIntervalMs when the freshness gate is disabled");
+});

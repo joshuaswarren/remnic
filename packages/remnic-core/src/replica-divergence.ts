@@ -882,8 +882,12 @@ export class ReplicaDivergenceMonitor {
       const gated = gateReportByCensus(report, census.complete);
       // A poll interval longer than the freshness bound would keep certifying
       // telemetry the freshness check would now reject (round 10). Cache for the
-      // shorter of the two so a cached `converged` can never outlive it.
-      const ttl = Math.min(config.pollIntervalMs, config.maxWatermarkAgeDeltaMs);
+      // shorter of the two so a cached `converged` can never outlive it. Zero is
+      // the documented "compare write ages strictly, no staleness gate" mode, NOT
+      // a zero-length cache - that would re-scan the corpus on every probe
+      // (round 11, §17 zero footgun).
+      const freshnessCap = config.maxWatermarkAgeDeltaMs > 0 ? config.maxWatermarkAgeDeltaMs : Number.POSITIVE_INFINITY;
+      const ttl = Math.min(config.pollIntervalMs, freshnessCap);
       this.cached = { report: gated, expiresAt: this.clock() + ttl };
       this.nextAttemptAt = 0; // a successful poll clears any failure backoff
     })()
