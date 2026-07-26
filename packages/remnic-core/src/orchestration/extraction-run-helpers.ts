@@ -66,22 +66,28 @@ export function computeExtractionRetryNextEligibleMs(
   now: number,
   rng: () => number = Math.random,
 ): number {
+  if (!Number.isFinite(attempts) || !Number.isInteger(attempts) || attempts < 1) {
+    throw new RangeError("attempts must be a finite integer >= 1");
+  }
+  if (!Number.isFinite(maxBackoffMs) || maxBackoffMs < 0) {
+    throw new RangeError("maxBackoffMs must be a finite number >= 0");
+  }
+  if (!Number.isFinite(jitterRatio) || jitterRatio < 0 || jitterRatio > 1) {
+    throw new RangeError("jitterRatio must be a finite number in [0, 1]");
+  }
   const safeNow = Number.isFinite(now) ? now : 0;
-  const cap = Number.isFinite(maxBackoffMs) && maxBackoffMs >= 0 ? maxBackoffMs : 0;
-  const safeAttempts =
-    Number.isFinite(attempts) && Number.isInteger(attempts) && attempts >= 1 ? attempts : 1;
+  const cap = maxBackoffMs;
   if (!Array.isArray(scheduleMs) || scheduleMs.length === 0) {
     return safeNow + cap;
   }
-  const idx = Math.min(safeAttempts - 1, scheduleMs.length - 1);
+  const idx = Math.min(attempts - 1, scheduleMs.length - 1);
   const step = scheduleMs[idx];
   const base = Math.min(typeof step === "number" && Number.isFinite(step) && step > 0 ? step : cap, cap);
-  const safeJitterRatio =
-    Number.isFinite(jitterRatio) && jitterRatio >= 0 && jitterRatio <= 1 ? jitterRatio : 0;
   const randomValue = rng();
-  const safeRandomValue =
-    Number.isFinite(randomValue) && randomValue >= 0 && randomValue <= 1 ? randomValue : 0.5;
-  const jitter = 1 + (safeRandomValue * 2 - 1) * safeJitterRatio;
+  if (!Number.isFinite(randomValue) || randomValue < 0 || randomValue > 1) {
+    throw new RangeError("rng() must return a finite number in [0, 1]");
+  }
+  const jitter = 1 + (randomValue * 2 - 1) * jitterRatio;
   return safeNow + Math.max(0, Math.round(base * jitter));
 }
 

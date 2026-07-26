@@ -463,6 +463,11 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
   assert.equal(call.options.failOnExtractionFailure, true);
   assert.equal(call.options.abortSignal, abortController.signal);
   assert.equal(call.options.writeNamespaceOverride, expectedNamespace);
+  assert.equal(
+    probe.orch.getCodingContextForSession("pi-geek:force-flush"),
+    null,
+    "successful extraction force-flush must clear per-call coding context",
+  );
   assert.equal(call.options.principalOverride, "pi-geek");
   assert.equal(
     Object.hasOwn(call.options, "sessionOwnerPrincipal"),

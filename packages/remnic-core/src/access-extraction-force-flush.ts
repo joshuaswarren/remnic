@@ -96,7 +96,7 @@ export async function extractionForceFlush(
     });
     const buffer = deps.orchestrator.buffer;
     if (buffer && typeof buffer.clearRetainedTurnsForSession === "function") {
-      await buffer.clearRetainedTurnsForSession(request.sessionKey);
+      await buffer.clearRetainedTurnsForSession(request.sessionKey, scope.principal);
     }
 
     return {
@@ -106,7 +106,6 @@ export async function extractionForceFlush(
       effectiveNamespace: scope.writeNamespace,
     };
   } catch (error) {
-    clearSeededCodingContext();
     if (error instanceof SessionOwnershipError) {
       throw new EngramAccessForbiddenError(error.message);
     }
@@ -114,5 +113,7 @@ export async function extractionForceFlush(
       throw new EngramAccessInputError(error.message);
     }
     throw error;
+  } finally {
+    clearSeededCodingContext();
   }
 }

@@ -492,6 +492,25 @@ test("clearRetainedTurnsForSession drains only the force-flushed session", async
   );
 });
 
+test("clearRetainedTurnsForSession drains only the authenticated owner", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const aliceTurn = { ...makeTurn("opaque-session", "alice deferred"), sessionOwnerPrincipal: "alice" };
+  const bobTurn = { ...makeTurn("opaque-session", "bob deferred"), sessionOwnerPrincipal: "bob" };
+
+  await buffer.addTurn("provider-thread", aliceTurn);
+  await buffer.addTurn("provider-thread", bobTurn);
+  await buffer.retainDeferredTurns("provider-thread", [aliceTurn, bobTurn]);
+
+  await buffer.clearRetainedTurnsForSession("opaque-session", "alice");
+
+  assert.deepEqual(buffer.getRetainedDeferredTurns("provider-thread"), [bobTurn]);
+});
+
 test("retainDeferredTurns respects the max tail size", async () => {
   const storage = new FakeStorage({
     turns: [],

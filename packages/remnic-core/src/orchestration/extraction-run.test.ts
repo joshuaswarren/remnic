@@ -100,6 +100,8 @@ interface Harness {
   ) => Promise<{ status: string; reason?: string }>;
   cleanup: () => Promise<void>;
   passiveCapture: () => { principal?: string; namespace?: string } | null;
+  setThreadingBlock: (blocked: boolean) => void;
+  persistCalls: () => number;
 }
 
 async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Harness> {
@@ -129,13 +131,14 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   const defaultStorage = await storageForNs("default");
   const buffer = new SmartBuffer(config, defaultStorage);
   await buffer.load();
-
   let engineCalls = 0;
   let respond: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult> = () => successResult();
-  let recordedProcessedCount = 0;
+  let passiveCaptureHandler: () => void | Promise<void> = async () => {};
   let passiveCapture: { principal?: string; namespace?: string } | null = null;
-  let passiveCaptureHandler: () => void | Promise<void> = () => {};
+  let recordedProcessedCount = 0;
 
+  let threadingBlocked = false;
+  let persistCalls = 0;
   const makeDeps = (): ExtractionRunCoordinatorDeps => ({
     config,
     getBuffer: () => buffer,
@@ -149,10 +152,16 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
       storageFor: async (ns: string) => storageForNs(ns),
     }),
     getThreading: () => ({
-      processTurn: async (..._args: Parameters<ThreadingManager["processTurn"]>) => "thread-1",
+      processTurn: async (..._args: Parameters<ThreadingManager["processTurn"]>) => {
+        if (threadingBlocked) await new Promise<void>(() => {});
+        return "thread-1";
+      },
       updateThreadTitle: async (..._args: Parameters<ThreadingManager["updateThreadTitle"]>) => {},
     }),
-    persistExtraction: async () => ({ persistedIds: ["memory-1"], memoryPathById: new Map() }),
+    persistExtraction: async () => {
+      persistCalls += 1;
+      return { persistedIds: ["memory-1"], memoryPathById: new Map() };
+    },
     maybeCapturePassiveCorrections: async (_turns, options) => {
       await passiveCaptureHandler();
       passiveCapture = { principal: options.principal, namespace: options.namespace };
@@ -177,6 +186,10 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     setStorageForDelay: (delayMs) => {
       storageForDelayMs = delayMs;
     },
+    setThreadingBlock: (blocked) => {
+      threadingBlocked = blocked;
+    },
+    persistCalls: () => persistCalls,
     newCoordinator: () => new ExtractionRunCoordinator(makeDeps()),
     engineCalls: () => engineCalls,
     setRespond: (fn) => {
@@ -347,6 +360,27 @@ test("runExtraction bounds storage preparation by its deadline", async () => {
   }
 });
 
+test("runExtraction bounds threading pre-persist work by its deadline", async () => {
+  const harness = await makeHarness({ threadingEnabled: true });
+  try {
+    harness.setRespond(() => successResult());
+    harness.setThreadingBlock(true);
+    await assert.rejects(
+      harness.newCoordinator().runExtraction(makeTurns("deadline-threading"), {
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+        clearBufferAfterExtraction: false,
+        bufferKey: "deadline-threading",
+        deadlineMs: Date.now() + 40,
+      }),
+      (error: unknown) => error instanceof ExtractionDeadlineError && error.stage === "during_threading",
+    );
+    assert.equal(harness.persistCalls(), 0, "deadline must prevent durable persistence");
+  } finally {
+    await harness.cleanup();
+  }
+  });
+
 test("runExtraction clamps long deadline timers to the Node setTimeout limit", async () => {
   const harness = await makeHarness();
   const timerGlobal = globalThis as unknown as { setTimeout: typeof setTimeout };
@@ -430,20 +464,46 @@ test("extraction helpers ignore malformed runtime values", () => {
   );
 });
 
-test("computeExtractionRetryNextEligibleMs sanitizes invalid numeric inputs", () => {
-  assert.equal(
-    computeExtractionRetryNextEligibleMs(Number.NaN, [1000], 5000, Number.NaN, 100, () => Number.NaN),
-    1100,
+test("computeExtractionRetryNextEligibleMs rejects invalid numeric inputs", () => {
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(Number.NaN, [1000], 5000, 0.2, 100),
+    /attempts must be a finite integer/,
   );
-  assert.equal(
-    computeExtractionRetryNextEligibleMs(1.5, [1000], Number.POSITIVE_INFINITY, 2, 100),
-    100,
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(0, [1000], 5000, 0.2, 100),
+    /attempts must be a finite integer/,
   );
-  assert.equal(
-    Number.isFinite(
-      computeExtractionRetryNextEligibleMs(1, [Number.NaN], 5000, 0.2, 100),
-    ),
-    true,
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1.5, [1000], 5000, 0.2, 100),
+    /attempts must be a finite integer/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], Number.POSITIVE_INFINITY, 0.2, 100),
+    /maxBackoffMs must be a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], -1, 0.2, 100),
+    /maxBackoffMs must be a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], 5000, Number.NaN, 100),
+    /jitterRatio must be a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], 5000, 2, 100),
+    /jitterRatio must be a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], 5000, 0.2, 100, () => Number.NaN),
+    /rng\(\) must return a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], 5000, 0.2, 100, () => -0.1),
+    /rng\(\) must return a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], 5000, 0.2, 100, () => 1.1),
+    /rng\(\) must return a finite number/,
   );
 });
 

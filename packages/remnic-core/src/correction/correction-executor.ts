@@ -300,6 +300,13 @@ export class CorrectionExecutor {
     const results: CorrectionActionResult[] = [];
     const appliedTouched: string[] = [];
     const retiredReplacementActions = new Set<CorrectionAction>();
+    const removeFailedResultsFor = (action: CorrectionAction): void => {
+      for (let i = results.length - 1; i >= 0; i -= 1) {
+        if (results[i]?.action === action && results[i]?.status === "failed") {
+          results.splice(i, 1);
+        }
+      }
+    };
 
     // ── Phase 1: replacement / edit writes (new state first) ───────────────
     // For each supersede with a replacement, write the replacement FIRST. If
@@ -342,6 +349,7 @@ export class CorrectionExecutor {
           // Once the replacement is durable, cancellation cannot interrupt the
           // retirement half and leave both memories active. This remains inside
           // the apply plan's serializeMutations lock.
+          const retirementResultBeforePhase2 = results.at(-1);
           await this.retireAndTombstone(
             namespace,
             action,
@@ -350,7 +358,14 @@ export class CorrectionExecutor {
             appliedTouched,
             { supersededBy: newId },
           );
-          retiredReplacementActions.add(action);
+          const retirementResult = results.at(-1);
+          if (
+            retirementResult !== retirementResultBeforePhase2 &&
+            retirementResult?.action === action &&
+            retirementResult.status === "applied"
+          ) {
+            retiredReplacementActions.add(action);
+          }
         } catch (err) {
           if (abortSignal?.aborted) throw err;
           results.push({
@@ -402,6 +417,9 @@ export class CorrectionExecutor {
           { supersededBy: replacementResult?.memoryId },
           abortSignal,
         );
+        if (results.at(-1)?.action === action && results.at(-1)?.status === "applied") {
+          removeFailedResultsFor(action);
+        }
       } else if (action.kind === "retract") {
         await this.retireAndTombstone(
           namespace,
@@ -412,6 +430,9 @@ export class CorrectionExecutor {
           {},
           abortSignal,
         );
+        if (results.at(-1)?.action === action && results.at(-1)?.status === "applied") {
+          removeFailedResultsFor(action);
+        }
       } else if (action.kind === "rescope") {
         try {
           // Authorize the destination namespace BEFORE the move — the plan's

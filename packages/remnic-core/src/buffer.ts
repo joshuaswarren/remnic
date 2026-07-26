@@ -10,6 +10,7 @@ import type {
   SignalLevel,
 } from "./types.js";
 import { resolvePresentationCapabilities } from "./capabilities.js";
+import { resolvePrincipal } from "./namespaces/principal.js";
 import type { ExtractionBufferSnapshot } from "./extraction-liveness.js";
 import {
   bufferTurnArrayIsSuffixOfSnapshot,
@@ -926,8 +927,12 @@ export class SmartBuffer {
    * extraction preserves these copies so a deferred candidate can be retried;
    * an explicit force flush is the caller's request to drain that context.
    */
-  async clearRetainedTurnsForSession(sessionKey: string): Promise<void> {
+  async clearRetainedTurnsForSession(sessionKey: string, ownerPrincipal?: string): Promise<void> {
     if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
+    const normalizedOwnerPrincipal =
+      typeof ownerPrincipal === "string" && ownerPrincipal.trim().length > 0
+        ? ownerPrincipal.trim()
+        : undefined;
     const bufferKeys = await this.findBufferKeysForSession(sessionKey);
     if (bufferKeys.length === 0) return;
     await this.enqueueMutation(async () => {
@@ -938,10 +943,19 @@ export class SmartBuffer {
       }
       await this.loadUnlocked();
       let changed = false;
+      const belongsToOwner = (turn: BufferTurn): boolean => {
+        if (turn.sessionKey !== sessionKey) return false;
+        if (normalizedOwnerPrincipal === undefined) return true;
+        if (turn.sessionOwnerPrincipal === normalizedOwnerPrincipal) return true;
+        return (
+          turn.sessionOwnerPrincipal === undefined &&
+          resolvePrincipal(turn.sessionKey, this.config) === normalizedOwnerPrincipal
+        );
+      };
       for (const bufferKey of bufferKeys) {
         const entry = this.entryFor(bufferKey);
         const retainedTurns = entry.retainedTurns ?? [];
-        const remainingTurns = retainedTurns.filter((turn) => turn.sessionKey !== sessionKey);
+        const remainingTurns = retainedTurns.filter((turn) => !belongsToOwner(turn));
         if (remainingTurns.length === retainedTurns.length) continue;
         changed = true;
         if (remainingTurns.length > 0) entry.retainedTurns = remainingTurns;

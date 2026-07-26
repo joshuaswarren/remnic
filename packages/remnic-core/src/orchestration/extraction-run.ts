@@ -746,7 +746,7 @@ export class ExtractionRunCoordinator {
       try {
         return await raceRecallAbort(
           operation(),
-          extractionDeadlineController?.signal,
+          extractionAbortSignal,
           `extraction aborted (${phase})`,
         );
       } catch (error) {
@@ -865,18 +865,15 @@ export class ExtractionRunCoordinator {
         "extraction aborted (during_extract)",
       );
     } catch (error) {
+      clearExtractionDeadlineTimer();
       if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
         throw new ExtractionDeadlineError("during_extract");
       }
       throw error;
-    } finally {
-      if (extractionDeadlineTimer) {
-        clearTimeout(extractionDeadlineTimer);
-        extractionDeadlineTimer = undefined;
-      }
     }
-    throwIfDeadlineExceeded("before_persist");
-    throwIfAborted("before_persist");
+    try {
+      throwIfDeadlineExceeded("before_persist");
+      throwIfAborted("before_persist");
 
     // Defensive: validate extraction result before processing. Explicit
     // fail-closed callers, such as flush-plan import, must not observe
@@ -1021,12 +1018,18 @@ export class ExtractionRunCoordinator {
     if (resolvePresentationCapabilities(this.config).threading && turns.length > 0) {
       const lastTurn = turns[turns.length - 1];
       try {
-        threadIdForExtraction = await this.deps.getThreading().processTurn(lastTurn, []);
+        threadIdForExtraction = await runDeadlineAware(
+          () => this.deps.getThreading().processTurn(lastTurn, []),
+          "during_threading",
+        );
       } catch (err) {
+        if (err instanceof ExtractionDeadlineError) throw err;
         // Fail-open: threading errors must not block memory persistence.
         log.warn("[threading] processTurn failed before persistence (non-fatal)", err);
       }
     }
+    throwIfDeadlineExceeded("before_persist");
+    throwIfAborted("before_persist");
 
     const { persistedIds } = await this.deps.persistExtraction(
       result,
@@ -1193,5 +1196,8 @@ export class ExtractionRunCoordinator {
       durableOutputCount,
       postPersistMetadataFailed,
     };
+    } finally {
+      clearExtractionDeadlineTimer();
+    }
   }
 }

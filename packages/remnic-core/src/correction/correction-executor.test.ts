@@ -41,6 +41,7 @@ interface FakeState {
   auditRecords: Array<{ planId: string; outcome: CorrectionOutcome }>;
   replacementFailOnLoserId?: string;
   retireFailOnMemoryId?: string;
+  retireFailuresRemaining?: number;
   /** When set, appendTombstone throws for this source memory (PG9 test). */
   tombstoneFailOnMemoryId?: string;
   /** Hook used by cancellation-transaction regressions after a tombstone commits. */
@@ -118,6 +119,10 @@ function makeExecutorDeps(state: FakeState, opts: { biTemporalEnabled?: boolean;
     retireMemory: async (_ns, memoryId, retireOpts, abortSignal) => {
       if (abortSignal?.aborted) {
         throw abortSignal.reason ?? new Error("aborted");
+      }
+      if (state.retireFailuresRemaining && state.retireFailuresRemaining > 0) {
+        state.retireFailuresRemaining -= 1;
+        throw new Error(`injected transient retire failure for ${memoryId}`);
       }
       if (state.retireFailOnMemoryId === memoryId) {
         throw new Error(`injected retire failure for ${memoryId}`);
@@ -284,6 +289,43 @@ test("supersede retires the loser atomically when cancellation arrives after rep
     assert.equal(loser?.status, "superseded");
     assert.equal(loser?.supersededBy, "mem-new-0");
     assert.equal(state.tombstones.length, 1);
+    assert.equal(state.retireCalls, 1);
+  });
+});
+
+test("supersede retries loser retirement after a transient failure", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-old", { memoryId: "mem-old", path: "facts/mem-old.md", content: "old", excerpt: "old", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([["mem-old", fakeMemory({ memoryId: "mem-old", content: "old" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      retireFailuresRemaining: 1,
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-old", replacement: { content: "new" } }],
+        relevance: [{ memoryId: "mem-old", why: "x" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "old", targetIds: ["mem-old"] }, ["default"]);
+    const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
+    const outcome = await executor.apply("default", plan.planId, { confirm: true });
+
+    assert.equal(outcome.status, "applied");
+    const loser = state.memories.get("mem-old");
+    assert.equal(loser?.status, "superseded");
+    assert.equal(state.tombstones.length, 2, "phase 2 must retry the failed retirement");
     assert.equal(state.retireCalls, 1);
   });
 });
