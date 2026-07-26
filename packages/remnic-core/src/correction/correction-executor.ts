@@ -413,7 +413,10 @@ export class CorrectionExecutor {
           }
         } catch (err) {
           if (abortSignal?.aborted) {
-            if (!mutationCommitted) throw err;
+            if (!mutationCommitted) {
+              await resetApplying();
+              throw err;
+            }
             cancellationRequestedAfterCommit = true;
             break;
           }
@@ -437,7 +440,10 @@ export class CorrectionExecutor {
           appliedTouched.push(editedId);
         } catch (err) {
           if (abortSignal?.aborted) {
-            if (!mutationCommitted) throw err;
+            if (!mutationCommitted) {
+              await resetApplying();
+              throw err;
+            }
             cancellationRequestedAfterCommit = true;
             break;
           }
@@ -455,7 +461,10 @@ export class CorrectionExecutor {
           results.push({ action, status: "applied" });
         } catch (err) {
           if (abortSignal?.aborted) {
-            if (!mutationCommitted) throw err;
+            if (!mutationCommitted) {
+              await resetApplying();
+              throw err;
+            }
             cancellationRequestedAfterCommit = true;
             break;
           }

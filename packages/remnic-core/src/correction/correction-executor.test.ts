@@ -392,6 +392,92 @@ test("cancellation during loser preflight restores an applying plan to pending",
     assert.equal(state.writtenReplacements.length, 0);
   });
 });
+test("#2128 Phase 1 pre-commit cancellation resets applying plans", async () => {
+  const cases: Array<{
+    name: string;
+    action: CorrectionAction;
+    inject: (deps: ExecutorDeps, abortController: AbortController) => ExecutorDeps;
+  }> = [
+    {
+      name: "supersede",
+      action: { kind: "supersede", loserId: "mem-old", replacement: { content: "new" } },
+      inject: (deps, abortController) => ({
+        ...deps,
+        writeReplacement: async (_namespace, _draft, _abortSignal) => {
+          abortController.abort();
+          throw abortController.signal.reason ?? new Error("aborted");
+        },
+      }),
+    },
+    {
+      name: "edit",
+      action: { kind: "edit", memoryId: "mem-old", patch: "new" },
+      inject: (deps, abortController) => ({
+        ...deps,
+        applyEdit: async (_namespace, _memoryId, _patch, _abortSignal) => {
+          abortController.abort();
+          throw abortController.signal.reason ?? new Error("aborted");
+        },
+      }),
+    },
+    {
+      name: "redaction_rule",
+      action: { kind: "redaction_rule", pattern: "secret-token" },
+      inject: (deps, abortController) => ({
+        ...deps,
+        registerRedactionRule: async (_namespace, _pattern, _abortSignal) => {
+          abortController.abort();
+          throw abortController.signal.reason ?? new Error("aborted");
+        },
+      }),
+    },
+  ];
+
+  for (const phaseCase of cases) {
+    await withTempDir(async (dir) => {
+      const candidates = new Map<string, PlannerCandidate>([
+        ["mem-old", { memoryId: "mem-old", path: "facts/mem-old.md", content: "old", excerpt: "old", score: 1 }],
+      ]);
+      const state: FakeState = {
+        memories: new Map([["mem-old", fakeMemory({ memoryId: "mem-old", content: "old" })]]),
+        tombstones: [],
+        redactionRules: [],
+        auditRecords: [],
+        propagateCalls: 0,
+        writtenReplacements: [],
+      };
+      const plannerDeps: PlannerDeps = {
+        ...makePlannerDeps(dir, candidates),
+        classifyAndDraft: async () => ({
+          classification: phaseCase.action.kind === "redaction_rule" ? "never_store" : "outdated",
+          confidence: 0.9,
+          actions: [phaseCase.action],
+          relevance: [{ memoryId: "mem-old", why: "x" }],
+          warnings: [],
+        }),
+      };
+      const planner = new CorrectionPlanner(plannerDeps);
+      const plan = await planner.plan({ text: "old", targetIds: ["mem-old"] }, ["default"]);
+      const abortController = new AbortController();
+      const deps = phaseCase.inject(makeExecutorDeps(state), abortController);
+
+      await assert.rejects(
+        new CorrectionExecutor(deps, planner).apply("default", plan.planId, {
+          confirm: true,
+          abortSignal: abortController.signal,
+        }),
+        /aborted/,
+      );
+
+      const reloaded = await planner.loadPlan("default", plan.planId);
+      assert.equal(reloaded?.status, "pending", `${phaseCase.name} plan must remain pending`);
+      assert.ok(
+        (await planner.listPending("default")).some((pending) => pending.planId === plan.planId),
+        `${phaseCase.name} plan must remain retryable`,
+      );
+    });
+  }
+});
 
 test("supersede retries loser retirement after a transient failure", async () => {
   await withTempDir(async (dir) => {
