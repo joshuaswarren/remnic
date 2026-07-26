@@ -28,7 +28,7 @@ test("converged corpora produce no work and report converged", () => {
     ["identical", "identical"],
   );
   assert.deepEqual(plan.byNamespace, [
-    { namespace: "default", pull: 0, push: 0, identical: 2, conflict: 0, unresolved: 0 },
+    { namespace: "default", pull: 0, push: 0, identical: 2, conflict: 0, suppress: 0, unresolved: 0 },
   ]);
 });
 
@@ -138,7 +138,7 @@ test("a base proves a deletion, and a deletion against a live edit needs an oper
   assert.equal(dropped.resolution, "unresolved");
 });
 
-test("a locally tombstoned fact is not resurrected from the peer", () => {
+test("a locally tombstoned fact is suppressed on the peer, not pulled back", () => {
   const entries = planNamespaceReconciliation({
     namespace: "default",
     local: [],
@@ -146,9 +146,46 @@ test("a locally tombstoned fact is not resurrected from the peer", () => {
     tombstonedSha256: ["retracted-hash"],
   });
   const retracted = entryFor(entries, "facts/retracted.md");
-  assert.equal(retracted.action, "identical", "a retraction must survive every future reconcile");
+  assert.equal(retracted.action, "suppress", "a retraction must survive every future reconcile");
   assert.equal(retracted.reason, "tombstoned");
   assert.equal(entryFor(entries, "facts/fresh.md").action, "pull");
+});
+
+test("a peer still serving a retracted fact is NOT converged", () => {
+  // Marking it `identical` would let transport skip the whole run on
+  // plan.converged, so the peer would keep serving the retracted fact forever.
+  const plan = planReconciliation([
+    {
+      namespace: "default",
+      local: [],
+      peer: [file("facts/retracted.md", "retracted-hash")],
+      tombstonedSha256: ["retracted-hash"],
+    },
+  ]);
+  assert.equal(plan.converged, false, "propagating the retraction is work, not agreement");
+  assert.deepEqual(plan.byNamespace, [
+    { namespace: "default", pull: 0, push: 0, identical: 0, conflict: 0, suppress: 1, unresolved: 0 },
+  ]);
+});
+
+test("delete-versus-modify stays a conflict in both directions", () => {
+  // The surviving side edited since the base, so its hash no longer equals the
+  // base. Keying on equality would emit a plain push/pull and silently
+  // resurrect a deliberate deletion.
+  const entries = planNamespaceReconciliation({
+    namespace: "default",
+    local: [file("facts/we-edited.md", "local-v2")],
+    peer: [file("facts/peer-edited.md", "peer-v2")],
+    base: [file("facts/we-edited.md", "v1"), file("facts/peer-edited.md", "v1")],
+  });
+  const weEdited = entryFor(entries, "facts/we-edited.md");
+  assert.equal(weEdited.action, "conflict");
+  assert.equal(weEdited.reason, "local_modified_peer_deleted");
+  assert.equal(weEdited.resolution, "unresolved");
+  const peerEdited = entryFor(entries, "facts/peer-edited.md");
+  assert.equal(peerEdited.action, "conflict");
+  assert.equal(peerEdited.reason, "local_deleted_peer_modified");
+  assert.equal(peerEdited.resolution, "unresolved");
 });
 
 test("namespaces are planned independently and reported separately", () => {
@@ -191,7 +228,7 @@ test("the report counts every action and isolates the unresolved ones", () => {
     peer: [file("facts/pull.md", "p"), file("facts/same.md", "s"), file("facts/clash.md", "p")],
   });
   assert.deepEqual(summarizeReconcilePlan(entries), [
-    { namespace: "default", pull: 1, push: 1, identical: 1, conflict: 1, unresolved: 1 },
+    { namespace: "default", pull: 1, push: 1, identical: 1, conflict: 1, suppress: 0, unresolved: 1 },
   ]);
 });
 

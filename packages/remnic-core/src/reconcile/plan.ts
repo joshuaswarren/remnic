@@ -19,7 +19,7 @@ import type { OfflineSyncFileState } from "../offline-sync.js";
  */
 
 /** Which way a path must move for the two corpora to agree. */
-export type ReconcileAction = "pull" | "push" | "identical" | "conflict";
+export type ReconcileAction = "pull" | "push" | "identical" | "conflict" | "suppress";
 
 /**
  * How a path present on BOTH sides with different content is settled.
@@ -60,6 +60,9 @@ export type ReconcileReason =
   | "both_modified"
   | "peer_deleted"
   | "local_deleted"
+  /** Peer deleted it while this side edited it — the offline-sync delete/modify pair. */
+  | "local_modified_peer_deleted"
+  | "local_deleted_peer_modified"
   | "tombstoned";
 
 export interface ReconcileNamespaceReport {
@@ -68,6 +71,8 @@ export interface ReconcileNamespaceReport {
   push: number;
   identical: number;
   conflict: number;
+  /** Local retractions the peer must be told about before the pair agrees. */
+  suppress: number;
   /** Conflicts the policy could not settle; these need an operator. */
   unresolved: number;
 }
@@ -170,19 +175,29 @@ export function planNamespaceReconciliation(
     const peerFile = peer.get(path);
     const baseSha256 = base?.get(path)?.sha256;
     if (!peerFile) {
-      // Only a base proves the peer once had this path and dropped it. Without
-      // one, the peer simply never saw it, and a bootstrap merge must push
-      // rather than delete — the whole point is that both sides hold unique
-      // valid data.
-      const deletedByPeer = baseSha256 !== undefined && baseSha256 === localFile.sha256;
+      // Base PRESENCE is what proves a deletion, not equality with whatever the
+      // surviving side now holds. If we also edited since the base, this is
+      // delete-versus-modify: still a conflict, and pushing it would resurrect
+      // a deliberate deletion. Without a base the peer simply never saw the
+      // path, and a bootstrap merge must push — both sides hold unique data.
+      if (baseSha256 !== undefined) {
+        entries.push({
+          path,
+          namespace,
+          action: "conflict",
+          reason: baseSha256 === localFile.sha256 ? "peer_deleted" : "local_modified_peer_deleted",
+          localSha256: localFile.sha256,
+          baseSha256,
+          resolution: "unresolved",
+        });
+        continue;
+      }
       entries.push({
         path,
         namespace,
-        action: deletedByPeer ? "conflict" : "push",
-        reason: deletedByPeer ? "peer_deleted" : "local_only",
+        action: "push",
+        reason: "local_only",
         localSha256: localFile.sha256,
-        ...(baseSha256 === undefined ? {} : { baseSha256 }),
-        ...(deletedByPeer ? { resolution: "unresolved" as const } : {}),
       });
       continue;
     }
@@ -240,27 +255,39 @@ export function planNamespaceReconciliation(
     if (local.has(path)) continue;
     const baseSha256 = base?.get(path)?.sha256;
     if (tombstoned.has(peerFile.sha256)) {
-      // Retracted here on purpose. Pulling it back would undo the retraction
-      // every time the peers reconcile.
+      // Retracted here on purpose, and the peer still serves it. Pulling it
+      // back would undo the retraction; calling it `identical` would be worse,
+      // because a converged plan lets transport skip everything and the peer
+      // keeps serving the retracted fact forever. It is work: propagate the
+      // tombstone.
       entries.push({
         path,
         namespace,
-        action: "identical",
+        action: "suppress",
         reason: "tombstoned",
         peerSha256: peerFile.sha256,
         ...(baseSha256 === undefined ? {} : { baseSha256 }),
       });
       continue;
     }
-    const deletedLocally = baseSha256 !== undefined && baseSha256 === peerFile.sha256;
+    if (baseSha256 !== undefined) {
+      entries.push({
+        path,
+        namespace,
+        action: "conflict",
+        reason: baseSha256 === peerFile.sha256 ? "local_deleted" : "local_deleted_peer_modified",
+        peerSha256: peerFile.sha256,
+        baseSha256,
+        resolution: "unresolved",
+      });
+      continue;
+    }
     entries.push({
       path,
       namespace,
-      action: deletedLocally ? "conflict" : "pull",
-      reason: deletedLocally ? "local_deleted" : "peer_only",
+      action: "pull",
+      reason: "peer_only",
       peerSha256: peerFile.sha256,
-      ...(baseSha256 === undefined ? {} : { baseSha256 }),
-      ...(deletedLocally ? { resolution: "unresolved" as const } : {}),
     });
   }
 
@@ -273,7 +300,7 @@ export function summarizeReconcilePlan(entries: readonly ReconcilePlanEntry[]): 
   for (const entry of entries) {
     let report = byNamespace.get(entry.namespace);
     if (!report) {
-      report = { namespace: entry.namespace, pull: 0, push: 0, identical: 0, conflict: 0, unresolved: 0 };
+      report = { namespace: entry.namespace, pull: 0, push: 0, identical: 0, conflict: 0, suppress: 0, unresolved: 0 };
       byNamespace.set(entry.namespace, report);
     }
     report[entry.action] += 1;
