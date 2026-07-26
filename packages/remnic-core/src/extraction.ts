@@ -39,8 +39,11 @@ import { ProfilingCollector } from "./profiling.js";
 import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
-import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
-import { applyExtractionSourceGrounding, type ExtractionGroundingRoleSources } from "./extraction-source-grounding.js";
+import {
+  attachExtractionProvenance,
+  applyExtractionSourceGrounding,
+  type ExtractionGroundingRoleSources,
+} from "./extraction-source-grounding.js";
 import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
@@ -1094,73 +1097,6 @@ export class ExtractionEngine {
     return null;
   }
 
-  /**
-   * Attach claim-level provenance spans to each fact in the extraction result
-   * (issue #1575 PR 2). Runs once at write time, after sanitize + proactive
-   * pass so ALL facts (base + proactive additions) get verified spans before
-   * the result is returned for persistence.
-   *
-   * The validator locates each fact's LLM-provided `quote` in the buffered
-   * turns and builds a `ProvenanceSource[]` with verified offsets. Never
-   * throws, never drops a fact — an unverifiable span is a tagged state, not
-   * a silent failure (rule 34 spirit). When `provenance.enabled` is false,
-   * this is a no-op (byte-identical to pre-feature behavior, rule 39).
-   */
-  private attachProvenanceToResult(
-    result: ExtractionResult,
-    turns: ReadonlyArray<{
-      content: string;
-      sessionKey?: string;
-      logicalSessionKey?: string;
-      timestamp: string;
-      turnFingerprint?: string;
-    }>,
-  ): ExtractionResult {
-    // Even when provenance is disabled, strip the transient LLM-provided
-    // `quote` field so it does not leak through the persist pipeline (the
-    // enabled path strips it after validation; the disabled path must match).
-    // quote is never persisted to frontmatter, but carrying it risks it
-    // surfacing in content-hash dedup or downstream in-memory consumers
-    // (cursor thread dHiY).
-    if (!this.config.provenance?.enabled) {
-      if (result.facts.length === 0) return result;
-      return {
-        ...result,
-        facts: result.facts.map((fact) => {
-          if (fact.quote === undefined) return fact;
-          const { quote: _stripped, ...rest } = fact;
-          return rest;
-        }),
-      };
-    }
-    if (result.facts.length === 0) return result;
-    const provenanceTurns: ProvenanceTurnInput[] = turns.map((t) => ({
-      content: t.content,
-      sessionKey: t.sessionKey,
-      logicalSessionKey: t.logicalSessionKey,
-      timestamp: t.timestamp,
-      turnId: t.turnFingerprint,
-    }));
-    const facts = result.facts.map((fact) => {
-      const built = buildFactProvenance(
-        fact.quote,
-        provenanceTurns,
-        this.config.provenance,
-      );
-      // Strip the transient `quote` field — it has served its purpose (the
-      // validator consumed it) and must NOT leak into the persisted ExtractedFact
-      // shape or the content-hash dedup key (rule 23 / checklist §13).
-      const { quote: _stripped, ...factWithoutQuote } = fact;
-      return {
-        ...factWithoutQuote,
-        ...(built.sources && built.sources.length > 0 ? { sources: built.sources } : {}),
-        ...(built.provenance !== "none" ? { provenance: built.provenance } : {}),
-        ...(built.requireSpansPending ? { requireSpansPending: true } : {}),
-      };
-    });
-    return { ...result, facts };
-  }
-
   private applySourceGrounding(
     result: ExtractionResult,
     sourceText: string,
@@ -1192,7 +1128,7 @@ export class ExtractionEngine {
       turnFingerprint?: string;
     }>,
   ): ExtractionResult {
-    return this.attachProvenanceToResult(result, turns);
+    return attachExtractionProvenance(result, turns, this.config.provenance);
   }
 
   async extract(
