@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import { throwIfAborted } from "./abort-error.js";
 import { scanSignals } from "./signal.js";
 import type { StorageManager } from "./storage.js";
 import type {
@@ -10,13 +11,30 @@ import type {
   SignalLevel,
 } from "./types.js";
 import { resolvePresentationCapabilities } from "./capabilities.js";
+import { resolvePrincipal } from "./namespaces/principal.js";
+import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import type { ExtractionBufferSnapshot } from "./extraction-liveness.js";
+import {
+  bufferTurnArrayIsSuffixOfSnapshot,
+  bufferTurnArraysEqual,
+  bufferTurnsEqual,
+  copyBufferTurn,
+  describeError,
+  liveTurnsFromExtractionSnapshot,
+  matchingQueuedExtractionPrefixLength,
+  probeWithTimeout,
+} from "./buffer-turn-helpers.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
 
 export interface AddTurnOutcome {
   decision: TriggerDecision;
   extractionTurns?: BufferTurn[];
+}
+
+export interface RetainedTurnCleanupOptions {
+  abortSignal?: AbortSignal;
+  deadlineMs?: number;
 }
 
 /**
@@ -875,6 +893,9 @@ export class SmartBuffer {
                 : new Date().toISOString(),
           };
           if (typeof t.sessionKey === "string") copy.sessionKey = t.sessionKey;
+          if (typeof t.sessionOwnerPrincipal === "string") {
+            copy.sessionOwnerPrincipal = t.sessionOwnerPrincipal;
+          }
           if (typeof t.logicalSessionKey === "string") {
             copy.logicalSessionKey = t.logicalSessionKey;
           }
@@ -898,6 +919,7 @@ export class SmartBuffer {
     });
   }
 
+
   /**
    * Return the current retention window (issue #562, PR 2). Primarily for
    * tests and diagnostics.
@@ -907,31 +929,92 @@ export class SmartBuffer {
     return entry?.retainedTurns ? [...entry.retainedTurns] : [];
   }
 
+  /**
+   * Clear deferred retention copies for a force-flushed session. Normal
+   * extraction preserves these copies so a deferred candidate can be retried;
+   * an explicit force flush is the caller's request to drain that context.
+   */
+  async clearRetainedTurnsForSession(
+    sessionKey: string,
+    ownerPrincipal?: string,
+    options: RetainedTurnCleanupOptions = {},
+  ): Promise<void> {
+    if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
+    const normalizedOwnerPrincipal =
+      typeof ownerPrincipal === "string" && ownerPrincipal.trim().length > 0
+        ? ownerPrincipal.trim()
+        : undefined;
+    const assertLifecycle = (): void => {
+      throwIfAborted(options.abortSignal, "extraction force-flush aborted");
+      if (typeof options.deadlineMs === "number" && Date.now() >= options.deadlineMs) {
+        throw new ExtractionDeadlineError("retained_turn_cleanup");
+      }
+    };
+    assertLifecycle();
+    await this.enqueueMutation(async () => {
+      assertLifecycle();
+      const hadPendingSave = this.pendingSave;
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+      }
+      await this.loadUnlocked();
+      assertLifecycle();
+      const bufferKeys = this.matchingSessionBufferKeysUnlocked(sessionKey);
+      if (bufferKeys.length === 0) {
+        if (hadPendingSave) {
+          assertLifecycle();
+          await this.saveNowRetainingPendingOnFailure("clearRetainedTurnsForSession");
+        }
+        return;
+      }
+      let changed = false;
+      const belongsToOwner = (turn: BufferTurn): boolean => {
+        if (turn.sessionKey !== sessionKey) return false;
+        if (normalizedOwnerPrincipal === undefined) return true;
+        if (turn.sessionOwnerPrincipal === normalizedOwnerPrincipal) return true;
+        return (
+          turn.sessionOwnerPrincipal === undefined &&
+          resolvePrincipal(turn.sessionKey, this.config) === normalizedOwnerPrincipal
+        );
+      };
+      for (const bufferKey of bufferKeys) {
+        const entry = this.entryFor(bufferKey);
+        const retainedTurns = entry.retainedTurns ?? [];
+        const remainingTurns = retainedTurns.filter((turn) => !belongsToOwner(turn));
+        if (remainingTurns.length === retainedTurns.length) continue;
+        changed = true;
+        if (remainingTurns.length > 0) entry.retainedTurns = remainingTurns;
+        else delete entry.retainedTurns;
+        if (bufferKey === "default") this.state.turns = entry.turns;
+      }
+      if (changed || hadPendingSave) {
+        assertLifecycle();
+        await this.saveNowRetainingPendingOnFailure("clearRetainedTurnsForSession");
+      }
+      assertLifecycle();
+    });
+  }
+
   async findBufferKeyForSession(sessionKey: string): Promise<string | null> {
     const bufferKeys = await this.findBufferKeysForSession(sessionKey);
     return bufferKeys[0] ?? null;
   }
 
-  async findBufferKeysForSession(sessionKey: string): Promise<string[]> {
-    if (typeof sessionKey !== "string" || sessionKey.length === 0) return [];
-    await this.mutationChain.catch(() => {});
-    await this.load();
-
+  private matchingSessionBufferKeysUnlocked(sessionKey: string): string[] {
     const matches: string[] = [];
+    const hasSessionTurns = (entry: BufferEntryState | null | undefined): boolean =>
+      [...(entry?.turns ?? []), ...(entry?.retainedTurns ?? [])].some(
+        (turn) => typeof turn.sessionKey === "string" && turn.sessionKey === sessionKey,
+      );
     const directEntry = this.peekEntry(sessionKey);
-    if ((directEntry?.turns.length ?? 0) > 0) {
+    if (hasSessionTurns(directEntry)) {
       matches.push(sessionKey);
     }
 
     const entries = this.state.entries ?? {};
     for (const [bufferKey, entry] of Object.entries(entries)) {
-      if (
-        !matches.includes(bufferKey) &&
-        entry.turns.some(
-          (turn) =>
-            typeof turn.sessionKey === "string" && turn.sessionKey === sessionKey,
-        )
-      ) {
+      if (!matches.includes(bufferKey) && hasSessionTurns(entry)) {
         matches.push(bufferKey);
       }
     }
@@ -939,9 +1022,17 @@ export class SmartBuffer {
     return matches;
   }
 
+  async findBufferKeysForSession(sessionKey: string): Promise<string[]> {
+    if (typeof sessionKey !== "string" || sessionKey.length === 0) return [];
+    await this.mutationChain.catch(() => {});
+    await this.load();
+    return this.matchingSessionBufferKeysUnlocked(sessionKey);
+  }
+
   async clearAfterExtraction(
     bufferKey = "default",
     extractedTurns?: readonly BufferTurn[],
+    options?: { allowNonPrefix?: boolean },
   ): Promise<void> {
     await this.enqueueMutation(async () => {
       // Drop any armed debounce TIMER so it cannot fire mid-mutation and race
@@ -964,14 +1055,29 @@ export class SmartBuffer {
         );
         let clearedLiveTurns = false;
         if (liveExtractedTurns.length > 0) {
-          const matchedCount = matchingQueuedExtractionPrefixLength(
-            entry.turns,
-            liveExtractedTurns,
-          );
-          if (matchedCount > 0) {
-            entry.turns = entry.turns.slice(matchedCount);
-            clearedLiveTurns = true;
+          if (options?.allowNonPrefix === true) {
+            const remainingTurns = [...entry.turns];
+            for (const extractedTurn of liveExtractedTurns) {
+              const matchingIndex = remainingTurns.findIndex((liveTurn) =>
+                bufferTurnsEqual(liveTurn, extractedTurn),
+              );
+              if (matchingIndex >= 0) {
+                remainingTurns.splice(matchingIndex, 1);
+                clearedLiveTurns = true;
+              }
+            }
+            if (clearedLiveTurns) entry.turns = remainingTurns;
           } else {
+            const matchedCount = matchingQueuedExtractionPrefixLength(
+              entry.turns,
+              liveExtractedTurns,
+            );
+            if (matchedCount > 0) {
+              entry.turns = entry.turns.slice(matchedCount);
+              clearedLiveTurns = true;
+            }
+          }
+          if (!clearedLiveTurns) {
             log.debug(
               `buffer[${bufferKey}]: extraction clear skipped because live turns changed before clear`,
             );
@@ -1015,185 +1121,4 @@ export class SmartBuffer {
   async flushSurpriseTelemetry(): Promise<void> {
     await this.surpriseTelemetryWriteChain;
   }
-}
-
-/**
- * Render an arbitrary thrown value as a short string for debug logging.
- *
- * JavaScript permits throwing *any* value (`throw null`,
- * `Promise.reject("x")`, `throw { reason: "timeout" }`) — not just
- * `Error` instances. The defensive catch blocks in `SmartBuffer` must
- * never themselves throw while trying to log the failure, or they
- * would defeat the whole point of isolating the surprise path from the
- * core extraction decision.
- */
-function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (err === null) return "null";
-  if (err === undefined) return "undefined";
-  if (typeof err === "string") return err;
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
-}
-
-function copyBufferTurn(turn: BufferTurn): BufferTurn {
-  const copy: BufferTurn = {
-    role: turn.role,
-    content: turn.content,
-    timestamp: turn.timestamp,
-  };
-  if (typeof turn.sessionKey === "string") copy.sessionKey = turn.sessionKey;
-  if (typeof turn.logicalSessionKey === "string") {
-    copy.logicalSessionKey = turn.logicalSessionKey;
-  }
-  if (
-    turn.providerThreadId === null ||
-    typeof turn.providerThreadId === "string"
-  ) {
-    copy.providerThreadId = turn.providerThreadId;
-  }
-  if (typeof turn.turnFingerprint === "string") {
-    copy.turnFingerprint = turn.turnFingerprint;
-  }
-  if (typeof turn.persistProcessedFingerprint === "boolean") {
-    copy.persistProcessedFingerprint = turn.persistProcessedFingerprint;
-  }
-  if (typeof turn.sourceConnector === "string") {
-    copy.sourceConnector = turn.sourceConnector;
-  }
-  return copy;
-}
-
-function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn): boolean {
-  if (!left) return false;
-  return (
-    left.role === right.role &&
-    left.content === right.content &&
-    left.timestamp === right.timestamp &&
-    left.sessionKey === right.sessionKey &&
-    left.logicalSessionKey === right.logicalSessionKey &&
-    left.providerThreadId === right.providerThreadId &&
-    left.turnFingerprint === right.turnFingerprint &&
-    left.persistProcessedFingerprint === right.persistProcessedFingerprint &&
-    left.sourceConnector === right.sourceConnector
-  );
-}
-
-function bufferTurnArraysEqual(
-  left: readonly BufferTurn[],
-  right: readonly BufferTurn[],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every((turn, index) => bufferTurnsEqual(turn, right[index]))
-  );
-}
-
-function bufferTurnArrayIsSuffixOfSnapshot(
-  liveTurns: readonly BufferTurn[],
-  snapshot: readonly BufferTurn[],
-): boolean {
-  if (liveTurns.length === 0 || liveTurns.length > snapshot.length) {
-    return false;
-  }
-  const offset = snapshot.length - liveTurns.length;
-  return liveTurns.every((turn, index) =>
-    bufferTurnsEqual(turn, snapshot[offset + index]),
-  );
-}
-
-function liveTurnsFromExtractionSnapshot(
-  entry: BufferEntryState,
-  extractedTurns: readonly BufferTurn[],
-): readonly BufferTurn[] {
-  const retainedTurns = entry.retainedTurns ?? [];
-  if (
-    retainedTurns.length > 0 &&
-    extractedTurns.length >= retainedTurns.length &&
-    retainedTurns.every((turn, index) =>
-      bufferTurnsEqual(extractedTurns[index], turn),
-    )
-  ) {
-    const withoutRetainedPrefix = extractedTurns.slice(retainedTurns.length);
-    if (
-      withoutRetainedPrefix.length > 0 &&
-      matchingPrefixLength(entry.turns, withoutRetainedPrefix) > 0
-    ) {
-      return withoutRetainedPrefix;
-    }
-  }
-  return extractedTurns;
-}
-
-function matchingPrefixLength(
-  liveTurns: readonly BufferTurn[],
-  extractedTurns: readonly BufferTurn[],
-): number {
-  let index = 0;
-  while (
-    index < liveTurns.length &&
-    index < extractedTurns.length &&
-    bufferTurnsEqual(liveTurns[index], extractedTurns[index])
-  ) {
-    index += 1;
-  }
-  return index;
-}
-
-function matchingQueuedExtractionPrefixLength(
-  liveTurns: readonly BufferTurn[],
-  extractedTurns: readonly BufferTurn[],
-): number {
-  let bestMatchedCount = 0;
-  for (let start = 0; start < extractedTurns.length; start += 1) {
-    const matchedCount = matchingPrefixLength(
-      liveTurns,
-      extractedTurns.slice(start),
-    );
-    if (matchedCount > bestMatchedCount) {
-      bestMatchedCount = matchedCount;
-      if (bestMatchedCount === liveTurns.length) break;
-    }
-  }
-  return bestMatchedCount;
-}
-
-/**
- * Sentinel error class for the probe timeout path. Catching it via
- * `instanceof` lets the buffer's surprise helper distinguish a timeout
- * from a probe rejection (which could carry operational context the
- * operator wants to see).
- */
-class ProbeTimeoutError extends Error {
-  constructor(timeoutMs: number) {
-    super(`probe exceeded ${timeoutMs}ms`);
-    this.name = "ProbeTimeoutError";
-  }
-}
-
-/**
- * Race `inflight` against a timeout clock. Resolves with `inflight`'s
- * value if it settles first, otherwise rejects with `ProbeTimeoutError`.
- * The timer is cleared in both branches so a fast-resolving probe does
- * not leak a handle that would keep the Node event loop alive.
- */
-function probeWithTimeout<T>(
-  inflight: Promise<T>,
-  timeoutMs: number,
-): Promise<T> {
-  let timer: NodeJS.Timeout | null = null;
-  const timeout = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => reject(new ProbeTimeoutError(timeoutMs)), timeoutMs);
-    // `.unref()` so the timer does not hold the event loop open if the
-    // caller decides the probe result is no longer interesting.
-    if (typeof (timer as NodeJS.Timeout).unref === "function") {
-      (timer as NodeJS.Timeout).unref();
-    }
-  });
-  return Promise.race([inflight, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
 }

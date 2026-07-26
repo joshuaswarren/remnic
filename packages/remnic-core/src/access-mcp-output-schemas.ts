@@ -167,6 +167,12 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     sessionKey: T_STRING,
     namespace: T_STRING,
   }),
+  extraction_force_flush: objectSchema({
+    flushed: T_BOOLEAN,
+    sessionKey: T_STRING,
+    namespace: T_STRING,
+    effectiveNamespace: T_STRING,
+  }),
   lcm_compaction_record: objectSchema({
     enabled: T_BOOLEAN,
     recorded: T_BOOLEAN,

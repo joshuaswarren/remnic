@@ -58,6 +58,23 @@ test("LCM compaction flush rejects duplicate namespace batches", () => {
   assert.equal(result.success, false);
 });
 
+test("extraction force-flush schema accepts scoped deadlines and rejects invalid deadlines", () => {
+  const accepted = validateRequest("extractionForceFlush", {
+    sessionKey: "pi:session",
+    namespace: "work",
+    cwd: "/workspace/project",
+    projectTag: "Acme/Webshop",
+    deadlineMs: 1_900_000_000_000,
+  });
+  assert.equal(accepted.success, true);
+
+  const rejected = validateRequest("extractionForceFlush", {
+    sessionKey: "pi:session",
+    deadlineMs: -1,
+  });
+  assert.equal(rejected.success, false);
+});
+
 test("LCM compaction record rejects invalid token counts", () => {
   const result = validateRequest("lcmCompactionRecord", {
     sessionKey: "pi:session",

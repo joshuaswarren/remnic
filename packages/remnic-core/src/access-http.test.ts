@@ -203,6 +203,72 @@ test("HTTP batch LCM flush isolates namespace failures and charges one write quo
   }
 });
 
+test("HTTP LCM compaction record uses the lifecycle route and write quota", async () => {
+  const calls: unknown[] = [];
+  const service = {
+    lcmCompactionRecord: async (request: unknown) => {
+      calls.push(request);
+      return { enabled: true, recorded: true, sessionKey: "record-session" };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/record`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "record-session",
+        namespace: "team-a",
+        tokensBefore: 100,
+        tokensAfter: 40,
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      enabled: true,
+      recorded: true,
+      sessionKey: "record-session",
+    });
+    assert.deepEqual(calls, [
+      {
+        sessionKey: "record-session",
+        namespace: "team-a",
+        tokensBefore: 100,
+        tokensAfter: 40,
+        authenticatedPrincipal: undefined,
+      },
+    ]);
+
+    const rateLimited = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/record`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "record-session",
+        tokensBefore: 120,
+        tokensAfter: 60,
+      }),
+    });
+    assert.equal(rateLimited.status, 429);
+    assert.equal(calls.length, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP batch LCM flush deduplicates aliases after effective namespace resolution", async () => {
   const calls: Array<{ namespace?: string; sessionKey: string; authenticatedPrincipal?: string }> = [];
   const service = {
@@ -3168,6 +3234,167 @@ test("HTTP meetings build enforces the per-principal write rate limit (issue #19
     const rateLimited = await second.json() as { code?: string };
     assert.equal(rateLimited.code, "write_rate_limited");
     assert.equal(builds, 1, "the rate-limited build never reached the service (no persist/reindex)");
+  } finally {
+    await server.stop();
+  }
+});
+test("HTTP-MCP extraction force-flush aliases consume the write quota", async () => {
+  let flushes = 0;
+  const service = {
+    extractionForceFlush: async () => {
+      flushes += 1;
+      return {
+        flushed: true,
+        sessionKey: "session-1",
+        namespace: "default",
+        effectiveNamespace: "default",
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  try {
+    const responses: Response[] = [];
+    for (const name of ["remnic.extraction_force_flush", "engram.extraction_force_flush"]) {
+      responses.push(
+        await fetch(`http://127.0.0.1:${status.port}/mcp`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer test-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: name,
+            method: "tools/call",
+            params: {
+              name,
+              arguments: {
+                sessionKey: "session-1",
+                namespace: "default",
+                cwd: "/workspace/project",
+                projectTag: "Acme/Webshop",
+                deadlineMs: Date.now() + 60_000,
+              },
+            },
+          }),
+        }),
+      );
+    }
+    const [first, second] = responses;
+    assert.equal(first.status, 200);
+    await first.text();
+    assert.equal(second.status, 429);
+    const rateLimited = await second.json() as { code?: string };
+    assert.equal(rateLimited.code, "write_rate_limited");
+    assert.equal(flushes, 1, "the rate-limited alias must not reach the service");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP extraction force-flush records quota after commit when cleanup fails", async () => {
+  let flushes = 0;
+  let committed = 0;
+  const service = {
+    extractionForceFlush: async (request: {
+      onCommitted?: () => void;
+    }) => {
+      flushes += 1;
+      request.onCommitted?.();
+      committed += 1;
+      throw new Error("retained cleanup deadline");
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const flush = () =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/extraction/flush`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ sessionKey: "session-1" }),
+    });
+  try {
+    const first = await flush();
+    assert.equal(first.status, 500);
+    await first.text();
+    const second = await flush();
+    assert.equal(second.status, 429);
+    const rateLimited = await second.json() as { code?: string };
+    assert.equal(rateLimited.code, "write_rate_limited");
+    assert.equal(flushes, 1);
+    assert.equal(committed, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP-MCP extraction force-flush records quota at the commit boundary", async () => {
+  let flushes = 0;
+  let committed = 0;
+  const service = {
+    extractionForceFlush: async (request: { onCommitted?: () => void }) => {
+      flushes += 1;
+      if (request.onCommitted) {
+        committed += 1;
+        request.onCommitted();
+      }
+      throw new Error("retained cleanup deadline");
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const flush = () =>
+    fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "extraction-force-flush",
+        method: "tools/call",
+        params: {
+          name: "remnic.extraction_force_flush",
+          arguments: { sessionKey: "session-1" },
+        },
+      }),
+    });
+  try {
+    const first = await flush();
+    assert.equal(first.status, 200);
+    const firstBody = (await first.json()) as {
+      result?: { isError?: boolean; content?: Array<{ text?: string }> };
+    };
+    assert.equal(firstBody.result?.isError, true);
+    const second = await flush();
+    assert.equal(second.status, 429);
+    const rateLimited = (await second.json()) as { code?: string };
+    assert.equal(rateLimited.code, "write_rate_limited");
+    assert.equal(flushes, 1, "the rate-limited MCP flush must not reach the service");
+    assert.equal(committed, 1);
   } finally {
     await server.stop();
   }

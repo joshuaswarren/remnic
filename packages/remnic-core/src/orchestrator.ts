@@ -127,7 +127,7 @@ import { WorkspaceOpsCoordinator } from "./orchestration/workspace-ops.js";
 import { NamespaceReadFanoutCoordinator } from "./orchestration/namespace-read-fanout.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { RecallEntryCoordinator } from "./orchestration/recall-entry.js";
-import { SessionContextCoordinator } from "./orchestration/session-context.js";
+import { SessionContextCoordinator, type SessionFlushOptions } from "./orchestration/session-context.js";
 import { drainRecallWrites, trackRecallWrite } from "./orchestration/recall-background-writes.js";
 import { XrayCaptureQueue } from "./orchestration/xray-capture-queue.js";
 import {
@@ -2928,11 +2928,7 @@ export class Orchestrator {
 
   async flushSession(
     sessionKey: string,
-    options: {
-      reason: string;
-      abortSignal?: AbortSignal;
-      bufferKey?: string;
-    },
+    options: SessionFlushOptions,
   ): Promise<void> {
     return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
       selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
@@ -2970,6 +2966,8 @@ export class Orchestrator {
        * `principalOverride` (issue #570 PR 4).
        */
       principalOverride?: string;
+      /** Persist the authenticated session owner on buffered turns. */
+      sessionOwnerPrincipal?: string;
     } = {},
   ): Promise<void> {
     return this.turnIngestionCoordinator.ingestReplayBatch(
@@ -3029,10 +3027,12 @@ export class Orchestrator {
     options: {
       skipDedupeCheck?: boolean;
       clearBufferAfterExtraction?: boolean;
+      clearMatchingTurns?: boolean;
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      onDurableCommit?: () => void;
       forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
@@ -3054,6 +3054,7 @@ export class Orchestrator {
        * authenticated principal instead of `resolvePrincipal(sessionKey)`.
        */
       principalOverride?: string;
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
     } = {},
   ): Promise<void> {
     return this.turnIngestionCoordinator.queueBufferedExtraction(
@@ -3086,6 +3087,7 @@ export class Orchestrator {
       namespace: string;
       bufferKey: string;
       isLiveSession: boolean;
+      abortSignal?: AbortSignal;
     },
   ): Promise<void> {
     return this.turnIngestionCoordinator.maybeCapturePassiveCorrections(

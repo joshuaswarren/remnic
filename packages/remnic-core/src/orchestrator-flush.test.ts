@@ -8,6 +8,7 @@ import {
   Orchestrator,
 } from "./orchestrator.js";
 import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
+import { TurnIngestionCoordinator } from "./orchestration/turn-ingestion.js";
 import { SmartBuffer } from "./buffer.js";
 import { parseConfig } from "./config.js";
 import { stableHash } from "./coding/git-context.js";
@@ -17,13 +18,37 @@ import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "./maintenance/namespace-planner.js";
 import { stubPersistExtraction } from "./testing/orchestrator-lite.js";
 
-function makeTurn(sessionKey: string, content: string): BufferTurn {
+function makeTurn(sessionKey: string, content: string, sessionOwnerPrincipal?: string): BufferTurn {
   return {
     role: "user",
     content,
     timestamp: "2026-04-12T12:00:00.000Z",
     sessionKey,
+    ...(sessionOwnerPrincipal ? { sessionOwnerPrincipal } : {}),
   };
+}
+
+interface ScopedFlushTestDouble {
+  buffer: {
+    getTurns(bufferKey: string): BufferTurn[];
+  };
+  queueBufferedExtraction(
+    turns: BufferTurn[],
+    reason: string,
+    options?: Record<string, unknown>,
+  ): Promise<void>;
+  flushSession(
+    sessionKey: string,
+    options: {
+      reason: string;
+      abortSignal?: AbortSignal;
+      bufferKey?: string;
+      extractionDeadlineMs?: number;
+      writeNamespaceOverride?: string;
+      failOnExtractionFailure?: boolean;
+      principalOverride?: string;
+    },
+  ): Promise<void>;
 }
 
 test("flushSession queues extraction for the targeted buffered session", async () => {
@@ -34,6 +59,7 @@ test("flushSession queues extraction for the targeted buffered session", async (
     reason: string;
     options: Record<string, unknown> | undefined;
   } | null = null;
+  let committed = 0;
 
   orchestrator.buffer = {
     getTurns(bufferKey: string) {
@@ -46,10 +72,16 @@ test("flushSession queues extraction for the targeted buffered session", async (
     options?: Record<string, unknown>,
   ) => {
     queued = { turns: queuedTurns, reason, options };
+    (options?.onDurableCommit as (() => void) | undefined)?.();
     (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
   };
-
-  await orchestrator.flushSession("thread-a", { reason: "before_reset" });
+  await orchestrator.flushSession("thread-a", {
+    reason: "access_force_flush",
+    failOnExtractionFailure: true,
+    onCommitted: () => {
+      committed += 1;
+    },
+  });
 
   assert.ok(queued);
   const queuedCall = queued as {
@@ -61,7 +93,9 @@ test("flushSession queues extraction for the targeted buffered session", async (
   assert.equal(queuedCall.reason, "trigger_mode");
   assert.equal(queuedCall.options?.clearBufferAfterExtraction, true);
   assert.equal(queuedCall.options?.skipDedupeCheck, true);
+  assert.equal(queuedCall.options?.failOnExtractionFailure, true);
   assert.equal(queuedCall.options?.abortSignal, undefined);
+  assert.equal(committed, 1);
 });
 
 test("flushSession is a no-op when the targeted buffer is empty", async () => {
@@ -109,6 +143,178 @@ test("flushSession forwards abort signals into the queued extraction", async () 
   assert.equal(queuedOptions?.abortSignal, abortController.signal);
 });
 
+test("flushSession preserves scoped force-drain routing and deadline options", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as unknown as ScopedFlushTestDouble;
+  const abortController = new AbortController();
+  const extractionDeadlineMs = Date.now() + 10_000;
+  let queuedOptions: Record<string, unknown> | undefined;
+
+  orchestrator.buffer = {
+    getTurns(bufferKey: string) {
+      return bufferKey === "logical-session" ? [makeTurn("session-z", "remember gamma", "alice")] : [];
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    _queuedTurns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queuedOptions = options;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("session-z", {
+    reason: "access_force_flush",
+    bufferKey: "logical-session",
+    abortSignal: abortController.signal,
+    extractionDeadlineMs,
+    writeNamespaceOverride: "alice-project-example",
+    principalOverride: "alice",
+  });
+
+  assert.equal(queuedOptions?.bufferKey, "logical-session");
+  assert.equal(queuedOptions?.abortSignal, abortController.signal);
+  assert.equal(queuedOptions?.extractionDeadlineMs, extractionDeadlineMs);
+  assert.equal(queuedOptions?.writeNamespaceOverride, "alice-project-example");
+  assert.equal(queuedOptions?.principalOverride, "alice");
+  assert.equal(queuedOptions?.skipDedupeCheck, true);
+  assert.equal(queuedOptions?.skipCharThreshold, true);
+  assert.equal(queuedOptions?.skipUserTurnThreshold, true);
+  assert.equal(queuedOptions?.forceExtractionAttempt, true);
+  assert.equal(queuedOptions?.clearBufferAfterExtraction, true);
+});
+
+test("flushSession preserves retained context for other scoped sessions", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let retainedTurns = [
+    makeTurn("session-z", "old session A context", "alice"),
+    makeTurn("session-y", "session B context", "bob"),
+  ];
+  orchestrator.config = parseConfig({ namespacesEnabled: true });
+  orchestrator.buffer = {
+    flushPendingSave: async () => {},
+    findBufferKeysForSession: async () => ["provider-thread"],
+    getTurns: (bufferKey: string) =>
+      bufferKey === "provider-thread" ? [makeTurn("session-z", "active session A", "alice")] : [],
+    getRetainedDeferredTurns: (bufferKey: string) =>
+      bufferKey === "provider-thread" ? retainedTurns : [],
+    retainDeferredTurns: async (_bufferKey: string, turns: BufferTurn[]) => {
+      retainedTurns = turns;
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    _queuedTurns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    retainedTurns = [makeTurn("session-z", "new session A context", "alice")];
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("session-z", {
+    reason: "access_force_flush",
+    writeNamespaceOverride: "alice-project",
+    principalOverride: "alice",
+  });
+
+  assert.ok(retainedTurns.some((turn) => turn.content === "session B context"));
+  assert.ok(retainedTurns.some((turn) => turn.content === "new session A context"));
+});
+
+test("flushSession keeps all other-session retained turns ahead of the scoped cap", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const otherSessionTurns = Array.from({ length: 10 }, (_, index) =>
+    makeTurn("session-y", `session B context ${index}`, "bob"),
+  );
+  let retainedTurns = [...otherSessionTurns];
+  orchestrator.config = parseConfig({ namespacesEnabled: true });
+  orchestrator.buffer = {
+    flushPendingSave: async () => {},
+    findBufferKeysForSession: async () => ["provider-thread"],
+    getTurns: (bufferKey: string) =>
+      bufferKey === "provider-thread" ? [makeTurn("session-z", "active session A", "alice")] : [],
+    getRetainedDeferredTurns: (bufferKey: string) =>
+      bufferKey === "provider-thread" ? retainedTurns : [],
+    retainDeferredTurns: async (_bufferKey: string, turns: BufferTurn[], max = 10) => {
+      retainedTurns = turns.slice(-max);
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    _queuedTurns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    retainedTurns = [makeTurn("session-z", "new session A context", "alice")];
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("session-z", {
+    reason: "access_force_flush",
+    writeNamespaceOverride: "alice-project",
+    principalOverride: "alice",
+  });
+
+  assert.deepEqual(
+    retainedTurns.map((turn) => turn.content),
+    otherSessionTurns.map((turn) => turn.content),
+  );
+});
+
+
+test("flushSession rejects opaque buffers without trusted ownership", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let queued = false;
+  orchestrator.config = parseConfig({ namespacesEnabled: true });
+  orchestrator.buffer = {
+    flushPendingSave: async () => {},
+    findBufferKeysForSession: async () => ["provider-thread"],
+    getTurns: (bufferKey: string) =>
+      bufferKey === "provider-thread" ? [makeTurn("opaque-session", "remember gamma")] : [],
+  };
+  orchestrator.queueBufferedExtraction = async () => {
+    queued = true;
+  };
+
+  await assert.rejects(
+    orchestrator.flushSession("opaque-session", {
+      reason: "access_force_flush",
+      failOnExtractionFailure: true,
+      writeNamespaceOverride: "alice-project",
+      principalOverride: "alice",
+    }),
+    /without trusted ownership/,
+  );
+  assert.equal(queued, false);
+});
+test("flushSession skips scoped ownership enforcement when namespaces are disabled", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let queued = false;
+  orchestrator.config = parseConfig({ namespacesEnabled: false });
+  orchestrator.buffer = {
+    flushPendingSave: async () => {},
+    findBufferKeysForSession: async () => ["provider-thread"],
+    getTurns: (bufferKey: string) =>
+      bufferKey === "provider-thread" ? [makeTurn("opaque-session", "remember gamma")] : [],
+  };
+  orchestrator.queueBufferedExtraction = async (
+    _turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queued = true;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("opaque-session", {
+    reason: "access_force_flush",
+    failOnExtractionFailure: true,
+    writeNamespaceOverride: "default",
+    principalOverride: "alice",
+  });
+
+  assert.equal(queued, true);
+});
+
 test("flushSession waits for queued extraction task completion", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   let releaseExtraction!: () => void;
@@ -145,6 +351,7 @@ test("flushSession waits for queued extraction task completion", async () => {
 
   assert.equal(flushSettled, true);
 });
+
 
 test("flushSession flushes the pending debounced buffer save before extraction, so keep_buffering turns survive a failed/timed-out extraction (issue #1909, PR #2016)", async () => {
   // Regression: in steady-state debounced buffering a `keep_buffering` turn only
@@ -213,6 +420,119 @@ test("flushSession flushes the pending debounced buffer save before extraction, 
   const entryTurns = persisted.entries?.["thread-a"]?.turns ?? [];
   assert.equal(entryTurns.length, 1, "keep_buffering turn is durable after failed flush");
   assert.equal(entryTurns[0]?.content, "remember alpha");
+});
+test("queued extraction settles immediately when its caller aborts while waiting", async () => {
+  const queue = new ExtractionQueueCoordinator();
+  let extractionStarted = false;
+  let releaseExtraction!: () => void;
+  const coordinator = new TurnIngestionCoordinator({
+    extractionQueueCoordinator: queue,
+    shouldQueueExtraction: () => true,
+    runExtraction: async () => {
+      extractionStarted = true;
+      await new Promise<void>((resolve) => {
+        releaseExtraction = resolve;
+      });
+      return {
+        status: "skipped",
+        reason: "test",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      };
+    },
+  } as any);
+  const turns = [makeTurn("thread-a", "remember alpha")];
+
+  await coordinator.queueBufferedExtraction(turns, "trigger_mode", {
+    skipDedupeCheck: true,
+  });
+  for (let i = 0; i < 50 && !extractionStarted; i++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(extractionStarted, true, "the first extraction must occupy the queue");
+
+  const abortController = new AbortController();
+  const abortReason = new Error("caller disconnected");
+  const settled = Promise.withResolvers<unknown>();
+  await coordinator.queueBufferedExtraction(turns, "trigger_mode", {
+    skipDedupeCheck: true,
+    abortSignal: abortController.signal,
+    onTaskSettled: (error) => settled.resolve(error),
+  });
+
+  abortController.abort(abortReason);
+  assert.equal(await settled.promise, abortReason);
+
+  releaseExtraction();
+  assert.equal(await queue.waitForIdle(1_000), true);
+});
+
+
+test("flushSession aborts a blocked pre-drain save before queueing extraction", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const abortController = new AbortController();
+  let releaseSave!: () => void;
+  let saveStarted!: () => void;
+  const saveReady = new Promise<void>((resolve) => {
+    saveStarted = resolve;
+  });
+  let queued = false;
+
+  orchestrator.buffer = {
+    flushPendingSave: async () => {
+      saveStarted();
+      await new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      });
+    },
+    findBufferKeysForSession: async () => ["thread-a"],
+    getTurns: () => [makeTurn("thread-a", "remember alpha")],
+  };
+  orchestrator.queueBufferedExtraction = async () => {
+    queued = true;
+  };
+
+  const flushPromise = orchestrator.flushSession("thread-a", {
+    reason: "access_force_flush",
+    abortSignal: abortController.signal,
+    extractionDeadlineMs: Date.now() + 10_000,
+  });
+  await saveReady;
+  abortController.abort();
+  await assert.rejects(flushPromise, /extraction force-flush aborted/);
+  assert.equal(queued, false);
+  releaseSave();
+});
+
+test("flushSession applies its deadline to a blocked pre-drain save", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let releaseSave!: () => void;
+  let queued = false;
+  const keepAlive = setInterval(() => undefined, 1_000);
+
+  orchestrator.buffer = {
+    flushPendingSave: async () =>
+      await new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      }),
+    findBufferKeysForSession: async () => ["thread-a"],
+    getTurns: () => [makeTurn("thread-a", "remember alpha")],
+  };
+  orchestrator.queueBufferedExtraction = async () => {
+    queued = true;
+  };
+
+  try {
+    const flushPromise = orchestrator.flushSession("thread-a", {
+      reason: "access_force_flush",
+      extractionDeadlineMs: Date.now() + 25,
+    });
+    await assert.rejects(flushPromise, /replay extraction deadline exceeded \(before_buffer_flush\)/);
+    assert.equal(queued, false);
+  } finally {
+    clearInterval(keepAlive);
+    releaseSave?.();
+  }
 });
 
 test("flushSession rejects and skips extraction when the durable buffer save fails, leaving turns and pending state intact (issue #1909, PR #2016)", async () => {
@@ -329,6 +649,39 @@ test("ingestBulkImportBatch rejects when the extraction deadline expires in the 
     0,
     "the expired bulk-import task should be a no-op when the queue later drains",
   );
+});
+
+test("queued extraction clamps long deadline timers to the Node setTimeout limit", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
+  orchestrator.extractionQueueCoordinator.setProcessingForTest(true);
+  orchestrator.runExtraction = async () => ({
+    status: "completed",
+    persistedCount: 0,
+    durableOutputCount: 0,
+  });
+
+  const timerGlobal = globalThis as unknown as { setTimeout: typeof setTimeout };
+  const realSetTimeout = timerGlobal.setTimeout;
+  const armedDelays: number[] = [];
+  timerGlobal.setTimeout = ((handler: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    if (typeof delay === "number") armedDelays.push(delay);
+    return realSetTimeout(handler, delay, ...args);
+  }) as typeof setTimeout;
+  try {
+    const pending = orchestrator.ingestBulkImportBatch(
+      [{ role: "user", timestamp: "2026-06-24T12:00:00.000Z", content: "Remember this long-deadline import." }],
+      { deadlineMs: Date.now() + 2_147_483_647 + 60_000, failOnExtractionFailure: true },
+    );
+    const queuedTask = orchestrator.extractionQueueCoordinator.shift();
+    assert.ok(queuedTask);
+    await queuedTask();
+    await pending;
+  } finally {
+    timerGlobal.setTimeout = realSetTimeout;
+  }
+  assert.ok(armedDelays.includes(2_147_483_647), `expected a clamped queue timer, got ${armedDelays.join(", ")}`);
 });
 
 test("ingestBulkImportBatch does not report queue wait timeout after extraction starts", async () => {
@@ -765,6 +1118,144 @@ test("flushSession drains every discovered buffer for the session", async () => 
     "session-z",
     "codex-thread:thread-11::principal:cli",
   ]);
+});
+
+test("flushSession filters shared-buffer turns before scoped extraction", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const ownedTurn = makeTurn("session-z", "remember owned", "session-z");
+  const foreignTurn = makeTurn("session-other", "remember foreign", "session-other");
+  let queuedTurns: BufferTurn[] = [];
+  let queuedOptions: Record<string, unknown> | undefined;
+
+  orchestrator.buffer = {
+    async findBufferKeysForSession() {
+      return ["codex-thread:shared"];
+    },
+    getTurns() {
+      return [ownedTurn, foreignTurn];
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queuedTurns = turns;
+    queuedOptions = options;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("session-z", {
+    reason: "access_force_flush",
+    writeNamespaceOverride: "session-z-project",
+    principalOverride: "session-z",
+  });
+
+  assert.deepEqual(queuedTurns, [ownedTurn]);
+  assert.equal(queuedOptions?.clearMatchingTurns, true);
+});
+
+test("flushSession filters shared-buffer turns when namespace capability is disabled", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const ownedTurn = makeTurn("session-z", "remember owned");
+  const foreignTurn = makeTurn("session-other", "remember foreign");
+  let queuedTurns: BufferTurn[] = [];
+
+  orchestrator.config = parseConfig({ namespacesEnabled: false });
+  orchestrator.buffer = {
+    async findBufferKeysForSession() {
+      return ["codex-thread:shared"];
+    },
+    getTurns() {
+      return [ownedTurn, foreignTurn];
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queuedTurns = turns;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("session-z", {
+    reason: "access_force_flush",
+    writeNamespaceOverride: "default",
+  });
+
+  assert.deepEqual(queuedTurns, [ownedTurn]);
+});
+
+test("flushSession honors persisted ownership for opaque sessions", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const ownedTurn = makeTurn("opaque-session", "remember owned", "alice");
+  const foreignTurn = makeTurn("opaque-session", "remember foreign", "bob");
+  let queuedTurns: BufferTurn[] = [];
+
+  orchestrator.buffer = {
+    async findBufferKeysForSession() {
+      return ["codex-thread:shared"];
+    },
+    getTurns() {
+      return [ownedTurn, foreignTurn];
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queuedTurns = turns;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("opaque-session", {
+    reason: "access_force_flush",
+    writeNamespaceOverride: "alice-project",
+    principalOverride: "alice",
+  });
+
+  assert.deepEqual(queuedTurns, [ownedTurn]);
+});
+
+test("flushSession preserves unstamped turns for a principal-keyed session", async () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+  });
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  const unstampedTurn = makeTurn("alice:chat", "remember host-hook turn");
+  let queuedTurns: BufferTurn[] = [];
+
+  orchestrator.buffer = {
+    async findBufferKeysForSession() {
+      return ["codex-thread:shared"];
+    },
+    getTurns() {
+      return [unstampedTurn];
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (
+    turns: BufferTurn[],
+    _reason: string,
+    options?: Record<string, unknown>,
+  ) => {
+    queuedTurns = turns;
+    (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
+  };
+
+  await orchestrator.flushSession("alice:chat", {
+    reason: "access_force_flush",
+    writeNamespaceOverride: "alice-project",
+    principalOverride: "alice",
+  });
+
+  assert.deepEqual(queuedTurns, [unstampedTurn]);
 });
 
 test("runExtraction skips active scope profile writes when no layer is writable", async () => {
@@ -1290,7 +1781,7 @@ test("runExtraction preserves empty-result buffers when fingerprint persistence 
   assert.equal(clearCalls, 0);
 });
 
-test("runExtraction preserves deduped buffers when the caller aborts before clearing", async () => {
+test("runExtraction preserves deduped buffers when the caller aborts during meta load", async () => {
   const config = parseConfig({});
   config.extractionMinChars = 0;
   config.extractionMinUserTurns = 1;
@@ -1357,7 +1848,7 @@ test("runExtraction preserves deduped buffers when the caller aborts before clea
         abortSignal: abortController.signal,
       },
     ),
-    /extraction aborted \(before_clear_buffer\)/,
+    /extraction aborted \(during_load_meta\)/,
   );
 
   assert.equal(clearCalls, 0);
@@ -2002,6 +2493,9 @@ test("runExtraction still clears the session buffer after persistence even if re
   config.extractionMinUserTurns = 1;
 
   let clearCalls = 0;
+  let retentionCalls = 0;
+  let passiveCaptureCalls = 0;
+  let tierMigrationCalls = 0;
   const abortController = new AbortController();
 
   const orchestrator = Object.create(Orchestrator.prototype) as any;
@@ -2009,6 +2503,9 @@ test("runExtraction still clears the session buffer after persistence even if re
   orchestrator.buffer = {
     clearAfterExtraction: async () => {
       clearCalls += 1;
+    },
+    retainDeferredTurns: async () => {
+      retentionCalls += 1;
     },
   };
   orchestrator.storageRouter = {
@@ -2044,6 +2541,12 @@ test("runExtraction still clears the session buffer after persistence even if re
   });
   orchestrator.maybeScheduleConsolidation = () => undefined;
   orchestrator.requestQmdMaintenance = () => undefined;
+  orchestrator.maybeCapturePassiveCorrections = async () => {
+    passiveCaptureCalls += 1;
+  };
+  orchestrator.runTierMigrationCycle = async () => {
+    tierMigrationCalls += 1;
+  };
   orchestrator.nonZeroExtractionsSinceConsolidation = 0;
 
   await assert.doesNotReject(async () => {
@@ -2052,6 +2555,9 @@ test("runExtraction still clears the session buffer after persistence even if re
       abortSignal: abortController.signal,
     });
   });
+  assert.equal(retentionCalls, 0);
+  assert.equal(passiveCaptureCalls, 0);
+  assert.equal(tierMigrationCalls, 0);
 
   assert.equal(
     clearCalls,

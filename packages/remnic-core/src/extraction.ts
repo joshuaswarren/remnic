@@ -39,8 +39,11 @@ import { ProfilingCollector } from "./profiling.js";
 import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
-import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
-import { applyExtractionSourceGrounding, type ExtractionGroundingRoleSources } from "./extraction-source-grounding.js";
+import {
+  attachExtractionProvenance,
+  applyExtractionSourceGrounding,
+  type ExtractionGroundingRoleSources,
+} from "./extraction-source-grounding.js";
 import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
@@ -183,6 +186,12 @@ export function shouldEnableLocalExtractionThinking(
   return config.localLlmDisableThinking &&
     config.localLlmThinkingThresholdChars > 0 &&
     conversationChars < config.localLlmThinkingThresholdChars;
+}
+
+function throwIfExtractionAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const reason = signal.reason;
+  throw reason instanceof Error ? reason : new Error("extraction aborted");
 }
 
 export class ExtractionEngine {
@@ -661,19 +670,21 @@ export class ExtractionEngine {
     assertionSource: string,
     messageTimestamp?: Date,
     roleAssertionSources?: ExtractionGroundingRoleSources,
+    signal?: AbortSignal,
   ): Promise<ExtractionResult> {
     if (!resolvePipelineProcessingCapabilities(this.config).proactiveExtraction) return base;
     const maxAdditional = Math.max(0, Math.floor(this.config.maxProactiveQuestionsPerExtraction));
     if (!shouldRunProactivePass(this.config, maxAdditional, this.shouldUseLocalLlm, this.localLlm)) return base;
 
     try {
-      const proactive = await this.generateProactiveQuestions(conversation, base, maxAdditional);
+      const proactive = await this.generateProactiveQuestions(conversation, base, maxAdditional, signal);
       if (proactive.length === 0) return base;
       const proactiveAdditions = await this.answerProactiveQuestions(
         conversation,
         base,
         proactive,
         maxAdditional,
+        signal,
       );
       const sanitizedAdditions = this.sanitizeExtractionResult(proactiveAdditions, messageTimestamp);
       const groundedAdditions = this.applySourceGrounding(
@@ -686,6 +697,7 @@ export class ExtractionEngine {
       if (!this.hasExtractionOutputs(groundedAdditions)) return base;
       return this.mergeProactiveExtractionPass(base, groundedAdditions, maxAdditional);
     } catch (err) {
+      if (signal?.aborted) throw err;
       log.debug(`proactive extraction question pass failed (ignored): ${err}`);
       return base;
     }
@@ -729,6 +741,7 @@ export class ExtractionEngine {
     conversation: string,
     base: ExtractionResult,
     maxAdditional: number,
+    signal?: AbortSignal,
   ): Promise<ExtractionQuestion[]> {
     const existingQuestionKeys = new Set(
       (base.questions ?? [])
@@ -776,8 +789,10 @@ export class ExtractionEngine {
             timeoutMs: this.config.proactiveExtractionTimeoutMs,
             operation: "proactive_extraction",
             priority: "background",
+            signal,
           },
         );
+        throwIfExtractionAborted(signal);
         if (localResponse?.content) {
           const localParsed = this.parseProactiveQuestionsFromText(
             localResponse.content.trim(),
@@ -791,7 +806,7 @@ export class ExtractionEngine {
           return [];
         }
       } catch (err) {
-        if (!this.config.localLlmFallback) {
+        if (signal?.aborted || !this.config.localLlmFallback) {
           throw err;
         }
       }
@@ -810,6 +825,7 @@ export class ExtractionEngine {
         temperature: 0.2,
         maxTokens: this.config.proactiveExtractionMaxTokens,
         timeoutMs: this.config.proactiveExtractionTimeoutMs,
+        signal,
       }),
     );
     if (!fallbackResult?.questions) return [];
@@ -825,6 +841,7 @@ export class ExtractionEngine {
     base: ExtractionResult,
     proactiveQuestions: ExtractionQuestion[],
     maxAdditional: number,
+    signal?: AbortSignal,
   ): Promise<ExtractionResult> {
     const factsPreview = base.facts
       .slice(0, 8)
@@ -883,8 +900,10 @@ export class ExtractionEngine {
             timeoutMs: this.config.proactiveExtractionTimeoutMs,
             operation: "proactive_extraction",
             priority: "background",
+            signal,
           },
         );
+        throwIfExtractionAborted(signal);
         if (localResponse?.content) {
           const parsed = this.parseProactiveExtractionResultFromText(localResponse.content.trim());
           if (parsed) {
@@ -895,7 +914,7 @@ export class ExtractionEngine {
           return { facts: [], profileUpdates: [], entities: [], questions: [] };
         }
       } catch (err) {
-        if (!this.config.localLlmFallback) {
+        if (signal?.aborted || !this.config.localLlmFallback) {
           throw err;
         }
       }
@@ -914,6 +933,7 @@ export class ExtractionEngine {
         temperature: 0.2,
         maxTokens: this.config.proactiveExtractionMaxTokens,
         timeoutMs: this.config.proactiveExtractionTimeoutMs,
+        signal,
       }),
     );
     if (!fallbackResult) {
@@ -1077,73 +1097,6 @@ export class ExtractionEngine {
     return null;
   }
 
-  /**
-   * Attach claim-level provenance spans to each fact in the extraction result
-   * (issue #1575 PR 2). Runs once at write time, after sanitize + proactive
-   * pass so ALL facts (base + proactive additions) get verified spans before
-   * the result is returned for persistence.
-   *
-   * The validator locates each fact's LLM-provided `quote` in the buffered
-   * turns and builds a `ProvenanceSource[]` with verified offsets. Never
-   * throws, never drops a fact — an unverifiable span is a tagged state, not
-   * a silent failure (rule 34 spirit). When `provenance.enabled` is false,
-   * this is a no-op (byte-identical to pre-feature behavior, rule 39).
-   */
-  private attachProvenanceToResult(
-    result: ExtractionResult,
-    turns: ReadonlyArray<{
-      content: string;
-      sessionKey?: string;
-      logicalSessionKey?: string;
-      timestamp: string;
-      turnFingerprint?: string;
-    }>,
-  ): ExtractionResult {
-    // Even when provenance is disabled, strip the transient LLM-provided
-    // `quote` field so it does not leak through the persist pipeline (the
-    // enabled path strips it after validation; the disabled path must match).
-    // quote is never persisted to frontmatter, but carrying it risks it
-    // surfacing in content-hash dedup or downstream in-memory consumers
-    // (cursor thread dHiY).
-    if (!this.config.provenance?.enabled) {
-      if (result.facts.length === 0) return result;
-      return {
-        ...result,
-        facts: result.facts.map((fact) => {
-          if (fact.quote === undefined) return fact;
-          const { quote: _stripped, ...rest } = fact;
-          return rest;
-        }),
-      };
-    }
-    if (result.facts.length === 0) return result;
-    const provenanceTurns: ProvenanceTurnInput[] = turns.map((t) => ({
-      content: t.content,
-      sessionKey: t.sessionKey,
-      logicalSessionKey: t.logicalSessionKey,
-      timestamp: t.timestamp,
-      turnId: t.turnFingerprint,
-    }));
-    const facts = result.facts.map((fact) => {
-      const built = buildFactProvenance(
-        fact.quote,
-        provenanceTurns,
-        this.config.provenance,
-      );
-      // Strip the transient `quote` field — it has served its purpose (the
-      // validator consumed it) and must NOT leak into the persisted ExtractedFact
-      // shape or the content-hash dedup key (rule 23 / checklist §13).
-      const { quote: _stripped, ...factWithoutQuote } = fact;
-      return {
-        ...factWithoutQuote,
-        ...(built.sources && built.sources.length > 0 ? { sources: built.sources } : {}),
-        ...(built.provenance !== "none" ? { provenance: built.provenance } : {}),
-        ...(built.requireSpansPending ? { requireSpansPending: true } : {}),
-      };
-    });
-    return { ...result, facts };
-  }
-
   private applySourceGrounding(
     result: ExtractionResult,
     sourceText: string,
@@ -1175,10 +1128,14 @@ export class ExtractionEngine {
       turnFingerprint?: string;
     }>,
   ): ExtractionResult {
-    return this.attachProvenanceToResult(result, turns);
+    return attachExtractionProvenance(result, turns, this.config.provenance);
   }
 
-  async extract(turns: BufferTurn[], existingEntities?: string[]): Promise<ExtractionResult> {
+  async extract(
+    turns: BufferTurn[],
+    existingEntities?: string[],
+    signal?: AbortSignal,
+  ): Promise<ExtractionResult> {
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
 
     // Guard: skip if buffer is empty or all turns are whitespace-only
@@ -1269,7 +1226,8 @@ export class ExtractionEngine {
       this.profiler.startSpan("local-llm", extractionTraceId);
       primaryExtractorAttempted = true;
       try {
-        const localResult = await this.extractWithLocalLlm(conversation, existingEntities);
+        const localResult = await this.extractWithLocalLlm(conversation, existingEntities, signal);
+        throwIfExtractionAborted(signal);
         if (localResult) {
           const durationMs = Date.now() - startTime;
           this.profiler.endSpan("local-llm", extractionTraceId);
@@ -1290,6 +1248,7 @@ export class ExtractionEngine {
             assertionSource,
             messageTimestamp,
             roleAssertionSources,
+            signal,
           );
           return this.finalizeExtractionResult(finalResult, boundedTurns);
         }
@@ -1307,6 +1266,7 @@ export class ExtractionEngine {
         }
         log.info("extraction: local LLM unavailable, falling back to gateway default AI");
       } catch (err) {
+        if (signal?.aborted) throw err;
         if (!this.config.localLlmFallback) {
           log.warn("extraction: local LLM error and fallback disabled:", err);
           return {
@@ -1330,7 +1290,7 @@ export class ExtractionEngine {
       this.profiler.startSpan("direct-client", extractionTraceId);
       primaryExtractorAttempted = true;
       try {
-        const directResult = await this.extractWithDirectClient(conversation, existingEntities);
+        const directResult = await this.extractWithDirectClient(conversation, existingEntities, signal);
         if (directResult) {
           const durationMs = Date.now() - startTime;
           this.profiler.endSpan("direct-client", extractionTraceId);
@@ -1351,6 +1311,7 @@ export class ExtractionEngine {
             assertionSource,
             messageTimestamp,
             roleAssertionSources,
+            signal,
           );
           return this.finalizeExtractionResult(finalResult, boundedTurns);
         }
@@ -1365,6 +1326,7 @@ export class ExtractionEngine {
         closedDirectTrace = true;
         log.info("extraction: direct client returned no result, falling back to gateway AI");
       } catch (err) {
+        if (signal?.aborted) throw err;
         try {
           this.emit({
             kind: "llm_error", traceId, model: this.config.model, operation: "extraction",
@@ -1420,6 +1382,7 @@ export class ExtractionEngine {
           temperature: 0.3,
           maxTokens: this.config.extractionMaxOutputTokens,
           timeoutMs: this.config.localLlmTimeoutMs,
+          signal,
         }),
       );
 
@@ -1450,6 +1413,7 @@ export class ExtractionEngine {
           assertionSource,
           messageTimestamp,
           roleAssertionSources,
+          signal,
         );
         return this.finalizeExtractionResult(finalResult, boundedTurns);
       }
@@ -1476,6 +1440,7 @@ export class ExtractionEngine {
         extractionFailureClass: fallbackParseFailureClass,
       };
     } catch (err) {
+      if (signal?.aborted) throw err;
       this.emit({
         kind: "llm_error", traceId: fallbackTraceId, model: "fallback", operation: "extraction",
         durationMs: Date.now() - fallbackStartTime, error: String(err),
@@ -1504,7 +1469,11 @@ export class ExtractionEngine {
    * Extract memories using local LLM with JSON mode.
    * Uses a minimal prompt to fit within local model context limits (typically 4k-8k).
    */
-  private async extractWithLocalLlm(conversation: string, existingEntities?: string[]): Promise<ExtractionResult | null> {
+  private async extractWithLocalLlm(
+    conversation: string,
+    existingEntities?: string[],
+    signal?: AbortSignal,
+  ): Promise<ExtractionResult | null> {
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     log.debug(
       `extractWithLocalLlm: starting extraction, localLlmEnabled=${this.shouldUseLocalLlm}, model=${this.config.localLlmModel}`,
@@ -1574,6 +1543,7 @@ ${truncatedConversation}`;
           ? false
           : undefined,
         priority: "background",
+        signal,
       },
     );
 
@@ -1625,6 +1595,7 @@ ${truncatedConversation}`;
   private async extractWithDirectClient(
     conversation: string,
     existingEntities?: string[],
+    signal?: AbortSignal,
   ): Promise<ExtractionResult | null> {
     if (!this.client) return null;
 
@@ -1633,19 +1604,22 @@ ${truncatedConversation}`;
     });
     log.debug(`extractWithDirectClient: calling model=${this.config.model} tokenParams=${JSON.stringify(tokenParams)}`);
 
-    const response = await this.client.chat.completions.create({
-      model: this.config.model,
-      messages: [
-        {
-          role: "system",
-          content:
-            this.buildExtractionInstructions(existingEntities) +
-            `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${EXTRACTION_RESPONSE_SHAPE}`,
-        },
-        { role: "user", content: conversation },
-      ],
-      ...tokenParams,
-    });
+    const response = await this.client.chat.completions.create(
+      {
+        model: this.config.model,
+        messages: [
+          {
+            role: "system",
+            content:
+              this.buildExtractionInstructions(existingEntities) +
+              `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${EXTRACTION_RESPONSE_SHAPE}`,
+          },
+          { role: "user", content: conversation },
+        ],
+        ...tokenParams,
+      },
+      signal ? { signal } : undefined,
+    );
 
     const content = response.choices?.[0]?.message?.content?.trim();
     if (!content) {

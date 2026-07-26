@@ -11,7 +11,25 @@
  */
 
 import { createHash } from "node:crypto";
-import { buildAccessWriteRequestFingerprint } from "./write-envelope.js";
+import {
+  type CodingScopedWriteInput,
+  ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
+  type EngramAccessBriefingRequest,
+  type EngramAccessBriefingResponse,
+  type EngramAccessExtractionForceFlushRequest,
+  type EngramAccessExtractionForceFlushResponse,
+  EngramAccessInputError,
+  type EngramAccessMemoryStoreRequest,
+  type EngramAccessObserveRequest,
+  type EngramAccessObserveResponse,
+  type EngramAccessQmdCollectionState,
+  type EngramAccessQmdHealthResponse,
+  type EngramAccessSuggestionSubmitRequest,
+  type EngramAccessWriteResponse,
+  type MemoryScopePlan,
+  NamespaceNotWritableError,
+} from "./access-service.js";
+import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
   resolveCompressionCapabilities,
@@ -32,24 +50,9 @@ import type { MemoryActionOutcome, MemoryActionType } from "./types.js";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "./work/board.js";
 import { wrapWorkLayerContext } from "./work/boundary.js";
 import { WorkStorage } from "./work/storage.js";
-import { WriteQuarantineStore, type QuarantineOperation } from "./write-quarantine.js";
-import {
-  ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
-  EngramAccessInputError,
-  NamespaceNotWritableError,
-  type CodingScopedWriteInput,
-  type EngramAccessBriefingRequest,
-  type EngramAccessBriefingResponse,
-  type EngramAccessMemoryStoreRequest,
-  type EngramAccessObserveRequest,
-  type EngramAccessObserveResponse,
-  type EngramAccessQmdCollectionState,
-  type EngramAccessQmdHealthResponse,
-  type EngramAccessSuggestionSubmitRequest,
-  type EngramAccessWriteResponse,
-  type MemoryScopePlan,
-} from "./access-service.js";
-
+import { buildAccessWriteRequestFingerprint } from "./write-envelope.js";
+import { type QuarantineOperation, WriteQuarantineStore } from "./write-quarantine.js";
+import { PendingObserveExtractionTracker, pendingObserveScopeHint } from "./access-observe-helpers.js";
 export interface AccessObserveWriteSurfaceDeps {
   attachCodingContextAfterScopedWrite(
     request: CodingScopedWriteInput & { namespace?: string; sessionKey?: string }
@@ -107,6 +110,12 @@ export interface AccessObserveWriteSurfaceDeps {
       authenticatedPrincipal?: string;
     }
   ): Promise<MemoryScopePlan>;
+  cancelPendingObserveExtractions?(
+    sessionKey: string,
+    principal?: string,
+    namespace?: string,
+    scopeHint?: string,
+  ): void;
   resolveReadableNamespace(namespace: string | undefined, principal?: string): string;
   validateWriteCandidate(
     request: EngramAccessMemoryStoreRequest | EngramAccessSuggestionSubmitRequest,
@@ -121,7 +130,16 @@ export interface AccessObserveWriteSurfaceDeps {
 
 export class AccessObserveWriteSurface {
   private quarantineStoreInstance?: WriteQuarantineStore;
+  private readonly pendingObserveExtractions = new PendingObserveExtractionTracker();
 
+  public cancelPendingObserveExtractions(
+    sessionKey: string,
+    principal?: string,
+    namespace?: string,
+    scopeHint?: string,
+  ): void {
+    this.pendingObserveExtractions.cancel(sessionKey, principal, namespace, scopeHint);
+  }
   constructor(private readonly deps: AccessObserveWriteSurfaceDeps) {}
 
   private quarantineStore(): WriteQuarantineStore {
@@ -654,6 +672,12 @@ export class AccessObserveWriteSurface {
     //    self base leaves NO coding context bound to the session, matching how
     //    `memory_store` resolves its full scoped write namespace before any
     //    session mutation.
+    const observePreparation = this.pendingObserveExtractions.reserve(
+      request.sessionKey,
+      pendingObserveScopeHint(request),
+    );
+    try {
+
     let scope: MemoryScopePlan;
     try {
       scope = await this.deps.resolveMemoryScopePlan(request);
@@ -666,6 +690,7 @@ export class AccessObserveWriteSurface {
       throw err;
     }
     const writeNamespace = scope.writeNamespace;
+    observePreparation.setScope(scope.principal, writeNamespace);
 
     // Backward-compatible BASE writable namespace (pre-#1495 response semantics)
     // for the legacy `namespace` response field. DERIVED from the already-resolved
@@ -812,21 +837,35 @@ export class AccessObserveWriteSurface {
       // limits concurrency (one extraction at a time per session via
       // queueBufferedExtraction). Fire-and-forget here just decouples
       // the HTTP response from the queue drain.
+      if (!observePreparation.isCancelled()) {
+
       try {
+        const observeAbortController = new AbortController();
         const extractionPromise = this.deps.orchestrator.ingestReplayBatch(turns, {
           archiveLcm: false,
           writeNamespaceOverride,
           principalOverride,
+          abortSignal: observeAbortController.signal,
+          ...(typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
+            ? { sessionOwnerPrincipal: request.authenticatedPrincipal.trim() }
+            : {}),
         });
         extractionPromise.catch((err) => {
           log.error(`access-observe background extraction failed: ${err}`);
         });
+        this.pendingObserveExtractions.track(
+          this.pendingObserveExtractions.key(request.sessionKey, scope.principal, writeNamespace),
+          extractionPromise,
+          observeAbortController,
+        );
         extractionQueued = true;
       } catch (err) {
         // Synchronous enqueue failure (e.g. orchestrator disposed)
         log.error(`access-observe extraction enqueue failed: ${err}`);
       }
     }
+      }
+
 
     log.info(
       `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued}`
@@ -852,8 +891,28 @@ export class AccessObserveWriteSurface {
       lcmArchived,
       extractionQueued,
     };
+    } finally {
+      observePreparation.release();
+  }
   }
 
+  async extractionForceFlush(
+    request: EngramAccessExtractionForceFlushRequest,
+  ): Promise<EngramAccessExtractionForceFlushResponse> {
+    return extractionForceFlush(
+      this.deps,
+      request,
+      (sessionKey, principal, namespace, abortSignal, registerCancellation, scopeHint) =>
+        this.pendingObserveExtractions.wait(
+          sessionKey,
+          principal,
+          namespace,
+          abortSignal,
+          registerCancellation,
+          scopeHint,
+        ),
+    );
+  }
   async workTask(request: {
     action: "create" | "get" | "list" | "update" | "transition" | "delete";
     id?: string;

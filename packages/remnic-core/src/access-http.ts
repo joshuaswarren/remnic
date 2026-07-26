@@ -17,6 +17,7 @@ import {
   type EngramAccessMemoryResponse,
   type EngramAccessWriteResponse,
 } from "./access-service.js";
+import { maybeHandleLifecycleFlush, type LifecycleFlushHttpDeps } from "./access-http-lifecycle-flush.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
@@ -40,7 +41,7 @@ import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation, type OperationName } from "./access-boundary.js";
 import { authorizationProbeNamespaces, probeOperationAuthorization } from "./access-authorization-probe.js";
 import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
-import * as lcm from "./access-http-lcm-compaction.js";
+import { respondLcmCompactionCapabilitiesHttp } from "./access-http-lcm-compaction.js";
 import {
   assertOperationAllowed,
   capabilityAllowsOp,
@@ -890,7 +891,7 @@ export class EngramAccessHttpServer {
       this.respondJson(res, 200, await this.service.health());
       return;
     }
-    if (req.method === "GET" && pathname === "/engram/v1/capabilities") return lcm.respondLcmCompactionCapabilitiesHttp(res);
+    if (req.method === "GET" && pathname === "/engram/v1/capabilities") return respondLcmCompactionCapabilitiesHttp(res);
     if (req.method === "GET" && pathname === "/engram/v1/authorization") {
       res.setHeader("cache-control", "no-store");
       const probe = probeOperationAuthorization(tokenCapabilityStore.getStore(), parsed.searchParams.getAll("op"));
@@ -1668,41 +1669,9 @@ export class EngramAccessHttpServer {
       this.respondJson(res, 200, response);
       return;
     }
-
-    if (
-      req.method === "POST" &&
-      (pathname === "/engram/v1/lcm/compaction/flush" || pathname === "/remnic/v1/lcm/compaction/flush")
-    ) {
-      this.enforceTokenOp("lcm_compaction_flush"); // boundary dispatch (issue #1525)
-      const body = await this.readValidatedBody(req, "lcmCompactionFlush");
-      await lcm.handleLcmCompactionFlushHttp({
-        body, service: this.service,
-        response: res, ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
-        recordWriteRateLimitHit: () => this.recordWriteRateLimitHit(req),
-        resolveNamespace: (namespace) => this.resolveNamespace(req, namespace), defaultNamespace: this.service.configRef?.defaultNamespace,
-        resolveRequestPrincipal: () => this.resolveRequestPrincipal(req), respondJson: this.respondJson.bind(this),
-      });
-      return;
-    }
-
-    if (
-      req.method === "POST" &&
-      (pathname === "/engram/v1/lcm/compaction/record" || pathname === "/remnic/v1/lcm/compaction/record")
-    ) {
-      this.enforceTokenOp("lcm_compaction_record"); // boundary dispatch (issue #1525)
-      const body = await this.readValidatedBody(req, "lcmCompactionRecord");
-      this.ensureWriteRateLimitAvailable(req);
-      const response = await this.service.lcmCompactionRecord({
-        sessionKey: body.sessionKey,
-        namespace: this.resolveNamespace(req, body.namespace),
-        tokensBefore: body.tokensBefore,
-        tokensAfter: body.tokensAfter,
-        authenticatedPrincipal: this.resolveRequestPrincipal(req),
-      });
-      this.recordWriteRateLimitHit(req);
-      this.respondJson(res, 200, response);
-      return;
-    }
+    if (await maybeHandleLifecycleFlush(
+      this.lifecycleFlushDeps(req, res), req.method, pathname, abortSignal,
+    )) return;
 
     if (req.method === "GET" && pathname === "/engram/v1/lcm/status") {
       this.enforceTokenOp("lcm_status"); // boundary dispatch (issue #1525)
@@ -3218,6 +3187,8 @@ export class EngramAccessHttpServer {
         toolName === "remnic.observe" ||
         toolName === "engram.lcm_compaction_flush" ||
         toolName === "remnic.lcm_compaction_flush" ||
+        toolName === "engram.extraction_force_flush" ||
+        toolName === "remnic.extraction_force_flush" ||
         toolName === "engram.lcm_compaction_record" ||
         toolName === "remnic.lcm_compaction_record" ||
         toolName === "engram.capsule_export" ||
@@ -3254,6 +3225,16 @@ export class EngramAccessHttpServer {
     // the record). Other write tools keep the coarse pre-check.
     const observeSelfEnforcesQuota =
       toolName === "engram.observe" || toolName === "remnic.observe";
+    const extractionForceFlushWrite =
+      toolName === "engram.extraction_force_flush" || toolName === "remnic.extraction_force_flush";
+    let writeRateLimitRecorded = false;
+    const recordCommittedMcpWrite = extractionForceFlushWrite
+      ? () => {
+          if (writeRateLimitRecorded) return;
+          writeRateLimitRecorded = true;
+          this.recordWriteRateLimitHit(req);
+        }
+      : undefined;
     if (isMcpWrite && !observeSelfEnforcesQuota) {
       this.ensureWriteRateLimitAvailable(req);
     }
@@ -3296,6 +3277,7 @@ export class EngramAccessHttpServer {
       enforceWriteQuota: observeSelfEnforcesQuota
         ? () => this.ensureWriteRateLimitAvailable(req)
         : undefined,
+      recordWriteCommit: recordCommittedMcpWrite,
       sourceConnector: this.resolveConnector(req),
       abortSignal,
     });
@@ -3317,8 +3299,9 @@ export class EngramAccessHttpServer {
       // consumed a write — count it. Tools WITH structuredContent use the
       // dryRun/idempotencyReplay guards.
       const counts = structured ? this.shouldCountWriteRateLimit(structured) : true;
-      if (!isError && !isRejectedCodegraph && counts) {
+      if (!writeRateLimitRecorded && !isError && !isRejectedCodegraph && counts) {
         this.recordWriteRateLimitHit(req);
+        writeRateLimitRecorded = true;
       }
     }
     // A mutating tool may have committed just before the client disconnected.
@@ -3621,7 +3604,6 @@ export class EngramAccessHttpServer {
     }
     return parsed;
   }
-
   private parseOptionalBooleanHeader(
     req: IncomingMessage,
     name: string,
@@ -3633,7 +3615,18 @@ export class EngramAccessHttpServer {
     if (raw === "false") return false;
     throw new EngramAccessInputError(`${name} header must be one of: true, false`);
   }
-
+  private lifecycleFlushDeps(req: IncomingMessage, res: ServerResponse): LifecycleFlushHttpDeps {
+    const readValidatedBody = ((schemaName: SchemaName) => this.readValidatedBody(req, schemaName)) as LifecycleFlushHttpDeps["readValidatedBody"];
+    return { service: this.service, defaultNamespace: this.service.configRef?.defaultNamespace,
+      enforceTokenOp: (op) => this.enforceTokenOp(op),
+      readValidatedBody,
+      ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
+      resolveNamespace: (namespace) => this.resolveNamespace(req, namespace),
+      resolveRequestPrincipal: () => this.resolveRequestPrincipal(req),
+      recordWriteRateLimitHit: () => this.recordWriteRateLimitHit(req),
+      respondJson: (payload) => this.respondJson(res, 200, payload),
+    };
+  }
   private async readValidatedBody<S extends SchemaName>(
     req: IncomingMessage,
     schemaName: S,

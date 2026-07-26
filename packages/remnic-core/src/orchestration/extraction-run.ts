@@ -51,6 +51,17 @@ export interface ExtractionRunResult {
   postPersistMetadataFailed?: boolean;
 }
 
+export class ExtractionDeadlineError extends Error {
+  readonly stage: string;
+
+  constructor(stage: string) {
+    super(`replay extraction deadline exceeded (${stage})`);
+    this.name = "ExtractionDeadlineError";
+    this.stage = stage;
+  }
+}
+
+
 /** Dependencies injected by the orchestrator. All stable references or
  *  live accessors — lazy getters for anything tests reassign
  *  post-construction (buffer, extraction, storageRouter, threading). */
@@ -81,6 +92,7 @@ export interface ExtractionRunCoordinatorDeps {
       namespace: string;
       bufferKey: string;
       isLiveSession: boolean;
+      abortSignal?: AbortSignal;
     }
   ) => Promise<void>;
 
@@ -112,83 +124,25 @@ export interface ExtractionRunCoordinatorDeps {
 // #1526 seam 25; this file previously carried duplicate copies
 // (AGENTS.md rule 8 — no duplicated helpers).
 import { raceRecallAbort, throwIfRecallAborted } from "./orchestrator-helpers.js";
+import {
+  capExtractionRetryStateEntries,
+  combineExtractionAbortSignals,
+  computeExtractionRetryNextEligibleMs,
+  deriveSourceConnector,
+  deriveTopicsFromExtraction,
+  runExtractionPostPersist,
+  runExtractionPostPersistBestEffort,
+  EXTRACTION_RETRY_STATE_MAX_ENTRIES,
+} from "./extraction-run-helpers.js";
+import type { ExtractionResilienceStatus, ExtractionRetryStateEntry } from "./extraction-run-helpers.js";
 
-export function deriveTopicsFromExtraction(result: ExtractionResult): string[] {
-  const topics = new Set<string>();
-  for (const fact of result.facts ?? []) {
-    for (const tag of fact.tags ?? []) {
-      if (tag && tag.length >= 2) topics.add(tag.toLowerCase());
-    }
-    if (fact.entityRef) topics.add(fact.entityRef.toLowerCase());
-    if (fact.category) topics.add(fact.category);
-  }
-  for (const entity of (result as any).entities ?? []) {
-    if (typeof entity.name === "string" && entity.name.length >= 2) {
-      topics.add(entity.name.toLowerCase());
-    }
-  }
-  return [...topics].slice(0, 16);
-}
-
-/** Bounded cap on persisted per-fingerprint retry-state entries (per namespace meta). */
-const EXTRACTION_RETRY_STATE_MAX_ENTRIES = 500;
-
-interface ExtractionRetryStateEntry {
-  attempts: number;
-  nextEligibleAtMs: number;
-  firstFailedAtMs: number;
-  lastFailureClass: ExtractionFailureClass;
-}
-
-export interface ExtractionResilienceStatus {
-  breaker: {
-    state: "closed" | "open" | "half_open";
-    openUntilMs: number;
-    consecutiveFailures: number;
-    lastReason: string;
-  };
-  backoffFingerprintCount: number;
-}
-
-/**
- * Pure backoff scheduler. Returns the absolute ms timestamp at which a
- * fingerprint that has failed `attempts` times becomes eligible again:
- * exponential via the configured schedule, clamped to `maxBackoffMs`, with
- * ±`jitterRatio` multiplicative jitter. `rng` is injectable for deterministic
- * tests. Never returns a timestamp before `now`.
- */
-export function computeExtractionRetryNextEligibleMs(
-  attempts: number,
-  scheduleMs: readonly number[],
-  maxBackoffMs: number,
-  jitterRatio: number,
-  now: number,
-  rng: () => number = Math.random,
-): number {
-  const cap = Number.isFinite(maxBackoffMs) && maxBackoffMs > 0 ? maxBackoffMs : 0;
-  if (!Array.isArray(scheduleMs) || scheduleMs.length === 0) {
-    return now + cap;
-  }
-  const idx = Math.min(Math.max(attempts - 1, 0), scheduleMs.length - 1);
-  const step = scheduleMs[idx];
-  const base = Math.min(typeof step === "number" && step > 0 ? step : cap, cap);
-  const jitter = 1 + (rng() * 2 - 1) * jitterRatio;
-  return now + Math.max(0, Math.round(base * jitter));
-}
-
-/**
- * Cap the persisted retry-state array to the newest `maxEntries` by
- * firstFailedAt. Guards `maxEntries <= 0` so a zero cap returns [] rather than
- * `slice(-0)`, which returns ALL entries (AGENTS.md rule 17).
- */
-export function capExtractionRetryStateEntries<T extends { firstFailedAt: string }>(
-  entries: readonly T[],
-  maxEntries: number,
-): T[] {
-  if (maxEntries <= 0) return [];
-  const sorted = [...entries].sort((a, b) => a.firstFailedAt.localeCompare(b.firstFailedAt));
-  return sorted.slice(-maxEntries);
-}
+export {
+  capExtractionRetryStateEntries,
+  computeExtractionRetryNextEligibleMs,
+  deriveSourceConnector,
+  deriveTopicsFromExtraction,
+};
+export type { ExtractionResilienceStatus };
 
 /**
  * Coordinates the extraction run pipeline. Holds the dedupe fingerprint
@@ -496,6 +450,7 @@ export class ExtractionRunCoordinator {
     turns: BufferTurn[],
     options: {
       clearBufferAfterExtraction?: boolean;
+      clearMatchingTurns?: boolean;
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       deadlineMs?: number;
@@ -503,52 +458,118 @@ export class ExtractionRunCoordinator {
       abortSignal?: AbortSignal;
       failOnExtractionFailure?: boolean;
       /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * extraction writes go to this namespace instead of the one derived
+       * Called immediately after durable extraction persistence returns, before
+       * any metadata, retention, or helper work. Lifecycle callers use this
+       * as the write-rate-limit commit boundary.
+       */
+      onDurableCommit?: () => void;
+      /**
+       * Explicit namespace override for the write path (#460).  When set, this
+       * is the namespace where extraction writes go instead of the one derived
        * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * The resolved `principal` is still threaded into memory metadata
-       * for provenance; only the storage target is overridden.
+       * The resolved `principal` is still threaded into memory metadata for
+       * provenance; only the storage target is overridden.
        */
       writeNamespaceOverride?: string;
       /**
        * Pin the provenance principal instead of deriving it from
-       * `resolvePrincipal(sessionKey)` (#1495 thread 1). When set, this is the
-       * identity an access surface already authenticated; used so observed-turn
-       * provenance is correct even though `turn.sessionKey` is the ORIGINAL
-       * (un-prefixed) key and storage is pinned via `writeNamespaceOverride`.
+       * `resolvePrincipal(sessionKey)`. When set, this is the identity an
+       * access surface already authenticated; used so observed-turn provenance
+       * is correct even though `turn.sessionKey` is the original key.
        */
       principalOverride?: string;
       /**
+       * Access scope resolution may already have selected a profile while the
+       * session context remains intentionally unbound. Reuse that plan for
+       * persistence instead of deriving it from shared session state.
+       */
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+      /**
        * Force the extractor call, bypassing the retry-backoff / circuit-breaker
-       * gate (extraction hot-loop hardening). Set by explicit flush paths
-       * (before_reset / session flush / replay / bulk import) that already pass
-       * `skipDedupeCheck: true` — AGENTS.md rule 18. A forced attempt still
-       * records its failure into retry-state/breaker.
+       * gate (extraction hot-loop hardening). Set by explicit flush paths.
        */
       forceExtractionAttempt?: boolean;
     } = {}
   ): Promise<ExtractionRunResult> {
     log.debug(`running extraction on ${turns.length} turns`);
     const clearBufferAfterExtraction = options.clearBufferAfterExtraction ?? true;
+    const clearMatchingTurns = options.clearMatchingTurns === true;
     const skipCharThreshold = options.skipCharThreshold ?? false;
     const skipUserTurnThreshold = options.skipUserTurnThreshold ?? false;
     const deadlineMs =
       typeof options.deadlineMs === "number" && Number.isFinite(options.deadlineMs) ? options.deadlineMs : undefined;
     const bufferKey = options.bufferKey ?? turns[0]?.sessionKey ?? "default";
     const throwIfDeadlineExceeded = (stage: string): void => {
-      if (typeof deadlineMs === "number" && Date.now() > deadlineMs) {
-        throw new Error(`replay extraction deadline exceeded (${stage})`);
+      if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+        throw new ExtractionDeadlineError(stage);
       }
     };
     const throwIfAborted = (stage: string): void => {
       throwIfRecallAborted(options.abortSignal, `extraction aborted (${stage})`);
     };
+    const runPassiveCapture = async (
+      captureTurns: readonly BufferTurn[],
+      captureOptions: {
+        sessionKey: string;
+        principal?: string;
+        namespace: string;
+        bufferKey: string;
+        isLiveSession: boolean;
+        abortSignal?: AbortSignal;
+      },
+    ): Promise<void> => {
+      const deadlineController =
+        typeof deadlineMs === "number" && Number.isFinite(deadlineMs) ? new AbortController() : undefined;
+      const captureSignal = combineExtractionAbortSignals(captureOptions.abortSignal ?? options.abortSignal,
+        deadlineController);
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      if (deadlineController && typeof deadlineMs === "number") {
+        const scheduleDeadlineAbort = (): void => {
+          const remainingMs = deadlineMs - Date.now();
+          if (remainingMs <= 0) {
+            deadlineController.abort();
+            return;
+          }
+          deadlineTimer = setTimeout(
+            () => {
+              if (Date.now() >= deadlineMs) {
+                deadlineController.abort();
+              } else {
+                scheduleDeadlineAbort();
+              }
+            },
+            Math.min(remainingMs, 2_147_483_647),
+          );
+        };
+        scheduleDeadlineAbort();
+      }
+      try {
+        await raceRecallAbort(
+          this.deps.maybeCapturePassiveCorrections(captureTurns, {
+            ...captureOptions,
+            ...(captureSignal ? { abortSignal: captureSignal } : {}),
+          }),
+          captureSignal,
+          "extraction aborted (during_passive_capture)",
+        );
+      } catch (error) {
+        if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+          throw new ExtractionDeadlineError("during_passive_capture");
+        }
+        throw error;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+      }
+    };
     const clearBuffer = async (options?: { ignoreAbort?: boolean }) => {
       if (options?.ignoreAbort !== true) {
+        throwIfDeadlineExceeded("before_clear_buffer");
         throwIfAborted("before_clear_buffer");
       }
       if (clearBufferAfterExtraction) {
-        await this.deps.getBuffer().clearAfterExtraction(bufferKey, turns);
+        await this.deps
+          .getBuffer()
+          .clearAfterExtraction(bufferKey, turns, clearMatchingTurns ? { allowNonPrefix: true } : undefined);
       }
     };
 
@@ -578,13 +599,23 @@ export class ExtractionRunCoordinator {
       // Context-only turns may still contain corrections (review: "context-only
       // turns skip capture"). Scan normalizedTurns before clearing the buffer.
       if (normalizedTurns.length > 0) {
-        await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+        throwIfDeadlineExceeded("before_context_only_capture");
+        const capturePrincipal =
+          typeof options.principalOverride === "string" && options.principalOverride.length > 0
+            ? options.principalOverride
+            : resolvePrincipal(sessionKey, this.config);
+        const captureNamespace =
+          typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
+            ? options.writeNamespaceOverride
+            : this.deps.resolveSelfNamespace(sessionKey);
+        await runPassiveCapture(normalizedTurns as BufferTurn[], {
           sessionKey,
-          principal: resolvePrincipal(sessionKey, this.config),
-          namespace: this.deps.resolveSelfNamespace(sessionKey),
+          principal: capturePrincipal,
+          namespace: captureNamespace,
           bufferKey,
           isLiveSession: clearBufferAfterExtraction,
         });
+        throwIfDeadlineExceeded("before_context_only_clear");
       }
       await clearBuffer();
       return { status: "skipped", reason: "empty_normalized_turns", persistedCount: 0, durableOutputCount: 0 };
@@ -599,7 +630,6 @@ export class ExtractionRunCoordinator {
     const belowUserTurnThreshold = !skipUserTurnThreshold && userTurns.length < this.config.extractionMinUserTurns;
     if ((!skipCharThreshold && belowCharThreshold) || belowUserTurnThreshold) {
       log.debug(`skipping extraction: below threshold (totalChars=${totalChars}, userTurns=${userTurns.length})`);
-      await clearBuffer();
       // Passive correction capture runs even when extraction is skipped for
       // being below the char/user-turn threshold (review: "skipped extraction
       // skips capture"). A short correction like "stop using Vim" is under
@@ -632,7 +662,7 @@ export class ExtractionRunCoordinator {
         });
         const captureNamespace =
           captureWO ?? captureScopePlan?.writeNamespace ?? this.deps.resolveSelfNamespace(sessionKey);
-        await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+        await runPassiveCapture(normalizedTurns as BufferTurn[], {
           sessionKey,
           principal: capturePrincipal,
           namespace: captureNamespace,
@@ -640,6 +670,7 @@ export class ExtractionRunCoordinator {
           isLiveSession: clearBufferAfterExtraction,
         });
       }
+      await clearBuffer();
       return {
         status: "skipped",
         reason: "below_threshold",
@@ -673,13 +704,19 @@ export class ExtractionRunCoordinator {
       this.config.codingMode,
       this.config.defaultNamespace
     );
-    const scopeProfileGatePlan = resolveScopeProfilePlan({
-      config: this.config,
-      principal,
-      codingContext: codingContextForWrite,
-      codingOverlay: codingOverlayForWrite,
-    });
-    const scopeProfileWritePlan = explicitWriteNamespace ? null : scopeProfileGatePlan;
+    const scopeProfileGatePlan =
+      options.scopeProfileWritePlan !== undefined
+        ? options.scopeProfileWritePlan
+        : resolveScopeProfilePlan({
+            config: this.config,
+            principal,
+            codingContext: codingContextForWrite,
+            codingOverlay: codingOverlayForWrite,
+          });
+    const scopeProfileWritePlan =
+      explicitWriteNamespace && options.scopeProfileWritePlan === undefined
+        ? null
+        : scopeProfileGatePlan;
     if (scopeProfileWritePlan) {
       const selectedLayer = scopeProfileWritePlan.layers.find((layer) => layer.id === scopeProfileWritePlan.writeLayer);
       const writeNamespaceReadable = scopeProfileWritePlan.readNamespaces.includes(
@@ -702,17 +739,84 @@ export class ExtractionRunCoordinator {
       explicitWriteNamespace ??
       scopeProfileWritePlan?.writeNamespace ??
       this.deps.applyCodingNamespaceOverlay(sessionKey, defaultNamespaceForPrincipal(principal, this.config));
-    const storage = await this.deps.getStorageRouter().storageFor(selfNamespace);
+    const extractionDeadlineController =
+      typeof deadlineMs === "number" && Number.isFinite(deadlineMs)
+        ? new AbortController()
+        : undefined;
+    const extractionAbortSignal = extractionDeadlineController
+      ? options.abortSignal
+        ? AbortSignal.any([options.abortSignal, extractionDeadlineController.signal])
+        : extractionDeadlineController.signal
+      : options.abortSignal;
+    let extractionDeadlineTimer: NodeJS.Timeout | undefined;
+    const clearExtractionDeadlineTimer = (): void => {
+      if (extractionDeadlineTimer) {
+        clearTimeout(extractionDeadlineTimer);
+        extractionDeadlineTimer = undefined;
+      }
+    };
+    const runDeadlineAware = async <T>(
+      operation: () => Promise<T>,
+      phase: string,
+      clearTimerOnError = true,
+      options: { ignoreAbort?: boolean; ignoreDeadline?: boolean } = {},
+    ): Promise<T> => {
+      const operationSignal = options.ignoreAbort ? undefined : extractionAbortSignal;
+      try {
+        if (!options.ignoreDeadline && typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+          throwIfDeadlineExceeded(phase);
+        }
+        if (operationSignal?.aborted) {
+          throwIfAborted(phase);
+        }
+        return await raceRecallAbort(
+          operation(),
+          operationSignal,
+          `extraction aborted (${phase})`,
+        );
+      } catch (error) {
+        if (clearTimerOnError) clearExtractionDeadlineTimer();
+        if (!options.ignoreDeadline && typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+          throw new ExtractionDeadlineError(phase);
+        }
+        throw error;
+      }
+    };
+    if (extractionDeadlineController && typeof deadlineMs === "number") {
+      const deadline = deadlineMs;
+      const maxTimerDelayMs = 2_147_483_647;
+      const scheduleDeadlineAbort = (): void => {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          extractionDeadlineController.abort();
+          return;
+        }
+        extractionDeadlineTimer = setTimeout(() => {
+          if (Date.now() >= deadline) {
+            extractionDeadlineController.abort();
+          } else {
+            scheduleDeadlineAbort();
+          }
+        }, Math.min(remainingMs, maxTimerDelayMs));
+      };
+      scheduleDeadlineAbort();
+    }
+    const storage = await runDeadlineAware(
+      () => this.deps.getStorageRouter().storageFor(selfNamespace),
+      "during_storage",
+    );
     const shouldPersistProcessedFingerprint = targetTurns.some((turn) => turn.persistProcessedFingerprint === true);
     const extractionFingerprint = this.buildExtractionFingerprint(targetTurns, bufferKey);
-    let meta = extractionFingerprint && shouldPersistProcessedFingerprint ? await storage.loadMeta() : null;
+    let meta = extractionFingerprint && shouldPersistProcessedFingerprint
+      ? await runDeadlineAware(() => storage.loadMeta(), "during_load_meta")
+      : null;
     if (
       extractionFingerprint &&
       shouldPersistProcessedFingerprint &&
       (meta?.processedExtractionFingerprints ?? []).some((entry) => entry.fingerprint === extractionFingerprint)
     ) {
-      log.debug(`runExtraction: skipping already-processed extraction fingerprint for ${bufferKey}`);
-      await clearBuffer();
+      await runDeadlineAware(() => clearBuffer(), "during_clear_buffer");
+      clearExtractionDeadlineTimer();
       return {
         status: "skipped",
         reason: "processed_fingerprint",
@@ -735,7 +839,7 @@ export class ExtractionRunCoordinator {
     const extractionRetryEnabled = resolveMemoryLifecycleCapabilities(this.config).extractionRetry;
     if (extractionFingerprint && !forcedExtractionAttempt && extractionRetryEnabled) {
       try {
-        meta ??= await storage.loadMeta();
+        meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_gate");
         this.hydrateRetryStateFromMeta(selfNamespace, meta);
         const nowMs = Date.now();
         let suppressReason: "provider_circuit_open" | "extraction_backoff" | null = null;
@@ -746,38 +850,55 @@ export class ExtractionRunCoordinator {
           if (st && nowMs < st.nextEligibleAtMs) suppressReason = "extraction_backoff";
         }
         if (suppressReason) {
-          // Parity with the other skip paths: passive correction capture is
-          // local (no provider call) and must not be delayed by a provider
-          // cooldown — "stop calling me X" style turns should register during
-          // a 30-minute breaker window too (codex review). Fail-open.
+          // Passive correction capture is local and must not be delayed by a
+          // provider cooldown. It remains fail-open.
           try {
-            await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
-              sessionKey,
-              principal,
-              namespace: selfNamespace,
-              bufferKey,
-              isLiveSession: clearBufferAfterExtraction,
-            });
+            await runDeadlineAware(
+              () => runPassiveCapture(normalizedTurns as BufferTurn[], {
+                sessionKey,
+                principal,
+                namespace: selfNamespace,
+                bufferKey,
+                isLiveSession: clearBufferAfterExtraction,
+              }),
+              "during_passive_capture",
+            );
           } catch (captureErr) {
+            if (captureErr instanceof ExtractionDeadlineError) throw captureErr;
             log.warn("runExtraction: passive correction capture failed on suppressed attempt (non-fatal)", captureErr);
           }
+          clearExtractionDeadlineTimer();
           return { status: "skipped", reason: suppressReason, persistedCount: 0, durableOutputCount: 0 };
         }
       } catch (err) {
+        if (err instanceof ExtractionDeadlineError) throw err;
         // Fail-open: a gate error must never block extraction.
         log.warn("runExtraction: extraction retry gate check failed; proceeding (fail-open)", err);
       }
     }
 
-    // Pass existing entity names so the LLM can reuse them instead of inventing variants
-    const existingEntities = await storage.listEntityNames();
-    const result = await raceRecallAbort(
-      this.deps.getExtraction().extract(normalizedTurns, existingEntities),
-      options.abortSignal,
-      "extraction aborted (during_extract)"
+    // Pass existing entity names so the LLM can reuse them instead of inventing variants.
+    const existingEntities = await runDeadlineAware(
+      () => storage.listEntityNames(),
+      "during_list_entity_names",
     );
-    throwIfDeadlineExceeded("before_persist");
-    throwIfAborted("before_persist");
+    let result: ExtractionResult;
+    try {
+      result = await raceRecallAbort(
+        this.deps.getExtraction().extract(normalizedTurns, existingEntities, extractionAbortSignal),
+        extractionAbortSignal,
+        "extraction aborted (during_extract)",
+      );
+    } catch (error) {
+      clearExtractionDeadlineTimer();
+      if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+        throw new ExtractionDeadlineError("during_extract");
+      }
+      throw error;
+    }
+    try {
+      throwIfDeadlineExceeded("before_persist");
+      throwIfAborted("before_persist");
 
     // Defensive: validate extraction result before processing. Explicit
     // fail-closed callers, such as flush-plan import, must not observe
@@ -831,20 +952,26 @@ export class ExtractionRunCoordinator {
     if (extractionFingerprint && extractionRetryEnabled) {
       if (extractionFailure) {
         try {
-          meta ??= await storage.loadMeta();
-          await this.recordExtractionFailure(
-            storage,
-            selfNamespace,
-            extractionFingerprint,
-            result.extractionFailureClass ?? "provider_retryable",
-            meta,
-            Date.now(),
+          meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_bookkeeping_load", false);
+          await runDeadlineAware(
+            () =>
+              this.recordExtractionFailure(
+                storage,
+                selfNamespace,
+                extractionFingerprint,
+                result.extractionFailureClass ?? "provider_retryable",
+                meta!,
+                Date.now(),
+              ),
+            "during_retry_bookkeeping_save",
+            false,
           );
           // The buffer is retained below so the backoff gate can re-attempt
           // these turns after nextEligibleAt — clearing would orphan the
           // retry state.
           recordedRetryFailure = true;
         } catch (err) {
+          if (err instanceof ExtractionDeadlineError) throw err;
           // Fail-open (codex review): retry bookkeeping is best-effort — a
           // corrupt or locked meta store must not reject the extraction task.
           // With no backoff recorded there is nothing to retain for, so the
@@ -856,7 +983,7 @@ export class ExtractionRunCoordinator {
         // parked backoff for this fingerprint so it proceeds normally.
         this.resetProviderBreakerOnSuccess();
         try {
-          meta ??= await storage.loadMeta();
+          meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_bookkeeping_load", false);
           // Hydrate the in-memory mirror from persisted meta before clearing.
           // A forced flush (forceExtractionAttempt) bypasses the retry gate and
           // never hydrated, so without this a stale persisted backoff entry
@@ -864,9 +991,10 @@ export class ExtractionRunCoordinator {
           // extraction until the timer expired (cursor/codex review).
           this.hydrateRetryStateFromMeta(selfNamespace, meta);
           if (this.clearExtractionRetryEntry(selfNamespace, extractionFingerprint, meta)) {
-            await storage.saveMeta(meta);
+            await runDeadlineAware(() => storage.saveMeta(meta!), "during_retry_bookkeeping_save", false);
           }
         } catch (err) {
+          if (err instanceof ExtractionDeadlineError) throw err;
           log.warn("runExtraction: failed to persist cleared retry state (non-fatal)", err);
         }
       }
@@ -897,7 +1025,7 @@ export class ExtractionRunCoordinator {
       // Correction-only turns that meet char/user-turn thresholds but yield
       // zero facts still need passive capture (review: "empty extraction skips
       // capture"). selfNamespace/principal already resolved above.
-      await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+      await runPassiveCapture(normalizedTurns as BufferTurn[], {
         sessionKey,
         principal,
         namespace: selfNamespace,
@@ -922,12 +1050,18 @@ export class ExtractionRunCoordinator {
     if (resolvePresentationCapabilities(this.config).threading && turns.length > 0) {
       const lastTurn = turns[turns.length - 1];
       try {
-        threadIdForExtraction = await this.deps.getThreading().processTurn(lastTurn, []);
+        threadIdForExtraction = await runDeadlineAware(
+          () => this.deps.getThreading().processTurn(lastTurn, []),
+          "during_threading",
+        );
       } catch (err) {
+        if (err instanceof ExtractionDeadlineError) throw err;
         // Fail-open: threading errors must not block memory persistence.
         log.warn("[threading] processTurn failed before persistence (non-fatal)", err);
       }
     }
+    throwIfDeadlineExceeded("before_persist");
+    throwIfAborted("before_persist");
 
     const { persistedIds } = await this.deps.persistExtraction(
       result,
@@ -937,94 +1071,61 @@ export class ExtractionRunCoordinator {
       // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
       // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,
-      scopeProfileGatePlan,
+      scopeProfileWritePlan,
       // Verbatim source turns for the faithfulness gate (#1576) so it can
       // locate a quote per fact when #1575 spans are absent.
       normalizedTurns
         .map((t) => t.content)
         .join("\n\n")
     );
-    let postPersistMetadataFailed = false;
-    meta ??= await storage.loadMeta();
-    if (extractionFingerprint && shouldPersistProcessedFingerprint) {
-      try {
-        await this.deps.recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta);
-      } catch (error) {
-        log.warn(
-          "runExtraction: failed to persist processed extraction fingerprint; continuing with buffer clear",
-          error
-        );
-        postPersistMetadataFailed = true;
-      }
-    }
-    // Persist extraction counters and processed fingerprints before running
-    // follow-on helpers so replay dedupe survives any later non-essential
-    // failure. If this aggregate meta write fails, still clear the buffer:
-    // the durable memories are already written and replaying the same turns
-    // would duplicate them.
-    meta.extractionCount += 1;
-    meta.lastExtractionAt = new Date().toISOString();
-    meta.totalMemories += Array.isArray(result?.facts) ? result.facts.length : 0;
-    meta.totalEntities += Array.isArray(result?.entities) ? result.entities.length : 0;
-    try {
-      await storage.saveMeta(meta);
-    } catch (error) {
-      log.warn(
-        "runExtraction: failed to save extraction metadata after durable persistence; continuing with buffer clear",
-        error
-      );
-      postPersistMetadataFailed = true;
-    }
-
     const durableOutputCount =
       result.facts.length + result.entities.length + result.questions.length + result.profileUpdates.length;
-
-    // Buffer retention for defer verdicts (issue #562, PR 2). When the judge
-    // deferred at least one candidate, retain the tail of the current turn
-    // window so the next extraction pass has the surrounding context that
-    // may disambiguate the deferred fact. Non-defer runs clear the slot.
-    //
-    // Gated on:
-    //   - `clearBufferAfterExtraction` — replay / bulk-import paths call
-    //     `runExtraction` with this false and do not operate on live buffer
-    //     state. Writing retention there would create synthetic buffer
-    //     entries and cross-contaminate future live extractions.
-    //   - NOT `extractionJudgeShadow` — in shadow mode the judge is only
-    //     advisory; facts are still persisted regardless of verdict, so
-    //     retaining the turn window on top of a persisted write would both
-    //     waste buffer space and cause the same facts to re-enter the
-    //     pipeline on the next pass.
     try {
-      if (clearBufferAfterExtraction && !this.config.extractionJudgeShadow) {
-        const deferredCount = this.deps.getLastPersistExtractionDeferredCount();
-        if (deferredCount > 0 && normalizedTurns.length > 0) {
-          await this.deps.getBuffer().retainDeferredTurns(bufferKey, normalizedTurns as BufferTurn[], 10);
-        } else {
-          await this.deps.getBuffer().retainDeferredTurns(bufferKey, [], 0);
-        }
-      }
-    } catch (err) {
-      // Fail-open: retention is a nice-to-have. If it fails the judge will
-      // still cap deferrals and convert to reject on the next pass.
-      log.debug(
-        `extraction-judge: defer retention failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`
-      );
+      options.onDurableCommit?.();
+    } catch (error) {
+      log.warn("runExtraction: durable-commit callback failed", error);
     }
-
-    await clearBuffer({ ignoreAbort: true });
+    const runPostPersistBestEffort = runExtractionPostPersistBestEffort.bind(null, runDeadlineAware);
+    const postPersist = await runExtractionPostPersist({
+      result,
+      storage,
+      meta: meta ?? undefined,
+      extractionFingerprint: extractionFingerprint ?? undefined,
+      shouldPersistProcessedFingerprint,
+      recordProcessedExtractionFingerprint: this.deps.recordProcessedExtractionFingerprint,
+      runDeadlineAware,
+      isDeadlineError: (error) => error instanceof ExtractionDeadlineError,
+      createDeadlineError: (stage) => new ExtractionDeadlineError(stage),
+      deadlineMs,
+      clearBufferAfterExtraction,
+      runPostPersistBestEffort,
+      extractionJudgeShadow: this.config.extractionJudgeShadow,
+      getDeferredCount: () => this.deps.getLastPersistExtractionDeferredCount(),
+      normalizedTurns: normalizedTurns as BufferTurn[],
+      bufferKey,
+      retainDeferredTurns: (key, retainedTurns, max) =>
+        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max),
+      clearBuffer,
+      failOnExtractionFailure: options.failOnExtractionFailure === true,
+    });
+    meta = postPersist.meta ?? null;
+    const postPersistMetadataFailed = postPersist.metadataFailed;
 
     // Passive correction capture (issue #1581) — detect corrections expressed
     // passively in the extracted turns and route to the Correction Contract.
     // Runs AFTER persistence + buffer clear so a capture failure never blocks
     // the extraction return. `clearBufferAfterExtraction` gates live-session
     // auto-apply (replay/import → queue-only).
-    await this.deps.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
-      sessionKey,
-      principal,
-      namespace: selfNamespace,
-      bufferKey,
-      isLiveSession: clearBufferAfterExtraction,
-    });
+    await runPostPersistBestEffort("during_post_persist_passive_capture", () =>
+      runPassiveCapture(normalizedTurns as BufferTurn[], {
+        sessionKey,
+        principal,
+        namespace: selfNamespace,
+        bufferKey,
+        isLiveSession: clearBufferAfterExtraction,
+        abortSignal: extractionAbortSignal,
+      }),
+    );
 
     // Build memory box from this extraction (v8.0 Phase 2A)
     // Topics are derived from the current extraction's facts and entities only —
@@ -1035,31 +1136,30 @@ export class ExtractionRunCoordinator {
       // Derive episodic metadata from buffer turns (REMem-inspired)
       const firstUserTurn = turns.find((t) => t.role === "user");
       const boxGoal = firstUserTurn?.content?.slice(0, 100)?.trim() || undefined;
-      await this.deps
-        .boxBuilderFor(storage)
-        .onExtraction({
+      await runPostPersistBestEffort("during_memory_box", () =>
+        this.deps.boxBuilderFor(storage).onExtraction({
           topics: extractionTopics,
           memoryIds: persistedIds,
           timestamp: new Date().toISOString(),
           goal: boxGoal,
-        })
-        .catch((err) => log.warn("[boxes] onExtraction failed (non-fatal)", err));
+        }),
+      );
     }
 
     // Batch-append persisted IDs so non-fact memories (entities/questions) are
     // always attached to the thread. The helper excludes pending_review ids (#1635).
     if (resolvePresentationCapabilities(this.config).threading && threadIdForExtraction && persistedIds.length > 0) {
-      await this.deps.appendPersistedThreadEpisodes(threadIdForExtraction, persistedIds);
+      await runPostPersistBestEffort("during_thread_episode_append", () =>
+        this.deps.appendPersistedThreadEpisodes(threadIdForExtraction, persistedIds),
+      );
     }
 
     // Thread title update for the already-established thread context.
     if (resolvePresentationCapabilities(this.config).threading && threadIdForExtraction) {
       const conversationContent = turns.map((t) => t.content).join(" ");
-      try {
-        await this.deps.getThreading().updateThreadTitle(threadIdForExtraction, conversationContent);
-      } catch (err) {
-        log.warn("[threading] updateThreadTitle failed after persistence (non-fatal)", err);
-      }
+      await runPostPersistBestEffort("during_thread_title_update", () =>
+        this.deps.getThreading().updateThreadTitle(threadIdForExtraction, conversationContent),
+      );
     }
 
     // Check if consolidation is needed (debounced + non-zero gated).
@@ -1078,11 +1178,9 @@ export class ExtractionRunCoordinator {
       log.warn("runExtraction: QMD maintenance scheduling failed after persistence (non-fatal)", err);
     }
 
-    try {
-      await this.deps.runTierMigrationCycle(storage, "extraction");
-    } catch (err) {
-      log.warn("runExtraction: tier migration failed after persistence (non-fatal)", err);
-    }
+    await runPostPersistBestEffort("during_tier_migration", () =>
+      this.deps.runTierMigrationCycle(storage, "extraction"),
+    );
 
     return {
       status: "completed",
@@ -1090,29 +1188,8 @@ export class ExtractionRunCoordinator {
       durableOutputCount,
       postPersistMetadataFailed,
     };
-  }
-}
-
-/**
- * Derive a single `sourceConnector` from a batch of turns.
- * Returns the connector ONLY when ALL turns carry the same connector.
- * Mixed tagged/untagged batches return undefined — extraction facts are
- * persisted at batch level, so attributing them to the single tagged
- * connector would falsely label facts from untagged turns.
- * Conflicting connectors (different values) also return undefined.
- */
-export function deriveSourceConnector(turns: readonly BufferTurn[]): string | undefined {
-  if (turns.length === 0) return undefined;
-  const connectors = new Set<string>();
-  let untaggedCount = 0;
-  for (const turn of turns) {
-    if (typeof turn.sourceConnector === "string" && turn.sourceConnector.length > 0) {
-      connectors.add(turn.sourceConnector);
-    } else {
-      untaggedCount += 1;
+    } finally {
+      clearExtractionDeadlineTimer();
     }
   }
-  // All turns must agree on the same connector — no untagged turns mixed in.
-  if (untaggedCount > 0) return undefined;
-  return connectors.size === 1 ? [...connectors][0] : undefined;
 }

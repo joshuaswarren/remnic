@@ -222,6 +222,20 @@ import type {
   RecallDisclosure,
   RecallPlanMode,
 } from "./types.js";
+import {
+  delegateExtractionForceFlush,
+  type EngramAccessExtractionForceFlushRequest,
+  type EngramAccessExtractionForceFlushResponse,
+  type EngramAccessLcmCompactionFlushRequest,
+  type EngramAccessLcmCompactionFlushResponse,
+} from "./access-service-helpers.js";
+export type {
+  EngramAccessExtractionForceFlushRequest,
+  EngramAccessExtractionForceFlushResponse,
+  EngramAccessLcmCompactionFlushRequest,
+  EngramAccessLcmCompactionFlushResponse,
+};
+
 import { DEFAULT_RECALL_DISCLOSURE, isRecallDisclosure } from "./types.js";
 import { estimateRecallTokens, type RecallXraySnapshot } from "./recall-xray.js";
 import type {
@@ -943,6 +957,8 @@ export interface MemoryScopePlan {
   readNamespaces: string[];
   /** Active scope profile id, when `defaultScopeProfile` is configured. */
   scopeProfile?: string;
+  /** Internal resolved profile used to keep scoped extraction persistence aligned with access resolution. */
+  scopeProfilePlan?: ResolvedScopeProfilePlan | null;
   /** Resolved profile layer that supplied `writeNamespace`. */
   writeLayer?: string;
   /** Resolved profile layers in the active profile contract. */
@@ -1082,19 +1098,6 @@ export interface EngramAccessLcmStatusResponse {
   stats?: { totalTurns?: number };
 }
 
-export interface EngramAccessLcmCompactionFlushRequest {
-  sessionKey: string;
-  namespace?: string;
-  authenticatedPrincipal?: string;
-}
-
-export interface EngramAccessLcmCompactionFlushResponse {
-  enabled: boolean;
-  flushed: boolean;
-  sessionKey: string;
-  namespace: string;
-  reason?: string;
-}
 
 export interface EngramAccessLcmCompactionRecordRequest {
   sessionKey: string;
@@ -1732,98 +1735,27 @@ export class EngramAccessService {
       this.orchestrator.config,
     );
 
-    // Resolve the coding overlay through the SAME orchestrator method recall and
-    // the buffer-flush write path use (`applyCodingNamespaceOverlay`), NOT a
-    // private re-implementation. Routing through the one shared method (rule 22 /
-    // 42) means a project-scoped observe writes to byte-for-byte the namespace a
-    // same-session recall reads — and that the read/write overlay logic cannot
-    // drift (the #1495 drift this PR exists to close). The orchestrator method
-    // already gates on `namespacesEnabled` + a bound/derivable coding context, so
-    // it returns the base unchanged when no overlay applies.
-    //
-    // `applyCodingNamespaceOverlay` reads the session's ATTACHED context. The
-    // scope plan runs BEFORE `maybeAttachCodingContext` (resolve-before-mutate),
-    // so when nothing is attached yet we seed the per-call cwd/projectTag context
-    // first — identical to what attach would bind — so the overlay is the same
-    // either way (Codex review precedence: session context first, per-call
-    // fallback).
-    const hasSession =
-      typeof request.sessionKey === "string" && request.sessionKey.length > 0;
-    const overlayEligible =
-      hasSession &&
-      resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true &&
-      this.orchestrator.config.codingMode?.projectScope === true;
-
-    // Resolve the coding context the overlay must use: the session's ATTACHED
-    // context first (so a bound session wins), else the per-call cwd/projectTag —
-    // identical precedence to recall and to `resolveCodingScopedWriteNamespace`.
-    let attachedContext = hasSession
-      ? this.orchestrator.getCodingContextForSession(request.sessionKey)
-      : null;
-    // Track whether WE seeded the per-call context so we can leave the session
-    // exactly as we found it on any rejection (read-only contract / no-orphan
-    // guard, observe-scope "unauthorized overlay self-base" test).
-    let seededContext = false;
-    if (overlayEligible && !attachedContext) {
-      attachedContext = await this.resolveCodingContextFromOptions(request);
-      if (attachedContext) {
-        // Seed the per-call context so the shared
-        // `applyCodingNamespaceOverlay` (which reads ATTACHED session context)
-        // overlays it through the ONE method recall/buffer-flush use (rule 22 /
-        // 42) — no private re-implementation that could drift. On the happy
-        // path `maybeAttachCodingContext` re-binds the identical context after
-        // auth passes; on a rejection we clear the seed below, so the session is
-        // untouched either way.
-        this.orchestrator.setCodingContextForSession(
-          request.sessionKey!,
-          attachedContext,
-        );
-        seededContext = true;
-      }
-    }
-
-    // Clear a seed we added, used only on the rejection paths so a failed
-    // observe never leaves an orphaned project binding (read-only contract).
-    const clearSeededContext = (): void => {
-      if (seededContext && hasSession) {
-        this.orchestrator.setCodingContextForSession(request.sessionKey!, null);
-      }
-    };
-    const assertWriteNamespaceAllowed = (namespace: string): void => {
-      try {
-        this.assertTokenCanWriteNamespace(namespace);
-      } catch (error) {
-        clearSeededContext();
-        throw error;
-      }
-    };
-
-
-    const overlaidBase = this.orchestrator.applyCodingNamespaceOverlay(
-      request.sessionKey,
-      baseNamespace,
-    );
+    // Resolve the coding context and overlay through the shared read-only
+    // resolver used by the other scoped access paths. It applies the same
+    // session-first, per-call fallback precedence without mutating session
+    // state, so concurrent requests cannot observe temporary context.
+    const {
+      overlay: codingOverlay,
+      profilePlan,
+    } = await this.resolveCodingScopeInputs(request);
+    const overlaidBase = codingOverlay
+      ? combineNamespaces(baseNamespace, codingOverlay.namespace)
+      : baseNamespace;
     const codingOverlayApplied = overlaidBase !== baseNamespace;
-    const codingOverlay = overlayEligible
-      ? resolveCodingNamespaceOverlay(
-          attachedContext,
-          this.orchestrator.config.codingMode,
-          this.orchestrator.config.defaultNamespace,
-        )
-      : null;
-    const profilePlan = resolveScopeProfilePlan({
-      config: this.orchestrator.config,
-      principal,
-      codingContext: attachedContext,
-      codingOverlay,
-    });
+    const assertWriteNamespaceAllowed = (namespace: string): void => {
+      this.assertTokenCanWriteNamespace(namespace);
+    };
     if (profilePlan) {
       const selectedLayer = profilePlan.layers.find((layer) => layer.id === profilePlan.writeLayer);
       const writeNamespaceReadable =
         profilePlan.writeNamespace.length > 0 &&
         profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
       if (!selectedLayer?.writable || !writeNamespaceReadable) {
-        clearSeededContext();
         throw new NamespaceNotWritableError(profilePlan.writeNamespace, principal,
           `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`);
       }
@@ -1857,6 +1789,7 @@ export class EngramAccessService {
         objectiveStateNamespace: profilePlan.writeNamespace,
         readNamespaces,
         scopeProfile: profilePlan.profileId,
+        scopeProfilePlan: profilePlan,
         writeLayer: profilePlan.writeLayer,
         layers: profilePlan.layers,
         promotionTargets: profilePlan.promotionTargets,
@@ -1899,7 +1832,6 @@ export class EngramAccessService {
         resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true &&
         !canWriteNamespace(principal, baseNamespace, this.orchestrator.config)
       ) {
-        clearSeededContext();
         throw new NamespaceNotWritableError(baseNamespace, principal);
       }
       assertWriteNamespaceAllowed(writeNamespace);
@@ -1927,15 +1859,13 @@ export class EngramAccessService {
     // (the overlay is a principal-owned `project-*` sub-namespace derived from
     // it, so it needs no separate write policy — rule 42 / 47 / 48).
     if (!canWriteNamespace(principal, baseNamespace, this.orchestrator.config)) {
-      clearSeededContext();
       throw new NamespaceNotWritableError(baseNamespace, principal);
     }
     const writeNamespace = overlaidBase;
     const readNamespaces = [writeNamespace];
     // Include read fallbacks (branch→project→root) so the diagnostic readNamespaces
-    // matches what a same-session recall searches. Resolved through the pure
-    // overlay helper to enumerate fallbacks; the write namespace itself already
-    // came from `applyCodingNamespaceOverlay` so the two agree.
+    // matches what a same-session recall searches. They come from the shared pure
+    // coding-scope resolver, so the write namespace and read fallbacks agree.
     for (const fallback of codingOverlay?.readFallbacks ?? []) {
       const ns = combineNamespaces(baseNamespace, fallback);
       if (!readNamespaces.includes(ns)) readNamespaces.push(ns);
@@ -4333,26 +4263,9 @@ export class EngramAccessService {
       throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
     }
 
-    // Authorize compaction against the SCOPED WRITE TARGET — the SAME effective
-    // write namespace `observe` archived the LCM queue under — NOT a premature
-    // the writable-namespace resolver (undefined ⇒ config.defaultNamespace) (#1505
-    // thread NBHWs). Under a restrictive `default` WRITE policy where the
-    // principal can still write its self/project overlay, that premature default
-    // write-auth threw `namespace is not writable: default` BEFORE the scoped key
-    // was computed, so the overlay queue `observe` just wrote could never be
-    // flushed. `resolveMemoryScopePlan` is the ONE write-scoped plan/gate observe
-    // uses (rule 22 / 39 / 42): it authorizes the principal self base for an
-    // overlay write and only collapses to `config.defaultNamespace` (always
-    // writable) when no overlay applies — so it never throws `not writable:
-    // default` for a validly scoped observe's queue.
+    // Authorize compaction against the same effective write namespace that
+    // observe archived under, not a premature default writable-namespace check.
     const scope = await this.resolveMemoryScopePlan(request);
-    // Legacy `namespace` response field: pre-#1505 semantics were exactly
-    // the writable-namespace resolver (overlay-agnostic) — the
-    // authorized explicit namespace when supplied, else `config.defaultNamespace`.
-    // DERIVED from the scope plan (NOT a second auth pass, #1505 thread jvO):
-    // explicit ⇒ writeNamespace; user-project coding overlay ⇒ defaultNamespace;
-    // non-user scope-profile layer/no overlay ⇒ writeNamespace. Identical to
-    // observe's legacy field.
     const namespace = this.legacyResponseNamespaceForScope(scope);
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
       return {
@@ -4364,13 +4277,7 @@ export class EngramAccessService {
       };
     }
 
-    // Flush the SAME LCM session_id `observe` archived under: encode the scope
-    // plan's EFFECTIVE write namespace (the coding overlay when one applies, else
-    // the default store) through the SAME `lcmSessionKeyForNamespace` helper
-    // observe uses for archival, so the flush key is byte-for-byte the write key
-    // (#1495 thread 2 / #1505 thread NBHWs, rule 42). A write-only / self-omitted
-    // principal still flushes the overlay queue because the scope plan authorized
-    // the write target by WRITE policy, not readability.
+    // Flush the same LCM session ID observe archived under.
     const lcmSessionKey =
       lcmSessionKeyForNamespace(
         scope.writeNamespace,
@@ -4387,6 +4294,17 @@ export class EngramAccessService {
     };
   }
 
+  async extractionForceFlush(request: EngramAccessExtractionForceFlushRequest): Promise<EngramAccessExtractionForceFlushResponse> {
+    return delegateExtractionForceFlush(this.accessObserveWriteSurface, request);
+  }
+  cancelPendingObserveExtractions(
+    sessionKey: string,
+    principal?: string,
+    namespace?: string,
+    scopeHint?: string,
+  ): void {
+    this.accessObserveWriteSurface.cancelPendingObserveExtractions(sessionKey, principal, namespace, scopeHint);
+  }
   async lcmCompactionRecord(
     request: EngramAccessLcmCompactionRecordRequest,
   ): Promise<EngramAccessLcmCompactionRecordResponse> {

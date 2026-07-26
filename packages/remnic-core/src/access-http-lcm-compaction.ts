@@ -1,9 +1,13 @@
 import type { ServerResponse } from "node:http";
 
-import type { LcmCompactionFlushRequest } from "./access-schema.js";
-import type { EngramAccessLcmCompactionFlushResponse, EngramAccessService } from "./access-service.js";
+import type { LcmCompactionFlushRequest, LcmCompactionRecordRequest } from "./access-schema.js";
+import type {
+  EngramAccessLcmCompactionFlushResponse,
+  EngramAccessLcmCompactionRecordResponse,
+  EngramAccessService,
+} from "./access-service.js";
 
-type LcmCompactionService = Pick<EngramAccessService, "lcmCompactionFlush">;
+type LcmCompactionService = Pick<EngramAccessService, "lcmCompactionFlush" | "lcmCompactionRecord">;
 type JsonResponder = (res: ServerResponse, status: number, payload: unknown) => void;
 
 export interface LcmCompactionFlushHttpOptions {
@@ -24,28 +28,55 @@ export function respondLcmCompactionCapabilitiesHttp(response: ServerResponse): 
   response.end(JSON.stringify({ lcmCompactionFlushBatch: true }, null, 2));
 }
 
-export async function handleLcmCompactionFlushHttp({
+export interface LcmCompactionFlushRunnerOptions {
+  body: LcmCompactionFlushRequest;
+  service: LcmCompactionService;
+  ensureWriteRateLimitAvailable: () => void;
+  recordWriteRateLimitHit: () => void;
+  resolveNamespace: (namespace?: string) => string | undefined;
+  defaultNamespace?: string;
+  resolveRequestPrincipal: () => string | undefined;
+}
+
+type LcmCompactionFlushBatchResult =
+  | {
+      namespace: string;
+      status: "fulfilled";
+      result: EngramAccessLcmCompactionFlushResponse;
+    }
+  | { namespace: string; status: "rejected" };
+
+type LcmCompactionFlushHttpResult =
+  | EngramAccessLcmCompactionFlushResponse
+  | {
+      enabled: boolean;
+      flushed: boolean;
+      sessionKey: string;
+      namespaces: string[];
+      results: LcmCompactionFlushBatchResult[];
+    };
+
+export async function runLcmCompactionFlushHttp({
   body,
   service,
-  response,
   ensureWriteRateLimitAvailable,
   recordWriteRateLimitHit,
   resolveNamespace,
   defaultNamespace,
   resolveRequestPrincipal,
-  respondJson,
-}: LcmCompactionFlushHttpOptions): Promise<void> {
+}: LcmCompactionFlushRunnerOptions): Promise<LcmCompactionFlushHttpResult> {
   ensureWriteRateLimitAvailable();
   const requestedNamespaces = body.namespaces;
   if (requestedNamespaces === undefined) {
     const result = await service.lcmCompactionFlush({
       sessionKey: body.sessionKey,
       namespace: resolveNamespace(body.namespace),
+      ...(body.cwd !== undefined ? { cwd: body.cwd } : {}),
+      ...(body.projectTag !== undefined ? { projectTag: body.projectTag } : {}),
       authenticatedPrincipal: resolveRequestPrincipal(),
     });
     recordWriteRateLimitHit();
-    respondJson(response, 200, result);
-    return;
+    return result;
   }
   const resolutionOutcomes = await Promise.allSettled(
     requestedNamespaces.map(async (requestedNamespace) => {
@@ -74,6 +105,8 @@ export async function handleLcmCompactionFlushHttp({
       service.lcmCompactionFlush({
         sessionKey: body.sessionKey,
         namespace,
+        ...(body.cwd !== undefined ? { cwd: body.cwd } : {}),
+        ...(body.projectTag !== undefined ? { projectTag: body.projectTag } : {}),
         authenticatedPrincipal: resolveRequestPrincipal(),
       })
     )
@@ -88,29 +121,73 @@ export async function handleLcmCompactionFlushHttp({
       serviceOutcomesByEffectiveNamespace.set(resolved.effectiveNamespace, serviceOutcome);
     }
   }
-  type BatchResult =
-    | {
-        requestedNamespace: string;
-        status: "fulfilled";
-        result: EngramAccessLcmCompactionFlushResponse;
-      }
-    | { requestedNamespace: string; status: "rejected" };
-  const results: BatchResult[] = resolutionOutcomes.map((outcome, index) => {
+  const results = resolutionOutcomes.map((outcome, index): LcmCompactionFlushBatchResult => {
     const requestedNamespace = requestedNamespaces[index] ?? "";
     if (outcome.status === "rejected") {
-      return { status: "rejected", requestedNamespace };
+      return { status: "rejected", namespace: requestedNamespace };
     }
     const serviceOutcome = serviceOutcomesByEffectiveNamespace.get(outcome.value.effectiveNamespace);
     return serviceOutcome?.status === "fulfilled"
-      ? { status: "fulfilled", requestedNamespace, result: serviceOutcome.value }
-      : { status: "rejected", requestedNamespace };
+      ? { status: "fulfilled", namespace: requestedNamespace, result: serviceOutcome.value }
+      : { status: "rejected", namespace: requestedNamespace };
   });
   recordWriteRateLimitHit();
-  respondJson(response, 200, {
+  return {
     enabled: results.every((result) => result.status === "fulfilled" && result.result.enabled !== false),
     flushed: results.every((result) => result.status === "fulfilled" && result.result.flushed !== false),
     sessionKey: body.sessionKey,
     namespaces: requestedNamespaces,
-    results: results.map(({ requestedNamespace, ...result }) => ({ ...result, namespace: requestedNamespace })),
+    results,
+  };
+}
+export async function handleLcmCompactionFlushHttp({
+  body,
+  service,
+  response,
+  ensureWriteRateLimitAvailable,
+  recordWriteRateLimitHit,
+  resolveNamespace,
+  defaultNamespace,
+  resolveRequestPrincipal,
+  respondJson,
+}: LcmCompactionFlushHttpOptions): Promise<void> {
+  const result = await runLcmCompactionFlushHttp({
+    body,
+    service,
+    ensureWriteRateLimitAvailable,
+    recordWriteRateLimitHit,
+    resolveNamespace,
+    defaultNamespace,
+    resolveRequestPrincipal,
   });
+  respondJson(response, 200, result);
+}
+
+export interface LcmCompactionRecordHttpOptions {
+  body: LcmCompactionRecordRequest;
+  service: LcmCompactionService;
+  ensureWriteRateLimitAvailable: () => void;
+  recordWriteRateLimitHit: () => void;
+  resolveNamespace: (namespace?: string) => string | undefined;
+  resolveRequestPrincipal: () => string | undefined;
+}
+
+export async function runLcmCompactionRecordHttp({
+  body,
+  service,
+  ensureWriteRateLimitAvailable,
+  recordWriteRateLimitHit,
+  resolveNamespace,
+  resolveRequestPrincipal,
+}: LcmCompactionRecordHttpOptions): Promise<EngramAccessLcmCompactionRecordResponse> {
+  ensureWriteRateLimitAvailable();
+  const response = await service.lcmCompactionRecord({
+    sessionKey: body.sessionKey,
+    namespace: resolveNamespace(body.namespace),
+    tokensBefore: body.tokensBefore,
+    tokensAfter: body.tokensAfter,
+    authenticatedPrincipal: resolveRequestPrincipal(),
+  });
+  recordWriteRateLimitHit();
+  return response;
 }

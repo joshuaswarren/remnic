@@ -11,6 +11,7 @@
  * Behavior-preserving move (late-binding selfDeps wiring, seams 18–27).
  */
 
+import { abortError, throwIfAborted } from "../abort-error.js";
 import { SmartBuffer } from "../buffer.js";
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import { combineNamespaces, resolveCodingNamespaceOverlay } from "../coding/coding-namespace.js";
@@ -21,9 +22,11 @@ import { StorageManager } from "../index.js";
 import { LocalLlmClient } from "../local-llm.js";
 import { log } from "../logger.js";
 import { canWriteNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "../namespaces/principal.js";
+import { ExtractionDeadlineError } from "./extraction-run.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
 import type { EntitySynthesisCoordinator } from "./entity-synthesis-coordinator.js";
 import type { BufferTurn, CodingContext, DaySummaryResult, MemoryFile, PluginConfig } from "../types.js";
+import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import {
   Orchestrator,
 } from "../orchestrator.js";
@@ -48,10 +51,12 @@ export interface SessionContextDeps {
     options?: {
       skipDedupeCheck?: boolean;
       clearBufferAfterExtraction?: boolean;
+      clearMatchingTurns?: boolean;
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      onDurableCommit?: () => void;
       forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
@@ -73,6 +78,7 @@ export interface SessionContextDeps {
        * authenticated principal instead of `resolvePrincipal(sessionKey)`.
        */
       principalOverride?: string;
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
     },
   ): Promise<void>;
   resolvePrincipal(sessionKey?: string): string | undefined;
@@ -80,6 +86,89 @@ export interface SessionContextDeps {
   storageDirNamespace(storageDir: string): string;
   /** The orchestrator itself — passiveCorrectionService constructs the CorrectionService against it. */
   readonly orchestratorSelf: Orchestrator;
+}
+
+
+export interface SessionFlushOptions {
+  reason: string;
+  abortSignal?: AbortSignal;
+  bufferKey?: string;
+  clearMatchingTurns?: boolean;
+  extractionDeadlineMs?: number;
+  writeNamespaceOverride?: string;
+  /** Called at the first durable extraction commit in this flush. */
+  onCommitted?: () => void;
+  failOnExtractionFailure?: boolean;
+  /** Resolved profile plan from access scope resolution; avoids recomputing from shared session context. */
+  scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+  principalOverride?: string;
+}
+
+/** Scoped flushes must never claim an opaque buffer without trusted ingestion ownership. */
+export class SessionOwnershipError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionOwnershipError";
+  }
+}
+
+const MAX_SET_TIMEOUT_MS = 2_147_483_647;
+
+export async function awaitSessionFlushPhase<T>(
+  task: () => Promise<T>,
+  options: Pick<SessionFlushOptions, "abortSignal" | "extractionDeadlineMs" | "reason"> & {
+    deadlineStage?: string;
+    onDeadline?: () => void;
+  },
+): Promise<T> {
+  const abortMessage =
+    options.reason === "access_force_flush" ? "extraction force-flush aborted" : "session flush aborted";
+  throwIfAborted(options.abortSignal, abortMessage);
+  const deadline = options.extractionDeadlineMs;
+  if (typeof deadline === "number" && Date.now() >= deadline) {
+    options.onDeadline?.();
+    throw new ExtractionDeadlineError(options.deadlineStage ?? "before_buffer_flush");
+  }
+
+  const taskPromise = Promise.resolve().then(task);
+  if (!options.abortSignal && typeof deadline !== "number") return taskPromise;
+
+  let abortHandler: (() => void) | undefined;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const abortPromise =
+    options.abortSignal === undefined
+      ? undefined
+      : new Promise<T>((_resolve, reject) => {
+          abortHandler = () => reject(abortError(abortMessage));
+          options.abortSignal?.addEventListener("abort", abortHandler, { once: true });
+        });
+  const deadlinePromise =
+    typeof deadline !== "number"
+      ? undefined
+      : new Promise<T>((_resolve, reject) => {
+          const schedule = (): void => {
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) {
+              options.onDeadline?.();
+              reject(new ExtractionDeadlineError(options.deadlineStage ?? "before_buffer_flush"));
+              return;
+            }
+            deadlineTimer = setTimeout(schedule, Math.min(remainingMs, MAX_SET_TIMEOUT_MS));
+            deadlineTimer.unref?.();
+          };
+          schedule();
+        });
+  const races: Promise<T>[] = [taskPromise];
+  if (abortPromise) races.push(abortPromise);
+  if (deadlinePromise) races.push(deadlinePromise);
+  try {
+    return await Promise.race(races);
+  } finally {
+    if (abortHandler && options.abortSignal) {
+      options.abortSignal.removeEventListener("abort", abortHandler);
+    }
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+  }
 }
 
 export class SessionContextCoordinator {
@@ -316,11 +405,7 @@ export class SessionContextCoordinator {
 
   async flushSession(
     sessionKey: string,
-    options: {
-      reason: string;
-      abortSignal?: AbortSignal;
-      bufferKey?: string;
-    },
+    options: SessionFlushOptions,
   ): Promise<void> {
     // Force any pending debounced buffer save to land durably BEFORE we read
     // and (via clearBufferAfterExtraction below) clear turns (issue #1909, PR
@@ -334,14 +419,20 @@ export class SessionContextCoordinator {
     // extraction leaves them on disk for re-extraction on next startup.
     // Durability-preserving AND fail-closed: pass throwOnFailure so a failed
     // durable save stops this lifecycle drain BEFORE any extraction runs
-    // (issue #1909, PR #2016). flushPendingSave still retains the pending state
-    // and re-arms a background retry on write failure, but it now rethrows so
-    // flushSession rejects instead of clearing turns behind a non-durable save.
-    // Without this, a force-drain could queue extraction with
-    // clearBufferAfterExtraction on turns that never reached disk; if extraction
-    // then failed and the host exited, the turn was lost.
+    // flushPendingSave retains pending state and re-arms a retry on failure.
     if (typeof this.deps.buffer.flushPendingSave === "function") {
-      await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
+      await awaitSessionFlushPhase(
+        () => this.deps.buffer.flushPendingSave!({ throwOnFailure: true }),
+        options,
+      );
+    } else {
+      throwIfAborted(
+        options.abortSignal,
+        options.reason === "access_force_flush" ? "extraction force-flush aborted" : "session flush aborted",
+      );
+      if (typeof options.extractionDeadlineMs === "number" && Date.now() >= options.extractionDeadlineMs) {
+        throw new ExtractionDeadlineError("before_buffer_flush");
+      }
     }
     const explicitBufferKey =
       typeof options.bufferKey === "string" && options.bufferKey.length > 0
@@ -353,7 +444,10 @@ export class SessionContextCoordinator {
       sessionKey.length === 0 ||
       typeof this.deps.buffer.findBufferKeysForSession !== "function"
         ? []
-        : await this.deps.buffer.findBufferKeysForSession(sessionKey);
+        : await awaitSessionFlushPhase(
+            () => this.deps.buffer.findBufferKeysForSession!(sessionKey),
+            options,
+          );
     const bufferKeys = explicitBufferKey
       ? [explicitBufferKey]
       : discoveredBufferKeys.length > 0
@@ -361,20 +455,101 @@ export class SessionContextCoordinator {
         : typeof sessionKey === "string" && sessionKey.length > 0
           ? [sessionKey]
           : ["default"];
+    const namespacesEnabled =
+      this.deps.config === undefined ||
+      resolveNamespaceCapabilities(this.deps.config).namespaces === true;
+    const scopedRequest =
+      typeof options.writeNamespaceOverride === "string" ||
+      typeof options.principalOverride === "string";
+    const ownershipEnforced = namespacesEnabled && scopedRequest;
+    const ownerPrincipal =
+      typeof options.principalOverride === "string" && options.principalOverride.trim().length > 0
+        ? options.principalOverride.trim()
+        : undefined;
+    const resolvedSessionPrincipal =
+      ownershipEnforced && ownerPrincipal !== undefined && this.deps.config
+        ? resolvePrincipal(sessionKey, this.deps.config)
+        : undefined;
+    const opaqueScopedSession =
+      ownershipEnforced &&
+      ownerPrincipal !== undefined &&
+      (resolvedSessionPrincipal === undefined || resolvedSessionPrincipal === "default");
+    const belongsToSession = (turn: BufferTurn): boolean => {
+      if (turn.sessionKey !== sessionKey) return false;
+      if (!ownershipEnforced || ownerPrincipal === undefined) return true;
+      if (turn.sessionOwnerPrincipal === ownerPrincipal) return true;
+      return (
+        turn.sessionOwnerPrincipal === undefined &&
+        this.deps.config !== undefined &&
+        resolvePrincipal(turn.sessionKey, this.deps.config) === ownerPrincipal
+      );
+    };
+    if (
+      opaqueScopedSession &&
+      bufferKeys.some((bufferKey) =>
+        this.deps.buffer
+          .getTurns(bufferKey)
+          .some((turn) => turn.sessionKey === sessionKey && turn.sessionOwnerPrincipal === undefined),
+      )
+    ) {
+      throw new SessionOwnershipError(
+        `session ${sessionKey} has buffered turns without trusted ownership`,
+      );
+    }
     for (const bufferKey of bufferKeys) {
       const turns = this.deps.buffer.getTurns(bufferKey);
-      if (turns.length === 0) continue;
-      await new Promise<void>((resolve, reject) => {
-        void this.deps.queueBufferedExtraction(turns, "trigger_mode", {
+      const turnsForSession = scopedRequest ? turns.filter(belongsToSession) : turns;
+      if (turnsForSession.length === 0) continue;
+      const retainedTurnsForOtherSessions =
+        scopedRequest && typeof this.deps.buffer.getRetainedDeferredTurns === "function"
+          ? this.deps.buffer
+              .getRetainedDeferredTurns(bufferKey)
+              .filter((turn) => !belongsToSession(turn))
+          : [];
+      try {
+        await new Promise<void>((resolve, reject) => {
+          void this.deps.queueBufferedExtraction(turnsForSession, "trigger_mode", {
             bufferKey,
             clearBufferAfterExtraction: true,
             skipDedupeCheck: true,
+            skipCharThreshold: true,
+            skipUserTurnThreshold: true,
+            failOnExtractionFailure: options.failOnExtractionFailure === true,
             forceExtractionAttempt: true,
             abortSignal: options.abortSignal,
+            extractionDeadlineMs: options.extractionDeadlineMs,
+            writeNamespaceOverride: options.writeNamespaceOverride,
+            principalOverride: options.principalOverride,
+            scopeProfileWritePlan: options.scopeProfileWritePlan,
+            clearMatchingTurns: options.clearMatchingTurns ?? scopedRequest,
+            onDurableCommit: options.onCommitted,
             onTaskSettled: (error) => (error ? reject(error) : resolve()),
           })
-          .catch(reject);
-      });
+            .catch(reject);
+        });
+      } finally {
+        if (
+          retainedTurnsForOtherSessions.length > 0 &&
+          typeof this.deps.buffer.retainDeferredTurns === "function"
+        ) {
+          const retainedAfterExtraction = this.deps.buffer.getRetainedDeferredTurns(bufferKey);
+          await this.deps.buffer
+            .retainDeferredTurns(
+              bufferKey,
+              [
+                ...retainedAfterExtraction.filter((turn) => belongsToSession(turn)),
+                ...retainedTurnsForOtherSessions,
+              ],
+              10,
+            )
+            .catch((error: unknown) => {
+              log.warn(
+                `session flush could not restore retained turns for other sessions in ${bufferKey}`,
+                error,
+              );
+            });
+        }
+      }
     }
   }
 

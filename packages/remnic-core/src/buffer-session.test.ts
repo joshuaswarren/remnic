@@ -216,6 +216,59 @@ test("SmartBuffer clearAfterExtraction preserves appends after queued snapshots"
   );
 });
 
+test("SmartBuffer shared-buffer clear removes only the extracted session turns", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const aliceTurn = makeTurn("alice", "alice memory");
+  const bobTurn = makeTurn("bob", "bob memory");
+
+  await buffer.addTurn("provider-thread", aliceTurn);
+  await buffer.addTurn("provider-thread", bobTurn);
+  await buffer.clearAfterExtraction("provider-thread", [aliceTurn], {
+    allowNonPrefix: true,
+  });
+
+  assert.deepEqual(buffer.getTurns("provider-thread"), [bobTurn]);
+});
+
+test("SmartBuffer shared-buffer clear distinguishes duplicate turns by owner", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const aliceTurn = { ...makeTurn("opaque-session", "same memory"), sessionOwnerPrincipal: "alice" };
+  const bobTurn = { ...makeTurn("opaque-session", "same memory"), sessionOwnerPrincipal: "bob" };
+
+  await buffer.addTurn("provider-thread", aliceTurn);
+  await buffer.addTurn("provider-thread", bobTurn);
+  await buffer.clearAfterExtraction("provider-thread", [aliceTurn], {
+    allowNonPrefix: true,
+  });
+
+  assert.deepEqual(buffer.getTurns("provider-thread"), [bobTurn]);
+});
+
+test("SmartBuffer preserves owner identity in deferred turns", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const aliceTurn = { ...makeTurn("opaque-session", "deferred memory"), sessionOwnerPrincipal: "alice" };
+
+  await buffer.retainDeferredTurns("provider-thread", [aliceTurn]);
+
+  assert.deepEqual(buffer.getRetainedDeferredTurns("provider-thread"), [aliceTurn]);
+});
+
+
 test("SmartBuffer clearAfterExtraction chooses the longest queued snapshot overlap", async () => {
   const storage = new FakeStorage({
     turns: [],
@@ -412,6 +465,101 @@ test("retainDeferredTurns preserves turns across clearAfterExtraction", async ()
   assert.equal(afterClear.length, 2, "Retained turns must survive clearAfterExtraction");
   assert.equal(afterClear[0]?.content, "deferred context one");
   assert.equal(afterClear[1]?.content, "deferred context two");
+});
+
+test("clearRetainedTurnsForSession drains only the force-flushed session", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const sessionTurn = makeTurn("session-a", "deferred context");
+  const otherTurn = makeTurn("session-b", "other deferred context");
+
+  await buffer.addTurn("provider-thread", sessionTurn);
+  await buffer.retainDeferredTurns("provider-thread", [sessionTurn]);
+  await buffer.addTurn("other-thread", otherTurn);
+  await buffer.retainDeferredTurns("other-thread", [otherTurn]);
+
+  await buffer.clearRetainedTurnsForSession("session-a");
+
+  assert.deepEqual(buffer.getRetainedDeferredTurns("provider-thread"), []);
+  assert.deepEqual(buffer.getRetainedDeferredTurns("other-thread"), [otherTurn]);
+  assert.deepEqual(
+    storage.saved?.entries?.["provider-thread"]?.retainedTurns,
+    undefined,
+  );
+});
+
+test("clearRetainedTurnsForSession flushes another session's pending save when target is absent", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 10_000 }),
+    storage as any,
+  );
+  const otherTurn = makeTurn("session-a", "pending turn from another session");
+  await buffer.addTurn("session-a", otherTurn);
+
+  const internals = buffer as unknown as DebouncedBufferInternals;
+  assert.equal(storage.saveCount, 0);
+  assert.equal(internals.pendingSave, true);
+  assert.notEqual(internals.saveTimer, null);
+
+  await buffer.clearRetainedTurnsForSession("session-b");
+
+  assert.equal(storage.saveCount, 1);
+  assert.equal(storage.saved?.entries?.["session-a"]?.turns.length, 1);
+  assert.equal(internals.pendingSave, false);
+  assert.equal(internals.saveTimer, null);
+});
+
+test("clearRetainedTurnsForSession drains only the authenticated owner", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const aliceTurn = { ...makeTurn("opaque-session", "alice deferred"), sessionOwnerPrincipal: "alice" };
+  const bobTurn = { ...makeTurn("opaque-session", "bob deferred"), sessionOwnerPrincipal: "bob" };
+
+  await buffer.addTurn("provider-thread", aliceTurn);
+  await buffer.addTurn("provider-thread", bobTurn);
+  await buffer.retainDeferredTurns("provider-thread", [aliceTurn, bobTurn]);
+
+  await buffer.clearRetainedTurnsForSession("opaque-session", "alice");
+
+  assert.deepEqual(buffer.getRetainedDeferredTurns("provider-thread"), [bobTurn]);
+});
+test("clearRetainedTurnsForSession discovers buffer keys inside the mutation", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const firstTurn = makeTurn("session-a", "first deferred context");
+  const lateTurn = makeTurn("session-a", "late deferred context");
+
+  await buffer.addTurn("provider-thread", firstTurn);
+  await buffer.retainDeferredTurns("provider-thread", [firstTurn]);
+  const originalFindBufferKeys = buffer.findBufferKeysForSession.bind(buffer);
+  (buffer as any).findBufferKeysForSession = async (sessionKey: string) => {
+    const keys = await originalFindBufferKeys(sessionKey);
+    await buffer.addTurn("late-provider-thread", lateTurn);
+    await buffer.retainDeferredTurns("late-provider-thread", [lateTurn]);
+    return keys;
+  };
+
+  await buffer.clearRetainedTurnsForSession("session-a");
+
+  assert.deepEqual(buffer.getRetainedDeferredTurns("provider-thread"), []);
+  assert.deepEqual(buffer.getRetainedDeferredTurns("late-provider-thread"), []);
 });
 
 test("retainDeferredTurns respects the max tail size", async () => {

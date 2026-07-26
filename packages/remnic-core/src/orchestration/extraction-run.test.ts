@@ -15,10 +15,12 @@ import test from "node:test";
 
 import { SmartBuffer } from "../buffer.js";
 import {
+  ExtractionDeadlineError,
   ExtractionRunCoordinator,
   type ExtractionRunCoordinatorDeps,
   computeExtractionRetryNextEligibleMs,
   capExtractionRetryStateEntries,
+  deriveTopicsFromExtraction,
 } from "./extraction-run.js";
 import { StorageManager } from "../storage.js";
 import { parseConfig } from "../config.js";
@@ -85,9 +87,13 @@ const migrationSummary: TierMigrationCycleSummary = {
 interface Harness {
   config: PluginConfig;
   storageForNs: (ns: string) => Promise<StorageManager>;
+  setStorageForDelay: (delayMs: number) => void;
   newCoordinator: () => ExtractionRunCoordinator;
   engineCalls: () => number;
-  setRespond: (fn: (turns: BufferTurn[]) => ExtractionResult) => void;
+  setRespond: (fn: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult>) => void;
+  setPassiveCapture: (fn: () => void | Promise<void>) => void;
+  setMemoryBox: (fn: () => void | Promise<void>) => void;
+  setPersist: (fn: () => void | Promise<void>) => void;
   recordedProcessedCount: () => number;
   run: (
     coord: ExtractionRunCoordinator,
@@ -95,6 +101,9 @@ interface Harness {
     opts?: { force?: boolean; failClosed?: boolean; writeNamespaceOverride?: string },
   ) => Promise<{ status: string; reason?: string }>;
   cleanup: () => Promise<void>;
+  passiveCapture: () => { principal?: string; namespace?: string } | null;
+  setThreadingBlock: (blocked: boolean) => void;
+  persistCalls: () => number;
 }
 
 async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Harness> {
@@ -107,7 +116,11 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   });
 
   const storages = new Map<string, StorageManager>();
+  let storageForDelayMs = 0;
   const storageForNs = async (ns: string): Promise<StorageManager> => {
+    if (storageForDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, storageForDelayMs));
+    }
     let s = storages.get(ns);
     if (!s) {
       s = new StorageManager(path.join(baseDir, `ns-${ns.replace(/[^a-z0-9]+/gi, "_")}`));
@@ -120,11 +133,16 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   const defaultStorage = await storageForNs("default");
   const buffer = new SmartBuffer(config, defaultStorage);
   await buffer.load();
-
   let engineCalls = 0;
-  let respond: (turns: BufferTurn[]) => ExtractionResult = () => successResult();
+  let respond: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult> = () => successResult();
+  let passiveCaptureHandler: () => void | Promise<void> = async () => {};
+  let passiveCapture: { principal?: string; namespace?: string } | null = null;
+  let persistHandler: () => void | Promise<void> = async () => {};
+  let memoryBoxHandler: () => void | Promise<void> = async () => {};
   let recordedProcessedCount = 0;
 
+  let threadingBlocked = false;
+  let persistCalls = 0;
   const makeDeps = (): ExtractionRunCoordinatorDeps => ({
     config,
     getBuffer: () => buffer,
@@ -138,15 +156,29 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
       storageFor: async (ns: string) => storageForNs(ns),
     }),
     getThreading: () => ({
-      processTurn: async (..._args: Parameters<ThreadingManager["processTurn"]>) => "thread-1",
+      processTurn: async (..._args: Parameters<ThreadingManager["processTurn"]>) => {
+        if (threadingBlocked) await new Promise<void>(() => {});
+        return "thread-1";
+      },
       updateThreadTitle: async (..._args: Parameters<ThreadingManager["updateThreadTitle"]>) => {},
     }),
-    persistExtraction: async () => ({ persistedIds: ["memory-1"], memoryPathById: new Map() }),
-    maybeCapturePassiveCorrections: async () => {},
+    persistExtraction: async () => {
+      persistCalls += 1;
+      await persistHandler();
+      return { persistedIds: ["memory-1"], memoryPathById: new Map() };
+    },
+    maybeCapturePassiveCorrections: async (_turns, options) => {
+      await passiveCaptureHandler();
+      passiveCapture = { principal: options.principal, namespace: options.namespace };
+    },
     resolveSelfNamespace: () => "default",
     getCodingContextForSession: () => null,
     applyCodingNamespaceOverlay: () => "default",
-    boxBuilderFor: () => ({ onExtraction: async () => {} }),
+    boxBuilderFor: () => ({
+      onExtraction: async () => {
+        await memoryBoxHandler();
+      },
+    }),
     appendPersistedThreadEpisodes: async () => {},
     maybeScheduleConsolidation: () => {},
     requestQmdMaintenance: () => {},
@@ -160,12 +192,29 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   return {
     config,
     storageForNs,
+    setStorageForDelay: (delayMs) => {
+      storageForDelayMs = delayMs;
+    },
+    setThreadingBlock: (blocked) => {
+      threadingBlocked = blocked;
+    },
+    persistCalls: () => persistCalls,
     newCoordinator: () => new ExtractionRunCoordinator(makeDeps()),
     engineCalls: () => engineCalls,
     setRespond: (fn) => {
       respond = fn;
     },
+    setPassiveCapture: (fn) => {
+      passiveCaptureHandler = fn;
+    },
+    setMemoryBox: (fn) => {
+      memoryBoxHandler = fn;
+    },
+    setPersist: (fn) => {
+      persistHandler = fn;
+    },
     recordedProcessedCount: () => recordedProcessedCount,
+    passiveCapture: () => passiveCapture,
     run: async (coord, content, opts = {}) => {
       const result = await coord.runExtraction(makeTurns(content), {
         skipCharThreshold: true,
@@ -184,6 +233,235 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     },
   };
 }
+
+test("context-only extraction honors scoped principal and namespace overrides", async () => {
+  const harness = await makeHarness();
+  try {
+    const coordinator = harness.newCoordinator();
+    const result = await coordinator.runExtraction(
+      [
+        {
+          role: "user",
+          content: "Please use the blue dashboard.",
+          timestamp: "2026-07-15T00:00:00Z",
+          sessionKey: "opaque-session",
+          extractionContextOnly: true,
+        },
+      ],
+      {
+        bufferKey: "opaque-session",
+        clearBufferAfterExtraction: false,
+        principalOverride: "alice",
+        writeNamespaceOverride: "alice-project",
+      },
+    );
+
+    assert.equal(result.reason, "empty_normalized_turns");
+    assert.deepEqual(harness.passiveCapture(), {
+      principal: "alice",
+      namespace: "alice-project",
+    });
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("context-only extraction bounds passive capture by its deadline", async () => {
+  const harness = await makeHarness();
+  try {
+    harness.setPassiveCapture(() => new Promise<void>(() => {}));
+    const coordinator = harness.newCoordinator();
+    const startedAt = Date.now();
+    await assert.rejects(
+      coordinator.runExtraction(
+        [
+          {
+            role: "user",
+            content: "The correction capture must not clear this buffer after its deadline.",
+            timestamp: "2026-07-15T00:00:00Z",
+            sessionKey: "context-only-deadline",
+            extractionContextOnly: true,
+          },
+        ],
+        {
+          bufferKey: "context-only-deadline",
+          clearBufferAfterExtraction: false,
+          deadlineMs: startedAt + 25,
+        },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof ExtractionDeadlineError);
+        assert.equal(error.stage, "during_passive_capture");
+        return true;
+      },
+    );
+    assert.ok(Date.now() - startedAt < 1_000, "passive capture must not outlive its deadline");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("runExtraction aborts an in-flight provider when its deadline expires", async () => {
+  const harness = await makeHarness();
+  try {
+    const coordinator = harness.newCoordinator();
+    harness.setRespond(() => new Promise<ExtractionResult>(() => {}));
+    await assert.rejects(
+      coordinator.runExtraction(makeTurns("deadline"), {
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+        clearBufferAfterExtraction: false,
+        bufferKey: "deadline",
+        deadlineMs: Date.now() + 40,
+      }),
+      (error: unknown) => error instanceof ExtractionDeadlineError && error.stage === "during_extract",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("runExtraction bounds storage preparation by its deadline", async () => {
+  const scenarios = [
+    {
+      name: "storageFor",
+      stage: "during_storage",
+      configure: (harness: Harness) => harness.setStorageForDelay(100),
+    },
+    {
+      name: "loadMeta",
+      stage: "during_load_meta",
+      configure: async (harness: Harness) => {
+        const storage = await harness.storageForNs("default");
+        const loadMeta = storage.loadMeta.bind(storage);
+        storage.loadMeta = async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          return loadMeta();
+        };
+      },
+    },
+    {
+      name: "listEntityNames",
+      stage: "during_list_entity_names",
+      configure: async (harness: Harness) => {
+        const storage = await harness.storageForNs("default");
+        const listEntityNames = storage.listEntityNames.bind(storage);
+        storage.listEntityNames = async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          return listEntityNames();
+        };
+      },
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    const harness = await makeHarness();
+    try {
+      await scenario.configure(harness);
+      await assert.rejects(
+        harness.newCoordinator().runExtraction(makeTurns(`deadline-${scenario.name}`), {
+          skipCharThreshold: true,
+          skipUserTurnThreshold: true,
+          clearBufferAfterExtraction: false,
+          bufferKey: `deadline-${scenario.name}`,
+          deadlineMs: Date.now() + 40,
+        }),
+        (error: unknown) => error instanceof ExtractionDeadlineError && error.stage === scenario.stage,
+      );
+      assert.equal(harness.engineCalls(), 0, `${scenario.name} timeout must happen before provider extraction`);
+    } finally {
+      await harness.cleanup();
+    }
+  }
+});
+
+test("runExtraction does not wait past its deadline for post-persist memory boxes", async () => {
+  const harness = await makeHarness({ memoryBoxesEnabled: true });
+  try {
+    harness.setMemoryBox(() => new Promise<void>(() => {}));
+    const startedAt = Date.now();
+    const result = await harness.newCoordinator().runExtraction(makeTurns("deadline-memory-box"), {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: false,
+      bufferKey: "deadline-memory-box",
+      deadlineMs: startedAt + 200,
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(harness.persistCalls(), 1, "durable persistence must complete before helper timeout");
+    assert.ok(Date.now() - startedAt < 1_500, "post-persist helper must not hold the extraction indefinitely");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("runExtraction force flush reports a late deadline after clearing committed turns", async () => {
+  const harness = await makeHarness();
+  try {
+    harness.setPersist(() => new Promise<void>((resolve) => setTimeout(resolve, 150)));
+    const deadlineMs = Date.now() + 50;
+    await assert.rejects(
+      harness.newCoordinator().runExtraction(makeTurns("late-persist-deadline"), {
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+        clearBufferAfterExtraction: true,
+        bufferKey: "late-persist-deadline",
+        deadlineMs,
+        failOnExtractionFailure: true,
+      }),
+      (error: unknown) => error instanceof ExtractionDeadlineError && error.stage === "during_buffer_clear",
+    );
+    assert.equal(harness.persistCalls(), 1, "the late deadline must follow durable persistence");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("runExtraction bounds threading pre-persist work by its deadline", async () => {
+  const harness = await makeHarness({ threadingEnabled: true });
+  try {
+    harness.setRespond(() => successResult());
+    harness.setThreadingBlock(true);
+    await assert.rejects(
+      harness.newCoordinator().runExtraction(makeTurns("deadline-threading"), {
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+        clearBufferAfterExtraction: false,
+        bufferKey: "deadline-threading",
+        deadlineMs: Date.now() + 40,
+      }),
+      (error: unknown) => error instanceof ExtractionDeadlineError && error.stage === "during_threading",
+    );
+    assert.equal(harness.persistCalls(), 0, "deadline must prevent durable persistence");
+  } finally {
+    await harness.cleanup();
+  }
+  });
+
+test("runExtraction clamps long deadline timers to the Node setTimeout limit", async () => {
+  const harness = await makeHarness();
+  const timerGlobal = globalThis as unknown as { setTimeout: typeof setTimeout };
+  const realSetTimeout = timerGlobal.setTimeout;
+  const armedDelays: number[] = [];
+  timerGlobal.setTimeout = ((handler: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    if (typeof delay === "number") armedDelays.push(delay);
+    return realSetTimeout(handler, 0, ...args);
+  }) as typeof setTimeout;
+  try {
+    const coordinator = harness.newCoordinator();
+    await coordinator.runExtraction(makeTurns("long-deadline"), {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: false,
+      bufferKey: "long-deadline",
+      deadlineMs: Date.now() + 2_147_483_647 + 60_000,
+    });
+  } finally {
+    timerGlobal.setTimeout = realSetTimeout;
+    await harness.cleanup();
+  }
+  assert.ok(armedDelays.includes(2_147_483_647), `expected a clamped deadline timer, got ${armedDelays.join(", ")}`);
+});
 
 // ---------------------------------------------------------------------------
 // Backoff math (pure)
@@ -226,6 +504,71 @@ test("capExtractionRetryStateEntries: caps to newest and guards maxEntries<=0", 
   // maxEntries<=0 must return [] (not ALL entries via slice(-0)).
   assert.deepEqual(capExtractionRetryStateEntries(entries, 0), []);
   assert.deepEqual(capExtractionRetryStateEntries(entries, -5), []);
+});
+test("extraction helpers ignore malformed runtime values", () => {
+  const malformed = {
+    facts: [
+      null,
+      { tags: [42, "OK"], entityRef: 7, category: "project" },
+      { tags: ["valid"], entityRef: "Entity" },
+    ],
+    entities: [null, 4, { name: "Tool" }],
+  } as unknown as ExtractionResult;
+  assert.deepEqual(deriveTopicsFromExtraction(malformed), ["ok", "project", "valid", "entity", "tool"]);
+  assert.deepEqual(
+    deriveTopicsFromExtraction(null as unknown as ExtractionResult),
+    [],
+  );
+});
+
+test("computeExtractionRetryNextEligibleMs rejects invalid numeric inputs", () => {
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(Number.NaN, [1000], 5000, 0.2, 100),
+    /attempts must be a finite integer/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(0, [1000], 5000, 0.2, 100),
+    /attempts must be a finite integer/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1.5, [1000], 5000, 0.2, 100),
+    /attempts must be a finite integer/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], Number.POSITIVE_INFINITY, 0.2, 100),
+    /maxBackoffMs must be a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], -1, 0.2, 100),
+    /maxBackoffMs must be a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], 5000, Number.NaN, 100),
+    /jitterRatio must be a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], 5000, 2, 100),
+    /jitterRatio must be a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], 5000, 0.2, 100, () => Number.NaN),
+    /rng\(\) must return a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], 5000, 0.2, 100, () => -0.1),
+    /rng\(\) must return a finite number/,
+  );
+  assert.throws(
+    () => computeExtractionRetryNextEligibleMs(1, [1000], 5000, 0.2, 100, () => 1.1),
+    /rng\(\) must return a finite number/,
+  );
+});
+
+test("capExtractionRetryStateEntries rejects non-finite and fractional caps", () => {
+  const entries = [{ firstFailedAt: "2026-07-15T00:00:00.000Z" }];
+  assert.deepEqual(capExtractionRetryStateEntries(entries, Number.NaN), []);
+  assert.deepEqual(capExtractionRetryStateEntries(entries, Number.POSITIVE_INFINITY), []);
+  assert.deepEqual(capExtractionRetryStateEntries(entries, 1.5), []);
 });
 
 // ---------------------------------------------------------------------------

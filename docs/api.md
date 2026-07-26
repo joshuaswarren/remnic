@@ -46,6 +46,7 @@ Two infrastructure routes carry no request envelope and sit outside the op-gated
 **Observe and LCM**
 
 - `POST /engram/v1/observe` — feed conversation messages into the LCM archive and extraction pipeline
+- `POST /engram/v1/extraction/flush` — force-drain buffered extraction for one scoped session
 - `POST /engram/v1/lcm/search` — full-text search over LCM-archived conversations
 - `POST /engram/v1/lcm/compaction/flush` — drain pending LCM observations before a host compaction
 - `POST /engram/v1/lcm/compaction/record` — record a completed host compaction checkpoint
@@ -249,12 +250,33 @@ Request fields:
 - `sessionKey` (string, required) — conversation session identifier
 - `namespace` (string, optional) — target namespace for a single flush
 - `namespaces` (array of strings, optional, 1–64 entries, no duplicates) — target namespaces for one quota-counted batch flush; each namespace is resolved and authorized independently. Mutually exclusive with `namespace`; supplying both, or duplicate entries, returns HTTP 400.
+- `cwd` (string, optional) — working directory used for project scope resolution
+- `projectTag` (string, optional) — project tag used for project scope resolution
 
 Response (HTTP 200):
 
 - Single flush: `enabled`, `flushed`, `sessionKey`, `namespace`, and optional `reason`
 - Batch flush: `enabled`, `flushed`, `sessionKey`, `namespaces`, and `results` entries with `status`, `namespace`, and (for fulfilled entries) `result`
 - A batch flush still returns HTTP 200 when an individual namespace fails or is denied; that namespace appears in `results` with `status: "rejected"`, and `enabled`/`flushed` are `false` for the batch.
+
+#### `POST /engram/v1/extraction/flush`
+
+Force-drain SmartBuffer extraction for a session. This route works when LCM is disabled.
+
+Request fields:
+
+- `sessionKey` (string, required) — conversation session identifier
+- `namespace` (string, optional) — target namespace
+- `cwd` (string, optional) — working directory used for project scope resolution
+- `projectTag` (string, optional) — project tag used for project scope resolution
+- `deadlineMs` (number, optional) — absolute deadline in Unix milliseconds
+
+Response (HTTP 200):
+
+- `flushed` — whether the force-flush completed
+- `sessionKey` — echo of the session key
+- `namespace` — legacy resolved namespace
+- `effectiveNamespace` — scoped write namespace used for extraction
 
 #### `POST /engram/v1/lcm/compaction/record`
 

@@ -64,6 +64,8 @@ export interface PassiveCaptureContext {
   principal?: string;
   /** Authorized namespace the extraction wrote to. */
   namespace: string;
+  /** Shared extraction deadline/cancellation signal. */
+  abortSignal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,11 +74,20 @@ export interface PassiveCaptureContext {
 
 export interface PassiveCaptureDeps {
   /** Plan a correction through the Correction Contract. */
-  planCorrection(request: CorrectionRequest): Promise<CorrectionPlan>;
+  planCorrection(
+    request: CorrectionRequest,
+    opts?: { abortSignal?: AbortSignal },
+  ): Promise<CorrectionPlan>;
   /** Apply a planned correction (auto mode only). */
   applyCorrection(
     planId: string,
-    opts: { confirm: true; namespace?: string; sessionKey?: string; principal?: string },
+    opts: {
+      confirm: true;
+      namespace?: string;
+      sessionKey?: string;
+      principal?: string;
+      abortSignal?: AbortSignal;
+    },
   ): Promise<CorrectionOutcome>;
   /** Resolve the storage dir for notification enqueue (per namespace). */
   storageDir(namespace: string): Promise<string>;
@@ -207,6 +218,7 @@ export async function capturePassiveCorrections(
   telemetry.detected = corrections.length;
 
   for (const correction of corrections) {
+    if (ctx.abortSignal?.aborted) return { telemetry, plans };
     // 1. Dedup — checked before planning, but the fingerprint is only
     //    recorded AFTER a successful plan so a transient planning failure
     //    can be retried on a later flush (review: "dedup blocks retry
@@ -243,13 +255,14 @@ export async function capturePassiveCorrections(
 
     let plan: CorrectionPlan;
     try {
-      plan = await deps.planCorrection(request);
+      plan = await deps.planCorrection(request, { abortSignal: ctx.abortSignal });
     } catch (err) {
       log.warn(
         `passive-correction: planning failed for "${correction.targetHint.slice(0, 60)}": ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
     }
+    if (ctx.abortSignal?.aborted) return { telemetry, plans };
     plans.push(plan);
     // Record the fingerprint only after a successful plan.
     dedupState.add(fp);
@@ -276,6 +289,7 @@ export async function capturePassiveCorrections(
         namespace: ctx.namespace,
         ...(ctx.sessionKey ? { sessionKey: ctx.sessionKey } : {}),
         ...(ctx.principal ? { principal: ctx.principal } : {}),
+        abortSignal: ctx.abortSignal,
       });
       // A partial outcome means some actions failed (per-action races or
       // storage failures). Don't count it as auto-applied or notify — queue

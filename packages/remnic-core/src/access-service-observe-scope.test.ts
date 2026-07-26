@@ -33,6 +33,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
+import { PendingObserveExtractionTracker } from "./access-observe-helpers.js";
+
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { resolveAuthorizedNamespaceWritablePreflight } from "./access-namespace-preflight.js";
 import { Orchestrator } from "./orchestrator.js";
@@ -213,6 +215,92 @@ test("#1495 projectTag: LCM, extraction, objective-state, and response all agree
   assert.ok(
     probe.objectiveStateNamespaces.every((ns) => ns === expected),
     `objective-state target must be the effective namespace, got ${JSON.stringify(probe.objectiveStateNamespaces)}`,
+  );
+});
+
+test("#2128 pending observe preparation is a force-flush barrier", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const preparation = tracker.reserve("session-z");
+  let releaseExtraction!: () => void;
+  const extraction = new Promise<void>((resolve) => {
+    releaseExtraction = resolve;
+  });
+  let waited = false;
+  const waitPromise = tracker.wait("session-z", "alice", "team-project").then(() => {
+    waited = true;
+  });
+
+  await Promise.resolve();
+  assert.equal(waited, false, "a force flush must wait while observe is still resolving scope");
+
+  tracker.track(tracker.key("session-z", "alice", "team-project"), extraction, new AbortController());
+  preparation.release();
+  await Promise.resolve();
+  assert.equal(waited, false, "registration must remain a barrier until extraction settles");
+
+  releaseExtraction();
+  await waitPromise;
+  assert.equal(waited, true);
+});
+
+test("#2128 scoped observe preparation cancellation preserves another project", () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const projectA = tracker.reserve("opaque-session", "projectTag:project-a");
+  const projectB = tracker.reserve("opaque-session", "projectTag:project-b");
+
+  tracker.cancel("opaque-session", undefined, "alice-project-a", "projectTag:project-a");
+
+  assert.equal(projectA.isCancelled(), true);
+  assert.equal(projectB.isCancelled(), false);
+  projectA.release();
+  projectB.release();
+});
+
+
+test("#2128 cancellation matches resolved scope despite a different request hint", () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const preparation = tracker.reserve("session-z", "cwd:/workspace/project/src");
+  preparation.setScope("alice", "alice-project");
+
+  tracker.cancel("session-z", "alice", "alice-project", "projectTag:Acme/Webshop");
+
+  assert.equal(preparation.isCancelled(), true);
+  preparation.release();
+});
+test("#2128 concurrent scope plans do not share temporary coding context", async () => {
+  const probe = makeObserveProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const internals = service as unknown as {
+    resolveMemoryScopePlan: (request: EngramAccessObserveRequest) => Promise<{
+      writeNamespace: string;
+    }>;
+  };
+
+  const firstProject = projectTagProjectId("Acme/Webshop");
+  const secondProject = projectTagProjectId("Contoso/Portal");
+  const [firstPlan, secondPlan] = await Promise.all([
+    internals.resolveMemoryScopePlan.call(
+      service,
+      observeRequest({ sessionKey: "pi-geek:concurrent", projectTag: "Acme/Webshop" }),
+    ),
+    internals.resolveMemoryScopePlan.call(
+      service,
+      observeRequest({ sessionKey: "pi-geek:concurrent", projectTag: "Contoso/Portal" }),
+    ),
+  ]);
+
+  assert.equal(
+    firstPlan.writeNamespace,
+    combineNamespaces("pi-geek", projectNamespaceName(firstProject)),
+  );
+  assert.equal(
+    secondPlan.writeNamespace,
+    combineNamespaces("pi-geek", projectNamespaceName(secondProject)),
+  );
+  assert.equal(
+    probe.contexts.get("pi-geek:concurrent"),
+    undefined,
+    "scope planning must not bind temporary coding context visible to concurrent calls",
   );
 });
 

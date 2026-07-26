@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { MemoryFile } from "../types.js";
 
 import { StorageManager, ContentHashIndex } from "../storage.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
@@ -19,8 +20,10 @@ import {
   isEligibleCorrectionCandidate,
   applyEditMemory,
   appendTombstoneFn,
+  retireMemoryFn,
+  rescopeMemoryFn,
+  writeReplacementMemory,
 } from "./correction-access-wiring.js";
-import type { MemoryFile } from "../types.js";
 
 async function makeStorage(prefix = "remnic-corr-wiring-") {
   StorageManager.clearAllStaticCaches();
@@ -116,6 +119,174 @@ test("#1672 item 3: applyEditMemory leaves non-fact contentHash untouched (only 
     assert.equal(after!.content, "likes light mode");
     // Non-fact categories are not content-hash indexed, so no hash is forced.
     assert.ok(!after!.frontmatter.contentHash, "non-fact edit must not synthesize a contentHash");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("#2128 edit returns its committed id after cancellation", async () => {
+  const { storage, cleanup } = await makeStorage("remnic-corr-edit-abort-");
+  try {
+    const { id } = await storage.writeMemory("fact", "the database is MySQL", { source: "test" });
+    const originalWriteFrontmatter = storage.writeMemoryFrontmatter.bind(storage);
+    const abortController = new AbortController();
+    let committed = false;
+    (storage as any).writeMemoryFrontmatter = async (...args: any[]) => {
+      const result = await (originalWriteFrontmatter as (...inner: any[]) => Promise<unknown>)(...args);
+      committed = true;
+      abortController.abort(new Error("caller disconnected"));
+      return result;
+    };
+    const wiring = { orchestrator: { getStorage: async () => storage } } as any;
+
+    const editedId = await applyEditMemory(
+      wiring,
+      "default",
+      id,
+      "the database is PostgreSQL",
+      abortController.signal,
+    );
+
+    assert.equal(committed, true);
+    assert.equal(editedId, id);
+    assert.equal((await storage.getMemoryById(id))?.content, "the database is PostgreSQL");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("#2128 retirement completes after cancellation during the durable write", async () => {
+  const { storage, cleanup } = await makeStorage("remnic-corr-retire-abort-");
+  try {
+    const { id } = await storage.writeMemory("fact", "the database is MySQL", { source: "test" });
+    const originalWriteFrontmatter = storage.writeMemoryFrontmatter.bind(storage);
+    const abortController = new AbortController();
+    let committed = false;
+    (storage as any).writeMemoryFrontmatter = async (...args: any[]) => {
+      const result = await (originalWriteFrontmatter as (...inner: any[]) => Promise<unknown>)(...args);
+      committed = true;
+      abortController.abort(new Error("caller disconnected"));
+      return result;
+    };
+    const wiring = { orchestrator: { getStorage: async () => storage } } as any;
+
+    await retireMemoryFn(
+      wiring,
+      "default",
+      id,
+      { status: "retracted" },
+      abortController.signal,
+    );
+
+    assert.equal(committed, true);
+    assert.equal((await storage.getMemoryById(id))?.frontmatter.status, "forgotten");
+  } finally {
+    await cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Rescope cancellation transaction
+// ---------------------------------------------------------------------------
+
+test("#2128 rescope retires the source when cancellation lands after destination write", async () => {
+  const source = await makeStorage("remnic-corr-rescope-source-");
+  const destination = await makeStorage("remnic-corr-rescope-dest-");
+  try {
+    const { id: sourceId } = await source.storage.writeMemory("fact", "the database is MySQL", {
+      source: "test",
+    });
+    const abortController = new AbortController();
+    const originalWriteSealedMemory = destination.storage.writeSealedMemory.bind(destination.storage);
+    let destinationWriteCompleted = false;
+    (destination.storage as any).writeSealedMemory = async (...args: any[]) => {
+      const result = await (originalWriteSealedMemory as (...args: any[]) => Promise<unknown>)(...args);
+      destinationWriteCompleted = true;
+      abortController.abort(new Error("caller disconnected"));
+      return result;
+    };
+    const wiring = {
+      orchestrator: {
+        getStorage: async (namespace: string) =>
+          namespace === "source" ? source.storage : destination.storage,
+      },
+    } as any;
+
+    const destinationId = await rescopeMemoryFn(
+      wiring,
+      "source",
+      sourceId,
+      "destination",
+      abortController.signal,
+    );
+
+    assert.equal(destinationWriteCompleted, true);
+    const archivedSource = await source.storage.getMemoryById(sourceId);
+    const activeDestination = await destination.storage.getMemoryById(destinationId);
+    assert.equal(archivedSource?.frontmatter.status, "archived");
+    assert.equal(activeDestination?.frontmatter.status, "active");
+  } finally {
+    await source.cleanup();
+    await destination.cleanup();
+  }
+});
+
+test("#2128 replacement write returns its committed id after cancellation", async () => {
+  const { storage, cleanup } = await makeStorage("remnic-corr-replacement-");
+  try {
+    const originalWriteSealedMemory = storage.writeSealedMemory.bind(storage);
+    const abortController = new AbortController();
+    let committed = false;
+    (storage as any).writeSealedMemory = async (...args: any[]) => {
+      const result = await (originalWriteSealedMemory as (...inner: any[]) => Promise<unknown>)(...args);
+      committed = true;
+      abortController.abort(new Error("caller disconnected"));
+      return result;
+    };
+    const wiring = { orchestrator: { getStorage: async () => storage } } as any;
+
+    const id = await writeReplacementMemory(
+      wiring,
+      "default",
+      { content: "the database is PostgreSQL", supersedes: "source-id" },
+      abortController.signal,
+    );
+
+    assert.equal(committed, true);
+    assert.equal(typeof id, "string");
+    assert.equal((await storage.getMemoryById(id))?.frontmatter.status, "active");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("#2128 tombstone append returns its committed id after cancellation", async () => {
+  const { storage, cleanup } = await makeStorage("remnic-corr-tombstone-abort-");
+  try {
+    const originalAppendTombstone = storage.appendTombstone.bind(storage);
+    const abortController = new AbortController();
+    let committed = false;
+    (storage as any).appendTombstone = async (...args: any[]) => {
+      const result = await (originalAppendTombstone as (...inner: any[]) => Promise<string | null>)(...args);
+      committed = true;
+      abortController.abort(new Error("caller disconnected"));
+      return result;
+    };
+    const wiring = { orchestrator: { getStorage: async () => storage } } as any;
+
+    const id = await appendTombstoneFn(
+      wiring,
+      "default",
+      {
+        reason: "retraction",
+        sourceMemoryId: "source-id",
+        rawContent: "the database is PostgreSQL",
+      },
+      abortController.signal,
+    );
+
+    assert.equal(committed, true);
+    assert.equal(typeof id, "string");
   } finally {
     await cleanup();
   }

@@ -20,6 +20,7 @@
  * only thing it persists is the plan document itself.
  */
 
+import { throwIfAborted } from "../abort-error.js";
 import { mkdir, readFile, rename, unlink, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { serializeMutations } from "../utils/serialize-mutations.js";
@@ -150,7 +151,10 @@ export class CorrectionPlanner {
   async plan(
     request: CorrectionRequest,
     readableNamespaces: readonly string[],
+    opts?: { abortSignal?: AbortSignal },
   ): Promise<CorrectionPlan> {
+    const abortSignal = opts?.abortSignal;
+    throwIfAborted(abortSignal, "correction planning aborted");
     const cleaned = validateCorrectionRequest(request);
     if (cleaned.text.length > CORRECTION_TEXT_MAX) {
       // Defensive double-check; validateCorrectionRequest already throws.
@@ -171,13 +175,15 @@ export class CorrectionPlanner {
     }
 
     // 1. LOCATE
-    const located = await this.locateCandidates(cleaned, namespaces);
+    const located = await this.locateCandidates(cleaned, namespaces, abortSignal);
+    throwIfAborted(abortSignal, "correction planning aborted");
     if (located.candidates.length === 0) {
       // No candidates AND no explicit targets → empty plan is valid (the user
       // can still discard). But explicit-target-not-found was already raised
       // inside locateCandidates (rule 34).
       return this.persist(
         this.emptyPlan(cleaned, namespaces[0], "no matching memories found for the correction text"),
+        abortSignal,
       );
     }
 
@@ -186,6 +192,7 @@ export class CorrectionPlanner {
       text: cleaned.text,
       candidates: located.candidates,
     });
+    throwIfAborted(abortSignal, "correction planning aborted");
 
     // Validate every action shape before persisting — the adapter is trusted
     // to validate, but a malformed action must never reach the executor
@@ -245,6 +252,7 @@ export class CorrectionPlanner {
     const diff = llm.fallback
       ? ""
       : await this.deps.renderDiff({ candidates: located.candidates, actions: llm.actions });
+    throwIfAborted(abortSignal, "correction planning aborted");
 
     const createdAt = this.deps.now().toISOString();
     const expiresAt = new Date(
@@ -275,18 +283,21 @@ export class CorrectionPlanner {
           status: "pending",
         };
 
-    return this.persist(plan);
+    throwIfAborted(abortSignal, "correction planning aborted");
+    return this.persist(plan, abortSignal);
   }
 
   private async locateCandidates(
     request: CorrectionRequest,
     namespaces: readonly string[],
+    abortSignal?: AbortSignal,
   ): Promise<{ candidates: PlannerCandidate[] }> {
     if (request.targetIds && request.targetIds.length > 0) {
       const targets = await this.deps.resolveTargets({
         targetIds: request.targetIds,
         namespaces,
       });
+      throwIfAborted(abortSignal, "correction planning aborted");
       // Expand 1-hop neighbors and merge (dedup by memoryId, keep highest score).
       const seedIds = targets.map((c) => c.memoryId);
       const neighbors = await this.deps.expandNeighbors({
@@ -294,6 +305,7 @@ export class CorrectionPlanner {
         namespaces,
         limit: this.deps.maxAffected,
       });
+      throwIfAborted(abortSignal, "correction planning aborted");
       return { candidates: mergeCandidates(targets, neighbors).slice(0, this.deps.maxAffected) };
     }
 
@@ -302,6 +314,7 @@ export class CorrectionPlanner {
       namespaces,
       limit: this.deps.maxAffected,
     });
+    throwIfAborted(abortSignal, "correction planning aborted");
     if (searched.length === 0) return { candidates: [] };
     const seedIds = searched.slice(0, Math.min(5, searched.length)).map((c) => c.memoryId);
     const neighbors = await this.deps.expandNeighbors({
@@ -309,6 +322,7 @@ export class CorrectionPlanner {
       namespaces,
       limit: this.deps.maxAffected,
     });
+    throwIfAborted(abortSignal, "correction planning aborted");
     return { candidates: mergeCandidates(searched, neighbors).slice(0, this.deps.maxAffected) };
   }
 
@@ -386,8 +400,13 @@ export class CorrectionPlanner {
     return path.join(await this.deps.storageDir(namespace), "state", "corrections", "pending");
   }
 
-  private async persist(plan: CorrectionPlan): Promise<CorrectionPlan> {
+  private async persist(
+    plan: CorrectionPlan,
+    abortSignal?: AbortSignal,
+  ): Promise<CorrectionPlan> {
+    throwIfAborted(abortSignal, "correction planning aborted");
     const dir = await this.pendingDir(plan.namespace);
+    throwIfAborted(abortSignal, "correction planning aborted");
     const target = path.join(dir, `${plan.planId}.json`);
     // #1678 (thread Oid8t): never-store/redaction corrections carry the very
     // secret/pattern the user asked Remnic NOT to retain. The durable audit
@@ -411,9 +430,12 @@ export class CorrectionPlanner {
       ? { ...plan, request: { ...plan.request, text: REDACTED_REQUEST_TEXT } }
       : plan;
     await serializeMutations(`correction-plan:${target}`, async () => {
+      throwIfAborted(abortSignal, "correction planning aborted");
       await mkdir(dir, { recursive: true });
       const tmp = `${target}.${process.pid}.${Date.now().toString(36)}.tmp`;
+      throwIfAborted(abortSignal, "correction planning aborted");
       await writeFile(tmp, `${JSON.stringify(persistedPlan)}\n`, "utf-8");
+      throwIfAborted(abortSignal, "correction planning aborted");
       // rename() is atomic on POSIX for same-filesystem renames (rule 54).
       await rename(tmp, target);
     });
@@ -498,6 +520,31 @@ export class CorrectionPlanner {
             : a,
         );
       }
+      const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
+      await writeFile(tmp, `${JSON.stringify(plan)}\n`, "utf-8");
+      await rename(tmp, file);
+    });
+  }
+  /**
+   * Return an applying plan to the pending queue when cancellation arrives
+   * before its first correction mutation.
+   */
+  async resetApplying(namespace: string, planId: string): Promise<void> {
+    assertSafePlanId(planId);
+    const file = path.join(await this.pendingDir(namespace), `${planId}.json`);
+    await serializeMutations(`correction-plan:${file}`, async () => {
+      let raw: string;
+      try {
+        raw = await readFile(file, "utf-8");
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === "ENOENT") return;
+        throw err;
+      }
+      const plan = parsePlan(raw);
+      if (!plan || plan.status !== "applying") return;
+      plan.status = "pending";
+      delete plan.applyingAt;
       const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
       await writeFile(tmp, `${JSON.stringify(plan)}\n`, "utf-8");
       await rename(tmp, file);

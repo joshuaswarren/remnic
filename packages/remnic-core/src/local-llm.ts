@@ -8,6 +8,13 @@ import { mergeEnv, readEnvVar } from "./runtime/env.js";
 import { resolveLocalLlmCapabilities } from "./capabilities.js";
 import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 import { ChatTransport } from "./local-llm-transport.js";
+import {
+  extractNonRecoverableBackendReason,
+  extractNonRecoverableBackendReasonFromErrorText,
+  isAbortError,
+  normalizeBackendTripReason,
+  waitForRetryBackoff,
+} from "./local-llm-helpers.js";
 
 /** Trim trailing slash characters without backtracking regex. */
 function trimTrailingSlashes(s: string): string {
@@ -223,6 +230,7 @@ interface LocalLlmChatCompletionOptions {
   forceDisableThinking?: boolean;
   disableThinking?: boolean;
   priority?: LocalLlmRequestPriority;
+  signal?: AbortSignal;
 }
 
 interface LocalLlmQueuedRequest {
@@ -304,15 +312,6 @@ export class LocalLlmClient {
     return headers;
   }
 
-  private isAbortError(err: unknown): boolean {
-    if (!err || typeof err !== "object") return false;
-    const maybe = err as { name?: string; message?: string };
-    return (
-      maybe.name === "AbortError" ||
-      maybe.message === "This operation was aborted" ||
-      maybe.message === "The operation was aborted"
-    );
-  }
 
   /**
    * Set the ModelRegistry for caching detected capabilities
@@ -356,7 +355,7 @@ export class LocalLlmClient {
   }
 
   private markBackendUnavailable(reason: string, durationMs: number): void {
-    const normalizedReason = this.normalizeBackendTripReason(reason);
+    const normalizedReason = normalizeBackendTripReason(reason);
     if (durationMs > 0) {
       const untilMs = Date.now() + durationMs;
       this.getGlobalBackendState().set(this.getBackendKey(), { untilMs, reason: normalizedReason });
@@ -370,29 +369,6 @@ export class LocalLlmClient {
     );
   }
 
-  private extractNonRecoverableBackendReason(reason: string): string | null {
-    const match = reason.match(
-      /Failed to load model|Library not loaded|different Team IDs|code signature|llm_engine_mlx_amphibian/i,
-    );
-    return match?.[0] ?? null;
-  }
-
-  private extractNonRecoverableBackendReasonFromErrorText(errorText: string): string | null {
-    const directReason = this.extractNonRecoverableBackendReason(errorText);
-    if (directReason) return directReason;
-    try {
-      const parsed = JSON.parse(errorText) as { error?: { message?: string } };
-      return this.extractNonRecoverableBackendReason(parsed?.error?.message ?? "");
-    } catch {
-      return null;
-    }
-  }
-
-  private normalizeBackendTripReason(reason: string): string {
-    const cleaned = reason.replace(/\s+/g, " ").replace(/^[-:–—\s]+/, "").trim();
-    if (!cleaned) return "unknown local backend failure";
-    return cleaned.length > 160 ? `${cleaned.slice(0, 157)}...` : cleaned;
-  }
 
   /**
    * Fetch with timeout for health checks
@@ -401,13 +377,15 @@ export class LocalLlmClient {
     url: string,
     timeoutMs: number = 2000,
     headers?: Record<string, string>,
+    signal?: AbortSignal,
   ): Promise<{ ok: boolean; data: unknown; status: number | null }> {
     const controller = new AbortController();
+    const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, {
-        signal: controller.signal,
+        signal: requestSignal,
         headers: this.buildRequestHeaders({ Accept: "application/json", ...(headers ?? {}) }),
       });
       clearTimeout(timeout);
@@ -430,10 +408,13 @@ export class LocalLlmClient {
 
   private async probeLmStudioNativeModels(
     probeBaseUrl: string,
+    signal?: AbortSignal,
   ): Promise<{ matched: boolean; unauthorized: boolean }> {
     let unauthorized = false;
     for (const endpoint of ["/api/v1/models", "/api/v0/models"]) {
-      const probe = await this.fetchWithTimeout(`${probeBaseUrl}${endpoint}`);
+      if (signal?.aborted) return { matched: false, unauthorized };
+      const probe = await this.fetchWithTimeout(`${probeBaseUrl}${endpoint}`, 2000, undefined, signal);
+      if (signal?.aborted) return { matched: false, unauthorized };
       if (probe.ok && isLmStudioNativeModelsResponse(probe.data)) {
         return { matched: true, unauthorized };
       }
@@ -448,7 +429,8 @@ export class LocalLlmClient {
    * Check if local LLM is available
    * Uses 127.0.0.1 instead of localhost to avoid DNS issues (consistent with tactician)
    */
-  async checkAvailability(): Promise<boolean> {
+  async checkAvailability(signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return false;
     // Cache health check results for 1 minute
     const now = Date.now();
     const trippedState = this.getTrippedBackendState(now);
@@ -474,14 +456,17 @@ export class LocalLlmClient {
     let sawUnauthorizedProbe = false;
 
     // Try to detect which server type is running
+    if (signal?.aborted) return false;
     for (const serverConfig of orderedLocalServers(configuredBaseUrl)) {
       const healthUrl = `${probeBaseUrl}${serverConfig.healthEndpoint}`;
       log.debug(`checking ${serverConfig.type} at ${healthUrl}`);
 
-      const result = await this.fetchWithTimeout(healthUrl);
+      const result = await this.fetchWithTimeout(healthUrl, 2000, undefined, signal);
+      if (signal?.aborted) return false;
       if (result.ok && serverConfig.detectFn(result.data)) {
         if (serverConfig.type === "mlx") {
-          const lmStudioProbe = await this.probeLmStudioNativeModels(probeBaseUrl);
+          const lmStudioProbe = await this.probeLmStudioNativeModels(probeBaseUrl, signal);
+          if (signal?.aborted) return false;
           if (lmStudioProbe.unauthorized) {
             sawUnauthorizedProbe = true;
           }
@@ -495,7 +480,8 @@ export class LocalLlmClient {
         }
         if (serverConfig.type === "llamacpp") {
           let sawLlamaCppSignal = false;
-          const propsProbe = await this.fetchWithTimeout(`${probeBaseUrl}/props`);
+          const propsProbe = await this.fetchWithTimeout(`${probeBaseUrl}/props`, 2000, undefined, signal);
+          if (signal?.aborted) return false;
           if (propsProbe.ok && isLlamaCppPropsResponse(propsProbe.data)) {
             sawLlamaCppSignal = true;
           }
@@ -504,7 +490,8 @@ export class LocalLlmClient {
           }
 
           const modelsUrl = `${probeBaseUrl}${serverConfig.modelsEndpoint}`;
-          const modelsProbe = await this.fetchWithTimeout(modelsUrl);
+          const modelsProbe = await this.fetchWithTimeout(modelsUrl, 2000, undefined, signal);
+          if (signal?.aborted) return false;
           if (modelsProbe.ok && isLlamaCppModelsResponse(modelsProbe.data)) {
             sawLlamaCppSignal = true;
           }
@@ -530,11 +517,13 @@ export class LocalLlmClient {
         sawUnauthorizedProbe = true;
       }
     }
+    if (signal?.aborted) return false;
 
     // Generic check if specific detection failed
     try {
       const modelsUrl = `${probeBaseUrl}/v1/models`;
-      const result = await this.fetchWithTimeout(modelsUrl);
+      const result = await this.fetchWithTimeout(modelsUrl, 2000, undefined, signal);
+      if (signal?.aborted) return false;
       if (result.ok) {
         this.isAvailable = true;
         this.detectedType = "generic";
@@ -903,6 +892,10 @@ export class LocalLlmClient {
 
   private async runQueuedRequest(next: LocalLlmQueuedRequest): Promise<void> {
     try {
+      if (next.options.signal?.aborted) {
+        next.resolve(null);
+        return;
+      }
       const remainingCooldownMs = this.remainingCooldownMs();
       if (remainingCooldownMs > 0) {
         const additionalDropped = this.failOpenQueuedRequestsForCooldown();
@@ -949,7 +942,8 @@ export class LocalLlmClient {
     }
 
     try {
-      const isAvailable = await this.checkAvailability();
+      if (options.signal?.aborted) return null;
+      const isAvailable = await this.checkAvailability(options.signal);
       if (!isAvailable) {
         log.debug(
           `local LLM: checkAvailability returned false for ${this.config.localLlmUrl}`,
@@ -1040,6 +1034,16 @@ export class LocalLlmClient {
       let lastAbortError: Error | null = null;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         const attemptAbort = new AbortController();
+        const onCallerAbort = (): void => {
+          attemptAbort.abort(options.signal?.reason);
+        };
+        if (options.signal) {
+          if (options.signal.aborted) {
+            onCallerAbort();
+          } else {
+            options.signal.addEventListener("abort", onCallerAbort, { once: true });
+          }
+        }
         const attemptTimeout = setTimeout(() => attemptAbort.abort(), effectiveTimeoutMs);
         try {
           response = await this.chatTransport.post({
@@ -1052,19 +1056,20 @@ export class LocalLlmClient {
             budgetMs: this.config.localLlmTimeoutMs,
           });
         } catch (err) {
-          if (!this.isAbortError(err)) throw err;
+          if (!isAbortError(err)) throw err;
           lastAbortError = err instanceof Error ? err : new Error(String(err));
-          if (attempt < maxAttempts) {
-            const backoffMs = this.config.localLlmRetryBackoffMs * attempt;
-            log.warn(
-              `local LLM request aborted: op=${operation} attempt=${attempt}/${maxAttempts} timeoutMs=${effectiveTimeoutMs} model=${this.config.localLlmModel}; retrying after ${backoffMs}ms`,
-            );
-            await new Promise((resolve) => setTimeout(resolve, backoffMs));
-            continue;
+          if (options.signal?.aborted || attempt >= maxAttempts) {
+            break;
           }
-          break;
+          const backoffMs = this.config.localLlmRetryBackoffMs * attempt;
+          log.warn(
+            `local LLM request aborted: op=${operation} attempt=${attempt}/${maxAttempts} timeoutMs=${effectiveTimeoutMs} model=${this.config.localLlmModel}; retrying after ${backoffMs}ms`,
+          );
+          if (!(await waitForRetryBackoff(backoffMs, options.signal))) return null;
+          continue;
         } finally {
           clearTimeout(attemptTimeout);
+          options.signal?.removeEventListener("abort", onCallerAbort);
         }
 
         if (response.ok) break;
@@ -1072,7 +1077,7 @@ export class LocalLlmClient {
           try {
             const errorText = await response.clone().text();
             const nonRecoverableReason =
-              this.extractNonRecoverableBackendReasonFromErrorText(errorText);
+              extractNonRecoverableBackendReasonFromErrorText(errorText);
             if (nonRecoverableReason) {
               this.markBackendUnavailable(
                 nonRecoverableReason,
@@ -1091,12 +1096,11 @@ export class LocalLlmClient {
         log.warn(
           `local LLM request got ${response.status}; retrying (attempt ${attempt + 1}/${maxAttempts}) after ${backoffMs}ms`,
         );
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        if (!(await waitForRetryBackoff(backoffMs, options.signal))) return null;
       }
       log.debug(
         `local LLM: received response, status=${response?.status}, ok=${response?.ok}`,
       );
-
       if (!response) {
         if (lastAbortError) {
           log.warn(
@@ -1131,8 +1135,8 @@ export class LocalLlmClient {
           `(op=${operation}, model=${this.config.localLlmModel}, url=${chatUrl}, promptChars=${promptChars}, maxTokens=${requestBody.max_tokens as number})`,
         );
         const nonRecoverableReason =
-          this.extractNonRecoverableBackendReason(reason) ??
-          this.extractNonRecoverableBackendReasonFromErrorText(errorText);
+          extractNonRecoverableBackendReason(reason) ??
+          extractNonRecoverableBackendReasonFromErrorText(errorText);
         if (nonRecoverableReason) {
           this.markBackendUnavailable(
             nonRecoverableReason,
@@ -1206,7 +1210,7 @@ export class LocalLlmClient {
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       const durationMs = Date.now() - startedAtMs;
-      if (this.isAbortError(err)) {
+      if (isAbortError(err)) {
         log.warn(
           `local LLM request aborted: op=${operation} timeoutMs=${options.timeoutMs ?? this.config.localLlmTimeoutMs} model=${this.config.localLlmModel} durationMs=${durationMs} error=${errMsg}`,
         );
@@ -1214,7 +1218,7 @@ export class LocalLlmClient {
       }
       log.warn(`local LLM request error: op=${operation} error=${errMsg}`);
       this.isAvailable = false; // Mark as unavailable on non-abort errors
-      const nonRecoverableReason = this.extractNonRecoverableBackendReason(errMsg);
+      const nonRecoverableReason = extractNonRecoverableBackendReason(errMsg);
       if (nonRecoverableReason) {
         this.markBackendUnavailable(
           nonRecoverableReason,

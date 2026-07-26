@@ -15,7 +15,14 @@ import { projectTagProjectId } from "./coding/coding-namespace.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
-type CommandName = "browse" | "store" | "decision" | "architecture" | "delta" | "correct";
+type CommandName =
+  | "browse"
+  | "store"
+  | "extraction-flush"
+  | "decision"
+  | "architecture"
+  | "delta"
+  | "correct";
 
 type ParsedArgs = {
   command: CommandName;
@@ -136,6 +143,7 @@ function usage(): string {
   return [
     "  engram-access browse [options]",
     "  engram-access store [options]",
+    "  engram-access extraction-flush [options]",
     "  engram-access decision [options]",
     "  engram-access architecture [options]",
     "  engram-access delta [options]",
@@ -164,6 +172,14 @@ function usage(): string {
     "  --source-reason <text>",
     "  --idempotency-key <key>",
     "  --dry-run",
+    "",
+    "Extraction flush options:",
+    "  --session-key <key>",
+    "  --namespace <name>",
+    "  --principal <principal>",
+    "  --cwd <path>",
+    "  --project-tag <tag>",
+    "  --deadline-ms <timestamp>",
     "",
     "Decision options:",
     "  --subcommand <list|get|record|supersede>",
@@ -233,6 +249,10 @@ const COMMAND_SPECS: Record<CommandName, CommandSpec> = {
     ]),
     flagOptions: new Set(["dry-run"]),
   },
+  "extraction-flush": {
+    valueOptions: new Set(["session-key", "namespace", "principal", "cwd", "project-tag", "deadline-ms"]),
+    flagOptions: new Set(),
+  },
   decision: {
     valueOptions: new Set([
       "subcommand",
@@ -301,7 +321,15 @@ type BrowseSort = (typeof BROWSE_SORT_VALUES)[number];
  * `command: commandRaw` assignment below (codex review P2).
  */
 function isCommandName(value: string): value is CommandName {
-  return value === "browse" || value === "store" || value === "decision" || value === "architecture" || value === "delta" || value === "correct";
+  return (
+    value === "browse" ||
+    value === "store" ||
+    value === "extraction-flush" ||
+    value === "decision" ||
+    value === "architecture" ||
+    value === "delta" ||
+    value === "correct"
+  );
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -561,6 +589,28 @@ async function runStore(args: ParsedArgs, preferredId?: string): Promise<void> {
   console.log(JSON.stringify(output.result, null, 2));
 }
 
+async function runExtractionFlush(args: ParsedArgs, preferredId?: string): Promise<void> {
+  const { config, service } = buildRuntime(preferredId);
+  const op = getOperation("extraction_force_flush");
+  if (!op) {
+    throw new Error("access-boundary: operation not registered: extraction_force_flush");
+  }
+  const output = (await op.run(
+    {
+      sessionKey: requireOption(args, "session-key"),
+      namespace: getLastOption(args, "namespace"),
+      cwd: expandOptionalPath(getLastOption(args, "cwd")),
+      projectTag: getLastOption(args, "project-tag"),
+      deadlineMs: parseIntegerOption(args, "deadline-ms", { min: 0 }),
+    },
+    {
+      service,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
+    },
+  )) as { result: unknown };
+  console.log(JSON.stringify(output.result, null, 2));
+}
+
 function expandOptionalPath(value: string | undefined): string | undefined {
   return value === undefined ? undefined : expandTildePath(value);
 }
@@ -803,6 +853,10 @@ export async function main(
   const args = parseArgs(argv);
   if (args.command === "browse") {
     await runBrowse(args, options.preferredId);
+    return;
+  }
+  if (args.command === "extraction-flush") {
+    await runExtractionFlush(args, options.preferredId);
     return;
   }
   if (args.command === "decision") {

@@ -17,6 +17,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { abortError } from "../abort-error.js";
 import { SmartBuffer } from "../buffer.js";
 import type { ImportTurn } from "../bulk-import/types.js";
 import { resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
@@ -28,13 +29,18 @@ import { StorageManager } from "../index.js";
 import { LcmEngine } from "../lcm/index.js";
 import { log } from "../logger.js";
 import { ExtractionQueueCoordinator } from "./extraction-queue-coordinator.js";
-import { ExtractionRunCoordinator, type ExtractionRunResult } from "./extraction-run.js";
+import {
+  ExtractionDeadlineError,
+  ExtractionRunCoordinator,
+  type ExtractionRunResult,
+} from "./extraction-run.js";
 import { stripHandles } from "../recall-handles.js";
 import { type ReplayTurn, normalizeReplaySessionKey } from "../replay/types.js";
 import { SessionObserverState } from "../session-observer-state.js";
 import { CODEX_THREAD_KEY_PREFIX } from "../thread-key.js";
 import { TranscriptManager } from "../transcript.js";
 import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../types.js";
+import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import {
   BulkImportBatchPartialFailureError,
   splitTurnsBySourceValidAt,
@@ -64,10 +70,12 @@ export interface TurnIngestionDeps {
     options?: {
       skipDedupeCheck?: boolean;
       clearBufferAfterExtraction?: boolean;
+      clearMatchingTurns?: boolean;
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      onDurableCommit?: () => void;
       forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
@@ -88,6 +96,7 @@ export interface TurnIngestionDeps {
        * `runExtraction` so access `observe` can record provenance under the
        * authenticated principal instead of `resolvePrincipal(sessionKey)`.
        */
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
       principalOverride?: string;
     },
   ): Promise<void>;
@@ -208,6 +217,12 @@ export class TurnIngestionCoordinator {
        * `principalOverride` (issue #570 PR 4).
        */
       principalOverride?: string;
+      /**
+       * Persist the authenticated principal that owns the replay session.
+       * Access observe supplies this from the transport auth boundary; replay
+       * and import callers leave it unset.
+       */
+      sessionOwnerPrincipal?: string;
     } = {},
   ): Promise<void> {
     if (!Array.isArray(turns) || turns.length === 0) return;
@@ -234,6 +249,7 @@ export class TurnIngestionCoordinator {
         timestamp: turn.timestamp,
         sourceValidAt: turn.sourceValidAt,
         sessionKey: key,
+        ...(options.sessionOwnerPrincipal ? { sessionOwnerPrincipal: options.sessionOwnerPrincipal } : {}),
         parts: turn.parts,
         rawContent: turn.rawContent,
         sourceFormat: turn.sourceFormat,
@@ -605,10 +621,12 @@ export class TurnIngestionCoordinator {
     options: {
       skipDedupeCheck?: boolean;
       clearBufferAfterExtraction?: boolean;
+      clearMatchingTurns?: boolean;
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      onDurableCommit?: () => void;
       forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
@@ -630,6 +648,7 @@ export class TurnIngestionCoordinator {
        * authenticated principal instead of `resolvePrincipal(sessionKey)`.
        */
       principalOverride?: string;
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
     } = {},
   ): Promise<void> {
     const bufferKey = options.bufferKey ?? turnsToExtract[0]?.sessionKey ?? "default";
@@ -660,6 +679,13 @@ export class TurnIngestionCoordinator {
         timeout = undefined;
       }
     };
+    let abortHandler: (() => void) | undefined;
+    const clearAbortListener = (): void => {
+      if (abortHandler && options.abortSignal) {
+        options.abortSignal.removeEventListener("abort", abortHandler);
+        abortHandler = undefined;
+      }
+    };
     const settleTask = (
       error?: unknown,
       result?: ExtractionRunResult,
@@ -667,19 +693,38 @@ export class TurnIngestionCoordinator {
       if (settled) return false;
       settled = true;
       clearQueueWaitTimer();
+      clearAbortListener();
       options.onTaskSettled?.(error, result);
       return true;
     };
-
-    if (typeof extractionDeadlineMs === "number") {
-      const remainingMs = extractionDeadlineMs - Date.now();
-      if (remainingMs <= 0) {
-        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
+    if (options.abortSignal) {
+      const signal = options.abortSignal;
+      abortHandler = () => settleTask(signal.reason ?? abortError("extraction aborted (queue_wait)"));
+      signal.addEventListener("abort", abortHandler, { once: true });
+      if (signal.aborted) {
+        settleTask(signal.reason ?? abortError("extraction aborted (queue_wait)"));
         return;
       }
-      timeout = setTimeout(() => {
-        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
-      }, remainingMs);
+    }
+
+    if (typeof extractionDeadlineMs === "number") {
+      const deadline = extractionDeadlineMs;
+      const maxTimerDelayMs = 2_147_483_647;
+      const scheduleQueueWaitTimeout = (): void => {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          settleTask(new ExtractionDeadlineError("queue_wait"));
+          return;
+        }
+        timeout = setTimeout(() => {
+          if (Date.now() >= deadline) {
+            settleTask(new ExtractionDeadlineError("queue_wait"));
+          } else {
+            scheduleQueueWaitTimeout();
+          }
+        }, Math.min(remainingMs, maxTimerDelayMs));
+      };
+      scheduleQueueWaitTimeout();
     }
 
     this.deps.extractionQueueCoordinator.enqueue(async () => {
@@ -688,7 +733,7 @@ export class TurnIngestionCoordinator {
         typeof extractionDeadlineMs === "number" &&
         extractionDeadlineMs <= Date.now()
       ) {
-        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
+        settleTask(new ExtractionDeadlineError("queue_wait"));
         return;
       }
       clearQueueWaitTimer();
@@ -696,14 +741,17 @@ export class TurnIngestionCoordinator {
         const result = await this.deps.runExtraction(turnsToExtract, {
           clearBufferAfterExtraction:
             options.clearBufferAfterExtraction ?? true,
+          clearMatchingTurns: options.clearMatchingTurns === true,
           skipCharThreshold: options.skipCharThreshold ?? false,
           skipUserTurnThreshold: options.skipUserTurnThreshold ?? false,
           deadlineMs: extractionDeadlineMs,
           bufferKey,
+          onDurableCommit: options.onDurableCommit,
           abortSignal: options.abortSignal,
           failOnExtractionFailure: options.failOnExtractionFailure === true,
           writeNamespaceOverride: options.writeNamespaceOverride,
           principalOverride: options.principalOverride,
+          scopeProfileWritePlan: options.scopeProfileWritePlan,
           forceExtractionAttempt: options.forceExtractionAttempt === true,
         });
         settleTask(undefined, result);
@@ -735,6 +783,7 @@ export class TurnIngestionCoordinator {
       namespace: string;
       bufferKey: string;
       isLiveSession: boolean;
+      abortSignal?: AbortSignal;
     },
   ): Promise<void> {
     const mode = this.deps.config.correctionCaptureMode;
@@ -765,10 +814,11 @@ export class TurnIngestionCoordinator {
           sessionKey: opts.sessionKey,
           principal: opts.principal,
           namespace: opts.namespace,
+          abortSignal: opts.abortSignal,
         },
         captureConfig,
         {
-          planCorrection: (req) => service.plan(req),
+          planCorrection: (req, planOpts) => service.plan(req, planOpts),
           applyCorrection: (planId, applyOpts) => service.apply(planId, applyOpts),
           storageDir: async (ns) => (await this.deps.getStorage(ns)).dir,
           // Resolve `[m:xxxx]` handles to concrete memory ids via the single

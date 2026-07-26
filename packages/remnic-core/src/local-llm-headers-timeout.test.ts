@@ -269,3 +269,51 @@ test("a process-wide custom dispatcher is left in place", async () => {
   assert.ok(restored);
   await restored.close();
 });
+
+test("aborting during a retry backoff stops the local request lane", async () => {
+  const original = globalThis.fetch;
+  const abortController = new AbortController();
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    setTimeout(() => abortController.abort(new Error("deadline")), 10);
+    return new Response("temporary failure", { status: 503 });
+  }) as typeof fetch;
+
+  try {
+    const client = new LocalLlmClient(
+      createConfig({ localLlmRetry5xxCount: 2, localLlmRetryBackoffMs: 5_000 }),
+    );
+    primeClient(client);
+    const result = await client.chatCompletion(
+      [{ role: "user", content: "extract facts" }],
+      { signal: abortController.signal },
+    );
+    assert.equal(result, null);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("availability probes stop after the caller aborts", async () => {
+  const abortController = new AbortController();
+  let requests = 0;
+  const server = http.createServer((_req, res) => {
+    requests += 1;
+    if (requests === 1) abortController.abort();
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const client = new LocalLlmClient(
+      createConfig({ localLlmUrl: `http://127.0.0.1:${port}/v1` }),
+    );
+    assert.equal(await client.checkAvailability(abortController.signal), false);
+    assert.equal(requests, 1, "an aborted availability check must not start later probes");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

@@ -21,6 +21,7 @@
  */
 
 import path from "node:path";
+import { throwIfAborted } from "../abort-error.js";
 import { composeMemoryEnvelope, isMemoryCategory } from "../write-envelope.js";
 import { log } from "../logger.js";
 import { createHash } from "node:crypto";
@@ -352,23 +353,24 @@ function makeExecutorDeps(
   opts: { biTemporalEnabled: boolean },
 ): ExecutorDeps {
   return {
-    getMemory: async (namespace, memoryId) => getExecutorMemory(wiring, namespace, memoryId),
-    writeReplacement: async (namespace, draft) =>
-      writeReplacementMemory(wiring, namespace, draft),
-    applyEdit: async (namespace, memoryId, patch) =>
-      applyEditMemory(wiring, namespace, memoryId, patch),
-    retireMemory: async (namespace, memoryId, retireOpts) =>
-      retireMemoryFn(wiring, namespace, memoryId, retireOpts),
-    rescopeMemory: async (namespace, memoryId, toNamespace) =>
-      rescopeMemoryFn(wiring, namespace, memoryId, toNamespace),
-    appendTombstone: async (namespace, input) =>
-      appendTombstoneFn(wiring, namespace, input),
-    registerRedactionRule: async (namespace, pattern) =>
-      registerRedactionRuleFn(wiring, namespace, pattern),
-    appendAuditRecord: async (namespace, record) =>
-      appendAuditRecordFn(wiring, namespace, record),
-    propagate: async (namespace, touchedMemoryIds) =>
-      propagateFn(wiring, namespace, touchedMemoryIds),
+    getMemory: async (namespace, memoryId, abortSignal) =>
+      getExecutorMemory(wiring, namespace, memoryId, abortSignal),
+    writeReplacement: async (namespace, draft, abortSignal) =>
+      writeReplacementMemory(wiring, namespace, draft, abortSignal),
+    applyEdit: async (namespace, memoryId, patch, abortSignal) =>
+      applyEditMemory(wiring, namespace, memoryId, patch, abortSignal),
+    retireMemory: async (namespace, memoryId, retireOpts, abortSignal) =>
+      retireMemoryFn(wiring, namespace, memoryId, retireOpts, abortSignal),
+    rescopeMemory: async (namespace, memoryId, toNamespace, abortSignal) =>
+      rescopeMemoryFn(wiring, namespace, memoryId, toNamespace, abortSignal),
+    appendTombstone: async (namespace, input, abortSignal) =>
+      appendTombstoneFn(wiring, namespace, input, abortSignal),
+    registerRedactionRule: async (namespace, pattern, abortSignal) =>
+      registerRedactionRuleFn(wiring, namespace, pattern, abortSignal),
+    appendAuditRecord: async (namespace, record, abortSignal) =>
+      appendAuditRecordFn(wiring, namespace, record, abortSignal),
+    propagate: async (namespace, touchedMemoryIds, abortSignal) =>
+      propagateFn(wiring, namespace, touchedMemoryIds, abortSignal),
     biTemporalEnabled: opts.biTemporalEnabled,
     now: () => new Date(),
   };
@@ -378,9 +380,13 @@ async function getExecutorMemory(
   wiring: CorrectionAccessWiring,
   namespace: string,
   memoryId: string,
+  abortSignal?: AbortSignal,
 ): Promise<ExecutorMemory | null> {
+  throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
+  throwIfAborted(abortSignal, "correction apply aborted");
   const m = await storage.getMemoryById(memoryId);
+  throwIfAborted(abortSignal, "correction apply aborted");
   if (!m) return null;
   return toExecutorMemory(m);
 }
@@ -399,8 +405,11 @@ async function writeReplacementMemory(
     structuredAttributes?: Record<string, string>;
     supersedes?: string;
   },
+  abortSignal?: AbortSignal,
 ): Promise<string> {
+  throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
+  throwIfAborted(abortSignal, "correction apply aborted");
   // writeMemory is the single storage chokepoint — catalog/dedup/reindex fire
   // here (rule 43). Tombstone blocking also fires here (#1579), so a
   // resurrected fact lands as pending_review rather than silently overwriting.
@@ -433,6 +442,7 @@ async function writeReplacementMemory(
   if (draftEnvelope.salvageNotes.length > 0) {
     log.warn(`correction write salvaged invalid fields: ${draftEnvelope.salvageNotes.join("; ")}`);
   }
+  throwIfAborted(abortSignal, "correction apply aborted");
   const { id, tombstoneBlocked } = await storage.writeSealedMemory(draftEnvelope, {
     ...(draft.observedAt ? { observedAt: draft.observedAt } : {}),
     ...(draft.supersedes ? { supersedes: draft.supersedes } : {}),
@@ -455,9 +465,13 @@ async function applyEditMemory(
   namespace: string,
   memoryId: string,
   patch: string,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
+  throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
+  throwIfAborted(abortSignal, "correction apply aborted");
   const existing = await storage.getMemoryById(memoryId);
+  throwIfAborted(abortSignal, "correction apply aborted");
   if (!existing) throw new CorrectionContractError(`memory not found for edit: ${memoryId}`);
   // Apply the patch by overwriting content through the storage chokepoint.
   // The StorageManager's writeMemoryFrontmatter snapshots the prior version
@@ -473,6 +487,7 @@ async function applyEditMemory(
     existing.frontmatter.category === "fact"
       ? computeContentHash(sanitizeMemoryContent(patch).text)
       : undefined;
+  throwIfAborted(abortSignal, "correction apply aborted");
   await storage.writeMemoryFrontmatter(
     { ...existing, content: patch },
     {
@@ -488,23 +503,20 @@ async function retireMemoryFn(
   namespace: string,
   memoryId: string,
   opts: { status: "superseded" | "retracted"; supersededBy?: string; validUntil?: string },
+  abortSignal?: AbortSignal,
 ): Promise<void> {
+  throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
+  throwIfAborted(abortSignal, "correction apply aborted");
   const memory = await storage.getMemoryById(memoryId);
+  throwIfAborted(abortSignal, "correction apply aborted");
   if (!memory) throw new CorrectionContractError(`memory not found for retire: ${memoryId}`);
-  // Map the correction-domain status to the storage-domain MemoryStatus.
-  // `retracted` (a correction concept) becomes `forgotten` — the soft-delete
-  // status that excludes the memory from recall/browse/attribution while
-  // keeping a page-version snapshot for reversibility (#686). `superseded`
-  // maps to itself.
   const storageStatus: MemoryStatus = opts.status === "retracted" ? "forgotten" : "superseded";
-  // Flip status + stamp validUntil (when bi-temporal is on, #1578) +
-  // link the superseder. writeMemoryFrontmatter is the chokepoint.
+  throwIfAborted(abortSignal, "correction apply aborted");
   await storage.writeMemoryFrontmatter(memory, {
     status: storageStatus,
     ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
     ...(opts.status === "superseded" ? { supersededAt: new Date().toISOString() } : {}),
-    // validUntil is the bi-temporal end; absent when the gate is off.
     ...(opts.validUntil ? { invalid_at: opts.validUntil } : {}),
   });
 }
@@ -514,11 +526,15 @@ async function rescopeMemoryFn(
   namespace: string,
   memoryId: string,
   toNamespace: string,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   // The destination namespace is re-authorized by the service before the
   // executor runs; here we perform the move atomically (write-then-unlink).
+  throwIfAborted(abortSignal, "correction apply aborted");
   const sourceStorage = await wiring.orchestrator.getStorage(namespace);
+  throwIfAborted(abortSignal, "correction apply aborted");
   const memory = await sourceStorage.getMemoryById(memoryId);
+  throwIfAborted(abortSignal, "correction apply aborted");
   if (!memory) throw new CorrectionContractError(`memory not found for rescope: ${memoryId}`);
   if (memory.frontmatter.status && memory.frontmatter.status !== "active") {
     // Don't copy a stale source: rescoping a superseded/retracted/archived
@@ -527,7 +543,9 @@ async function rescopeMemoryFn(
       `cannot rescope memory ${memoryId}: source is ${memory.frontmatter.status}, not active`,
     );
   }
+  throwIfAborted(abortSignal, "correction apply aborted");
   const destStorage = await wiring.orchestrator.getStorage(toNamespace);
+  throwIfAborted(abortSignal, "correction apply aborted");
   const fm = memory.frontmatter;
   // Strip the `[Attributes: …]` suffix writeMemory appended to the source body
   // (review thread Of0p6): we forward `structuredAttributes` separately, so
@@ -557,6 +575,7 @@ async function rescopeMemoryFn(
   if (rescopeEnvelope.salvageNotes.length > 0) {
     log.warn(`rescope write salvaged invalid fields: ${rescopeEnvelope.salvageNotes.join("; ")}`);
   }
+  throwIfAborted(abortSignal, "correction apply aborted");
   const { id: destId, tombstoneBlocked: destBlocked } = await destStorage.writeSealedMemory(rescopeEnvelope, {
     ...(fm.observedAt ? { observedAt: fm.observedAt } : {}),
     ...(fm.memoryKind ? { memoryKind: fm.memoryKind } : {}),
@@ -575,6 +594,8 @@ async function rescopeMemoryFn(
   // fails AFTER the destination write succeeded, compensate by archiving the
   // destination too so no duplicate ACTIVE fact remains, then re-throw so the
   // executor records the action as failed (review: rescope-duplicates-on-fail).
+  // Once the destination write resolves, cancellation cannot interrupt the
+  // source retirement or leave both memories active.
   try {
     await sourceStorage.writeMemoryFrontmatter(memory, {
       status: "archived",
@@ -609,8 +630,11 @@ async function appendTombstoneFn(
     supersessionKeys?: string[];
     contentHash?: string;
   },
+  abortSignal?: AbortSignal,
 ): Promise<string | null> {
+  throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
+  throwIfAborted(abortSignal, "correction apply aborted");
   // storage.appendTombstone returns null for TWO reasons: tombstones disabled
   // (off = pre-feature behavior) OR a swallowed store error (it catches I/O
   // failures and returns null — review thread OgIqp). The executor writes the
@@ -637,7 +661,13 @@ async function appendTombstoneFn(
         : [undefined];
   const writtenIds: string[] = [];
   let firstId: string | null = null;
+  let committed = false;
   for (const key of keys) {
+    // Once one tombstone is durable, finish the complete tombstone set even
+    // if the caller aborts. The executor must retire the source after the
+    // tombstone commit or compensate it; returning an abort here would leave
+    // an active source behind a committed resurrection block.
+    if (!committed) throwIfAborted(abortSignal, "correction apply aborted");
     const result = await storage.appendTombstone({
       reason: input.reason,
       createdBy: "user_correction",
@@ -660,7 +690,10 @@ async function appendTombstoneFn(
       );
     }
     if (firstId === null) firstId = result;
-    if (result) writtenIds.push(result);
+    if (result) {
+      writtenIds.push(result);
+      committed = true;
+    }
   }
   return firstId;
 }
@@ -669,12 +702,16 @@ async function registerRedactionRuleFn(
   wiring: CorrectionAccessWiring,
   namespace: string,
   pattern: string,
+  abortSignal?: AbortSignal,
 ): Promise<void> {
   // Persist the redaction rule under state/ so extraction consults it the
   // same way tombstones are consulted (route through the same chokepoint).
+  throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
+  throwIfAborted(abortSignal, "correction apply aborted");
   const dir = path.join(storage.dir, "state", "corrections", "redaction-rules");
   await mkdir(dir, { recursive: true });
+  throwIfAborted(abortSignal, "correction apply aborted");
   // Idempotent: filename is a slug + short hash of the full pattern so
   // re-registering the same pattern overwrites rather than duplicates, while
   // distinct patterns that slug identically (e.g. "abc+def" vs "abc.def" →
@@ -683,11 +720,13 @@ async function registerRedactionRuleFn(
   const slugBase = pattern.replace(/[^a-zA-Z0-9]+/g, "-").slice(0, 48) || "rule";
   const patternHash = createHash("sha256").update(pattern).digest("hex").slice(0, 16);
   const slug = `${slugBase}-${patternHash}`;
+  throwIfAborted(abortSignal, "correction apply aborted");
   await writeFile(
     path.join(dir, `${slug}.json`),
     `${JSON.stringify({ pattern, namespace, createdAt: new Date().toISOString() })}\n`,
     "utf-8",
   );
+  throwIfAborted(abortSignal, "correction apply aborted");
 }
 
 async function appendAuditRecordFn(
@@ -699,13 +738,17 @@ async function appendAuditRecordFn(
     outcome: CorrectionOutcome;
     requestText: string;
   },
+  abortSignal?: AbortSignal,
 ): Promise<string> {
+  throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
+  throwIfAborted(abortSignal, "correction apply aborted");
   // Corrections are themselves memories, searchable and namespaced (issue
   // #1580 design §4). Write a correction-category memory capturing the
   // plan + outcome as the audit trail.
   // Sealed-envelope write (issue #1989 PR4): system-built audit body —
   // strict compose; an invalid audit record is a code bug.
+  throwIfAborted(abortSignal, "correction apply aborted");
   const { id: id } = await storage.writeSealedMemory(
     composeMemoryEnvelope(
       {
@@ -718,6 +761,7 @@ async function appendAuditRecordFn(
     ),
     {},
   );
+  throwIfAborted(abortSignal, "correction apply aborted");
   return id;
 }
 
@@ -760,22 +804,27 @@ async function propagateFn(
   wiring: CorrectionAccessWiring,
   namespace: string,
   touchedMemoryIds: readonly string[],
+  abortSignal?: AbortSignal,
 ): Promise<void> {
   // Best-effort post-write propagation. The orchestrator's indexPersistedMemory
   // fires the QMD reindex for a touched file (checklist §31). A failure here
   // is non-fatal — the executor records it as a warning, never a failed action.
   for (const id of touchedMemoryIds) {
+    throwIfAborted(abortSignal, "correction apply aborted");
     try {
       // indexPersistedMemory is keyed by the namespace's storage, NOT the
       // default namespace (review thread: propagation-hardcodes-default-ns).
       const storage = await wiring.orchestrator.getStorage(namespace);
+      throwIfAborted(abortSignal, "correction apply aborted");
       const orchestrator = wiring.orchestrator as unknown as {
         indexPersistedMemory?(storage: unknown, memoryId: string): Promise<void>;
       };
       if (typeof orchestrator.indexPersistedMemory === "function") {
         await orchestrator.indexPersistedMemory(storage, id);
+        throwIfAborted(abortSignal, "correction apply aborted");
       }
-    } catch {
+    } catch (err) {
+      if (abortSignal?.aborted) throw err;
       // Swallow — propagation is best-effort.
     }
   }
@@ -1032,4 +1081,7 @@ export {
   isEligibleCorrectionCandidate,
   applyEditMemory,
   appendTombstoneFn,
+  retireMemoryFn,
+  rescopeMemoryFn,
+  writeReplacementMemory,
 };
