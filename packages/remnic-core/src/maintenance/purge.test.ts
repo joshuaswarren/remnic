@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -252,6 +252,36 @@ test("purgeMemories coordinates blocked capture deletion", async () => {
     assert.equal(purged.purgedCount, 1);
     assert.equal(await fileExists(blocked.path), false);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("maintenance deletion prefers the candidate path when IDs overlap across tiers", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-delete-tier-path-"));
+  try {
+    StorageManager.clearAllStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const content = "The cold candidate path must win when a hot copy shares its ID.";
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const hot = await storage.getMemoryById(result.id);
+    assert.ok(hot);
+    const coldPath = storage.buildTierMemoryPath(hot, "cold");
+    await mkdir(path.dirname(coldPath), { recursive: true });
+    await writeFile(coldPath, await readFile(hot.path));
+    StorageManager.clearAllStaticCaches();
+
+    const cold = (await storage.readAllColdMemories()).find((memory) => memory.frontmatter.id === result.id);
+    assert.ok(cold);
+    const removed = await storage.deleteMemoryForMaintenance(cold);
+    assert.equal(removed?.path, coldPath);
+    assert.equal(await fileExists(coldPath), false);
+    assert.equal(await fileExists(hot.path), true);
+  } finally {
+    StorageManager.clearAllStaticCaches();
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -479,8 +479,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       const attempt = async () => {
         const options = this.tombstoneBlockedCaptureIndexOptions();
         const current =
-          (await options.readAllMemories()).find((candidate) => candidate.frontmatter.id === memory.frontmatter.id) ??
           (await this.readMemoryByPath(memory.path)) ??
+          (await options.readAllMemories()).find((candidate) => candidate.frontmatter.id === memory.frontmatter.id) ??
           (await options.readAllColdMemories()).find((candidate) => candidate.frontmatter.id === memory.frontmatter.id);
         if (!current) return { result: false };
         const blocked = this.isTombstoneBlockedMemory(current);
