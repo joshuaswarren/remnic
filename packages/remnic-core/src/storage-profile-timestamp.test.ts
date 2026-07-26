@@ -1166,6 +1166,84 @@ test("writeProfile recognizes link reference definitions as metadata boundaries"
   }
 });
 
+test("writeProfile stops nested-list context at an intervening document paragraph", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "- item",
+        "",
+        "Document paragraph.",
+        "",
+        `  ${STALE_HEADER}`,
+        "",
+        "- Keeps the standalone header canonical.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          "- item",
+          "",
+          "Document paragraph.",
+          "",
+          FRESH_HEADER,
+          "",
+          "- Keeps the standalone header canonical.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile recognizes link-reference continuation boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "[docs]: /url",
+        '  "Docs"',
+        STALE_HEADER,
+        "",
+        "- Keeps link-reference content.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          "[docs]: /url",
+          '  "Docs"',
+          FRESH_HEADER,
+          "",
+          "- Keeps link-reference content.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile ignores invalid backtick fence openers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {

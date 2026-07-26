@@ -7,6 +7,8 @@ const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
 const MARKDOWN_LINK_REFERENCE = /^\[[^\]]+\]:\s*\S/;
+const MARKDOWN_LINK_REFERENCE_CONTINUATION =
+  /^ {1,3}(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\))$/;
 const UTF8_BOM = "\uFEFF";
 
 type FenceMarker = {
@@ -518,15 +520,43 @@ function visitProfileMetadataLines(
   }
 }
 
+function isListContinuation(lines: ProfileLine[], index: number, indentation: number): boolean {
+  for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+    const previousLine = lines[previousIndex]?.content ?? "";
+    if (previousLine.trim() === "") return false;
+    const previousIndentation = previousLine.length - previousLine.trimStart().length;
+    if (previousIndentation > indentation) continue;
+    return MARKDOWN_LIST_ITEM.test(previousLine.trimStart());
+  }
+  return false;
+}
+
 function isNestedListContent(lines: ProfileLine[], index: number, indentation: number): boolean {
   for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
     const previousLine = lines[previousIndex]?.content ?? "";
     if (previousLine.trim() === "") continue;
     const previousIndentation = previousLine.length - previousLine.trimStart().length;
     if (previousIndentation >= indentation) continue;
-    if (MARKDOWN_LIST_ITEM.test(previousLine.trimStart())) return true;
+    if (
+      MARKDOWN_LIST_ITEM.test(previousLine.trimStart()) ||
+      isListContinuation(lines, previousIndex, indentation)
+    ) {
+      return true;
+    }
+    break;
   }
   return false;
+}
+
+function isMarkdownLinkReferenceDefinitionEnd(lines: ProfileLine[], index: number): boolean {
+  const line = lines[index]?.content ?? "";
+  const boundaryLine = /^ {0,3}(?=\S)/.test(line) ? line.trimStart() : line;
+  if (MARKDOWN_LINK_REFERENCE.test(boundaryLine)) return true;
+  if (!MARKDOWN_LINK_REFERENCE_CONTINUATION.test(line)) return false;
+  const previousLine = lines[index - 1]?.content ?? "";
+  const previousBoundaryLine =
+    /^ {0,3}(?=\S)/.test(previousLine) ? previousLine.trimStart() : previousLine;
+  return MARKDOWN_LINK_REFERENCE.test(previousBoundaryLine);
 }
 
 function isProfileTitleLine(lines: ProfileLine[], index: number, line: string): boolean {
@@ -590,10 +620,13 @@ function isStandaloneMetadataLine(
     ? previousLine.slice(1)
     : previousLine;
   const nextWithoutBom = nextLine.startsWith(UTF8_BOM) ? nextLine.slice(1) : nextLine;
-  const previousMetadataBoundary = isMetadataBoundary(
-    previousWithoutBom,
-    htmlTerminatorIndexes.has(index - 1),
-  );
+  const previousLinkReferenceBoundary = isMarkdownLinkReferenceDefinitionEnd(lines, index - 1);
+  const previousMetadataBoundary =
+    previousLinkReferenceBoundary ||
+    isMetadataBoundary(
+      previousWithoutBom,
+      htmlTerminatorIndexes.has(index - 1),
+    );
   const nextHtmlBlockBoundary = isHtmlBlockBoundary(
     lines,
     index + 1,
