@@ -948,7 +948,12 @@ export async function migrateLegacyEntityCanonicalIds(
             state.mappings,
             await discoverMappings(deps, state.mappings, blocked),
           );
-          if (Object.keys(discoveredAfter).length === 0) {
+          // Reconcile before declaring completion: this rescan can resolve a
+          // park (another writer removed the legacy file), and completing
+          // without promoting it strands its references behind a fingerprint
+          // that already reflects the deletion - so no later run revisits it.
+          await pruneBlocked();
+          if (Object.keys(discoveredAfter).length === 0 && Object.keys(state.mappings).length === 0) {
             await writeState(deps, { ...state, complete: true });
             return finish();
           }

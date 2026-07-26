@@ -371,3 +371,51 @@ test("a park is dropped once its source needs no migration", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a park whose legacy file is already gone still rewrites references", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-rescan-park-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const legacy = normalizeEntityName("Weekly Report", "automation");
+    const canonical = normalizeEntityName("Weekly Report", "automation-cron-job");
+    await writeFile(
+      path.join(dir, "entities", `${canonical}.md`),
+      `---\nid: ${canonical}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# Weekly Report\n\n**Type:** automation-cron-job\n\nRuns Mondays.\n`,
+      "utf8",
+    );
+    // The legacy file is already gone (resolved out of band) while the journal
+    // still parks the pair and holds no active mappings - the zero-mapping
+    // path. Completing without reconciling would seal the park behind a
+    // fingerprint that already covers the deletion, so no later run revisits
+    // it. This pins the observable contract; the mid-run race (resolution
+    // landing BETWEEN the initial scan and the rescan) is covered by the
+    // reconcile call in that branch but is not drivable from a test.
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: {}, blocked: { [legacy]: canonical } }),
+      "utf8",
+    );
+    const factDir = path.join(dir, "facts", "2026-03-01");
+    await mkdir(factDir, { recursive: true });
+    const factPath = path.join(factDir, "fact-rescan-park.md");
+    await writeFile(
+      factPath,
+      `---\nid: fact-rescan-park\ncategory: fact\nconfidence: 0.9\n`
+      + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+      + `entityRef: ${legacy}\nstatus: active\n---\n\nThe report runs weekly.\n`,
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+
+    assert.equal(
+      /^entityRef: (.*)$/m.exec(await readFile(factPath, "utf8"))?.[1],
+      canonical,
+      "a park resolved before completion must still rewrite its references",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
