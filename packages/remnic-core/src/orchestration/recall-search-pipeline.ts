@@ -1339,7 +1339,15 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
       }
-      filtered.push(r);
+      // Issue #2183 — derive sourceConnector EXCLUSIVELY from the hydrated
+      // memory, on a copy so a shared/cached result object (global QMD cache)
+      // is never mutated across recalls and a result-supplied value (e.g.
+      // RemoteSearchBackend casting arbitrary responses) cannot pose as trusted
+      // provenance. Connectorless memory (or no memory) → cleared (undefined).
+      filtered.push({
+        ...r,
+        sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
+      });
     }
     if (lifecycleFilteredCount > 0) {
       log.debug(

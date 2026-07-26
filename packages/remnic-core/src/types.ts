@@ -3449,7 +3449,6 @@ export interface ConsolidationObservation {
   merged: number;
   invalidated: number;
 }
-
 export interface QmdSearchResult {
   docid: string;
   path: string;
@@ -3460,6 +3459,7 @@ export interface QmdSearchResult {
   transport?: "daemon" | "subprocess" | "hybrid" | "scoped_prefilter";
   /** Namespace that owned this result when returned by a namespace fanout search. */
   namespace?: string;
+  sourceConnector?: string;
 }
 
 export interface QmdSearchExplain {

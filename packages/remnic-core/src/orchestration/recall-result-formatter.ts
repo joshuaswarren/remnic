@@ -30,6 +30,7 @@ import type { VerifiedEpisodeResult } from "../verified-recall.js";
 import type { VerifiedSemanticRuleResult } from "../semantic-rule-verifier.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
 import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
+import { CONNECTOR_ID_PATTERN, CONNECTOR_LABEL_MAX_LENGTH } from "../connectors/label.js";
 import type {
   ContinuityIncidentRecord,
   IdentityInjectionMode,
@@ -37,6 +38,22 @@ import type {
   QmdSearchResult,
   RecallPlanMode,
 } from "../types.js";
+
+/**
+ * Issue #2183 — render the persisted `sourceConnector` carried on the result
+ * (hydrated where the memory is loaded) as `[agent: <connector>]`. The value
+ * reaches model-visible recall context, so it is validated against the canonical
+ * persisted-ID charset (CONNECTOR_ID_PATTERN — IDs the system accepts,
+ * including '.'/'_', keep their label) and TRUNCATED past CONNECTOR_LABEL_MAX
+ * with an explicit marker (attribution survives; suppression would lose the
+ * exact signal this PR adds). One resolver at the single render site.
+ */
+function renderConnectorLabel(connector: string | undefined): string | null {
+  if (!connector || !CONNECTOR_ID_PATTERN.test(connector)) return null;
+  return connector.length <= CONNECTOR_LABEL_MAX_LENGTH
+    ? connector
+    : `${connector.slice(0, CONNECTOR_LABEL_MAX_LENGTH - 1)}…`;
+}
 
 // ---------------------------------------------------------------------------
 // Identity injection mode helpers (moved verbatim from orchestrator.ts)
@@ -211,14 +228,16 @@ export class RecallResultFormatter {
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
       const handle = handleByIndex.get(i);
       const withHandle = handle ? `${head.trimEnd()} ${handle}` : head.trimEnd();
+      const connectorLabel = renderConnectorLabel(r.sourceConnector);
+      const withConnector = connectorLabel ? `${withHandle} [agent: ${connectorLabel}]` : withHandle;
       if (hedgeMap) {
         const item = trustResultFor(hedgeMap, r);
         if (item) {
           const hedge = renderEpistemicHedge(item.trust);
-          if (hedge.length > 0) return `${withHandle} ${hedge}`;
+          if (hedge.length > 0) return `${withConnector} ${hedge}`;
         }
       }
-      return withHandle;
+      return withConnector;
     });
     return { heading: `## ${title}`, entries };
   }

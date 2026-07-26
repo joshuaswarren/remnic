@@ -70,6 +70,40 @@ test("recall safety keeps same relative path distinct across namespaces", async 
   }
 });
 
+test("recall safety derives sourceConnector exclusively from the hydrated memory (#2183)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-conn-prov-"));
+  try {
+    const coordinator = await makeCoordinator(memoryDir);
+    // Both results arrive carrying an UNTRUSTED sourceConnector (e.g. a remote
+    // search backend casting arbitrary response objects). One's memory carries
+    // a real connector; the other's memory is connectorless.
+    const has = { ...result("default", "facts/has.md"), sourceConnector: "untrusted" };
+    const none = { ...result("default", "facts/none.md"), sourceConnector: "untrusted" };
+    const memHas = {
+      path: "facts/has.md",
+      content: "facts/has.md",
+      frontmatter: { status: "active", memoryKind: "fact", created: "2026-07-19T00:00:00.000Z", updated: "2026-07-19T00:00:00.000Z", sourceConnector: "trusted-pi" } as unknown as MemoryFile["frontmatter"],
+    };
+    const memNone = {
+      path: "facts/none.md",
+      content: "facts/none.md",
+      frontmatter: { status: "active", memoryKind: "fact", created: "2026-07-19T00:00:00.000Z", updated: "2026-07-19T00:00:00.000Z" } as unknown as MemoryFile["frontmatter"],
+    };
+    const memoryByPath = new Map<string, MemoryFile>([
+      ["default\0facts/has.md", memHas],
+      ["default\0facts/none.md", memNone],
+    ]);
+    const safe = coordinator.filterSearchResultsByRecallSafety([has, none], memoryByPath);
+    const byPath = new Map(safe.map((r) => [r.path, r.sourceConnector]));
+    assert.equal(byPath.get("facts/has.md"), "trusted-pi", "an untrusted result-supplied value is overwritten by the memory's connector");
+    assert.equal(byPath.get("facts/none.md"), undefined, "an untrusted value is cleared when the memory is connectorless");
+    // The shared/cached input objects are never mutated.
+    assert.equal(has.sourceConnector, "untrusted", "the input result object is not mutated (copy semantics, no cross-recall leak)");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 function scopedCandidatesStub(
   seed: QmdSearchResult[],
 ): RecallSearchPipelineDeps["searchScopedMemoryCandidates"] {
