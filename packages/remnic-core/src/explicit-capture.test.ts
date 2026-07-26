@@ -1060,6 +1060,28 @@ test("explicit capture preserves tombstone-blocked status for duplicate pending 
   assert.equal(probe.envelopes.length, 1);
 });
 
+test("explicit capture preserves duplicateOf when a blocked write coalesces", async () => {
+  const probe = createInlineCaptureProcessorProbe({
+    tombstoneBlocked: true,
+    authoritativeFactHashMiss: true,
+  });
+  const originalWrite = probe.storage.writeSealedMemory;
+  probe.storage.writeSealedMemory = async (envelope) => {
+    const result = await originalWrite(envelope);
+    return { ...result, duplicateOf: result.id };
+  };
+  const candidate = validateExplicitCaptureInput({
+    content: "A coalesced blocked write must remain a duplicate.",
+    category: "fact",
+  });
+
+  const result = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
+
+  assert.equal(result.duplicateOf, result.id);
+  assert.equal(result.tombstoneBlocked, true);
+  assert.equal(probe.lifecycleEvents.length, 0);
+});
+
 test("explicit capture confirms blocked duplicates in the cold tier", async () => {
   const probe = createInlineCaptureProcessorProbe({
     tombstoneBlocked: true,

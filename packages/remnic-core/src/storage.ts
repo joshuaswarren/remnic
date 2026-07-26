@@ -1698,6 +1698,8 @@ export interface MemoryWriteResult {
   tombstoneBlocked: boolean;
   /** The tombstone id that blocked the write, when `tombstoneBlocked`. */
   blockedBy?: string;
+  /** Existing pending-review memory id when a blocked write coalesced with it. */
+  duplicateOf?: string;
 }
 
 /**
@@ -3859,6 +3861,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         id: duplicateBlocked.frontmatter.id,
         tombstoneBlocked: true,
         blockedBy: duplicateBlocked.frontmatter.blockedBy,
+        duplicateOf: duplicateBlocked.frontmatter.id,
       };
     }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");

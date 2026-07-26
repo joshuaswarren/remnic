@@ -2989,6 +2989,7 @@ test("blocked generic writes share their explicit-capture identity lock", async 
     assert.ok(firstResult);
     assert.equal(result.tombstoneBlocked, true);
     assert.equal(result.id, firstResult.id, "the waiting writer must recheck identity after lock acquisition");
+    assert.equal(result.duplicateOf, firstResult.id, "the coalesced blocked write must identify its duplicate");
     assert.equal((await storage.readAllMemories()).length, 1, "the duplicate row must not be persisted");
   });
 });

@@ -532,7 +532,8 @@ async function persistExplicitCaptureUnlocked(
     },
     { source: source === "inline" ? "explicit-inline" : "explicit" }
   );
-  const { id, tombstoneBlocked } = await storage.writeSealedMemory(captureEnvelope);
+  const { id, duplicateOf, tombstoneBlocked } = await storage.writeSealedMemory(captureEnvelope);
+  if (duplicateOf) return { id, duplicateOf, tombstoneBlocked };
   // #1522: catalog touch handled at the storage chokepoint — the StorageManager's
   // post-write hook records the namespace touch automatically.
 
@@ -548,7 +549,7 @@ async function persistExplicitCaptureUnlocked(
   };
   await storage.appendMemoryLifecycleEvents([event]);
 
-  return { id, tombstoneBlocked };
+  return { id, duplicateOf, tombstoneBlocked };
 }
 
 export async function persistExplicitCapture(
