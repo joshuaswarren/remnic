@@ -239,8 +239,8 @@ function assertNoCaseCollision(
  * byte-stable ordering the convergence report relies on.
  */
 function rejectConflictingDuplicate(
-  existing: ReconcileFileState | undefined,
-  incoming: ReconcileFileState,
+  existing: { sha256: string; mtimeMs?: number } | undefined,
+  incoming: { sha256: string; mtimeMs?: number },
   path: string,
   side: string,
   namespace: string,
@@ -370,21 +370,21 @@ export function planNamespaceReconciliation(
   // a local `facts/a.md` is the same delete/change ambiguity on a
   // case-insensitive participant.
   if (base) for (const basePath of base.keys()) assertNoCaseCollision(caseFold, basePath, namespace);
-  const seenLocal = new Map<string, string>();
+  // Path -> decision-relevant fields only, never the whole record: enough to
+  // make the stream idempotent and to catch contradictory duplicates without
+  // materializing the second census.
+  const seenLocal = new Map<string, { sha256: string; mtimeMs?: number }>();
   for (const rawLocal of localCensus) {
     const localFile = assertCensusRecord(rawLocal, "local", namespace);
     const path = localFile.path;
     assertNoCaseCollision(caseFold, path, namespace);
-    const seenDigest = seenLocal.get(path);
-    if (seenDigest !== undefined) {
-      if (seenDigest !== localFile.sha256) {
-        throw new ReconcilePlanInputError(
-          `reconcile: local census for namespace ${namespace} lists ${path} twice with different digests`,
-        );
-      }
-      continue;
+    const seen = seenLocal.get(path);
+    if (seen !== undefined) {
+      // Same rule the indexed censuses get: mtimeMs is decision-relevant under
+      // `newest-wins`, so a duplicate that disagrees on it is ambiguous too.
+      if (rejectConflictingDuplicate(seen, localFile, path, "local", namespace)) continue;
     }
-    seenLocal.set(path, localFile.sha256);
+    seenLocal.set(path, { sha256: localFile.sha256, mtimeMs: localFile.mtimeMs });
     const peerFile = peer.get(path);
     // Consumed: whatever remains in the index afterwards is peer-only.
     peer.delete(path);
@@ -558,7 +558,18 @@ export function planReconciliation(
   options: ReconcileOptions = {},
 ): ReconcilePlan {
   const entries: ReconcilePlanEntry[] = [];
+  // Two inputs for one namespace are planned independently, so the same
+  // (namespace, path) can draw contradictory actions - and because those
+  // entries also sort equal, batch order would decide which revision survives.
+  const seenNamespaces = new Set<string>();
   for (const namespace of namespaces) {
+    const name = assertNamespace(namespace?.namespace);
+    if (seenNamespaces.has(name)) {
+      throw new ReconcilePlanInputError(
+        `reconcile: namespace ${name} appears twice; merge its censuses before planning`,
+      );
+    }
+    seenNamespaces.add(name);
     entries.push(...planNamespaceReconciliation(namespace, options));
   }
   entries.sort(compareEntries);

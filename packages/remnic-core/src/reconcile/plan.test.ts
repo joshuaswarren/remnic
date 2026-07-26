@@ -563,3 +563,46 @@ test("the base census participates in case-collision detection", () => {
     /differing only by case/,
   );
 });
+
+test("the streamed local census rejects an mtime-only duplicate like the indexed ones", () => {
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [file("facts/a.md", "same", 1000), file("facts/a.md", "same", 2000)],
+        peer: [],
+      }),
+    /local census for namespace default lists facts\/a\.md twice with different mtimeMs/,
+  );
+});
+
+test("newest-wins cannot be flipped by local census ordering", () => {
+  // The duplicate is rejected outright, so neither arrival order can supply
+  // the timestamp that decides the winner.
+  for (const order of [
+    [file("facts/a.md", "local", 1000), file("facts/a.md", "local", 9000)],
+    [file("facts/a.md", "local", 9000), file("facts/a.md", "local", 1000)],
+  ]) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation(
+          { namespace: "default", local: order, peer: [file("facts/a.md", "peer", 5000)] },
+          { conflictPolicy: "newest-wins" },
+        ),
+      ReconcilePlanInputError,
+    );
+  }
+});
+
+test("the same namespace supplied twice is rejected", () => {
+  // Planned independently, one (namespace, path) could draw both push and pull,
+  // and the two entries sort equal so batch order would pick the survivor.
+  assert.throws(
+    () =>
+      planReconciliation([
+        { namespace: "default", local: [file("facts/a.md", "one")], peer: [] },
+        { namespace: "default", local: [], peer: [file("facts/a.md", "two")] },
+      ]),
+    /namespace default appears twice/,
+  );
+});
