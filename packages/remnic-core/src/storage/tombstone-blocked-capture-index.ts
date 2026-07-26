@@ -807,11 +807,15 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       incoming.frontmatter.category,
       incoming.frontmatter.sourceConnector
     );
-    return (
-      duplicate &&
-      (!this.isTombstoneBlockedMemory(before) ||
-        this.offlineSyncMemoryIdentity(before) !== this.offlineSyncMemoryIdentity(incoming))
+    if (!duplicate) return false;
+    const incomingIdentity = this.offlineSyncMemoryIdentity(incoming);
+    const options = this.tombstoneBlockedCaptureIndexOptions();
+    const existing = [...(await options.readAllMemories()), ...(await options.readAllColdMemories())];
+    const exactMatch = existing.some(
+      (memory) => this.isTombstoneBlockedMemory(memory) && this.offlineSyncMemoryIdentity(memory) === incomingIdentity
     );
+    if (!exactMatch) return false;
+    return !this.isTombstoneBlockedMemory(before) || this.offlineSyncMemoryIdentity(before) === incomingIdentity;
   }
 
   private async invalidateAfterOfflineSyncMutation(filePath: string, ownedMarker?: string): Promise<void> {

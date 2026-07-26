@@ -740,13 +740,8 @@ export async function queueExplicitCaptureForReview(
     await storage.appendMemoryLifecycleEvents([event]);
     return { id };
   };
-  const queueIsDefault =
-    queueNamespace === undefined || queueNamespace === asTrimmed(orchestrator.config.defaultNamespace);
-  const defaultStorage = queueIsDefault ? storage : await orchestrator.getStorage(undefined);
-  const lockStorage =
-    typeof defaultStorage.withTombstoneBlockedCaptureWriteLock === "function" ? defaultStorage : storage;
-  if (typeof lockStorage.withTombstoneBlockedCaptureWriteLock !== "function") return await queue();
-  return await lockStorage.withTombstoneBlockedCaptureWriteLock(queue, lockIdentity);
+  if (typeof storage.withTombstoneBlockedCaptureWriteLock !== "function") return await queue();
+  return await storage.withTombstoneBlockedCaptureWriteLock(queue, lockIdentity);
 }
 
 export function shouldSkipImplicitExtraction(cfg: Pick<PluginConfig, "captureMode">): boolean {

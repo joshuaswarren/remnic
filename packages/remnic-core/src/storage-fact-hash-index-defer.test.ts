@@ -1672,6 +1672,126 @@ test("offline sync rechecks blocked identity after waiting on the capture lock",
   });
 });
 
+test("offline sync verifies blocked-index hits against exact identities", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const existingContent = "Remember cats.";
+    const incomingContent = "Remember cats!";
+    const existingTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "exact-identity-existing",
+      rawContent: existingContent,
+    });
+    const incomingTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "exact-identity-incoming",
+      rawContent: incomingContent,
+    });
+    assert.ok(existingTombstone);
+    assert.ok(incomingTombstone);
+    const existing = await storage.writeMemory("fact", existingContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(existing.tombstoneBlocked, true);
+    const incomingFile = [
+      "---",
+      "id: exact-identity-incoming",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${incomingTombstone}`,
+      "---",
+      "",
+      incomingContent,
+      "",
+    ].join("\n");
+    const target = path.join(dir, "facts", "2026-01-01", "exact-identity-incoming.md");
+    await storage.writeOfflineSyncFile(target, Buffer.from(incomingFile, "utf8"));
+    assert.equal(existsSync(target), true);
+    assert.equal((await storage.readAllMemories()).filter((memory) => memory.content === incomingContent).length, 1);
+  });
+});
+
+test("offline sync replaces a blocked target when the incoming identity exists elsewhere", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const incomingContent = "Replica canonical content.";
+    const targetContent = "Replica stale content.";
+    const incomingTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "target-replacement-incoming",
+      rawContent: incomingContent,
+    });
+    const targetTombstone = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "target-replacement-target",
+      rawContent: targetContent,
+    });
+    assert.ok(incomingTombstone);
+    assert.ok(targetTombstone);
+    const incoming = await storage.writeMemory("fact", incomingContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    const target = await storage.writeMemory("fact", targetContent, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(incoming.tombstoneBlocked, true);
+    assert.equal(target.tombstoneBlocked, true);
+    const incomingFile = [
+      "---",
+      "id: target-replacement-incoming",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "source: offline-sync",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "tags: []",
+      "sourceConnector: provider-a",
+      "status: pending_review",
+      `blockedBy: ${incomingTombstone}`,
+      "---",
+      "",
+      incomingContent,
+      "",
+    ].join("\n");
+    const targetMemory = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === target.id);
+    assert.ok(targetMemory);
+    await storage.writeOfflineSyncFile(targetMemory.path, Buffer.from(incomingFile, "utf8"));
+    const replaced = (await storage.readAllMemories()).find((memory) => memory.path === targetMemory.path);
+    assert.ok(replaced);
+    assert.equal(replaced.content, incomingContent);
+    assert.equal(replaced.frontmatter.id, "target-replacement-incoming");
+  });
+});
+
 test("offline sync mutation rebuilds a loaded tombstone-blocked index", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);

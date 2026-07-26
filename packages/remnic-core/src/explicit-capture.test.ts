@@ -474,6 +474,34 @@ test("inline capture review fallback isolates authorized review namespaces", asy
   assert.equal(secondary.memories.length, 1);
 });
 
+test("inline capture review fallback locks the resolved review namespace storage", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const queueStorage = probe.storage;
+  const defaultStorage = {
+    ...queueStorage,
+    withTombstoneBlockedCaptureWriteLock: async () => {
+      throw new Error("default review lock must not be used");
+    },
+  };
+  probe.orchestrator.getStorage = async (namespace?: string) =>
+    (namespace === "review-a" ? queueStorage : defaultStorage) as unknown as StorageManager;
+
+  const result = await queueExplicitCaptureForReview(
+    probe.orchestrator,
+    {
+      content: "A review fallback must lock its own namespace.",
+      category: "fact",
+      namespace: "unsupported-inline-namespace",
+    },
+    "inline",
+    new Error("invalid capture"),
+    { resolvedNamespace: "review-a" }
+  );
+
+  assert.equal(result.duplicateOf, undefined);
+  assert.equal(probe.memories.length, 1);
+});
+
 test("inline capture routes unsupported namespaces to the authorized default review scope", async () => {
   const probe = createInlineCaptureProcessorProbe();
   const result = await probe.processor.process({
