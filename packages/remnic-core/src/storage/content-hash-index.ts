@@ -76,6 +76,14 @@ export class FactHashIndexNotAuthoritativeError extends Error {
   }
 }
 
+type DiskFingerprint = {
+  mtimeMs: number;
+  size: number;
+  dev: number;
+  ino: number;
+  ctimeMs: number;
+  birthtimeMs: number;
+};
 /**
  * Content-hash dedup index for facts.
  * Normalizes content (lowercase, strip punctuation, collapse whitespace),
@@ -120,15 +128,13 @@ export class ContentHashIndex {
   private reconcileRetryBarrier: Promise<void> | null = null;
   private reconcileRetryResolve: (() => void) | null = null;
   /**
-   * On-disk fingerprint (mtime + byte size) of `fact-hashes.txt` captured at the
-   * last point THIS instance's in-memory set matched disk — after `load()`,
-   * `save()`, or a reconcile publish (PR #2016 review). A peer process that
-   * advances the durable index changes this fingerprint;
-   * {@link isDiskFingerprintCurrent} compares a single cheap `stat` against it so
-   * a stale-but-"authoritative" snapshot is detected without an O(file-size)
-   * re-read on the hot path.
+   * On-disk fingerprint captured at the last point THIS instance's in-memory
+   * set matched disk — after `load()`, `save()`, or a reconcile publish. A peer
+   * process that advances the durable index changes its file generation even
+   * when byte size and mtime collide, so the freshness check remains safe
+   * without an O(file-size) read on the hot path.
    */
-  private lastSyncedFingerprint: { mtimeMs: number; size: number } | null = null;
+  private lastSyncedFingerprint: DiskFingerprint | null = null;
 
   constructor(
     stateDir: string,
@@ -166,10 +172,17 @@ export class ContentHashIndex {
   }
 
   /** Cheap `stat` of the durable index file; null when it does not exist yet. */
-  private async statIndexFile(): Promise<{ mtimeMs: number; size: number } | null> {
+  private async statIndexFile(): Promise<DiskFingerprint | null> {
     try {
       const s = await stat(this.filePath);
-      return { mtimeMs: s.mtimeMs, size: s.size };
+      return {
+        mtimeMs: s.mtimeMs,
+        size: s.size,
+        dev: s.dev,
+        ino: s.ino,
+        ctimeMs: s.ctimeMs,
+        birthtimeMs: s.birthtimeMs,
+      };
     } catch (err) {
       if (isErrnoCode(err, "ENOENT")) return null;
       throw err;
@@ -190,14 +203,15 @@ export class ContentHashIndex {
 
   /**
    * True when the durable index file is unchanged since this instance last
-   * synced it (load / save / reconcile). False when a peer advanced it, when the
-   * file appeared or vanished, or when freshness cannot be established (stat
-   * error) — the caller then treats the in-memory snapshot as non-authoritative
-   * and confirms a dedup miss against the durable corpus (PR #2016 review). One
-   * `stat`, never an O(file-size) read, so the hot path stays cheap.
+   * synced it (load / save / reconcile). False when a peer advanced it, when
+   * the file appeared or vanished, or when freshness cannot be established
+   * (stat error) — the caller then treats the in-memory snapshot as
+   * non-authoritative and confirms a dedup miss against the durable corpus.
+   * The stat includes file identity and generation metadata so same-size,
+   * same-mtime atomic replacements are detected without reading the file body.
    */
   async isDiskFingerprintCurrent(): Promise<boolean> {
-    let current: { mtimeMs: number; size: number } | null;
+    let current: DiskFingerprint | null;
     try {
       current = await this.statIndexFile();
     } catch {
@@ -207,7 +221,14 @@ export class ContentHashIndex {
     if (last === null || current === null) {
       return last === null && current === null;
     }
-    return current.mtimeMs === last.mtimeMs && current.size === last.size;
+    return (
+      current.mtimeMs === last.mtimeMs &&
+      current.size === last.size &&
+      current.dev === last.dev &&
+      current.ino === last.ino &&
+      current.ctimeMs === last.ctimeMs &&
+      current.birthtimeMs === last.birthtimeMs
+    );
   }
 
   /** Check if content already exists in the index. */

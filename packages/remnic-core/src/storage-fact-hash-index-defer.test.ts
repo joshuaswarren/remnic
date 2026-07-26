@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -910,6 +910,33 @@ test("#2016 finding 3: flushReconcileRetry drains a deferred lock-timeout append
       fresh.has("deferred-drained-on-shutdown"),
       "the deferred hash reached disk via the inline shutdown drain"
     );
+  });
+});
+
+test("#2016 fingerprint detects same-size same-mtime index replacement", async () => {
+  await withMemoryDir(async (dir) => {
+    const stateDir = path.join(dir, "state");
+    const indexPath = path.join(stateDir, "fact-hashes.txt");
+    await mkdir(stateDir, { recursive: true });
+    const original = `${"a".repeat(64)}\n`;
+    const replacement = `${"b".repeat(64)}\n`;
+    const fixedSeconds = 1_700_000_000;
+    await writeFile(indexPath, original, "utf8");
+    await utimes(indexPath, fixedSeconds, fixedSeconds);
+
+    const index = new ContentHashIndex(stateDir);
+    await index.load();
+    assert.equal(await index.isDiskFingerprintCurrent(), true);
+    const baseline = await stat(indexPath);
+
+    const replacementPath = `${indexPath}.replacement`;
+    await writeFile(replacementPath, replacement, "utf8");
+    await utimes(replacementPath, fixedSeconds, fixedSeconds);
+    await rename(replacementPath, indexPath);
+    const replaced = await stat(indexPath);
+    assert.equal(replaced.size, baseline.size);
+    assert.equal(replaced.mtimeMs, baseline.mtimeMs);
+    assert.equal(await index.isDiskFingerprintCurrent(), false);
   });
 });
 
