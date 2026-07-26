@@ -1688,3 +1688,102 @@ test("grounding selects eventTime from the supporting fact sentence", () => {
 
   assert.equal(result.facts[0]?.eventTime, "yesterday");
 });
+
+test("grounding scopes reasoning traces to the fact's role source", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "User works at Acme.",
+        confidence: 0.9,
+        tags: [],
+        reasoningTrace: {
+          steps: [{ order: 1, description: "User uses PostgreSQL." }],
+          finalAnswer: "User uses PostgreSQL.",
+        },
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "I work at Acme.\nI use PostgreSQL.",
+    undefined,
+    {
+      profile: "I work at Acme.",
+      identity: "",
+    },
+  );
+
+  assert.equal(result.facts[0]?.content, "User works at Acme.");
+  assert.equal(result.facts[0]?.reasoningTrace, undefined);
+});
+
+test("grounding excludes unanswered questions from reasoning traces", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "The incident analysis is recorded.",
+        confidence: 0.9,
+        tags: [],
+        reasoningTrace: {
+          steps: [{ order: 1, description: "Alice deleted backups." }],
+          finalAnswer: "Alice deleted backups.",
+        },
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "The incident analysis is recorded. Did Alice delete backups?",
+  );
+
+  assert.equal(result.facts[0]?.content, "The incident analysis is recorded.");
+  assert.equal(result.facts[0]?.reasoningTrace, undefined);
+});
+
+test("extraction grounds de-linearized facts after resolving coreferences", async () => {
+  const engine = fixtureEngine({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+  });
+  Object.assign(engine, {
+    localLlm: {
+      async chatCompletion() {
+        return {
+          content: JSON.stringify({
+            facts: [{
+              category: "fact",
+              content: "He works at Acme.",
+              confidence: 0.9,
+              tags: [],
+            }],
+            profileUpdates: [],
+            entities: [{
+              name: "Bob",
+              type: "person",
+              facts: ["Alice introduced Bob."],
+            }],
+            questions: [],
+          }),
+        };
+      },
+    },
+    modelRegistry: {
+      calculateContextSizes: () => ({
+        maxInputChars: 8_000,
+        maxOutputTokens: 1_000,
+        description: "fixture",
+      }),
+    },
+  });
+
+  const result = await engine.extract([{
+    role: "user",
+    content: "Alice introduced Bob. He works at Acme.",
+    timestamp: "2026-07-25T12:00:00.000Z",
+  }]);
+
+  assert.deepEqual(result.facts, []);
+});

@@ -138,6 +138,15 @@ const GROUNDING_AUXILIARY_TOKENS = new Set([
   "should",
 ]);
 
+const GROUNDING_SUBJECT_PRONOUNS = new Set([
+  "he",
+  "she",
+  "they",
+  "it",
+  "i",
+  "we",
+  "you",
+]);
 const GROUNDING_ENTITY_TYPE_PREFIXES = new Set([
   "person",
   "project",
@@ -353,8 +362,11 @@ function isInterrogativeSourceSentence(sentence: string): boolean {
   const normalized = sentence.trim();
   return normalized.endsWith("?")
     || /\b(?:whether|if)\b/iu.test(normalized)
-    || /^(?:suppose|assuming|maybe|perhaps|hypothetically|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who)\b/iu.test(
-      normalized,
+    || (
+      !normalized.includes(":")
+      && /^(?:suppose|assuming|maybe|perhaps|hypothetically|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who)\b/iu.test(
+        normalized,
+      )
     );
 }
 
@@ -367,6 +379,15 @@ function groundingTokenSequence(text: string): string[] {
     .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
     .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS));
 }
+function normalizedGroundingAlignmentTokenSequence(text: string): string[] {
+  const normalized = normalizedGroundingTokenSequence(text);
+  const firstLexeme = groundingLexemes(text)[0];
+  if (firstLexeme === undefined || !GROUNDING_SUBJECT_PRONOUNS.has(firstLexeme.token)) {
+    return normalized;
+  }
+  return [stemToken(firstLexeme.token, firstLexeme.preserveTerminalS), ...normalized];
+}
+
 
 function normalizedGroundingTokenSequence(text: string): string[] {
   return groundingTokenSequence(text).map((token) => token.replace(/'$/u, ""));
@@ -377,8 +398,8 @@ function areGroundingTokensCompatible(left: string, right: string): boolean {
 }
 
 function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): boolean {
-  const candidateTokens = normalizedGroundingTokenSequence(candidate);
-  const sourceTokens = normalizedGroundingTokenSequence(source);
+  const candidateTokens = normalizedGroundingAlignmentTokenSequence(candidate);
+  const sourceTokens = normalizedGroundingAlignmentTokenSequence(source);
   if (candidateTokens.length < 3 || sourceTokens.length < 3) return true;
 
   const subjectAligned = areGroundingTokensCompatible(candidateTokens[0]!, sourceTokens[0]!);
@@ -770,15 +791,33 @@ function filterGroundedFact(
     : undefined;
   const groundedReasoningTrace = fact.reasoningTrace
     && fact.reasoningTrace.steps.length > 0
-    && isGroundedCandidate(fact.reasoningTrace.finalAnswer, source, assertionSource, true)
+    && isGroundedCandidate(
+      fact.reasoningTrace.finalAnswer,
+      factContext.source,
+      factContext.assertionSource,
+      false,
+      factContext.allowRoleNormalization,
+    )
     && fact.reasoningTrace.steps.every((step) =>
-      isGroundedCandidate(step.description, source, assertionSource, true),
+      isGroundedCandidate(
+        step.description,
+        factContext.source,
+        factContext.assertionSource,
+        false,
+        factContext.allowRoleNormalization,
+      ),
     )
     ? {
       steps: fact.reasoningTrace.steps,
       finalAnswer: fact.reasoningTrace.finalAnswer,
       ...(fact.reasoningTrace.observedOutcome
-        && isGroundedCandidate(fact.reasoningTrace.observedOutcome, source, assertionSource, true)
+        && isGroundedCandidate(
+          fact.reasoningTrace.observedOutcome,
+          factContext.source,
+          factContext.assertionSource,
+          false,
+          factContext.allowRoleNormalization,
+        )
         ? { observedOutcome: fact.reasoningTrace.observedOutcome }
         : {}),
     }
