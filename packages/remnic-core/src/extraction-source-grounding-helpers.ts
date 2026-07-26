@@ -10,7 +10,7 @@ export function isInterrogativeSourceSentence(sentence: string): boolean {
     || hasEmbeddedQuestion
     || (
       !normalized.includes(":")
-      && /^(?:suppose|assuming|maybe|perhaps|hypothetically|if|whether|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who)\b/iu.test(
+      && /^(?:suppose|assuming|assume|maybe|perhaps|hypothetically|if|whether|imagine|imagining|presume|presuming|supposing|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who)\b/iu.test(
         normalized,
       )
     );

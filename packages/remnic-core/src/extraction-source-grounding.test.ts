@@ -1788,7 +1788,7 @@ test("extraction grounds de-linearized facts after resolving coreferences", asyn
     timestamp: "2026-07-25T12:00:00.000Z",
   }]);
 
-  assert.deepEqual(result.facts, []);
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["Bob works at Acme."]);
 });
 
 test("grounding rejects topical overlap for short copular claims", () => {
@@ -2178,4 +2178,69 @@ test("grounding preserves affirmative not-only claims", () => {
   );
 
   assert.deepEqual(result.facts.map((fact) => fact.content), ["Alice works at Acme."]);
+});
+
+test("grounding rejects propositions embedded in denial reports", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Bob works at Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice denied that Bob works at Acme.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding rejects imperative hypothetical premises", () => {
+  for (const source of ["Assume Alice works at Acme.", "Imagine Alice works at Acme."]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{
+          category: "fact",
+          content: "Alice works at Acme.",
+          confidence: 0.9,
+          tags: [],
+        }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      source,
+    );
+
+    assert.deepEqual(result.facts, []);
+  }
+});
+
+test("grounding requires temporal evidence to answer when questions", () => {
+  const question = "When did Alice deploy Acme?";
+  const unresolved = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{ question, context: "", priority: 0.5 }],
+    },
+    `${question}\nAlice deployed Acme for cost savings.`,
+  );
+  const resolved = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{ question, context: "", priority: 0.5 }],
+    },
+    `${question}\nAlice deployed Acme yesterday.`,
+  );
+
+  assert.deepEqual(unresolved.questions, [{ question, context: "", priority: 0.5 }]);
+  assert.deepEqual(resolved.questions, []);
 });

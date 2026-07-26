@@ -1152,11 +1152,21 @@ export class ExtractionEngine {
     messageTimestamp?: Date,
   ): ExtractionResult {
     const capabilities = resolvePipelineProcessingCapabilities(this.config);
+    const sourceForGrounding = (source: string | undefined): string | undefined =>
+      source === undefined || !capabilities.delinearize
+        ? source
+        : delinearize(source, result.entities, messageTimestamp ?? new Date());
+    const groundedRoleSources = roleAssertionSources === undefined
+      ? undefined
+      : {
+        profile: sourceForGrounding(roleAssertionSources.profile),
+        identity: sourceForGrounding(roleAssertionSources.identity),
+      };
     return applyExtractionSourceGrounding(
       result,
-      sourceText,
-      assertionSourceText,
-      roleAssertionSources,
+      sourceForGrounding(sourceText) ?? sourceText,
+      sourceForGrounding(assertionSourceText) ?? assertionSourceText,
+      groundedRoleSources,
       messageTimestamp,
       {
         sourceGrounding: capabilities.sourceGrounding,

@@ -69,6 +69,61 @@ export interface ExtractionGroundingRoleSources {
   identity?: string;
 }
 
+const GROUNDING_DENIAL_REPORTING_VERBS = new Set([
+  "deny",
+  "denied",
+  "denies",
+  "denying",
+  "dispute",
+  "disputed",
+  "disputes",
+  "disputing",
+  "reject",
+  "rejected",
+  "rejects",
+  "rejecting",
+  "refute",
+  "refuted",
+  "refutes",
+  "refuting",
+  "contradict",
+  "contradicted",
+  "contradicts",
+  "contradicting",
+  "disprove",
+  "disproved",
+  "disproves",
+  "disproving",
+]);
+
+function isDenialReportingVerb(token: string): boolean {
+  return GROUNDING_DENIAL_REPORTING_VERBS.has(token);
+}
+
+function isGroundingClauseBoundary(token: string): boolean {
+  return token === "and"
+    || token === "but"
+    || token === "or"
+    || token === "while"
+    || token === "although"
+    || token === "because";
+}
+
+function isDeniedAt(tokens: ReadonlyArray<string>, index: number): boolean {
+  let boundary = 0;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (isGroundingClauseBoundary(tokens[cursor]!)) boundary = cursor + 1;
+  }
+  for (let cursor = index - 1; cursor >= boundary; cursor -= 1) {
+    const token = tokens[cursor];
+    if (token === "that" && cursor > boundary && isDenialReportingVerb(tokens[cursor - 1]!)) {
+      return true;
+    }
+    if (isDenialReportingVerb(token) && index - cursor <= 5) return true;
+  }
+  return false;
+}
+
 function hasContradictoryPolarity(candidate: string, source: string): boolean {
   const candidateLexemes = groundingLexemes(candidate);
   const candidateTokens = candidateLexemes.map(({ token }) => token);
@@ -92,7 +147,11 @@ function hasContradictoryPolarity(candidate: string, source: string): boolean {
         allTokensFound = false;
         break;
       }
-      if (isNegatedAt(candidateTokens, candidateIndex) !== isNegatedAt(sourceTokens, sourceIndex)) {
+      const candidateNegated = isNegatedAt(candidateTokens, candidateIndex)
+        || isDeniedAt(candidateTokens, candidateIndex);
+      const sourceNegated = isNegatedAt(sourceTokens, sourceIndex)
+        || isDeniedAt(sourceTokens, sourceIndex);
+      if (candidateNegated !== sourceNegated) {
         contradiction = true;
       }
       sourceCursor = sourceIndex + 1;
@@ -120,7 +179,11 @@ function hasContradictoryPolarity(candidate: string, source: string): boolean {
     );
     if (!positions || positions.length === 0) continue;
     const sourceIndex = positions[positions.length - 1];
-    if (isNegatedAt(candidateTokens, candidateIndex) !== isNegatedAt(sourceTokens, sourceIndex)) {
+    const candidateNegated = isNegatedAt(candidateTokens, candidateIndex)
+      || isDeniedAt(candidateTokens, candidateIndex);
+    const sourceNegated = isNegatedAt(sourceTokens, sourceIndex)
+      || isDeniedAt(sourceTokens, sourceIndex);
+    if (candidateNegated !== sourceNegated) {
       return true;
     }
   }
@@ -790,6 +853,66 @@ function isGroundedRelationship(
   return hasCoherentSourceSpan
     && isGroundedCandidate(relationText, source, assertionSource);
 }
+const GROUNDING_TEMPORAL_WORDS = new Set([
+  "today",
+  "yesterday",
+  "tomorrow",
+  "now",
+  "recently",
+  "earlier",
+  "later",
+  "soon",
+  "morning",
+  "afternoon",
+  "evening",
+  "tonight",
+  "night",
+  "noon",
+  "midnight",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
+  "q1",
+  "q2",
+  "q3",
+  "q4",
+]);
+const GROUNDING_TEMPORAL_CLOCK_PATTERN = /\b\d{1,2}:\d{2}(?:\s*[ap]\.?m\.?)?\b/iu;
+const GROUNDING_TEMPORAL_DURATION_PATTERN = new RegExp(
+  "\\b(?:\\d+|one|two|three|four|five|six|seven|eight|nine|ten)\\s+"
+    + "(?:seconds?|minutes?|hours?|days?|weeks?|months?|quarters?|years?)\\b",
+  "iu",
+);
+
+function isWhenQuestion(question: string): boolean {
+  return /^(?:when|what\s+(?:time|date)|which\s+day)\b/iu.test(question.trim());
+}
+
+function hasTemporalAnswerEvidence(question: string, sentence: string): boolean {
+  if (!isWhenQuestion(question)) return true;
+  return groundingLexemes(sentence).some(({ token }) =>
+    GROUNDING_TEMPORAL_WORDS.has(token) || /^(?:19|20)\d{2}$/u.test(token),
+  )
+    || GROUNDING_TEMPORAL_CLOCK_PATTERN.test(sentence)
+    || GROUNDING_TEMPORAL_DURATION_PATTERN.test(sentence);
+}
+
 
 function isUnknownAnswerSentence(sentence: string): boolean {
   return /\b(?:unknown|unclear|unsure|unresolved|unanswered|not\s+(?:known|sure|available)|don't\s+know|do\s+not\s+know|no\s+idea|pending)\b/iu
@@ -860,7 +983,9 @@ function isQuestionAnsweredBySource(
     if (score !== 1) return false;
     const sentenceTokens = tokenize(sentence);
     const hasAnswerToken = [...sentenceTokens].some((token) => !questionTokens.has(token));
-    return (isYesNoQuestion || hasAnswerToken) && hasWhAnswerRoleAlignment(question, sentence);
+    return (isYesNoQuestion || hasAnswerToken)
+      && hasTemporalAnswerEvidence(question, sentence)
+      && hasWhAnswerRoleAlignment(question, sentence);
   });
 }
 
