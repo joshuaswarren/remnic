@@ -426,6 +426,7 @@ export class CorrectionExecutor {
     // Only run for supersede/retract actions whose replacement write (if any)
     // succeeded. A supersede WITHOUT a replacement is a pure retract.
     for (const action of plan.actions) {
+      try {
       throwIfAbortedBeforeCommit();
       if (action.kind === "supersede" && retiredReplacementActions.has(action)) continue;
       if (action.kind === "supersede") {
@@ -502,6 +503,12 @@ export class CorrectionExecutor {
           if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
           results.push({ action, status: "failed", error: errMsg(err) });
         }
+      }
+      } catch (err) {
+        if (!mutationCommitted && abortSignal?.aborted) {
+          await resetApplying();
+        }
+        throw err;
       }
     }
     throwIfAbortedBeforeCommit();

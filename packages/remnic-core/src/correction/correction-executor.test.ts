@@ -850,6 +850,54 @@ test("#2128 cancellation after tombstone commit still retires the source", async
   });
 });
 
+test("#2128 cancellation before retract mutation restores a plan to pending", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-old", { memoryId: "mem-old", path: "facts/mem-old.md", content: "stale", excerpt: "stale", score: 1 }],
+    ]);
+    const abortController = new AbortController();
+    const state: FakeState = {
+      memories: new Map([["mem-old", fakeMemory({ memoryId: "mem-old", content: "stale" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "retract", memoryId: "mem-old" }],
+        relevance: [{ memoryId: "mem-old", why: "stale" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "stale", targetIds: ["mem-old"] }, ["default"]);
+    const deps = makeExecutorDeps(state);
+    const originalGetMemory = deps.getMemory;
+    deps.getMemory = async (namespace, memoryId, signal) => {
+      if (memoryId === "mem-old") {
+        abortController.abort(new Error("caller disconnected"));
+        throw signal?.reason ?? new Error("caller disconnected");
+      }
+      return originalGetMemory(namespace, memoryId, signal);
+    };
+    const executor = new CorrectionExecutor(deps, planner);
+
+    await assert.rejects(
+      () => executor.apply("default", plan.planId, { confirm: true, abortSignal: abortController.signal }),
+      /caller disconnected/,
+    );
+    const reloaded = await planner.loadPlan("default", plan.planId);
+    assert.equal(reloaded?.status, "pending");
+    assert.equal(state.tombstones.length, 0);
+    assert.equal(state.retireCalls ?? 0, 0);
+  });
+});
+
 test("#2128 committed actions terminalize plans after cancellation", async () => {
   const actions: CorrectionAction[] = [
     { kind: "edit", memoryId: "mem-edit", patch: "edited" },
