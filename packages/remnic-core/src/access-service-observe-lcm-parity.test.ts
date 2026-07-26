@@ -986,6 +986,46 @@ test("#2128: aborted or expired extraction force-flush never touches a buffer", 
   assert.equal(probe.extractionForceFlushCalls.length, 0);
 });
 
+test("#2128: self-deps wires force-flush cancellation into the observe tracker", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const cancellations: Array<{
+    sessionKey: string;
+    principal?: string;
+    namespace?: string;
+  }> = [];
+  const surface = (service as unknown as {
+    accessObserveWriteSurface: {
+      cancelPendingObserveExtractions(
+        sessionKey: string,
+        principal?: string,
+        namespace?: string,
+      ): void;
+    };
+  }).accessObserveWriteSurface;
+  surface.cancelPendingObserveExtractions = (sessionKey, principal, namespace) => {
+    cancellations.push({ sessionKey, principal, namespace });
+  };
+
+  await assert.rejects(
+    () =>
+      service.extractionForceFlush({
+        sessionKey: "pi-geek:cancel-hook",
+        namespace: "pi-geek",
+        authenticatedPrincipal: "pi-geek",
+        deadlineMs: Date.now() - 1,
+      }),
+    (error: unknown) =>
+      error instanceof EngramAccessInputError &&
+      error.message === "extraction force-flush deadline exceeded before buffer drain",
+  );
+  assert.deepEqual(cancellations, [{
+    sessionKey: "pi-geek:cancel-hook",
+    principal: "pi-geek",
+    namespace: "pi-geek",
+  }]);
+});
+
 test("#2128: late extraction deadline is surfaced as an access input error", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   probe.orch.flushSession = async () => {

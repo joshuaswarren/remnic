@@ -4315,6 +4315,13 @@ export class EngramAccessService {
   async extractionForceFlush(request: EngramAccessExtractionForceFlushRequest): Promise<EngramAccessExtractionForceFlushResponse> {
     return delegateExtractionForceFlush(this.accessObserveWriteSurface, request);
   }
+  cancelPendingObserveExtractions(
+    sessionKey: string,
+    principal?: string,
+    namespace?: string,
+  ): void {
+    this.accessObserveWriteSurface.cancelPendingObserveExtractions(sessionKey, principal, namespace);
+  }
   async lcmCompactionRecord(
     request: EngramAccessLcmCompactionRecordRequest,
   ): Promise<EngramAccessLcmCompactionRecordResponse> {
