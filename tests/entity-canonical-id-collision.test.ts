@@ -272,3 +272,50 @@ test("a re-normalized collision replaces the journal's stale target", async () =
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a stale park never outranks a migration this scan discovered", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-stale-vs-active-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const legacy = normalizeEntityName("Weekly Report", "automation");
+    const canonical = normalizeEntityName("Weekly Report", "automation-cron-job");
+    const stale = "automation-cron-job-obsolete-report";
+    // No collision this time: the pair migrates cleanly. The journal's parked
+    // entry is left over from an earlier normalization and must not resurrect
+    // once the rename makes the legacy filename disappear.
+    await writeFile(
+      path.join(dir, "entities", `${legacy}.md`),
+      `---\nid: ${legacy}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# Weekly Report\n\n**Type:** automation-cron-job\n\nRuns Mondays.\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: {}, blocked: { [legacy]: stale } }),
+      "utf8",
+    );
+    const factDir = path.join(dir, "facts", "2026-03-01");
+    await mkdir(factDir, { recursive: true });
+    const factPath = path.join(factDir, "fact-active-wins.md");
+    await writeFile(
+      factPath,
+      `---\nid: fact-active-wins\ncategory: fact\nconfidence: 0.9\n`
+      + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+      + `entityRef: ${legacy}\nstatus: active\n---\n\nThe report runs weekly.\n`,
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+    await new StorageManager(dir).ensureDirectories();
+
+    assert.match(await readFile(path.join(dir, "entities", `${canonical}.md`), "utf8"), /Runs Mondays\./);
+    assert.equal(
+      /^entityRef: (.*)$/m.exec(await readFile(factPath, "utf8"))?.[1],
+      canonical,
+      "the live migration target must win over a leftover parked one",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
