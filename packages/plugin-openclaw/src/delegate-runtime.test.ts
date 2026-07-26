@@ -64,6 +64,7 @@ async function startDaemonStub(
   ) => Record<string, unknown> | Promise<Record<string, unknown>>,
   options: {
     batchFlush?: boolean;
+    batchResponse?: boolean;
     capabilityResponses?: Array<{ status: number; body: Record<string, unknown> }>;
   } = {},
 ): Promise<DaemonStub> {
@@ -94,10 +95,29 @@ async function startDaemonStub(
             ? Promise.resolve({ status: 200, body: { lcmCompactionFlushBatch: true } })
             : Promise.resolve()
                 .then(() => respond(pathname, body))
-                .then((response) => ({
-                  status: 200,
-                  body: response,
-                }));
+                .then((response) => {
+                  const requestedNamespaces = Array.isArray(body.namespaces)
+                    ? body.namespaces
+                    : undefined;
+                  if (requestedNamespaces === undefined || options.batchResponse === false) {
+                    return { status: 200, body: response };
+                  }
+                  return {
+                    status: 200,
+                    body: {
+                      ...response,
+                      enabled: response.enabled ?? true,
+                      flushed: response.flushed ?? true,
+                      sessionKey: body.sessionKey,
+                      namespaces: requestedNamespaces,
+                      results: requestedNamespaces.map((namespace) => ({
+                        status: "fulfilled",
+                        namespace,
+                        result: response,
+                      })),
+                    },
+                  };
+                });
       void responsePromise
         .then(({ status, body: response }) => {
           if (res.destroyed) return;
@@ -820,12 +840,12 @@ test("delegate falls back to singular flushes when batch capability is unavailab
   }
 });
 
-test("delegate retries a transient batch capability probe", async () => {
+test("delegate retries a transient or malformed batch capability probe", async () => {
   const stub = await startDaemonStub(
     () => ({ flushed: true }),
     {
       capabilityResponses: [
-        { status: 503, body: {} },
+        { status: 200, body: {} },
         { status: 200, body: { lcmCompactionFlushBatch: true } },
       ],
     },
@@ -861,6 +881,75 @@ test("delegate retries a transient batch capability probe", async () => {
       ["team-first", "team-second"],
     );
     assert.deepEqual(flushes.at(-1)?.body.namespaces, ["team-first", "team-second"]);
+  } finally {
+    await stub.close();
+  }
+});
+test("delegate reprobes batch support after daemon replacement", async () => {
+  let replaced = false;
+  const stub = await startDaemonStub(
+    (_pathname, body) => {
+      const requestedNamespaces = Array.isArray(body.namespaces) ? body.namespaces : undefined;
+      if (requestedNamespaces !== undefined && !replaced) {
+        replaced = true;
+        return {
+          enabled: true,
+          flushed: true,
+          sessionKey: body.sessionKey,
+          namespaces: requestedNamespaces,
+          results: requestedNamespaces.map((namespace) => ({
+            status: "fulfilled",
+            namespace,
+            result: { enabled: true, flushed: true },
+          })),
+        };
+      }
+      return { flushed: true };
+    },
+    {
+      batchResponse: false,
+      capabilityResponses: [
+        { status: 200, body: { lcmCompactionFlushBatch: true } },
+        { status: 200, body: { lcmCompactionFlushBatch: false } },
+      ],
+    },
+  );
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const sessionKey = "replaced-daemon-session";
+
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} session namespace` },
+            { role: "assistant", content: "the namespace is bound" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+
+    await invoke(api, "before_compaction", { sessionKey });
+    await invoke(api, "before_reset", { sessionKey });
+    await invoke(api, "session_end", { sessionKey });
+
+    const capabilityCalls = stub.calls.filter((call) => call.pathname === "/engram/v1/capabilities");
+    assert.equal(capabilityCalls.length, 2);
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.deepEqual(flushes[0]?.body.namespaces, ["team-first", "team-second"]);
+    assert.deepEqual(
+      flushes
+        .filter((call) => !("namespaces" in call.body))
+        .slice(-2)
+        .map((call) => call.body.namespace)
+        .sort(),
+      ["team-first", "team-second"],
+    );
   } finally {
     await stub.close();
   }
@@ -1167,6 +1256,10 @@ test("delegate restores full canonical history during explicit legacy migration"
       entries: Record<string, { namespaces: string[] }>;
     };
     assert.deepEqual(persisted.entries[encodeURIComponent(sessionKey)].namespaces, expected);
+    const migratedLegacy = JSON.parse(fs.readFileSync(legacyPath, "utf8")) as {
+      entries: Record<string, unknown>;
+    };
+    assert.deepEqual(migratedLegacy.entries, {});
   } finally {
     if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorMode;

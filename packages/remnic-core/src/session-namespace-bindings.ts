@@ -5,6 +5,7 @@ import path from "node:path";
 export interface SessionNamespaceBindingStore {
   namespacesFor(sessionKey: string): Promise<string[]>;
   remember(sessionKey: string, namespace: string): Promise<void>;
+  replace?(sessionKey: string, namespaces: string[]): Promise<void>;
 }
 
 export const SESSION_NAMESPACE_BINDING_MAX_ENTRIES = 1_000;
@@ -219,6 +220,17 @@ export function createInMemorySessionNamespaceBindingStore(): SessionNamespaceBi
         entries.delete(oldest);
       }
     },
+    async replace(sessionKey: string, namespaces: string[]): Promise<void> {
+      entries.delete(sessionKey);
+      if (namespaces.length > 0) {
+        entries.set(sessionKey, capNamespaceHistory([...namespaces]));
+      }
+      while (entries.size > SESSION_NAMESPACE_BINDING_MAX_ENTRIES) {
+        const oldest = entries.keys().next().value;
+        if (typeof oldest !== "string") break;
+        entries.delete(oldest);
+      }
+    },
   };
 }
 
@@ -262,6 +274,23 @@ export function createFileSessionNamespaceBindingStore(
         };
         bindings.entries = pruneBindingEntries(bindings.entries, key);
         await write(filePath, bindings);
+      });
+    },
+    async replace(sessionKey: string, namespaces: string[]): Promise<void> {
+      const key = encodeSessionKey(sessionKey);
+      await queueFileWrite(filePath, async () => {
+        const bindings = await readBindingFile(filePath);
+        if (namespaces.length === 0) {
+          delete bindings.entries[key];
+        } else {
+          bindings.entries[key] = {
+            namespaces: capNamespaceHistory([...namespaces]),
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        bindings.entries = pruneBindingEntries(bindings.entries, key);
+        await write(filePath, bindings);
+        clearVolatileRefresh(filePath, key);
       });
     },
   };

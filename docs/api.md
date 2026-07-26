@@ -248,12 +248,13 @@ Drain pending LCM observation work for a session before a host compacts its loca
 Request fields:
 - `sessionKey` (string, required) — conversation session identifier
 - `namespace` (string, optional) — target namespace for a single flush
-- `namespaces` (array of strings, optional) — target namespaces for one quota-counted batch flush; each namespace is resolved and authorized independently
+- `namespaces` (array of strings, optional, 1–64 entries, no duplicates) — target namespaces for one quota-counted batch flush; each namespace is resolved and authorized independently. Mutually exclusive with `namespace`; supplying both, or duplicate entries, returns HTTP 400.
 
 Response (HTTP 200):
 
 - Single flush: `enabled`, `flushed`, `sessionKey`, `namespace`, and optional `reason`
 - Batch flush: `enabled`, `flushed`, `sessionKey`, `namespaces`, and `results` entries with `status`, `namespace`, and (for fulfilled entries) `result`
+- A batch flush still returns HTTP 200 when an individual namespace fails or is denied; that namespace appears in `results` with `status: "rejected"`, and `enabled`/`flushed` are `false` for the batch.
 
 #### `POST /engram/v1/lcm/compaction/record`
 

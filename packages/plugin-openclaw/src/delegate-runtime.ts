@@ -624,8 +624,12 @@ export function registerDelegateRuntime(
       .then((response) => {
         const isSuccessfulResponse = response.status >= 200 && response.status < 300;
         if (isSuccessfulResponse && response.body !== null) {
-          cachedBatchFlushSupport = response.body.lcmCompactionFlushBatch === true;
-          return cachedBatchFlushSupport;
+          const batchFlushSupport = response.body.lcmCompactionFlushBatch;
+          if (typeof batchFlushSupport === "boolean") {
+            cachedBatchFlushSupport = batchFlushSupport;
+            return batchFlushSupport;
+          }
+          return false;
         }
         if (
           response.status === 204 ||
@@ -670,6 +674,12 @@ export function registerDelegateRuntime(
           withNamespace(sessionNamespace, { sessionKey }),
           remainingTimeout(),
         );
+      const flushIndividually = async (): Promise<boolean> => {
+        const outcomes = await Promise.allSettled(namespaces.map(flushNamespace));
+        return outcomes.every(
+          (outcome) => outcome.status === "fulfilled" && outcome.value?.flushed !== false,
+        );
+      };
       if (namespaces.length <= 1 || (await supportsBatchFlush(remainingTimeout()))) {
         if (namespaces.length <= 1) {
           const response = await flushNamespace(namespaces[0]);
@@ -686,7 +696,26 @@ export function registerDelegateRuntime(
             },
             remainingTimeout(),
           );
-          if (response === null || response.flushed === false) {
+          if (response === null) {
+            cachedBatchFlushSupport = undefined;
+            return flushIndividually();
+          }
+          const responseNamespaces = response.namespaces;
+          const responseResults = response.results;
+          const isBatchResponse =
+            Array.isArray(responseNamespaces) &&
+            Array.isArray(responseResults) &&
+            responseNamespaces.length === namespaces.length &&
+            responseNamespaces.every(
+              (responseNamespace, index) =>
+                responseNamespace === (namespaces[index] ?? ""),
+            ) &&
+            responseResults.length === namespaces.length;
+          if (!isBatchResponse) {
+            cachedBatchFlushSupport = undefined;
+            return flushIndividually();
+          }
+          if (response.flushed === false) {
             cachedBatchFlushSupport = undefined;
             return false;
           }
@@ -696,10 +725,7 @@ export function registerDelegateRuntime(
           throw err;
         }
       }
-      const outcomes = await Promise.allSettled(namespaces.map(flushNamespace));
-      return outcomes.every(
-        (outcome) => outcome.status === "fulfilled" && outcome.value?.flushed !== false,
-      );
+      return flushIndividually();
     } catch (err) {
       log.warn(`delegate flush failed: ${String(err)}`);
       return false;
@@ -773,14 +799,23 @@ function createDelegateNamespaceBindingStore(
   const legacy = createFileSessionNamespaceBindingStore(
     bindingPath(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID),
   );
+  const migratedLegacySessions = new Set<string>();
   const readLegacyNamespaces = async (
     sessionKey: string,
     current: string[],
   ): Promise<string[]> => {
+    if (migratedLegacySessions.has(sessionKey)) return [];
     try {
-      return await legacy.namespacesFor(sessionKey);
+      const previous = await legacy.namespacesFor(sessionKey);
+      if (previous.length === 0) migratedLegacySessions.add(sessionKey);
+      return previous;
     } catch (err) {
-      if (current.length > 0) return [];
+      if (current.length > 0) {
+        log.warn(
+          `[${serviceId}] delegate legacy namespace read failed; using canonical bindings: ${String(err)}`,
+        );
+        return [];
+      }
       throw err;
     }
   };
@@ -793,6 +828,27 @@ function createDelegateNamespaceBindingStore(
     }
     return merged.slice(-SESSION_NAMESPACE_BINDING_MAX_NAMESPACES);
   };
+  const persistNamespaceHistory = async (
+    store: SessionNamespaceBindingStore,
+    sessionKey: string,
+    namespaces: string[],
+  ): Promise<void> => {
+    if (store.replace !== undefined) {
+      await store.replace(sessionKey, namespaces);
+      return;
+    }
+    for (const namespace of namespaces) {
+      await store.remember(sessionKey, namespace);
+    }
+  };
+  const completeLegacyMigration = async (sessionKey: string): Promise<void> => {
+    try {
+      await legacy.replace?.(sessionKey, []);
+    } catch (err) {
+      log.warn(`[${serviceId}] delegate legacy namespace cleanup failed: ${String(err)}`);
+    }
+    migratedLegacySessions.add(sessionKey);
+  };
   return {
     async namespacesFor(sessionKey: string): Promise<string[]> {
       const current = await primary.namespacesFor(sessionKey);
@@ -800,12 +856,15 @@ function createDelegateNamespaceBindingStore(
       if (previous.length === 0) return current;
       const merged = mergeNamespaceHistory(current, previous);
       const hasMissingLegacy = previous.some((remembered) => !current.includes(remembered));
-      if (!hasMissingLegacy) return current;
+      if (!hasMissingLegacy) {
+        await completeLegacyMigration(sessionKey);
+        return current;
+      }
       try {
-        for (const remembered of merged) {
-          await primary.remember(sessionKey, remembered);
-        }
-      } catch {
+        await persistNamespaceHistory(primary, sessionKey, merged);
+        await completeLegacyMigration(sessionKey);
+      } catch (err) {
+        log.warn(`[${serviceId}] delegate namespace migration failed: ${String(err)}`);
       }
       return merged;
     },
@@ -817,9 +876,8 @@ function createDelegateNamespaceBindingStore(
         return;
       }
       const merged = mergeNamespaceHistory([...current, namespace], previous);
-      for (const remembered of merged) {
-        await primary.remember(sessionKey, remembered);
-      }
+      await persistNamespaceHistory(primary, sessionKey, merged);
+      await completeLegacyMigration(sessionKey);
     },
   };
 }

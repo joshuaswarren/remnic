@@ -64,12 +64,25 @@ async function startDaemonStub(): Promise<DaemonStub> {
       }
       calls.push({ pathname: req.url ?? "", body });
       res.setHeader("content-type", "application/json");
+      const requestedNamespaces = Array.isArray(body.namespaces) ? body.namespaces : undefined;
       const response =
         req.url === "/engram/v1/recall"
           ? { context: "remembered" }
           : req.url === "/engram/v1/capabilities"
             ? { lcmCompactionFlushBatch: true }
-            : {};
+            : requestedNamespaces !== undefined
+              ? {
+                  enabled: true,
+                  flushed: true,
+                  sessionKey: body.sessionKey,
+                  namespaces: requestedNamespaces,
+                  results: requestedNamespaces.map((namespace) => ({
+                    status: "fulfilled",
+                    namespace,
+                    result: { enabled: true, flushed: true },
+                  })),
+                }
+              : {};
       res.end(JSON.stringify(response));
     });
   });
@@ -276,6 +289,7 @@ const subject: LifecycleSubject<DelegateLifecycleState> = {
         assert.equal(recallCalls[0]?.body.namespace, "team-remembered");
         return;
       case "sparse-metadata-without-binding":
+        assert.equal(recallCalls.length, 1, "expected exactly one recall call");
         assert.equal("namespace" in (recallCalls[0]?.body ?? {}), false);
         return;
       case "provider-rebinding":
