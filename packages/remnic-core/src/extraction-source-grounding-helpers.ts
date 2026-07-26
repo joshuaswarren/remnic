@@ -94,6 +94,7 @@ export const GROUNDING_STOPWORDS: Record<string, true> = {
   not: true,
   of: true,
   on: true,
+  only: true,
   or: true,
   our: true,
   ours: true,
@@ -240,7 +241,9 @@ export interface GroundingLexeme {
 }
 
 export function groundingLexemes(text: string): GroundingLexeme[] {
-  return text.normalize("NFKC").match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu)
+  return text.normalize("NFKC").match(
+    /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?(?:\+\+[\p{L}\p{N}]*|#[\p{L}\p{N}]*)?/gu,
+  )
     ?.map((rawToken) => {
       const token = rawToken.replaceAll("’", "'").toLocaleLowerCase();
       return {
@@ -277,6 +280,7 @@ export function isAttachedNegatedAuxiliary(token: string): boolean {
 }
 
 export function isNegatedAt(tokens: ReadonlyArray<string>, index: number): boolean {
+  if (tokens[index - 1] === "only" && tokens[index - 2] === "not") return false;
   const previousStart = Math.max(0, index - 2);
   for (let i = previousStart; i < index; i += 1) {
     if (isNegationCue(tokens[i])) return true;

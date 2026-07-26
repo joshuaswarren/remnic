@@ -347,6 +347,18 @@ function isGroundedEntityName(name: string, source: string): boolean {
     return containsContiguousGroundingTokens(nameTokens, sentenceTokens);
   });
 }
+function buildEntitySupportSource(name: string, source: string): string {
+  const nameTokens = normalizedEntityIdentifierTokens(name);
+  if (nameTokens.length === 0) return "";
+  return sourceSentences(source)
+    .filter((sentence) => {
+      const sentenceTokens = groundingLexemes(sentence)
+        .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
+        .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS));
+      return containsContiguousGroundingTokens(nameTokens, sentenceTokens);
+    })
+    .join(" ");
+}
 
 function hasGroundedPredicateAnchor(candidate: string, sentence: string): boolean {
   const candidateTokens = normalizedGroundingTokenSequence(candidate);
@@ -729,10 +741,18 @@ function filterGroundedEntity(
   assertionSource: string | undefined,
 ): ExtractionResult["entities"][number] | undefined {
   if (!isGroundedEntityName(entity.name, source)) return undefined;
-  const facts = entity.facts.filter((fact) => isGroundedCandidate(fact, source, assertionSource));
+  const entitySource = buildEntitySupportSource(entity.name, source);
+  const entityAssertionSource = assertionSource === undefined
+    ? undefined
+    : buildEntitySupportSource(entity.name, assertionSource);
+  const facts = entity.facts.filter((fact) =>
+    isGroundedCandidate(fact, entitySource, entityAssertionSource),
+  );
   const structuredSections = entity.structuredSections
     ?.flatMap((section) => {
-      const groundedFacts = section.facts.filter((fact) => isGroundedCandidate(fact, source, assertionSource));
+      const groundedFacts = section.facts.filter((fact) =>
+        isGroundedCandidate(fact, entitySource, entityAssertionSource),
+      );
       return groundedFacts.length > 0
         ? [{ ...section, facts: groundedFacts }]
         : [];
@@ -850,7 +870,7 @@ function groundQuestion(
   assertionSource: string | undefined,
 ): ExtractionResult["questions"][number] | undefined {
   if (isQuestionAnsweredBySource(question.question, source, assertionSource)) return undefined;
-  if (!isGroundedCandidate(question.question, source, undefined, true)) return undefined;
+  if (!isGroundedCandidate(question.question, source, assertionSource, true)) return undefined;
   const normalizedContext = question.context.trim();
   if (
     normalizedContext.length > 0

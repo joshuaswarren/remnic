@@ -1980,7 +1980,7 @@ test("grounding does not keep context-only event times", () => {
   assert.equal(result.facts[0]?.eventTime, undefined);
 });
 
-test("grounding keeps unresolved questions when only context answers them", () => {
+test("grounding drops unresolved questions sourced only from context turns", () => {
   const result = filterExtractionResultBySource(
     {
       facts: [],
@@ -1996,11 +1996,7 @@ test("grounding keeps unresolved questions when only context answers them", () =
     "Alice still needs confirmation.",
   );
 
-  assert.deepEqual(result.questions, [{
-    question: "Does Alice work at Acme?",
-    context: "",
-    priority: 0.5,
-  }]);
+  assert.deepEqual(result.questions, []);
 });
 
 test("grounding aligns supported facts after leading modifiers", () => {
@@ -2082,4 +2078,104 @@ test("grounding preserves paraphrased conjunctions across source clauses", () =>
     result.facts.map((fact) => fact.content),
     ["Alice works at Acme but does not work at Globex."],
   );
+});
+
+test("grounding scopes nested entity facts to the enclosing entity", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [{
+        name: "Alice",
+        type: "person",
+        facts: ["Alice works at Acme.", "Bob owns Mars."],
+        structuredSections: [{
+          key: "work",
+          title: "Work",
+          facts: ["Alice uses PostgreSQL.", "Bob uses MySQL."],
+        }],
+      }],
+      questions: [],
+    },
+    "Alice works at Acme. Bob owns Mars. Alice uses PostgreSQL. Bob uses MySQL.",
+  );
+
+  assert.deepEqual(result.entities, [{
+    name: "Alice",
+    type: "person",
+    facts: ["Alice works at Acme."],
+    structuredSections: [{
+      key: "work",
+      title: "Work",
+      facts: ["Alice uses PostgreSQL."],
+    }],
+  }]);
+});
+
+test("grounding preserves punctuation in technology identifiers", () => {
+  const cppResult = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice uses C++.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice uses C.",
+  );
+  const plainCResult = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice uses C.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice uses C++.",
+  );
+
+  assert.deepEqual(cppResult.facts, []);
+  assert.deepEqual(plainCResult.facts, []);
+});
+
+test("grounding requires unresolved questions on the asserted target turn", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [{ question: "Does Alice work at Acme?", context: "", priority: 0.5 }],
+    },
+    "Does Alice work at Acme?\nBob joined the call.",
+    "Bob joined the call.",
+  );
+
+  assert.deepEqual(result.questions, []);
+});
+
+test("grounding preserves affirmative not-only claims", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice not only works at Acme but also owns Mars.",
+  );
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["Alice works at Acme."]);
 });
