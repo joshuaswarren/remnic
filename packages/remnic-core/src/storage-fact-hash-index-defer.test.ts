@@ -6,7 +6,10 @@ import path from "node:path";
 import test, { mock } from "node:test";
 
 import { ContentHashIndex, FactHashIndexNotAuthoritativeError, StorageManager } from "./storage.js";
-import { TombstoneBlockedCaptureIndex } from "./storage/tombstone-blocked-capture-index.js";
+import {
+  buildExplicitCaptureDedupKey,
+  TombstoneBlockedCaptureIndex,
+} from "./storage/tombstone-blocked-capture-index.js";
 import type { MemoryFile } from "./types.js";
 
 // Issue #1909 (Part B): writeMemory("fact") used to rewrite the whole
@@ -1857,7 +1860,7 @@ test("abandoned pending blocked-index markers rebuild and are reaped", async () 
   });
 });
 
-test("explicit capture write lock serializes concurrent operations", async () => {
+test("explicit capture write locks serialize identities without head-of-line blocking", async () => {
   await withMemoryDir(async (dir) => {
     const options = {
       stateDir: dir,
@@ -1871,21 +1874,22 @@ test("explicit capture write lock serializes concurrent operations", async () =>
     const index = new TombstoneBlockedCaptureIndex(options);
     let inFlight = 0;
     let maxInFlight = 0;
-    let releaseFirst!: () => void;
-    const firstRelease = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
-    let firstEntered!: () => void;
-    const firstEnteredSignal = new Promise<void>((resolve) => {
-      firstEntered = resolve;
-    });
+    const firstReleaseState = Promise.withResolvers<void>();
+    const firstRelease = firstReleaseState.promise;
+    const releaseFirst = firstReleaseState.resolve;
+    const firstEnteredState = Promise.withResolvers<void>();
+    const firstEnteredSignal = firstEnteredState.promise;
+    const firstEntered = firstEnteredState.resolve;
+    const otherEnteredState = Promise.withResolvers<void>();
+    const otherEnteredSignal = otherEnteredState.promise;
+    const otherEntered = otherEnteredState.resolve;
     const first = index.withCaptureWriteLock(async () => {
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
       firstEntered();
       await firstRelease;
       inFlight -= 1;
-    });
+    }, "capture-a");
     await firstEnteredSignal;
     const queued = Promise.all(
       Array.from({ length: 3 }, () =>
@@ -1893,12 +1897,123 @@ test("explicit capture write lock serializes concurrent operations", async () =>
           inFlight += 1;
           maxInFlight = Math.max(maxInFlight, inFlight);
           inFlight -= 1;
-        }),
+        }, "capture-a"),
       ),
     );
-    releaseFirst();
-    await Promise.all([first, queued]);
-    assert.equal(maxInFlight, 1);
+    const other = index.withCaptureWriteLock(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      otherEntered();
+      inFlight -= 1;
+    }, "capture-b");
+    const all = Promise.all([first, queued, other]);
+    const timeoutState = Promise.withResolvers<void>();
+    setTimeout(timeoutState.resolve, 100);
+    try {
+      await Promise.race([
+        otherEnteredSignal,
+        timeoutState.promise,
+      ]);
+      assert.equal(
+        maxInFlight,
+        2,
+        "an unrelated capture identity must not wait behind a slow capture",
+      );
+    } finally {
+      releaseFirst();
+      await all;
+    }
+  });
+});
+test("blocked generic writes share their explicit-capture identity lock", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "Generic blocked writes must coordinate with explicit captures.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "generic-lock-coordination",
+      rawContent: content,
+    });
+    const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const releaseHeldState = Promise.withResolvers<void>();
+    const releaseHeld = releaseHeldState.promise;
+    const release = releaseHeldState.resolve;
+    const enteredState = Promise.withResolvers<void>();
+    const enteredSignal = enteredState.promise;
+    const entered = enteredState.resolve;
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      entered();
+      await releaseHeld;
+    }, identity);
+    await enteredSignal;
+    let completed = false;
+    const pending = storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    }).then((result) => {
+      completed = true;
+      return result;
+    });
+    const delayState = Promise.withResolvers<void>();
+    setTimeout(delayState.resolve, 50);
+    await delayState.promise;
+    assert.equal(completed, false, "a matching generic write must wait for the capture lock");
+    release();
+    await held;
+    const result = await pending;
+    assert.equal(result.tombstoneBlocked, true);
+  });
+});
+
+
+test("blocked write failures clear their uncommitted rebuild marker", async () => {
+  await withMemoryDir(async (dir) => {
+    class FailingStorageManager extends StorageManager {
+      failWrites = false;
+
+      protected override writeStorageSecureFile(
+        filePath: string,
+        content: string | Buffer,
+        forceEncrypt = false,
+      ): Promise<void> {
+        if (this.failWrites) return Promise.reject(new Error("simulated durable write failure"));
+        return super.writeStorageSecureFile(filePath, content, forceEncrypt);
+      }
+    }
+
+    const storage = new FailingStorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A failed blocked write must not poison the rebuild state.";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "failed-blocked-write",
+      rawContent: content,
+    });
+    const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
+    storage.failWrites = true;
+    await assert.rejects(
+      storage.writeMemory("fact", content, {
+        source: "test",
+        sourceConnector: "provider-a",
+      }),
+      /simulated durable write failure/,
+    );
+    assert.deepEqual(await readdir(markerDir), []);
   });
 });
 

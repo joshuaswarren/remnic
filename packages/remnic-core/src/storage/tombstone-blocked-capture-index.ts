@@ -1,5 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import {
@@ -285,7 +286,9 @@ export class TombstoneBlockedCaptureIndex {
             rebuilt = await this.rebuild(index);
             if (rebuilt || attempt === maxAttempts - 1) break;
             const wait = Math.min(baseMs * 2 ** attempt, CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS);
-            await new Promise<void>((resolve) => setTimeout(resolve, wait));
+            const delayState = Promise.withResolvers<void>();
+            setTimeout(delayState.resolve, wait);
+            await delayState.promise;
           }
           if (!rebuilt) {
             throw new Error("tombstone-blocked capture index rebuild lock unavailable");
@@ -303,12 +306,22 @@ export class TombstoneBlockedCaptureIndex {
     return this.loadPromise;
   }
 
-  async withCaptureWriteLock<T>(task: () => Promise<T>): Promise<T> {
-    const lockPath = path.join(
+  private captureWriteLockPath(identity: string): string {
+    const filename =
+      identity.length === 0
+        ? "explicit-capture-write.lock"
+        : `explicit-capture-write-${createHash("sha256").update(identity).digest("hex")}.lock`;
+    return path.join(
       this.options.stateDir,
       "tombstone-blocked-capture",
-      "explicit-capture-write.lock",
+      filename,
     );
+  }
+
+  private async withSingleCaptureWriteLock<T>(
+    lockPath: string,
+    task: () => Promise<T>,
+  ): Promise<T> {
     await mkdir(path.dirname(lockPath), { recursive: true });
     const retry = Symbol("retry");
     const permanentFailure = Symbol("permanent-failure");
@@ -331,11 +344,27 @@ export class TombstoneBlockedCaptureIndex {
       }
       if (result !== retry) return result;
       if (attempt === CAPTURE_WRITE_LOCK_MAX_ATTEMPTS - 1) break;
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, CAPTURE_WRITE_LOCK_RETRY_BASE_MS * 2 ** attempt);
-      });
+      const delayState = Promise.withResolvers<void>();
+      setTimeout(delayState.resolve, CAPTURE_WRITE_LOCK_RETRY_BASE_MS * 2 ** attempt);
+      await delayState.promise;
     }
     throw new Error("tombstone-blocked capture write lock remained busy");
+  }
+
+  async withCaptureWriteLock<T>(
+    task: () => Promise<T>,
+    identity?: string | readonly string[],
+  ): Promise<T> {
+    const identities =
+      Array.isArray(identity) && identity.length > 0
+        ? identity
+        : [typeof identity === "string" ? identity : ""];
+    const lockPaths = [...new Set(identities.map((key) => this.captureWriteLockPath(key)))].sort();
+    const run = async (index: number): Promise<T> => {
+      if (index === lockPaths.length) return await task();
+      return await this.withSingleCaptureWriteLock(lockPaths[index], () => run(index + 1));
+    };
+    return await run(0);
   }
 
   private async reload(): Promise<ContentHashIndex> {
@@ -393,6 +422,11 @@ export class TombstoneBlockedCaptureIndex {
   /** Mark a prepared write committed once its memory file is durable. */
   async commitWrite(rebuildMarker: string): Promise<void> {
     await this.markRebuildCommitted(rebuildMarker);
+  }
+
+  /** Drop a pending marker when the protected memory write never commits. */
+  async discardWrite(rebuildMarker: string): Promise<void> {
+    await this.clearRebuildRequired([rebuildMarker]);
   }
 
   /** Add a newly persisted blocked row to the durable targeted index. */
@@ -537,6 +571,7 @@ export class TombstoneBlockedCaptureIndex {
 
 export abstract class TombstoneBlockedCaptureIndexHost {
   private tombstoneBlockedCaptureIndex: TombstoneBlockedCaptureIndex | null = null;
+  private readonly captureWriteLockContext = new AsyncLocalStorage<boolean>();
   protected abstract tombstoneBlockedCaptureIndexOptions(): TombstoneBlockedCaptureIndexOptions;
   protected abstract writeStorageSecureFile(
     filePath: string,
@@ -549,9 +584,14 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       this.tombstoneBlockedCaptureIndexOptions(),
     );
   }
-
-  async withTombstoneBlockedCaptureWriteLock<T>(task: () => Promise<T>): Promise<T> {
-    return await this.getTombstoneBlockedCaptureIndex().withCaptureWriteLock(task);
+  async withTombstoneBlockedCaptureWriteLock<T>(
+    task: () => Promise<T>,
+    identity?: string | readonly string[],
+  ): Promise<T> {
+    return await this.getTombstoneBlockedCaptureIndex().withCaptureWriteLock(
+      () => this.captureWriteLockContext.run(true, task),
+      identity,
+    );
   }
   private tombstoneBlocked(frontmatter: MemoryFrontmatter): boolean {
     return frontmatter.status === "pending_review" && Boolean(frontmatter.blockedBy);
@@ -561,22 +601,42 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     blocked: boolean,
     pathname: string,
     fileContent: string,
+    identity: string | readonly string[],
     updateIndex: (rebuildMarker?: string) => Promise<void>,
   ): Promise<void> {
-    let rebuildMarker = blocked
-      ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
-      : undefined;
-    await this.writeStorageSecureFile(pathname, fileContent);
-    if (rebuildMarker) {
+    const mutate = async (): Promise<void> => {
+      let rebuildMarker = blocked
+        ? await this.getTombstoneBlockedCaptureIndex().prepareWrite()
+        : undefined;
       try {
-        await this.getTombstoneBlockedCaptureIndex().commitWrite(rebuildMarker);
+        await this.writeStorageSecureFile(pathname, fileContent);
       } catch (err) {
-        this.getTombstoneBlockedCaptureIndex().markUntrusted();
-        log.warn(`storage.tombstoneBlocked committed write marker failed: ${err}`);
-        rebuildMarker = undefined;
+        if (rebuildMarker) {
+          try {
+            await this.getTombstoneBlockedCaptureIndex().discardWrite(rebuildMarker);
+          } catch (cleanupError) {
+            this.getTombstoneBlockedCaptureIndex().markUntrusted();
+            log.warn(`storage.tombstoneBlocked failed to clear write marker: ${cleanupError}`);
+          }
+        }
+        throw err;
       }
+      if (rebuildMarker) {
+        try {
+          await this.getTombstoneBlockedCaptureIndex().commitWrite(rebuildMarker);
+        } catch (err) {
+          this.getTombstoneBlockedCaptureIndex().markUntrusted();
+          log.warn(`storage.tombstoneBlocked committed write marker failed: ${err}`);
+          rebuildMarker = undefined;
+        }
+      }
+      await updateIndex(rebuildMarker);
+    };
+    if (!blocked || this.captureWriteLockContext.getStore() === true) {
+      await mutate();
+      return;
     }
-    await updateIndex(rebuildMarker);
+    await this.withTombstoneBlockedCaptureWriteLock(mutate, identity);
   }
 
   protected async writeTombstoneBlockedMemory(
@@ -589,6 +649,11 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       this.tombstoneBlocked(frontmatter),
       pathname,
       fileContent,
+      buildExplicitCaptureDedupKey(
+        content,
+        frontmatter.category,
+        frontmatter.sourceConnector,
+      ),
       (rebuildMarker) => this.getTombstoneBlockedCaptureIndex().addWrittenMemory(
         pathname,
         frontmatter,
@@ -608,6 +673,22 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       this.tombstoneBlocked(before.frontmatter) || this.tombstoneBlocked(frontmatter),
       before.path,
       fileContent,
+      [
+        ...(this.tombstoneBlocked(before.frontmatter)
+          ? [buildExplicitCaptureDedupKey(
+              before.content,
+              before.frontmatter.category,
+              before.frontmatter.sourceConnector,
+            )]
+          : []),
+        ...(this.tombstoneBlocked(frontmatter)
+          ? [buildExplicitCaptureDedupKey(
+              content,
+              frontmatter.category,
+              frontmatter.sourceConnector,
+            )]
+          : []),
+      ],
       (rebuildMarker) => this.getTombstoneBlockedCaptureIndex().syncUpdatedMemory(
         before,
         frontmatter,
@@ -626,6 +707,22 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       this.tombstoneBlocked(before.frontmatter) || this.tombstoneBlocked(frontmatter),
       before.path,
       fileContent,
+      [
+        ...(this.tombstoneBlocked(before.frontmatter)
+          ? [buildExplicitCaptureDedupKey(
+              before.content,
+              before.frontmatter.category,
+              before.frontmatter.sourceConnector,
+            )]
+          : []),
+        ...(this.tombstoneBlocked(frontmatter)
+          ? [buildExplicitCaptureDedupKey(
+              before.content,
+              frontmatter.category,
+              frontmatter.sourceConnector,
+            )]
+          : []),
+      ],
       (rebuildMarker) => this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(
         before,
         frontmatter,

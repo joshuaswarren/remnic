@@ -5,7 +5,10 @@ import type { Orchestrator } from "./orchestrator.js";
 import { log } from "./logger.js";
 import { isSafeRouteNamespace } from "./routing/engine.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
-import { normalizeExplicitCaptureContent } from "./storage/tombstone-blocked-capture-index.js";
+import {
+  buildExplicitCaptureDedupKey,
+  normalizeExplicitCaptureContent,
+} from "./storage/tombstone-blocked-capture-index.js";
 import type { CaptureMode, MemoryCategory, MemoryLifecycleEvent, PluginConfig } from "./types.js";
 import type { StorageManager } from "./storage.js";
 
@@ -567,7 +570,12 @@ export async function persistExplicitCapture(
   const persist = () =>
     persistExplicitCaptureUnlocked(orchestrator, candidate, source, resolvedNamespace, storage);
   if (typeof storage.withTombstoneBlockedCaptureWriteLock !== "function") return await persist();
-  return await storage.withTombstoneBlockedCaptureWriteLock(persist);
+  const lockIdentity = buildExplicitCaptureDedupKey(
+    candidate.content,
+    candidate.category,
+    candidate.sourceConnector,
+  );
+  return await storage.withTombstoneBlockedCaptureWriteLock(persist, lockIdentity);
 }
 
 function buildExplicitCaptureReviewContent(input: ExplicitCaptureInput, reason: string): string {
