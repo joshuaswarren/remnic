@@ -675,7 +675,19 @@ function mergeDiscoveredMappings(
   for (const [legacyId, canonicalId] of Object.entries(discovered)) {
     const previousMapping = merged[legacyId];
     if (previousMapping !== undefined && previousMapping !== canonicalId) {
-      throw new Error(`Legacy entity id ${legacyId} changed canonical target during migration.`);
+      // A -> B collapses to A -> C once B -> C exists, so a rescan that still
+      // reads A -> B off disk is reporting the same chain, not a new target.
+      // Only a target the chain cannot reach is a real conflict.
+      let hop: string | undefined = canonicalId;
+      const seen = new Set<string>();
+      while (hop !== undefined && hop !== previousMapping && !seen.has(hop)) {
+        seen.add(hop);
+        hop = merged[hop];
+      }
+      if (hop !== previousMapping) {
+        throw new Error(`Legacy entity id ${legacyId} changed canonical target during migration.`);
+      }
+      continue;
     }
     if (previousMapping === undefined && wouldCreateMappingCycle(merged, legacyId, canonicalId)) continue;
     const previousOwner = canonicalOwners.get(canonicalId);
@@ -860,6 +872,17 @@ export async function migrateLegacyEntityCanonicalIds(
         // keeping the canonical side. The rename no longer needs doing, but the
         // REWRITE does - references still name the legacy id, and this record
         // is the only thing that can still map them.
+        // Follow the chain: parking A -> B while B -> C migrates in the same
+        // run would leave the park pointing at an id that no longer exists.
+        for (const [legacyId, canonicalId] of Object.entries(parked)) {
+          let hop = canonicalId;
+          const seen = new Set<string>([legacyId]);
+          while (remaining[hop] !== undefined && !seen.has(hop)) {
+            seen.add(hop);
+            hop = remaining[hop];
+          }
+          parked[legacyId] = hop;
+        }
         for (const [legacyId, canonicalId] of Object.entries(parked)) {
           if (blocked.has(legacyId)) continue;
           const legacyPath = deps.resolveEntityFilePath(legacyId);

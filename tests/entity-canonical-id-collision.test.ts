@@ -158,9 +158,9 @@ test("a mapping persisted by an earlier run cannot outvote a later block", async
     assert.match(await readFile(path.join(dir, "entities", `${firstLegacy}.md`), "utf8"), /First\./);
     assert.match(await readFile(path.join(dir, "entities", `${secondLegacy}.md`), "utf8"), /Second\./);
     await assert.rejects(() => readFile(path.join(dir, "entities", `${canonicalId}.md`), "utf8"));
-    assert.match(
-      await readFile(path.join(factDir, "fact-contested.md"), "utf8"),
-      new RegExp(`entityRef: ${firstLegacy}`),
+    assert.equal(
+      /^entityRef: (.*)$/m.exec(await readFile(path.join(factDir, "fact-contested.md"), "utf8"))?.[1],
+      firstLegacy,
       "a blocked pair must not have its references redirected to the contested canonical id",
     );
   } finally {
@@ -183,7 +183,9 @@ test("resolving a collision lets the pair migrate, references included", async (
       "utf8",
     );
     await new StorageManager(dir).ensureDirectories();
-    assert.match(await readFile(factPath, "utf8"), new RegExp(`entityRef: ${legacy}`), "blocked while contested");
+    assert.equal(
+      /^entityRef: (.*)$/m.exec(await readFile(factPath, "utf8"))?.[1], legacy, "blocked while contested",
+    );
 
     // The operator resolves it the documented way: one side goes.
     await rm(path.join(dir, "entities", `${canonical}.md`));
@@ -193,7 +195,7 @@ test("resolving a collision lets the pair migrate, references included", async (
     // reference follows it, or memories point at a filename that is gone.
     await assert.rejects(() => readFile(path.join(dir, "entities", `${legacy}.md`), "utf8"));
     assert.match(await readFile(path.join(dir, "entities", `${canonical}.md`), "utf8"), /Runs at 02:00\./);
-    assert.match(await readFile(factPath, "utf8"), new RegExp(`entityRef: ${canonical}`));
+    assert.equal(/^entityRef: (.*)$/m.exec(await readFile(factPath, "utf8"))?.[1], canonical);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -221,12 +223,14 @@ test("deleting the legacy side still rewrites references to the canonical id", a
     await rm(path.join(dir, "entities", `${legacy}.md`));
     await new StorageManager(dir).ensureDirectories();
 
-    assert.match(
-      await readFile(factPath, "utf8"),
-      new RegExp(`entityRef: ${canonical}`),
+    const rewritten = await readFile(factPath, "utf8");
+    assert.equal(
+      /^entityRef: (.*)$/m.exec(rewritten)?.[1],
+      canonical,
       "a reference must not be stranded on a legacy id whose file was removed",
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
