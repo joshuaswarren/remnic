@@ -1,11 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { access, lstat, readFile, readdir, rename, stat as statFile, unlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  stat as statFile,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { computeSupersessionKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { EntityFile, MemoryFile } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+import { assertPathInsideRoot } from "../utils/path-containment.js";
 
 const ENTITY_CANONICAL_ID_MIGRATION_VERSION = 1;
 const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
@@ -51,6 +63,57 @@ export interface EntityCanonicalIdMigrationDependencies {
   invalidateAllMemoriesCache(): void;
   invalidateColdMemoriesCache(): void;
   bumpMemoryStatusVersion(): void;
+}
+
+export async function getFingerprint(
+  entitiesDir: string,
+  getCorpusScanVersion: () => string,
+): Promise<string> {
+  let entityStat;
+  try {
+    entityStat = await lstat(entitiesDir);
+  } catch (error) {
+    if (!isErrnoCode(error, "ENOENT")) throw error;
+  }
+  const entityFingerprint = entityStat
+    ? `${entityStat.dev}:${entityStat.ino}:${entityStat.mtimeMs}:${entityStat.ctimeMs}:${entityStat.size}`
+    : "missing";
+  return `${entityFingerprint}:${getCorpusScanVersion()}`;
+}
+
+export async function validateRoots(
+  baseDir: string,
+  entitiesDir: string,
+  stateDir: string,
+  archiveDir: string,
+): Promise<void> {
+  let memoryRoot: string;
+  try {
+    memoryRoot = await realpath(baseDir);
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) return;
+    throw error;
+  }
+  const roots = [
+    entitiesDir,
+    stateDir,
+    ...RECALL_FALLBACK_DIRS.map((directory) => path.join(baseDir, directory)),
+    path.join(baseDir, "cold"),
+    archiveDir,
+  ];
+  for (const root of roots) {
+    let rootStat;
+    try {
+      rootStat = await lstat(root);
+    } catch (error) {
+      if (isErrnoCode(error, "ENOENT")) continue;
+      throw error;
+    }
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      throw new Error(`Refusing entity canonical-id migration through unsafe memory root: ${root}.`);
+    }
+    assertPathInsideRoot(memoryRoot, await realpath(root), root);
+  }
 }
 
 function statePath(deps: EntityCanonicalIdMigrationDependencies): string {

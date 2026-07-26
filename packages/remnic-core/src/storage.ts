@@ -33,12 +33,11 @@ import {
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
-import { migrateLegacyEntityCanonicalIds } from "./storage/entity-canonical-id-migration.js";
+import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import { EntityCanonicalIdMigrationRunner } from "./storage/entity-canonical-id-migration-runner.js";
 export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
-import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
-import { assertPathInsideRoot } from "./utils/path-containment.js";
+import { getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
 import {
   qmdCollectionPathParts,
@@ -3565,7 +3564,7 @@ export class StorageManager {
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
     () => this.runLegacyEntityCanonicalIdMigration(),
-    () => this.entityCanonicalIdMigrationFingerprint(),
+    () => entityMigration.getFingerprint(this.entitiesDir, () => this.getCorpusScanVersion()),
   );
 
   normalizeEntityName(raw: string, type: string): string {
@@ -3615,54 +3614,10 @@ export class StorageManager {
       // No aliases file — that's fine, use built-in only
       log.debug("no config/aliases.json found — using built-in aliases only");
     }
-
-  }
-
-  private async entityCanonicalIdMigrationFingerprint(): Promise<string> {
-    let entityStat;
-    try {
-      entityStat = await lstat(this.entitiesDir);
-    } catch (error) {
-      if (!isErrnoCode(error, "ENOENT")) throw error;
-    }
-    const entityFingerprint = entityStat
-      ? `${entityStat.dev}:${entityStat.ino}:${entityStat.mtimeMs}:${entityStat.ctimeMs}:${entityStat.size}`
-      : "missing";
-    return `${entityFingerprint}:${this.getCorpusScanVersion()}`;
-  }
-
-  private async validateEntityCanonicalIdMigrationMemoryRoots(): Promise<void> {
-    let memoryRoot: string;
-    try {
-      memoryRoot = await realpath(this.baseDir);
-    } catch (error) {
-      if (isErrnoCode(error, "ENOENT")) return;
-      throw error;
-    }
-    const roots = [
-      this.entitiesDir,
-      this.stateDir,
-      ...RECALL_FALLBACK_DIRS.map((directory) => path.join(this.baseDir, directory)),
-      path.join(this.baseDir, "cold"),
-      this.archiveDir,
-    ];
-    for (const root of roots) {
-      let rootStat;
-      try {
-        rootStat = await lstat(root);
-      } catch (error) {
-        if (isErrnoCode(error, "ENOENT")) continue;
-        throw error;
-      }
-      if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
-        throw new Error(`Refusing entity canonical-id migration through unsafe memory root: ${root}.`);
-      }
-      assertPathInsideRoot(memoryRoot, await realpath(root), root);
-    }
   }
 
   private async runLegacyEntityCanonicalIdMigration(): Promise<void> {
-    await migrateLegacyEntityCanonicalIds({
+    await entityMigration.migrateLegacyEntityCanonicalIds({
       stateDir: this.stateDir, entitiesDir: this.entitiesDir,
       normalizeEntityName: this.normalizeEntityName.bind(this),
       resolveEntityFilePath: this.resolveEntityFilePath.bind(this),
@@ -3677,7 +3632,8 @@ export class StorageManager {
       readMemoryByPath: this.readMemoryByPath.bind(this), readAllMemories: this.readAllMemories.bind(this),
       readAllColdMemories: this.readAllColdMemories.bind(this),
       readArchivedMemories: this.readArchivedMemories.bind(this),
-      validateMemoryScanRoots: this.validateEntityCanonicalIdMigrationMemoryRoots.bind(this),
+      validateMemoryScanRoots: () =>
+        entityMigration.validateRoots(this.baseDir, this.entitiesDir, this.stateDir, this.archiveDir),
       rewriteProjectedEntityReferences: (mappings) => rewriteProjectedEntityReferences(this.baseDir, mappings),
       rewriteProjectedMemoryEntityReference: (memoryId, previousEntityRef, nextEntityRef) =>
         rewriteProjectedMemoryEntityReference(this.baseDir, memoryId, previousEntityRef, nextEntityRef),
@@ -3690,7 +3646,7 @@ export class StorageManager {
 
   async ensureDirectories(): Promise<void> {
     await mkdir(this.baseDir, { recursive: true });
-    await this.validateEntityCanonicalIdMigrationMemoryRoots();
+    await entityMigration.validateRoots(this.baseDir, this.entitiesDir, this.stateDir, this.archiveDir);
     const today = new Date().toISOString().slice(0, 10);
     await mkdir(path.join(this.factsDir, today), { recursive: true });
     await mkdir(path.join(this.proceduresDir, today), { recursive: true });
