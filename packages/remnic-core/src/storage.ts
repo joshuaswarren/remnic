@@ -87,7 +87,6 @@ import {
   readMaybeEncryptedFileBuffer,
   readMaybeEncryptedFile,
   writeMaybeEncryptedFile,
-  writeMaybeEncryptedFileFromChunks,
 } from "./secure-store/secure-fs.js";
 import {
   isConsolidationOperator,
@@ -2023,7 +2022,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * OUTSIDE `stateDir`, so a data write always touches; a write under `stateDir`
    * is a pure state write and is skipped unless `touchStateWrites` is enabled.
    */
-  private notifyCatalogWriteForPath(filePath: string): void {
+  protected notifyCatalogWriteForPath(filePath: string): void {
     if (!this.touchStateWrites && this.isStateFilePath(filePath)) return;
     this.notifyCatalogWrite();
   }
@@ -2904,28 +2903,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
-  async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
-    const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
-    await this.writeTombstoneBlockedOfflineSyncFile(target, content);
-  }
-
   async writeOfflineSyncStagingFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncStagingFile");
     await this.writeStorageSecureFile(target, content);
   }
 
-  async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
-    const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
-    await this.writeTombstoneBlockedOfflineSyncFileChunks(target, chunks, async (filePath, inputChunks) => {
-      await writeMaybeEncryptedFileFromChunks(filePath, inputChunks, this.resolveWriteKey(), {}, this.baseDir);
-      this.notifyCatalogWriteForPath(filePath);
-    });
-  }
-
-  async deleteOfflineSyncFile(filePath: string): Promise<void> {
-    const target = this.assertManagedStoragePath(filePath, "storage.deleteOfflineSyncFile");
-    await this.deleteTombstoneBlockedOfflineSyncFile(target);
-  }
   createContentHashIndex(): ContentHashIndex {
     return new ContentHashIndex(
       this.stateDir,

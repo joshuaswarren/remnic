@@ -1693,6 +1693,27 @@ test("chunked offline sync reserves the incoming blocked identity before streami
   });
 });
 
+test("chunked offline sync streams non-memory files through the host writer", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const target = path.join(dir, "state", "streamed.bin");
+    const input = ["first chunk\n", "second chunk\n"];
+    let consumed = 0;
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (const value of input) {
+        consumed += 1;
+        yield Buffer.from(value, "utf8");
+      }
+    })();
+
+    await storage.writeOfflineSyncFileChunks(target, chunks);
+
+    assert.equal(consumed, input.length);
+    assert.equal(await readFile(target, "utf8"), input.join(""));
+  });
+});
+
 test("offline sync mutation rebuilds blocked index for every recall category", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);

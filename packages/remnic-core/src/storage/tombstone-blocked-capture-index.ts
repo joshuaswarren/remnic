@@ -12,6 +12,7 @@ import {
   ContentHashIndex,
   type ContentHashIndexLockOptions,
 } from "./content-hash-index.js";
+import { writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
 
 const REBUILD_MAX_ATTEMPTS = 3;
 const REBUILD_RETRY_BASE_MS = 50;
@@ -584,6 +585,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     content: string | Buffer,
     forceEncrypt?: boolean
   ): Promise<void>;
+  protected abstract assertManagedStoragePath(filePath: string, method: string): string;
+  protected abstract notifyCatalogWriteForPath(filePath: string): void;
   protected abstract readMemoryByPath(filePath: string): Promise<MemoryFile | null>;
   protected abstract invalidateAllMemoriesCache(): void;
   protected abstract invalidateKnowledgeIndexCache(): void;
@@ -591,6 +594,18 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected abstract bumpArtifactWriteVersion(): number;
   protected abstract bumpMemoryStatusVersion(): void;
   protected abstract markFactHashIndexNotAuthoritative(): void;
+
+  private async writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
+    const options = this.tombstoneBlockedCaptureIndexOptions();
+    await writeMaybeEncryptedFileFromChunks(
+      filePath,
+      chunks,
+      options.secureStoreWriteKeyProvider(),
+      {},
+      options.memoryDir
+    );
+    this.notifyCatalogWriteForPath(filePath);
+  }
 
   protected getTombstoneBlockedCaptureIndex(): TombstoneBlockedCaptureIndex {
     if (this.tombstoneBlockedCaptureIndex === null) {
@@ -846,8 +861,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
 
   protected async writeTombstoneBlockedOfflineSyncFileChunks(
     target: string,
-    chunks: AsyncIterable<Buffer>,
-    writeChunks: (filePath: string, chunks: AsyncIterable<Buffer>) => Promise<void>
+    chunks: AsyncIterable<Buffer>
   ): Promise<void> {
     const coordinate = this.getTombstoneBlockedCaptureIndex().shouldRebuildAfterInvalidationForPath(target);
     const prepared = coordinate
@@ -856,9 +870,24 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     await this.runTombstoneBlockedOfflineSyncMutation(
       target,
       prepared.after,
-      () => writeChunks(target, prepared.chunks),
+      () => this.writeStorageSecureFileChunks(target, prepared.chunks),
       coordinate
     );
+  }
+
+  async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
+    const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
+    await this.writeTombstoneBlockedOfflineSyncFile(target, content);
+  }
+
+  async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
+    const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
+    await this.writeTombstoneBlockedOfflineSyncFileChunks(target, chunks);
+  }
+
+  async deleteOfflineSyncFile(filePath: string): Promise<void> {
+    const target = this.assertManagedStoragePath(filePath, "storage.deleteOfflineSyncFile");
+    await this.deleteTombstoneBlockedOfflineSyncFile(target);
   }
 
   protected async deleteTombstoneBlockedOfflineSyncFile(target: string): Promise<void> {
