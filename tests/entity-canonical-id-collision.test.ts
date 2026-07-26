@@ -198,3 +198,35 @@ test("resolving a collision lets the pair migrate, references included", async (
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("deleting the legacy side still rewrites references to the canonical id", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-legacy-deleted-"));
+  try {
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    const factDir = path.join(dir, "facts", "2026-03-01");
+    await mkdir(factDir, { recursive: true });
+    const factPath = path.join(factDir, "fact-legacy-side.md");
+    await writeFile(
+      factPath,
+      `---\nid: fact-legacy-side\ncategory: fact\nconfidence: 0.9\n`
+      + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+      + `entityRef: ${legacy}\nstatus: active\n---\n\nThe ingest runs nightly.\n`,
+      "utf8",
+    );
+    await new StorageManager(dir).ensureDirectories();
+
+    // The other documented resolution: keep the canonical file, drop the legacy
+    // one. No later scan can rediscover the pair — the legacy filename is gone
+    // — so the parked record is the only thing that can still fix references.
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    assert.match(
+      await readFile(factPath, "utf8"),
+      new RegExp(`entityRef: ${canonical}`),
+      "a reference must not be stranded on a legacy id whose file was removed",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

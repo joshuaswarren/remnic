@@ -70,6 +70,14 @@ const EntityCanonicalIdMigrationStateSchema = z.object({
   version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),
   complete: z.boolean(),
   mappings: z.record(z.string().min(1)),
+  /**
+   * Pairs the migration refused to resolve, PARKED rather than dropped.
+   * Deleting the record would strand the collision: once an operator removes
+   * the legacy file, no later scan can rediscover the mapping, so references
+   * still naming the legacy id would never be rewritten. Optional so a journal
+   * written by an older build still parses.
+   */
+  blocked: z.record(z.string().min(1)).optional(),
 });
 
 type EntityCanonicalIdMigrationState = z.infer<typeof EntityCanonicalIdMigrationStateSchema>;
@@ -840,12 +848,31 @@ export async function migrateLegacyEntityCanonicalIds(
        */
       const pruneBlocked = async (): Promise<void> => {
         const current = state;
-        if (blocked.size === 0 || !current) return;
-        const remaining: Record<string, string> = Object.fromEntries(
-          Object.entries(current.mappings).filter(([legacyId]) => !blocked.has(legacyId)),
-        );
-        if (Object.keys(remaining).length === Object.keys(current.mappings).length) return;
-        state = { ...current, mappings: remaining };
+        if (!current) return;
+        const remaining: Record<string, string> = {};
+        const parked: Record<string, string> = { ...(current.blocked ?? {}) };
+        for (const [legacyId, canonicalId] of Object.entries(current.mappings)) {
+          if (blocked.has(legacyId)) parked[legacyId] = canonicalId;
+          else remaining[legacyId] = canonicalId;
+        }
+        for (const [legacyId, canonicalId] of blocked) parked[legacyId] ??= canonicalId;
+        // A parked pair whose legacy file is gone was resolved by the operator
+        // keeping the canonical side. The rename no longer needs doing, but the
+        // REWRITE does - references still name the legacy id, and this record
+        // is the only thing that can still map them.
+        for (const [legacyId, canonicalId] of Object.entries(parked)) {
+          if (blocked.has(legacyId)) continue;
+          const legacyPath = deps.resolveEntityFilePath(legacyId);
+          if (legacyPath !== null && (await fileExists(legacyPath))) continue;
+          remaining[legacyId] = canonicalId;
+          delete parked[legacyId];
+        }
+        const sameMappings = Object.keys(remaining).length === Object.keys(current.mappings).length
+          && Object.entries(remaining).every(([legacyId, canonicalId]) => current.mappings[legacyId] === canonicalId);
+        const samePark = Object.keys(parked).length === Object.keys(current.blocked ?? {}).length
+          && Object.entries(parked).every(([legacyId, canonicalId]) => current.blocked?.[legacyId] === canonicalId);
+        if (sameMappings && samePark) return;
+        state = { ...current, mappings: remaining, blocked: parked };
         await writeState(deps, state);
       };
       const previousMappings = state.mappings;
