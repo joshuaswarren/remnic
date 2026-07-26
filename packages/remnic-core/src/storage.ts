@@ -2938,14 +2938,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await this.writeTombstoneBlockedOfflineSyncFileChunks(
       target,
       chunks,
-      async (filePath, temporaryPath) => {
-        await writeMaybeEncryptedFileFromChunks(
-          filePath,
-          createReadStream(temporaryPath),
-          this.resolveWriteKey(),
-          {},
-          this.baseDir,
-        );
+      async (filePath, inputChunks) => {
+        await writeMaybeEncryptedFileFromChunks(filePath, inputChunks, this.resolveWriteKey(), {}, this.baseDir);
         this.notifyCatalogWriteForPath(filePath);
       },
     );

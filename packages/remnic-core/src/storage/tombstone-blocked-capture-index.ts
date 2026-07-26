@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { normalizeContent } from "../content-hash.js";
 import { log } from "../logger.js";
@@ -756,13 +756,16 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected async runTombstoneBlockedOfflineSyncMutation(
     target: string,
     after: MemoryFile | null,
-    write: () => Promise<void>
+    write: () => Promise<void>,
+    coordinate = false
   ): Promise<void> {
     const before = await this.readMemoryByPath(target);
-    const blocked = this.isTombstoneBlockedMemory(before) || this.isTombstoneBlockedMemory(after);
+    const blocked =
+      coordinate || this.isTombstoneBlockedMemory(before) || this.isTombstoneBlockedMemory(after);
     const identities = [
       ...(this.isTombstoneBlockedMemory(before) ? [this.offlineSyncMemoryIdentity(before)] : []),
       ...(this.isTombstoneBlockedMemory(after) ? [this.offlineSyncMemoryIdentity(after)] : []),
+      ...(coordinate ? [target] : [])
     ];
     const mutate = async (): Promise<void> => {
       const marker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
@@ -809,29 +812,14 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected async writeTombstoneBlockedOfflineSyncFileChunks(
     target: string,
     chunks: AsyncIterable<Buffer>,
-    writeChunks: (filePath: string, temporaryPath: string) => Promise<void>
+    writeChunks: (filePath: string, chunks: AsyncIterable<Buffer>) => Promise<void>
   ): Promise<void> {
-    const temporaryPath = `${target}.offline-sync-${randomUUID()}.tmp`;
-    try {
-      const handle = await open(temporaryPath, "w", 0o600);
-      try {
-        for await (const chunk of chunks) {
-          if (chunk.length > 0) await handle.write(chunk);
-        }
-      } finally {
-        await handle.close();
-      }
-      const content = await readFile(temporaryPath);
-      await this.runTombstoneBlockedOfflineSyncMutation(
-        target,
-        this.tombstoneBlockedCaptureIndexOptions().parseMemory?.(target, content) ?? null,
-        () => writeChunks(target, temporaryPath)
-      );
-    } finally {
-      await unlink(temporaryPath).catch((err: unknown) => {
-        if (!isErrnoCode(err, "ENOENT")) throw err;
-      });
-    }
+    await this.runTombstoneBlockedOfflineSyncMutation(
+      target,
+      null,
+      () => writeChunks(target, chunks),
+      this.getTombstoneBlockedCaptureIndex().shouldRebuildAfterInvalidationForPath(target)
+    );
   }
 
   protected async deleteTombstoneBlockedOfflineSyncFile(target: string): Promise<void> {

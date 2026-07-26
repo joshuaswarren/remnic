@@ -863,12 +863,12 @@ export class InlineExplicitCaptureProcessor {
     const identityPrefix = `${namespaceScope}\u0000${sourceConnectorScope}\u0000`;
     const fallbackKey = `${identityPrefix}fallback:inline-memory-note:${noteHash}`;
     return {
-      replayKeys: [
-        ...deliveryKeys.map(
-          (key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`,
-        ),
-        fallbackKey,
-      ],
+      replayKeys:
+        deliveryKeys.length > 0
+          ? deliveryKeys.map(
+              (key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`,
+            )
+          : [fallbackKey],
       validationFailureKey: `${identityPrefix}validation:inline-memory-note:${validationHash}`,
     };
   }
