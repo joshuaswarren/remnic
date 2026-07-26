@@ -1,3 +1,4 @@
+import { validateArchiveRelativePath } from "../transfer/fs-utils.js";
 import type { OfflineSyncFileState } from "../offline-sync.js";
 
 /**
@@ -51,6 +52,13 @@ export interface ReconcilePlanEntry {
   baseSha256?: string;
   /** Set only when `action` is `conflict`. */
   resolution?: ReconcileResolution;
+  /**
+   * Which side holds the retracted revision. Set only when `action` is
+   * `suppress`: with different digests on each side and only one retracted,
+   * the entry would otherwise be identical either way and transport could
+   * delete the live copy instead of the retracted one.
+   */
+  suppressSide?: "local" | "peer" | "both";
 }
 
 export type ReconcileReason =
@@ -152,20 +160,41 @@ function assertCensusRecord(
   file: ReconcileFileState | undefined,
   side: string,
   namespace: string,
-): { path: string; sha256: string } {
+): ReconcileFileState {
   const path = file?.path;
   if (typeof path !== "string" || path.length === 0) {
     throw new ReconcilePlanInputError(
       `reconcile: ${side} census for namespace ${namespace} contains a record with no path`,
     );
   }
-  const sha256 = file?.sha256;
-  if (typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256)) {
+  // Same boundary offline-sync applies to this field: a peer census is
+  // untrusted input, and an absolute or traversal path would otherwise become
+  // a transfer instruction pointing outside the corpus root.
+  try {
+    validateArchiveRelativePath(path, `reconcile: ${side} census for namespace ${namespace}`);
+  } catch (err) {
+    throw new ReconcilePlanInputError(err instanceof Error ? err.message : String(err));
+  }
+  return {
+    ...file,
+    path,
+    sha256: assertDigest(file?.sha256, `${side} census for namespace ${namespace} entry ${path}`),
+  };
+}
+
+/**
+ * Digests are canonicalized to lowercase, exactly as offline-sync's
+ * `assertSha256` does. Keeping the caller's spelling would make two forms of
+ * one digest compare unequal, so identical files would plan `both_modified`
+ * and tombstone lookups would silently miss.
+ */
+function assertDigest(value: unknown, context: string): string {
+  if (typeof value !== "string" || !SHA256_PATTERN.test(value)) {
     throw new ReconcilePlanInputError(
-      `reconcile: ${side} census for namespace ${namespace} entry ${path} must carry a 64-character sha256 hex digest`,
+      `reconcile: ${context} must carry a 64-character sha256 hex digest`,
     );
   }
-  return { path, sha256 };
+  return value.toLowerCase();
 }
 
 function assertNamespace(namespace: unknown): string {
@@ -217,10 +246,20 @@ function rejectConflictingDuplicate(
   namespace: string,
 ): boolean {
   if (!existing) return false;
-  if (existing.sha256 === incoming.sha256) return true;
-  throw new ReconcilePlanInputError(
-    `reconcile: ${side} census for namespace ${namespace} lists ${path} twice with different digests`,
-  );
+  if (existing.sha256 !== incoming.sha256) {
+    throw new ReconcilePlanInputError(
+      `reconcile: ${side} census for namespace ${namespace} lists ${path} twice with different digests`,
+    );
+  }
+  // Same bytes but a different mtime is still ambiguous: `newest-wins` reads
+  // that timestamp, so accepting the first arrival would let input order decide
+  // the winner.
+  if (existing.mtimeMs !== incoming.mtimeMs) {
+    throw new ReconcilePlanInputError(
+      `reconcile: ${side} census for namespace ${namespace} lists ${path} twice with different mtimeMs`,
+    );
+  }
+  return true;
 }
 
 function indexByPath(
@@ -229,12 +268,32 @@ function indexByPath(
   namespace: string,
 ): Map<string, ReconcileFileState> {
   const index = new Map<string, ReconcileFileState>();
-  for (const file of files) {
-    const { path } = assertCensusRecord(file, side, namespace);
-    if (rejectConflictingDuplicate(index.get(path), file, path, side, namespace)) continue;
-    index.set(path, file);
+  for (const raw of files) {
+    const file = assertCensusRecord(raw, side, namespace);
+    if (rejectConflictingDuplicate(index.get(file.path), file, file.path, side, namespace)) continue;
+    index.set(file.path, file);
   }
   return index;
+}
+
+/**
+ * A bare string satisfies `Iterable<string>`, and `new Set("abc…")` would split
+ * it into 64 one-character members — every membership test then misses and each
+ * retracted file is planned as `pull` and resurrected. Reject the scalar and
+ * canonicalize every member.
+ */
+function parseTombstonedDigests(value: Iterable<string> | undefined, namespace: string): Set<string> {
+  if (value === undefined) return new Set();
+  if (typeof value === "string") {
+    throw new ReconcilePlanInputError(
+      `reconcile: tombstonedFileSha256 for namespace ${namespace} must be a collection of digests, not a single string`,
+    );
+  }
+  const digests = new Set<string>();
+  for (const entry of value) {
+    digests.add(assertDigest(entry, `tombstonedFileSha256 for namespace ${namespace}`));
+  }
+  return digests;
 }
 
 const RECONCILE_CONFLICT_POLICIES: readonly ReconcileConflictPolicy[] = ["manual", "newest-wins", "keep-both"];
@@ -298,16 +357,23 @@ export function planNamespaceReconciliation(
   // each match as it is consumed. Peak residency is one index plus the entry
   // list rather than two full censuses (round 2, codex P2).
   const peer = indexByPath(assertIterable(input.peer, "peer", namespace), "peer", namespace);
-  const base = input.base ? indexByPath(input.base, "base", namespace) : null;
-  const tombstoned = new Set(input.tombstonedFileSha256 ?? []);
+  const base = input.base
+    ? indexByPath(assertIterable(input.base, "base", namespace), "base", namespace)
+    : null;
+  const tombstoned = parseTombstonedDigests(input.tombstonedFileSha256, namespace);
   const entries: ReconcilePlanEntry[] = [];
 
   // Path -> digest only, never the file objects: enough to make the stream
   // idempotent and to catch contradictory duplicates without materializing the
   // second census.
+  // Base paths participate in the collision check: a base `Facts/A.md` against
+  // a local `facts/a.md` is the same delete/change ambiguity on a
+  // case-insensitive participant.
+  if (base) for (const basePath of base.keys()) assertNoCaseCollision(caseFold, basePath, namespace);
   const seenLocal = new Map<string, string>();
-  for (const localFile of localCensus) {
-    const { path } = assertCensusRecord(localFile, "local", namespace);
+  for (const rawLocal of localCensus) {
+    const localFile = assertCensusRecord(rawLocal, "local", namespace);
+    const path = localFile.path;
     assertNoCaseCollision(caseFold, path, namespace);
     const seenDigest = seenLocal.get(path);
     if (seenDigest !== undefined) {
@@ -329,7 +395,9 @@ export function planNamespaceReconciliation(
     // retracted LOCAL revision would otherwise be pushed - which is also how a
     // suppression undoes itself on the next run, since the local copy survives
     // the peer-side delete (round 4).
-    if ((peerFile && tombstoned.has(peerFile.sha256)) || tombstoned.has(localFile.sha256)) {
+    const localRetracted = tombstoned.has(localFile.sha256);
+    const peerRetracted = peerFile !== undefined && tombstoned.has(peerFile.sha256);
+    if (localRetracted || peerRetracted) {
       entries.push({
         path,
         namespace,
@@ -338,6 +406,7 @@ export function planNamespaceReconciliation(
         localSha256: localFile.sha256,
         ...(peerFile ? { peerSha256: peerFile.sha256 } : {}),
         ...(baseSha256 === undefined ? {} : { baseSha256 }),
+        suppressSide: localRetracted && peerRetracted ? "both" : localRetracted ? "local" : "peer",
       });
       continue;
     }
@@ -434,6 +503,7 @@ export function planNamespaceReconciliation(
         reason: "tombstoned",
         peerSha256: peerFile.sha256,
         ...(baseSha256 === undefined ? {} : { baseSha256 }),
+        suppressSide: "peer",
       });
       continue;
     }

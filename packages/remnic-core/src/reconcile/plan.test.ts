@@ -448,3 +448,118 @@ test("a missing namespace or a non-iterable census is rejected", () => {
     );
   }
 });
+
+test("digest casing is canonicalized, not compared verbatim", () => {
+  const upper = digest("same").toUpperCase();
+  const plan = planReconciliation([
+    {
+      namespace: "default",
+      local: [{ path: "facts/a.md", sha256: upper }],
+      peer: [file("facts/a.md", "same")],
+    },
+  ]);
+  assert.equal(plan.entries[0]?.action, "identical", "one digest in two spellings is one digest");
+  assert.equal(plan.entries[0]?.localSha256, digest("same"));
+  assert.equal(plan.converged, true);
+});
+
+test("tombstone membership survives digest casing", () => {
+  const entries = planNamespaceReconciliation({
+    namespace: "default",
+    local: [],
+    peer: [file("facts/r.md", "gone")],
+    tombstonedFileSha256: [digest("gone").toUpperCase()],
+  });
+  assert.equal(entryFor(entries, "facts/r.md").action, "suppress");
+});
+
+test("suppress names the side holding the retracted revision", () => {
+  const cases = [
+    { tomb: "local-rev", expect: "local" },
+    { tomb: "peer-rev", expect: "peer" },
+  ] as const;
+  for (const { tomb, expect } of cases) {
+    const entries = planNamespaceReconciliation({
+      namespace: "default",
+      local: [file("facts/a.md", "local-rev")],
+      peer: [file("facts/a.md", "peer-rev")],
+      tombstonedFileSha256: [digest(tomb)],
+    });
+    // Without this, transport cannot tell which copy to remove and may delete
+    // the live revision instead of the retracted one.
+    assert.equal(entryFor(entries, "facts/a.md").suppressSide, expect);
+  }
+  const both = planNamespaceReconciliation({
+    namespace: "default",
+    local: [file("facts/a.md", "gone")],
+    peer: [file("facts/a.md", "gone")],
+    tombstonedFileSha256: [digest("gone")],
+  });
+  assert.equal(entryFor(both, "facts/a.md").suppressSide, "both");
+});
+
+test("a single digest string is rejected instead of being split into characters", () => {
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [],
+        peer: [file("facts/r.md", "gone")],
+        // Satisfies Iterable<string>; new Set() would make 64 one-char members.
+        tombstonedFileSha256: digest("gone") as unknown as string[],
+      }),
+    /must be a collection of digests, not a single string/,
+  );
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [],
+        peer: [file("facts/r.md", "gone")],
+        tombstonedFileSha256: ["not-a-digest"],
+      }),
+    /64-character sha256 hex digest/,
+  );
+});
+
+test("an unsafe census path is rejected before it becomes transfer work", () => {
+  for (const bad of ["/outside.md", "../outside.md", "facts\\win.md"]) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation({
+          namespace: "default",
+          local: [],
+          peer: [{ path: bad, sha256: digest("x") }],
+        }),
+      ReconcilePlanInputError,
+      `peer census path ${bad} must be rejected`,
+    );
+  }
+});
+
+test("a duplicate record disagreeing only on mtime is rejected", () => {
+  // newest-wins reads that timestamp, so first-arrival-wins would let input
+  // order pick the winner.
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [],
+        peer: [file("facts/a.md", "same", 1000), file("facts/a.md", "same", 2000)],
+      }),
+    /lists facts\/a\.md twice with different mtimeMs/,
+  );
+});
+
+test("the base census participates in case-collision detection", () => {
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [file("facts/a.md", "one")],
+        peer: [],
+        base: [file("Facts/A.md", "one")],
+      }),
+    /differing only by case/,
+  );
+});
