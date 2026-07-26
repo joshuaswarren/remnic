@@ -549,11 +549,11 @@ test("StorageManager.setSecureStoreKey — repeated same key and policy do not r
     };
 
     const key = makeKey();
-    await storage.setSecureStoreKey(key, true);
-    await storage.setSecureStoreKey(Buffer.from(key), true);
+    await storage.setSecureStoreKeyAndWait(key, true);
+    await storage.setSecureStoreKeyAndWait(Buffer.from(key), true);
     assert.equal(triggerCalls, 1, "same key bytes and policy must be a no-op");
 
-    await storage.setSecureStoreKey(Buffer.from(key), false);
+    await storage.setSecureStoreKeyAndWait(Buffer.from(key), false);
     assert.equal(triggerCalls, 2, "changing encrypt-on-write policy must refresh state");
   });
 });

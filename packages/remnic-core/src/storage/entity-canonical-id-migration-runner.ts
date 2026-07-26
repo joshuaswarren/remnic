@@ -33,13 +33,33 @@ export class EntityCanonicalIdMigrationRunner {
   }
 
   private async runOrReuse(): Promise<void> {
-    const fingerprintAtStart = await this.readFingerprint();
+    let fingerprintAtStart = await this.readFingerprint();
     if (this.migrationComplete && fingerprintAtStart === this.completedFingerprint) return;
 
-    const completionFingerprint = await this.runMigration();
-    this.migrationComplete = true;
-    this.completedFingerprint =
-      typeof completionFingerprint === "string" ? completionFingerprint : fingerprintAtStart;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const completionFingerprint = await this.runMigration();
+      const fingerprintAfterMigration = await this.readFingerprint();
+      const fingerprintAfterStabilityRead = await this.readFingerprint();
+      const returnedFingerprint =
+        typeof completionFingerprint === "string" ? completionFingerprint : fingerprintAfterMigration;
+      if (
+        returnedFingerprint === fingerprintAfterMigration
+        && fingerprintAfterMigration === fingerprintAfterStabilityRead
+        && (
+          typeof completionFingerprint === "string"
+          || fingerprintAfterMigration === fingerprintAtStart
+        )
+      ) {
+        this.migrationComplete = true;
+        this.completedFingerprint = fingerprintAfterStabilityRead;
+        return;
+      }
+      fingerprintAtStart = fingerprintAfterStabilityRead;
+    }
+
+    this.migrationComplete = false;
+    this.completedFingerprint = null;
+    throw new Error("Entity canonical-id migration fingerprint changed while migration was completing; retry migration.");
   }
 
   private clearInFlight(migration: Promise<void>): void {

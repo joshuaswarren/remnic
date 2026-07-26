@@ -244,6 +244,31 @@ test("entity retrieval resolves Korean grammatical particles after Unicode menti
   assert.match(section!, /Hangang-314/);
   assert.ok(await buildSection(config, storage, "서울은어디인가요?"));
   assert.equal(await buildSection(config, storage, "서울로봇의 상태는 무엇인가요?"), null);
+  const kimdo = await writeEntity(
+    storage,
+    "김도",
+    "person",
+    ["김도 is synthetic."],
+    "김도 is synthetic.",
+  );
+  await storage.writeMemory("fact", "김도의 검증 코드는 Gimdo-271 입니다.", {
+    entityRef: kimdo,
+    confidence: 1,
+  });
+  assert.equal(await buildSection(config, storage, "김도나가 누구야?"), null);
+});
+
+test("entity retrieval applies Unicode boundaries to ASCII aliases", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-ascii-boundary");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  await writeEntity(storage, "AB", "project", ["AB is synthetic."], "AB summary.");
+  assert.equal(await buildSection(config, storage, "漢AB字"), null);
+  assert.ok(await buildSection(config, storage, "AB status?"));
 });
 
 test("entity retrieval treats combining marks as Unicode word continuations", async (t) => {
@@ -722,6 +747,47 @@ test("entity retrieval reads entity hints from allowed secondary namespaces only
   assert.ok(section);
   assert.match(section!, /Shared Person is visible from the shared namespace/);
   assert.doesNotMatch(section!, /private namespace secret|private-only/);
+});
+test("entity retrieval caches namespace-scoped negative lookups by corpus version", async () => {
+  const { memoryDir, config } = await buildHarness("engram-entity-namespace-negative-cache", {
+    namespacesEnabled: true,
+    defaultNamespace: "alice",
+    sharedNamespace: "shared",
+  });
+  const aliceStorage = new StorageManager(path.join(memoryDir, "namespaces", "alice"), config.entitySchemas);
+  const sharedStorage = new StorageManager(path.join(memoryDir, "namespaces", "shared"), config.entitySchemas);
+  await Promise.all([aliceStorage.ensureDirectories(), sharedStorage.ensureDirectories()]);
+  let entityReads = 0;
+  const originalAliceRead = aliceStorage.readAllEntityFiles.bind(aliceStorage);
+  const originalSharedRead = sharedStorage.readAllEntityFiles.bind(sharedStorage);
+  aliceStorage.readAllEntityFiles = async () => {
+    entityReads += 1;
+    return originalAliceRead();
+  };
+  sharedStorage.readAllEntityFiles = async () => {
+    entityReads += 1;
+    return originalSharedRead();
+  };
+  const options = {
+    config,
+    storage: aliceStorage,
+    namespaceStorage: async (namespace: string) => {
+      if (namespace === "alice") return aliceStorage;
+      if (namespace === "shared") return sharedStorage;
+      throw new Error(`unexpected namespace ${namespace}`);
+    },
+    recallNamespaces: ["alice", "shared"],
+    query: "Tell me about an unrelated ordinary turn.",
+    recentTurns: 6,
+    maxHints: 2,
+    maxSupportingFacts: 6,
+    maxRelatedEntities: 3,
+    maxChars: 2400,
+    transcriptEntries: [],
+  } satisfies Parameters<typeof buildEntityRecallSection>[0];
+  assert.equal(await buildEntityRecallSection(options), null);
+  assert.equal(await buildEntityRecallSection(options), null);
+  assert.equal(entityReads, 2);
 });
 
 test("entity retrieval preserves mention-index updatedAt when entity state is unchanged", async () => {

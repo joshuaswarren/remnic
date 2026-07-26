@@ -68,7 +68,7 @@ export async function createConfiguredOfflineStorage(
     storage.setSecureStoreRequired(true);
     const key = keyring.getKey(secureStoreDir(memoryDir));
     if (key) {
-      await storage.setSecureStoreKey(key, secureStoreEncryptOnWrite);
+      await storage.setSecureStoreKeyAndWait(key, secureStoreEncryptOnWrite);
       secureStoreKey = key;
     }
   }
@@ -94,7 +94,7 @@ export async function createOfflineStorageForPath(
     storage.setSecureStoreRequired(true);
   }
   if (configured.secureStoreKey) {
-    await storage.setSecureStoreKey(configured.secureStoreKey, secureStoreEncryptOnWrite);
+    await storage.setSecureStoreKeyAndWait(configured.secureStoreKey, secureStoreEncryptOnWrite);
   }
   return storage;
 }

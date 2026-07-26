@@ -485,7 +485,7 @@ export class NamespaceStorageRouter {
     sm.setSecureStoreRequired(true);
     const existingKey = keyring.getKey(secureStoreDir(this.config.memoryDir));
     if (existingKey) {
-      await sm.setSecureStoreKey(existingKey, this.config.secureStoreEncryptOnWrite);
+      await sm.setSecureStoreKeyAndWait(existingKey, this.config.secureStoreEncryptOnWrite);
     }
   }
 

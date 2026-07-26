@@ -128,6 +128,8 @@ const HANGUL_RUN_RE = /^[\p{Script=Hangul}]+/u;
 
 const UNICODE_WORD_SEGMENTER =
   typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "word" }) : null;
+const KOREAN_WORD_SEGMENTER =
+  typeof Intl.Segmenter === "function" ? new Intl.Segmenter("ko", { granularity: "word" }) : null;
 
 const JAPANESE_WORD_SEGMENTER =
   typeof Intl.Segmenter === "function" ? new Intl.Segmenter("ja", { granularity: "word" }) : null;
@@ -162,18 +164,14 @@ function isKoreanUnspacedQuestionBoundary(suffix: string): boolean {
 
 function isKoreanParticleBoundary(suffix: string): boolean {
   if (isKoreanUnspacedQuestionBoundary(suffix)) return true;
-  const particleRun = suffix.match(HANGUL_RUN_RE)?.[0] ?? "";
-  let offset = 0;
-  while (offset < particleRun.length) {
-    const particle = KOREAN_PARTICLES.find((candidate) =>
-      particleRun.startsWith(candidate, offset),
-    );
-    if (!particle) return false;
-    offset += particle.length;
+  const firstSegment = KOREAN_WORD_SEGMENTER?.segment(suffix).containing(0)?.segment;
+  if (firstSegment !== undefined) {
+    return KOREAN_PARTICLES.some((particle) => particle === firstSegment);
   }
+  const particleRun = suffix.match(HANGUL_RUN_RE)?.[0] ?? "";
   const nextCharacter = firstUnicodeCharacter(suffix.slice(particleRun.length));
   return (
-    particleRun.length > 0 &&
+    KOREAN_PARTICLES.some((particle) => particle === particleRun) &&
     (nextCharacter.length === 0 || !UNICODE_WORD_OR_NUMBER_RE.test(nextCharacter))
   );
 }
@@ -183,38 +181,49 @@ function isUnicodePhraseBoundary(
   suffix: string = "",
   source: string = "",
   boundaryIndex: number = -1,
+  strictUnicode = false,
+  allowLeadingParticle = false,
 ): boolean {
   return (
-    character.length === 0 ||
-    !UNICODE_WORD_OR_NUMBER_RE.test(character) ||
-    isJapaneseParticleBoundary(suffix) ||
-    (boundaryIndex >= 0 &&
+    character.length === 0
+    || !UNICODE_WORD_OR_NUMBER_RE.test(character)
+    || (allowLeadingParticle && isJapaneseParticleBoundary(character))
+    || isJapaneseParticleBoundary(suffix)
+    || (!strictUnicode &&
+      boundaryIndex >= 0 &&
       !JAPANESE_KANA_RE.test(suffix) &&
-      isIntlWordBoundary(source, boundaryIndex)) ||
-    isKoreanParticleBoundary(suffix)
+      isIntlWordBoundary(source, boundaryIndex))
+    || (allowLeadingParticle && isKoreanParticleBoundary(character))
+    || isKoreanParticleBoundary(suffix)
   );
 }
 
 function containsPhrase(haystack: string, needle: string): boolean {
   if (!needle) return false;
-  if (/^[a-z0-9 ]+$/i.test(needle)) {
-    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`(^|\\b)${escaped}(\\b|$)`, "i").test(haystack);
-  }
-  let offset = haystack.indexOf(needle);
+  const caseInsensitive = /^[a-z0-9 ]+$/i.test(needle);
+  const searchHaystack = caseInsensitive ? haystack.toLowerCase() : haystack;
+  const searchNeedle = caseInsensitive ? needle.toLowerCase() : needle;
+  let offset = searchHaystack.indexOf(searchNeedle);
   while (offset >= 0) {
-    const before = lastUnicodeCharacter(haystack.slice(0, offset));
-    const after = haystack.slice(offset + needle.length);
+    const before = lastUnicodeCharacter(searchHaystack.slice(0, offset));
+    const after = searchHaystack.slice(offset + searchNeedle.length);
     if (
-      isUnicodePhraseBoundary(before, "", haystack, offset) &&
-      isUnicodePhraseBoundary(firstUnicodeCharacter(after), after, haystack, offset + needle.length)
+      isUnicodePhraseBoundary(before, "", searchHaystack, offset, caseInsensitive, true)
+      && isUnicodePhraseBoundary(
+        firstUnicodeCharacter(after),
+        after,
+        searchHaystack,
+        offset + searchNeedle.length,
+        caseInsensitive,
+      )
     ) {
       return true;
     }
-    offset = haystack.indexOf(needle, offset + needle.length);
+    offset = searchHaystack.indexOf(searchNeedle, offset + searchNeedle.length);
   }
   return false;
 }
+
 
 function compactLine(value: string, maxLength: number = 220): string {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -525,6 +534,32 @@ async function readCurrentPersistedEntityIndex(
   }
   return index;
 }
+const namespaceEntityIndexCache = new Map<string, EntityMentionIndex>();
+const MAX_NAMESPACE_ENTITY_INDEX_CACHE_ENTRIES = 32;
+
+function namespaceEntityIndexCacheKey(
+  storages: StorageManager[],
+  recallNamespaces: string[],
+): string {
+  const namespaceKey = uniqueStrings(recallNamespaces).sort().join("\u001f");
+  const storageKey = storages
+    .map((scopedStorage) => {
+      const aliases = Object.entries(scopedStorage.entityAliases)
+        .sort(([left], [right]) => left.localeCompare(right));
+      return `${path.resolve(scopedStorage.dir)}@${scopedStorage.getMemoryStatusVersion()}:${JSON.stringify(aliases)}`;
+    })
+    .sort()
+    .join("\u001f");
+  return `${namespaceKey}\u001e${storageKey}`;
+}
+
+function rememberNamespaceEntityIndex(key: string, index: EntityMentionIndex): void {
+  if (namespaceEntityIndexCache.size >= MAX_NAMESPACE_ENTITY_INDEX_CACHE_ENTRIES) {
+    const oldestKey = namespaceEntityIndexCache.keys().next().value;
+    if (typeof oldestKey === "string") namespaceEntityIndexCache.delete(oldestKey);
+  }
+  namespaceEntityIndexCache.set(key, index);
+}
 
 async function writeEntityIndexState(storage: StorageManager, index: EntityMentionIndex): Promise<void> {
   const statePath = entityIndexStatePath(storage);
@@ -604,8 +639,9 @@ async function buildEntityMentionIndex(
   recallNamespaces?: string[],
   namespaceStorage?: (namespace: string) => Promise<StorageManager>,
   nativeChunksOverride?: NativeKnowledgeChunk[],
+  resolvedStorages?: StorageManager[],
 ): Promise<EntityMentionIndex> {
-  const storages = await resolveEntityIndexStorages(
+  const storages = resolvedStorages ?? await resolveEntityIndexStorages(
     storage,
     config,
     recallNamespaces,
@@ -1102,13 +1138,36 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
       return null;
     }
   }
-  const index = await buildEntityMentionIndex(
-    options.storage,
-    options.config,
-    options.recallNamespaces,
-    options.namespaceStorage,
-    nativeChunks,
-  );
+  const namespaceScoped =
+    resolveNamespaceCapabilities(options.config).namespaces &&
+    options.namespaceStorage !== undefined &&
+    (options.recallNamespaces?.length ?? 0) > 0;
+  const resolvedStorages = namespaceScoped
+    ? await resolveEntityIndexStorages(
+      options.storage,
+      options.config,
+      options.recallNamespaces,
+      options.namespaceStorage,
+    )
+    : undefined;
+  const namespaceCacheKey =
+    resolvedStorages && options.recallNamespaces
+      ? namespaceEntityIndexCacheKey(resolvedStorages, options.recallNamespaces)
+      : undefined;
+  let index: EntityMentionIndex | undefined = namespaceCacheKey
+    ? namespaceEntityIndexCache.get(namespaceCacheKey)
+    : undefined;
+  if (!index) {
+    index = await buildEntityMentionIndex(
+      options.storage,
+      options.config,
+      options.recallNamespaces,
+      options.namespaceStorage,
+      nativeChunks,
+      resolvedStorages,
+    );
+    if (namespaceCacheKey) rememberNamespaceEntityIndex(namespaceCacheKey, index);
+  }
   const explicitCandidates = resolveExplicitCandidates(index, options.query);
   const queryCandidates = prefixedMode
     ? explicitCandidates

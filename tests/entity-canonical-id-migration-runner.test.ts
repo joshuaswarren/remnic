@@ -63,12 +63,13 @@ test("entity migration runner does not cache writes that race migration completi
     () => true,
     async () => {
       runCount += 1;
-      fingerprint = "changed";
+      if (runCount === 1) fingerprint = "changed";
     },
     async () => fingerprint,
   );
 
   await runner.ensure();
+  assert.equal(runCount, 2);
   await runner.ensure();
 
   assert.equal(runCount, 2);

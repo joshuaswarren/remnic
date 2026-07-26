@@ -354,6 +354,39 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
   }
 });
 
+test("ensureDirectories rejects a symlinked tombstone ledger before rewriting", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-tombstone-symlink-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-tombstone-outside-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Entity fact."]);
+    const canonical = normalizeEntityName(name, type);
+    const legacy = normalizeLegacyEntityName(name, type);
+    const canonicalPath = path.join(dir, "entities", `${canonical}.md`);
+    const legacyPath = path.join(dir, "entities", `${legacy}.md`);
+    await rename(canonicalPath, legacyPath);
+    const outsidePath = path.join(outsideDir, "tombstones.jsonl");
+    const outsideContent = `{"entityRef":"${legacy}"}\n`;
+    await writeFile(outsidePath, outsideContent, "utf-8");
+    const tombstonePath = path.join(dir, "state", "tombstones.jsonl");
+    await symlink(outsidePath, tombstonePath);
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+
+    await assert.rejects(
+      () => new StorageManager(dir).ensureDirectories(),
+      /unsafe tombstone ledger/,
+    );
+    assert.equal(await readFile(outsidePath, "utf-8"), outsideContent);
+    assert.equal((await lstat(tombstonePath)).isSymbolicLink(), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories reapplies completed mappings to memories created later", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-completed-reapply-"));
   try {
@@ -803,7 +836,7 @@ test("setSecureStoreKey resumes entity migration after a locked startup", async 
     await upgraded.ensureDirectories();
     await assert.rejects(readFile(canonicalPath), { code: "ENOENT" });
 
-    await upgraded.setSecureStoreKey(key, false);
+    await upgraded.setSecureStoreKeyAndWait(key, false);
     assert.equal(isEncryptedFile(await readFile(canonicalPath)), true);
     const migratedMemories = await upgraded.readAllMemories();
     assert.deepEqual(migratedMemories.map((memory) => memory.frontmatter.entityRef), [canonical]);
@@ -948,6 +981,59 @@ test("ensureDirectories rescans legacy entities created during migration", async
   }
 });
 
+test("ensureDirectories removes an uncommitted canonical destination after a legacy source race", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-destination-race-"));
+  try {
+    const name = "月光";
+    const type = "project";
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity(name, type, ["Original entity fact."]);
+    const canonical = normalizeEntityName(name, type);
+    const canonicalPath = path.join(dir, "entities", `${canonical}.md`);
+    const legacy = normalizeLegacyEntityName(name, type);
+    const legacyPath = path.join(dir, "entities", `${legacy}.md`);
+    await rename(canonicalPath, legacyPath);
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+
+    const migrating = new StorageManager(dir);
+    const internals = migrating as unknown as {
+      writeStorageSecureFile(
+        filePath: string,
+        content: string | Buffer,
+        forceEncrypt?: boolean,
+      ): Promise<void>;
+    };
+    const originalWrite = internals.writeStorageSecureFile.bind(migrating);
+    let injected = false;
+    internals.writeStorageSecureFile = async (filePath, content, forceEncrypt) => {
+      await originalWrite(filePath, content, forceEncrypt);
+      if (!injected && filePath === canonicalPath) {
+        injected = true;
+        await writeFile(
+          legacyPath,
+          String(content).replace("Original entity fact.", "Concurrent entity fact."),
+          "utf-8",
+        );
+      }
+    };
+
+    await assert.rejects(
+      () => migrating.ensureDirectories(),
+      /changed while migration was running|retry migration/,
+    );
+    assert.equal(injected, true);
+    await assert.rejects(() => readFile(canonicalPath), { code: "ENOENT" });
+    assert.match(await readFile(legacyPath, "utf-8"), /Concurrent entity fact/);
+
+    await migrating.ensureDirectories();
+    assert.match(await readFile(canonicalPath, "utf-8"), /Concurrent entity fact/);
+    await assert.rejects(() => readFile(legacyPath), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories preserves entities whose legacy and canonical paths share an inode", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-same-inode-"));
   try {
@@ -1070,6 +1156,7 @@ test("ensureDirectories reruns migration when aliases change and ignores reversa
     await rm(path.join(dir, "config", "aliases.json"));
     await storage.loadAliases();
     await storage.ensureDirectories();
+    assert.equal(storage.normalizeEntityName("Café", "project"), nextCanonical);
     assert.match(await readFile(path.join(dir, "entities", `${nextCanonical}.md`), "utf-8"), /# Café/);
     await assert.rejects(() => readFile(path.join(dir, "entities", `${previousCanonical}.md`)), { code: "ENOENT" });
   } finally {

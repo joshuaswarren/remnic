@@ -20,11 +20,13 @@ import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 
 const ENTITY_CANONICAL_ID_MIGRATION_VERSION = 1;
-const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
+export const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
 const ENTITY_CANONICAL_ID_MIGRATION_LOCK_STALE_MS = 60_000;
 const ENTITY_CANONICAL_ID_MIGRATION_LOCK_MAX_WAIT_MS = 300_000;
 const TOMBSTONE_LOCK_STALE_MS = 30_000;
 const TOMBSTONE_LOCK_MAX_WAIT_MS = 5_000;
+const ENTITY_CANONICAL_ID_MUTATION_LOCK_STALE_MS = 60_000;
+const ENTITY_CANONICAL_ID_MUTATION_LOCK_MAX_WAIT_MS = 300_000;
 const MEMORY_REWRITE_MAX_PASSES = 3;
 const ENTITY_MAPPING_RESCAN_MAX_PASSES = 3;
 
@@ -155,9 +157,49 @@ async function assertSafeMigrationStateFile(
   ]);
   assertPathInsideRoot(stateRoot, stateFile, migrationStatePath);
 }
+async function assertSafeTombstoneFile(
+  deps: EntityCanonicalIdMigrationDependencies,
+  tombstonePath: string,
+): Promise<boolean> {
+  let fileStat;
+  try {
+    fileStat = await lstat(tombstonePath);
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) return false;
+    throw error;
+  }
+  if (fileStat.isSymbolicLink() || !fileStat.isFile()) {
+    throw new Error(
+      `Refusing entity canonical-id migration through unsafe tombstone ledger: ${tombstonePath}.`,
+    );
+  }
+  const [stateRoot, tombstoneFile] = await Promise.all([
+    realpath(deps.stateDir),
+    realpath(tombstonePath),
+  ]);
+  assertPathInsideRoot(stateRoot, tombstoneFile, tombstonePath);
+  return true;
+}
 
 function lockPath(deps: EntityCanonicalIdMigrationDependencies): string {
   return path.join(deps.stateDir, "entity-canonical-id-migration.lock");
+}
+
+export async function withEntityCanonicalMutationLock<T>(
+  stateDir: string,
+  task: (refreshLock: () => Promise<boolean>) => Promise<T>,
+): Promise<T> {
+  return withHeldFileLock(
+    path.join(stateDir, "entity-canonical-id-mutation.lock"),
+    {
+      staleMs: ENTITY_CANONICAL_ID_MUTATION_LOCK_STALE_MS,
+      maxWaitMs: ENTITY_CANONICAL_ID_MUTATION_LOCK_MAX_WAIT_MS,
+    },
+    async (acquired, lock) => {
+      if (!acquired) throw new Error("Timed out waiting for entity mutation lock.");
+      return task(() => lock.refresh());
+    },
+  );
 }
 
 async function readState(
@@ -440,7 +482,7 @@ async function rewriteTombstoneReferences(
     },
     async (acquired, tombstoneLock) => {
       if (!acquired) throw new Error("Timed out waiting for active tombstone migration.");
-      if (!(await fileExists(tombstonePath))) return;
+      if (!(await assertSafeTombstoneFile(deps, tombstonePath))) return;
       const tombstoneEncrypted = await deps.isEncryptedStorageFile(tombstonePath);
       const original = await deps.readStorageSecureFile(tombstonePath);
       let changed = false;
@@ -480,24 +522,33 @@ async function rewriteRelationshipTargets(
       return target ? { ...relationship, target } : relationship;
     });
     if (relationships.every((relationship, index) => relationship === entity.relationships[index])) continue;
-    if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
-    const latestEntity = deps.parseEntityFile(await deps.readStorageSecureFile(entityPath));
-    if ((await fingerprintPath(entityPath)) !== observedEntityFingerprint) continue;
-    const latestRelationships = latestEntity.relationships.map((relationship) => {
-      const target = mappings[relationship.target];
-      return target ? { ...relationship, target } : relationship;
-    });
-    if (latestRelationships.every((relationship, index) => relationship === latestEntity.relationships[index])) continue;
-    const entityEncrypted = await deps.isEncryptedStorageFile(entityPath);
-    if ((await fingerprintPath(entityPath)) !== observedEntityFingerprint) continue;
-    await deps.snapshotBeforeWrite(entityPath, "write");
-    if ((await fingerprintPath(entityPath)) !== observedEntityFingerprint) continue;
-    await deps.writeStorageSecureFile(
-      entityPath,
-      deps.serializeEntityFile({ ...latestEntity, relationships: latestRelationships }),
-      entityEncrypted,
+    const rewroteEntity = await withEntityCanonicalMutationLock(
+      deps.stateDir,
+      async (refreshEntityLock) => {
+        if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
+        const latestEntity = deps.parseEntityFile(await deps.readStorageSecureFile(entityPath));
+        if ((await fingerprintPath(entityPath)) !== observedEntityFingerprint) return false;
+        const latestRelationships = latestEntity.relationships.map((relationship) => {
+          const target = mappings[relationship.target];
+          return target ? { ...relationship, target } : relationship;
+        });
+        if (latestRelationships.every((relationship, index) => relationship === latestEntity.relationships[index])) {
+          return false;
+        }
+        const entityEncrypted = await deps.isEncryptedStorageFile(entityPath);
+        if (!(await refreshEntityLock())) throw new Error("Lost entity mutation lock.");
+        if ((await fingerprintPath(entityPath)) !== observedEntityFingerprint) return false;
+        await deps.snapshotBeforeWrite(entityPath, "write");
+        if ((await fingerprintPath(entityPath)) !== observedEntityFingerprint) return false;
+        await deps.writeStorageSecureFile(
+          entityPath,
+          deps.serializeEntityFile({ ...latestEntity, relationships: latestRelationships }),
+          entityEncrypted,
+        );
+        return true;
+      },
     );
-    rewritten = true;
+    rewritten ||= rewroteEntity;
   }
   return rewritten;
 }
@@ -592,6 +643,99 @@ function collapseMappings(mappings: Readonly<Record<string, string>>): Record<st
   return collapsed;
 }
 
+type EntityFileMigrationResult = {
+  deferred: boolean;
+  progressed: boolean;
+};
+
+async function migrateEntityFilePair(
+  deps: EntityCanonicalIdMigrationDependencies,
+  legacyId: string,
+  canonicalId: string,
+  refreshMigrationLock: () => Promise<boolean>,
+): Promise<EntityFileMigrationResult> {
+  return withEntityCanonicalMutationLock(deps.stateDir, async (refreshEntityLock) => {
+    assertSafeEntityId(legacyId);
+    assertSafeEntityId(canonicalId);
+    const legacyPath = deps.resolveEntityFilePath(legacyId);
+    const canonicalPath = deps.resolveEntityFilePath(canonicalId);
+    if (legacyPath === null || canonicalPath === null) {
+      throw new Error("Invalid entity canonical-id migration path.");
+    }
+    await assertNotSymlink(legacyPath, legacyId);
+    await assertNotSymlink(canonicalPath, canonicalId);
+    const legacyExists = await fileExists(legacyPath);
+    const canonicalExists = await fileExists(canonicalPath);
+    if (!legacyExists && !canonicalExists) return { deferred: true, progressed: false };
+    if (legacyExists && canonicalExists) {
+      if (await sameFileIdentity(legacyPath, canonicalPath)) return { deferred: false, progressed: false };
+      const [legacyContent, canonicalContent, legacyEncrypted, canonicalEncrypted] = await Promise.all([
+        deps.readStorageSecureFile(legacyPath),
+        deps.readStorageSecureFile(canonicalPath),
+        deps.isEncryptedStorageFile(legacyPath),
+        deps.isEncryptedStorageFile(canonicalPath),
+      ]);
+      if (legacyContent !== canonicalContent) {
+        throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
+      }
+      if (legacyEncrypted && !canonicalEncrypted) {
+        if (!(await refreshMigrationLock()) || !(await refreshEntityLock())) {
+          throw new Error("Lost entity canonical-id migration lock.");
+        }
+        await deps.snapshotBeforeWrite(canonicalPath, "write");
+        await deps.writeStorageSecureFile(canonicalPath, legacyContent, true);
+        if ((await deps.readStorageSecureFile(canonicalPath)) !== legacyContent) {
+          throw new Error(`Cannot verify migrated entity id ${canonicalId}.`);
+        }
+      }
+      if (!(await refreshMigrationLock()) || !(await refreshEntityLock())) {
+        throw new Error("Lost entity canonical-id migration lock.");
+      }
+      await deps.snapshotBeforeWrite(legacyPath, "write");
+      await assertNotSymlink(legacyPath, legacyId);
+      await assertEntityContentUnchanged(deps, legacyPath, legacyContent, legacyId);
+      await unlink(legacyPath);
+      return { deferred: false, progressed: true };
+    }
+    if (!legacyExists) return { deferred: false, progressed: false };
+    if (!(await refreshMigrationLock()) || !(await refreshEntityLock())) {
+      throw new Error("Lost entity canonical-id migration lock.");
+    }
+    const entityEncrypted = await deps.isEncryptedStorageFile(legacyPath);
+    const entityContent = await deps.readStorageSecureFile(legacyPath);
+    await assertNotSymlink(legacyPath, legacyId);
+    await assertEntityContentUnchanged(deps, legacyPath, entityContent, legacyId);
+    let canonicalFingerprintAfterWrite: string | null = null;
+    try {
+      await deps.writeStorageSecureFile(canonicalPath, entityContent, entityEncrypted);
+      canonicalFingerprintAfterWrite = await fingerprintPath(canonicalPath);
+      if ((await deps.readStorageSecureFile(canonicalPath)) !== entityContent) {
+        throw new Error(`Cannot verify migrated entity id ${canonicalId}.`);
+      }
+      if (!(await refreshMigrationLock()) || !(await refreshEntityLock())) {
+        throw new Error("Lost entity canonical-id migration lock.");
+      }
+      await deps.snapshotBeforeWrite(legacyPath, "write");
+      await assertNotSymlink(legacyPath, legacyId);
+      await assertEntityContentUnchanged(deps, legacyPath, entityContent, legacyId);
+      await unlink(legacyPath);
+    } catch (error) {
+      if (!canonicalExists && canonicalFingerprintAfterWrite !== null) {
+        try {
+          if ((await fingerprintPath(canonicalPath)) === canonicalFingerprintAfterWrite) {
+            await assertNotSymlink(canonicalPath, canonicalId);
+            await unlink(canonicalPath);
+          }
+        } catch {
+          // Preserve the migration error when cleanup races another writer.
+        }
+      }
+      throw error;
+    }
+    return { deferred: false, progressed: true };
+  });
+}
+
 export async function migrateLegacyEntityCanonicalIds(
   deps: EntityCanonicalIdMigrationDependencies,
 ): Promise<string | undefined> {
@@ -672,64 +816,16 @@ export async function migrateLegacyEntityCanonicalIds(
           const deferredMappings: Array<[string, string]> = [];
           let progressed = false;
           for (const [legacyId, canonicalId] of pendingMappings) {
-            assertSafeEntityId(legacyId);
-            assertSafeEntityId(canonicalId);
-            const legacyPath = deps.resolveEntityFilePath(legacyId);
-            const canonicalPath = deps.resolveEntityFilePath(canonicalId);
-            if (legacyPath === null || canonicalPath === null) {
-              throw new Error("Invalid entity canonical-id migration path.");
-            }
-            await assertNotSymlink(legacyPath, legacyId);
-            await assertNotSymlink(canonicalPath, canonicalId);
-            const legacyExists = await fileExists(legacyPath);
-            const canonicalExists = await fileExists(canonicalPath);
-            if (!legacyExists && !canonicalExists) {
+            const result = await migrateEntityFilePair(
+              deps,
+              legacyId,
+              canonicalId,
+              () => lock.refresh(),
+            );
+            if (result.deferred) {
               deferredMappings.push([legacyId, canonicalId]);
-              continue;
             }
-            if (legacyExists && canonicalExists) {
-              if (await sameFileIdentity(legacyPath, canonicalPath)) continue;
-              const [legacyContent, canonicalContent, legacyEncrypted, canonicalEncrypted] = await Promise.all([
-                deps.readStorageSecureFile(legacyPath),
-                deps.readStorageSecureFile(canonicalPath),
-                deps.isEncryptedStorageFile(legacyPath),
-                deps.isEncryptedStorageFile(canonicalPath),
-              ]);
-              if (legacyContent !== canonicalContent) {
-                throw new Error(`Cannot migrate legacy entity id ${legacyId}: ${canonicalId} already exists.`);
-              }
-              if (legacyEncrypted && !canonicalEncrypted) {
-                if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
-                await deps.snapshotBeforeWrite(canonicalPath, "write");
-                await deps.writeStorageSecureFile(canonicalPath, legacyContent, true);
-                if ((await deps.readStorageSecureFile(canonicalPath)) !== legacyContent) {
-                  throw new Error(`Cannot verify migrated entity id ${canonicalId}.`);
-                }
-              }
-              if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
-              await deps.snapshotBeforeWrite(legacyPath, "write");
-              await assertNotSymlink(legacyPath, legacyId);
-              await assertEntityContentUnchanged(deps, legacyPath, legacyContent, legacyId);
-              await unlink(legacyPath);
-              progressed = true;
-              continue;
-            }
-            if (!legacyExists) continue;
-            if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
-            const entityEncrypted = await deps.isEncryptedStorageFile(legacyPath);
-            const entityContent = await deps.readStorageSecureFile(legacyPath);
-            await assertNotSymlink(legacyPath, legacyId);
-            await assertEntityContentUnchanged(deps, legacyPath, entityContent, legacyId);
-            await deps.writeStorageSecureFile(canonicalPath, entityContent, entityEncrypted);
-            if ((await deps.readStorageSecureFile(canonicalPath)) !== entityContent) {
-              throw new Error(`Cannot verify migrated entity id ${canonicalId}.`);
-            }
-            if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
-            await deps.snapshotBeforeWrite(legacyPath, "write");
-            await assertNotSymlink(legacyPath, legacyId);
-            await assertEntityContentUnchanged(deps, legacyPath, entityContent, legacyId);
-            await unlink(legacyPath);
-            progressed = true;
+            progressed ||= result.progressed;
           }
           if (deferredMappings.length === 0) break;
           if (!progressed) {

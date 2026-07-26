@@ -2092,31 +2092,39 @@ export class StorageManager {
    * Set or clear the at-rest encryption key.
    *
    * Pass a 32-byte Buffer to enable encryption; pass null to clear
-   * (lock) the store.  The caller is responsible for key lifecycle —
+   * (lock) the store. The caller is responsible for key lifecycle —
    * this method does not zero the buffer on replacement; the keyring
-   * module (`keyring.ts`) owns zeroization.
+   * module (`keyring.ts`) owns zeroization. The setter remains synchronous
+   * for existing consumers; call `setSecureStoreKeyAndWait` when unlock must
+   * await migration.
    */
-  async setSecureStoreKey(key: Buffer | null, encryptOnWrite = true): Promise<void> {
+  setSecureStoreKey(key: Buffer | null, encryptOnWrite = true): void {
+    if (!this.applySecureStoreKey(key, encryptOnWrite) || key === null) return;
+    void this.entityCanonicalIdMigration.triggerAfterUnlock().catch((error: unknown) => {
+      log.warn(
+        `secure-store unlock migration failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
+
+  public async setSecureStoreKeyAndWait(key: Buffer | null, encryptOnWrite = true): Promise<void> {
+    if (!this.applySecureStoreKey(key, encryptOnWrite) || key === null) return;
+    await this.entityCanonicalIdMigration.triggerAfterUnlock();
+  }
+
+  private applySecureStoreKey(key: Buffer | null, encryptOnWrite: boolean): boolean {
     const sameKey =
       this._secureStoreKey === key ||
       (this._secureStoreKey !== null && key !== null && this._secureStoreKey.equals(key));
-    if (sameKey && this._secureStoreEncryptOnWrite === encryptOnWrite) return;
+    if (sameKey && this._secureStoreEncryptOnWrite === encryptOnWrite) return false;
 
     this._secureStoreKey = key;
     this._secureStoreEncryptOnWrite = encryptOnWrite;
-    // Route through the invalidation chokepoint (issue #1535): a key change
-    // (or store lock) must evict every cache layer that may hold content
-    // decrypted under the previous key, not just the entity layer.
     invalidateAllForDir(this.baseDir);
     this.invalidateKnowledgeIndexCache();
-    // A key change flips resolveWriteKey(), so a file's plain/encrypted class on
-    // the next full rewrite may differ from what was cached (issue #1909).
     this.secureFileEncryptionSniffCache.clear();
-    // Same rationale for the behavior-signals dedup key cache (issue #1909):
-    // drop it on a key change so a re-encrypted/re-decrypted ledger is reloaded.
     this.behaviorSignalsKeyCache = null;
-    if (key !== null) await this.entityCanonicalIdMigration.triggerAfterUnlock();
-
+    return true;
   }
 
   private getEntityCacheSecureStoreKey(): string {
@@ -2304,6 +2312,7 @@ export class StorageManager {
     // loadAliases() explicitly — every creation path must still get the
     // store's own aliases, never an empty or foreign table.
     this.loadAliasesSync();
+    this.loadHistoricalEntityCanonicalIdsSync();
   }
 
   /** Set the process-wide hot-memories cache default (issue #1902). The
@@ -3561,14 +3570,23 @@ export class StorageManager {
    * store loaded last rewrite every other store's canonical entity ids.
    */
   private userAliases: Record<string, string> = {};
+  private historicalEntityCanonicalIds: Readonly<Record<string, string>> = {};
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
     () => this.runLegacyEntityCanonicalIdMigration(),
     () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => this.getCorpusScanVersion()),
   );
-
   normalizeEntityName(raw: string, type: string): string {
-    return this.entityStore.normalizeEntityName(raw, type);
+    const normalized = this.entityStore.normalizeEntityName(raw, type);
+    let current = normalized;
+    const seen = new Set<string>();
+    while (!seen.has(current)) {
+      seen.add(current);
+      const next = this.historicalEntityCanonicalIds[current];
+      if (!next || next === current) break;
+      current = next;
+    }
+    return current;
   }
 
   /**
@@ -3615,14 +3633,36 @@ export class StorageManager {
       log.debug("no config/aliases.json found — using built-in aliases only");
     }
   }
+  private loadHistoricalEntityCanonicalIdsSync(): void {
+    const statePath = path.join(this.baseDir, "state", entityMigration.ENTITY_CANONICAL_ID_MIGRATION_FILE);
+    this.historicalEntityCanonicalIds = {};
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(statePath, "utf-8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      const mappings = (parsed as { mappings?: unknown }).mappings;
+      if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return;
+      const cleaned: Record<string, string> = {};
+      for (const [legacyId, canonicalId] of Object.entries(mappings)) {
+        if (legacyId.length > 0 && typeof canonicalId === "string" && canonicalId.length > 0) {
+          cleaned[legacyId] = canonicalId;
+        }
+      }
+      this.historicalEntityCanonicalIds = cleaned;
+    } catch {
+      // The migration validates malformed state when it runs; normalization
+      // should fall back to the current alias table until then.
+    }
+  }
 
-  private runLegacyEntityCanonicalIdMigration(): Promise<string> {
-    return runLegacyEntityCanonicalIdMigration(
+  private async runLegacyEntityCanonicalIdMigration(): Promise<string> {
+    const completionFingerprint = await runLegacyEntityCanonicalIdMigration(
       this as unknown as EntityCanonicalIdMigrationHost,
       (content) => parseEntityFile(content, this.entitySchemas),
       (entity) => serializeEntityFile(entity, this.entitySchemas),
       (memory, entityRef) => `${serializeFrontmatter({ ...memory.frontmatter, entityRef })}\n\n${memory.content}\n`,
     );
+    this.loadHistoricalEntityCanonicalIdsSync();
+    return completionFingerprint;
   }
 
   async ensureDirectories(): Promise<void> {
