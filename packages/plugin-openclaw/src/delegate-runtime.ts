@@ -91,6 +91,8 @@ export interface DelegateRuntimeOptions {
   recallTimeoutMs: number;
   observeTimeoutMs: number;
   flushTimeoutMs: number;
+  /** Injectable clock for capability-cache expiry tests and deterministic hosts. */
+  now?: () => number;
 }
 
 export interface DelegateHookApi {
@@ -106,6 +108,7 @@ export interface DelegateHookApi {
 
 const MEMORY_CONTEXT_HEADER = "## Memory Context (Remnic)";
 const DELEGATE_NAMESPACE_MAX_LENGTH = 256;
+const DELEGATE_BATCH_FLUSH_NEGATIVE_CACHE_TTL_MS = 30_000;
 
 const DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS = [
   "recall",
@@ -433,6 +436,7 @@ export function registerDelegateRuntime(
   options: DelegateRuntimeOptions,
 ): void {
   const { target, namespace, namespaceBindings } = options;
+  const now = options.now ?? Date.now;
   if (options.passive) {
     log.info(
       `[${options.serviceId}] bridge mode delegate: memory slot not owned — passive, no hooks registered`,
@@ -609,10 +613,24 @@ export function registerDelegateRuntime(
   });
 
   let cachedBatchFlushSupport: boolean | undefined;
+  let cachedBatchFlushSupportExpiresAt = 0;
   let supportsBatchFlushPromise: Promise<boolean> | undefined;
+  const invalidateCachedBatchFlushSupport = (): void => {
+    cachedBatchFlushSupport = undefined;
+    cachedBatchFlushSupportExpiresAt = 0;
+  };
+  const cacheBatchFlushSupport = (supported: boolean): void => {
+    cachedBatchFlushSupport = supported;
+    cachedBatchFlushSupportExpiresAt = supported
+      ? Number.POSITIVE_INFINITY
+      : now() + DELEGATE_BATCH_FLUSH_NEGATIVE_CACHE_TTL_MS;
+  };
   const supportsBatchFlush = (timeoutMs: number): Promise<boolean> => {
     if (cachedBatchFlushSupport !== undefined) {
-      return Promise.resolve(cachedBatchFlushSupport);
+      if (cachedBatchFlushSupport || now() < cachedBatchFlushSupportExpiresAt) {
+        return Promise.resolve(cachedBatchFlushSupport);
+      }
+      invalidateCachedBatchFlushSupport();
     }
     if (supportsBatchFlushPromise !== undefined) return supportsBatchFlushPromise;
     const probe = getJson(
@@ -626,7 +644,7 @@ export function registerDelegateRuntime(
         if (isSuccessfulResponse && response.body !== null) {
           const batchFlushSupport = response.body.lcmCompactionFlushBatch;
           if (typeof batchFlushSupport === "boolean") {
-            cachedBatchFlushSupport = batchFlushSupport;
+            cacheBatchFlushSupport(batchFlushSupport);
             return batchFlushSupport;
           }
           return false;
@@ -637,7 +655,7 @@ export function registerDelegateRuntime(
           response.status === 405 ||
           response.status === 501
         ) {
-          cachedBatchFlushSupport = false;
+          cacheBatchFlushSupport(false);
         }
         return false;
       })
@@ -697,7 +715,7 @@ export function registerDelegateRuntime(
             remainingTimeout(),
           );
           if (response === null) {
-            cachedBatchFlushSupport = undefined;
+            invalidateCachedBatchFlushSupport();
             return flushIndividually();
           }
           const responseNamespaces = response.namespaces;
@@ -712,16 +730,16 @@ export function registerDelegateRuntime(
             ) &&
             responseResults.length === namespaces.length;
           if (!isBatchResponse) {
-            cachedBatchFlushSupport = undefined;
+            invalidateCachedBatchFlushSupport();
             return flushIndividually();
           }
           if (response.flushed === false) {
-            cachedBatchFlushSupport = undefined;
+            invalidateCachedBatchFlushSupport();
             return false;
           }
           return true;
         } catch (err) {
-          cachedBatchFlushSupport = undefined;
+          invalidateCachedBatchFlushSupport();
           throw err;
         }
       }

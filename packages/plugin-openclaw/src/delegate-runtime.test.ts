@@ -885,6 +885,54 @@ test("delegate retries a transient or malformed batch capability probe", async (
     await stub.close();
   }
 });
+
+test("delegate revalidates cached negative batch support after expiry", async () => {
+  let now = 0;
+  const stub = await startDaemonStub(
+    () => ({ flushed: true }),
+    {
+      capabilityResponses: [
+        { status: 200, body: { lcmCompactionFlushBatch: false } },
+        { status: 200, body: { lcmCompactionFlushBatch: true } },
+      ],
+    },
+  );
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { now: () => now }));
+    const sessionKey = "negative-capability-expiry-session";
+
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} session namespace` },
+            { role: "assistant", content: "the namespace is bound" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+
+    await invoke(api, "before_compaction", { sessionKey });
+    now = Number.POSITIVE_INFINITY;
+    await invoke(api, "before_reset", { sessionKey });
+
+    const capabilityCalls = stub.calls.filter((call) => call.pathname === "/engram/v1/capabilities");
+    assert.equal(capabilityCalls.length, 2);
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.deepEqual(
+      flushes.slice(0, 2).map((call) => call.body.namespace).sort(),
+      ["team-first", "team-second"],
+    );
+    assert.deepEqual(flushes.at(-1)?.body.namespaces, ["team-first", "team-second"]);
+  } finally {
+    await stub.close();
+  }
+});
 test("delegate reprobes batch support after daemon replacement", async () => {
   let replaced = false;
   const stub = await startDaemonStub(
