@@ -6,7 +6,8 @@ const MARKDOWN_LIST_ITEM_CAN_INTERRUPT = /^(?:[-+*]|1[.)])\s+/;
 const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
-const MARKDOWN_LINK_REFERENCE = /^\[[^\]]+\]:\s*\S/;
+const MARKDOWN_LINK_REFERENCE =
+  /^\[[^\]]+\]:\s*(?:<[^>\n]*>|[^\s]+)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?$/;
 const MARKDOWN_LINK_REFERENCE_LABEL = /^\[[^\]]+\]:\s*$/;
 const MARKDOWN_LINK_REFERENCE_CONTINUATION =
   /^ {1,3}(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\))$/;
@@ -133,11 +134,13 @@ function findHtmlBlockTag(line: string, tags: readonly string[]): string | null 
   const nameStart = isClosing ? 2 : 1;
   for (const tag of tags) {
     const nextCharacter = line[nameStart + tag.length];
+    const isSelfClosingSlash =
+      !isClosing && nextCharacter === "/" && line[nameStart + tag.length + 1] === ">";
     if (
       line.startsWith(`${isClosing ? "</" : "<"}${tag}`) &&
       (nextCharacter === undefined ||
         nextCharacter === ">" ||
-        nextCharacter === "/" ||
+        isSelfClosingSlash ||
         nextCharacter === " " ||
         nextCharacter === "\t")
     ) {

@@ -1279,6 +1279,43 @@ test("writeProfile recognizes link-reference destination continuation boundaries
     t.mock.timers.reset();
   }
 });
+test("writeProfile ignores invalid link-reference prose", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "[docs]: /url invalid title",
+        STALE_HEADER,
+        "",
+        "- Keeps invalid link-reference prose.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "[docs]: /url invalid title",
+          STALE_HEADER,
+          "",
+          "- Keeps invalid link-reference prose.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 
 
 test("writeProfile ignores invalid backtick fence openers", async (t) => {
@@ -1380,6 +1417,49 @@ test("writeProfile keeps frame and frameset HTML blocks opaque", async (t) => {
     t.mock.timers.reset();
   }
 });
+test("writeProfile keeps malformed built-in HTML slashes in prose", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "Preamble prose.",
+        "",
+        "*Last updated: literal example*",
+        "<div/garbage",
+        "",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps malformed HTML prose.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "Preamble prose.",
+          "",
+          "*Last updated: literal example*",
+          "<div/garbage",
+          "",
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- Keeps malformed HTML prose.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 
 
 test("writeProfile preserves HTML blocks with multiline open tags", async (t) => {
