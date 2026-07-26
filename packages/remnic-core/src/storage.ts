@@ -3564,7 +3564,7 @@ export class StorageManager {
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
     () => this.runLegacyEntityCanonicalIdMigration(),
-    () => entityMigration.getFingerprint(this.entitiesDir, () => this.getCorpusScanVersion()),
+    () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => this.getCorpusScanVersion()),
   );
 
   normalizeEntityName(raw: string, type: string): string {

@@ -910,6 +910,29 @@ test("ensureDirectories processes intermediate canonical-id mappings before coll
   }
 });
 
+test("ensureDirectories reruns migration when aliases change", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-alias-fingerprint-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const previousCanonical = storage.normalizeEntityName("Café", "project");
+    await storage.writeEntity("Café", "project", ["Alias fingerprint source."]);
+    await storage.ensureDirectories();
+
+    await writeFile(path.join(dir, "config", "aliases.json"), JSON.stringify({ "café": "coffee" }), "utf-8");
+    await storage.loadAliases();
+    const nextCanonical = storage.normalizeEntityName("Café", "project");
+    assert.notEqual(previousCanonical, nextCanonical);
+
+    await storage.ensureDirectories();
+
+    assert.match(await readFile(path.join(dir, "entities", `${nextCanonical}.md`), "utf-8"), /# Café/);
+    await assert.rejects(() => readFile(path.join(dir, "entities", `${previousCanonical}.md`)), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories rejects symlinked entity roots and entries", async () => {
   const entryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-symlink-entry-"));
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-symlink-root-"));

@@ -65,20 +65,28 @@ export interface EntityCanonicalIdMigrationDependencies {
   bumpMemoryStatusVersion(): void;
 }
 
-export async function getFingerprint(
-  entitiesDir: string,
-  getCorpusScanVersion: () => string,
-): Promise<string> {
-  let entityStat;
+async function fingerprintPath(filePath: string): Promise<string> {
+  let fileStat;
   try {
-    entityStat = await lstat(entitiesDir);
+    fileStat = await lstat(filePath);
   } catch (error) {
     if (!isErrnoCode(error, "ENOENT")) throw error;
   }
-  const entityFingerprint = entityStat
-    ? `${entityStat.dev}:${entityStat.ino}:${entityStat.mtimeMs}:${entityStat.ctimeMs}:${entityStat.size}`
+  return fileStat
+    ? `${fileStat.dev}:${fileStat.ino}:${fileStat.mtimeMs}:${fileStat.ctimeMs}:${fileStat.size}`
     : "missing";
-  return `${entityFingerprint}:${getCorpusScanVersion()}`;
+}
+
+export async function getFingerprint(
+  baseDir: string,
+  entitiesDir: string,
+  getCorpusScanVersion: () => string,
+): Promise<string> {
+  const [entityFingerprint, aliasFingerprint] = await Promise.all([
+    fingerprintPath(entitiesDir),
+    fingerprintPath(path.join(baseDir, "config", "aliases.json")),
+  ]);
+  return `${entityFingerprint}:${aliasFingerprint}:${getCorpusScanVersion()}`;
 }
 
 export async function validateRoots(
