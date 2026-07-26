@@ -1,0 +1,5 @@
+---
+"@remnic/core": patch
+---
+
+Tool-scoped global-promotion guard (#2183). A `global`-scoped fact that references a specific tool or command and was produced by a known integration (`sourceConnector`) is no longer promoted to the shared namespace — a different integration exposing a same-named but incompatible tool (Pi `search` = repo code search vs OpenClaw `search` = web search) would otherwise consume it. Detection is a new pure predicate `referencesAgentSpecificTool` (bounded, backtracking-safe regexes). The promotion decision lives in ONE shared predicate `shouldPromoteGlobalFactToShared({ scope, content, sourceConnector })`, called from BOTH the pre-judge namespace prediction and the write-loop scope-routing block in `extraction-persist.ts` so the read path and write path never disagree on the target namespace. The guard has no separate config knob: it is gated by the existing `extractionScopeClassificationEnabled` capability (the scope-routing block it lives in), since the guard only applies to facts the scope classifier tagged `global`. With scope classification off, or for unattributed/portable facts, behavior is byte-identical to before.

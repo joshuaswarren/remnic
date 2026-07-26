@@ -82,6 +82,7 @@ import {
   stripCitationForTemplate,
 } from "../source-attribution.js";
 import { classifyMemoryKind } from "../himem.js";
+import { shouldPromoteGlobalFactToShared } from "../tool-scoped-memory.js";
 import {
   buildBehaviorSignalsForMemory,
   dedupeBehaviorSignalsByMemoryAndHash,
@@ -394,6 +395,7 @@ export class ExtractionPersistCoordinator {
     // (pre-judge + write-loop) so no new scattered config.*Enabled read is
     // introduced (ratchet scatteredConfigFlagReads; see #1523).
     const namespacesEnabled = resolveNamespaceCapabilities(this.deps.config).namespaces;
+    const sourceConnector = sourceContext?.sourceConnector; // #2183 tool-scope guard input
     const promoteMemoryToProfileTargets = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -1350,20 +1352,17 @@ export class ExtractionPersistCoordinator {
           // + PBJEe/PBKAj).
           let factRedactionRules = preJudgeRedactionRules;
           let factNs = preRoutedNamespaceByFact[fi];
-          // #1713 (codex PRRT_kwDORJXyws6PBj5X): scope classification can route
-          // a scope=global fact to the shared namespace independent of routing
-          // rules. If so, the pre-judge filter must consult the shared
-          // namespace's rules too, or a never-store pattern under shared is
-          // missed at pre-judge and only caught at the write gate — letting the
-          // content reach the extraction judge/training path. Mirror the write
-          // loop's scope-routing conditions exactly.
+          // #1713: predict the same target namespace the write loop will route
+          // this global fact to (shared, via shouldPromoteGlobalFactToShared) so
+          // the pre-judge redaction filter consults that namespace's rules.
           if (
             !factNs &&
             lifecycleCaps.extractionScopeClassification &&
             namespacesEnabled &&
             f.scope === "global" &&
             profileAllowsSharedWrites &&
-            this.deps.storageDirNamespace(storage.dir) !== this.deps.config.sharedNamespace
+            this.deps.storageDirNamespace(storage.dir) !== this.deps.config.sharedNamespace &&
+            shouldPromoteGlobalFactToShared({ scope: f.scope, content: f.content, sourceConnector })
           ) {
             factNs = this.deps.config.sharedNamespace;
           }
@@ -1611,14 +1610,9 @@ export class ExtractionPersistCoordinator {
         }
       }
 
-      // Scope-based namespace routing: when scope classification is enabled
-      // and the LLM tagged this fact as "global", route it to the shared
-      // namespace so cross-project knowledge is visible everywhere. Only
-      // applies when namespaces are enabled and the fact was not already
-      // routed to a specific namespace by a routing rule (routing rules
-      // that set an explicit namespace take precedence; category-only rules
-      // do not block scope routing). Rule 30: gated by
-      // extractionScopeClassificationEnabled.
+      // Scope-based namespace routing: a `global` fact (scope classification
+      // on, no explicit routing-rule namespace) is promoted to the shared
+      // namespace unless the tool-scope guard withholds it (#2183).
       if (
         lifecycleCaps.extractionScopeClassification &&
         namespacesEnabled &&
@@ -1627,18 +1621,20 @@ export class ExtractionPersistCoordinator {
       ) {
         const currentNs = this.deps.storageDirNamespace(targetStorage.dir);
         if (currentNs !== this.deps.config.sharedNamespace && profileAllowsSharedWrites) {
-          try {
-            targetStorage = await this.deps.getStorageRouter().storageFor(
-              this.deps.config.sharedNamespace,
-            );
-            targetNamespaceName = this.deps.config.sharedNamespace;
-            log.debug(
-              `scope-routing: fact "${fact.content.slice(0, 60)}…" routed to shared namespace (scope=global)`,
-            );
-          } catch (scopeRouteErr) {
-            log.warn(
-              `scope-routing: failed to resolve shared namespace storage; writing to session namespace (fail-open): ${scopeRouteErr}`,
-            );
+          if (shouldPromoteGlobalFactToShared({ scope: fact.scope, content: fact.content, sourceConnector })) {
+            try {
+              targetStorage = await this.deps.getStorageRouter().storageFor(
+                this.deps.config.sharedNamespace,
+              );
+              targetNamespaceName = this.deps.config.sharedNamespace;
+              log.debug(
+                `scope-routing: fact "${fact.content.slice(0, 60)}…" routed to shared namespace (scope=global)`,
+              );
+            } catch (scopeRouteErr) {
+              log.warn(
+                `scope-routing: failed to resolve shared namespace storage; writing to session namespace (fail-open): ${scopeRouteErr}`,
+              );
+            }
           }
         } else if (currentNs !== this.deps.config.sharedNamespace) {
           log.debug(
