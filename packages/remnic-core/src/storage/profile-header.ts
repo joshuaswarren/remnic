@@ -1,7 +1,7 @@
 const LAST_UPDATED_HEADER = /^\*Last updated:[^*]*\*$/;
 const PROFILE_TITLE = /^ {0,3}#(?:\s+|$)/;
 const MARKDOWN_HEADING = /^#{1,6}(?:\s+|$)/;
-const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d+[.)])\s+/;
+const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d{1,9}[.)])\s+/;
 const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const MARKDOWN_SETEXT_UNDERLINE = /^(?:=+|-+)$/;
 const MARKDOWN_BLOCK_QUOTE = /^>/;
@@ -306,6 +306,9 @@ function updateHtmlBlockDepth(
     : null;
 }
 
+function hasSpacedSelfClosingSlash(line: string): boolean {
+  return /\s\/\s*>/.test(line);
+}
 function findHtmlBlockStart(
   normalizedLine: string,
   trimmedLine: string,
@@ -316,7 +319,7 @@ function findHtmlBlockStart(
     const completeTag =
       findCompleteHtmlTag(trimmedLine) ?? findHtmlTagPrefix(trimmedLine);
     if (!completeTag) return null;
-    if (completeTag.isSelfClosing) {
+    if (completeTag.isSelfClosing && !hasSpacedSelfClosingSlash(trimmedLine)) {
       return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
     }
     const endMarker = `</${rawTag}>`;

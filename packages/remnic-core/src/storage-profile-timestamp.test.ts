@@ -112,6 +112,43 @@ test("writeProfile preserves compound emphasis instead of replacing it", async (
   }
 });
 
+test("writeProfile does not treat ten-digit ordered markers as metadata boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const proseHeader = "*Last updated: literal example*";
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        proseHeader,
+        "1234567890. continuation",
+        "",
+        "- Keeps timestamp-shaped prose.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          proseHeader,
+          "1234567890. continuation",
+          "",
+          "- Keeps timestamp-shaped prose.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
 test("writeProfile recognizes an indented profile title", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
@@ -1794,6 +1831,44 @@ test("writeProfile keeps self-closing raw HTML blocks opaque", async (t) => {
       assert.equal(
         await storage.readProfile(),
         profile.replace("\n\n<pre/>", `\n\n${FRESH_HEADER}\n\n<pre/>`),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+test("writeProfile keeps spaced self-closing raw blocks opaque through EOF", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        "<pre />",
+        "",
+        "*Last updated: literal example*",
+        "",
+        "- Keeps the spaced raw block opaque.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "<pre />",
+          "",
+          "*Last updated: literal example*",
+          "",
+          "- Keeps the spaced raw block opaque.",
+          "",
+        ].join("\n"),
       );
     });
   } finally {
