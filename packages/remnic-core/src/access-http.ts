@@ -3244,6 +3244,16 @@ export class EngramAccessHttpServer {
     // the record). Other write tools keep the coarse pre-check.
     const observeSelfEnforcesQuota =
       toolName === "engram.observe" || toolName === "remnic.observe";
+    const extractionForceFlushWrite =
+      toolName === "engram.extraction_force_flush" || toolName === "remnic.extraction_force_flush";
+    let writeRateLimitRecorded = false;
+    const recordCommittedMcpWrite = extractionForceFlushWrite
+      ? () => {
+          if (writeRateLimitRecorded) return;
+          writeRateLimitRecorded = true;
+          this.recordWriteRateLimitHit(req);
+        }
+      : undefined;
     if (isMcpWrite && !observeSelfEnforcesQuota) {
       this.ensureWriteRateLimitAvailable(req);
     }
@@ -3286,6 +3296,7 @@ export class EngramAccessHttpServer {
       enforceWriteQuota: observeSelfEnforcesQuota
         ? () => this.ensureWriteRateLimitAvailable(req)
         : undefined,
+      recordWriteCommit: recordCommittedMcpWrite,
       sourceConnector: this.resolveConnector(req),
       abortSignal,
     });
@@ -3307,8 +3318,9 @@ export class EngramAccessHttpServer {
       // consumed a write — count it. Tools WITH structuredContent use the
       // dryRun/idempotencyReplay guards.
       const counts = structured ? this.shouldCountWriteRateLimit(structured) : true;
-      if (!isError && !isRejectedCodegraph && counts) {
+      if (!writeRateLimitRecorded && !isError && !isRejectedCodegraph && counts) {
         this.recordWriteRateLimitHit(req);
+        writeRateLimitRecorded = true;
       }
     }
     // A mutating tool may have committed just before the client disconnected.

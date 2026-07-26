@@ -93,6 +93,7 @@ interface Harness {
   setRespond: (fn: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult>) => void;
   setPassiveCapture: (fn: () => void | Promise<void>) => void;
   setMemoryBox: (fn: () => void | Promise<void>) => void;
+  setPersist: (fn: () => void | Promise<void>) => void;
   recordedProcessedCount: () => number;
   run: (
     coord: ExtractionRunCoordinator,
@@ -136,6 +137,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   let respond: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult> = () => successResult();
   let passiveCaptureHandler: () => void | Promise<void> = async () => {};
   let passiveCapture: { principal?: string; namespace?: string } | null = null;
+  let persistHandler: () => void | Promise<void> = async () => {};
   let memoryBoxHandler: () => void | Promise<void> = async () => {};
   let recordedProcessedCount = 0;
 
@@ -162,6 +164,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     }),
     persistExtraction: async () => {
       persistCalls += 1;
+      await persistHandler();
       return { persistedIds: ["memory-1"], memoryPathById: new Map() };
     },
     maybeCapturePassiveCorrections: async (_turns, options) => {
@@ -206,6 +209,9 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     },
     setMemoryBox: (fn) => {
       memoryBoxHandler = fn;
+    },
+    setPersist: (fn) => {
+      persistHandler = fn;
     },
     recordedProcessedCount: () => recordedProcessedCount,
     passiveCapture: () => passiveCapture,
@@ -384,6 +390,28 @@ test("runExtraction does not wait past its deadline for post-persist memory boxe
     assert.equal(result.status, "completed");
     assert.equal(harness.persistCalls(), 1, "durable persistence must complete before helper timeout");
     assert.ok(Date.now() - startedAt < 1_500, "post-persist helper must not hold the extraction indefinitely");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("runExtraction force flush reports a late deadline after clearing committed turns", async () => {
+  const harness = await makeHarness();
+  try {
+    harness.setPersist(() => new Promise<void>((resolve) => setTimeout(resolve, 150)));
+    const deadlineMs = Date.now() + 50;
+    await assert.rejects(
+      harness.newCoordinator().runExtraction(makeTurns("late-persist-deadline"), {
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+        clearBufferAfterExtraction: true,
+        bufferKey: "late-persist-deadline",
+        deadlineMs,
+        failOnExtractionFailure: true,
+      }),
+      (error: unknown) => error instanceof ExtractionDeadlineError && error.stage === "during_buffer_clear",
+    );
+    assert.equal(harness.persistCalls(), 1, "the late deadline must follow durable persistence");
   } finally {
     await harness.cleanup();
   }

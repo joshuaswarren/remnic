@@ -40,6 +40,7 @@ import { SessionObserverState } from "../session-observer-state.js";
 import { CODEX_THREAD_KEY_PREFIX } from "../thread-key.js";
 import { TranscriptManager } from "../transcript.js";
 import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../types.js";
+import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import {
   BulkImportBatchPartialFailureError,
   splitTurnsBySourceValidAt,
@@ -74,6 +75,7 @@ export interface TurnIngestionDeps {
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      onDurableCommit?: () => void;
       forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
@@ -94,6 +96,7 @@ export interface TurnIngestionDeps {
        * `runExtraction` so access `observe` can record provenance under the
        * authenticated principal instead of `resolvePrincipal(sessionKey)`.
        */
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
       principalOverride?: string;
     },
   ): Promise<void>;
@@ -623,6 +626,7 @@ export class TurnIngestionCoordinator {
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      onDurableCommit?: () => void;
       forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
@@ -644,6 +648,7 @@ export class TurnIngestionCoordinator {
        * authenticated principal instead of `resolvePrincipal(sessionKey)`.
        */
       principalOverride?: string;
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
     } = {},
   ): Promise<void> {
     const bufferKey = options.bufferKey ?? turnsToExtract[0]?.sessionKey ?? "default";
@@ -741,10 +746,12 @@ export class TurnIngestionCoordinator {
           skipUserTurnThreshold: options.skipUserTurnThreshold ?? false,
           deadlineMs: extractionDeadlineMs,
           bufferKey,
+          onDurableCommit: options.onDurableCommit,
           abortSignal: options.abortSignal,
           failOnExtractionFailure: options.failOnExtractionFailure === true,
           writeNamespaceOverride: options.writeNamespaceOverride,
           principalOverride: options.principalOverride,
+          scopeProfileWritePlan: options.scopeProfileWritePlan,
           forceExtractionAttempt: options.forceExtractionAttempt === true,
         });
         settleTask(undefined, result);

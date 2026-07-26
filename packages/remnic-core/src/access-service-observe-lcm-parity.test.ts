@@ -168,6 +168,7 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
         writeNamespaceOverride?: string;
         principalOverride?: string;
         sessionOwnerPrincipal?: string;
+        abortSignal?: AbortSignal;
       } = {},
     ) => {
       extractionCalls.push({
@@ -536,6 +537,173 @@ test("#2128: force-flush waits for a pending observe extraction", async () => {
   const response = await flushPromise;
   assert.equal(response.flushed, true);
 });
+test("#2128: pending extraction barriers stay isolated by authenticated principal", async () => {
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "team", readPrincipals: ["alice", "bob"], writePrincipals: ["alice", "bob"] },
+    ],
+  } as Partial<PluginConfig>);
+  const pending = new Map<string, () => void>();
+  probe.orch.ingestReplayBatch = async (_turns, options = {}) =>
+    new Promise<void>((resolve) => {
+      pending.set(options.principalOverride ?? "", resolve);
+    });
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "shared-session";
+
+  await service.observe(
+    observeRequest({
+      sessionKey,
+      namespace: "team",
+      authenticatedPrincipal: "alice",
+      skipExtraction: false,
+    }),
+  );
+  await service.observe(
+    observeRequest({
+      sessionKey,
+      namespace: "team",
+      authenticatedPrincipal: "bob",
+      skipExtraction: false,
+    }),
+  );
+  assert.deepEqual([...pending.keys()].sort(), ["alice", "bob"]);
+
+  const aliceFlush = service.extractionForceFlush({
+    sessionKey,
+    namespace: "team",
+    authenticatedPrincipal: "alice",
+    deadlineMs: Date.now() + 500,
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  pending.get("alice")?.();
+  assert.equal((await aliceFlush).flushed, true);
+
+  const bobFlush = service.extractionForceFlush({
+    sessionKey,
+    namespace: "team",
+    authenticatedPrincipal: "bob",
+    deadlineMs: Date.now() + 500,
+  });
+  pending.get("bob")?.();
+  assert.equal((await bobFlush).flushed, true);
+});
+
+test("#2128: chained observes remain behind one force-flush barrier", async () => {
+  const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
+  const resolvers: Array<() => void> = [];
+  probe.orch.ingestReplayBatch = async () =>
+    new Promise<void>((resolve) => {
+      resolvers.push(resolve);
+    });
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "chained-observes";
+
+  await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
+  const flushPromise = service.extractionForceFlush({ sessionKey, deadlineMs: Date.now() + 500 });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
+  assert.equal(resolvers.length, 2);
+
+  let settled = false;
+  void flushPromise.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  resolvers[0]?.();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  resolvers[1]?.();
+  assert.equal((await flushPromise).flushed, true);
+});
+
+test("#2128: a failed observe extraction remains visible to force-flush", async () => {
+  const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
+  let rejectExtraction!: (error: Error) => void;
+  probe.orch.ingestReplayBatch = async () =>
+    new Promise<void>((_resolve, reject) => {
+      rejectExtraction = reject;
+    });
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "failed-observe-extraction";
+  const failure = new Error("provider failed");
+
+  await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
+  rejectExtraction(failure);
+  await assert.rejects(
+    service.extractionForceFlush({ sessionKey }),
+    (error: unknown) => error === failure,
+  );
+});
+
+test("#2128: force-flush deadline cancels the pending observe extraction", async () => {
+  const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
+  let extractionSignal: AbortSignal | undefined;
+  probe.orch.ingestReplayBatch = async (_turns, options = {}) => {
+    extractionSignal = options.abortSignal;
+    return new Promise<void>((_resolve, reject) => {
+      options.abortSignal?.addEventListener(
+        "abort",
+        () => reject(new Error("extraction cancelled")),
+        { once: true },
+      );
+    });
+  };
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "deadline-cancelled-extraction";
+
+  await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
+  const keepAlive = setInterval(() => {}, 5);
+  try {
+    await assert.rejects(
+      service.extractionForceFlush({
+        sessionKey,
+        deadlineMs: Date.now() + 25,
+      }),
+      (error: unknown) =>
+        error instanceof EngramAccessInputError &&
+        error.message.includes("pending_observe_extraction"),
+    );
+  } finally {
+    clearInterval(keepAlive);
+  }
+  assert.equal(extractionSignal?.aborted, true);
+});
+
+test("#2128: force-flush abort signal cancels the pending observe extraction", async () => {
+  const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
+  let extractionSignal: AbortSignal | undefined;
+  probe.orch.ingestReplayBatch = async (_turns, options = {}) => {
+    extractionSignal = options.abortSignal;
+    return new Promise<void>((_resolve, reject) => {
+      options.abortSignal?.addEventListener(
+        "abort",
+        () => reject(new Error("extraction cancelled")),
+        { once: true },
+      );
+    });
+  };
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "abort-cancelled-extraction";
+  const abortController = new AbortController();
+
+  await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
+  const flushPromise = service.extractionForceFlush({
+    sessionKey,
+    abortSignal: abortController.signal,
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  abortController.abort();
+  await assert.rejects(
+    flushPromise,
+    (error: unknown) => error instanceof Error && error.message === "extraction force-flush aborted",
+  );
+  assert.equal(extractionSignal?.aborted, true);
+});
 
 test("#2128: authenticated opaque sessions persist their trusted owner for force-flush", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
@@ -760,86 +928,47 @@ test("#2128: late extraction deadline is surfaced as an access input error", asy
   );
 });
 
-test("#2128: an abort while attaching single-store context never starts the buffer drain", async () => {
-  const probe = makeParityProbe({ namespacesEnabled: false });
-  const service = new EngramAccessService(probe.orch);
-  const abortController = new AbortController();
-  const originalSetCodingContext = probe.orch.setCodingContextForSession.bind(probe.orch);
-  (probe.orch as unknown as {
-    setCodingContextForSession(sessionKey: string, context: CodingContext | null): void;
-  }).setCodingContextForSession = (sessionKey, context) => {
-    originalSetCodingContext(sessionKey, context);
-    if (context !== null) abortController.abort(new Error("late lifecycle abort"));
-  };
-
-  await assert.rejects(
-    () =>
-      service.extractionForceFlush({
-        sessionKey: "pi-geek:abort-during-attach",
-        projectTag: "Acme/Webshop",
-        authenticatedPrincipal: "pi-geek",
-        abortSignal: abortController.signal,
-      }),
-    /extraction force-flush aborted/,
-  );
-  assert.equal(probe.extractionForceFlushCalls.length, 0);
-});
-
-test("#2128: abort after scoped-plan context seeding clears the temporary binding", async () => {
+test("#2128: force-flush scope resolution does not overwrite a concurrent observe context", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);
-  const sessionKey = "pi-geek:abort-after-scope";
-  const abortController = new AbortController();
-  const originalSetCodingContext = probe.orch.setCodingContextForSession.bind(probe.orch);
-  (probe.orch as unknown as {
-    setCodingContextForSession(sessionKey: string, context: CodingContext | null): void;
-  }).setCodingContextForSession = (key, context) => {
-    originalSetCodingContext(key, context);
-    if (context !== null) abortController.abort(new Error("scope-plan abort"));
-  };
+  const sessionKey = "pi-geek:concurrent-scope";
+  let releaseFlush!: () => void;
+  const flushBlocked = new Promise<void>((resolve) => {
+    releaseFlush = resolve;
+  });
+  probe.orch.flushSession = async () => flushBlocked;
 
-  await assert.rejects(
-    () =>
-      service.extractionForceFlush({
-        sessionKey,
-        projectTag: "Acme/Webshop",
-        authenticatedPrincipal: "pi-geek",
-        abortSignal: abortController.signal,
-      }),
-    /extraction force-flush aborted/,
+  const flushPromise = service.extractionForceFlush({
+    sessionKey,
+    projectTag: "Acme/FlushProject",
+    authenticatedPrincipal: "pi-geek",
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(
+    probe.orch.getCodingContextForSession(sessionKey),
+    null,
+    "force-flush scope resolution must stay local while its drain is pending",
   );
-  assert.equal(probe.orch.getCodingContextForSession(sessionKey), null);
-  assert.equal(probe.extractionForceFlushCalls.length, 0);
-});
 
-test("#2128: a deadline that elapses while attaching single-store context never starts the buffer drain", async () => {
-  const probe = makeParityProbe({ namespacesEnabled: false });
-  const service = new EngramAccessService(probe.orch);
-  const originalDateNow = Date.now;
-  const originalSetCodingContext = probe.orch.setCodingContextForSession.bind(probe.orch);
-  let now = 1_000;
-  (probe.orch as unknown as {
-    setCodingContextForSession(sessionKey: string, context: CodingContext | null): void;
-  }).setCodingContextForSession = (sessionKey, context) => {
-    originalSetCodingContext(sessionKey, context);
-    if (context !== null) now = 1_002;
-  };
-  Date.now = () => now;
-  try {
-    await assert.rejects(
-      () =>
-        service.extractionForceFlush({
-          sessionKey: "pi-geek:deadline-during-attach",
-          projectTag: "Acme/Webshop",
-          authenticatedPrincipal: "pi-geek",
-          deadlineMs: 1_001,
-        }),
-      /extraction force-flush deadline exceeded before buffer drain/,
-    );
-  } finally {
-    Date.now = originalDateNow;
-  }
-  assert.equal(probe.extractionForceFlushCalls.length, 0);
+  await service.observe(
+    observeRequest({
+      sessionKey,
+      projectTag: "Acme/ObserveProject",
+      authenticatedPrincipal: "pi-geek",
+      skipExtraction: true,
+    }),
+  );
+  const observedContext = probe.orch.getCodingContextForSession(sessionKey);
+  assert.ok(observedContext);
+  assert.equal(observedContext.projectId, projectTagProjectId("Acme/ObserveProject"));
+
+  releaseFlush();
+  await flushPromise;
+  assert.equal(
+    probe.orch.getCodingContextForSession(sessionKey)?.projectId,
+    projectTagProjectId("Acme/ObserveProject"),
+    "force-flush cleanup must not clear a context attached by the concurrent observe",
+  );
 });
 
 test("#1505 thread 2 (b) cwd git repo: observe LCM write key == recall reader key == compaction keys", async () => {

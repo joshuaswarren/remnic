@@ -73,6 +73,12 @@ type McpRequestOptions = {
    */
   enforceWriteQuota?: () => void | Promise<void>;
   /**
+   * Called once when a lifecycle write reaches its durable commit boundary.
+   * HTTP transports use this to account writes even when post-commit work
+   * fails or the client disconnects before a response is available.
+   */
+  recordWriteCommit?: () => void;
+  /**
    * Server-resolved connector identity (Phase 1 provenance). Set by the HTTP
    * auth boundary from the matched token entry's connector; threaded into
    * the operation context so write handlers stamp it onto frontmatter.
@@ -2432,6 +2438,7 @@ export class EngramMcpServer {
           options?.sessionId,
           mcpScope,
           options?.enforceWriteQuota,
+          options?.recordWriteCommit,
           options?.sourceConnector,
           options?.abortSignal,
         );
@@ -2648,6 +2655,7 @@ export class EngramMcpServer {
     mcpSessionId?: string,
     scope?: { namespace?: string; sessionKey?: string },
     enforceWriteQuota?: () => void | Promise<void>,
+    recordWriteCommit?: () => void,
     sourceConnector?: string,
     abortSignal?: AbortSignal,
   ): Promise<unknown> {
@@ -2751,7 +2759,9 @@ export class EngramMcpServer {
     const output = (await op.run(envelope, {
       service: this.service,
       authenticatedPrincipal: effectivePrincipal,
-      ...(enforceWriteQuota ? { hooks: { enforceWriteQuota } } : {}),
+      ...(enforceWriteQuota || recordWriteCommit
+        ? { hooks: { ...(enforceWriteQuota ? { enforceWriteQuota } : {}), ...(recordWriteCommit ? { recordWriteCommit } : {}) } }
+        : {}),
       ...(sourceConnector ? { sourceConnector } : {}),
       ...(abortSignal ? { abortSignal } : {}),
     })) as { result: unknown };

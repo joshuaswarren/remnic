@@ -26,6 +26,7 @@ import { ExtractionDeadlineError } from "./extraction-run.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
 import type { EntitySynthesisCoordinator } from "./entity-synthesis-coordinator.js";
 import type { BufferTurn, CodingContext, DaySummaryResult, MemoryFile, PluginConfig } from "../types.js";
+import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import {
   Orchestrator,
 } from "../orchestrator.js";
@@ -55,6 +56,7 @@ export interface SessionContextDeps {
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      onDurableCommit?: () => void;
       forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
@@ -76,6 +78,7 @@ export interface SessionContextDeps {
        * authenticated principal instead of `resolvePrincipal(sessionKey)`.
        */
       principalOverride?: string;
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
     },
   ): Promise<void>;
   resolvePrincipal(sessionKey?: string): string | undefined;
@@ -93,7 +96,11 @@ export interface SessionFlushOptions {
   clearMatchingTurns?: boolean;
   extractionDeadlineMs?: number;
   writeNamespaceOverride?: string;
+  /** Called at the first durable extraction commit in this flush. */
+  onCommitted?: () => void;
   failOnExtractionFailure?: boolean;
+  /** Resolved profile plan from access scope resolution; avoids recomputing from shared session context. */
+  scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
   principalOverride?: string;
 }
 
@@ -111,6 +118,7 @@ export async function awaitSessionFlushPhase<T>(
   task: () => Promise<T>,
   options: Pick<SessionFlushOptions, "abortSignal" | "extractionDeadlineMs" | "reason"> & {
     deadlineStage?: string;
+    onDeadline?: () => void;
   },
 ): Promise<T> {
   const abortMessage =
@@ -118,6 +126,7 @@ export async function awaitSessionFlushPhase<T>(
   throwIfAborted(options.abortSignal, abortMessage);
   const deadline = options.extractionDeadlineMs;
   if (typeof deadline === "number" && Date.now() >= deadline) {
+    options.onDeadline?.();
     throw new ExtractionDeadlineError(options.deadlineStage ?? "before_buffer_flush");
   }
 
@@ -140,6 +149,7 @@ export async function awaitSessionFlushPhase<T>(
           const schedule = (): void => {
             const remainingMs = deadline - Date.now();
             if (remainingMs <= 0) {
+              options.onDeadline?.();
               reject(new ExtractionDeadlineError(options.deadlineStage ?? "before_buffer_flush"));
               return;
             }
@@ -502,7 +512,9 @@ export class SessionContextCoordinator {
           extractionDeadlineMs: options.extractionDeadlineMs,
           writeNamespaceOverride: options.writeNamespaceOverride,
           principalOverride: options.principalOverride,
+          scopeProfileWritePlan: options.scopeProfileWritePlan,
           clearMatchingTurns: options.clearMatchingTurns ?? scopedRequest,
+          onDurableCommit: options.onCommitted,
           onTaskSettled: (error) => (error ? reject(error) : resolve()),
         })
           .catch(reject);

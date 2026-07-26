@@ -59,6 +59,7 @@ test("flushSession queues extraction for the targeted buffered session", async (
     reason: string;
     options: Record<string, unknown> | undefined;
   } | null = null;
+  let committed = 0;
 
   orchestrator.buffer = {
     getTurns(bufferKey: string) {
@@ -71,12 +72,15 @@ test("flushSession queues extraction for the targeted buffered session", async (
     options?: Record<string, unknown>,
   ) => {
     queued = { turns: queuedTurns, reason, options };
+    (options?.onDurableCommit as (() => void) | undefined)?.();
     (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
   };
-
   await orchestrator.flushSession("thread-a", {
     reason: "access_force_flush",
     failOnExtractionFailure: true,
+    onCommitted: () => {
+      committed += 1;
+    },
   });
 
   assert.ok(queued);
@@ -91,6 +95,7 @@ test("flushSession queues extraction for the targeted buffered session", async (
   assert.equal(queuedCall.options?.skipDedupeCheck, true);
   assert.equal(queuedCall.options?.failOnExtractionFailure, true);
   assert.equal(queuedCall.options?.abortSignal, undefined);
+  assert.equal(committed, 1);
 });
 
 test("flushSession is a no-op when the targeted buffer is empty", async () => {

@@ -144,15 +144,19 @@ export async function runExtractionPostPersistBestEffort(
     operation: () => Promise<unknown>,
     phase: string,
     clearTimerOnError?: boolean,
-    options?: { ignoreAbort?: boolean },
+    options?: { ignoreAbort?: boolean; ignoreDeadline?: boolean },
   ) => Promise<unknown>,
   stage: string,
   operation: () => Promise<unknown>,
-  options?: { ignoreAbort?: boolean },
+  options?: { ignoreAbort?: boolean; ignoreDeadline?: boolean; propagateErrors?: boolean },
 ): Promise<void> {
   try {
-    await runDeadlineAware(operation, stage, false, options);
+    await runDeadlineAware(operation, stage, false, {
+      ignoreAbort: options?.ignoreAbort,
+      ignoreDeadline: options?.ignoreDeadline,
+    });
   } catch (error) {
+    if (options?.propagateErrors) throw error;
     log.warn(`runExtraction: ${stage} failed after persistence (non-fatal)`, error);
   }
 }

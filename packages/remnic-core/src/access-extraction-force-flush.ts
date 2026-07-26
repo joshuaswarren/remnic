@@ -14,14 +14,24 @@ import { log } from "./logger.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import { SessionOwnershipError, awaitSessionFlushPhase } from "./orchestration/session-context.js";
 
-type PendingObserveExtractionWaiter = (sessionKey: string) => Promise<void>;
+type PendingObserveExtractionWaiter = (
+  sessionKey: string,
+  principal: string | undefined,
+  namespace: string | undefined,
+  abortSignal?: AbortSignal,
+  registerCancellation?: (cancel: () => void) => void,
+) => Promise<void>;
 
 export async function extractionForceFlush(
   deps: AccessObserveWriteSurfaceDeps,
   request: EngramAccessExtractionForceFlushRequest,
   waitForPendingObserveExtraction?: PendingObserveExtractionWaiter,
 ): Promise<EngramAccessExtractionForceFlushResponse> {
-  if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
+  if (
+    !request.sessionKey ||
+    typeof request.sessionKey !== "string" ||
+    request.sessionKey.trim().length === 0
+  ) {
     throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
   }
   if (
@@ -30,14 +40,21 @@ export async function extractionForceFlush(
   ) {
     throw new EngramAccessInputError("deadlineMs must be a finite non-negative number");
   }
-  throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-  const namespacesEnabled = resolveNamespaceCapabilities(deps.orchestrator.config).namespaces === true;
+
   const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
+  const cancelPendingObserveExtractions = (): void => {
+    deps.cancelPendingObserveExtractions?.(
+      request.sessionKey,
+      authenticatedPrincipal,
+    );
+  };
+  if (request.abortSignal?.aborted) cancelPendingObserveExtractions();
+  throwIfAborted(request.abortSignal, "extraction force-flush aborted");
+
+  const namespacesEnabled = resolveNamespaceCapabilities(deps.orchestrator.config).namespaces === true;
   const sessionPrincipal = namespacesEnabled
     ? resolvePrincipal(request.sessionKey, deps.orchestrator.config)
     : undefined;
-  const opaqueSession =
-    namespacesEnabled && (sessionPrincipal === undefined || sessionPrincipal === "default");
   if (namespacesEnabled) {
     if (
       !authenticatedPrincipal ||
@@ -49,67 +66,83 @@ export async function extractionForceFlush(
     }
   }
 
-  const previousCodingContext = deps.orchestrator.getCodingContextForSession(request.sessionKey);
-  let seededCodingContext: unknown = null;
-  const captureSeededCodingContext = (): void => {
-    if (previousCodingContext !== null || seededCodingContext !== null) return;
-    const currentCodingContext = deps.orchestrator.getCodingContextForSession(request.sessionKey);
-    if (currentCodingContext !== null) seededCodingContext = currentCodingContext;
+  let committed = false;
+  const markCommitted = (): void => {
+    if (committed) return;
+    committed = true;
+    request.onCommitted?.();
   };
-  const clearSeededCodingContext = (): void => {
-    if (previousCodingContext !== null || seededCodingContext === null) return;
-    if (deps.orchestrator.getCodingContextForSession(request.sessionKey) === seededCodingContext) {
-      deps.orchestrator.setCodingContextForSession(request.sessionKey, null);
-    }
-  };
+  const abortHandler = (): void => cancelPendingObserveExtractions();
+  request.abortSignal?.addEventListener("abort", abortHandler, { once: true });
 
   try {
     const scope = await deps.resolveMemoryScopePlan(request);
-    captureSeededCodingContext();
-    if (opaqueSession && previousCodingContext === null) {
-      const scopedCodingContext = deps.orchestrator.getCodingContextForSession(request.sessionKey);
-      if (scopedCodingContext !== null) {
-        deps.orchestrator.setCodingContextForSession(request.sessionKey, null);
-        seededCodingContext = null;
-      }
-    }
     throwIfAborted(request.abortSignal, "extraction force-flush aborted");
     if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
+      cancelPendingObserveExtractions();
       throw new EngramAccessInputError("extraction force-flush deadline exceeded before buffer drain");
     }
 
-    if (!request.namespace?.trim() && !opaqueSession) {
-      await deps.maybeAttachCodingContext(request.sessionKey, {
-        cwd: request.cwd,
-        projectTag: request.projectTag,
-      });
-      captureSeededCodingContext();
-    }
-    throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-    if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
-      throw new EngramAccessInputError("extraction force-flush deadline exceeded before buffer drain");
-    }
-    await deps.orchestrator.flushSession(request.sessionKey, {
-      reason: "access_force_flush",
-      abortSignal: request.abortSignal,
-      failOnExtractionFailure: true,
-      extractionDeadlineMs: request.deadlineMs,
-      writeNamespaceOverride: scope.writeNamespace,
-      principalOverride:
-        typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined,
-    });
+    const cancelScopedPendingObserveExtractions = (): void => {
+      deps.cancelPendingObserveExtractions?.(
+        request.sessionKey,
+        scope.principal,
+        scope.writeNamespace,
+      );
+    };
+    await awaitSessionFlushPhase(
+      () =>
+        deps.orchestrator.flushSession(request.sessionKey, {
+          reason: "access_force_flush",
+          abortSignal: request.abortSignal,
+          failOnExtractionFailure: true,
+          extractionDeadlineMs: request.deadlineMs,
+          writeNamespaceOverride: scope.writeNamespace,
+          principalOverride:
+            typeof scope.principal === "string" && scope.principal.length > 0
+              ? scope.principal
+              : undefined,
+          scopeProfileWritePlan: scope.scopeProfilePlan,
+          onCommitted: markCommitted,
+        }),
+      {
+        abortSignal: request.abortSignal,
+        extractionDeadlineMs: request.deadlineMs,
+        reason: "access_force_flush",
+        deadlineStage: "buffer_drain",
+        onDeadline: cancelScopedPendingObserveExtractions,
+      },
+    );
+    // A flush with no buffered turns still consumes the lifecycle write;
+    // durable drains already invoked this idempotent callback.
+    markCommitted();
+
     if (waitForPendingObserveExtraction) {
+      let cancelPendingObserveExtraction: (() => void) | undefined;
       await awaitSessionFlushPhase(
-        () => waitForPendingObserveExtraction(request.sessionKey),
+        () =>
+          waitForPendingObserveExtraction(
+            request.sessionKey,
+            scope.principal,
+            scope.writeNamespace,
+            request.abortSignal,
+            (cancel) => {
+              cancelPendingObserveExtraction = cancel;
+            },
+          ),
         {
           abortSignal: request.abortSignal,
           extractionDeadlineMs: request.deadlineMs,
           reason: "access_force_flush",
           deadlineStage: "pending_observe_extraction",
+          onDeadline: () => {
+            cancelScopedPendingObserveExtractions();
+            cancelPendingObserveExtraction?.();
+          },
         },
       );
     }
-    request.onCommitted?.();
+
     const buffer = deps.orchestrator.buffer;
     if (buffer && typeof buffer.clearRetainedTurnsForSession === "function") {
       try {
@@ -157,6 +190,6 @@ export async function extractionForceFlush(
     }
     throw error;
   } finally {
-    clearSeededCodingContext();
+    request.abortSignal?.removeEventListener("abort", abortHandler);
   }
 }

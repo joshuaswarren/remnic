@@ -957,6 +957,8 @@ export interface MemoryScopePlan {
   readNamespaces: string[];
   /** Active scope profile id, when `defaultScopeProfile` is configured. */
   scopeProfile?: string;
+  /** Internal resolved profile used to keep scoped extraction persistence aligned with access resolution. */
+  scopeProfilePlan?: ResolvedScopeProfilePlan | null;
   /** Resolved profile layer that supplied `writeNamespace`. */
   writeLayer?: string;
   /** Resolved profile layers in the active profile contract. */
@@ -1787,6 +1789,7 @@ export class EngramAccessService {
         objectiveStateNamespace: profilePlan.writeNamespace,
         readNamespaces,
         scopeProfile: profilePlan.profileId,
+        scopeProfilePlan: profilePlan,
         writeLayer: profilePlan.writeLayer,
         layers: profilePlan.layers,
         promotionTargets: profilePlan.promotionTargets,

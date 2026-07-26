@@ -3032,6 +3032,7 @@ export class Orchestrator {
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       failOnExtractionFailure?: boolean;
+      onDurableCommit?: () => void;
       forceExtractionAttempt?: boolean;
       onTaskSettled?: (
         error?: unknown,
@@ -3053,6 +3054,7 @@ export class Orchestrator {
        * authenticated principal instead of `resolvePrincipal(sessionKey)`.
        */
       principalOverride?: string;
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
     } = {},
   ): Promise<void> {
     return this.turnIngestionCoordinator.queueBufferedExtraction(

@@ -110,6 +110,11 @@ export interface AccessObserveWriteSurfaceDeps {
       authenticatedPrincipal?: string;
     }
   ): Promise<MemoryScopePlan>;
+  cancelPendingObserveExtractions?(
+    sessionKey: string,
+    principal?: string,
+    namespace?: string,
+  ): void;
   resolveReadableNamespace(namespace: string | undefined, principal?: string): string;
   validateWriteCandidate(
     request: EngramAccessMemoryStoreRequest | EngramAccessSuggestionSubmitRequest,
@@ -124,33 +129,110 @@ export interface AccessObserveWriteSurfaceDeps {
 
 export class AccessObserveWriteSurface {
   private quarantineStoreInstance?: WriteQuarantineStore;
-  private readonly pendingObserveExtractions = new Map<string, Promise<void>>();
+  private readonly pendingObserveExtractions = new Map<
+    string,
+    {
+      promise: Promise<void>;
+      controllers: Set<AbortController>;
+    }
+  >();
 
-  private trackPendingObserveExtraction(sessionKey: string, extraction: Promise<void>): void {
-    const previous = this.pendingObserveExtractions.get(sessionKey);
-    const tracked = previous
-      ? Promise.allSettled([previous, extraction]).then((results) => {
-          const rejected = results.find(
-            (result): result is PromiseRejectedResult => result.status === "rejected",
-          );
-          if (rejected) throw rejected.reason;
-        })
-      : extraction;
-    this.pendingObserveExtractions.set(sessionKey, tracked);
-    void tracked
-      .finally(() => {
-        if (this.pendingObserveExtractions.get(sessionKey) === tracked) {
-          this.pendingObserveExtractions.delete(sessionKey);
+  private pendingObserveExtractionKey(
+    sessionKey: string,
+    principal: string | undefined,
+    namespace: string | undefined,
+  ): string {
+    return `${sessionKey}\u0000${principal ?? ""}\u0000${namespace ?? ""}`;
+  }
+
+  private trackPendingObserveExtraction(
+    key: string,
+    extraction: Promise<void>,
+    controller: AbortController,
+  ): void {
+    const previous = this.pendingObserveExtractions.get(key);
+    const trackedPromise =
+      previous
+        ? Promise.allSettled([previous.promise, extraction]).then((results) => {
+            const rejected = results.find(
+              (result): result is PromiseRejectedResult => result.status === "rejected",
+            );
+            if (rejected) throw rejected.reason;
+          })
+        : extraction;
+    const entry = {
+      promise: trackedPromise,
+      controllers: new Set(previous ? [...previous.controllers, controller] : [controller]),
+    };
+    this.pendingObserveExtractions.set(key, entry);
+    void trackedPromise.then(() => {
+      if (this.pendingObserveExtractions.get(key) === entry) {
+        this.pendingObserveExtractions.delete(key);
+      }
+    }).catch(() => {
+      // Keep a failed barrier visible to the next lifecycle flush. Dropping
+      // it would turn a failed fire-and-forget observe into flushed:true.
+    });
+  }
+
+  cancelPendingObserveExtractions(
+    sessionKey: string,
+    principal?: string,
+    namespace?: string,
+  ): void {
+    for (const [key, entry] of this.pendingObserveExtractions) {
+      const [entrySessionKey, entryPrincipal, entryNamespace] = key.split("\u0000");
+      if (
+        entrySessionKey !== sessionKey ||
+        (principal !== undefined && entryPrincipal !== (principal ?? "")) ||
+        (namespace !== undefined && entryNamespace !== (namespace ?? ""))
+      ) {
+        continue;
+      }
+      for (const controller of entry.controllers) {
+        controller.abort();
+      }
+    }
+  }
+
+  private async waitForPendingObserveExtraction(
+    sessionKey: string,
+    principal: string | undefined,
+    namespace: string | undefined,
+    abortSignal?: AbortSignal,
+    registerCancellation?: (cancel: () => void) => void,
+  ): Promise<void> {
+    const key = this.pendingObserveExtractionKey(sessionKey, principal, namespace);
+    const abortTracked = (): void => {
+      const entry = this.pendingObserveExtractions.get(key);
+      for (const controller of entry?.controllers ?? []) {
+        controller.abort(abortSignal?.reason);
+      }
+    };
+    registerCancellation?.(abortTracked);
+    abortSignal?.addEventListener("abort", abortTracked, { once: true });
+    try {
+      while (true) {
+        const entry = this.pendingObserveExtractions.get(key);
+        if (!entry) return;
+        try {
+          await entry.promise;
+        } catch (error) {
+          // A newer observe may have replaced this entry while the older
+          // extraction was settling. Continue with the current barrier so a
+          // force flush never leaves newly-added work running in the
+          // background; only the current failed barrier rejects the flush.
+          if (this.pendingObserveExtractions.get(key) !== entry) continue;
+          throw error;
         }
-      })
-      .catch(() => {});
+        if (this.pendingObserveExtractions.get(key) !== entry) continue;
+        this.pendingObserveExtractions.delete(key);
+        return;
+      }
+    } finally {
+      abortSignal?.removeEventListener("abort", abortTracked);
+    }
   }
-
-  private async waitForPendingObserveExtraction(sessionKey: string): Promise<void> {
-    const pending = this.pendingObserveExtractions.get(sessionKey);
-    if (pending) await pending;
-  }
-
   constructor(private readonly deps: AccessObserveWriteSurfaceDeps) {}
 
   private quarantineStore(): WriteQuarantineStore {
@@ -842,10 +924,12 @@ export class AccessObserveWriteSurface {
       // queueBufferedExtraction). Fire-and-forget here just decouples
       // the HTTP response from the queue drain.
       try {
+        const observeAbortController = new AbortController();
         const extractionPromise = this.deps.orchestrator.ingestReplayBatch(turns, {
           archiveLcm: false,
           writeNamespaceOverride,
           principalOverride,
+          abortSignal: observeAbortController.signal,
           ...(typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
             ? { sessionOwnerPrincipal: request.authenticatedPrincipal.trim() }
             : {}),
@@ -853,7 +937,11 @@ export class AccessObserveWriteSurface {
         extractionPromise.catch((err) => {
           log.error(`access-observe background extraction failed: ${err}`);
         });
-        this.trackPendingObserveExtraction(request.sessionKey, extractionPromise);
+        this.trackPendingObserveExtraction(
+          this.pendingObserveExtractionKey(request.sessionKey, scope.principal, writeNamespace),
+          extractionPromise,
+          observeAbortController,
+        );
         extractionQueued = true;
       } catch (err) {
         // Synchronous enqueue failure (e.g. orchestrator disposed)
@@ -893,10 +981,10 @@ export class AccessObserveWriteSurface {
     return extractionForceFlush(
       this.deps,
       request,
-      (sessionKey) => this.waitForPendingObserveExtraction(sessionKey),
+      (sessionKey, principal, namespace, abortSignal, registerCancellation) =>
+        this.waitForPendingObserveExtraction(sessionKey, principal, namespace, abortSignal, registerCancellation),
     );
   }
-
   async workTask(request: {
     action: "create" | "get" | "list" | "update" | "transition" | "delete";
     id?: string;

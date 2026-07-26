@@ -458,27 +458,35 @@ export class ExtractionRunCoordinator {
       abortSignal?: AbortSignal;
       failOnExtractionFailure?: boolean;
       /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * extraction writes go to this namespace instead of the one derived
+       * Called immediately after durable extraction persistence returns, before
+       * any metadata, retention, or helper work. Lifecycle callers use this
+       * as the write-rate-limit commit boundary.
+       */
+      onDurableCommit?: () => void;
+      /**
+       * Explicit namespace override for the write path (#460).  When set, this
+       * is the namespace where extraction writes go instead of the one derived
        * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * The resolved `principal` is still threaded into memory metadata
-       * for provenance; only the storage target is overridden.
+       * The resolved `principal` is still threaded into memory metadata for
+       * provenance; only the storage target is overridden.
        */
       writeNamespaceOverride?: string;
       /**
        * Pin the provenance principal instead of deriving it from
-       * `resolvePrincipal(sessionKey)` (#1495 thread 1). When set, this is the
-       * identity an access surface already authenticated; used so observed-turn
-       * provenance is correct even though `turn.sessionKey` is the ORIGINAL
-       * (un-prefixed) key and storage is pinned via `writeNamespaceOverride`.
+       * `resolvePrincipal(sessionKey)`. When set, this is the identity an
+       * access surface already authenticated; used so observed-turn provenance
+       * is correct even though `turn.sessionKey` is the original key.
        */
       principalOverride?: string;
       /**
+       * Access scope resolution may already have selected a profile while the
+       * session context remains intentionally unbound. Reuse that plan for
+       * persistence instead of deriving it from shared session state.
+       */
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+      /**
        * Force the extractor call, bypassing the retry-backoff / circuit-breaker
-       * gate (extraction hot-loop hardening). Set by explicit flush paths
-       * (before_reset / session flush / replay / bulk import) that already pass
-       * `skipDedupeCheck: true` — AGENTS.md rule 18. A forced attempt still
-       * records its failure into retry-state/breaker.
+       * gate (extraction hot-loop hardening). Set by explicit flush paths.
        */
       forceExtractionAttempt?: boolean;
     } = {}
@@ -696,13 +704,19 @@ export class ExtractionRunCoordinator {
       this.config.codingMode,
       this.config.defaultNamespace
     );
-    const scopeProfileGatePlan = resolveScopeProfilePlan({
-      config: this.config,
-      principal,
-      codingContext: codingContextForWrite,
-      codingOverlay: codingOverlayForWrite,
-    });
-    const scopeProfileWritePlan = explicitWriteNamespace ? null : scopeProfileGatePlan;
+    const scopeProfileGatePlan =
+      options.scopeProfileWritePlan !== undefined
+        ? options.scopeProfileWritePlan
+        : resolveScopeProfilePlan({
+            config: this.config,
+            principal,
+            codingContext: codingContextForWrite,
+            codingOverlay: codingOverlayForWrite,
+          });
+    const scopeProfileWritePlan =
+      explicitWriteNamespace && options.scopeProfileWritePlan === undefined
+        ? null
+        : scopeProfileGatePlan;
     if (scopeProfileWritePlan) {
       const selectedLayer = scopeProfileWritePlan.layers.find((layer) => layer.id === scopeProfileWritePlan.writeLayer);
       const writeNamespaceReadable = scopeProfileWritePlan.readNamespaces.includes(
@@ -745,13 +759,11 @@ export class ExtractionRunCoordinator {
       operation: () => Promise<T>,
       phase: string,
       clearTimerOnError = true,
-      options: { ignoreAbort?: boolean } = {},
+      options: { ignoreAbort?: boolean; ignoreDeadline?: boolean } = {},
     ): Promise<T> => {
-      const operationSignal = options.ignoreAbort
-        ? extractionDeadlineController?.signal
-        : extractionAbortSignal;
+      const operationSignal = options.ignoreAbort ? undefined : extractionAbortSignal;
       try {
-        if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+        if (!options.ignoreDeadline && typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
           throwIfDeadlineExceeded(phase);
         }
         if (operationSignal?.aborted) {
@@ -764,7 +776,7 @@ export class ExtractionRunCoordinator {
         );
       } catch (error) {
         if (clearTimerOnError) clearExtractionDeadlineTimer();
-        if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+        if (!options.ignoreDeadline && typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
           throw new ExtractionDeadlineError(phase);
         }
         throw error;
@@ -940,20 +952,26 @@ export class ExtractionRunCoordinator {
     if (extractionFingerprint && extractionRetryEnabled) {
       if (extractionFailure) {
         try {
-          meta ??= await storage.loadMeta();
-          await this.recordExtractionFailure(
-            storage,
-            selfNamespace,
-            extractionFingerprint,
-            result.extractionFailureClass ?? "provider_retryable",
-            meta,
-            Date.now(),
+          meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_bookkeeping_load", false);
+          await runDeadlineAware(
+            () =>
+              this.recordExtractionFailure(
+                storage,
+                selfNamespace,
+                extractionFingerprint,
+                result.extractionFailureClass ?? "provider_retryable",
+                meta!,
+                Date.now(),
+              ),
+            "during_retry_bookkeeping_save",
+            false,
           );
           // The buffer is retained below so the backoff gate can re-attempt
           // these turns after nextEligibleAt — clearing would orphan the
           // retry state.
           recordedRetryFailure = true;
         } catch (err) {
+          if (err instanceof ExtractionDeadlineError) throw err;
           // Fail-open (codex review): retry bookkeeping is best-effort — a
           // corrupt or locked meta store must not reject the extraction task.
           // With no backoff recorded there is nothing to retain for, so the
@@ -965,7 +983,7 @@ export class ExtractionRunCoordinator {
         // parked backoff for this fingerprint so it proceeds normally.
         this.resetProviderBreakerOnSuccess();
         try {
-          meta ??= await storage.loadMeta();
+          meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_bookkeeping_load", false);
           // Hydrate the in-memory mirror from persisted meta before clearing.
           // A forced flush (forceExtractionAttempt) bypasses the retry gate and
           // never hydrated, so without this a stale persisted backoff entry
@@ -973,9 +991,10 @@ export class ExtractionRunCoordinator {
           // extraction until the timer expired (cursor/codex review).
           this.hydrateRetryStateFromMeta(selfNamespace, meta);
           if (this.clearExtractionRetryEntry(selfNamespace, extractionFingerprint, meta)) {
-            await storage.saveMeta(meta);
+            await runDeadlineAware(() => storage.saveMeta(meta!), "during_retry_bookkeeping_save", false);
           }
         } catch (err) {
+          if (err instanceof ExtractionDeadlineError) throw err;
           log.warn("runExtraction: failed to persist cleared retry state (non-fatal)", err);
         }
       }
@@ -1052,47 +1071,63 @@ export class ExtractionRunCoordinator {
       // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
       // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,
-      scopeProfileGatePlan,
+      scopeProfileWritePlan,
       // Verbatim source turns for the faithfulness gate (#1576) so it can
       // locate a quote per fact when #1575 spans are absent.
       normalizedTurns
         .map((t) => t.content)
         .join("\n\n")
     );
+    const durableOutputCount =
+      result.facts.length + result.entities.length + result.questions.length + result.profileUpdates.length;
+    try {
+      options.onDurableCommit?.();
+    } catch (error) {
+      log.warn("runExtraction: durable-commit callback failed", error);
+    }
+
     let postPersistMetadataFailed = false;
-    meta ??= await storage.loadMeta();
-    if (extractionFingerprint && shouldPersistProcessedFingerprint) {
+    let postPersistDeadlineError: ExtractionDeadlineError | undefined;
+    const recordPostPersistMetadataFailure = (stage: string, error: unknown): void => {
+      postPersistMetadataFailed = true;
+      if (error instanceof ExtractionDeadlineError && postPersistDeadlineError === undefined) {
+        postPersistDeadlineError = error;
+      }
+      log.warn(`runExtraction: ${stage} failed after durable persistence; continuing with buffer clear`, error);
+    };
+    try {
+      meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_post_persist_load_meta", false);
+    } catch (error) {
+      recordPostPersistMetadataFailure("metadata load", error);
+    }
+    if (meta && extractionFingerprint && shouldPersistProcessedFingerprint) {
       try {
-        await this.deps.recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta);
-      } catch (error) {
-        log.warn(
-          "runExtraction: failed to persist processed extraction fingerprint; continuing with buffer clear",
-          error
+        await runDeadlineAware(
+          () => this.deps.recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta!),
+          "during_post_persist_fingerprint",
+          false,
         );
-        postPersistMetadataFailed = true;
+      } catch (error) {
+        recordPostPersistMetadataFailure("processed fingerprint", error);
       }
     }
     // Persist extraction counters and processed fingerprints before running
     // follow-on helpers so replay dedupe survives any later non-essential
     // failure. If this aggregate meta write fails, still clear the buffer:
-    // the durable memories are already written and replaying the same turns
-    // would duplicate them.
-    meta.extractionCount += 1;
-    meta.lastExtractionAt = new Date().toISOString();
-    meta.totalMemories += Array.isArray(result?.facts) ? result.facts.length : 0;
-    meta.totalEntities += Array.isArray(result?.entities) ? result.entities.length : 0;
-    try {
-      await storage.saveMeta(meta);
-    } catch (error) {
-      log.warn(
-        "runExtraction: failed to save extraction metadata after durable persistence; continuing with buffer clear",
-        error
-      );
-      postPersistMetadataFailed = true;
+    // durable memories are already written and replaying the same turns would
+    // duplicate them.
+    if (meta) {
+      meta.extractionCount += 1;
+      meta.lastExtractionAt = new Date().toISOString();
+      meta.totalMemories += Array.isArray(result?.facts) ? result.facts.length : 0;
+      meta.totalEntities += Array.isArray(result?.entities) ? result.entities.length : 0;
+      try {
+        await runDeadlineAware(() => storage.saveMeta(meta!), "during_post_persist_meta_save", false);
+      } catch (error) {
+        recordPostPersistMetadataFailure("metadata save", error);
+      }
     }
 
-    const durableOutputCount =
-      result.facts.length + result.entities.length + result.questions.length + result.profileUpdates.length;
 
     // Durable memories are already committed; bound every later helper by the
     // same caller deadline and keep helper failures non-fatal.
@@ -1110,8 +1145,20 @@ export class ExtractionRunCoordinator {
     await runPostPersistBestEffort(
       "during_buffer_clear",
       () => clearBuffer({ ignoreAbort: true }),
-      { ignoreAbort: true },
+      {
+        ignoreAbort: true,
+        // Once durable outputs exist, a force flush must still clear the
+        // committed turns even when the absolute deadline fired during
+        // persistence. Ordinary extraction keeps the existing best-effort
+        // deadline behavior.
+        ignoreDeadline: options.failOnExtractionFailure === true,
+        propagateErrors: options.failOnExtractionFailure === true,
+      },
     );
+    if (options.failOnExtractionFailure === true && typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+      throw new ExtractionDeadlineError("during_buffer_clear");
+    }
+    if (postPersistDeadlineError) throw postPersistDeadlineError;
 
     // Passive correction capture (issue #1581) — detect corrections expressed
     // passively in the extracted turns and route to the Correction Contract.

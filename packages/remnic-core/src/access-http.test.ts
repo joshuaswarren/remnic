@@ -3278,6 +3278,62 @@ test("HTTP extraction force-flush records quota after commit when cleanup fails"
   }
 });
 
+test("HTTP-MCP extraction force-flush records quota at the commit boundary", async () => {
+  let flushes = 0;
+  let committed = 0;
+  const service = {
+    extractionForceFlush: async (request: { onCommitted?: () => void }) => {
+      flushes += 1;
+      if (request.onCommitted) {
+        committed += 1;
+        request.onCommitted();
+      }
+      throw new Error("retained cleanup deadline");
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const flush = () =>
+    fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "extraction-force-flush",
+        method: "tools/call",
+        params: {
+          name: "remnic.extraction_force_flush",
+          arguments: { sessionKey: "session-1" },
+        },
+      }),
+    });
+  try {
+    const first = await flush();
+    assert.equal(first.status, 200);
+    const firstBody = (await first.json()) as {
+      result?: { isError?: boolean; content?: Array<{ text?: string }> };
+    };
+    assert.equal(firstBody.result?.isError, true);
+    const second = await flush();
+    assert.equal(second.status, 429);
+    const rateLimited = (await second.json()) as { code?: string };
+    assert.equal(rateLimited.code, "write_rate_limited");
+    assert.equal(flushes, 1, "the rate-limited MCP flush must not reach the service");
+    assert.equal(committed, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP meetings get returns 400 (not 500) for a malformed percent-encoded id (issue #1900)", async () => {
   let called = 0;
   const service = {

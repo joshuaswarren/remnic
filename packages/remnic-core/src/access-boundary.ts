@@ -232,6 +232,8 @@ export interface OperationContext {
 export interface OperationHooks {
   /** HTTP write-quota gate; throws to reject the write when exhausted. */
   readonly enforceWriteQuota?: () => void | Promise<void>;
+  /** Commit-boundary accounting for writes that can fail after durability. */
+  readonly recordWriteCommit?: () => void;
 }
 
 // ---------------------------------------------------------------------------
