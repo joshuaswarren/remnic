@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -45,7 +45,7 @@ test("deferred fact writes do NO per-fact index saves; a single flush persists a
       assert.equal(
         saveSpy.mock.callCount(),
         0,
-        "deferred fact writes must not flush the index per fact (was 10 flushes)",
+        "deferred fact writes must not flush the index per fact (was 10 flushes)"
       );
 
       // All 10 hashes are live in the in-memory index (dirty), so same-session
@@ -57,9 +57,11 @@ test("deferred fact writes do NO per-fact index saves; a single flush persists a
       // One authoritative batch save (mirrors saveContentHashIndexes) persists
       // the whole superset in a single rewrite.
       saveSpy.mock.resetCalls();
-      const index = await (storage as unknown as {
-        getFactHashIndex: () => Promise<ContentHashIndex>;
-      }).getFactHashIndex.call(storage);
+      const index = await (
+        storage as unknown as {
+          getFactHashIndex: () => Promise<ContentHashIndex>;
+        }
+      ).getFactHashIndex.call(storage);
       await index.save();
       assert.equal(saveSpy.mock.callCount(), 1, "exactly one batch save, down from 10+");
     } finally {
@@ -72,7 +74,7 @@ test("deferred fact writes do NO per-fact index saves; a single flush persists a
       assert.equal(
         await reopened.hasFactContentHash(`deferred fact number ${i}`),
         true,
-        "batch-saved hashes survive into a new session",
+        "batch-saved hashes survive into a new session"
       );
     }
   });
@@ -92,13 +94,9 @@ test("direct writeMemory('fact') without the flag persists the hash via the LOCK
       await storage.writeMemory("fact", "single write fact", { source: "manual" });
       assert.ok(
         reconcileSpy.mock.callCount() >= 1,
-        "single-write callers flush via the locked reconcile (saveMergingWithDisk)",
+        "single-write callers flush via the locked reconcile (saveMergingWithDisk)"
       );
-      assert.equal(
-        saveSpy.mock.callCount(),
-        0,
-        "the direct write must NOT use the unlocked whole-file save()",
-      );
+      assert.equal(saveSpy.mock.callCount(), 0, "the direct write must NOT use the unlocked whole-file save()");
       assert.equal(await storage.hasFactContentHash("single write fact"), true);
     } finally {
       saveSpy.mock.restore();
@@ -152,7 +150,7 @@ test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's c
     assert.equal(
       s.factOnlyHashes.has(sentinel),
       true,
-      "a fact hash added during the rebuild scan must survive publication (lost under reassign)",
+      "a fact hash added during the rebuild scan must survive publication (lost under reassign)"
     );
     // The corpus fact is present too — the in-place repopulate did not drop it.
     assert.equal(await storage.hasFactContentHash("alpha established fact"), true);
@@ -202,7 +200,7 @@ test("#2016 thread PRRT_kwDORJXyws6SEBri: a hash added during rebuildUnderLock's
     await fresh.load();
     assert.ok(
       fresh.has(lateContent),
-      "a hash added during the locked rebuild save must reach disk (lost under the unconditional clear)",
+      "a hash added during the locked rebuild save must reach disk (lost under the unconditional clear)"
     );
     // The rebuilt corpus set survives too — the late-delta handling did not drop it.
     assert.ok(fresh.has("corpus fact one"), "corpus hash one survives the rebuild+reconcile");
@@ -230,7 +228,7 @@ test("promotion-style immediate write survives restart even with fact-hashes.rea
     assert.equal(
       await restarted.hasFactContentHash("promoted profile fact"),
       true,
-      "the promoted hash is on disk and found after restart — no duplicate re-creation",
+      "the promoted hash is on disk and found after restart — no duplicate re-creation"
     );
   });
 });
@@ -258,7 +256,7 @@ test("durability: deferred writes with NO batch save are rebuildable from on-dis
       assert.equal(
         await recovered.hasFactContentHash(`crash fact ${i}`),
         true,
-        "a lost hash is rebuilt from the durable fact corpus — never a data loss",
+        "a lost hash is rebuilt from the durable fact corpus — never a data loss"
       );
     }
   });
@@ -277,9 +275,11 @@ test("concurrent deferred fact writes both land in the index (no lost update)", 
         deferHashIndexSave: true,
       }),
     ]);
-    const index = await (storage as unknown as {
-      getFactHashIndex: () => Promise<ContentHashIndex>;
-    }).getFactHashIndex.call(storage);
+    const index = await (
+      storage as unknown as {
+        getFactHashIndex: () => Promise<ContentHashIndex>;
+      }
+    ).getFactHashIndex.call(storage);
     await index.save();
 
     const reopened = new StorageManager(dir);
@@ -307,7 +307,7 @@ test("#1909 round 11: a deferred write with no batch save is rebuilt from the co
     assert.equal(
       await restarted.hasFactContentHash("windowed fact"),
       true,
-      "the fact is rebuilt from the corpus — never lost from dedup",
+      "the fact is rebuilt from the corpus — never lost from dedup"
     );
   });
 });
@@ -400,7 +400,7 @@ test("#1909: removing a hash and reconcile-saving drops it from disk (no resurre
     assert.equal(
       fresh.has("archived fact body"),
       false,
-      "removed hash stays gone → re-extraction of that content is allowed",
+      "removed hash stays gone → re-extraction of that content is allowed"
     );
   });
 });
@@ -486,9 +486,7 @@ test("#1909: rebuild indexes ACTIVE cold-tier facts; a demoted fact's hash survi
     await storage.writeMemory("fact", "cold tier fact was demoted", { source: "manual" });
 
     storage.invalidateAllMemoriesCacheForDir();
-    const demoted = (await storage.readAllMemories()).find(
-      (m) => m.content.includes("cold tier fact was demoted"),
-    );
+    const demoted = (await storage.readAllMemories()).find((m) => m.content.includes("cold tier fact was demoted"));
     assert.ok(demoted, "the fact to demote must be readable in hot before migration");
     await storage.migrateMemoryToTier(demoted!, "cold");
 
@@ -503,12 +501,12 @@ test("#1909: rebuild indexes ACTIVE cold-tier facts; a demoted fact's hash survi
     assert.equal(
       await reopened.hasFactContentHash("cold tier fact was demoted"),
       true,
-      "a fact demoted to cold must survive the corpus rebuild (hot+cold union)",
+      "a fact demoted to cold must survive the corpus rebuild (hot+cold union)"
     );
     assert.equal(
       await reopened.hasFactContentHash("hot tier fact stays put"),
       true,
-      "the hot-tier fact must also survive the rebuild",
+      "the hot-tier fact must also survive the rebuild"
     );
   });
 });
@@ -569,7 +567,11 @@ test("#2016: a lock-timed-out append is NOT silently dropped and eventually pers
     // Disk is untouched while the lock is held — proves it did not write unlocked.
     const early = new ContentHashIndex(stateDir);
     await early.load();
-    assert.equal(early.has("deferred-under-contended-lock"), false, "no unlocked publish while the peer holds the lock");
+    assert.equal(
+      early.has("deferred-under-contended-lock"),
+      false,
+      "no unlocked publish while the peer holds the lock"
+    );
     // In-memory dedup still works this session (dirty addition retained).
     assert.equal(idx.has("deferred-under-contended-lock"), true, "addition stays live in-memory");
 
@@ -582,7 +584,7 @@ test("#2016: a lock-timed-out append is NOT silently dropped and eventually pers
     await fresh.load();
     assert.ok(
       fresh.has("deferred-under-contended-lock"),
-      "the deferred addition eventually reached disk via the durable retry",
+      "the deferred addition eventually reached disk via the durable retry"
     );
   });
 });
@@ -610,13 +612,21 @@ test("#2016: exhausting retries under a permanently held lock is best-effort, ne
     // Let the bounded retry chain run to exhaustion (lock is never released).
     await withRetryLoopAlive(() => idx.whenReconcileRetrySettled());
 
-    assert.equal(idx.hasPendingReconcileRetry, false, "retries are bounded — the chain gives up, it does not spin forever");
+    assert.equal(
+      idx.hasPendingReconcileRetry,
+      false,
+      "retries are bounded — the chain gives up, it does not spin forever"
+    );
     // The addition is still held in-memory (dedup stays correct this session);
     // disk stays empty, so the corpus-rebuild-on-restart safety net covers it.
     assert.equal(idx.has("never-persistable-while-locked"), true, "addition retained in-memory after giving up");
     const fresh = new ContentHashIndex(stateDir);
     await fresh.load();
-    assert.equal(fresh.has("never-persistable-while-locked"), false, "nothing written unlocked while the lock stayed held");
+    assert.equal(
+      fresh.has("never-persistable-while-locked"),
+      false,
+      "nothing written unlocked while the lock stayed held"
+    );
   });
 });
 
@@ -754,7 +764,7 @@ test("#2016: a rebuild serializes with a concurrent locked writer — the peer's
     assert.equal(
       peerBlockedDuringRebuild,
       true,
-      "the peer could not acquire the lock while the rebuild held it (serialized)",
+      "the peer could not acquire the lock while the rebuild held it (serialized)"
     );
 
     // The peer's deferred retry lands after the rebuild releases the lock and
@@ -766,7 +776,7 @@ test("#2016: a rebuild serializes with a concurrent locked writer — the peer's
     assert.ok(fresh.has("rebuilt-corpus-fact"), "the rebuild's set was published");
     assert.ok(
       fresh.has("peer-append-during-rebuild"),
-      "the peer's concurrent addition survived — reconciled on top of the rebuild, never clobbered",
+      "the peer's concurrent addition survived — reconciled on top of the rebuild, never clobbered"
     );
   });
 });
@@ -784,7 +794,7 @@ test("#2016: a peer's committed fact survives a fresh-session authoritative rebu
     assert.equal(
       await rebuilder.hasFactContentHash("durable multiprocess fact"),
       true,
-      "the peer's fact is deduped after a fresh-session locked rebuild",
+      "the peer's fact is deduped after a fresh-session locked rebuild"
     );
   });
 });
@@ -822,17 +832,17 @@ test("#2016 finding 1: a lock-contended miss is verified against the corpus, nev
       assert.equal(
         await reader.isFactContentHashAuthoritative(),
         false,
-        "index cannot be authoritative while the peer holds the rebuild lock",
+        "index cannot be authoritative while the peer holds the rebuild lock"
       );
       assert.equal(
         await reader.hasFactContentHash("durable fact under contention"),
         true,
-        "a miss on the empty loaded snapshot is verified against the durable corpus — no false dedup miss",
+        "a miss on the empty loaded snapshot is verified against the durable corpus — no false dedup miss"
       );
       assert.equal(
         await reader.hasFactContentHash("was never written anywhere"),
         false,
-        "a genuine miss is still a miss under contention (corpus confirms absence)",
+        "a genuine miss is still a miss under contention (corpus confirms absence)"
       );
     } finally {
       await rm(lockPath, { force: true });
@@ -852,12 +862,12 @@ test("#2016 finding 2: getAuthoritativeFactHashIndex fails explicitly instead of
       await assert.rejects(
         () => storage.getAuthoritativeFactHashIndex(),
         (err: unknown) => err instanceof FactHashIndexNotAuthoritativeError,
-        "must throw rather than return a stale/non-authoritative index",
+        "must throw rather than return a stale/non-authoritative index"
       );
       assert.equal(
         await storage.isFactContentHashAuthoritative(),
         false,
-        "the non-authoritative state is propagated, not masked as authoritative",
+        "the non-authoritative state is propagated, not masked as authoritative"
       );
     } finally {
       await rm(lockPath, { force: true });
@@ -898,7 +908,7 @@ test("#2016 finding 3: flushReconcileRetry drains a deferred lock-timeout append
     await fresh.load();
     assert.ok(
       fresh.has("deferred-drained-on-shutdown"),
-      "the deferred hash reached disk via the inline shutdown drain",
+      "the deferred hash reached disk via the inline shutdown drain"
     );
   });
 });
@@ -963,13 +973,9 @@ test("#2016 thread SDzOP: a storage fact-hash removal reconciles under the lock,
       await storage.removeFactContentHashesForMemories([beta!]);
       assert.ok(
         reconcileSpy.mock.callCount() >= 1,
-        "the removal flushes via the locked reconcile (saveMergingWithDisk)",
+        "the removal flushes via the locked reconcile (saveMergingWithDisk)"
       );
-      assert.equal(
-        saveSpy.mock.callCount(),
-        0,
-        "the removal must NOT use the unlocked whole-file save()",
-      );
+      assert.equal(saveSpy.mock.callCount(), 0, "the removal must NOT use the unlocked whole-file save()");
     } finally {
       saveSpy.mock.restore();
       reconcileSpy.mock.restore();
@@ -978,14 +984,10 @@ test("#2016 thread SDzOP: a storage fact-hash removal reconciles under the lock,
     const fresh = new ContentHashIndex(stateDir);
     await fresh.load();
     assert.ok(fresh.has("alpha stays active"), "the surviving fact's hash is intact");
-    assert.equal(
-      fresh.has("beta gets archived"),
-      false,
-      "the archived fact's hash is dropped — no resurrection",
-    );
+    assert.equal(fresh.has("beta gets archived"), false, "the archived fact's hash is dropped — no resurrection");
     assert.ok(
       fresh.has("peer concurrent append"),
-      "the concurrent peer append survives the removal (locked reconcile, not unlocked overwrite)",
+      "the concurrent peer append survives the removal (locked reconcile, not unlocked overwrite)"
     );
   });
 });
@@ -1043,7 +1045,7 @@ test("#2016 thread SD7Tj: a hash added while a reconcile save awaits disk is not
     assert.ok(fresh.has("added-before-save"), "pre-save addition still durable after drain");
     assert.ok(
       fresh.has("added-during-save"),
-      "the mid-save addition reached disk — the mid-flight delta was preserved, not dropped",
+      "the mid-save addition reached disk — the mid-flight delta was preserved, not dropped"
     );
   });
 });
@@ -1077,7 +1079,7 @@ test("#2016 thread SD7Tk: a direct fact write drains its deferred hash retry bef
       // called flushReconcileRetry — so this count was 0.
       assert.ok(
         flushSpy.mock.callCount() >= 1,
-        "direct writeMemory drains the deferred hash retry (flushReconcileRetry) before returning",
+        "direct writeMemory drains the deferred hash retry (flushReconcileRetry) before returning"
       );
     } finally {
       flushSpy.mock.restore();
@@ -1120,7 +1122,7 @@ test("#2016 thread SD-nG: a direct re-add of a hash the local snapshot still hol
     assert.equal(
       reader.has(CONTENT),
       true,
-      "the reintroduced hash is durably republished for peers (stale re-add recorded as a delta)",
+      "the reintroduced hash is durably republished for peers (stale re-add recorded as a delta)"
     );
   });
 });
@@ -1163,7 +1165,7 @@ test("#2016 thread PRRT_kwDORJXyws6SEHve: addByHash re-add of a hash the local s
     assert.equal(
       reader.has("reactivated-fact-body"),
       true,
-      "addByHash on a stale local hit must republish the hash durably for peers",
+      "addByHash on a stale local hit must republish the hash durably for peers"
     );
   });
 });
@@ -1190,11 +1192,11 @@ test("#2016 thread PRRT_kwDORJXyws6SEHvh: reactivation drains the deferred recon
       await storage.restoreFactHashAfterApproval(id);
       assert.ok(
         reconcileSpy.mock.callCount() >= 1,
-        "reactivation publishes via the locked reconcile (saveMergingWithDisk)",
+        "reactivation publishes via the locked reconcile (saveMergingWithDisk)"
       );
       assert.ok(
         flushSpy.mock.callCount() >= 1,
-        "reactivation drains the deferred lock-timeout retry inline (flushReconcileRetry) — same durability guarantee as writeMemory",
+        "reactivation drains the deferred lock-timeout retry inline (flushReconcileRetry) — same durability guarantee as writeMemory"
       );
     } finally {
       reconcileSpy.mock.restore();
@@ -1237,7 +1239,7 @@ test("tombstone blocked index rebuilds after a failed publish survives restart",
       assert.equal(
         existsSync(path.join(dir, "tombstone-blocked-capture", "rebuild-required")),
         true,
-        "failed publish must leave a durable rebuild marker",
+        "failed publish must leave a durable rebuild marker"
       );
     } finally {
       saveSpy.mock.restore();
@@ -1247,12 +1249,12 @@ test("tombstone blocked index rebuilds after a failed publish survives restart",
     assert.equal(
       await restarted.has(blocked.content, "fact"),
       true,
-      "restart must rebuild from durable blocked rows instead of trusting stale index data",
+      "restart must rebuild from durable blocked rows instead of trusting stale index data"
     );
     assert.deepEqual(
       await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required")),
       [],
-      "successful rebuild clears the marker owned by the restarted index",
+      "successful rebuild clears the marker owned by the restarted index"
     );
   });
 });
@@ -1300,7 +1302,7 @@ test("token-specific blocked index markers survive peer interleaving and restart
           peerMarker = await peerInternals.markRebuildRequired();
         }
         return originalSave.call(this);
-      },
+      }
     );
     try {
       await writer.add(blocked);
@@ -1308,7 +1310,7 @@ test("token-specific blocked index markers survive peer interleaving and restart
       assert.equal(
         (await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required"))).length,
         1,
-        "writer success must clear only its marker and preserve the peer marker",
+        "writer success must clear only its marker and preserve the peer marker"
       );
     } finally {
       saveSpy.mock.restore();
@@ -1322,7 +1324,7 @@ test("token-specific blocked index markers survive peer interleaving and restart
     assert.deepEqual(
       await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required")),
       [],
-      "restart rebuild clears the peer marker after incorporating durable rows",
+      "restart rebuild clears the peer marker after incorporating durable rows"
     );
   });
 });
@@ -1375,7 +1377,7 @@ test("tombstone blocked index sync failure persists a rebuild marker across rest
       assert.equal(
         (await readdir(path.join(dir, "tombstone-blocked-capture", "rebuild-required"))).length > 0,
         true,
-        "a failed identity rebuild must leave durable rebuild intent",
+        "a failed identity rebuild must leave durable rebuild intent"
       );
     } finally {
       rebuildSpy.mock.restore();
@@ -1408,22 +1410,18 @@ test("tombstone-blocked writes reserve rebuild intent before post-write index wo
     assert.ok(tombstoneId, "test tombstone must persist");
 
     const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
-    const addSpy = mock.method(
-      TombstoneBlockedCaptureIndex.prototype,
-      "addWrittenMemory",
-      async () => {
-        throw new Error("simulated post-write index failure");
-      },
-    );
+    const addSpy = mock.method(TombstoneBlockedCaptureIndex.prototype, "addWrittenMemory", async () => {
+      throw new Error("simulated post-write index failure");
+    });
     try {
       await assert.rejects(
         storage.writeMemory("fact", content, { source: "test", sourceConnector: "provider-a" }),
-        /simulated post-write index failure/,
+        /simulated post-write index failure/
       );
       assert.equal(
         (await readdir(markerDir)).length > 0,
         true,
-        "blocked memory persistence must leave a durable marker before its index hook",
+        "blocked memory persistence must leave a durable marker before its index hook"
       );
     } finally {
       addSpy.mock.restore();
@@ -1439,7 +1437,7 @@ test("tombstone-blocked writes reserve rebuild intent before post-write index wo
     assert.equal(
       await restarted.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
       true,
-      "restart must rebuild the blocked identity from the durable memory",
+      "restart must rebuild the blocked identity from the durable memory"
     );
     assert.deepEqual(await readdir(markerDir), [], "successful restart rebuild clears the marker");
   });
@@ -1469,11 +1467,7 @@ test("blocked rewrites reserve markers before durable mutation index hooks", asy
     });
     assert.equal(result.tombstoneBlocked, true);
     const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
-    const syncMemorySpy = mock.method(
-      TombstoneBlockedCaptureIndex.prototype,
-      "syncUpdatedMemory",
-      async () => {},
-    );
+    const syncMemorySpy = mock.method(TombstoneBlockedCaptureIndex.prototype, "syncUpdatedMemory", async () => {});
     try {
       assert.equal(await storage.updateMemory(result.id, `${content} changed`), true);
       assert.equal((await readdir(markerDir)).length, 1, "blocked update must leave a committed marker for its hook");
@@ -1494,13 +1488,10 @@ test("blocked rewrites reserve markers before durable mutation index hooks", asy
     const syncFrontmatterSpy = mock.method(
       TombstoneBlockedCaptureIndex.prototype,
       "syncUpdatedFrontmatter",
-      async () => {},
+      async () => {}
     );
     try {
-      assert.equal(
-        await restarted.writeMemoryFrontmatter(memory, { sourceConnector: "provider-b" }),
-        true,
-      );
+      assert.equal(await restarted.writeMemoryFrontmatter(memory, { sourceConnector: "provider-b" }), true);
       assert.equal((await readdir(markerDir)).length, 1, "blocked frontmatter rewrite must reserve a marker");
     } finally {
       syncFrontmatterSpy.mock.restore();
@@ -1545,11 +1536,10 @@ test("blocked rewrites rebuild the index from post-write memory cache state", as
     assert.equal(await storage.updateMemory(result.id, updatedContent), true);
     assert.ok(
       rebuiltContents.includes(updatedContent),
-      "the blocked-index rebuild must read the durable post-write content, not the pre-write hot cache",
+      "the blocked-index rebuild must read the durable post-write content, not the pre-write hot cache"
     );
   });
 });
-
 
 test("blocked chunk writes enter the targeted dedupe index", async () => {
   await withMemoryDir(async (dir) => {
@@ -1564,7 +1554,7 @@ test("blocked chunk writes enter the targeted dedupe index", async () => {
     assert.equal(
       await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
       true,
-      "blocked chunk content must be indexed with its connector identity",
+      "blocked chunk content must be indexed with its connector identity"
     );
   });
 });
@@ -1620,12 +1610,12 @@ test("offline sync mutation rebuilds a loaded tombstone-blocked index", async ()
     assert.equal(
       await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
       false,
-      "offline sync must remove the stale provider identity from the loaded index",
+      "offline sync must remove the stale provider identity from the loaded index"
     );
     assert.equal(
       await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
       true,
-      "offline sync must add the updated provider identity",
+      "offline sync must add the updated provider identity"
     );
   });
 });
@@ -1653,10 +1643,7 @@ test("offline sync mutation rebuilds blocked index for every recall category", a
       sourceConnector: "provider-a",
     });
     assert.equal(result.tombstoneBlocked, true);
-    assert.equal(
-      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
-      true,
-    );
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"), true);
 
     const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
     assert.ok(memory, "blocked memory must be readable before offline sync");
@@ -1665,19 +1652,19 @@ test("offline sync mutation rebuilds blocked index for every recall category", a
     await rename(memory.path, movedPath);
     const updatedFile = (await readFile(movedPath, "utf8")).replace(
       "sourceConnector: provider-a",
-      "sourceConnector: provider-b",
+      "sourceConnector: provider-b"
     );
     await storage.writeOfflineSyncFile(movedPath, Buffer.from(updatedFile, "utf8"));
 
     assert.equal(
       await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
       false,
-      "offline sync must remove the stale provider identity from every recall category",
+      "offline sync must remove the stale provider identity from every recall category"
     );
     assert.equal(
       await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
       true,
-      "offline sync must add the updated provider identity in every recall category",
+      "offline sync must add the updated provider identity in every recall category"
     );
   });
 });
@@ -1705,10 +1692,7 @@ test("offline sync invalidates cold cache before blocked index rebuild", async (
       sourceConnector: "provider-a",
     });
     assert.equal(result.tombstoneBlocked, true);
-    assert.equal(
-      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
-      true,
-    );
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"), true);
 
     const memory = await storage.getMemoryById(result.id);
     assert.ok(memory, "blocked memory must be readable before tier migration");
@@ -1717,19 +1701,19 @@ test("offline sync invalidates cold cache before blocked index rebuild", async (
     await storage.readAllColdMemories();
     const updatedFile = (await readFile(moved.targetPath, "utf8")).replace(
       "sourceConnector: provider-a",
-      "sourceConnector: provider-b",
+      "sourceConnector: provider-b"
     );
     await storage.writeOfflineSyncFile(moved.targetPath, Buffer.from(updatedFile, "utf8"));
 
     assert.equal(
       await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
       false,
-      "cold sync must remove the stale provider identity",
+      "cold sync must remove the stale provider identity"
     );
     assert.equal(
       await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
       true,
-      "cold sync must index the post-mutation provider identity",
+      "cold sync must index the post-mutation provider identity"
     );
   });
 });
@@ -1757,10 +1741,7 @@ test("memory invalidation rebuilds an unloaded persisted blocked index", async (
       sourceConnector: "provider-a",
     });
     assert.equal(result.tombstoneBlocked, true);
-    assert.equal(
-      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
-      true,
-    );
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"), true);
 
     const restarted = new StorageManager(dir);
     restarted.setTombstonesConfig({
@@ -1773,7 +1754,7 @@ test("memory invalidation rebuilds an unloaded persisted blocked index", async (
     assert.equal(
       await restarted.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
       false,
-      "memory invalidation must rebuild a persisted index before its first lookup",
+      "memory invalidation must rebuild a persisted index before its first lookup"
     );
   });
 });
@@ -1800,7 +1781,7 @@ test("permanent capture lock failures stop retrying", async () => {
 
     await assert.rejects(
       index.withCaptureWriteLock(async () => "unreachable"),
-      /capture write lock acquisition failed/,
+      /capture write lock acquisition failed/
     );
     assert.equal(attempts, 1, "permanent filesystem failures must not retry as contention");
   });
@@ -1894,11 +1875,52 @@ test("abandoned pending blocked-index markers rebuild and are reaped", async () 
         ownerId: "abandoned-writer",
         createdAt: Date.now() - 120_000,
       })}\n`,
-      "utf8",
+      "utf8"
     );
 
     const index = new TombstoneBlockedCaptureIndex(options);
     assert.equal(await index.has(content, "fact", "provider-a"), true);
+    assert.deepEqual(await readdir(markerDir), []);
+  });
+});
+
+test("truncated pending blocked-index markers retain filesystem age and are reaped", async () => {
+  await withMemoryDir(async (dir) => {
+    const content = "A truncated blocked-index marker must not suppress dedupe forever.";
+    const memory: MemoryFile = {
+      path: path.join(dir, "facts", "truncated.md"),
+      frontmatter: {
+        id: "truncated-blocked",
+        category: "fact",
+        created: new Date(0).toISOString(),
+        updated: new Date(0).toISOString(),
+        source: "explicit-inline-review",
+        confidence: 0.2,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "pending_review",
+        blockedBy: "truncated-tombstone",
+      },
+      content,
+    };
+    const options = {
+      stateDir: dir,
+      memoryDir: dir,
+      secureStoreKeyProvider: () => null,
+      secureStoreWriteKeyProvider: () => null,
+      lockOptions: () => ({ retryMaxAttempts: 2, retryBaseMs: 1 }),
+      readAllMemories: async () => [memory],
+      readAllColdMemories: async () => [],
+    };
+    const markerDir = path.join(dir, "tombstone-blocked-capture", "rebuild-required");
+    await mkdir(markerDir, { recursive: true });
+    const markerPath = path.join(markerDir, "truncated-writer");
+    await writeFile(markerPath, "{", "utf8");
+    const staleAt = new Date(Date.now() - 120_000);
+    await utimes(markerPath, staleAt, staleAt);
+
+    const index = new TombstoneBlockedCaptureIndex(options);
+    assert.equal(await index.has(content, "fact"), true);
     assert.deepEqual(await readdir(markerDir), []);
   });
 });
@@ -1940,8 +1962,8 @@ test("explicit capture write locks serialize identities without head-of-line blo
           inFlight += 1;
           maxInFlight = Math.max(maxInFlight, inFlight);
           inFlight -= 1;
-        }, "capture-a"),
-      ),
+        }, "capture-a")
+      )
     );
     const other = index.withCaptureWriteLock(async () => {
       inFlight += 1;
@@ -1953,15 +1975,8 @@ test("explicit capture write locks serialize identities without head-of-line blo
     const timeoutState = Promise.withResolvers<void>();
     setTimeout(timeoutState.resolve, 100);
     try {
-      await Promise.race([
-        otherEnteredSignal,
-        timeoutState.promise,
-      ]);
-      assert.equal(
-        maxInFlight,
-        2,
-        "an unrelated capture identity must not wait behind a slow capture",
-      );
+      await Promise.race([otherEnteredSignal, timeoutState.promise]);
+      assert.equal(maxInFlight, 2, "an unrelated capture identity must not wait behind a slow capture");
     } finally {
       releaseFirst();
       await all;
@@ -1986,6 +2001,10 @@ test("blocked generic writes share their explicit-capture identity lock", async 
       rawContent: content,
     });
     const identity = buildExplicitCaptureDedupKey(content, "fact", "provider-a");
+    const firstResult = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
     const releaseHeldState = Promise.withResolvers<void>();
     const releaseHeld = releaseHeldState.promise;
     const release = releaseHeldState.resolve;
@@ -1998,13 +2017,15 @@ test("blocked generic writes share their explicit-capture identity lock", async 
     }, identity);
     await enteredSignal;
     let completed = false;
-    const pending = storage.writeMemory("fact", content, {
-      source: "test",
-      sourceConnector: "provider-a",
-    }).then((result) => {
-      completed = true;
-      return result;
-    });
+    const pending = storage
+      .writeMemory("fact", content, {
+        source: "test",
+        sourceConnector: "provider-a",
+      })
+      .then((result) => {
+        completed = true;
+        return result;
+      });
     const delayState = Promise.withResolvers<void>();
     setTimeout(delayState.resolve, 50);
     await delayState.promise;
@@ -2012,10 +2033,12 @@ test("blocked generic writes share their explicit-capture identity lock", async 
     release();
     await held;
     const result = await pending;
+    assert.ok(firstResult);
     assert.equal(result.tombstoneBlocked, true);
+    assert.equal(result.id, firstResult.id, "the waiting writer must recheck identity after lock acquisition");
+    assert.equal((await storage.readAllMemories()).length, 1, "the duplicate row must not be persisted");
   });
 });
-
 
 test("blocked write failures clear their uncommitted rebuild marker", async () => {
   await withMemoryDir(async (dir) => {
@@ -2025,7 +2048,7 @@ test("blocked write failures clear their uncommitted rebuild marker", async () =
       protected override writeStorageSecureFile(
         filePath: string,
         content: string | Buffer,
-        forceEncrypt = false,
+        forceEncrypt = false
       ): Promise<void> {
         if (this.failWrites) return Promise.reject(new Error("simulated durable write failure"));
         return super.writeStorageSecureFile(filePath, content, forceEncrypt);
@@ -2054,7 +2077,7 @@ test("blocked write failures clear their uncommitted rebuild marker", async () =
         source: "test",
         sourceConnector: "provider-a",
       }),
-      /simulated durable write failure/,
+      /simulated durable write failure/
     );
     assert.deepEqual(await readdir(markerDir), []);
   });
@@ -2078,13 +2101,9 @@ test("blocked writes stay successful when post-commit marker publication fails",
       rawContent: content,
     });
     const markerDir = path.join(dir, "state", "tombstone-blocked-capture", "rebuild-required");
-    const commitSpy = mock.method(
-      TombstoneBlockedCaptureIndex.prototype,
-      "commitWrite",
-      async () => {
-        throw new Error("simulated marker publication failure");
-      },
-    );
+    const commitSpy = mock.method(TombstoneBlockedCaptureIndex.prototype, "commitWrite", async () => {
+      throw new Error("simulated marker publication failure");
+    });
     try {
       const result = await storage.writeMemory("fact", content, {
         source: "test",
@@ -2096,12 +2115,9 @@ test("blocked writes stay successful when post-commit marker publication fails",
       assert.equal(
         await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
         true,
-        "the retried marker publication must leave the blocked identity indexed",
+        "the retried marker publication must leave the blocked identity indexed"
       );
-      assert.equal(
-        await storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative(),
-        true,
-      );
+      assert.equal(await storage.isTombstoneBlockedExplicitCaptureIndexAuthoritative(), true);
     } finally {
       commitSpy.mock.restore();
     }
@@ -2127,14 +2143,10 @@ test("blocked additions exclude their own marker from rebuild checks", async () 
     });
     await storage.hasTombstoneBlockedExplicitCapture("unrelated", "fact", "provider-a");
     let rebuilds = 0;
-    const rebuildSpy = mock.method(
-      ContentHashIndex.prototype,
-      "rebuildUnderLock",
-      async () => {
-        rebuilds += 1;
-        return true;
-      },
-    );
+    const rebuildSpy = mock.method(ContentHashIndex.prototype, "rebuildUnderLock", async () => {
+      rebuilds += 1;
+      return true;
+    });
     try {
       const result = await storage.writeMemory("fact", content, {
         source: "test",

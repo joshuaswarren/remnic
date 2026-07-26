@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Orchestrator } from "./orchestrator.js";
+import type { StorageManager } from "./storage.js";
 import type { PluginConfig } from "./types.js";
 import type { SealedMemoryEnvelope } from "./write-envelope.js";
 import {
   InlineExplicitCaptureProcessor,
   parseInlineExplicitCaptureNotes,
   persistExplicitCapture,
+  queueExplicitCaptureForReview,
   validateExplicitCaptureInput,
 } from "./explicit-capture.js";
 
@@ -29,7 +31,7 @@ test("inline explicit capture rejects malformed confidence values", () => {
     assert.throws(
       () => validateExplicitCaptureInput(note),
       /confidence must be a finite number/,
-      `${confidenceLine} should be rejected`,
+      `${confidenceLine} should be rejected`
     );
   }
 });
@@ -62,7 +64,7 @@ function createInlineCaptureProcessorProbe(
     tombstoneBlockedCaptureIndexHit?: boolean;
     failWrites?: boolean;
     duplicateReadDelayMs?: number;
-  } = {},
+  } = {}
 ) {
   const envelopes: SealedMemoryEnvelope[] = [];
   const lifecycleEvents: Array<{ eventType: string; actor: string }> = [];
@@ -107,9 +109,7 @@ function createInlineCaptureProcessorProbe(
         frontmatter: {
           id,
           category: envelope.category,
-          ...(options.tombstoneBlocked
-            ? { status: "pending_review", blockedBy: "tombstone-1" }
-            : {}),
+          ...(options.tombstoneBlocked ? { status: "pending_review", blockedBy: "tombstone-1" } : {}),
           tags: [...envelope.tags],
           sourceConnector: envelope.sourceConnector,
         },
@@ -138,22 +138,14 @@ function createInlineCaptureProcessorProbe(
       : {}),
     ...(options.tombstoneBlockedCaptureIndexHit !== undefined
       ? {
-          checkTombstoneBlockedExplicitCapture: async (
-            content: string,
-            category: string,
-            sourceConnector?: string,
-          ) => {
+          checkTombstoneBlockedExplicitCapture: async (content: string, category: string, sourceConnector?: string) => {
             blockedIndexArguments.push({ content, category, sourceConnector });
             return {
               has: options.tombstoneBlockedCaptureIndexHit === true,
               authoritative: true,
             };
           },
-          hasTombstoneBlockedExplicitCapture: async (
-            content: string,
-            category: string,
-            sourceConnector?: string,
-          ) => {
+          hasTombstoneBlockedExplicitCapture: async (content: string, category: string, sourceConnector?: string) => {
             blockedIndexArguments.push({ content, category, sourceConnector });
             return options.tombstoneBlockedCaptureIndexHit === true;
           },
@@ -164,10 +156,7 @@ function createInlineCaptureProcessorProbe(
       lifecycleEvents.push(...events);
     },
     getMemoryById: async (id: string) => memories.find((memory) => memory.frontmatter.id === id) ?? null,
-    writeMemoryFrontmatter: async (
-      memory: StoredMemory,
-      update: { status?: string },
-    ) => {
+    writeMemoryFrontmatter: async (memory: StoredMemory, update: { status?: string }) => {
       memory.frontmatter = { ...memory.frontmatter, ...update };
     },
   };
@@ -195,6 +184,7 @@ function createInlineCaptureProcessorProbe(
     maintenanceReasons,
     memories,
     coldMemories,
+    storage,
     readAllCalls: () => readAllCalls,
     maxConcurrentReadAllCalls: () => maxConcurrentReadAllCalls,
     blockedIndexArguments: () => blockedIndexArguments,
@@ -251,10 +241,7 @@ test("inline capture processor serializes overlapping duplicate deliveries", asy
     dedupeKeys: ["overlapping-delivery"],
   };
 
-  const [first, second] = await Promise.all([
-    probe.processor.process(request),
-    probe.processor.process(request),
-  ]);
+  const [first, second] = await Promise.all([probe.processor.process(request), probe.processor.process(request)]);
 
   assert.equal(first.processed + second.processed, 1);
   assert.equal(first.accepted + second.accepted, 1);
@@ -435,6 +422,49 @@ test("inline capture review fallback serializes duplicate checks across processo
   assert.equal(probe.maxConcurrentReadAllCalls(), 1);
 });
 
+test("inline capture review fallback deduplicates across authorized review namespaces", async () => {
+  const primary = createInlineCaptureProcessorProbe();
+  const secondary = createInlineCaptureProcessorProbe();
+  const config = primary.orchestrator.config as PluginConfig;
+  config.namespacePolicies = [
+    { name: "review-a", readPrincipals: ["*"], writePrincipals: ["*"] },
+    { name: "review-b", readPrincipals: ["*"], writePrincipals: ["*"] },
+  ];
+  const primaryStorage = primary.storage;
+  const secondaryStorage = secondary.storage;
+  primary.orchestrator.getStorage = async (namespace?: string) =>
+    (namespace === "review-b" ? secondaryStorage : primaryStorage) as unknown as StorageManager;
+  const secondProcessor = new InlineExplicitCaptureProcessor(primary.orchestrator, {
+    sourceConnector: "openclaw",
+  });
+  const content = [
+    "<memory_note>",
+    "content: The same unsupported note must queue once across review roots.",
+    "category: fact",
+    "namespace: unsupported-inline-namespace",
+    "</memory_note>",
+  ].join("\n");
+  const first = await primary.processor.process({
+    captureMode: "hybrid",
+    content,
+    dedupeKeys: ["review-root-a"],
+    reviewNamespace: "review-a",
+    reviewNamespacePreResolved: true,
+  });
+  const second = await secondProcessor.process({
+    captureMode: "hybrid",
+    content,
+    dedupeKeys: ["review-root-b"],
+    reviewNamespace: "review-b",
+    reviewNamespacePreResolved: true,
+  });
+
+  assert.equal(first.queued, 1);
+  assert.equal(second.duplicates, 1);
+  assert.equal(primary.memories.length, 1);
+  assert.equal(secondary.memories.length, 0);
+});
+
 test("inline capture processor rejects pre-resolved input without a resolved namespace", async () => {
   const probe = createInlineCaptureProcessorProbe();
   const content = [
@@ -452,7 +482,7 @@ test("inline capture processor rejects pre-resolved input without a resolved nam
       dedupeKeys: ["message-untrusted-namespace"],
       namespacePreResolved: true,
     }),
-    /namespacePreResolved requires a resolved namespace/,
+    /namespacePreResolved requires a resolved namespace/
   );
   assert.equal(probe.envelopes.length, 0);
 });
@@ -463,12 +493,13 @@ test("inline capture processor bounds non-finite dedupe limits", async () => {
     maxDedupeKeys: Number.POSITIVE_INFINITY,
     sourceConnector: "openclaw",
   });
-  const contentFor = (index: number) => [
-    "<memory_note>",
-    `content: A bounded dedupe capture item number ${index}.`,
-    "category: fact",
-    "</memory_note>",
-  ].join("\n");
+  const contentFor = (index: number) =>
+    [
+      "<memory_note>",
+      `content: A bounded dedupe capture item number ${index}.`,
+      "category: fact",
+      "</memory_note>",
+    ].join("\n");
 
   for (let index = 0; index <= 1024; index += 1) {
     await processor.process({
@@ -658,19 +689,11 @@ test("inline capture processor does not let a fallback suppress a new delivery a
 });
 
 test("inline capture processor queues complete notes with empty content", async () => {
-  for (const noteFields of [
-    ["category: fact"],
-    ["content: |", "category: fact"],
-  ]) {
+  for (const noteFields of [["category: fact"], ["content: |", "category: fact"]]) {
     const probe = createInlineCaptureProcessorProbe();
     const result = await probe.processor.process({
       captureMode: "hybrid",
-      content: [
-        "Keep this visible text.",
-        "<memory_note>",
-        ...noteFields,
-        "</memory_note>",
-      ].join("\n"),
+      content: ["Keep this visible text.", "<memory_note>", ...noteFields, "</memory_note>"].join("\n"),
     });
 
     assert.equal(result.content, "Keep this visible text.");
@@ -731,7 +754,7 @@ test("inline capture queues safe unsupported namespaces through the authorized r
   assert.ok(probe.requestedNamespaces.every((namespace) => namespace === "default"));
 });
 
-test("inline capture scopes unsupported namespace review replay to the authorized review namespace", async () => {
+test("inline capture globally deduplicates unsupported namespace review replay", async () => {
   const probe = createInlineCaptureProcessorProbe();
   const request = {
     captureMode: "hybrid" as const,
@@ -756,10 +779,9 @@ test("inline capture scopes unsupported namespace review replay to the authorize
   });
 
   assert.equal(first.queued, 1);
-  assert.equal(second.processed, 1);
+  assert.equal(second.processed, 0);
   assert.equal(second.duplicates, 1);
   assert.ok(probe.requestedNamespaces.includes("review-one"));
-  assert.ok(probe.requestedNamespaces.includes("review-two"));
 });
 
 test("inline capture accepts corrected metadata after queuing a validation failure", async () => {
@@ -768,24 +790,12 @@ test("inline capture accepts corrected metadata after queuing a validation failu
   const invalid = await probe.processor.process({
     captureMode: "hybrid",
     dedupeKeys: ["invalid-delivery"],
-    content: [
-      "<memory_note>",
-      `content: ${content}`,
-      "category: fact",
-      "confidence: abc",
-      "</memory_note>",
-    ].join("\n"),
+    content: ["<memory_note>", `content: ${content}`, "category: fact", "confidence: abc", "</memory_note>"].join("\n"),
   });
   const corrected = await probe.processor.process({
     captureMode: "hybrid",
     dedupeKeys: ["corrected-delivery"],
-    content: [
-      "<memory_note>",
-      `content: ${content}`,
-      "category: fact",
-      "confidence: 0.8",
-      "</memory_note>",
-    ].join("\n"),
+    content: ["<memory_note>", `content: ${content}`, "category: fact", "confidence: 0.8", "</memory_note>"].join("\n"),
   });
 
   assert.equal(invalid.queued, 1);
@@ -894,11 +904,13 @@ test("explicit capture keeps the authoritative fact-hash miss fast path", async 
   const result = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
 
   assert.equal(result.duplicateOf, undefined);
-  assert.deepEqual(probe.blockedIndexArguments(), [{
-    content: candidate.content,
-    category: "fact",
-    sourceConnector: undefined,
-  }]);
+  assert.deepEqual(probe.blockedIndexArguments(), [
+    {
+      content: candidate.content,
+      category: "fact",
+      sourceConnector: undefined,
+    },
+  ]);
   assert.equal(probe.envelopes.length, 1);
   assert.equal(probe.readAllCalls(), 0);
 });

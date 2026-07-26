@@ -8,92 +8,54 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { MemoryFile, MemoryFrontmatter } from "../../types.js";
+import type { MemoryFile } from "../../types.js";
+import { StorageManager } from "../../storage.js";
 import { ContentHashIndex } from "../../storage/content-hash-index.js";
-import {
-  TombstoneBlockedCaptureIndex,
-  buildExplicitCaptureDedupKey,
-} from "../../storage/tombstone-blocked-capture-index.js";
-import {
-  type LifecycleSubject,
-  type MatrixRow,
-  runLifecycleMatrix,
-} from "../lifecycle-matrix.js";
+import { buildExplicitCaptureDedupKey } from "../../storage/tombstone-blocked-capture-index.js";
+import { type LifecycleSubject, type MatrixRow, runLifecycleMatrix } from "../lifecycle-matrix.js";
 import { cleanupDir, mkTempMemoryDir } from "../orchestrator-lite.js";
 
 interface TombstoneLifecycleState {
   readonly memoryDir: string;
   readonly stateDir: string;
-  memories: MemoryFile[];
-  index: TombstoneBlockedCaptureIndex;
+  storage: StorageManager;
 }
 
-function memoryFile(
-  id: string,
-  content: string,
-  sourceConnector: string | undefined,
-  blocked = true,
-): MemoryFile {
-  const frontmatter: MemoryFrontmatter = {
-    id,
-    category: "fact",
-    created: "2026-07-25T00:00:00.000Z",
-    updated: "2026-07-25T00:00:00.000Z",
-    source: "explicit-inline",
-    confidence: 0.95,
-    confidenceTier: "explicit",
-    tags: [],
-    ...(sourceConnector === undefined ? {} : { sourceConnector }),
-    ...(blocked
-      ? {
-          status: "pending_review" as const,
-          blockedBy: "tombstone-1",
-          tombstoneBlockTier: "exact" as const,
-        }
-      : { status: "active" as const }),
-  };
-  return {
-    path: path.join("facts", `${id}.md`),
-    frontmatter,
-    content,
-  };
-}
-
-function createIndex(
-  stateDir: string,
-  memoryDir: string,
-  memories: MemoryFile[],
-): TombstoneBlockedCaptureIndex {
-  return new TombstoneBlockedCaptureIndex({
-    stateDir,
-    memoryDir,
-    secureStoreKeyProvider: () => null,
-    secureStoreWriteKeyProvider: () => null,
-    lockOptions: () => ({ maxWaitMs: 500, pollMs: 5, retryBaseMs: 5, retryMaxAttempts: 3 }),
-    readAllMemories: async () => memories,
-    readAllColdMemories: async () => [],
-  });
+async function readMemory(storage: StorageManager, id: string): Promise<MemoryFile> {
+  const memory = (await storage.readAllMemories()).find((entry) => entry.frontmatter.id === id);
+  assert.ok(memory, `expected persisted lifecycle memory ${id}`);
+  return memory;
 }
 
 async function addBlocked(
   state: TombstoneLifecycleState,
-  id: string,
   content: string,
-  sourceConnector: string | undefined,
+  sourceConnector: string | undefined
 ): Promise<MemoryFile> {
-  const memory = memoryFile(id, content, sourceConnector);
-  state.memories.push(memory);
-  await state.index.add(memory);
-  return memory;
+  const result = await state.storage.writeMemory("fact", content, {
+    source: "explicit-inline-review",
+    confidence: 0.2,
+    tags: ["review"],
+    status: "pending_review",
+    contentHashSource: content,
+    ...(sourceConnector === undefined ? {} : { sourceConnector }),
+  });
+  const pending = await readMemory(state.storage, result.id);
+  await state.storage.writeMemoryFrontmatter(pending, {
+    status: "pending_review",
+    blockedBy: "tombstone-1",
+    tombstoneBlockTier: "exact",
+  });
+  return await readMemory(state.storage, result.id);
 }
 
 async function assertMembership(
   state: TombstoneLifecycleState,
   content: string,
   sourceConnector: string | undefined,
-  expected: boolean,
+  expected: boolean
 ): Promise<void> {
-  const result = await state.index.check(content, "fact", sourceConnector);
+  const result = await state.storage.checkTombstoneBlockedExplicitCapture(content, "fact", sourceConnector);
   assert.equal(result.has, expected);
   assert.equal(result.authoritative, true, "a published index must answer authoritatively");
 }
@@ -103,12 +65,10 @@ const subject: LifecycleSubject<TombstoneLifecycleState> = {
     const memoryDir = await mkTempMemoryDir(`tombstone-${row.id}`);
     try {
       const stateDir = path.join(memoryDir, "state");
-      const memories: MemoryFile[] = [];
       return {
         memoryDir,
         stateDir,
-        memories,
-        index: createIndex(stateDir, memoryDir, memories),
+        storage: new StorageManager(memoryDir),
       };
     } catch (err) {
       await cleanupDir(memoryDir);
@@ -119,46 +79,47 @@ const subject: LifecycleSubject<TombstoneLifecycleState> = {
     const content = `The tombstone lifecycle row is ${row.id}.`;
     switch (row.id) {
       case "explicit-provider-identity":
-        await addBlocked(state, "explicit", content, "openclaw");
+        await addBlocked(state, content, "openclaw");
         return;
       case "sparse-metadata-with-binding":
-        await addBlocked(state, "remembered", content, undefined);
+        await addBlocked(state, content, undefined);
         return;
       case "sparse-metadata-without-binding":
-        await addBlocked(state, "unbound", content, "remembered-provider");
+        await addBlocked(state, content, "remembered-provider");
         return;
       case "provider-rebinding": {
-        const before = await addBlocked(state, "rebind", content, "provider-a");
-        const after = memoryFile("rebind", content, "provider-b");
-        state.memories[0] = after;
-        await state.index.sync(before, after);
+        const before = await addBlocked(state, content, "provider-a");
+        await state.storage.writeMemoryFrontmatter(before, {
+          sourceConnector: "provider-b",
+        });
         return;
       }
       case "restart-reload-recovery": {
-        await addBlocked(state, "restart", content, "openclaw");
-        state.index = createIndex(state.stateDir, state.memoryDir, state.memories);
+        await addBlocked(state, content, "openclaw");
+        state.storage = new StorageManager(state.memoryDir);
         return;
       }
       case "compaction-flush":
-        await addBlocked(state, "compact-a", `${content} First.`, "openclaw");
-        await addBlocked(state, "compact-b", `${content} Second.`, "openclaw");
+        await addBlocked(state, `${content} First.`, "openclaw");
+        await addBlocked(state, `${content} Second.`, "openclaw");
         return;
       case "before-reset": {
-        const before = await addBlocked(state, "reset", content, "openclaw");
-        const after = memoryFile("reset", content, "openclaw", false);
-        state.memories[0] = after;
-        await state.index.sync(before, after);
+        const before = await addBlocked(state, content, "openclaw");
+        await state.storage.writeMemoryFrontmatter(before, {
+          status: "active",
+          blockedBy: undefined,
+          tombstoneBlockTier: undefined,
+        });
         return;
       }
       case "session-end":
-        await addBlocked(state, "session-end", content, "openclaw");
-        await state.index.rebuildIfLoaded();
+        await addBlocked(state, content, "openclaw");
+        await state.storage.checkTombstoneBlockedExplicitCapture(content, "fact", "openclaw");
         return;
-      case "dedupe-replay": {
-        const memory = await addBlocked(state, "replay", content, "openclaw");
-        await state.index.add(memory);
+      case "dedupe-replay":
+        await addBlocked(state, content, "openclaw");
+        await addBlocked(state, content, "openclaw");
         return;
-      }
       default: {
         const exhaustive: never = row.id;
         throw new Error(`unhandled row ${String(exhaustive)}`);
@@ -194,12 +155,15 @@ const subject: LifecycleSubject<TombstoneLifecycleState> = {
         return;
       case "dedupe-replay": {
         await assertMembership(state, content, "openclaw", true);
-        const raw = await readFile(
-          path.join(state.stateDir, "tombstone-blocked-capture", "fact-hashes.txt"),
-          "utf8",
-        );
+        const raw = await readFile(path.join(state.stateDir, "tombstone-blocked-capture", "fact-hashes.txt"), "utf8");
         const keyHash = ContentHashIndex.computeHash(buildExplicitCaptureDedupKey(content, "fact", "openclaw"));
-        assert.equal(raw.trim().split("\n").filter((line) => line === keyHash).length, 1);
+        assert.equal(
+          raw
+            .trim()
+            .split("\n")
+            .filter((line) => line === keyHash).length,
+          1
+        );
         return;
       }
       default: {

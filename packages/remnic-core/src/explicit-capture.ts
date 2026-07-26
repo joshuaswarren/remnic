@@ -151,9 +151,13 @@ function sanitizeReviewMetadata(value: string | undefined): string | undefined {
 }
 
 function sanitizeReviewTags(tags: string[] | undefined): string[] {
-  return Array.from(new Set((tags ?? [])
-    .map((tag) => sanitizeReviewMetadata(tag))
-    .filter((tag): tag is string => typeof tag === "string" && tag.length > 0)));
+  return Array.from(
+    new Set(
+      (tags ?? [])
+        .map((tag) => sanitizeReviewMetadata(tag))
+        .filter((tag): tag is string => typeof tag === "string" && tag.length > 0)
+    )
+  );
 }
 
 function normalizeExplicitCaptureError(error: unknown): string {
@@ -164,7 +168,7 @@ function normalizeExplicitCaptureError(error: unknown): string {
 
 function resolveExplicitCaptureReviewNamespace(
   orchestrator: Orchestrator,
-  namespace: string | undefined,
+  namespace: string | undefined
 ): string | undefined {
   const normalized = asTrimmed(namespace);
   if (!normalized) return undefined;
@@ -173,7 +177,7 @@ function resolveExplicitCaptureReviewNamespace(
 
 function resolveExplicitCaptureNamespace(
   orchestrator: Orchestrator,
-  namespace: string | undefined,
+  namespace: string | undefined
 ): string | undefined {
   const normalized = asTrimmed(namespace);
   if (!normalized) return undefined;
@@ -183,11 +187,15 @@ function resolveExplicitCaptureNamespace(
     }
     return normalized;
   }
-  const allowed = new Set([
-    orchestrator.config.defaultNamespace,
-    orchestrator.config.sharedNamespace,
-    ...orchestrator.config.namespacePolicies.map((policy) => policy.name),
-  ].map((value) => value.trim()).filter(Boolean));
+  const allowed = new Set(
+    [
+      orchestrator.config.defaultNamespace,
+      orchestrator.config.sharedNamespace,
+      ...orchestrator.config.namespacePolicies.map((policy) => policy.name),
+    ]
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
   if (!allowed.has(normalized)) {
     throw new Error(`unsupported namespace: ${normalized}`);
   }
@@ -215,10 +223,7 @@ function parseExplicitCaptureTtl(ttl: string | undefined): string | undefined {
   }
 
   const multiplier =
-    unit === "m" ? 60_000
-      : unit === "h" ? 60 * 60_000
-        : unit === "d" ? 24 * 60 * 60_000
-          : 7 * 24 * 60 * 60_000;
+    unit === "m" ? 60_000 : unit === "h" ? 60 * 60_000 : unit === "d" ? 24 * 60 * 60_000 : 7 * 24 * 60 * 60_000;
   return new Date(Date.now() + amount * multiplier).toISOString();
 }
 
@@ -324,7 +329,7 @@ export function stripInlineExplicitCaptureNotes(text: string): string {
 
 export function validateExplicitCaptureInput(
   input: ExplicitCaptureInput,
-  mode: ExplicitCaptureValidationMode = "strict_explicit",
+  mode: ExplicitCaptureValidationMode = "strict_explicit"
 ): ValidExplicitCapture {
   const content = asTrimmed(input.content);
   if (!content) throw new Error("content is required");
@@ -401,18 +406,15 @@ async function findDuplicateExplicitCapture(
   orchestrator: Orchestrator,
   resolvedNamespace: string | undefined,
   candidate: ValidExplicitCapture,
-  storageOverride?: StorageManager,
+  storageOverride?: StorageManager
 ): Promise<{ id: string; tombstoneBlocked: boolean } | null> {
-  const storage = storageOverride ?? await orchestrator.getStorage(resolvedNamespace);
+  const storage = storageOverride ?? (await orchestrator.getStorage(resolvedNamespace));
   // Tombstone-blocked rows are absent from the active fact hash index. An
   // authoritative miss can therefore skip the corpus scan only after the
   // targeted blocked-row index reports a miss and remains authoritative.
   let activeFactHashMayMatch = true;
   let authoritativeFactHashMiss = false;
-  if (
-    candidate.category === "fact"
-    && typeof storage.hasFactContentHash === "function"
-  ) {
+  if (candidate.category === "fact" && typeof storage.hasFactContentHash === "function") {
     try {
       const hasHash = await storage.hasFactContentHash(candidate.content);
       if (!hasHash) {
@@ -437,7 +439,7 @@ async function findDuplicateExplicitCapture(
           storage,
           candidate.content,
           candidate.category,
-          candidate.sourceConnector,
+          candidate.sourceConnector
         );
         if (!result.has && result.authoritative) return null;
       } catch (err) {
@@ -453,7 +455,7 @@ async function findDuplicateExplicitCapture(
             storage,
             candidate.content,
             candidate.category,
-            candidate.sourceConnector,
+            candidate.sourceConnector
           );
           if (!hasBlocked) {
             const isIndexAuthoritative =
@@ -471,17 +473,14 @@ async function findDuplicateExplicitCapture(
     }
   }
   const hotMemories = await storage.readAllMemories();
-  const coldMemories =
-    typeof storage.readAllColdMemories === "function"
-      ? await storage.readAllColdMemories()
-      : [];
+  const coldMemories = typeof storage.readAllColdMemories === "function" ? await storage.readAllColdMemories() : [];
   const existing = [...hotMemories, ...coldMemories];
   const normalizedCandidate = normalizeExplicitCaptureContent(candidate.content);
   const match = existing.find((memory) => {
     const status = memory.frontmatter.status ?? "active";
     if (
-      (status !== "active" && (status !== "pending_review" || !memory.frontmatter.blockedBy))
-      || (status === "active" && !activeFactHashMayMatch)
+      (status !== "active" && (status !== "pending_review" || !memory.frontmatter.blockedBy)) ||
+      (status === "active" && !activeFactHashMayMatch)
     ) {
       return false;
     }
@@ -498,8 +497,7 @@ async function findDuplicateExplicitCapture(
   return match
     ? {
         id: match.frontmatter.id,
-        tombstoneBlocked:
-          match.frontmatter.status === "pending_review" && Boolean(match.frontmatter.blockedBy),
+        tombstoneBlocked: match.frontmatter.status === "pending_review" && Boolean(match.frontmatter.blockedBy),
       }
     : null;
 }
@@ -508,14 +506,9 @@ async function persistExplicitCaptureUnlocked(
   candidate: ValidExplicitCapture,
   source: ExplicitCaptureSource,
   resolvedNamespace: string | undefined,
-  storage: StorageManager,
+  storage: StorageManager
 ): Promise<{ id: string; duplicateOf?: string; tombstoneBlocked?: boolean }> {
-  const duplicate = await findDuplicateExplicitCapture(
-    orchestrator,
-    resolvedNamespace,
-    candidate,
-    storage,
-  );
+  const duplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
   if (duplicate) {
     return duplicate.tombstoneBlocked
       ? { id: duplicate.id, duplicateOf: duplicate.id, tombstoneBlocked: true }
@@ -537,7 +530,7 @@ async function persistExplicitCaptureUnlocked(
       ...(candidate.sourceConnector ? { sourceConnector: candidate.sourceConnector } : {}),
       ...(candidate.sourceReason ? { sourceReason: candidate.sourceReason } : {}),
     },
-    { source: source === "inline" ? "explicit-inline" : "explicit" },
+    { source: source === "inline" ? "explicit-inline" : "explicit" }
   );
   const { id, tombstoneBlocked } = await storage.writeSealedMemory(captureEnvelope);
   // #1522: catalog touch handled at the storage chokepoint — the StorageManager's
@@ -561,20 +554,15 @@ async function persistExplicitCaptureUnlocked(
 export async function persistExplicitCapture(
   orchestrator: Orchestrator,
   candidate: ValidExplicitCapture,
-  source: ExplicitCaptureSource,
+  source: ExplicitCaptureSource
 ): Promise<{ id: string; duplicateOf?: string; tombstoneBlocked?: boolean }> {
   const resolvedNamespace = candidate.namespacePreResolved
     ? asTrimmed(candidate.namespace)
     : resolveExplicitCaptureNamespace(orchestrator, candidate.namespace);
   const storage = await orchestrator.getStorage(resolvedNamespace);
-  const persist = () =>
-    persistExplicitCaptureUnlocked(orchestrator, candidate, source, resolvedNamespace, storage);
+  const persist = () => persistExplicitCaptureUnlocked(orchestrator, candidate, source, resolvedNamespace, storage);
   if (typeof storage.withTombstoneBlockedCaptureWriteLock !== "function") return await persist();
-  const lockIdentity = buildExplicitCaptureDedupKey(
-    candidate.content,
-    candidate.category,
-    candidate.sourceConnector,
-  );
+  const lockIdentity = buildExplicitCaptureDedupKey(candidate.content, candidate.category, candidate.sourceConnector);
   return await storage.withTombstoneBlockedCaptureWriteLock(persist, lockIdentity);
 }
 
@@ -587,14 +575,7 @@ function buildExplicitCaptureReviewContent(input: ExplicitCaptureInput, reason: 
   const safeTtl = sanitizeReviewMetadata(input.ttl);
   const safeSourceReason = sanitizeReviewMetadata(input.sourceReason);
   const safeTags = sanitizeReviewTags(input.tags);
-  const lines = [
-    "Explicit capture queued for review.",
-    "",
-    `Reason: ${reason}`,
-    "",
-    "Submitted content:",
-    safeContent,
-  ];
+  const lines = ["Explicit capture queued for review.", "", `Reason: ${reason}`, "", "Submitted content:", safeContent];
   const metadata = [
     safeCategory ? `Requested category: ${safeCategory}` : undefined,
     safeNamespace ? `Requested namespace: ${safeNamespace}` : undefined,
@@ -609,19 +590,46 @@ function buildExplicitCaptureReviewContent(input: ExplicitCaptureInput, reason: 
   return lines.join("\n");
 }
 
+function explicitCaptureReviewNamespaces(
+  orchestrator: Orchestrator,
+  queueNamespace: string | undefined
+): Array<string | undefined> {
+  const config = orchestrator.config;
+  const namespaces = new Set<string>();
+  const add = (namespace: string | undefined): void => {
+    const normalized = asTrimmed(namespace);
+    if (normalized) namespaces.add(normalized);
+  };
+  add(queueNamespace);
+  if (config.namespacesEnabled !== false) {
+    for (const policy of config.namespacePolicies) add(policy.name);
+  }
+  return [...namespaces];
+}
+
 async function findQueuedExplicitCaptureDuplicate(
   orchestrator: Orchestrator,
   namespace: string | undefined,
   content: string,
-  sourceConnector?: string,
+  sourceConnector?: string
 ): Promise<string | null> {
-  const storage = await orchestrator.getStorage(namespace);
-  const hotMemories = await storage.readAllMemories();
-  const coldMemories =
-    typeof storage.readAllColdMemories === "function"
-      ? await storage.readAllColdMemories()
-      : [];
-  const existing = [...hotMemories, ...coldMemories];
+  const storages = Array.from(
+    new Set(
+      await Promise.all(
+        explicitCaptureReviewNamespaces(orchestrator, namespace).map((reviewNamespace) =>
+          orchestrator.getStorage(reviewNamespace)
+        )
+      )
+    )
+  );
+  const memorySets = await Promise.all(
+    storages.map(async (storage) => {
+      const hotMemories = await storage.readAllMemories();
+      const coldMemories = typeof storage.readAllColdMemories === "function" ? await storage.readAllColdMemories() : [];
+      return [...hotMemories, ...coldMemories];
+    })
+  );
+  const existing = memorySets.flat();
   const normalized = normalizeExplicitCaptureContent(content);
   const match = existing.find((memory) => {
     const status = memory.frontmatter.status ?? "active";
@@ -646,7 +654,7 @@ export async function queueExplicitCaptureForReview(
   input: ExplicitCaptureInput,
   source: ExplicitCaptureSource,
   error: unknown,
-  options: ExplicitCaptureReviewQueueOptions = {},
+  options: ExplicitCaptureReviewQueueOptions = {}
 ): Promise<{ id: string; duplicateOf?: string }> {
   const reason = sanitizeReviewText(normalizeExplicitCaptureError(error), "explicit capture failed");
   const requestedNamespace = asTrimmed(input.namespace);
@@ -654,28 +662,26 @@ export async function queueExplicitCaptureForReview(
   // A caller-pre-authorized namespace (e.g. a session-owned project overlay
   // from the access service) routes directly; otherwise apply the static
   // policy allow-list guard (#1434).
-  const queueNamespace = resolvedNamespace ??
+  const queueNamespace =
+    resolvedNamespace ??
     ((input as { namespacePreResolved?: boolean }).namespacePreResolved
       ? requestedNamespace
       : resolveExplicitCaptureReviewNamespace(orchestrator, requestedNamespace));
   const content = buildExplicitCaptureReviewContent(input, reason);
   const requestedCategory = asTrimmed(input.category);
-  const reviewCategory = requestedCategory && INLINE_ALLOWED_CATEGORIES.has(requestedCategory as MemoryCategory)
-    ? requestedCategory as MemoryCategory
-    : "fact";
+  const reviewCategory =
+    requestedCategory && INLINE_ALLOWED_CATEGORIES.has(requestedCategory as MemoryCategory)
+      ? (requestedCategory as MemoryCategory)
+      : "fact";
   const requestedTags = sanitizeReviewTags(input.tags);
   const storage = await orchestrator.getStorage(queueNamespace);
-  const lockIdentity = buildExplicitCaptureDedupKey(
-    content,
-    reviewCategory,
-    input.sourceConnector,
-  );
+  const lockIdentity = buildExplicitCaptureDedupKey(content, reviewCategory, input.sourceConnector);
   const queue = async (): Promise<{ id: string; duplicateOf?: string }> => {
     const duplicateOf = await findQueuedExplicitCaptureDuplicate(
       orchestrator,
       queueNamespace,
       content,
-      input.sourceConnector,
+      input.sourceConnector
     );
     if (duplicateOf) {
       return { id: duplicateOf, duplicateOf };
@@ -698,20 +704,24 @@ export async function queueExplicitCaptureForReview(
       // would throw, losing the capture (#2014 review round). Salvage clamps
       // instead; the fixed review tags sort first in the assembly above, so
       // they always survive the clamp.
-      { salvage: true },
+      { salvage: true }
     );
     const { id } = await storage.writeSealedMemory(reviewEnvelope);
     try {
       const created = await storage.getMemoryById(id);
       if (created) {
-        await storage.writeMemoryFrontmatter(created, {
-          status: "pending_review",
-          updated: new Date().toISOString(),
-        }, {
-          actor: explicitCaptureActor(source),
-          reasonCode: reason,
-          ruleVersion: "explicit-capture.v1",
-        });
+        await storage.writeMemoryFrontmatter(
+          created,
+          {
+            status: "pending_review",
+            updated: new Date().toISOString(),
+          },
+          {
+            actor: explicitCaptureActor(source),
+            reasonCode: reason,
+            ruleVersion: "explicit-capture.v1",
+          }
+        );
       }
     } finally {
       // Record the catalog write touch (issue #1499, round 5/6 codex P2; NIhUg).
@@ -734,8 +744,13 @@ export async function queueExplicitCaptureForReview(
     await storage.appendMemoryLifecycleEvents([event]);
     return { id };
   };
-  if (typeof storage.withTombstoneBlockedCaptureWriteLock !== "function") return await queue();
-  return await storage.withTombstoneBlockedCaptureWriteLock(queue, lockIdentity);
+  const queueIsDefault =
+    queueNamespace === undefined || queueNamespace === asTrimmed(orchestrator.config.defaultNamespace);
+  const defaultStorage = queueIsDefault ? storage : await orchestrator.getStorage(undefined);
+  const lockStorage =
+    typeof defaultStorage.withTombstoneBlockedCaptureWriteLock === "function" ? defaultStorage : storage;
+  if (typeof lockStorage.withTombstoneBlockedCaptureWriteLock !== "function") return await queue();
+  return await lockStorage.withTombstoneBlockedCaptureWriteLock(queue, lockIdentity);
 }
 
 export function shouldSkipImplicitExtraction(cfg: Pick<PluginConfig, "captureMode">): boolean {
@@ -772,6 +787,7 @@ export interface InlineExplicitCaptureProcessorOptions {
 }
 
 const DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT = 1024;
+const EXPLICIT_CAPTURE_REVIEW_FALLBACK_SCOPE = "__explicit-capture-review-fallback__";
 
 export class InlineExplicitCaptureProcessor {
   private readonly observedKeys = new Set<string>();
@@ -781,7 +797,7 @@ export class InlineExplicitCaptureProcessor {
 
   constructor(
     private readonly orchestrator: Orchestrator,
-    private readonly options: InlineExplicitCaptureProcessorOptions = {},
+    private readonly options: InlineExplicitCaptureProcessorOptions = {}
   ) {
     const requestedLimit = options.maxDedupeKeys ?? DEFAULT_INLINE_CAPTURE_DEDUPE_KEY_LIMIT;
     this.maxDedupeKeys =
@@ -807,36 +823,32 @@ export class InlineExplicitCaptureProcessor {
     dedupeKeys: readonly string[] | undefined,
     input: ExplicitCaptureInput,
     namespacePreResolved: boolean,
-    fallbackReviewNamespace?: string,
+    fallbackReviewNamespace?: string
   ): { replayKeys: string[]; validationFailureKey: string } {
     let effectiveNamespace = asTrimmed(input.namespace);
+    let reviewFallback = false;
     if (!namespacePreResolved) {
       try {
-        effectiveNamespace = resolveExplicitCaptureNamespace(
-          this.orchestrator,
-          effectiveNamespace,
-        );
+        effectiveNamespace = resolveExplicitCaptureNamespace(this.orchestrator, effectiveNamespace);
       } catch {
+        reviewFallback = fallbackReviewNamespace !== undefined;
         effectiveNamespace = asTrimmed(fallbackReviewNamespace) ?? asTrimmed(input.namespace);
       }
     }
-    const namespaceScope =
-      effectiveNamespace ?? this.orchestrator.config.defaultNamespace;
+    const namespaceScope = reviewFallback
+      ? EXPLICIT_CAPTURE_REVIEW_FALLBACK_SCOPE
+      : (effectiveNamespace ?? this.orchestrator.config.defaultNamespace);
     const sourceConnectorScope = asTrimmed(input.sourceConnector) ?? "";
     const noteHash = createHash("sha256")
       .update(
         JSON.stringify({
           content: normalizeExplicitCaptureContent(input.content),
           category: asTrimmed(input.category) ?? "fact",
-        }),
+        })
       )
       .digest("hex");
     const validationTags = Array.from(
-      new Set(
-        (input.tags ?? [])
-          .map((tag) => asTrimmed(tag))
-          .filter((tag): tag is string => tag !== undefined),
-      ),
+      new Set((input.tags ?? []).map((tag) => asTrimmed(tag)).filter((tag): tag is string => tag !== undefined))
     ).sort();
     const validationHash = createHash("sha256")
       .update(
@@ -854,7 +866,7 @@ export class InlineExplicitCaptureProcessor {
           entityRef: asTrimmed(input.entityRef),
           sourceReason: asTrimmed(input.sourceReason),
           ttl: asTrimmed(input.ttl),
-        }),
+        })
       )
       .digest("hex");
     const deliveryKeys = (dedupeKeys ?? [])
@@ -865,9 +877,7 @@ export class InlineExplicitCaptureProcessor {
     return {
       replayKeys:
         deliveryKeys.length > 0
-          ? deliveryKeys.map(
-              (key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`,
-            )
+          ? deliveryKeys.map((key) => `${identityPrefix}${key}:inline-memory-note:${noteHash}`)
           : [fallbackKey],
       validationFailureKey: `${identityPrefix}validation:inline-memory-note:${validationHash}`,
     };
@@ -898,16 +908,11 @@ export class InlineExplicitCaptureProcessor {
     request: InlineExplicitCaptureProcessRequest,
     input: ExplicitCaptureInput,
     replayKeys: readonly string[],
-    validationFailureKey: string,
-  ): Promise<
-    Pick<InlineExplicitCaptureProcessResult, "processed" | "accepted" | "queued" | "duplicates" | "failed">
-  > {
+    validationFailureKey: string
+  ): Promise<Pick<InlineExplicitCaptureProcessResult, "processed" | "accepted" | "queued" | "duplicates" | "failed">> {
     const serializationKey = replayKeys.at(-1) ?? validationFailureKey;
     return this.enqueue(serializationKey, async () => {
-      if (
-        replayKeys.some((key) => this.observedKeys.has(key))
-        || this.observedKeys.has(validationFailureKey)
-      ) {
+      if (replayKeys.some((key) => this.observedKeys.has(key)) || this.observedKeys.has(validationFailureKey)) {
         return { processed: 0, accepted: 0, queued: 0, duplicates: 1, failed: 0 };
       }
 
@@ -928,9 +933,7 @@ export class InlineExplicitCaptureProcessor {
         this.orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
         return { processed: 1, accepted: 1, queued: 0, duplicates: 0, failed: 0 };
       } catch (error) {
-        const queueInput = request.namespacePreResolved === true
-          ? { ...input, namespacePreResolved: true }
-          : input;
+        const queueInput = request.namespacePreResolved === true ? { ...input, namespacePreResolved: true } : input;
         const reviewNamespace =
           request.reviewNamespacePreResolved === true &&
           request.namespacePreResolved !== true &&
@@ -943,7 +946,7 @@ export class InlineExplicitCaptureProcessor {
             queueInput,
             "inline",
             error,
-            reviewNamespace ? { resolvedNamespace: reviewNamespace } : undefined,
+            reviewNamespace ? { resolvedNamespace: reviewNamespace } : undefined
           );
           this.remember(validationSucceeded ? replayKeys : [validationFailureKey]);
           if (review.duplicateOf) {
@@ -953,7 +956,7 @@ export class InlineExplicitCaptureProcessor {
           return { processed: 1, accepted: 0, queued: 1, duplicates: 0, failed: 0 };
         } catch (queueError) {
           log.warn(
-            `explicit inline capture rejected: ${normalizeExplicitCaptureError(error)}; review queue fallback failed: ${normalizeExplicitCaptureError(queueError)}`,
+            `explicit inline capture rejected: ${normalizeExplicitCaptureError(error)}; review queue fallback failed: ${normalizeExplicitCaptureError(queueError)}`
           );
           return { processed: 0, accepted: 0, queued: 0, duplicates: 0, failed: 1 };
         }
@@ -993,9 +996,7 @@ export class InlineExplicitCaptureProcessor {
         request.dedupeKeys,
         input,
         request.namespacePreResolved === true,
-        request.reviewNamespacePreResolved === true
-          ? request.reviewNamespace
-          : undefined,
+        request.reviewNamespacePreResolved === true ? request.reviewNamespace : undefined
       );
       const result = await this.processNote(request, input, replayKeys, validationFailureKey);
       processed += result.processed;

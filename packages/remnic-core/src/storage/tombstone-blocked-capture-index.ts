@@ -156,17 +156,25 @@ export class TombstoneBlockedCaptureIndex {
               const state = value.state;
               if (state !== "pending" && state !== "committed") malformed = true;
               const markerStat = await stat(markerPath).catch(() => null);
+              // A torn payload can lose its JSON metadata, but the atomic
+              // marker filename and filesystem mtime still identify its owner
+              // and age. Preserve both so stale malformed markers can be
+              // reaped without treating a fresh pre-commit gap as abandoned.
               const createdAt =
                 typeof value.createdAt === "number" && Number.isFinite(value.createdAt)
                   ? value.createdAt
                   : markerStat?.mtimeMs;
               if (typeof value.pid !== "number" || !Number.isInteger(value.pid)) malformed = true;
+              const ownerId =
+                typeof value.ownerId === "string" && value.ownerId.length > 0
+                  ? value.ownerId
+                  : path.basename(markerPath);
               if (typeof value.ownerId !== "string" || value.ownerId.length === 0) malformed = true;
               return {
                 path: markerPath,
                 committed: state === "committed",
                 ...(typeof value.pid === "number" && Number.isInteger(value.pid) ? { pid: value.pid } : {}),
-                ...(typeof value.ownerId === "string" && value.ownerId.length > 0 ? { ownerId: value.ownerId } : {}),
+                ...(ownerId.length > 0 ? { ownerId } : {}),
                 ...(typeof createdAt === "number" && Number.isFinite(createdAt) ? { createdAt } : {}),
                 ...(malformed ? { malformed: true } : {}),
               };
@@ -654,7 +662,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     pathname: string,
     fileContent: string,
     frontmatter: MemoryFrontmatter,
-    content: string
+    content: string,
+    beforeIndexUpdate?: () => Promise<void>
   ): Promise<void> {
     await this.writeTombstoneBlockedMutation(
       this.tombstoneBlocked(frontmatter),
@@ -662,7 +671,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       fileContent,
       buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector),
       (rebuildMarker) =>
-        this.getTombstoneBlockedCaptureIndex().addWrittenMemory(pathname, frontmatter, content, rebuildMarker)
+        this.getTombstoneBlockedCaptureIndex().addWrittenMemory(pathname, frontmatter, content, rebuildMarker),
+      beforeIndexUpdate
     );
   }
 
@@ -760,12 +770,11 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     coordinate = false
   ): Promise<void> {
     const before = await this.readMemoryByPath(target);
-    const blocked =
-      coordinate || this.isTombstoneBlockedMemory(before) || this.isTombstoneBlockedMemory(after);
+    const blocked = coordinate || this.isTombstoneBlockedMemory(before) || this.isTombstoneBlockedMemory(after);
     const identities = [
       ...(this.isTombstoneBlockedMemory(before) ? [this.offlineSyncMemoryIdentity(before)] : []),
       ...(this.isTombstoneBlockedMemory(after) ? [this.offlineSyncMemoryIdentity(after)] : []),
-      ...(coordinate ? [target] : [])
+      ...(coordinate ? [target] : []),
     ];
     const mutate = async (): Promise<void> => {
       const marker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
