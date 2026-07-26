@@ -759,7 +759,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       id: frontmatter.id,
       identity: buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector),
       findDuplicate,
-      writeMemory: () => this.writeTombstoneBlockedMemory(pathname, fileContent, frontmatter, content),
+      persistMemory: () => this.writeTombstoneBlockedMemory(pathname, fileContent, frontmatter, content),
       afterWrite,
       withCaptureWriteLock: (task, identity) => this.withTombstoneBlockedCaptureWriteLock(task, identity),
     });

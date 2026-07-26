@@ -100,7 +100,7 @@ export type TombstoneBlockedChunkMutation = {
   id: string;
   identity: string;
   findDuplicate: () => Promise<MemoryFile | null>;
-  writeMemory: () => Promise<void>;
+  persistMemory: () => Promise<void>;
   afterWrite: () => Promise<void>;
   withCaptureWriteLock: (task: () => Promise<string>, identity: string) => Promise<string>;
 };
@@ -113,7 +113,7 @@ export async function runTombstoneBlockedChunkMutation(
       const duplicate = await mutation.findDuplicate();
       if (duplicate) return duplicate.frontmatter.id;
     }
-    await mutation.writeMemory();
+    await mutation.persistMemory();
     await mutation.afterWrite();
     return mutation.id;
   };
