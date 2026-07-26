@@ -290,6 +290,7 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
     const lifecycleRoutes = [
       ["/engram/v1/lcm/compaction/flush", "lcm_compaction_flush"],
       ["/engram/v1/extraction/flush", "extraction_force_flush"],
+      ["/engram/v1/lcm/compaction/record", "lcm_compaction_record"],
     ] as const;
     for (const [pathname, operation] of lifecycleRoutes) {
       const escapedPathname = pathname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
