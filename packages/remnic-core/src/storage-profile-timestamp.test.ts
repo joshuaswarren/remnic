@@ -363,6 +363,12 @@ test("writeProfile recognizes empty headings and spaced thematic breaks", async 
           "Body after a spaced thematic break.",
           "",
         ].join("\n"),
+        [
+          "#",
+          STALE_HEADER,
+          "Body after an empty H1.",
+          "",
+        ].join("\n"),
       ];
 
       for (const profile of profiles) {

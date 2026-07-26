@@ -1,5 +1,5 @@
 const LAST_UPDATED_HEADER = /^\*Last updated:[^*]*\*$/;
-const PROFILE_TITLE = /^ {0,3}#\s+/;
+const PROFILE_TITLE = /^ {0,3}#(?:\s+|$)/;
 const MARKDOWN_HEADING = /^#{1,6}(?:\s+|$)/;
 const MARKDOWN_LIST_ITEM = /^(?:[-+*]|\d+[.)])\s+/;
 const MARKDOWN_THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
