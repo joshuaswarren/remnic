@@ -2450,7 +2450,7 @@ export class EngramMcpServer {
           id,
           result: {
             content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-            structuredContent: result,
+            ...(result !== null && result !== undefined ? { structuredContent: result } : {}),
             isError: false,
           },
         };

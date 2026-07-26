@@ -276,6 +276,10 @@ function createFakeService(): EngramAccessService {
     }),
     peerDelete: async () => ({ ok: true, deleted: true }),
     peerProfileGet: async () => ({ found: false }),
+    wearablesSync: async () => [],
+    wearablesTranscriptDay: async () => [],
+    wearablesTranscriptSearch: async () => [],
+    wearablesTranscriptMemories: async () => [],
     consoleState: async () => ({
       capturedAt: "2026-04-27T00:00:00.000Z",
       bufferState: { turnsCount: 0, byteCount: 0 },
@@ -777,6 +781,34 @@ test("MCP day_summary tolerates injected git context keys", async () => {
     namespace: "global",
     timeZone: "America/Chicago",
   });
+});
+
+test("MCP day_summary omits structuredContent when the service returns null", async () => {
+  const service = createFakeService();
+  service.daySummary = async () => null;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "engram.day_summary",
+      arguments: {
+        namespace: "global",
+        timeZone: "America/Chicago",
+      },
+    },
+  });
+
+  const result = response?.result as {
+    isError?: boolean;
+    structuredContent?: unknown;
+    content?: Array<{ type: string; text: string }>;
+  };
+  assert.equal(result?.isError, false);
+  assert.equal("structuredContent" in result, false);
+  assert.equal(result?.content?.[0]?.text, "null");
 });
 
 test("engram.dreams_status rejects invalid windowHours without calling service", async () => {
@@ -1287,13 +1319,24 @@ test("MCP tools/list: every tool (including engram.* aliases) declares an output
   assert.ok(Array.isArray(tools), "tools/list must return a tools array");
   assert.ok((tools as unknown[]).length > 0, "tools array must be non-empty");
   const missing: string[] = [];
+  const invalidTypes: string[] = [];
   for (const tool of tools) {
     const name = fieldOf(tool, "name");
-    if (typeof name === "string" && fieldOf(tool, "outputSchema") === undefined) {
-      missing.push(name);
+    if (typeof name === "string") {
+      const outputSchema = fieldOf(tool, "outputSchema");
+      if (outputSchema === undefined) {
+        missing.push(name);
+      } else if (fieldOf(outputSchema, "type") !== "object") {
+        invalidTypes.push(name);
+      }
     }
   }
   assert.deepEqual(missing, [], `every tool must declare outputSchema; missing on: ${missing.join(", ")}`);
+  assert.deepEqual(
+    invalidTypes,
+    [],
+    `every tool outputSchema.type must be the literal string 'object'; invalid on: ${invalidTypes.join(", ")}`,
+  );
 });
 
 test("MCP tools/list: key tools have outputSchema with declared properties", async () => {
@@ -1498,6 +1541,11 @@ test("AJV: structuredContent validates against declared outputSchema for represe
     { name: "engram.capsule_export", args: { name: "cap-1" } },
     // Array-of-objects import result
     { name: "engram.capsule_import", args: { archivePath: "/tmp/a.capsule.json.gz" } },
+    // Wrapped array results for wearables/transcript tools
+    { name: "engram.wearables_sync", args: {} },
+    { name: "engram.transcript_day", args: { date: "2026-07-11" } },
+    { name: "engram.transcript_search", args: { query: "meeting" } },
+    { name: "engram.transcript_memories", args: {} },
     // Complex governance object
     { name: "engram.memory_governance_run", args: {} },
     // Corrected schemas (phantom removal + type fixes)
