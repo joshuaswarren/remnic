@@ -1652,6 +1652,7 @@ test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls th
         watermarkScope: "root-store",
       },
       corpus: [],
+      corpusComplete: true,
       replica: { enabled: false, pending: false, polledAt: null, peers: [] },
     }),
   } satisfies Pick<EngramAccessService, "health">;
@@ -1778,6 +1779,7 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
         watermarkScope: "root-store",
       },
       corpus: [],
+      corpusComplete: true,
       replica: { enabled: false, pending: false, polledAt: null, peers: [] },
     }),
   } satisfies Pick<EngramAccessService, "health">;

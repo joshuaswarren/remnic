@@ -24,6 +24,12 @@ export interface EngramAccessHealthResponse {
   projectionAvailable: boolean;
   extraction: ExtractionLivenessStatus;
   corpus: CorpusWatermark[];
+  /**
+   * Whether `corpus` above is the COMPLETE census for this responder, from the
+   * same call that produced it. A polling peer must refuse to certify
+   * convergence against a partial array (issue #2149).
+   */
+  corpusComplete: boolean;
   replica: ReplicaDivergenceStatus;
 }
 

@@ -2441,6 +2441,12 @@ export class EngramAccessService {
     const searchBackend = this.orchestrator.config.searchBackend ?? "qmd";
     const qmdEnabled = resolveQmdCapabilities(this.orchestrator.config).qmd === true;
     const extraction = await computeExtractionLivenessStatus(this.orchestrator, this.extractionLivenessWarn);
+    // ONE call: the corpus array and the flag describing it must not come from
+    // two independently-cached scans (round 8, codex P1).
+    const corpusCensus = await computeServiceCorpusCensus(this.orchestrator, {
+      cache: this.corpusWatermarkCache,
+      caps: tokenCapabilityStore.getStore(),
+    });
     let projectionAvailable = false;
     try {
       await stat(getMemoryProjectionPath(storage.dir));
@@ -2465,11 +2471,15 @@ export class EngramAccessService {
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
       extraction,
-      corpus: await computeServiceCorpusWatermarks(this.orchestrator, {
-        cache: this.corpusWatermarkCache, caps: tokenCapabilityStore.getStore() }),
+      corpus: corpusCensus.watermarks,
+      // Describes THIS response's `corpus` array, from the same call that built
+      // it. Sourcing it from the replica monitor's independent scan instead let
+      // a warming/failing corpus cache emit a partial array alongside a
+      // complete-looking flag, which a polling peer would trust (round 8).
+      corpusComplete: corpusCensus.complete,
       replica: this.replicaDivergenceMonitor.getReport({
         config: this.orchestrator.config.replicaPeers,
-        computeLocalWatermarks: () => computeServiceCorpusCensus(this.orchestrator, {}),
+        computeLocalWatermarks: async () => corpusCensus,
         caps: tokenCapabilityStore.getStore(),
       }),
     };

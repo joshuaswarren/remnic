@@ -541,8 +541,13 @@ export async function fetchPeerWatermarks(
     // A peer that does not advertise the field at all predates it — documented
     // as a mixed-version limitation rather than pinning every older peer to
     // `unknown` forever.
-    const peerReplica = (body as { replica?: { censusComplete?: unknown } }).replica;
-    if (peerReplica && peerReplica.censusComplete === false) {
+    // Prefer `corpusComplete`, which describes THIS response's corpus array;
+    // `replica.censusComplete` came from the peer's independently-cached
+    // monitor scan and could disagree with the array it shipped (round 8).
+    const peerBody = body as { corpusComplete?: unknown; replica?: { censusComplete?: unknown } };
+    const peerComplete =
+      typeof peerBody.corpusComplete === "boolean" ? peerBody.corpusComplete : peerBody.replica?.censusComplete;
+    if (peerComplete === false) {
       return { kind: "unknown", reason: "peer_census_incomplete" };
     }
     // A peer census whose `computedAt` is too far from the poll time in EITHER

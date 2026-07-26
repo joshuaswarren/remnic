@@ -1305,3 +1305,36 @@ test("round 7 (codex P1): a peer advertising an incomplete census cannot converg
   });
   assert.equal(ok.peers[0]?.state, "converged");
 });
+
+test("round 8 (codex P1): corpusComplete describing THIS response wins over the replica block", async () => {
+  // The peer's `corpus` array and `replica.censusComplete` came from two
+  // independently-cached scans and could disagree; the flag that describes the
+  // shipped array is authoritative.
+  const mixed: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      corpus: [watermark("default")],
+      corpusComplete: false, // the array we were actually given is partial
+      replica: { censusComplete: true }, // the peer's separate monitor scan was fine
+    }),
+  });
+  const status = await pollReplicaPeers({
+    config: parseReplicaPeersConfig({ replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318" }] } }),
+    localWatermarks: [watermark("default")],
+    fetchImpl: mixed,
+  });
+  assert.equal(status.peers[0]?.state, "unknown", "a partial corpus must not converge on a stale complete flag");
+  assert.equal(status.peers[0]?.reason, "peer_census_incomplete");
+});
+
+test("round 8 (codex P2): an unterminated env placeholder in a peer token is rejected", () => {
+  assert.throws(
+    () =>
+      parseReplicaPeersConfig({
+        replicaPeers: { enabled: true, peers: [{ url: "http://127.0.0.1:4318", token: "${PEER_TOKEN" }] },
+      }),
+    /unterminated environment variable placeholder/,
+    "a typo'd placeholder must fail at parse, not be sent literally as a bearer token",
+  );
+});

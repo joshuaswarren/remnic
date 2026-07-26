@@ -64,6 +64,13 @@ function expandEnvValue(value: string): string {
     }
     return envValue;
   });
+  // An UNTERMINATED `${NAME` matches neither the replacement regex nor the
+  // balanced leftover check below, so the literal typo would be sent as the
+  // bearer token and surface as a misleading `http_401` (round 8, codex P2).
+  const unterminated = resolved.match(/\$\{[^}]*$/);
+  if (unterminated) {
+    throw new Error(`replicaPeers: unterminated environment variable placeholder: ${unterminated[0]}`);
+  }
   const remaining = resolved.match(/\$\{[^}]*\}/);
   if (remaining) {
     throw new Error(`replicaPeers: malformed environment variable placeholder: ${remaining[0]}`);
