@@ -1,15 +1,12 @@
-import type {
-  EngramAccessExtractionForceFlushRequest,
-  EngramAccessLcmCompactionFlushRequest,
-  EngramAccessService,
-} from "./access-service.js";
+import type { EngramAccessExtractionForceFlushRequest, EngramAccessService } from "./access-service.js";
 import type { OperationName } from "./access-boundary.js";
 import type { LcmCompactionFlushRequest } from "./access-schema.js";
+import { runLcmCompactionFlushHttp } from "./access-http-lcm-compaction.js";
 
 export interface LifecycleFlushHttpDeps {
   service: Pick<EngramAccessService, "extractionForceFlush" | "lcmCompactionFlush">;
   enforceTokenOp(op: OperationName): void;
-  handleLcmCompactionFlushHttp?(body: LcmCompactionFlushRequest): Promise<void>;
+  defaultNamespace?: string;
   readValidatedBody(schemaName: "lcmCompactionFlush"): Promise<LcmCompactionFlushRequest>;
   readValidatedBody(schemaName: "extractionForceFlush"): Promise<EngramAccessExtractionForceFlushRequest>;
   ensureWriteRateLimitAvailable(): void;
@@ -32,17 +29,15 @@ export async function maybeHandleLifecycleFlush(
   ) {
     deps.enforceTokenOp("lcm_compaction_flush");
     const body = await deps.readValidatedBody("lcmCompactionFlush");
-    if (deps.handleLcmCompactionFlushHttp !== undefined) {
-      await deps.handleLcmCompactionFlushHttp(body);
-      return true;
-    }
-    deps.ensureWriteRateLimitAvailable();
-    const response = await deps.service.lcmCompactionFlush({
-      ...body,
-      namespace: deps.resolveNamespace(body.namespace),
-      authenticatedPrincipal: deps.resolveRequestPrincipal(),
+    const response = await runLcmCompactionFlushHttp({
+      body,
+      service: deps.service,
+      ensureWriteRateLimitAvailable: deps.ensureWriteRateLimitAvailable,
+      recordWriteRateLimitHit: deps.recordWriteRateLimitHit,
+      resolveNamespace: deps.resolveNamespace,
+      defaultNamespace: deps.defaultNamespace,
+      resolveRequestPrincipal: deps.resolveRequestPrincipal,
     });
-    deps.recordWriteRateLimitHit();
     deps.respondJson(response);
     return true;
   }

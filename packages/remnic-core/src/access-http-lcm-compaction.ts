@@ -24,17 +24,43 @@ export function respondLcmCompactionCapabilitiesHttp(response: ServerResponse): 
   response.end(JSON.stringify({ lcmCompactionFlushBatch: true }, null, 2));
 }
 
-export async function handleLcmCompactionFlushHttp({
+export interface LcmCompactionFlushRunnerOptions {
+  body: LcmCompactionFlushRequest;
+  service: LcmCompactionService;
+  ensureWriteRateLimitAvailable: () => void;
+  recordWriteRateLimitHit: () => void;
+  resolveNamespace: (namespace?: string) => string | undefined;
+  defaultNamespace?: string;
+  resolveRequestPrincipal: () => string | undefined;
+}
+
+type LcmCompactionFlushBatchResult =
+  | {
+      namespace: string;
+      status: "fulfilled";
+      result: EngramAccessLcmCompactionFlushResponse;
+    }
+  | { namespace: string; status: "rejected" };
+
+type LcmCompactionFlushHttpResult =
+  | EngramAccessLcmCompactionFlushResponse
+  | {
+      enabled: boolean;
+      flushed: boolean;
+      sessionKey: string;
+      namespaces: string[];
+      results: LcmCompactionFlushBatchResult[];
+    };
+
+export async function runLcmCompactionFlushHttp({
   body,
   service,
-  response,
   ensureWriteRateLimitAvailable,
   recordWriteRateLimitHit,
   resolveNamespace,
   defaultNamespace,
   resolveRequestPrincipal,
-  respondJson,
-}: LcmCompactionFlushHttpOptions): Promise<void> {
+}: LcmCompactionFlushRunnerOptions): Promise<LcmCompactionFlushHttpResult> {
   ensureWriteRateLimitAvailable();
   const requestedNamespaces = body.namespaces;
   if (requestedNamespaces === undefined) {
@@ -46,8 +72,7 @@ export async function handleLcmCompactionFlushHttp({
       authenticatedPrincipal: resolveRequestPrincipal(),
     });
     recordWriteRateLimitHit();
-    respondJson(response, 200, result);
-    return;
+    return result;
   }
   const resolutionOutcomes = await Promise.allSettled(
     requestedNamespaces.map(async (requestedNamespace) => {
@@ -92,29 +117,44 @@ export async function handleLcmCompactionFlushHttp({
       serviceOutcomesByEffectiveNamespace.set(resolved.effectiveNamespace, serviceOutcome);
     }
   }
-  type BatchResult =
-    | {
-        requestedNamespace: string;
-        status: "fulfilled";
-        result: EngramAccessLcmCompactionFlushResponse;
-      }
-    | { requestedNamespace: string; status: "rejected" };
-  const results: BatchResult[] = resolutionOutcomes.map((outcome, index) => {
+  const results = resolutionOutcomes.map((outcome, index): LcmCompactionFlushBatchResult => {
     const requestedNamespace = requestedNamespaces[index] ?? "";
     if (outcome.status === "rejected") {
-      return { status: "rejected", requestedNamespace };
+      return { status: "rejected", namespace: requestedNamespace };
     }
     const serviceOutcome = serviceOutcomesByEffectiveNamespace.get(outcome.value.effectiveNamespace);
     return serviceOutcome?.status === "fulfilled"
-      ? { status: "fulfilled", requestedNamespace, result: serviceOutcome.value }
-      : { status: "rejected", requestedNamespace };
+      ? { status: "fulfilled", namespace: requestedNamespace, result: serviceOutcome.value }
+      : { status: "rejected", namespace: requestedNamespace };
   });
   recordWriteRateLimitHit();
-  respondJson(response, 200, {
+  return {
     enabled: results.every((result) => result.status === "fulfilled" && result.result.enabled !== false),
     flushed: results.every((result) => result.status === "fulfilled" && result.result.flushed !== false),
     sessionKey: body.sessionKey,
     namespaces: requestedNamespaces,
-    results: results.map(({ requestedNamespace, ...result }) => ({ ...result, namespace: requestedNamespace })),
+    results,
+  };
+}
+export async function handleLcmCompactionFlushHttp({
+  body,
+  service,
+  response,
+  ensureWriteRateLimitAvailable,
+  recordWriteRateLimitHit,
+  resolveNamespace,
+  defaultNamespace,
+  resolveRequestPrincipal,
+  respondJson,
+}: LcmCompactionFlushHttpOptions): Promise<void> {
+  const result = await runLcmCompactionFlushHttp({
+    body,
+    service,
+    ensureWriteRateLimitAvailable,
+    recordWriteRateLimitHit,
+    resolveNamespace,
+    defaultNamespace,
+    resolveRequestPrincipal,
   });
+  respondJson(response, 200, result);
 }

@@ -41,7 +41,7 @@ import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation, type OperationName } from "./access-boundary.js";
 import { authorizationProbeNamespaces, probeOperationAuthorization } from "./access-authorization-probe.js";
 import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
-import * as lcm from "./access-http-lcm-compaction.js";
+import { respondLcmCompactionCapabilitiesHttp } from "./access-http-lcm-compaction.js";
 import {
   assertOperationAllowed,
   capabilityAllowsOp,
@@ -891,7 +891,7 @@ export class EngramAccessHttpServer {
       this.respondJson(res, 200, await this.service.health());
       return;
     }
-    if (req.method === "GET" && pathname === "/engram/v1/capabilities") return lcm.respondLcmCompactionCapabilitiesHttp(res);
+    if (req.method === "GET" && pathname === "/engram/v1/capabilities") return respondLcmCompactionCapabilitiesHttp(res);
     if (req.method === "GET" && pathname === "/engram/v1/authorization") {
       res.setHeader("cache-control", "no-store");
       const probe = probeOperationAuthorization(tokenCapabilityStore.getStore(), parsed.searchParams.getAll("op"));
@@ -3611,7 +3611,6 @@ export class EngramAccessHttpServer {
     }
     return parsed;
   }
-
   private parseOptionalBooleanHeader(
     req: IncomingMessage,
     name: string,
@@ -3624,20 +3623,7 @@ export class EngramAccessHttpServer {
     throw new EngramAccessInputError(`${name} header must be one of: true, false`);
   }
   private lifecycleFlushDeps(req: IncomingMessage, res: ServerResponse): LifecycleFlushHttpDeps {
-    return {
-      service: this.service,
-      handleLcmCompactionFlushHttp: (body) =>
-        lcm.handleLcmCompactionFlushHttp({
-          body,
-          service: this.service,
-          response: res,
-          ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
-          recordWriteRateLimitHit: () => this.recordWriteRateLimitHit(req),
-          resolveNamespace: (namespace) => this.resolveNamespace(req, namespace),
-          defaultNamespace: this.service.configRef?.defaultNamespace,
-          resolveRequestPrincipal: () => this.resolveRequestPrincipal(req),
-          respondJson: this.respondJson.bind(this),
-        }),
+    return { service: this.service, defaultNamespace: this.service.configRef?.defaultNamespace,
       enforceTokenOp: (op) => this.enforceTokenOp(op),
       readValidatedBody: (schemaName) => this.readValidatedBody(req, schemaName),
       ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
