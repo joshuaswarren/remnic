@@ -948,10 +948,6 @@ export class AccessObserveWriteSurface {
           typeof scope.principal === "string" && scope.principal.length > 0
             ? scope.principal
             : undefined,
-        sessionOwnerPrincipal:
-          typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
-            ? request.authenticatedPrincipal.trim()
-            : undefined,
       });
 
       return {

@@ -176,34 +176,31 @@ test("flushSession preserves scoped force-drain routing and deadline options", a
   assert.equal(queuedOptions?.clearBufferAfterExtraction, true);
 });
 
-test("flushSession binds an authenticated owner before draining opaque buffers", async () => {
-  const orchestrator = Object.create(Orchestrator.prototype) as any;
-  const turn = makeTurn("opaque-session", "remember gamma");
-  let bound: { sessionKey: string; principal: string } | undefined;
 
+test("flushSession rejects opaque buffers without trusted ownership", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let queued = false;
+  orchestrator.config = parseConfig({ namespacesEnabled: true });
   orchestrator.buffer = {
     flushPendingSave: async () => {},
-    bindSessionOwnerPrincipal: async (sessionKey: string, principal: string) => {
-      bound = { sessionKey, principal };
-    },
     findBufferKeysForSession: async () => ["provider-thread"],
-    getTurns: (bufferKey: string) => (bufferKey === "provider-thread" ? [turn] : []),
+    getTurns: (bufferKey: string) =>
+      bufferKey === "provider-thread" ? [makeTurn("opaque-session", "remember gamma")] : [],
   };
-  orchestrator.queueBufferedExtraction = async (
-    _turns: BufferTurn[],
-    _reason: string,
-    options?: Record<string, unknown>,
-  ) => {
-    (options?.onTaskSettled as (() => void) | undefined)?.();
+  orchestrator.queueBufferedExtraction = async () => {
+    queued = true;
   };
 
-  await orchestrator.flushSession("opaque-session", {
-    reason: "access_force_flush",
-    failOnExtractionFailure: true,
-    sessionOwnerPrincipal: "alice",
-  });
-
-  assert.deepEqual(bound, { sessionKey: "opaque-session", principal: "alice" });
+  await assert.rejects(
+    orchestrator.flushSession("opaque-session", {
+      reason: "access_force_flush",
+      failOnExtractionFailure: true,
+      writeNamespaceOverride: "alice-project",
+      principalOverride: "alice",
+    }),
+    /without trusted ownership/,
+  );
+  assert.equal(queued, false);
 });
 
 test("flushSession waits for queued extraction task completion", async () => {

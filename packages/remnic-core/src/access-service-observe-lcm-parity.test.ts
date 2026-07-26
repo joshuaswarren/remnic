@@ -73,7 +73,6 @@ interface ExtractionForceFlushCall {
     abortSignal?: AbortSignal;
     writeNamespaceOverride?: string;
     principalOverride?: string;
-    sessionOwnerPrincipal?: string;
   };
 }
 
@@ -446,7 +445,11 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
   assert.equal(call.options.abortSignal, abortController.signal);
   assert.equal(call.options.writeNamespaceOverride, expectedNamespace);
   assert.equal(call.options.principalOverride, "pi-geek");
-  assert.equal(call.options.sessionOwnerPrincipal, "pi-geek");
+  assert.equal(
+    Object.hasOwn(call.options, "sessionOwnerPrincipal"),
+    false,
+    "force-flush must not claim ownership for opaque buffered turns",
+  );
 });
 
 test("#2128: authenticated opaque sessions persist their trusted owner for force-flush", async () => {

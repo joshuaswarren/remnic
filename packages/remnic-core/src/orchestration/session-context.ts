@@ -83,6 +83,7 @@ export interface SessionContextDeps {
   readonly orchestratorSelf: Orchestrator;
 }
 
+
 export interface SessionFlushOptions {
   reason: string;
   abortSignal?: AbortSignal;
@@ -92,8 +93,14 @@ export interface SessionFlushOptions {
   writeNamespaceOverride?: string;
   failOnExtractionFailure?: boolean;
   principalOverride?: string;
-  /** Authenticated owner to persist on matching turns before scoped draining. */
-  sessionOwnerPrincipal?: string;
+}
+
+/** Scoped flushes must never claim an opaque buffer without trusted ingestion ownership. */
+export class SessionOwnershipError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionOwnershipError";
+  }
 }
 
 export class SessionContextCoordinator {
@@ -344,25 +351,9 @@ export class SessionContextCoordinator {
     // extraction leaves them on disk for re-extraction on next startup.
     // Durability-preserving AND fail-closed: pass throwOnFailure so a failed
     // durable save stops this lifecycle drain BEFORE any extraction runs
-    // (issue #1909, PR #2016). flushPendingSave still retains the pending state
-    // and re-arms a background retry on write failure, but it now rethrows so
-    // flushSession rejects instead of clearing turns behind a non-durable save.
-    // Without this, a force-drain could queue extraction with
-    // clearBufferAfterExtraction on turns that never reached disk; if extraction
-    // then failed and the host exited, the turn was lost.
+    // flushPendingSave retains pending state and re-arms a retry on failure.
     if (typeof this.deps.buffer.flushPendingSave === "function") {
       await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
-    }
-    const sessionOwnerPrincipal =
-      typeof options.sessionOwnerPrincipal === "string" && options.sessionOwnerPrincipal.trim().length > 0
-        ? options.sessionOwnerPrincipal.trim()
-        : undefined;
-    if (
-      sessionOwnerPrincipal &&
-      sessionKey.length > 0 &&
-      typeof this.deps.buffer.bindSessionOwnerPrincipal === "function"
-    ) {
-      await this.deps.buffer.bindSessionOwnerPrincipal(sessionKey, sessionOwnerPrincipal);
     }
     const explicitBufferKey =
       typeof options.bufferKey === "string" && options.bufferKey.length > 0
@@ -382,15 +373,35 @@ export class SessionContextCoordinator {
         : typeof sessionKey === "string" && sessionKey.length > 0
           ? [sessionKey]
           : ["default"];
+    const scopedOwnership =
+      typeof options.writeNamespaceOverride === "string" ||
+      typeof options.principalOverride === "string";
+    const ownerPrincipal =
+      typeof options.principalOverride === "string" && options.principalOverride.trim().length > 0
+        ? options.principalOverride.trim()
+        : undefined;
+    const resolvedSessionPrincipal =
+      scopedOwnership && ownerPrincipal !== undefined && this.deps.config
+        ? resolvePrincipal(sessionKey, this.deps.config)
+        : undefined;
+    const opaqueScopedSession =
+      scopedOwnership &&
+      ownerPrincipal !== undefined &&
+      (resolvedSessionPrincipal === undefined || resolvedSessionPrincipal === "default");
+    if (
+      opaqueScopedSession &&
+      bufferKeys.some((bufferKey) =>
+        this.deps.buffer
+          .getTurns(bufferKey)
+          .some((turn) => turn.sessionKey === sessionKey && turn.sessionOwnerPrincipal === undefined),
+      )
+    ) {
+      throw new SessionOwnershipError(
+        `session ${sessionKey} has buffered turns without trusted ownership`,
+      );
+    }
     for (const bufferKey of bufferKeys) {
       const turns = this.deps.buffer.getTurns(bufferKey);
-      const scopedOwnership =
-        typeof options.writeNamespaceOverride === "string" ||
-        typeof options.principalOverride === "string";
-      const ownerPrincipal =
-        typeof options.principalOverride === "string" && options.principalOverride.trim().length > 0
-          ? options.principalOverride.trim()
-          : undefined;
       const turnsForSession = scopedOwnership
         ? turns.filter((turn) => {
             if (turn.sessionKey !== sessionKey) return false;
@@ -398,6 +409,7 @@ export class SessionContextCoordinator {
             if (turn.sessionOwnerPrincipal === ownerPrincipal) return true;
             return (
               turn.sessionOwnerPrincipal === undefined &&
+              this.deps.config !== undefined &&
               resolvePrincipal(turn.sessionKey, this.deps.config) === ownerPrincipal
             );
           })

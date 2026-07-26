@@ -70,8 +70,7 @@ export interface ExecutorMemory {
 }
 
 export interface ExecutorDeps {
-  /** Lookup a memory by id within the plan's namespace. null if not found. */
-  getMemory(namespace: string, memoryId: string): Promise<ExecutorMemory | null>;
+  getMemory(namespace: string, memoryId: string, abortSignal?: AbortSignal): Promise<ExecutorMemory | null>;
   /**
    * Persist a NEW memory through the orchestrator's normal write pipeline
    * (catalog/reindex/dedup fire — rule 43). Returns the new memory id.
@@ -90,6 +89,7 @@ export interface ExecutorDeps {
       structuredAttributes?: Record<string, string>;
       supersedes?: string;
     },
+    abortSignal?: AbortSignal,
   ): Promise<string>;
   /**
    * Apply a versioned edit to an existing memory (page-versioning — every
@@ -100,6 +100,7 @@ export interface ExecutorDeps {
     namespace: string,
     memoryId: string,
     patch: string,
+    abortSignal?: AbortSignal,
   ): Promise<string>;
   /**
    * Flip a memory's status to superseded/retracted and stamp `validUntil`
@@ -113,13 +114,19 @@ export interface ExecutorDeps {
       supersededBy?: string;
       validUntil?: string;
     },
+    abortSignal?: AbortSignal,
   ): Promise<void>;
   /**
    * Move a memory to a different namespace (rescope). The destination
    * namespace is re-authorized by the service before the executor runs; the
    * implementation performs the move atomically (write-then-unlink).
    */
-  rescopeMemory(namespace: string, memoryId: string, toNamespace: string): Promise<string>;
+  rescopeMemory(
+    namespace: string,
+    memoryId: string,
+    toNamespace: string,
+    abortSignal?: AbortSignal,
+  ): Promise<string>;
   /**
    * Append a tombstone (#1579) for a retired memory. Returns the tombstone
    * id, or null if tombstones are disabled (off = pre-feature behavior).
@@ -142,12 +149,13 @@ export interface ExecutorDeps {
       /** Canonical contentHash from the retired memory's frontmatter (#1672 item 4). */
       contentHash?: string;
     },
+    abortSignal?: AbortSignal,
   ): Promise<string | null>;
   /**
    * Persist a redaction rule so extraction consults it the same way tombstones
    * are consulted (route through the same chokepoint check). Idempotent.
    */
-  registerRedactionRule(namespace: string, pattern: string): Promise<void>;
+  registerRedactionRule(namespace: string, pattern: string, abortSignal?: AbortSignal): Promise<void>;
   /**
    * Append an audit record under `corrections/` (existing storage category)
    * capturing plan + outcome. Returns the audit memory id.
@@ -160,6 +168,7 @@ export interface ExecutorDeps {
       outcome: CorrectionOutcome;
       requestText: string;
     },
+    abortSignal?: AbortSignal,
   ): Promise<string>;
   /**
    * Post-write propagation: QMD reindex for touched files (checklist §31),
@@ -167,7 +176,11 @@ export interface ExecutorDeps {
    * here is recorded as a warning, never as a failed action (propagation is
    * not part of the §14 non-destructive-order guarantee; it runs after).
    */
-  propagate(namespace: string, touchedMemoryIds: readonly string[]): Promise<void>;
+  propagate(
+    namespace: string,
+    touchedMemoryIds: readonly string[],
+    abortSignal?: AbortSignal,
+  ): Promise<void>;
   /** Whether the bi-temporal gate (#1578) is on. When off, validUntil is omitted. */
   readonly biTemporalEnabled: boolean;
   /** Injected clock for deterministic tests. */
@@ -299,7 +312,7 @@ export class CorrectionExecutor {
         // replacement creates an orphan fact that supersedes nothing. Phase 2
         // (retireAndTombstone) re-checks via getMemory, so verifying here
         // keeps the two phases in agreement and avoids the orphan write.
-        const loser = await this.deps.getMemory(namespace, action.loserId);
+        const loser = await this.deps.getMemory(namespace, action.loserId, abortSignal);
         if (!loser) {
           results.push({
             action,
@@ -321,10 +334,11 @@ export class CorrectionExecutor {
               ? { structuredAttributes: action.replacement.structuredAttributes }
               : {}),
             supersedes: action.loserId,
-          });
+          }, abortSignal);
           results.push({ action, status: "applied", memoryId: newId });
           appliedTouched.push(newId);
         } catch (err) {
+          if (abortSignal?.aborted) throw err;
           results.push({
             action,
             status: "failed",
@@ -333,17 +347,19 @@ export class CorrectionExecutor {
         }
       } else if (action.kind === "edit") {
         try {
-          const editedId = await this.deps.applyEdit(namespace, action.memoryId, action.patch);
+          const editedId = await this.deps.applyEdit(namespace, action.memoryId, action.patch, abortSignal);
           results.push({ action, status: "applied", memoryId: editedId });
           appliedTouched.push(editedId);
         } catch (err) {
+          if (abortSignal?.aborted) throw err;
           results.push({ action, status: "failed", error: errMsg(err) });
         }
       } else if (action.kind === "redaction_rule") {
         try {
-          await this.deps.registerRedactionRule(namespace, action.pattern);
+          await this.deps.registerRedactionRule(namespace, action.pattern, abortSignal);
           results.push({ action, status: "applied" });
         } catch (err) {
+          if (abortSignal?.aborted) throw err;
           results.push({ action, status: "failed", error: errMsg(err) });
         }
       }
@@ -362,11 +378,25 @@ export class CorrectionExecutor {
         if (action.replacement && !replacementResult) {
           continue;
         }
-        await this.retireAndTombstone(namespace, action, "supersession", results, appliedTouched, {
-          supersededBy: replacementResult?.memoryId,
-        });
+        await this.retireAndTombstone(
+          namespace,
+          action,
+          "supersession",
+          results,
+          appliedTouched,
+          { supersededBy: replacementResult?.memoryId },
+          abortSignal,
+        );
       } else if (action.kind === "retract") {
-        await this.retireAndTombstone(namespace, action, "retraction", results, appliedTouched);
+        await this.retireAndTombstone(
+          namespace,
+          action,
+          "retraction",
+          results,
+          appliedTouched,
+          {},
+          abortSignal,
+        );
       } else if (action.kind === "rescope") {
         try {
           // Authorize the destination namespace BEFORE the move — the plan's
@@ -383,7 +413,12 @@ export class CorrectionExecutor {
             });
             continue;
           }
-          const destId = await this.deps.rescopeMemory(namespace, action.memoryId, action.toNamespace);
+          const destId = await this.deps.rescopeMemory(
+            namespace,
+            action.memoryId,
+            action.toNamespace,
+            abortSignal,
+          );
           // #1678 (thread OiiV6): report the DESTINATION memory id, not the
           // source. The source is archived by the move; callers that re-fetch
           // the reported id need the live (destination) memory, otherwise they
@@ -393,11 +428,13 @@ export class CorrectionExecutor {
           // Propagate the destination memory in its namespace too (review
           // thread: propagate-rescoped-destination) — best-effort.
           try {
-            await this.deps.propagate(action.toNamespace, [destId]);
-          } catch {
+            await this.deps.propagate(action.toNamespace, [destId], abortSignal);
+          } catch (err) {
+            if (abortSignal?.aborted) throw err;
             // non-fatal — the source propagation still fires.
           }
         } catch (err) {
+          if (abortSignal?.aborted) throw err;
           results.push({ action, status: "failed", error: errMsg(err) });
         }
       }
@@ -410,8 +447,9 @@ export class CorrectionExecutor {
     const propagationWarnings: string[] = [];
     if (appliedTouched.length > 0) {
       try {
-        await this.deps.propagate(namespace, appliedTouched);
+        await this.deps.propagate(namespace, appliedTouched, abortSignal);
       } catch (err) {
+        if (abortSignal?.aborted) throw err;
         propagationWarnings.push(`propagation failed (non-fatal): ${errMsg(err)}`);
       }
     }
@@ -437,9 +475,10 @@ export class CorrectionExecutor {
         classification: plan.classification,
         outcome,
         requestText: plan.request.text,
-      });
+      }, abortSignal);
       outcome.auditMemoryId = auditId;
     } catch (err) {
+      if (abortSignal?.aborted) throw err;
       // The audit record is part of the contract but a failure to write it
       // must NOT undo the applied corrections. Record as a warning.
       (outcome as CorrectionOutcome & { warnings?: string[] }).warnings = [
@@ -470,12 +509,13 @@ export class CorrectionExecutor {
     results: CorrectionActionResult[],
     appliedTouched: string[],
     opts: { supersededBy?: string } = {},
+    abortSignal?: AbortSignal,
   ): Promise<void> {
     const memoryId =
       action.kind === "supersede" ? action.loserId : action.kind === "retract" ? action.memoryId : null;
     if (!memoryId) return;
     try {
-      const memory = await this.deps.getMemory(namespace, memoryId);
+      const memory = await this.deps.getMemory(namespace, memoryId, abortSignal);
       if (!memory) {
         results.push({
           action,
@@ -506,12 +546,12 @@ export class CorrectionExecutor {
         ...(memory.supersessionKeys && memory.supersessionKeys.length > 0
           ? { supersessionKeys: memory.supersessionKeys }
           : {}),
-      });
+      }, abortSignal);
       await this.deps.retireMemory(namespace, memoryId, {
         status: reason === "supersession" ? "superseded" : "retracted",
         ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
         ...(validUntil ? { validUntil } : {}),
-      });
+      }, abortSignal);
       results.push({
         action,
         status: "applied",
@@ -520,6 +560,7 @@ export class CorrectionExecutor {
       });
       appliedTouched.push(memoryId);
     } catch (err) {
+      if (abortSignal?.aborted) throw err;
       results.push({ action, status: "failed", error: errMsg(err) });
     }
   }
