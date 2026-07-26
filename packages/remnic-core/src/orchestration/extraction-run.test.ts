@@ -20,6 +20,7 @@ import {
   type ExtractionRunCoordinatorDeps,
   computeExtractionRetryNextEligibleMs,
   capExtractionRetryStateEntries,
+  deriveTopicsFromExtraction,
 } from "./extraction-run.js";
 import { StorageManager } from "../storage.js";
 import { parseConfig } from "../config.js";
@@ -86,6 +87,7 @@ const migrationSummary: TierMigrationCycleSummary = {
 interface Harness {
   config: PluginConfig;
   storageForNs: (ns: string) => Promise<StorageManager>;
+  setStorageForDelay: (delayMs: number) => void;
   newCoordinator: () => ExtractionRunCoordinator;
   engineCalls: () => number;
   setRespond: (fn: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult>) => void;
@@ -110,7 +112,11 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   });
 
   const storages = new Map<string, StorageManager>();
+  let storageForDelayMs = 0;
   const storageForNs = async (ns: string): Promise<StorageManager> => {
+    if (storageForDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, storageForDelayMs));
+    }
     let s = storages.get(ns);
     if (!s) {
       s = new StorageManager(path.join(baseDir, `ns-${ns.replace(/[^a-z0-9]+/gi, "_")}`));
@@ -168,6 +174,9 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   return {
     config,
     storageForNs,
+    setStorageForDelay: (delayMs) => {
+      storageForDelayMs = delayMs;
+    },
     newCoordinator: () => new ExtractionRunCoordinator(makeDeps()),
     engineCalls: () => engineCalls,
     setRespond: (fn) => {
@@ -284,6 +293,60 @@ test("runExtraction aborts an in-flight provider when its deadline expires", asy
   }
 });
 
+test("runExtraction bounds storage preparation by its deadline", async () => {
+  const scenarios = [
+    {
+      name: "storageFor",
+      stage: "during_storage",
+      configure: (harness: Harness) => harness.setStorageForDelay(100),
+    },
+    {
+      name: "loadMeta",
+      stage: "during_load_meta",
+      configure: async (harness: Harness) => {
+        const storage = await harness.storageForNs("default");
+        const loadMeta = storage.loadMeta.bind(storage);
+        storage.loadMeta = async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          return loadMeta();
+        };
+      },
+    },
+    {
+      name: "listEntityNames",
+      stage: "during_list_entity_names",
+      configure: async (harness: Harness) => {
+        const storage = await harness.storageForNs("default");
+        const listEntityNames = storage.listEntityNames.bind(storage);
+        storage.listEntityNames = async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          return listEntityNames();
+        };
+      },
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    const harness = await makeHarness();
+    try {
+      await scenario.configure(harness);
+      await assert.rejects(
+        harness.newCoordinator().runExtraction(makeTurns(`deadline-${scenario.name}`), {
+          skipCharThreshold: true,
+          skipUserTurnThreshold: true,
+          clearBufferAfterExtraction: false,
+          bufferKey: `deadline-${scenario.name}`,
+          deadlineMs: Date.now() + 40,
+        }),
+        (error: unknown) => error instanceof ExtractionDeadlineError && error.stage === scenario.stage,
+      );
+      assert.equal(harness.engineCalls(), 0, `${scenario.name} timeout must happen before provider extraction`);
+    } finally {
+      await harness.cleanup();
+    }
+  }
+});
+
 test("runExtraction clamps long deadline timers to the Node setTimeout limit", async () => {
   const harness = await makeHarness();
   const timerGlobal = globalThis as unknown as { setTimeout: typeof setTimeout };
@@ -350,6 +413,45 @@ test("capExtractionRetryStateEntries: caps to newest and guards maxEntries<=0", 
   // maxEntries<=0 must return [] (not ALL entries via slice(-0)).
   assert.deepEqual(capExtractionRetryStateEntries(entries, 0), []);
   assert.deepEqual(capExtractionRetryStateEntries(entries, -5), []);
+});
+test("extraction helpers ignore malformed runtime values", () => {
+  const malformed = {
+    facts: [
+      null,
+      { tags: [42, "OK"], entityRef: 7, category: "project" },
+      { tags: ["valid"], entityRef: "Entity" },
+    ],
+    entities: [null, 4, { name: "Tool" }],
+  } as unknown as ExtractionResult;
+  assert.deepEqual(deriveTopicsFromExtraction(malformed), ["ok", "project", "valid", "entity", "tool"]);
+  assert.deepEqual(
+    deriveTopicsFromExtraction(null as unknown as ExtractionResult),
+    [],
+  );
+});
+
+test("computeExtractionRetryNextEligibleMs sanitizes invalid numeric inputs", () => {
+  assert.equal(
+    computeExtractionRetryNextEligibleMs(Number.NaN, [1000], 5000, Number.NaN, 100, () => Number.NaN),
+    1100,
+  );
+  assert.equal(
+    computeExtractionRetryNextEligibleMs(1.5, [1000], Number.POSITIVE_INFINITY, 2, 100),
+    100,
+  );
+  assert.equal(
+    Number.isFinite(
+      computeExtractionRetryNextEligibleMs(1, [Number.NaN], 5000, 0.2, 100),
+    ),
+    true,
+  );
+});
+
+test("capExtractionRetryStateEntries rejects non-finite and fractional caps", () => {
+  const entries = [{ firstFailedAt: "2026-07-15T00:00:00.000Z" }];
+  assert.deepEqual(capExtractionRetryStateEntries(entries, Number.NaN), []);
+  assert.deepEqual(capExtractionRetryStateEntries(entries, Number.POSITIVE_INFINITY), []);
+  assert.deepEqual(capExtractionRetryStateEntries(entries, 1.5), []);
 });
 
 // ---------------------------------------------------------------------------

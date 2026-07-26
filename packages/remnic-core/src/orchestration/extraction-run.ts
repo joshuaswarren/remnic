@@ -726,17 +726,72 @@ export class ExtractionRunCoordinator {
       explicitWriteNamespace ??
       scopeProfileWritePlan?.writeNamespace ??
       this.deps.applyCodingNamespaceOverlay(sessionKey, defaultNamespaceForPrincipal(principal, this.config));
-    const storage = await this.deps.getStorageRouter().storageFor(selfNamespace);
+    const extractionDeadlineController =
+      typeof deadlineMs === "number" && Number.isFinite(deadlineMs)
+        ? new AbortController()
+        : undefined;
+    const extractionAbortSignal = extractionDeadlineController
+      ? options.abortSignal
+        ? AbortSignal.any([options.abortSignal, extractionDeadlineController.signal])
+        : extractionDeadlineController.signal
+      : options.abortSignal;
+    let extractionDeadlineTimer: NodeJS.Timeout | undefined;
+    const clearExtractionDeadlineTimer = (): void => {
+      if (extractionDeadlineTimer) {
+        clearTimeout(extractionDeadlineTimer);
+        extractionDeadlineTimer = undefined;
+      }
+    };
+    const runDeadlineAware = async <T>(operation: () => Promise<T>, phase: string): Promise<T> => {
+      try {
+        return await raceRecallAbort(
+          operation(),
+          extractionDeadlineController?.signal,
+          `extraction aborted (${phase})`,
+        );
+      } catch (error) {
+        clearExtractionDeadlineTimer();
+        if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+          throw new ExtractionDeadlineError(phase);
+        }
+        throw error;
+      }
+    };
+    if (extractionDeadlineController && typeof deadlineMs === "number") {
+      const deadline = deadlineMs;
+      const maxTimerDelayMs = 2_147_483_647;
+      const scheduleDeadlineAbort = (): void => {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          extractionDeadlineController.abort();
+          return;
+        }
+        extractionDeadlineTimer = setTimeout(() => {
+          if (Date.now() >= deadline) {
+            extractionDeadlineController.abort();
+          } else {
+            scheduleDeadlineAbort();
+          }
+        }, Math.min(remainingMs, maxTimerDelayMs));
+      };
+      scheduleDeadlineAbort();
+    }
+    const storage = await runDeadlineAware(
+      () => this.deps.getStorageRouter().storageFor(selfNamespace),
+      "during_storage",
+    );
     const shouldPersistProcessedFingerprint = targetTurns.some((turn) => turn.persistProcessedFingerprint === true);
     const extractionFingerprint = this.buildExtractionFingerprint(targetTurns, bufferKey);
-    let meta = extractionFingerprint && shouldPersistProcessedFingerprint ? await storage.loadMeta() : null;
+    let meta = extractionFingerprint && shouldPersistProcessedFingerprint
+      ? await runDeadlineAware(() => storage.loadMeta(), "during_load_meta")
+      : null;
     if (
       extractionFingerprint &&
       shouldPersistProcessedFingerprint &&
       (meta?.processedExtractionFingerprints ?? []).some((entry) => entry.fingerprint === extractionFingerprint)
     ) {
-      log.debug(`runExtraction: skipping already-processed extraction fingerprint for ${bufferKey}`);
-      await clearBuffer();
+      await runDeadlineAware(() => clearBuffer(), "during_clear_buffer");
+      clearExtractionDeadlineTimer();
       return {
         status: "skipped",
         reason: "processed_fingerprint",
@@ -759,7 +814,7 @@ export class ExtractionRunCoordinator {
     const extractionRetryEnabled = resolveMemoryLifecycleCapabilities(this.config).extractionRetry;
     if (extractionFingerprint && !forcedExtractionAttempt && extractionRetryEnabled) {
       try {
-        meta ??= await storage.loadMeta();
+        meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_gate");
         this.hydrateRetryStateFromMeta(selfNamespace, meta);
         const nowMs = Date.now();
         let suppressReason: "provider_circuit_open" | "extraction_backoff" | null = null;
@@ -770,60 +825,38 @@ export class ExtractionRunCoordinator {
           if (st && nowMs < st.nextEligibleAtMs) suppressReason = "extraction_backoff";
         }
         if (suppressReason) {
-          // Parity with the other skip paths: passive correction capture is
-          // local (no provider call) and must not be delayed by a provider
-          // cooldown — "stop calling me X" style turns should register during
-          // a 30-minute breaker window too (codex review). Fail-open.
+          // Passive correction capture is local and must not be delayed by a
+          // provider cooldown. It remains fail-open.
           try {
-            await runPassiveCapture(normalizedTurns as BufferTurn[], {
-              sessionKey,
-              principal,
-              namespace: selfNamespace,
-              bufferKey,
-              isLiveSession: clearBufferAfterExtraction,
-            });
+            await runDeadlineAware(
+              () => runPassiveCapture(normalizedTurns as BufferTurn[], {
+                sessionKey,
+                principal,
+                namespace: selfNamespace,
+                bufferKey,
+                isLiveSession: clearBufferAfterExtraction,
+              }),
+              "during_passive_capture",
+            );
           } catch (captureErr) {
+            if (captureErr instanceof ExtractionDeadlineError) throw captureErr;
             log.warn("runExtraction: passive correction capture failed on suppressed attempt (non-fatal)", captureErr);
           }
+          clearExtractionDeadlineTimer();
           return { status: "skipped", reason: suppressReason, persistedCount: 0, durableOutputCount: 0 };
         }
       } catch (err) {
+        if (err instanceof ExtractionDeadlineError) throw err;
         // Fail-open: a gate error must never block extraction.
         log.warn("runExtraction: extraction retry gate check failed; proceeding (fail-open)", err);
       }
     }
 
-    // Pass existing entity names so the LLM can reuse them instead of inventing variants
-    const existingEntities = await storage.listEntityNames();
-    const extractionDeadlineController =
-      typeof deadlineMs === "number" && Number.isFinite(deadlineMs)
-        ? new AbortController()
-        : undefined;
-    const extractionAbortSignal = extractionDeadlineController
-      ? options.abortSignal
-        ? AbortSignal.any([options.abortSignal, extractionDeadlineController.signal])
-        : extractionDeadlineController.signal
-      : options.abortSignal;
-    let extractionDeadlineTimer: NodeJS.Timeout | undefined;
-    if (extractionDeadlineController && typeof deadlineMs === "number") {
-      const deadline = deadlineMs;
-      const maxTimerDelayMs = 2_147_483_647;
-      const scheduleDeadlineAbort = (): void => {
-        const remainingMs = deadline - Date.now();
-        if (remainingMs <= 0) {
-          extractionDeadlineController.abort();
-          return;
-        }
-        extractionDeadlineTimer = setTimeout(() => {
-          if (Date.now() >= deadline) {
-            extractionDeadlineController.abort();
-          } else {
-            scheduleDeadlineAbort();
-          }
-        }, Math.min(remainingMs, maxTimerDelayMs));
-      };
-      scheduleDeadlineAbort();
-    }
+    // Pass existing entity names so the LLM can reuse them instead of inventing variants.
+    const existingEntities = await runDeadlineAware(
+      () => storage.listEntityNames(),
+      "during_list_entity_names",
+    );
     let result: ExtractionResult;
     try {
       result = await raceRecallAbort(

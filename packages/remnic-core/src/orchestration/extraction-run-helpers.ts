@@ -1,17 +1,31 @@
 import type { BufferTurn, ExtractionFailureClass, ExtractionResult } from "../types.js";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 export function deriveTopicsFromExtraction(result: ExtractionResult): string[] {
+  if (!isRecord(result)) return [];
   const topics = new Set<string>();
-  for (const fact of result.facts ?? []) {
-    for (const tag of fact.tags ?? []) {
-      if (tag && tag.length >= 2) topics.add(tag.toLowerCase());
+  const facts = Array.isArray(result.facts) ? result.facts : [];
+  for (const rawFact of facts) {
+    if (!isRecord(rawFact)) continue;
+    const tags = Array.isArray(rawFact.tags) ? rawFact.tags : [];
+    for (const tag of tags) {
+      if (typeof tag === "string" && tag.length >= 2) topics.add(tag.toLowerCase());
     }
-    if (fact.entityRef) topics.add(fact.entityRef.toLowerCase());
-    if (fact.category) topics.add(fact.category);
+    if (typeof rawFact.entityRef === "string" && rawFact.entityRef.length >= 2) {
+      topics.add(rawFact.entityRef.toLowerCase());
+    }
+    if (typeof rawFact.category === "string" && rawFact.category.length > 0) {
+      topics.add(rawFact.category);
+    }
   }
-  for (const entity of (result as any).entities ?? []) {
-    if (typeof entity.name === "string" && entity.name.length >= 2) {
-      topics.add(entity.name.toLowerCase());
+  const entities = Array.isArray(result.entities) ? result.entities : [];
+  for (const rawEntity of entities) {
+    if (!isRecord(rawEntity)) continue;
+    if (typeof rawEntity.name === "string" && rawEntity.name.length >= 2) {
+      topics.add(rawEntity.name.toLowerCase());
     }
   }
   return [...topics].slice(0, 16);
@@ -52,27 +66,35 @@ export function computeExtractionRetryNextEligibleMs(
   now: number,
   rng: () => number = Math.random,
 ): number {
-  const cap = Number.isFinite(maxBackoffMs) && maxBackoffMs > 0 ? maxBackoffMs : 0;
+  const safeNow = Number.isFinite(now) ? now : 0;
+  const cap = Number.isFinite(maxBackoffMs) && maxBackoffMs >= 0 ? maxBackoffMs : 0;
+  const safeAttempts =
+    Number.isFinite(attempts) && Number.isInteger(attempts) && attempts >= 1 ? attempts : 1;
   if (!Array.isArray(scheduleMs) || scheduleMs.length === 0) {
-    return now + cap;
+    return safeNow + cap;
   }
-  const idx = Math.min(Math.max(attempts - 1, 0), scheduleMs.length - 1);
+  const idx = Math.min(safeAttempts - 1, scheduleMs.length - 1);
   const step = scheduleMs[idx];
-  const base = Math.min(typeof step === "number" && step > 0 ? step : cap, cap);
-  const jitter = 1 + (rng() * 2 - 1) * jitterRatio;
-  return now + Math.max(0, Math.round(base * jitter));
+  const base = Math.min(typeof step === "number" && Number.isFinite(step) && step > 0 ? step : cap, cap);
+  const safeJitterRatio =
+    Number.isFinite(jitterRatio) && jitterRatio >= 0 && jitterRatio <= 1 ? jitterRatio : 0;
+  const randomValue = rng();
+  const safeRandomValue =
+    Number.isFinite(randomValue) && randomValue >= 0 && randomValue <= 1 ? randomValue : 0.5;
+  const jitter = 1 + (safeRandomValue * 2 - 1) * safeJitterRatio;
+  return safeNow + Math.max(0, Math.round(base * jitter));
 }
 
 /**
  * Cap the persisted retry-state array to the newest `maxEntries` by
- * firstFailedAt. Guards `maxEntries <= 0` so a zero cap returns [] rather than
- * `slice(-0)`, which returns ALL entries (AGENTS.md rule 17).
+ * firstFailedAt. Guards invalid caps so they cannot turn `slice(-maxEntries)`
+ * into an unbounded copy (AGENTS.md rule 17).
  */
 export function capExtractionRetryStateEntries<T extends { firstFailedAt: string }>(
   entries: readonly T[],
   maxEntries: number,
 ): T[] {
-  if (maxEntries <= 0) return [];
+  if (!Number.isFinite(maxEntries) || !Number.isInteger(maxEntries) || maxEntries <= 0) return [];
   const sorted = [...entries].sort((a, b) => a.firstFailedAt.localeCompare(b.firstFailedAt));
   return sorted.slice(-maxEntries);
 }

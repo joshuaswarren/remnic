@@ -663,8 +663,13 @@ async function appendTombstoneFn(
         : [undefined];
   const writtenIds: string[] = [];
   let firstId: string | null = null;
+  let committed = false;
   for (const key of keys) {
-    throwIfAborted(abortSignal, "correction apply aborted");
+    // Once one tombstone is durable, finish the complete tombstone set even
+    // if the caller aborts. The executor must retire the source after the
+    // tombstone commit or compensate it; returning an abort here would leave
+    // an active source behind a committed resurrection block.
+    if (!committed) throwIfAborted(abortSignal, "correction apply aborted");
     const result = await storage.appendTombstone({
       reason: input.reason,
       createdBy: "user_correction",
@@ -674,7 +679,6 @@ async function appendTombstoneFn(
       ...(key ? { supersessionKey: key } : {}),
       ...(input.contentHash ? { contentHash: input.contentHash } : {}),
     });
-    throwIfAborted(abortSignal, "correction apply aborted");
     if (result === null && enabled) {
       // Rollback already-written tombstones so a partial multi-key failure
       // does not leave incomplete resurrection blocking for the still-active
@@ -688,7 +692,10 @@ async function appendTombstoneFn(
       );
     }
     if (firstId === null) firstId = result;
-    if (result) writtenIds.push(result);
+    if (result) {
+      writtenIds.push(result);
+      committed = true;
+    }
   }
   return firstId;
 }

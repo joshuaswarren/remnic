@@ -467,6 +467,31 @@ test("retainDeferredTurns preserves turns across clearAfterExtraction", async ()
   assert.equal(afterClear[1]?.content, "deferred context two");
 });
 
+test("clearRetainedTurnsForSession drains only the force-flushed session", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+  const sessionTurn = makeTurn("session-a", "deferred context");
+  const otherTurn = makeTurn("session-b", "other deferred context");
+
+  await buffer.addTurn("provider-thread", sessionTurn);
+  await buffer.retainDeferredTurns("provider-thread", [sessionTurn]);
+  await buffer.addTurn("other-thread", otherTurn);
+  await buffer.retainDeferredTurns("other-thread", [otherTurn]);
+
+  await buffer.clearRetainedTurnsForSession("session-a");
+
+  assert.deepEqual(buffer.getRetainedDeferredTurns("provider-thread"), []);
+  assert.deepEqual(buffer.getRetainedDeferredTurns("other-thread"), [otherTurn]);
+  assert.deepEqual(
+    storage.saved?.entries?.["provider-thread"]?.retainedTurns,
+    undefined,
+  );
+});
+
 test("retainDeferredTurns respects the max tail size", async () => {
   const storage = new FakeStorage({
     turns: [],

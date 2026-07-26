@@ -43,6 +43,8 @@ interface FakeState {
   retireFailOnMemoryId?: string;
   /** When set, appendTombstone throws for this source memory (PG9 test). */
   tombstoneFailOnMemoryId?: string;
+  /** Hook used by cancellation-transaction regressions after a tombstone commits. */
+  abortAfterTombstone?: () => void;
   propagateFails?: boolean;
   propagateCalls: number;
   /** Number of times retireMemory was invoked (PG9 ordering test). */
@@ -113,7 +115,10 @@ function makeExecutorDeps(state: FakeState, opts: { biTemporalEnabled?: boolean;
       state.memories.set(memoryId, { ...existing, content: patch, rawContent: patch });
       return memoryId;
     },
-    retireMemory: async (_ns, memoryId, retireOpts) => {
+    retireMemory: async (_ns, memoryId, retireOpts, abortSignal) => {
+      if (abortSignal?.aborted) {
+        throw abortSignal.reason ?? new Error("aborted");
+      }
       if (state.retireFailOnMemoryId === memoryId) {
         throw new Error(`injected retire failure for ${memoryId}`);
       }
@@ -139,6 +144,7 @@ function makeExecutorDeps(state: FakeState, opts: { biTemporalEnabled?: boolean;
         throw new Error(`injected tombstone failure for ${input.sourceMemoryId}`);
       }
       state.tombstones.push(input);
+      state.abortAfterTombstone?.();
       return `tomb-${state.tombstones.length}`;
     },
     registerRedactionRule: async (_ns, pattern) => {
@@ -656,6 +662,48 @@ test("PG9: tombstone failure does NOT retire the source memory (write tombstone 
     // so a retry operates on un-mutated state with no resurrection window.
     assert.equal(state.retireCalls ?? 0, 0, "retireMemory must not run when appendTombstone fails");
     assert.equal(state.memories.get("mem-old")!.status, "active", "source memory stays active");
+  });
+});
+
+test("#2128 cancellation after tombstone commit still retires the source", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-old", { memoryId: "mem-old", path: "facts/mem-old.md", content: "stale", excerpt: "stale", score: 1 }],
+    ]);
+    const abortController = new AbortController();
+    const state: FakeState = {
+      memories: new Map([["mem-old", fakeMemory({ memoryId: "mem-old", content: "stale" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+      abortAfterTombstone: () => abortController.abort(new Error("caller disconnected")),
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "retract", memoryId: "mem-old" }],
+        relevance: [{ memoryId: "mem-old", why: "stale" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "stale", targetIds: ["mem-old"] }, ["default"]);
+    const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
+
+    await assert.rejects(
+      () => executor.apply("default", plan.planId, {
+        confirm: true,
+        abortSignal: abortController.signal,
+      }),
+      /correction apply aborted/,
+    );
+    assert.equal(state.tombstones.length, 1);
+    assert.equal(state.retireCalls, 1, "retirement must complete after tombstone commit");
+    assert.equal(state.memories.get("mem-old")?.status, "retracted");
   });
 });
 

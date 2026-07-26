@@ -921,6 +921,39 @@ export class SmartBuffer {
     return entry?.retainedTurns ? [...entry.retainedTurns] : [];
   }
 
+  /**
+   * Clear deferred retention copies for a force-flushed session. Normal
+   * extraction preserves these copies so a deferred candidate can be retried;
+   * an explicit force flush is the caller's request to drain that context.
+   */
+  async clearRetainedTurnsForSession(sessionKey: string): Promise<void> {
+    if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
+    const bufferKeys = await this.findBufferKeysForSession(sessionKey);
+    if (bufferKeys.length === 0) return;
+    await this.enqueueMutation(async () => {
+      const hadPendingSave = this.pendingSave;
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+      }
+      await this.loadUnlocked();
+      let changed = false;
+      for (const bufferKey of bufferKeys) {
+        const entry = this.entryFor(bufferKey);
+        const retainedTurns = entry.retainedTurns ?? [];
+        const remainingTurns = retainedTurns.filter((turn) => turn.sessionKey !== sessionKey);
+        if (remainingTurns.length === retainedTurns.length) continue;
+        changed = true;
+        if (remainingTurns.length > 0) entry.retainedTurns = remainingTurns;
+        else delete entry.retainedTurns;
+        if (bufferKey === "default") this.state.turns = entry.turns;
+      }
+      if (changed || hadPendingSave) {
+        await this.saveNowRetainingPendingOnFailure("clearRetainedTurnsForSession");
+      }
+    });
+  }
+
   async findBufferKeyForSession(sessionKey: string): Promise<string | null> {
     const bufferKeys = await this.findBufferKeysForSession(sessionKey);
     return bufferKeys[0] ?? null;

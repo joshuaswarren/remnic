@@ -198,6 +198,38 @@ test("#2128 replacement write returns its committed id after cancellation", asyn
   }
 });
 
+test("#2128 tombstone append returns its committed id after cancellation", async () => {
+  const { storage, cleanup } = await makeStorage("remnic-corr-tombstone-abort-");
+  try {
+    const originalAppendTombstone = storage.appendTombstone.bind(storage);
+    const abortController = new AbortController();
+    let committed = false;
+    (storage as any).appendTombstone = async (...args: any[]) => {
+      const result = await (originalAppendTombstone as (...inner: any[]) => Promise<string | null>)(...args);
+      committed = true;
+      abortController.abort(new Error("caller disconnected"));
+      return result;
+    };
+    const wiring = { orchestrator: { getStorage: async () => storage } } as any;
+
+    const id = await appendTombstoneFn(
+      wiring,
+      "default",
+      {
+        reason: "retraction",
+        sourceMemoryId: "source-id",
+        rawContent: "the database is PostgreSQL",
+      },
+      abortController.signal,
+    );
+
+    assert.equal(committed, true);
+    assert.equal(typeof id, "string");
+  } finally {
+    await cleanup();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // item 4: per-key tombstone emission
 // ---------------------------------------------------------------------------

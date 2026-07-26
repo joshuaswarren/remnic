@@ -94,6 +94,10 @@ export async function extractionForceFlush(
       principalOverride:
         typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined,
     });
+    const buffer = deps.orchestrator.buffer;
+    if (buffer && typeof buffer.clearRetainedTurnsForSession === "function") {
+      await buffer.clearRetainedTurnsForSession(request.sessionKey);
+    }
 
     return {
       flushed: true,

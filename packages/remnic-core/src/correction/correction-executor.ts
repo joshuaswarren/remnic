@@ -562,11 +562,14 @@ export class CorrectionExecutor {
           ? { supersessionKeys: memory.supersessionKeys }
           : {}),
       }, abortSignal);
+      // A committed tombstone and source retirement form one transaction from
+      // the caller's point of view. Once append succeeds, cancellation must
+      // not prevent retirement and leave an active source behind the block.
       await this.deps.retireMemory(namespace, memoryId, {
         status: reason === "supersession" ? "superseded" : "retracted",
         ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
         ...(validUntil ? { validUntil } : {}),
-      }, abortSignal);
+      }, tombstoneId === null ? abortSignal : undefined);
       results.push({
         action,
         status: "applied",
