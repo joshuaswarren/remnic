@@ -14,6 +14,12 @@ import {
   ContentHashIndex,
   type ContentHashIndexLockOptions,
 } from "./content-hash-index.js";
+import {
+  isQueuedReviewFrontmatter, isQueuedReviewMemory, tombstoneBlocked,
+  runTombstoneBlockedChunkMutation,
+  runTombstoneBlockedMutation,
+  type TombstoneBlockedMutationHost,
+} from "./tombstone-blocked-capture-mutation.js";
 import { writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
 
 const REBUILD_MAX_ATTEMPTS = 3;
@@ -688,16 +694,6 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       missing
     );
   }
-  private tombstoneBlocked(frontmatter: MemoryFrontmatter): boolean {
-    return frontmatter.status === "pending_review" && Boolean(frontmatter.blockedBy);
-  }
-  private isQueuedReviewFrontmatter(frontmatter: MemoryFrontmatter): boolean {
-    return frontmatter.status === "pending_review" && (frontmatter.tags ?? []).includes("queued-review");
-  }
-  private isQueuedReviewMemory(memory: MemoryFile | null): memory is MemoryFile {
-    return memory !== null && this.isQueuedReviewFrontmatter(memory.frontmatter);
-  }
-
   private async writeTombstoneBlockedMutation(
     blocked: boolean,
     pathname: string,
@@ -707,62 +703,29 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     beforeIndexUpdate?: () => Promise<void>,
     coordinate = false
   ): Promise<void> {
-    let lockIdentity: string | readonly string[] = identity;
-    let mustLock = blocked || coordinate;
-    for (;;) {
-      let retryIdentity: string | undefined;
-      const mutate = async (): Promise<void> => {
-        const current = await this.readMemoryByPath(pathname);
-        const currentBlocked = this.isTombstoneBlockedMemory(current);
-        const currentQueuedReview = this.isQueuedReviewMemory(current);
-        if (currentBlocked || currentQueuedReview) {
-          const currentIdentity = this.offlineSyncMemoryIdentity(current);
-          const heldIdentities = Array.isArray(lockIdentity) ? lockIdentity : [lockIdentity];
-          if (!heldIdentities.includes(currentIdentity)) {
-            retryIdentity = currentIdentity;
-            return;
-          }
-        }
-        const rebuildMarker =
-          blocked || currentBlocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
-        try {
-          await this.writeStorageSecureFile(pathname, fileContent);
-        } catch (err) {
-          if (rebuildMarker) {
-            try {
-              await this.getTombstoneBlockedCaptureIndex().discardWrite(rebuildMarker);
-            } catch (cleanupError) {
-              this.getTombstoneBlockedCaptureIndex().markUntrusted();
-              log.warn(`storage.tombstoneBlocked failed to clear write marker: ${cleanupError}`);
-            }
-          }
-          throw err;
-        }
-        if (rebuildMarker) {
-          try {
-            await this.getTombstoneBlockedCaptureIndex().commitWrite(rebuildMarker);
-          } catch (err) {
-            // Retain the marker for the index hook: it can retry publication under
-            // the same ownership token and clear it after the durable index update.
-            this.getTombstoneBlockedCaptureIndex().markUntrusted();
-            log.warn(`storage.tombstoneBlocked committed write marker failed: ${err}`);
-          }
-        }
-        if (rebuildMarker) await beforeIndexUpdate?.();
-        await updateIndex(rebuildMarker, currentBlocked ? current : undefined);
-      };
-      if (mustLock) {
-        await this.withTombstoneBlockedCaptureWriteLock(mutate, lockIdentity);
-      } else {
-        await mutate();
-      }
-      if (retryIdentity === undefined) return;
-      const identities = Array.isArray(lockIdentity)
-        ? [...lockIdentity, retryIdentity]
-        : [lockIdentity, retryIdentity];
-      lockIdentity = [...new Set(identities)];
-      mustLock = true;
-    }
+    const host: TombstoneBlockedMutationHost = {
+      readCurrent: () => this.readMemoryByPath(pathname),
+      isBlocked: (memory) => this.isTombstoneBlockedMemory(memory),
+      isQueuedReview: (memory) => isQueuedReviewMemory(memory),
+      memoryIdentity: (memory) => this.offlineSyncMemoryIdentity(memory),
+      prepareWrite: () => this.getTombstoneBlockedCaptureIndex().prepareWrite(),
+      commitWrite: (marker) => this.getTombstoneBlockedCaptureIndex().commitWrite(marker),
+      discardWrite: (marker) => this.getTombstoneBlockedCaptureIndex().discardWrite(marker),
+      markUntrusted: () => this.getTombstoneBlockedCaptureIndex().markUntrusted(),
+      writeStorageSecureFile: (target, content) => this.writeStorageSecureFile(target, content),
+      withCaptureWriteLock: (task, lockIdentity) =>
+        this.withTombstoneBlockedCaptureWriteLock(task, lockIdentity),
+      logWarning: (message) => log.warn(message),
+    };
+    await runTombstoneBlockedMutation(host, {
+      blocked,
+      pathname,
+      fileContent,
+      identity,
+      updateIndex,
+      beforeIndexUpdate,
+      coordinate,
+    });
   }
 
   protected async writeTombstoneBlockedMemory(
@@ -773,7 +736,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     beforeIndexUpdate?: () => Promise<void>
   ): Promise<void> {
     await this.writeTombstoneBlockedMutation(
-      this.tombstoneBlocked(frontmatter),
+      tombstoneBlocked(frontmatter),
       pathname,
       fileContent,
       buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector),
@@ -791,23 +754,15 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     findDuplicate: () => Promise<MemoryFile | null>,
     afterWrite: () => Promise<void>
   ): Promise<string> {
-    const blocked = this.tombstoneBlocked(frontmatter);
-    const persist = async (): Promise<string> => {
-      if (blocked) {
-        const duplicate = await findDuplicate();
-        if (duplicate) return duplicate.frontmatter.id;
-      }
-      await this.writeTombstoneBlockedMemory(pathname, fileContent, frontmatter, content);
-      await afterWrite();
-      return frontmatter.id;
-    };
-    if (blocked) {
-      return await this.withTombstoneBlockedCaptureWriteLock(
-        persist,
-        buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector)
-      );
-    }
-    return await persist();
+    return await runTombstoneBlockedChunkMutation({
+      blocked: tombstoneBlocked(frontmatter),
+      id: frontmatter.id,
+      identity: buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector),
+      findDuplicate,
+      writeMemory: () => this.writeTombstoneBlockedMemory(pathname, fileContent, frontmatter, content),
+      afterWrite,
+      withCaptureWriteLock: (task, identity) => this.withTombstoneBlockedCaptureWriteLock(task, identity),
+    });
   }
 
   protected async writeTombstoneBlockedUpdate(
@@ -818,11 +773,11 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     beforeIndexUpdate?: () => Promise<void>
   ): Promise<void> {
     await this.writeTombstoneBlockedMutation(
-      this.tombstoneBlocked(before.frontmatter) || this.tombstoneBlocked(frontmatter),
+      tombstoneBlocked(before.frontmatter) || tombstoneBlocked(frontmatter),
       before.path,
       fileContent,
       [
-        ...(this.tombstoneBlocked(before.frontmatter)
+        ...(tombstoneBlocked(before.frontmatter)
           ? [
               buildExplicitCaptureDedupKey(
                 before.content,
@@ -831,10 +786,10 @@ export abstract class TombstoneBlockedCaptureIndexHost {
               ),
             ]
           : []),
-        ...(this.tombstoneBlocked(frontmatter)
+        ...(tombstoneBlocked(frontmatter)
           ? [buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector)]
           : []),
-        ...(this.isQueuedReviewMemory(before)
+        ...(isQueuedReviewMemory(before)
           ? [
               buildExplicitCaptureDedupKey(
                 before.content,
@@ -843,7 +798,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
               ),
             ]
           : []),
-        ...(this.isQueuedReviewFrontmatter(frontmatter)
+        ...(isQueuedReviewFrontmatter(frontmatter)
           ? [buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector)]
           : []),
       ],
@@ -855,7 +810,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
           rebuildMarker
         ),
       beforeIndexUpdate,
-      this.isQueuedReviewMemory(before) || this.isQueuedReviewFrontmatter(frontmatter)
+      isQueuedReviewMemory(before) || isQueuedReviewFrontmatter(frontmatter)
     );
   }
 
@@ -866,11 +821,11 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     beforeIndexUpdate?: () => Promise<void>
   ): Promise<void> {
     await this.writeTombstoneBlockedMutation(
-      this.tombstoneBlocked(before.frontmatter) || this.tombstoneBlocked(frontmatter),
+      tombstoneBlocked(before.frontmatter) || tombstoneBlocked(frontmatter),
       before.path,
       fileContent,
       [
-        ...(this.tombstoneBlocked(before.frontmatter)
+        ...(tombstoneBlocked(before.frontmatter)
           ? [
               buildExplicitCaptureDedupKey(
                 before.content,
@@ -879,10 +834,10 @@ export abstract class TombstoneBlockedCaptureIndexHost {
               ),
             ]
           : []),
-        ...(this.tombstoneBlocked(frontmatter)
+        ...(tombstoneBlocked(frontmatter)
           ? [buildExplicitCaptureDedupKey(before.content, frontmatter.category, frontmatter.sourceConnector)]
           : []),
-        ...(this.isQueuedReviewMemory(before)
+        ...(isQueuedReviewMemory(before)
           ? [
               buildExplicitCaptureDedupKey(
                 before.content,
@@ -891,7 +846,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
               ),
             ]
           : []),
-        ...(this.isQueuedReviewFrontmatter(frontmatter)
+        ...(isQueuedReviewFrontmatter(frontmatter)
           ? [buildExplicitCaptureDedupKey(before.content, frontmatter.category, frontmatter.sourceConnector)]
           : []),
       ],
@@ -902,7 +857,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
           rebuildMarker
         ),
       beforeIndexUpdate,
-      this.isQueuedReviewMemory(before) || this.isQueuedReviewFrontmatter(frontmatter)
+      isQueuedReviewMemory(before) || isQueuedReviewFrontmatter(frontmatter)
     );
   }
 
