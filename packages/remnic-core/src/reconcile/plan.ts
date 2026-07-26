@@ -138,14 +138,70 @@ export class ReconcilePlanInputError extends Error {
   }
 }
 
-function assertCensusPath(file: ReconcileFileState | undefined, side: string, namespace: string): string {
+/** Matches `assertSha256` in offline-sync so both surfaces reject the same values (§40). */
+const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+
+/**
+ * Validate a census record's identity fields.
+ *
+ * The digest matters as much as the path: two records that both omit `sha256`
+ * compare `undefined === undefined` and plan as `identical`, converging a
+ * corpus the planner never actually read.
+ */
+function assertCensusRecord(
+  file: ReconcileFileState | undefined,
+  side: string,
+  namespace: string,
+): { path: string; sha256: string } {
   const path = file?.path;
   if (typeof path !== "string" || path.length === 0) {
     throw new ReconcilePlanInputError(
       `reconcile: ${side} census for namespace ${namespace} contains a record with no path`,
     );
   }
-  return path;
+  const sha256 = file?.sha256;
+  if (typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256)) {
+    throw new ReconcilePlanInputError(
+      `reconcile: ${side} census for namespace ${namespace} entry ${path} must carry a 64-character sha256 hex digest`,
+    );
+  }
+  return { path, sha256 };
+}
+
+function assertNamespace(namespace: unknown): string {
+  if (typeof namespace !== "string" || namespace.length === 0) {
+    throw new ReconcilePlanInputError("reconcile: every namespace input needs a non-empty namespace");
+  }
+  return namespace;
+}
+
+function assertIterable(value: unknown, side: string, namespace: string): Iterable<ReconcileFileState> {
+  if (value === null || typeof value !== "object" || typeof (value as Iterable<ReconcileFileState>)[Symbol.iterator] !== "function") {
+    throw new ReconcilePlanInputError(`reconcile: ${side} census for namespace ${namespace} must be iterable`);
+  }
+  return value as Iterable<ReconcileFileState>;
+}
+
+/**
+ * Paths that differ only by case are the SAME file on a case-insensitive
+ * participant (macOS, Windows), so planning a push AND a pull for them lets
+ * application order decide which revision survives. Remnic is explicitly
+ * multi-platform, so the collision is rejected rather than raced.
+ */
+function assertNoCaseCollision(
+  seen: Map<string, string>,
+  path: string,
+  namespace: string,
+): void {
+  const folded = path.toLowerCase();
+  const existing = seen.get(folded);
+  if (existing !== undefined && existing !== path) {
+    throw new ReconcilePlanInputError(
+      `reconcile: namespace ${namespace} has paths differing only by case (${existing}, ${path}); ` +
+        "they are one file on a case-insensitive peer",
+    );
+  }
+  seen.set(folded, path);
 }
 
 /**
@@ -174,7 +230,7 @@ function indexByPath(
 ): Map<string, ReconcileFileState> {
   const index = new Map<string, ReconcileFileState>();
   for (const file of files) {
-    const path = assertCensusPath(file, side, namespace);
+    const { path } = assertCensusRecord(file, side, namespace);
     if (rejectConflictingDuplicate(index.get(path), file, path, side, namespace)) continue;
     index.set(path, file);
   }
@@ -234,12 +290,14 @@ export function planNamespaceReconciliation(
   input: ReconcileNamespaceInput,
   options: ReconcileOptions = {},
 ): ReconcilePlanEntry[] {
-  const namespace = input.namespace;
+  const namespace = assertNamespace(input?.namespace);
   const policy = assertConflictPolicy(options.conflictPolicy);
+  const localCensus = assertIterable(input.local, "local", namespace);
+  const caseFold = new Map<string, string>();
   // Index the peer census only, then stream the local one against it, removing
   // each match as it is consumed. Peak residency is one index plus the entry
   // list rather than two full censuses (round 2, codex P2).
-  const peer = indexByPath(input.peer, "peer", namespace);
+  const peer = indexByPath(assertIterable(input.peer, "peer", namespace), "peer", namespace);
   const base = input.base ? indexByPath(input.base, "base", namespace) : null;
   const tombstoned = new Set(input.tombstonedFileSha256 ?? []);
   const entries: ReconcilePlanEntry[] = [];
@@ -248,8 +306,9 @@ export function planNamespaceReconciliation(
   // idempotent and to catch contradictory duplicates without materializing the
   // second census.
   const seenLocal = new Map<string, string>();
-  for (const localFile of input.local) {
-    const path = assertCensusPath(localFile, "local", namespace);
+  for (const localFile of localCensus) {
+    const { path } = assertCensusRecord(localFile, "local", namespace);
+    assertNoCaseCollision(caseFold, path, namespace);
     const seenDigest = seenLocal.get(path);
     if (seenDigest !== undefined) {
       if (seenDigest !== localFile.sha256) {
@@ -264,18 +323,20 @@ export function planNamespaceReconciliation(
     // Consumed: whatever remains in the index afterwards is peer-only.
     peer.delete(path);
     const baseSha256 = base?.get(path)?.sha256;
-    // Retraction outranks every other decision for this path. Checked BEFORE
-    // hash comparison and conflict resolution: otherwise a retracted peer
-    // revision reaches the conflict ladder and `newest-wins` can hand it the
-    // win, resurrecting exactly what was retracted (round 3).
-    if (peerFile && tombstoned.has(peerFile.sha256)) {
+    // Retraction outranks every other decision for this path, on EITHER side.
+    // Checked before hash comparison and conflict resolution: a retracted peer
+    // revision reaching the conflict ladder can win under `newest-wins`, and a
+    // retracted LOCAL revision would otherwise be pushed - which is also how a
+    // suppression undoes itself on the next run, since the local copy survives
+    // the peer-side delete (round 4).
+    if ((peerFile && tombstoned.has(peerFile.sha256)) || tombstoned.has(localFile.sha256)) {
       entries.push({
         path,
         namespace,
         action: "suppress",
         reason: "tombstoned",
         localSha256: localFile.sha256,
-        peerSha256: peerFile.sha256,
+        ...(peerFile ? { peerSha256: peerFile.sha256 } : {}),
         ...(baseSha256 === undefined ? {} : { baseSha256 }),
       });
       continue;
@@ -358,6 +419,7 @@ export function planNamespaceReconciliation(
   }
 
   for (const [path, peerFile] of peer) {
+    assertNoCaseCollision(caseFold, path, namespace);
     const baseSha256 = base?.get(path)?.sha256;
     if (tombstoned.has(peerFile.sha256)) {
       // Retracted here on purpose, and the peer still serves it. Pulling it

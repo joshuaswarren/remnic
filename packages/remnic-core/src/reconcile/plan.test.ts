@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -10,7 +11,13 @@ import {
   type ReconcilePlanEntry,
 } from "./plan.js";
 
-function file(path: string, sha256: string, mtimeMs?: number): ReconcileFileState {
+/** Readable labels stay in the tests; the planner sees real sha256 hex. */
+function digest(label: string): string {
+  return createHash("sha256").update(label).digest("hex");
+}
+
+function file(path: string, label: string, mtimeMs?: number): ReconcileFileState {
+  const sha256 = digest(label);
   return mtimeMs === undefined ? { path, sha256 } : { path, sha256, mtimeMs };
 }
 
@@ -144,7 +151,7 @@ test("a locally tombstoned fact is suppressed on the peer, not pulled back", () 
     namespace: "default",
     local: [],
     peer: [file("facts/retracted.md", "retracted-hash"), file("facts/fresh.md", "fresh-hash")],
-    tombstonedFileSha256: ["retracted-hash"],
+    tombstonedFileSha256: [digest("retracted-hash")],
   });
   const retracted = entryFor(entries, "facts/retracted.md");
   assert.equal(retracted.action, "suppress", "a retraction must survive every future reconcile");
@@ -160,7 +167,7 @@ test("a peer still serving a retracted fact is NOT converged", () => {
       namespace: "default",
       local: [],
       peer: [file("facts/retracted.md", "retracted-hash")],
-      tombstonedFileSha256: ["retracted-hash"],
+      tombstonedFileSha256: [digest("retracted-hash")],
     },
   ]);
   assert.equal(plan.converged, false, "propagating the retraction is work, not agreement");
@@ -248,11 +255,11 @@ test("entries carry the hashes a transport needs to verify what it moved", () =>
     base: [file("facts/a.md", "base-hash")],
   });
   const a = entryFor(entries, "facts/a.md");
-  assert.equal(a.localSha256, "local-hash");
-  assert.equal(a.peerSha256, "peer-hash");
-  assert.equal(a.baseSha256, "base-hash");
+  assert.equal(a.localSha256, digest("local-hash"));
+  assert.equal(a.peerSha256, digest("peer-hash"));
+  assert.equal(a.baseSha256, digest("base-hash"));
   const b = entryFor(entries, "facts/b.md");
-  assert.equal(b.peerSha256, "peer-b");
+  assert.equal(b.peerSha256, digest("peer-b"));
   assert.equal(b.localSha256, undefined);
 });
 
@@ -288,7 +295,7 @@ test("a retracted digest present on BOTH sides is suppressed, not called identic
       namespace: "default",
       local: [file("facts/retracted.md", "gone")],
       peer: [file("facts/retracted.md", "gone")],
-      tombstonedFileSha256: ["gone"],
+      tombstonedFileSha256: [digest("gone")],
     },
   ]);
   assert.equal(plan.entries[0]?.action, "suppress");
@@ -304,7 +311,7 @@ test("a retracted peer revision cannot win a conflict", () => {
       namespace: "default",
       local: [file("facts/a.md", "live", 1000)],
       peer: [file("facts/a.md", "retracted", 9000)],
-      tombstonedFileSha256: ["retracted"],
+      tombstonedFileSha256: [digest("retracted")],
     },
     { conflictPolicy: "newest-wins" },
   );
@@ -319,8 +326,8 @@ test("a malformed census record fails the plan instead of vanishing from it", ()
       () =>
         planNamespaceReconciliation({
           namespace: "default",
-          local: side === "local" ? [{ path: "", sha256: "x" }] : [],
-          peer: side === "peer" ? [{ path: "", sha256: "x" }] : [],
+          local: side === "local" ? [{ path: "", sha256: digest("x") }] : [],
+          peer: side === "peer" ? [{ path: "", sha256: digest("x") }] : [],
         }),
       ReconcilePlanInputError,
       `${side} census with an empty path must reject`,
@@ -363,4 +370,81 @@ test("an unknown conflictPolicy is rejected rather than silently treated as manu
       ),
     ReconcilePlanInputError,
   );
+});
+
+test("a retracted LOCAL revision is suppressed, never pushed", () => {
+  // Without this the suppression undoes itself: transport drops the peer copy,
+  // and the next run pushes our surviving retracted copy straight back.
+  const entries = planNamespaceReconciliation({
+    namespace: "default",
+    local: [file("facts/retracted.md", "gone")],
+    peer: [],
+    tombstonedFileSha256: [digest("gone")],
+  });
+  const entry = entryFor(entries, "facts/retracted.md");
+  assert.equal(entry.action, "suppress");
+  assert.equal(entry.peerSha256, undefined);
+});
+
+test("a retracted local revision does not win a conflict either", () => {
+  const entries = planNamespaceReconciliation(
+    {
+      namespace: "default",
+      local: [file("facts/a.md", "retracted", 9000)],
+      peer: [file("facts/a.md", "live", 1000)],
+      tombstonedFileSha256: [digest("retracted")],
+    },
+    { conflictPolicy: "newest-wins" },
+  );
+  assert.equal(entryFor(entries, "facts/a.md").action, "suppress");
+});
+
+test("a census record without a usable digest is rejected", () => {
+  // Two records that both omit sha256 compare equal and would plan `identical`,
+  // converging a corpus that was never actually read.
+  for (const bad of [undefined, "", "not-a-digest", 42] as const) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation({
+          namespace: "default",
+          local: [{ path: "facts/a.md", sha256: bad as unknown as string }],
+          peer: [],
+        }),
+      /64-character sha256 hex digest/,
+      `digest ${JSON.stringify(bad)} must be rejected`,
+    );
+  }
+});
+
+test("paths differing only by case are rejected across censuses", () => {
+  // One file on a case-insensitive peer; planning a push AND a pull would let
+  // application order pick the survivor.
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [file("Facts/A.md", "one")],
+        peer: [file("facts/a.md", "two")],
+      }),
+    /differing only by case/,
+  );
+});
+
+test("a missing namespace or a non-iterable census is rejected", () => {
+  assert.throws(
+    () => planNamespaceReconciliation({ namespace: "", local: [], peer: [] }),
+    ReconcilePlanInputError,
+  );
+  for (const side of ["local", "peer"] as const) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation({
+          namespace: "default",
+          local: side === "local" ? (undefined as unknown as ReconcileFileState[]) : [],
+          peer: side === "peer" ? (undefined as unknown as ReconcileFileState[]) : [],
+        }),
+      /must be iterable/,
+      `${side} census`,
+    );
+  }
 });
