@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1580,6 +1580,58 @@ test("offline sync mutation rebuilds a loaded tombstone-blocked index", async ()
       await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
       true,
       "offline sync must add the updated provider identity",
+    );
+  });
+});
+
+test("offline sync mutation rebuilds blocked index for every recall category", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = "A decision-category sync update must refresh blocked capture identity.";
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "retired-decision-sync",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId, "test tombstone must persist");
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      true,
+    );
+
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory, "blocked memory must be readable before offline sync");
+    const movedPath = path.join(dir, "decisions", "2026-01-01", "moved.md");
+    await mkdir(path.dirname(movedPath), { recursive: true });
+    await rename(memory.path, movedPath);
+    const updatedFile = (await readFile(movedPath, "utf8")).replace(
+      "sourceConnector: provider-a",
+      "sourceConnector: provider-b",
+    );
+    await storage.writeOfflineSyncFile(movedPath, Buffer.from(updatedFile, "utf8"));
+
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-a"),
+      false,
+      "offline sync must remove the stale provider identity from every recall category",
+    );
+    assert.equal(
+      await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"),
+      true,
+      "offline sync must add the updated provider identity in every recall category",
     );
   });
 });

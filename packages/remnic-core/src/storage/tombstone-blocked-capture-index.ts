@@ -9,6 +9,7 @@ import {
 } from "./content-hash-index.js";
 import { normalizeContent } from "../content-hash.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { log } from "../logger.js";
 
@@ -511,6 +512,11 @@ export class TombstoneBlockedCaptureIndex {
       this.sync(before, { ...before, frontmatter }, rebuildMarker),
     );
   }
+  shouldRebuildAfterInvalidationForPath(filePath: string): boolean {
+    const relative = path.relative(path.resolve(this.options.memoryDir), path.resolve(filePath));
+    const category = relative.split(path.sep)[0];
+    return category === "cold" || RECALL_FALLBACK_DIRS.includes(category);
+  }
 }
 
 export abstract class TombstoneBlockedCaptureIndexHost {
@@ -627,8 +633,10 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   }
 
   protected async rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath: string): Promise<void> {
-    if (filePath.includes(`${path.sep}facts${path.sep}`) || filePath.includes(`${path.sep}cold${path.sep}`))
+    const index = this.getTombstoneBlockedCaptureIndex();
+    if (index.shouldRebuildAfterInvalidationForPath(filePath)) {
       await this.rebuildTombstoneBlockedCaptureAfterInvalidation();
+    }
   }
   protected async rebuildTombstoneBlockedCaptureAfterInvalidation(): Promise<void> {
     await this.tombstoneBlockedCaptureIndex?.rebuildAfterInvalidation();
