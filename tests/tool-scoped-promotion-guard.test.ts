@@ -540,7 +540,7 @@ function scopeProfilePlanWithLocalAndShared(): ResolvedScopeProfilePlan {
       readOrder: ["self", "serverShared"],
       writeDefault: "self",
       autoPromote: { enabled: true, targets: ["localTeam", "serverShared"], categories: ["fact"], minConfidenceTier: "explicit" },
-    } as ResolvedScopeProfilePlan["profile"],
+    },
     baseNamespace: "default",
     writeLayer: "self",
     writeNamespace: "default",
@@ -554,7 +554,7 @@ function scopeProfilePlanWithLocalAndShared(): ResolvedScopeProfilePlan {
       { target: "serverShared", namespace: "shared", authorized: true, reason: "" },
     ],
     warnings: [],
-  } as ResolvedScopeProfilePlan;
+  } as unknown as ResolvedScopeProfilePlan;
 }
 
 test("profile targets: attributed tool-scoped fact still promotes to a non-serverShared target, withheld only from shared", async () => {

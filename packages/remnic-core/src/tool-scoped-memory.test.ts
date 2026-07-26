@@ -62,6 +62,11 @@ const EXTRA_POSITIVE: string[] = [
   "Run rg --files before editing",
   "Use grep -n TODO when reviewing",
   "Run `rg --files` before editing",
+  "The Bash tool executes commands",
+  "Use the Edit tool before saving",
+  "The WebFetch tool retrieves pages",
+  "Run git status before committing",
+  "Use npm install to add dependencies",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {
@@ -105,6 +110,10 @@ const EXTRA_NEGATIVE: string[] = [
   "Run in before deploying",
   "Use 2024-2025 data for the baseline",
   "The tool — a recent addition — is optional",
+  "Use `TypeScript` for new packages",
+  "Use `config.json` for configuration",
+  "Use least-privilege when designing authorization",
+  "Use TypeScript-first for new packages",
 ];
 for (const content of EXTRA_NEGATIVE) {
   test(`referencesAgentSpecificTool ignores prose: "${content.slice(0, 44)}…"`, () => {
