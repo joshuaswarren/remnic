@@ -390,3 +390,214 @@ export function normalizedGroundingTokenSequence(text: string): string[] {
 export function areGroundingTokensCompatible(left: string, right: string): boolean {
   return left === right || `${left}e` === right || left === `${right}e`;
 }
+const GROUNDING_DENIAL_REPORTING_VERBS = new Set([
+  "deny",
+  "denied",
+  "denies",
+  "denying",
+  "dispute",
+  "disputed",
+  "disputes",
+  "disputing",
+  "reject",
+  "rejected",
+  "rejects",
+  "rejecting",
+  "refute",
+  "refuted",
+  "refutes",
+  "refuting",
+  "contradict",
+  "contradicted",
+  "contradicts",
+  "contradicting",
+  "disprove",
+  "disproved",
+  "disproves",
+  "disproving",
+]);
+
+function isDenialReportingVerb(token: string): boolean {
+  return GROUNDING_DENIAL_REPORTING_VERBS.has(token);
+}
+const GROUNDING_NON_ASSERTIVE_REPORTING_VERBS = new Set([
+  "allege",
+  "alleged",
+  "alleges",
+  "alleging",
+  "allegedly",
+  "assert",
+  "asserted",
+  "asserts",
+  "asserting",
+  "believe",
+  "believed",
+  "believes",
+  "believing",
+  "claim",
+  "claimed",
+  "claims",
+  "claiming",
+  "doubt",
+  "doubted",
+  "doubts",
+  "doubting",
+  "uncertain",
+  "unsure",
+  "unclear",
+  "unknown",
+  "possibly",
+  "probably",
+  "imagine",
+  "imagined",
+  "imagines",
+  "imagining",
+  "report",
+  "reported",
+  "reports",
+  "reporting",
+  "reportedly",
+  "say",
+  "said",
+  "says",
+  "saying",
+  "speculate",
+  "speculated",
+  "speculates",
+  "speculating",
+  "suspect",
+  "suspected",
+  "suspects",
+  "suspecting",
+  "suppose",
+  "supposed",
+  "supposes",
+  "supposing",
+  "supposedly",
+  "think",
+  "thought",
+  "thinks",
+  "thinking",
+]);
+
+function isNonAssertiveReportingVerb(token: string): boolean {
+  return GROUNDING_NON_ASSERTIVE_REPORTING_VERBS.has(token);
+}
+
+function isGroundingClauseBoundary(token: string): boolean {
+  return token === "and"
+    || token === "but"
+    || token === "or"
+    || token === "while"
+    || token === "although"
+    || token === "because";
+}
+
+function isNonAssertiveReportingAt(tokens: ReadonlyArray<string>, index: number): boolean {
+  let boundary = 0;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (isGroundingClauseBoundary(tokens[cursor]!)) boundary = cursor + 1;
+  }
+  for (let cursor = index - 1; cursor >= boundary; cursor -= 1) {
+    if (
+      tokens[cursor] === "that"
+      && cursor > boundary
+      && isNonAssertiveReportingVerb(tokens[cursor - 1]!)
+    ) {
+      return true;
+    }
+    if (isNonAssertiveReportingVerb(tokens[cursor]!) && index - cursor <= 5) return true;
+  }
+  return false;
+}
+
+function isDeniedAt(tokens: ReadonlyArray<string>, index: number): boolean {
+  let boundary = 0;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (isGroundingClauseBoundary(tokens[cursor]!)) boundary = cursor + 1;
+  }
+  for (let cursor = index - 1; cursor >= boundary; cursor -= 1) {
+    const token = tokens[cursor];
+    if (token === "that" && cursor > boundary && isDenialReportingVerb(tokens[cursor - 1]!)) {
+      return true;
+    }
+    if (isDenialReportingVerb(token) && index - cursor <= 5) return true;
+  }
+  return false;
+}
+
+export function hasContradictoryPolarity(candidate: string, source: string): boolean {
+  const candidateLexemes = groundingLexemes(candidate);
+  const candidateTokens = candidateLexemes.map(({ token }) => token);
+  let coherentContradiction = false;
+  for (const clause of sourceSentences(source).flatMap((sentence) =>
+    sentence.split(/\s+(?:and|but|or|while|although|because)\s+/gu))) {
+    const sourceLexemes = groundingLexemes(clause);
+    const sourceTokens = sourceLexemes.map(({ token }) => token);
+    let sourceCursor = 0;
+    let allTokensFound = true;
+    let contradiction = false;
+    for (const [candidateIndex, candidateToken] of candidateTokens.entries()) {
+      if (GROUNDING_STOPWORDS[candidateToken] === true) continue;
+      const sourceIndex = sourceTokens.findIndex(
+        (sourceToken, index) =>
+          index >= sourceCursor
+          && stemToken(sourceToken, sourceLexemes[index]?.preserveTerminalS === true)
+            === stemToken(candidateToken, candidateLexemes[candidateIndex]?.preserveTerminalS === true),
+      );
+      if (sourceIndex === -1) {
+        allTokensFound = false;
+        break;
+      }
+      const candidateNegated = isNegatedAt(candidateTokens, candidateIndex)
+        || isDeniedAt(candidateTokens, candidateIndex);
+      const sourceNegated = isNegatedAt(sourceTokens, sourceIndex)
+        || isDeniedAt(sourceTokens, sourceIndex);
+      const candidateNonAssertive = isNonAssertiveReportingAt(candidateTokens, candidateIndex);
+      const sourceNonAssertive = isNonAssertiveReportingAt(sourceTokens, sourceIndex);
+      if (
+        candidateNegated !== sourceNegated
+        || candidateNonAssertive !== sourceNonAssertive
+      ) {
+        contradiction = true;
+      }
+      sourceCursor = sourceIndex + 1;
+    }
+    if (allTokensFound) {
+      if (!contradiction) return false;
+      coherentContradiction = true;
+    }
+  }
+  if (coherentContradiction) return true;
+
+  const sourceLexemes = groundingLexemes(source);
+  const sourceTokens = sourceLexemes.map(({ token }) => token);
+  const sourcePositions = new Map<string, number[]>();
+  sourceLexemes.forEach(({ token, preserveTerminalS }, index) => {
+    const key = stemToken(token, preserveTerminalS);
+    const positions = sourcePositions.get(key);
+    if (positions) positions.push(index);
+    else sourcePositions.set(key, [index]);
+  });
+  for (const [candidateIndex, token] of candidateTokens.entries()) {
+    if (GROUNDING_STOPWORDS[token] === true) continue;
+    const positions = sourcePositions.get(
+      stemToken(token, candidateLexemes[candidateIndex]?.preserveTerminalS === true),
+    );
+    if (!positions || positions.length === 0) continue;
+    const sourceIndex = positions[positions.length - 1];
+    const candidateNegated = isNegatedAt(candidateTokens, candidateIndex)
+      || isDeniedAt(candidateTokens, candidateIndex);
+    const sourceNegated = isNegatedAt(sourceTokens, sourceIndex)
+      || isDeniedAt(sourceTokens, sourceIndex);
+    const candidateNonAssertive = isNonAssertiveReportingAt(candidateTokens, candidateIndex);
+    const sourceNonAssertive = isNonAssertiveReportingAt(sourceTokens, sourceIndex);
+    if (
+      candidateNegated !== sourceNegated
+      || candidateNonAssertive !== sourceNonAssertive
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
