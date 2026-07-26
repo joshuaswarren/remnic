@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.25.2",
+  "version": "9.25.7",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -6412,7 +6412,7 @@
     "qmdColdTierEnabled": {
       "label": "Enable Cold QMD Tier",
       "advanced": true,
-      "help": "When hot recall misses, query a secondary cold QMD collection before archive scan fallback"
+      "help": "When hot recall misses, query a secondary cold QMD collection before the query-aware fallback"
     },
     "qmdColdCollection": {
       "label": "Cold QMD Collection",

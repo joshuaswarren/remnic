@@ -40,6 +40,7 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
+import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
@@ -52,6 +53,41 @@ type ExtractedEntityResult = ExtractionResult["entities"][number];
 type ExtractedRelationshipResult = NonNullable<ExtractionResult["relationships"]>[number];
 
 const PROACTIVE_MIN_CONFIDENCE = 0.8;
+const EXTRACTION_RESPONSE_SHAPE = `{
+  "facts": [{
+    "category": "<category>",
+    "content": "<source-grounded statement>",
+    "confidence": 0.0,
+    "tags": ["<tag>"],
+    "entityRef": "<optional normalized-name>",
+    "promptedByQuestion": "<optional source-grounded question>",
+    "quote": "<optional exact contiguous source span>",
+    "scope": "<optional project-or-global>",
+    "structuredAttributes": {"<key>": "<value>"},
+    "procedureSteps": [{"order": 1, "intent": "<step>"}, {"order": 2, "intent": "<step>"}],
+    "reasoningTrace": {
+      "steps": [{"order": 1, "description": "<step>"}, {"order": 2, "description": "<step>"}],
+      "finalAnswer": "<answer>",
+      "observedOutcome": "<optional outcome>"
+    },
+    "eventTime": "<optional source temporal expression>"
+  }],
+  "entities": [{
+    "name": "<normalized-name>",
+    "type": "<entity-type>",
+    "facts": ["<source-grounded statement>"],
+    "promptedByQuestion": "<optional source-grounded question>",
+    "structuredSections": [{"key": "<section-key>", "title": "<section-title>", "facts": ["<source-grounded statement>"]}]
+  }],
+  "profileUpdates": ["<source-grounded profile update>"],
+  "questions": [{"question": "<source-grounded unresolved question>", "context": "<source-grounded context>", "priority": 0.0}],
+  "identityReflection": "<conversation-grounded agent reflection>",
+  "relationships": [{"source": "<normalized-name>", "target": "<normalized-name>", "label": "<source-grounded relationship>"}]
+}`;
+const EXTRACTION_RESPONSE_PLACEHOLDERS: Record<string, true> = {};
+for (const placeholder of EXTRACTION_RESPONSE_SHAPE.match(/<[^<>\r\n]+>/g) ?? []) {
+  EXTRACTION_RESPONSE_PLACEHOLDERS[placeholder] = true;
+}
 const CONSOLIDATION_RESPONSE_SCHEMA = `{
   "items": [
     {
@@ -68,6 +104,46 @@ const CONSOLIDATION_RESPONSE_SCHEMA = `{
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function containsExtractionPlaceholder(value: unknown): boolean {
+  if (typeof value === "string") return EXTRACTION_RESPONSE_PLACEHOLDERS[value.trim()] === true;
+  if (Array.isArray(value)) return value.some(containsExtractionPlaceholder);
+  return isPlainRecord(value) && Object.values(value).some(containsExtractionPlaceholder);
+}
+
+function extractionText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text.length > 0 && !containsExtractionPlaceholder(text) ? text : undefined;
+}
+
+function extractionAttributes(value: unknown): Record<string, string> | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const attributes: Record<string, string> = {};
+  for (const [key, candidate] of Object.entries(value)) {
+    const normalizedKey = extractionText(key);
+    const normalizedValue = extractionText(candidate);
+    if (normalizedKey !== undefined && normalizedValue !== undefined) {
+      attributes[normalizedKey] = normalizedValue;
+    }
+  }
+  return Object.keys(attributes).length > 0 ? attributes : undefined;
+}
+
+function extractionEntityType(value: unknown): ExtractedEntityResult["type"] | undefined {
+  const type = extractionText(value);
+  if (
+    type === "person" ||
+    type === "project" ||
+    type === "tool" ||
+    type === "company" ||
+    type === "place" ||
+    type === "other"
+  ) {
+    return type;
+  }
+  return undefined;
 }
 
 function normalizeQuestion(question: ExtractionQuestion): ExtractionQuestion {
@@ -245,182 +321,168 @@ export class ExtractionEngine {
   }
 
   private normalizeExtractionResultPayload(parsed: any): ExtractionResult {
-    const entities = Array.isArray(parsed?.entities)
+    const entities: ExtractedEntityResult[] = Array.isArray(parsed?.entities)
       ? parsed.entities
-          .map((e: any) => this.normalizeEntityUpdate(e))
-          .filter((e: any) => e.name.length > 0)
+          .map((candidate: unknown): ExtractedEntityResult | undefined => this.normalizeEntityUpdate(candidate))
+          .filter((entity: ExtractedEntityResult | undefined): entity is ExtractedEntityResult => (
+            entity !== undefined && entity.name.length > 0
+          ))
       : [];
 
     const facts = Array.isArray(parsed?.facts)
       ? parsed.facts
-          .map((f: any) => ({
-            category: typeof f?.category === "string" ? f.category : "fact",
-            content: typeof f?.content === "string" ? f.content : typeof f?.text === "string" ? f.text : "",
-            confidence: typeof f?.confidence === "number" ? f.confidence : 0.7,
-            tags: Array.isArray(f?.tags) ? f.tags.filter((t: any) => typeof t === "string") : [],
-            entityRef: typeof f?.entityRef === "string" ? f.entityRef : undefined,
-            promptedByQuestion:
-              typeof f?.promptedByQuestion === "string" ? f.promptedByQuestion : undefined,
-            scope:
-              f?.scope === "global" || f?.scope === "project" ? f.scope : undefined,
-            structuredAttributes:
-              f?.structuredAttributes && typeof f.structuredAttributes === "object" && !Array.isArray(f.structuredAttributes)
-                ? Object.fromEntries(
-                    Object.entries(f.structuredAttributes)
-                      .filter(([k, v]) => typeof k === "string" && typeof v === "string")
-                  ) as Record<string, string>
-                : undefined,
-            procedureSteps: Array.isArray(f?.procedureSteps)
+          .map((candidate: unknown) => {
+            const f = isPlainRecord(candidate) ? candidate : {};
+            const category = typeof f.category === "string" ? f.category.trim() : "fact";
+            const reasoningTraceInput = isPlainRecord(f.reasoningTrace)
+              ? f.reasoningTrace
+              : isPlainRecord(f?.reasoning_trace)
+                ? f.reasoning_trace
+                : undefined;
+            if (!isMemoryCategory(category)) return undefined;
+            const procedureSteps = Array.isArray(f.procedureSteps)
               ? normalizeProcedureSteps(f.procedureSteps)
-              : undefined,
-            reasoningTrace: (() => {
-              // Accept both camelCase and snake_case payload keys. The
-              // category itself is snake_case and we already tolerate
-              // snake_case nested fields in normalizeReasoningTrace, so a
-              // loose local/direct LLM that outputs `reasoning_trace` on the
-              // fact should not silently drop the structured chain.
-              const candidate =
-                f?.reasoningTrace && typeof f.reasoningTrace === "object" && !Array.isArray(f.reasoningTrace)
-                  ? f.reasoningTrace
-                  : f?.reasoning_trace && typeof f.reasoning_trace === "object" && !Array.isArray(f.reasoning_trace)
-                    ? f.reasoning_trace
-                    : null;
-              return candidate ? normalizeReasoningTrace(candidate) ?? undefined : undefined;
-            })(),
-            // Issue #1575 PR 2: the LLM provides a verbatim supporting quote
-            // per fact. Optional/nullable per repo gotcha 6 (OpenAI Responses
-            // API emits null for absent optional fields). The post-parse
-            // validator (buildFactProvenance) locates this quote in the
-            // buffered turns and builds verified ProvenanceSource[] entries.
-            quote:
-              typeof f?.quote === "string" && f.quote.trim().length > 0
-                ? f.quote
-                : undefined,
-            eventTime:
-              typeof f?.eventTime === "string" && f.eventTime.trim().length > 0
-                ? f.eventTime.trim()
-                : typeof f?.event_time === "string" && f.event_time.trim().length > 0
-                  ? f.event_time.trim()
-                  : undefined,
-          }))
-          .filter((f: any) => f.content.length > 0)
-      : [];
-
-    const questions = Array.isArray(parsed?.questions)
-      ? parsed.questions
-          .map((q: any) => {
-            if (typeof q === "string") return { question: q, context: "", priority: 0.5 };
+              : undefined;
+            const reasoningTrace = reasoningTraceInput
+              ? normalizeReasoningTrace(reasoningTraceInput) ?? undefined
+              : undefined;
+            if (
+              containsExtractionPlaceholder(procedureSteps) ||
+              containsExtractionPlaceholder(reasoningTrace)
+            ) {
+              return undefined;
+            }
             return {
-              question: typeof q?.question === "string" ? q.question : typeof q?.text === "string" ? q.text : "",
-              context: typeof q?.context === "string" ? q.context : "",
-              priority: typeof q?.priority === "number" ? q.priority : 0.5,
+              category,
+              content: extractionText(f.content) ?? extractionText(f.text) ?? "",
+              confidence: typeof f.confidence === "number" ? f.confidence : 0.7,
+              tags: Array.isArray(f.tags)
+                ? f.tags.flatMap((tag: unknown) => {
+                    const text = extractionText(tag);
+                    return text === undefined ? [] : [text];
+                  })
+                : [],
+              entityRef: extractionText(f.entityRef),
+              promptedByQuestion: extractionText(f.promptedByQuestion),
+              scope:
+                f.scope === "global" || f.scope === "project" ? f.scope : undefined,
+              structuredAttributes: extractionAttributes(f.structuredAttributes),
+              procedureSteps,
+              reasoningTrace,
+              quote: extractionText(f.quote),
+              eventTime: extractionText(f.eventTime) ?? extractionText(f.event_time),
             };
           })
-          .filter((q: any) => q.question.length > 0)
+          .filter((fact: ExtractedFactResult | undefined): fact is ExtractedFactResult => (
+            fact !== undefined && fact.content.length > 0
+          ))
       : [];
+
+    const questions: ExtractionQuestion[] = Array.isArray(parsed?.questions)
+      ? parsed.questions.flatMap((candidate: unknown) => {
+          const record = isPlainRecord(candidate) ? candidate : undefined;
+          const question =
+            extractionText(record?.question) ??
+            extractionText(record?.text) ??
+            extractionText(candidate);
+          if (question === undefined) return [];
+          return [{
+            question,
+            context: extractionText(record?.context) ?? "",
+            priority: typeof record?.priority === "number" ? record.priority : 0.5,
+          }];
+        })
+      : [];
+
+    const profileUpdates = Array.isArray(parsed?.profileUpdates)
+      ? parsed.profileUpdates.flatMap((candidate: unknown) => {
+          const update = extractionText(candidate);
+          return update === undefined ? [] : [update];
+        })
+      : [];
+
+    const relationships: ExtractedRelationshipResult[] | undefined = Array.isArray(parsed?.relationships)
+      ? parsed.relationships.flatMap((candidate: unknown) => {
+          const relationship = isPlainRecord(candidate) ? candidate : undefined;
+          const source = extractionText(relationship?.source);
+          const target = extractionText(relationship?.target);
+          const label = extractionText(relationship?.label);
+          if (source === undefined || target === undefined || label === undefined) return [];
+          return [{
+            source,
+            target,
+            label,
+            promptedByQuestion: extractionText(relationship?.promptedByQuestion),
+          }];
+        })
+      : undefined;
 
     return {
       facts,
       entities,
-      profileUpdates: Array.isArray(parsed?.profileUpdates)
-        ? parsed.profileUpdates.filter((u: any) => typeof u === "string" && u.trim().length > 0)
-        : [],
+      profileUpdates,
       questions,
-      identityReflection: parsed?.identityReflection ?? undefined,
-      relationships: Array.isArray(parsed?.relationships)
-        ? parsed.relationships.filter(
-            (r: any) =>
-              typeof r?.source === "string" &&
-              typeof r?.target === "string" &&
-              typeof r?.label === "string",
-          )
-            .map((r: any) => ({
-              source: r.source,
-              target: r.target,
-              label: r.label,
-              promptedByQuestion:
-                typeof r?.promptedByQuestion === "string" ? r.promptedByQuestion : undefined,
-            }))
-        : undefined,
+      identityReflection: extractionText(parsed?.identityReflection),
+      relationships,
     };
   }
 
-  private normalizeEntityUpdate(entity: any): ExtractedEntityResult {
-    const rawUpdates = isPlainRecord(entity?.updates) ? entity.updates : null;
-    const directFacts = Array.isArray(entity?.facts)
-      ? entity.facts
-          .filter((fact: any) => typeof fact === "string")
-          .map((fact: string) => fact.trim())
-          .filter((fact: string) => fact.length > 0)
-      : [];
-    const updateFacts = rawUpdates && Array.isArray(rawUpdates.facts)
-      ? rawUpdates.facts
-          .filter((fact: unknown) => typeof fact === "string")
-          .map((fact: string) => fact.trim())
-          .filter((fact: string) => fact.length > 0)
-      : [];
+  private normalizeEntityUpdate(entity: unknown): ExtractedEntityResult | undefined {
+    const record = isPlainRecord(entity) ? entity : {};
+    const rawUpdates = isPlainRecord(record.updates) ? record.updates : undefined;
+    const normalizedTexts = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? value.flatMap((candidate: unknown) => {
+            const text = extractionText(candidate);
+            return text === undefined ? [] : [text];
+          })
+        : [];
+    const directFacts = normalizedTexts(record.facts);
+    const updateFacts = normalizedTexts(rawUpdates?.facts);
     const scalarUpdateFacts = rawUpdates
-      ? Object.keys(rawUpdates)
-          .sort((a, b) => a.localeCompare(b))
-          .filter((key) => !["facts", "name", "promptedByQuestion", "structuredSections", "type"].includes(key))
-          .flatMap((key) => {
-            const value = rawUpdates[key];
-            if (typeof value === "string" && value.trim().length > 0) {
-              return [`${key}: ${value.trim()}`];
+      ? Object.entries(rawUpdates)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .flatMap(([key, value]) => {
+            if (["facts", "name", "promptedByQuestion", "structuredSections", "type"].includes(key)) {
+              return [];
             }
+            const normalizedKey = extractionText(key);
+            if (normalizedKey === undefined) return [];
+            const normalizedValue = extractionText(value);
+            if (normalizedValue !== undefined) return [`${normalizedKey}: ${normalizedValue}`];
             if (typeof value === "number" || typeof value === "boolean") {
-              return [`${key}: ${String(value)}`];
+              return [`${normalizedKey}: ${String(value)}`];
             }
             return [];
           })
       : [];
-    const structuredSectionsSource = Array.isArray(entity?.structuredSections)
-      ? entity.structuredSections
+    const structuredSectionsSource = Array.isArray(record.structuredSections)
+      ? record.structuredSections
       : Array.isArray(rawUpdates?.structuredSections)
         ? rawUpdates.structuredSections
         : [];
-    const name =
-      typeof entity?.name === "string"
-        ? entity.name.trim()
-        : typeof entity?.entityId === "string"
-          ? entity.entityId.trim()
-          : typeof rawUpdates?.name === "string"
-            ? rawUpdates.name.trim()
-            : "";
-    const type =
-      typeof entity?.type === "string" && entity.type.trim().length > 0
-        ? entity.type.trim()
-        : typeof rawUpdates?.type === "string" && rawUpdates.type.trim().length > 0
-          ? rawUpdates.type.trim()
-          : "other";
+    const structuredSections = structuredSectionsSource.flatMap((candidate: unknown) => {
+      const section = isPlainRecord(candidate) ? candidate : {};
+      const key = extractionText(section.key);
+      const title = extractionText(section.title);
+      const facts = normalizedTexts(section.facts);
+      if (key === undefined || title === undefined || facts.length === 0) return [];
+      return [{ key, title, facts }];
+    });
 
+    const rawType = record.type ?? rawUpdates?.type;
+    const type = rawType === undefined ? "other" : extractionEntityType(rawType);
+    if (type === undefined) return undefined;
     return {
-      name,
+      name:
+        extractionText(record.name) ??
+        extractionText(record.entityId) ??
+        extractionText(rawUpdates?.name) ??
+        "",
       type,
       facts: [...directFacts, ...updateFacts, ...scalarUpdateFacts],
-      structuredSections: structuredSectionsSource.length > 0
-        ? structuredSectionsSource
-            .map((section: any) => ({
-              key: typeof section?.key === "string" ? section.key.trim() : "",
-              title: typeof section?.title === "string" ? section.title.trim() : "",
-              facts: Array.isArray(section?.facts)
-                ? section.facts.filter((fact: any) => typeof fact === "string")
-                    .map((fact: string) => fact.trim())
-                    .filter((fact: string) => fact.length > 0)
-                : [],
-            }))
-            .filter((section: any) => (
-              section.key.length > 0 &&
-              section.title.length > 0 &&
-              section.facts.length > 0
-            ))
-        : undefined,
-      promptedByQuestion:
-        typeof entity?.promptedByQuestion === "string"
-          ? entity.promptedByQuestion
-          : typeof rawUpdates?.promptedByQuestion === "string"
-            ? rawUpdates.promptedByQuestion
-            : undefined,
+      structuredSections: structuredSections.length > 0 ? structuredSections : undefined,
+      promptedByQuestion: extractionText(record.promptedByQuestion) ?? extractionText(rawUpdates?.promptedByQuestion),
     };
   }
 
@@ -584,8 +646,10 @@ export class ExtractionEngine {
       )
       .filter((update) => update.length > 0);
     const entityUpdates = (Array.isArray(result.entityUpdates) ? result.entityUpdates : [])
-      .map((entity: any) => this.normalizeEntityUpdate(entity))
-      .filter((entity: ExtractedEntityResult) => entity.name.length > 0);
+      .map((entity: unknown): ExtractedEntityResult | undefined => this.normalizeEntityUpdate(entity))
+      .filter((entity: ExtractedEntityResult | undefined): entity is ExtractedEntityResult => (
+        entity !== undefined && entity.name.length > 0
+      ));
     return { items, profileUpdates, entityUpdates };
   }
 
@@ -1279,37 +1343,8 @@ export class ExtractionEngine {
         log.debug(
           `extracted ${result.facts.length} facts, ${result.entities.length} entities, ${(result.questions ?? []).length} questions via fallback (${detailed.modelUsed})`,
         );
-        // Zod schema accepts snake_case aliases (final_answer / observed_outcome)
-        // alongside camelCase for gateway-tolerance, but the downstream
-        // ExtractedFact contract only exposes camelCase. Collapse each fact's
-        // reasoningTrace through normalizeReasoningTrace before passing it on so
-        // gateway output matches the shape local/direct-client paths produce.
-        const normalizedFacts = result.facts.map((f: any) => {
-          if (!f) return f;
-          // Gateway tolerance: collapse snake_case event_time → camelCase
-          // eventTime so the gateway path matches the local/direct/proactive
-          // normalization (#1578 r3 — cursor bugbot).
-          const eventTime =
-            typeof f.eventTime === "string" && f.eventTime.trim().length > 0
-              ? f.eventTime.trim()
-              : typeof f.event_time === "string" && f.event_time.trim().length > 0
-                ? f.event_time.trim()
-                : undefined;
-          if (!f.reasoningTrace && eventTime === undefined) return f;
-          return {
-            ...f,
-            ...(f.reasoningTrace
-              ? { reasoningTrace: normalizeReasoningTrace(f.reasoningTrace) ?? undefined }
-              : {}),
-            ...(eventTime !== undefined ? { eventTime } : {}),
-          };
-        });
-        const sanitized = this.sanitizeExtractionResult({
-          ...result,
-          facts: normalizedFacts,
-          questions: result.questions ?? [],
-          identityReflection: result.identityReflection ?? undefined,
-        } as ExtractionResult, messageTimestamp);
+        const normalized = this.normalizeExtractionResultPayload(result);
+        const sanitized = this.sanitizeExtractionResult(normalized, messageTimestamp);
         const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized);
         return this.attachProvenanceToResult(finalResult, boundedTurns);
       }
@@ -1384,90 +1419,36 @@ export class ExtractionEngine {
 
     const localPrompt = `You are a memory extraction system. Extract durable, reusable memories from this conversation.
 
-Memory categories — use the MOST SPECIFIC category that fits:
-- fact: Objective information about the world
-- preference: User likes, dislikes, or stylistic choices
-- correction: User correcting a mistake (highest priority)
-- entity: People, projects, tools, companies (use canonical hyphenated names like "my-project")
-- decision: Choices made with rationale
-- relationship: How entities relate (e.g., "Alice manages Bob")
-- principle: Durable rules or operating beliefs (e.g., "never use X API")
-- commitment: Promises, obligations, deadlines
-- moment: Emotionally significant events
-- skill: Demonstrated capabilities
-- rule: Explicit operational rules or constraints
-- procedure: Repeatable workflows — use when the user describes a multi-step play (≥2 ordered steps). Put the human-readable trigger/context in "content" (e.g. "When you deploy…") and list steps in "procedureSteps" as [{"order":1,"intent":"…"}, …] mirroring the gateway extraction schema.
-- reasoning_trace: Stored solution chains — use when the user narrates HOW they solved a specific problem step-by-step ("here's how I figured out…", "the debugging went like this…"). Put a short title in "content" (e.g. "How I debugged the staging latency spike") and the chain in "reasoningTrace": {"steps":[{"order":1,"description":"…"}, …], "finalAnswer":"…", "observedOutcome":"…" (optional)}. Require ≥2 ordered steps and a finalAnswer. Do NOT use for ordinary decisions (prefer "decision") or reusable workflows (prefer "procedure").
+Use the most specific category:
+- fact: objective information
+- preference: a durable preference or style
+- correction: a correction of a prior mistake
+- entity: a durable person, project, tool, company, or place
+- decision: a choice with rationale
+- relationship: a durable link between two entities
+- principle: a reusable rule or operating belief
+${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? "- rule: an explicit causal rule or constraint\n" : ""}- commitment: a promise, obligation, or deadline
+- moment: a significant milestone
+- skill: a demonstrated capability
+- procedure: an explicit reusable workflow with ordered procedureSteps
+- reasoning_trace: Stored solution chains — an explicitly narrated solution path with reasoningTrace. Use {"category": "reasoning_trace", "reasoningTrace": {"steps": [...], "finalAnswer": "..."}} only when the conversation provides the chain.
 
-IMPORTANT: Do NOT label everything as "fact". Use "decision" for architectural choices, "commitment" for deadlines/promises, "principle" for reusable rules, "correction" for when the user rejects a suggestion, etc.
-
-=== DO NOT EXTRACT (negative examples) ===
-These are operational noise - skip them:
-- "The user has a cron job that runs every 30 minutes" (scheduled task descriptions)
-- "The user encountered error XYZ at 3:45 PM" (temporary error states)
-- "The file is located at /path/to/project/file" (transient file paths)
-- "The system is using 4GB of memory" (current resource usage)
-- "The user ran the 'git status' command" (individual command executions)
-- "The conversation took place on Tuesday" (session metadata)
-- "The agent read the file at /path/to/file.txt" (agent's own actions)
-- "The user's OpenClaw automation posts to #channel on failures" (automation behavior descriptions)
-- "The user stores state in /path/to/state.json" (implementation details)
-- "The X-watch automation has been stalled for 58 hours" (system status updates)
-- "The user processed 5 batch files and extracted insights" (processing summaries)
-- "The user has a cron job that runs a Checkpoint Loop every 2 hours" (automation schedules)
-- "The user runs a Morning Surprise cron job daily at 7:30 AM" (automation schedules)
-- "The user runs an X Bookmarks → Insights pipeline hourly at :13" (automation schedules)
-- "The user's system mines X/Twitter mentions for ideas every 10a/2p/6p" (automation schedules)
-- "The user runs a Health Insights cron job weekday mornings" (automation schedules)
-- "The system monitors the showcase page every 12 hours" (system monitoring configurations)
-
-=== DO EXTRACT (positive examples) ===
-These are durable insights - capture them:
-- "The user prefers dark mode interfaces and finds light mode uncomfortable" (preference)
-- "The user works primarily with TypeScript and avoids Python for frontend code" (long-term fact)
-- "The user's side project 'alpha-trader' uses a custom algorithm for arbitrage" (entity + detail)
-- "The user corrected that PostgreSQL 15 is required, not version 14" (correction)
-- "The user never commits code without running tests first" (principle)
-- "The user has a meeting with the design team every Friday at 2pm" (commitment)
-
-=== Rules ===
-- Extract only NEW information worth remembering across sessions
-- Skip transient details (file paths, current errors, temporary states, agent actions)
-- Confidence: Explicit (0.95-1.0), Implied (0.70-0.94), Inferred (0.40-0.69), Speculative (0.00-0.39)${this.config.provenance?.enabled ? `
-- Source quotes: For each fact, include a "quote" field with the EXACT verbatim words from the conversation that support the fact (copy a contiguous span from a single turn, not a paraphrase). Cap at ~300 chars.` : ""}
-- Corrections get highest confidence (0.95+)
-- Each fact should be standalone and self-contained
-- Lines labelled [context user] or [context assistant] are reference context only. Use them to resolve pronouns and adjacent question/answer pairs, but do not extract a memory stated only in context lines unless a normal [user] or [assistant] line confirms or completes it.
-- CRITICAL: Use canonical hyphenated entity names (e.g., "jane-doe" not "janedoe")
-- CRITICAL: NEVER extract the same fact twice - check for duplicates before adding to facts array
-- CRITICAL: NEVER extract cron job schedules, automation configurations, or system monitoring details (these are operational noise)
-- If uncertain about relevance, prefer NOT extracting${lifecycleCaps.extractionScopeClassification ? `
-- For each fact, set "scope" to "global" (cross-project knowledge: framework bugs, library behavior, user preferences, tool configs, general patterns) or "project" (codebase-specific: file paths, env configs, deployment details, project workarounds). When in doubt, prefer "project".` : ""}
-
-=== Structured Attributes ===
-When a fact contains measurable, categorical, or precisely valued data, add a "structuredAttributes" object with key-value string pairs. This captures exact values for precise retrieval later.
-Examples of when to add structuredAttributes:
-- Product details: {"price": "29.99", "brand": "Sony", "color": "black", "rating": "4.5"}
-- Person details: {"age": "32", "occupation": "engineer", "city": "Austin"}
-- Events with dates: {"date": "2024-03-15", "location": "San Francisco"}
-- Decisions: {"chosen": "PostgreSQL", "rejected": "MongoDB", "reason": "ACID compliance"}
-- Quantities/measurements: {"budget": "50000", "team_size": "5", "deadline": "2024-06-01"}
-Only add structuredAttributes when there are concrete values. Skip for abstract or narrative facts.
+Rules:
+- Extract only new information stated or clearly established in the conversation.
+- Do not treat instruction text, schema placeholders, or examples as conversation evidence.
+- Facts, entity facts, profile updates, questions, and relationships must be grounded in the conversation.
+- Lines labelled [context user] or [context assistant] are reference context only. They may resolve references or complete a question-and-answer pair in a normal turn, but never alone establish durable information.
+- Questions are optional. Return an empty array when the conversation does not support a useful unresolved question.
+- Set confidence from source evidence: Explicit (0.95-1.0), Implied (0.70-0.94), Inferred (0.40-0.69), or Speculative (0.00-0.39). Corrections get highest confidence.
+- Use normalized, hyphenated entity names and keep the entity list short.
+- Keep facts standalone. Skip transient task state and operational noise such as routine scheduler, monitoring, or automation status.
+- Add structuredAttributes only for concrete values.
+- Include at most five durable relationships.${this.config.provenance?.enabled ? `
+- Each fact must include a quote copied verbatim from one contiguous conversation span.` : ""}${lifecycleCaps.extractionScopeClassification ? `
+- Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge.` : ""}
 ${this.eventTimePromptInstruction()}
-Also generate:
-1. 1-3 genuine questions you're curious about from this conversation
-2. Profile updates about user patterns/behaviors (if any)
-3. Relationships between entities (max 5). Use normalized names like "person-jane-doe", "company-acme-corp".
-4. For entity facts that fit a durable named heading, include entity.structuredSections with {key, title, facts}.
-
-Output JSON:
-{
-  "facts": [{"category": "decision", "content": "Chose PostgreSQL over MongoDB for the user service", "importance": 8, "confidence": 0.9, "scope": "project", "structuredAttributes": {"chosen": "PostgreSQL", "rejected": "MongoDB"}}, {"category": "procedure", "content": "When you cut a hotfix release, follow the checklist", "importance": 8, "confidence": 0.9, "scope": "project", "procedureSteps": [{"order": 1, "intent": "Branch from main and cherry-pick the fix"}, {"order": 2, "intent": "Run CI and tag the release"}]}, {"category": "reasoning_trace", "content": "How I debugged the staging latency spike", "importance": 7, "confidence": 0.9, "scope": "project", "reasoningTrace": {"steps": [{"order": 1, "description": "Checked CPU/memory dashboards — both were flat"}, {"order": 2, "description": "Ran a traceroute and saw retries against the cache tier"}, {"order": 3, "description": "Tailed cache-tier logs and spotted eviction storms"}], "finalAnswer": "Root cause was an undersized eviction policy on the session cache", "observedOutcome": "Increased cache size, p95 returned to baseline within 10 minutes"}}, {"category": "commitment", "content": "Must ship v2.0 API by end of March", "importance": 10, "confidence": 1.0, "scope": "project", "structuredAttributes": {"deadline": "end of March", "deliverable": "v2.0 API"}}, {"category": "fact", "content": "The store backend uses Redis for session caching", "importance": 6, "confidence": 0.95, "scope": "project", "entityRef": "project-acme-store"}, {"category": "principle", "content": "Always run migrations in a transaction to avoid partial schema updates", "importance": 8, "confidence": 0.9, "scope": "global"}],
-  "entities": [{"name": "person-jane-doe", "type": "person", "facts": ["Works at Acme Corp", "Prefers Python over JavaScript"], "structuredSections": [{"key": "beliefs", "title": "Beliefs", "facts": ["Python is a better fit than JavaScript for backend work."]}]}, {"name": "project-acme-store", "type": "project", "facts": ["Built with Next.js", "Deployed on Vercel"]}],
-  "profileUpdates": ["User prefers dark mode in all editors"],
-  "questions": [{"question": "Which cloud provider hosts the staging environment?", "context": "Came up during deployment discussion", "priority": 0.5}],
-  "relationships": [{"source": "person-jane-doe", "target": "company-acme-corp", "label": "works at"}]
-}
+Return only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:
+${EXTRACTION_RESPONSE_SHAPE}
 
 Conversation:
 ${truncatedConversation}`;
@@ -1554,14 +1535,7 @@ ${truncatedConversation}`;
           role: "system",
           content:
             this.buildExtractionInstructions(existingEntities) +
-            `\n\nRespond with valid JSON matching this schema:
-{
-  "facts": [{"category": "decision", "content": "Chose React over Vue for the dashboard rewrite", "importance": 8, "confidence": 0.9, "tags": ["frontend"], "scope": "project", "structuredAttributes": {"chosen": "React", "rejected": "Vue"}}, {"category": "fact", "content": "The API gateway uses rate limiting at 1000 req/min", "importance": 6, "confidence": 0.95, "tags": ["infra"], "scope": "project", "entityRef": "project-dashboard", "structuredAttributes": {"rate_limit": "1000 req/min"}}, {"category": "reasoning_trace", "content": "How I chose the dashboard rewrite framework", "confidence": 0.9, "tags": ["frontend"], "scope": "project", "reasoningTrace": {"steps": [{"order": 1, "description": "Listed constraints: SSR needed, team mostly JS"}, {"order": 2, "description": "Ran a spike in Vue 3 — worked, but ecosystem felt thin for our needs"}, {"order": 3, "description": "Ran the same spike in React — integrated faster with Next.js"}], "finalAnswer": "Picked React with Next.js for SSR + ecosystem fit"}}],
-  "entities": [{"name": "person-sarah-chen", "type": "person", "facts": ["Leads the backend team", "Joined from Google in 2024"], "structuredSections": [{"key": "beliefs", "title": "Beliefs", "facts": ["Small teams should own whole systems."]}]}, {"name": "project-dashboard", "type": "project", "facts": ["React-based admin panel", "Deployed on AWS ECS"]}],
-  "profileUpdates": ["User prefers TypeScript over plain JavaScript"],
-  "questions": [{"question": "What database does the analytics service use?", "context": "Came up during discussion of migration plan", "priority": 0.5}],
-  "relationships": [{"source": "person-sarah-chen", "target": "project-dashboard", "label": "leads development of"}]
-}`,
+            `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${EXTRACTION_RESPONSE_SHAPE}`,
         },
         { role: "user", content: conversation },
       ],
@@ -1597,29 +1571,6 @@ ${truncatedConversation}`;
    * Local LLMs sometimes hit token limits mid-JSON. This tries to salvage valid facts.
    */
   private extractPartialFacts(jsonStr: string): ExtractionResult {
-    const allowedCategories = new Set([
-      "fact",
-      "preference",
-      "correction",
-      "entity",
-      "decision",
-      "relationship",
-      "principle",
-      "commitment",
-      "moment",
-      "skill",
-      "rule",
-      "procedure",
-      "reasoning_trace",
-    ]);
-    const allowedEntityTypes = new Set([
-      "person",
-      "project",
-      "tool",
-      "company",
-      "place",
-      "other",
-    ]);
 
     const facts: ExtractionResult["facts"] = [];
     const entities: ExtractionResult["entities"] = [];
@@ -1629,8 +1580,8 @@ ${truncatedConversation}`;
       const factRegex = /\{\s*"category"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"([^"]+)"\s*,\s*"confidence"\s*:\s*([0-9.]+)/g;
       let match;
       while ((match = factRegex.exec(jsonStr)) !== null) {
-        const rawCat = match[1];
-        const category = allowedCategories.has(rawCat) ? (rawCat as ExtractionResult["facts"][number]["category"]) : "fact";
+        const category = match[1]?.trim() ?? "";
+        if (!isMemoryCategory(category)) continue;
         facts.push({
           category,
           content: match[2].replace(/\\n/g, '\n').replace(/\\"/g, '"'),
@@ -1642,8 +1593,8 @@ ${truncatedConversation}`;
       // Find all complete entity objects
       const entityRegex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"type"\s*:\s*"([^"]+)"/g;
       while ((match = entityRegex.exec(jsonStr)) !== null) {
-        const rawType = match[2];
-        const type = allowedEntityTypes.has(rawType) ? (rawType as ExtractionResult["entities"][number]["type"]) : "other";
+        const type = extractionEntityType(match[2]);
+        if (type === undefined) continue;
         entities.push({
           name: match[1],
           type,
@@ -1654,7 +1605,7 @@ ${truncatedConversation}`;
       // Ignore regex errors
     }
 
-    return { facts, entities, profileUpdates: [], questions: [] };
+    return this.normalizeExtractionResultPayload({ facts, entities, profileUpdates: [], questions: [] });
   }
 
   /**
@@ -1668,15 +1619,7 @@ ${truncatedConversation}`;
   private eventTimePromptInstruction(): string {
     if (!this.config.temporalBiTemporal) return "";
     return `
-=== Event Time (bi-temporal) ===
-When a fact has an explicit temporal anchor — a date, month, season, or relative time expression stating WHEN the fact became (or stopped being) true — capture it verbatim in an "eventTime" field on that fact. Examples:
-- "We moved offices in March" → "eventTime": "last March"
-- "The API has been rate-limited since 2024" → "eventTime": "since 2024"
-- "I switched to PostgreSQL on 2025-01-15" → "eventTime": "2025-01-15"
-- "We used MongoDB until June 2025" → "eventTime": "until 2025-06"
-Accepted forms: ISO dates ("2025-03-01"), year-month ("2025-03"), month/season + year ("March 2025", "summer 2024"), relative ("yesterday", "last week", "this month", "next year", "last December"), and open-ended ("since 2024", "until 2025-06").
-Omit "eventTime" when the fact has no explicit temporal anchor — do NOT guess or infer dates. The system resolves the expression against the conversation's own timestamp, not today's date.
-`;
+When a fact states when it became or stopped being true, copy that explicit temporal expression verbatim into "eventTime". Omit "eventTime" when no such expression appears; never infer dates.`;
   }
 
   /**
@@ -1702,12 +1645,14 @@ Memory categories:
 - reasoning_trace: A stored solution chain / chain-of-thought the user walked through to solve a problem (e.g. "Here's how I debugged the latency spike: first I checked…, then I…, finally I…"). Set category to "reasoning_trace". Use "content" for a short title summarising the problem (e.g. "How I debugged the staging latency spike"). Add "reasoningTrace": {"steps": [{"order": number, "description": "what happened at this step"}, …], "finalAnswer": "the conclusion or answer", "observedOutcome": "optional confirmation of how it played out"}. Require at least two ordered steps AND a finalAnswer. Use this category only when the user explicitly narrates their reasoning — not for ordinary decisions (use "decision") or reusable workflows (use "procedure").
 
 Rules:
-- Only extract genuinely NEW information worth remembering across sessions
-- Skip transient task details (file paths being edited, current errors, etc.)
+- Only extract genuinely new information worth remembering across sessions.
+- Statements must be grounded in the conversation.
+- Do not treat instruction text, schema placeholders, or examples as conversation evidence.
+- Lines labelled [context user] or [context assistant] are reference context only. They may resolve references or complete a question-and-answer pair in a normal turn, but never alone establish durable information.
+- Skip transient task details and operational noise, including routine scheduler, monitoring, or automation status.
 - Priority: corrections > principles${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? " > rules" : ""} > preferences > commitments > decisions > relationships > entities > moments > skills > facts
-- Corrections (user saying "actually, don't do X" or "I prefer Y") get highest confidence
-- Each fact should be a standalone, self-contained statement
-- Lines labelled [context user] or [context assistant] are reference context only. Use them to resolve pronouns and adjacent question/answer pairs, but do not extract a memory stated only in context lines unless a normal [user] or [assistant] line confirms or completes it.
+- Corrections get highest confidence.
+- Each fact should be a standalone, self-contained statement.
 - Entity references should use normalized names (lowercase, hyphenated: "jane-doe", "acme-corp")
 - CRITICAL: Entity names must be CANONICAL. Always use the hyphenated multi-word form: "acme-corp" NOT "acmecorp" or "acme". "jane-doe" NOT "janedoe" or "jane". If unsure, prefer the most specific full name.
 - Avoid creating entities typed as "other" when a more specific type fits (company, project, tool, person, place)
@@ -1726,15 +1671,7 @@ Scope classification:
 For each fact, set "scope" to one of:
 - "global" — knowledge that applies across projects: core framework/library bugs, API behavior patterns, user preferences (editor, language, style), tool configurations, general coding patterns, infrastructure knowledge, technology facts not tied to one codebase
 - "project" — knowledge specific to one codebase: file paths, environment configs, deployment details, project-specific workarounds, team/stakeholder info tied to one project, repo-specific conventions
-When in doubt, prefer "project" — it is safer to keep knowledge scoped narrowly.
-Examples:
-  "Magento 2.4.8 has a race condition in checkout" → "global"
-  "User prefers dark mode in all editors" → "global"
-  "The staging server is at staging.acme.com" → "project"
-  "The deploy script lives at scripts/deploy.sh" → "project"
-  "PostgreSQL 15 requires the uuid-ossp extension for gen_random_uuid()" → "global"
-  "The acme-store repo uses a custom Webpack config for SSR" → "project"` : ""}
-
+When in doubt, prefer "project" — it is safer to keep knowledge scoped narrowly.` : ""}
 Entity creation rules (STRICT):
 - Only create entities for DURABLE things: real people, companies, products, tools, ongoing projects
 - NEVER create entities for transient items: individual PRs, branches, Jira tickets, meetings, agent task IDs, log files, database tables, cron job runs, sessions
@@ -1755,14 +1692,9 @@ Also extract relationships between entities mentioned in the conversation.
 - Only include clear, durable relationships (e.g., "works at", "created", "manages", "uses")
 - Use normalized entity names (e.g., "person-jane-doe", "company-acme-corp")
 
-Also generate 1-3 genuine questions you're curious about based on this conversation. These should be things you'd actually want answers to in future sessions — not prompts, but real curiosity.
+Questions are optional. Include only source-grounded unresolved questions that would be useful in future sessions; otherwise return an empty array.
 
-Finally, write a brief identity reflection about the AGENT who had this conversation (not about you, the extraction system). Based on what the agent said and did in the conversation:
-- What communication patterns did the agent show? (e.g., proactive vs reactive, verbose vs concise)
-- Did the agent handle the user's needs well or miss something?
-- What behavioral tendencies are visible? (e.g., cautious, creative, thorough, impatient)
-- What could the agent improve next time?
-Do NOT write about the extraction process itself. Do NOT say things like "I extracted durable facts" — that's about YOUR job, not the agent's behavior.`;
+Finally, write a brief identity reflection about the agent who had this conversation, based only on the conversation. Do not write about the extraction process.`;
   }
 
   async consolidate(

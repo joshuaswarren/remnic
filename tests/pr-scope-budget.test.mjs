@@ -209,7 +209,7 @@ test("single-group PR is unaffected by multi-issue text (line-count behavior unc
   const result = evaluateScopeBudget({
     files: [
       coreFile(100, "packages/remnic-core/src/recall-state.ts"),
-      coreFile(120, "packages/remnic-core/src/recall/archive-scoring.ts"),
+      coreFile(120, "packages/remnic-core/src/recall-timings.ts"),
     ],
     labels: [],
     thresholds: THRESHOLDS,

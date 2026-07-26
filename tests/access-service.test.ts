@@ -36,6 +36,12 @@ function staticPassphraseReader(...sequence: string[]) {
   return async () => sequence[index++] ?? sequence[sequence.length - 1] ?? TEST_PASSPHRASE;
 }
 
+function recallOptionsWithoutComposition(options: unknown): Record<string, unknown> {
+  const { onContextComposition, ...rest } = options as Record<string, unknown>;
+  assert.equal(typeof onContextComposition, "function");
+  return rest;
+}
+
 function dreamsPhasesConfig(deepSleepEnabled = true, deepSleepEnabledExplicitlySet = false) {
   return {
     lightSleep: {
@@ -1056,7 +1062,7 @@ test("access service allows readable namespace overrides outside default recall 
   });
 
   assert.equal(response.namespace, "project-y");
-  assert.deepEqual(capturedOptions, {
+  assert.deepEqual(recallOptionsWithoutComposition(capturedOptions), {
     namespace: "project-y",
     topK: undefined,
     mode: undefined,
@@ -1111,7 +1117,7 @@ test("access service recall uses authenticated principal for namespace authoriza
   });
 
   assert.equal(response.namespace, "project-y");
-  assert.deepEqual(capturedOptions, {
+  assert.deepEqual(recallOptionsWithoutComposition(capturedOptions), {
     namespace: "project-y",
     topK: undefined,
     mode: "full",
@@ -1274,7 +1280,7 @@ test("access service recall forwards overrides and returns explainable metadata"
       includeDebug: true,
     });
 
-    assert.deepEqual(capturedOptions, {
+    assert.deepEqual(recallOptionsWithoutComposition(capturedOptions), {
       namespace: "global",
       topK: 3,
       mode: "minimal",

@@ -532,7 +532,7 @@ test("qmd top-up falls back to query after artifact-only hybrid window", async (
   assert.equal(results.every((r: any) => r.path.includes("/default/facts/")), true);
 });
 
-test("recall falls back to long-term archive when hot memory is empty", async () => {
+test("recall does not fall back to archive when hot memory is empty", async () => {
   const memoryDir = tmpDir("engram-long-term-fallback");
   await mkdir(path.join(memoryDir, "archive", "2026-02-23"), { recursive: true });
 
@@ -563,11 +563,11 @@ test("recall falls back to long-term archive when hot memory is empty", async ()
   const orchestrator = new Orchestrator(cfg);
 
   const context = await (orchestrator as any).recallInternal("What happened with burst limiter shard counts?", undefined);
-  assert.match(context, /Long-Term Memories \(Fallback\)/);
-  assert.match(context, /burst limiter failed/i);
+  assert.doesNotMatch(context, /Long-Term Memories \(Fallback\)/);
+  assert.doesNotMatch(context, /burst limiter failed/i);
 });
 
-test("cold fallback applies boost pipeline and tracking signals", async () => {
+test("archive-only cold fallback does not track an injected memory", async () => {
   const memoryDir = tmpDir("engram-long-term-pipeline");
   await mkdir(path.join(memoryDir, "archive", "2026-02-23"), { recursive: true });
 
@@ -618,13 +618,12 @@ test("cold fallback applies boost pipeline and tracking signals", async () => {
     "session-cold-pipeline",
   );
 
-  assert.match(context, /Long-Term Memories \(Fallback\)/);
-  assert.equal(boostCalled > 0, true);
-  assert.deepEqual(tracked, ["fact-archived-2"]);
-  assert.deepEqual(recalled, ["fact-archived-2"]);
+  assert.doesNotMatch(context, /Long-Term Memories \(Fallback\)/);
+  assert.deepEqual(tracked, []);
+  assert.deepEqual(recalled, []);
 });
 
-test("cold fallback remains eligible when lifecycle stale filtering is enabled", async () => {
+test("lifecycle stale filtering does not reopen archive fallback", async () => {
   const memoryDir = tmpDir("engram-long-term-lifecycle");
   await mkdir(path.join(memoryDir, "archive", "2026-02-23"), { recursive: true });
 
@@ -658,8 +657,8 @@ test("cold fallback remains eligible when lifecycle stale filtering is enabled",
   const orchestrator = new Orchestrator(cfg);
 
   const context = await (orchestrator as any).recallInternal("Any shard migration edge cases?", undefined);
-  assert.match(context, /Long-Term Memories \(Fallback\)/);
-  assert.match(context, /shard migration edge cases/i);
+  assert.doesNotMatch(context, /Long-Term Memories \(Fallback\)/);
+  assert.doesNotMatch(context, /shard migration edge cases/i);
 });
 
 test("recall suppresses empty impression append when no memories are injected by default", async () => {

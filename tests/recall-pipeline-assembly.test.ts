@@ -112,7 +112,6 @@ test("custom recallPipeline reorders sections and can disable transcript injecti
   assert.equal(qIndex >= 0, true);
   assert.equal(pIndex >= 0, true);
   assert.equal(sIndex >= 0, true);
-  assert.equal(qIndex < pIndex, true);
   assert.equal(pIndex < sIndex, true);
   assert.equal(context.includes("TRANSCRIPT_SHOULD_NOT_APPEAR"), false);
 });

@@ -134,11 +134,11 @@ import {
   computeSemanticDedupScope,
   qmdCollectionNamespaceFromPrefix as computeQmdCollectionNamespaceFromPrefix,
 } from "./orchestration/orchestrator-namespace-scope.js";
+import { isGenericRecallExcludedPath } from "./orchestration/generic-recall-paths.js";
 import {
   abortRecallError,
   buildCompressionGuidelinesMarkdown,
   buildQmdIntentHint,
-  isGenericRecallExcludedPath,
   mergeArtifactRecallCandidates,
   tokenizeRecallQuery,
   type BulkImportBatchIngestResult,
@@ -163,7 +163,6 @@ export {
   computeQmdHybridFetchLimit,
   defaultWorkspaceDir,
   filterHourlySummaryMarkdownForLocalDay,
-  filterRecallCandidates,
   formatDateInTimeZone,
   isArtifactMemoryPath,
   lifecycleRecallScoreAdjustment,
@@ -198,6 +197,7 @@ export {
   type RecallInvocationOptions,
   type RecallModeDecision,
 } from "./orchestration/orchestrator-helpers.js";
+export { filterRecallCandidates } from "./orchestration/generic-recall-paths.js";
 
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
 import {
@@ -541,7 +541,6 @@ import type {
   RecallSectionConfig,
   RecallTierExplain,
 } from "./types.js";
-import { disposeDefaultArchiveScoring, getDefaultArchiveScoring, memoryFileToScoreItem } from "./recall/archive-scoring.js";
 
 // Issue #1526 seam 15: ExtractionRunResult moved to orchestration/extraction-run.ts.
 export type { ExtractionRunResult } from "./orchestration/extraction-run.js";
@@ -997,8 +996,6 @@ export class Orchestrator {
       if (this.conversationQmd && this.conversationQmd !== this.qmd) {
         await (this.conversationQmd as { dispose?: () => void | Promise<void> }).dispose?.();
       }
-      // Issue #1674: terminate archive-scoring worker threads on destroy.
-      await disposeDefaultArchiveScoring();
     } finally {
       if (bufferFlushError !== undefined) {
         log.warn(
@@ -2483,7 +2480,7 @@ export class Orchestrator {
     if (!paths) return null;
     const scoped = new Set<string>();
     for (const memoryPath of paths) {
-      if (!memoryPath || isGenericRecallExcludedPath(memoryPath, this.config.memoryDir)) continue;
+      if (!memoryPath || isGenericRecallExcludedPath(memoryPath, this.config, "qmd")) continue;
       if (
         resolveNamespaceCapabilities(this.config).namespaces &&
         !recallNamespaces.includes(this.namespaceFromPath(memoryPath))
@@ -3600,16 +3597,14 @@ export class Orchestrator {
     );
   }
 
-  private async searchLongTermArchiveFallback(
+  private async searchQueryAwareFallback(
     prompt: string,
-    recallNamespaces: string[],
     limit: number,
     queryAwarePrefilter?: QueryAwarePrefilter,
     abortSignal?: AbortSignal,
   ): Promise<QmdSearchResult[]> {
-    return this.recallSearchPipelineCoordinator.searchLongTermArchiveFallback(
+    return this.recallSearchPipelineCoordinator.searchQueryAwareFallback(
       prompt,
-      recallNamespaces,
       limit,
       queryAwarePrefilter,
       abortSignal,
@@ -3965,13 +3960,6 @@ export class Orchestrator {
     namespaces: string[],
   ): Promise<MemoryFile[]> {
     return this.namespaceReadFanoutCoordinator.readAllMemoriesForNamespaces(
-      namespaces,
-    );
-  }
-  private async readArchivedMemoriesForNamespaces(
-    namespaces: string[],
-  ): Promise<MemoryFile[]> {
-    return this.namespaceReadFanoutCoordinator.readArchivedMemoriesForNamespaces(
       namespaces,
     );
   }

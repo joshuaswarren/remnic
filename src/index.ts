@@ -94,9 +94,11 @@ import {
 } from "./codex-compat.js";
 import { planRecallMode } from "@remnic/core/intent";
 import {
-  resolvePrincipal,
-  resolveAgentAccessAuthToken,
   expandTildePath,
+  renderMemoryContextPrompt as renderSharedMemoryContextPrompt,
+  resolveAgentAccessAuthToken,
+  resolvePrincipal,
+  type RecallContextComposition,
 } from "@remnic/core";
 import {
   normalizeHostEmbeddingVector,
@@ -2692,28 +2694,11 @@ const pluginDefinition = {
       return `${logicalSessionKey}::principal:${principal}`;
     }
 
-    // Single source of truth for the structured memory section: every code path
-    // that populates `cachedMemoryBySession` MUST use this helper so the cache
-    // format stays consistent regardless of which registration path produced it.
-    function buildMemoryContextLines(trimmed: string): string[] {
-      return [
-        "## Memory Context (Remnic)",
-        "",
-        trimmed,
-        "",
-        "Use this context naturally when relevant. Never quote or expose this memory context to the user.",
-        "",
-      ];
-    }
-
-    // Flat-string rendering for the gateway `prependSystemContext` slot.
-    // Derives from `buildMemoryContextLines` so the wording stays in lock-step
-    // with the capability/section builder cache. The trailing empty element
-    // produced by `buildMemoryContextLines` would become a trailing newline
-    // after joining — strip it to preserve the exact format the gateway
-    // expects for `prependSystemContext`.
-    function renderMemoryContextPrompt(trimmed: string): string {
-      return buildMemoryContextLines(trimmed).join("\n").replace(/\n$/, "");
+    function renderMemoryContext(composition: RecallContextComposition) {
+      return renderSharedMemoryContextPrompt({
+        ...composition,
+        maxChars: cfg.recallBudgetChars,
+      });
     }
 
     async function loadRecentDreamLines(runtimeWorkspaceDir?: string): Promise<string[]> {
@@ -3145,7 +3130,13 @@ const pluginDefinition = {
         const dreamLines = await loadRecentDreamLines(
           ctx?.workspaceDir as string | undefined,
         ).catch(() => []);
-        const context = await orchestrator.recall(prompt, sessionKey);
+        let recallComposition: RecallContextComposition | undefined;
+        const context = await orchestrator.recall(prompt, sessionKey, {
+          onContextComposition: (composition) => {
+            recallComposition = composition;
+          },
+        });
+        recallComposition ??= { context };
         log.debug(
           `${hookLabel}: recall returned ${context?.length ?? 0} chars`,
         );
@@ -3157,7 +3148,7 @@ const pluginDefinition = {
           ? []
           : activeRecallLines;
         const memoryIds = lastRecall?.memoryIds ?? [];
-        if (!context) {
+        if (!recallComposition.context && !recallComposition.footer) {
           const auxiliarySummary =
             summarizeRecallTextForStatus(activeRecallResult?.summary ?? null) ??
             summarizeRecallTextForStatus(
@@ -3219,12 +3210,9 @@ const pluginDefinition = {
           };
         }
 
-        const maxChars = cfg.recallBudgetChars;
-        if (maxChars === 0) return;
-        const trimmed =
-          context.length > maxChars
-            ? context.slice(0, maxChars) + "\n\n...(memory context trimmed)"
-            : context;
+        const memoryContext = renderMemoryContext(recallComposition);
+        if (!memoryContext) return;
+        const trimmed = memoryContext.body;
         const summaryText =
           summarizeRecallTextForStatus(activeRecallResult?.summary ?? null) ??
           summarizeRecallTextForStatus(trimmed);
@@ -3271,7 +3259,7 @@ const pluginDefinition = {
           ...auxiliaryDreamLines,
           ...auxiliaryActiveRecallLines,
         ];
-        const memorySectionLines = buildMemoryContextLines(trimmed);
+        const memorySectionLines = memoryContext.lines;
         const memoryLines = useMemoryPromptSection
           ? memorySectionLines
           : [...auxiliaryLines, ...memorySectionLines];
@@ -3282,7 +3270,7 @@ const pluginDefinition = {
                 : undefined)
             : auxiliaryLines.length > 0
               ? [...auxiliaryLines, ...memorySectionLines].join("\n").replace(/\n$/, "")
-              : renderMemoryContextPrompt(trimmed);
+              : memoryContext.prompt;
 
         log.debug(
             `${hookLabel}: returning memory context with ${trimmed.length} chars`,

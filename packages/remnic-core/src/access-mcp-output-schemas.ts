@@ -31,6 +31,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     query: T_STRING,
     namespace: T_STRING,
     context: T_STRING,
+    contextComposition: objectSchema({ context: T_STRING, footer: T_STRING }),
     count: T_NUMBER,
     memoryIds: T_ARRAY,
     results: T_ARRAY,
