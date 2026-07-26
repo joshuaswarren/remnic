@@ -126,9 +126,11 @@ export interface ExtractionRunCoordinatorDeps {
 import { raceRecallAbort, throwIfRecallAborted } from "./orchestrator-helpers.js";
 import {
   capExtractionRetryStateEntries,
+  combineExtractionAbortSignals,
   computeExtractionRetryNextEligibleMs,
   deriveSourceConnector,
   deriveTopicsFromExtraction,
+  runExtractionPostPersistBestEffort,
   EXTRACTION_RETRY_STATE_MAX_ENTRIES,
 } from "./extraction-run-helpers.js";
 import type { ExtractionResilienceStatus, ExtractionRetryStateEntry } from "./extraction-run-helpers.js";
@@ -140,8 +142,6 @@ export {
   deriveTopicsFromExtraction,
 };
 export type { ExtractionResilienceStatus };
-
-
 
 /**
  * Coordinates the extraction run pipeline. Holds the dedupe fingerprint
@@ -511,12 +511,8 @@ export class ExtractionRunCoordinator {
     ): Promise<void> => {
       const deadlineController =
         typeof deadlineMs === "number" && Number.isFinite(deadlineMs) ? new AbortController() : undefined;
-      const captureAbortSignal = captureOptions.abortSignal ?? options.abortSignal;
-      const captureSignal = deadlineController
-        ? captureAbortSignal
-          ? AbortSignal.any([captureAbortSignal, deadlineController.signal])
-          : deadlineController.signal
-        : captureAbortSignal;
+      const captureSignal = combineExtractionAbortSignals(captureOptions.abortSignal ?? options.abortSignal,
+        deadlineController);
       let deadlineTimer: NodeJS.Timeout | undefined;
       if (deadlineController && typeof deadlineMs === "number") {
         const scheduleDeadlineAbort = (): void => {
@@ -1089,16 +1085,7 @@ export class ExtractionRunCoordinator {
 
     // Durable memories are already committed; bound every later helper by the
     // same caller deadline and keep helper failures non-fatal.
-    const runPostPersistBestEffort = async (
-      stage: string,
-      operation: () => Promise<unknown>,
-    ): Promise<void> => {
-      try {
-        await runDeadlineAware(operation, stage, false);
-      } catch (error) {
-        log.warn(`runExtraction: ${stage} failed after persistence (non-fatal)`, error);
-      }
-    };
+    const runPostPersistBestEffort = runExtractionPostPersistBestEffort.bind(null, runDeadlineAware);
 
     // Buffer retention for defer verdicts (issue #562, PR 2). When the judge
     // deferred at least one candidate, retain the tail of the current turn

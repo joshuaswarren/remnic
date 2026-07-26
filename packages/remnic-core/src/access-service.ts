@@ -222,11 +222,12 @@ import type {
   RecallDisclosure,
   RecallPlanMode,
 } from "./types.js";
-import type {
-  EngramAccessExtractionForceFlushRequest,
-  EngramAccessExtractionForceFlushResponse,
-  EngramAccessLcmCompactionFlushRequest,
-  EngramAccessLcmCompactionFlushResponse,
+import {
+  delegateExtractionForceFlush,
+  type EngramAccessExtractionForceFlushRequest,
+  type EngramAccessExtractionForceFlushResponse,
+  type EngramAccessLcmCompactionFlushRequest,
+  type EngramAccessLcmCompactionFlushResponse,
 } from "./access-service-helpers.js";
 export type {
   EngramAccessExtractionForceFlushRequest,
@@ -4408,12 +4409,9 @@ export class EngramAccessService {
     }
   }
 
-  async extractionForceFlush(
-    request: EngramAccessExtractionForceFlushRequest,
-  ): Promise<EngramAccessExtractionForceFlushResponse> {
-    return this.accessObserveWriteSurface.extractionForceFlush(request);
+  async extractionForceFlush(request: EngramAccessExtractionForceFlushRequest): Promise<EngramAccessExtractionForceFlushResponse> {
+    return delegateExtractionForceFlush(this.accessObserveWriteSurface, request);
   }
-
   async lcmCompactionRecord(
     request: EngramAccessLcmCompactionRecordRequest,
   ): Promise<EngramAccessLcmCompactionRecordResponse> {

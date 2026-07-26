@@ -1,4 +1,14 @@
 import type { BufferTurn, ExtractionFailureClass, ExtractionResult } from "../types.js";
+import { log } from "../logger.js";
+
+export function combineExtractionAbortSignals(
+  primary: AbortSignal | undefined,
+  deadlineController: AbortController | undefined,
+): AbortSignal | undefined {
+  if (!deadlineController) return primary;
+  return primary ? AbortSignal.any([primary, deadlineController.signal]) : deadlineController.signal;
+}
+
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -127,4 +137,20 @@ export function deriveSourceConnector(turns: readonly BufferTurn[]): string | un
   // All turns must agree on the same connector — no untagged turns mixed in.
   if (untaggedCount > 0) return undefined;
   return connectors.size === 1 ? [...connectors][0] : undefined;
+}
+
+export async function runExtractionPostPersistBestEffort(
+  runDeadlineAware: (
+    operation: () => Promise<unknown>,
+    phase: string,
+    clearTimerOnError?: boolean,
+  ) => Promise<unknown>,
+  stage: string,
+  operation: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await runDeadlineAware(operation, stage, false);
+  } catch (error) {
+    log.warn(`runExtraction: ${stage} failed after persistence (non-fatal)`, error);
+  }
 }

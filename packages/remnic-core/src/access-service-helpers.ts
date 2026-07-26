@@ -28,3 +28,16 @@ export interface EngramAccessExtractionForceFlushResponse {
   namespace: string;
   effectiveNamespace: string;
 }
+
+export interface ExtractionForceFlushDelegate {
+  extractionForceFlush(
+    request: EngramAccessExtractionForceFlushRequest,
+  ): Promise<EngramAccessExtractionForceFlushResponse>;
+}
+
+export function delegateExtractionForceFlush(
+  delegate: ExtractionForceFlushDelegate,
+  request: EngramAccessExtractionForceFlushRequest,
+): Promise<EngramAccessExtractionForceFlushResponse> {
+  return delegate.extractionForceFlush(request);
+}
