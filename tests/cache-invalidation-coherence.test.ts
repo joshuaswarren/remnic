@@ -313,10 +313,20 @@ test("scope matrix: cold-only tier invalidation clears every cache layer", async
   });
 });
 
-test("scope matrix: setSecureStoreKey clears every cache layer (secure-key-change)", async () => {
+test("scope matrix: setSecureStoreKey clears every cache layer only after a real key change", async () => {
   await withStorage(async (storage, dir) => {
+    const key = Buffer.alloc(32, 1);
+    await storage.setSecureStoreKey(key);
     seedAllLayers(dir);
-    storage.setSecureStoreKey(null);
+    await storage.setSecureStoreKey(Buffer.from(key), true);
+    for (const layer of ALL_CACHE_LAYERS) {
+      assert.equal(
+        layer.hasEntriesFor(dir),
+        true,
+        `cache layer "${layer.name}" must stay warm after a no-op secure-key refresh`,
+      );
+    }
+    await storage.setSecureStoreKey(null);
     assertAllLayersEmpty(dir, "setSecureStoreKey");
   });
 });

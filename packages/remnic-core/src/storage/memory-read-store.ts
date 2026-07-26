@@ -26,6 +26,7 @@ import {
   parseFrontmatter,
   StorageManager,
 } from "../storage.js";
+import { rememberRawFrontmatter } from "./memory-frontmatter-metadata.js";
 
 export interface MemoryReadStoreDeps {
   /** Live class object of the host instance — shared static caches (see storage.ts storageManagerClass). */
@@ -495,7 +496,7 @@ export class MemoryReadStore {
       // but SecureStoreLockedError must propagate — see re-throw below.
       const parsed = parseFrontmatter(raw);
       if (parsed) {
-        return {
+        return rememberRawFrontmatter({
           path: filePath,
           frontmatter: normalizeFrontmatterForPath(
             parsed.frontmatter,
@@ -503,7 +504,7 @@ export class MemoryReadStore {
             parsed.content,
           ),
           content: parsed.content,
-        };
+        }, raw);
       }
 
       // Entity files use a `# Name` + `**Type:** ...` markdown format rather than

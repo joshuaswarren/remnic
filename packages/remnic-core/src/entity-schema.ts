@@ -44,8 +44,9 @@ const DEFAULT_ENTITY_SCHEMAS: Record<string, EntitySchemaDefinition> = {
 
 export function normalizeEntityText(value: string): string {
   return value
+    .normalize("NFC")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, " ")
     .trim();
 }
 

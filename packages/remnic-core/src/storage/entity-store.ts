@@ -13,6 +13,7 @@
 import { readdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
+import { withEntityCanonicalMutationLock } from "./entity-canonical-id-migration.js";
 import { log } from "../logger.js";
 import { getCachedEntities, setCachedEntities } from "../memory-cache.js";
 import type { VersionTrigger } from "../page-versioning.js";
@@ -78,6 +79,24 @@ export class EntityStore {
     } = {},
   ): Promise<string> {
     await this.deps.ensureDirectories();
+    return withEntityCanonicalMutationLock(
+      path.join(this.deps.baseDir, "state"),
+      () => this.writeEntityUnlocked(name, type, facts, options),
+    );
+  }
+
+  private async writeEntityUnlocked(
+    name: string,
+    type: string,
+    facts: string[],
+    options: {
+      timestamp?: string;
+      source?: string;
+      sessionKey?: string;
+      principal?: string;
+      structuredSections?: EntityStructuredSection[];
+    } = {},
+  ): Promise<string> {
     if (typeof name !== "string" || !name.trim() || typeof type !== "string" || !type.trim()) {
       log.warn("writeEntity: invalid entity payload, skipping", {
         nameType: typeof name,
@@ -228,6 +247,24 @@ export class EntityStore {
    * Set or rewrite the synthesis layer of an entity file.
    */
   async updateEntitySynthesis(
+    name: string,
+    synthesis: string,
+    options: {
+      entityUpdatedAt?: string;
+      synthesisStructuredFactCount?: number;
+      synthesisStructuredFactDigest?: string;
+      synthesisTimelineCount?: number;
+      updatedAt?: string;
+      incrementVersion?: boolean;
+    } = {},
+  ): Promise<void> {
+    return withEntityCanonicalMutationLock(
+      path.join(this.deps.baseDir, "state"),
+      () => this.updateEntitySynthesisUnlocked(name, synthesis, options),
+    );
+  }
+
+  private async updateEntitySynthesisUnlocked(
     name: string,
     synthesis: string,
     options: {
@@ -407,6 +444,13 @@ export class EntityStore {
    * Returns count of files merged.
    */
   async mergeFragmentedEntities(): Promise<number> {
+    return withEntityCanonicalMutationLock(
+      path.join(this.deps.baseDir, "state"),
+      () => this.mergeFragmentedEntitiesUnlocked(),
+    );
+  }
+
+  private async mergeFragmentedEntitiesUnlocked(): Promise<number> {
     let merged = 0;
     try {
       const entries = await readdir(this.deps.entitiesDir);

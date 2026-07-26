@@ -399,4 +399,16 @@ test("router installs the unlocked secure-store key on router-created stores so 
     false,
     "no key in the keyring → router store stays locked, never silently plaintext",
   );
+
+  keyring.unlock(storeId, Buffer.alloc(32, 6));
+  try {
+    const cachedUnlockedStore = await lockedRouter.storageFor("default");
+    assert.equal(
+      cachedUnlockedStore.isSecureStoreUnlocked(),
+      true,
+      "a cached router store refreshes its secure-store key after unlock",
+    );
+  } finally {
+    keyring.lock(storeId);
+  }
 });

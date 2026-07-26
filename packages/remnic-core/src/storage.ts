@@ -1,6 +1,5 @@
 import { readProjectionRebuiltAt } from "./maintenance/projection-support.js";
 import {
-  access,
   lstat,
   readdir,
   readFile,
@@ -9,7 +8,6 @@ import {
   writeFile,
   mkdir,
   unlink,
-  rename,
   appendFile,
   open,
 } from "node:fs/promises";
@@ -35,10 +33,17 @@ import {
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
+import * as entityMigration from "./storage/entity-canonical-id-migration.js";
+import {
+  runLegacyEntityCanonicalIdMigration,
+  type EntityCanonicalIdMigrationHost,
+} from "./storage/entity-canonical-id-migration-adapter.js";
+import { EntityCanonicalIdMigrationRunner } from "./storage/entity-canonical-id-migration-runner.js";
+import { rememberRawFrontmatter } from "./storage/memory-frontmatter-metadata.js";
+import { createMemoryEntityRefSerializer } from "./storage/memory-migration-serialization.js";
+export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
-import { withHeldFileLock } from "./utils/serialize-mutations.js";
-import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
-import { assertPathInsideRoot } from "./utils/path-containment.js";
+import { getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
 import {
   qmdCollectionPathParts,
@@ -1095,52 +1100,6 @@ function inferCurrentStateStatus(
   return inferMemoryStatus(frontmatter, pathRel, fallbackStatus);
 }
 
-/** Built-in aliases for common structural normalizations (no personal data) */
-const BUILTIN_ALIASES: Record<string, string> = {
-  openclaw: "openclaw",
-  "open-claw": "openclaw",
-};
-
-/**
- * Normalize an entity name to a canonical form.
- * Strips non-alphanumeric chars, collapses hyphens, removes type prefix duplication.
- * e.g. "My Project" → "my-project"
- *
- * Checks caller-provided user aliases first, then built-in aliases. Alias
- * tables are instance state on StorageManager (issue #1534) — use
- * `storageManager.normalizeEntityName(raw, type)` when normalizing within a
- * store, or pass `storageManager.entityAliases` explicitly. Without an
- * aliases argument only the built-in structural aliases apply.
- */
-export function normalizeEntityName(raw: string, type: string, aliases?: Readonly<Record<string, string>>): string {
-  // Strip type prefix if present (e.g. name="person-jane-doe", type="person")
-  const rawStr = typeof raw === "string" ? raw : "";
-  const typeStr = typeof type === "string" && type.trim().length > 0 ? type : "entity";
-
-  let name = rawStr.toLowerCase().trim();
-  const typePrefix = `${typeStr.toLowerCase()}-`;
-  if (name.startsWith(typePrefix)) {
-    name = name.slice(typePrefix.length);
-  }
-
-  // Replace non-alphanumeric with hyphens, collapse multiples, trim edges
-  let normalized = name
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-
-  // Check caller-provided user aliases first, then built-in. Own-property and
-  // string guards keep inherited object keys (e.g. an entity literally named
-  // "constructor") and malformed alias values from corrupting canonical ids.
-  const userAlias = aliases !== undefined && Object.hasOwn(aliases, normalized) ? aliases[normalized] : undefined;
-  if (typeof userAlias === "string" && userAlias.length > 0) {
-    normalized = userAlias;
-  } else if (Object.hasOwn(BUILTIN_ALIASES, normalized)) {
-    normalized = BUILTIN_ALIASES[normalized];
-  }
-
-  return `${typeStr.toLowerCase()}-${normalized}`;
-}
 
 /**
  * Simple Levenshtein distance between two strings.
@@ -2135,24 +2094,39 @@ export class StorageManager {
    * Set or clear the at-rest encryption key.
    *
    * Pass a 32-byte Buffer to enable encryption; pass null to clear
-   * (lock) the store.  The caller is responsible for key lifecycle —
+   * (lock) the store. The caller is responsible for key lifecycle —
    * this method does not zero the buffer on replacement; the keyring
-   * module (`keyring.ts`) owns zeroization.
+   * module (`keyring.ts`) owns zeroization. The setter remains synchronous
+   * for existing consumers; call `setSecureStoreKeyAndWait` when unlock must
+   * await migration.
    */
   setSecureStoreKey(key: Buffer | null, encryptOnWrite = true): void {
+    if (!this.applySecureStoreKey(key, encryptOnWrite) || key === null) return;
+    void this.entityCanonicalIdMigration.triggerAfterUnlock().catch((error: unknown) => {
+      log.warn(
+        `secure-store unlock migration failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
+
+  public async setSecureStoreKeyAndWait(key: Buffer | null, encryptOnWrite = true): Promise<void> {
+    if (!this.applySecureStoreKey(key, encryptOnWrite) || key === null) return;
+    await this.entityCanonicalIdMigration.triggerAfterUnlock();
+  }
+
+  private applySecureStoreKey(key: Buffer | null, encryptOnWrite: boolean): boolean {
+    const sameKey =
+      this._secureStoreKey === key ||
+      (this._secureStoreKey !== null && key !== null && this._secureStoreKey.equals(key));
+    if (sameKey && this._secureStoreEncryptOnWrite === encryptOnWrite) return false;
+
     this._secureStoreKey = key;
     this._secureStoreEncryptOnWrite = encryptOnWrite;
-    // Route through the invalidation chokepoint (issue #1535): a key change
-    // (or store lock) must evict every cache layer that may hold content
-    // decrypted under the previous key, not just the entity layer.
     invalidateAllForDir(this.baseDir);
     this.invalidateKnowledgeIndexCache();
-    // A key change flips resolveWriteKey(), so a file's plain/encrypted class on
-    // the next full rewrite may differ from what was cached (issue #1909).
     this.secureFileEncryptionSniffCache.clear();
-    // Same rationale for the behavior-signals dedup key cache (issue #1909):
-    // drop it on a key change so a re-encrypted/re-decrypted ledger is reloaded.
     this.behaviorSignalsKeyCache = null;
+    return true;
   }
 
   private getEntityCacheSecureStoreKey(): string {
@@ -2340,6 +2314,7 @@ export class StorageManager {
     // loadAliases() explicitly — every creation path must still get the
     // store's own aliases, never an empty or foreign table.
     this.loadAliasesSync();
+    this.loadHistoricalEntityCanonicalIdsSync();
   }
 
   /** Set the process-wide hot-memories cache default (issue #1902). The
@@ -3597,9 +3572,17 @@ export class StorageManager {
    * store loaded last rewrite every other store's canonical entity ids.
    */
   private userAliases: Record<string, string> = {};
-
+  private historicalEntityCanonicalIds: Readonly<Record<string, string>> = {};
+  private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
+    () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
+    () => this.runLegacyEntityCanonicalIdMigration(),
+    () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => this.getCorpusScanVersion()),
+  );
   normalizeEntityName(raw: string, type: string): string {
-    return this.entityStore.normalizeEntityName(raw, type);
+    return entityMigration.resolveHistoricalEntityCanonicalId(
+      this.entityStore.normalizeEntityName(raw, type),
+      this.historicalEntityCanonicalIds,
+    );
   }
 
   /**
@@ -3646,8 +3629,24 @@ export class StorageManager {
       log.debug("no config/aliases.json found — using built-in aliases only");
     }
   }
+  private loadHistoricalEntityCanonicalIdsSync(): void {
+    this.historicalEntityCanonicalIds = entityMigration.loadHistoricalEntityCanonicalIds(this.stateDir);
+  }
+
+  private async runLegacyEntityCanonicalIdMigration(): Promise<string> {
+    const completionFingerprint = await runLegacyEntityCanonicalIdMigration(
+      this as unknown as EntityCanonicalIdMigrationHost,
+      (content) => parseEntityFile(content, this.entitySchemas),
+      (entity) => serializeEntityFile(entity, this.entitySchemas),
+      createMemoryEntityRefSerializer(serializeFrontmatter),
+    );
+    this.loadHistoricalEntityCanonicalIdsSync();
+    return completionFingerprint;
+  }
 
   async ensureDirectories(): Promise<void> {
+    await mkdir(this.baseDir, { recursive: true });
+    await entityMigration.validateRoots(this.baseDir, this.entitiesDir, this.stateDir, this.archiveDir);
     const today = new Date().toISOString().slice(0, 10);
     await mkdir(path.join(this.factsDir, today), { recursive: true });
     await mkdir(path.join(this.proceduresDir, today), { recursive: true });
@@ -3662,6 +3661,7 @@ export class StorageManager {
     await mkdir(this.identityAuditsWeeklyDir, { recursive: true });
     await mkdir(this.identityAuditsMonthlyDir, { recursive: true });
     await mkdir(path.join(this.baseDir, "config"), { recursive: true });
+    await this.entityCanonicalIdMigration.ensure();
     // Activate the corpus sentinel at setup (issue #1902, Cursor Medium): an
     // existing corpus predating this feature has a size-0/absent sentinel, which
     // getCachedMemories treats as a miss — so a read-heavy workload would never
@@ -3675,6 +3675,7 @@ export class StorageManager {
     if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === 0) {
       this.bumpMemoryCorpusVersion();
     }
+    await this.entityCanonicalIdMigration.markDirectoriesInitialized();
   }
 
   /**
@@ -4682,7 +4683,7 @@ export class StorageManager {
             const raw = await readMaybeEncryptedFile(fullPath, this._secureStoreKey, this.baseDir);
             const parsed = parseFrontmatter(raw);
             if (!parsed) return null;
-            return {
+            return rememberRawFrontmatter({
               path: fullPath,
               frontmatter: normalizeFrontmatterForPath(
                 parsed.frontmatter,
@@ -4690,7 +4691,7 @@ export class StorageManager {
                 parsed.content
               ),
               content: parsed.content,
-            } satisfies MemoryFile;
+            } satisfies MemoryFile, raw);
           } catch (err) {
             // Re-throw store-locked errors so a locked encrypted store fails
             // loudly rather than appearing as an empty memory corpus (Cursor
@@ -4841,7 +4842,7 @@ export class StorageManager {
               const raw = await readMaybeEncryptedFile(fullPath, this._secureStoreKey, this.baseDir);
               const parsed = parseFrontmatter(raw);
               if (parsed) {
-                memories.push({
+                memories.push(rememberRawFrontmatter({
                   path: fullPath,
                   frontmatter: normalizeFrontmatterForPath(
                     parsed.frontmatter,
@@ -4849,7 +4850,7 @@ export class StorageManager {
                     parsed.content
                   ),
                   content: parsed.content,
-                });
+                }, raw));
               }
             } catch (err) {
               // Re-throw store-locked errors — a locked encrypted store
@@ -6133,9 +6134,6 @@ export class StorageManager {
     this.invalidateKnowledgeIndexCache();
   }
 
-  /**
-   * Add an alias to an entity file. Deduplicates.
-   */
   async addEntityAlias(name: string, alias: string): Promise<void> {
     const filePath = path.join(this.entitiesDir, `${name}.md`);
     let entity: EntityFile;
@@ -6154,6 +6152,7 @@ export class StorageManager {
     entity.updated = new Date().toISOString();
     await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
     this.invalidateKnowledgeIndexCache();
+    this.bumpMemoryStatusVersion();
   }
 
   async updateEntitySynthesis(

@@ -284,6 +284,7 @@ export class NamespaceStorageRouter {
       root = await this.defaultNamespaceRoot();
       const cached = this.cache.get(ns);
       if (cached && cached.dir === root) {
+        await this.applySecureStoreConfig(cached);
         this.notifyResolved(ns, root);
         return cached;
       }
@@ -291,6 +292,7 @@ export class NamespaceStorageRouter {
       const cached = this.cache.get(ns);
       root = await this.namespaceRoot(ns);
       if (cached && cached.dir === root) {
+        await this.applySecureStoreConfig(cached);
         this.notifyResolved(ns, root);
         return cached;
       }
@@ -335,7 +337,7 @@ export class NamespaceStorageRouter {
     // recovery paths (e.g. the CLI lifecycle-ledger rebuild) refuse an encrypted
     // ledger they could actually rewrite, and namespace writes could silently
     // fall back to plaintext. Mirror the orchestrator's setup exactly.
-    this.applySecureStoreConfig(sm);
+    await this.applySecureStoreConfig(sm);
     this.cache.set(ns, sm);
     // #2019: let the orchestrator wire write-triggered prioritized embedding on
     // every router-created namespace storage, not just the primary default store.
@@ -478,12 +480,12 @@ export class NamespaceStorageRouter {
    * root keyring id — exactly the id the orchestrator and `secure-store unlock`
    * register under. No-op when secure-store is disabled.
    */
-  private applySecureStoreConfig(sm: StorageManager): void {
+  private async applySecureStoreConfig(sm: StorageManager): Promise<void> {
     if (!resolveRecallAuxiliaryCapabilities(this.config).secureStore) return;
     sm.setSecureStoreRequired(true);
     const existingKey = keyring.getKey(secureStoreDir(this.config.memoryDir));
     if (existingKey) {
-      sm.setSecureStoreKey(existingKey, this.config.secureStoreEncryptOnWrite);
+      await sm.setSecureStoreKeyAndWait(existingKey, this.config.secureStoreEncryptOnWrite);
     }
   }
 

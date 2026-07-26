@@ -45,7 +45,7 @@ test("offline storage creates namespace-scoped secure storage for lifecycle drai
       "state",
       "memory-lifecycle-ledger.jsonl",
     );
-    const namespaceStorage = createOfflineStorageForPath(memoryDir, ledgerPath, configured, true);
+    const namespaceStorage = await createOfflineStorageForPath(memoryDir, ledgerPath, configured, true);
     const pendingPath = path.join(
       memoryDir,
       "namespaces",

@@ -25,28 +25,61 @@ function buildConfig(
   });
 }
 
-function stubInitializeDependencies(orchestrator: any) {
-  orchestrator.storage = {
+function setTestDependency(orchestrator: Orchestrator, key: string, value: unknown): void {
+  Reflect.set(orchestrator, key, value);
+}
+
+function stubInitializeDependencies(
+  orchestrator: Orchestrator,
+  storageOverrides: Record<string, unknown> = {},
+) {
+  setTestDependency(orchestrator, "storage", {
     ensureDirectories: async () => {},
     loadAliases: async () => {},
     readAllMemories: async () => [],
     readAllEntityFiles: async () => [],
-  };
-  orchestrator.relevance = { load: async () => {} };
-  orchestrator.negatives = { load: async () => {} };
-  orchestrator.lastRecall = { load: async () => {} };
-  orchestrator.tierMigrationStatus = { load: async () => {} };
-  orchestrator.sessionObserver = { load: async () => {} };
-  orchestrator.policyRuntime = { loadRuntimeValues: async () => null };
-  orchestrator.transcript = { initialize: async () => {} };
-  orchestrator.summarizer = { initialize: async () => {} };
-  orchestrator.qmd = {
+    ...storageOverrides,
+  });
+  setTestDependency(orchestrator, "relevance", { load: async () => {} });
+  setTestDependency(orchestrator, "negatives", { load: async () => {} });
+  setTestDependency(orchestrator, "lastRecall", { load: async () => {} });
+  setTestDependency(orchestrator, "tierMigrationStatus", { load: async () => {} });
+  setTestDependency(orchestrator, "sessionObserver", { load: async () => {} });
+  setTestDependency(orchestrator, "policyRuntime", { loadRuntimeValues: async () => null });
+  setTestDependency(orchestrator, "transcript", { initialize: async () => {} });
+  setTestDependency(orchestrator, "summarizer", { initialize: async () => {} });
+  setTestDependency(orchestrator, "qmd", {
     probe: async () => false,
     isAvailable: () => false,
     debugStatus: () => "disabled",
-  };
-  orchestrator.buffer = { load: async () => {} };
+  });
+  setTestDependency(orchestrator, "buffer", { load: async () => {} });
 }
+
+test("initialize loads aliases before running storage migration", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-alias-before-migration-memory-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-alias-before-migration-workspace-"));
+  try {
+    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, false));
+    const order: string[] = [];
+    stubInitializeDependencies(orchestrator, {
+      ensureDirectories: async () => {
+        order.push("ensureDirectories");
+      },
+      loadAliases: async () => {
+        order.push("loadAliases");
+      },
+    });
+
+    await orchestrator.initialize();
+    await orchestrator.deferredReady;
+
+    assert.deepEqual(order.slice(0, 2), ["loadAliases", "ensureDirectories"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
 
 test("initialize skips nightly governance cron auto-register unless explicitly enabled", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-off-memory-"));
