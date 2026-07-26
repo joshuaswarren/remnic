@@ -749,6 +749,26 @@ test("grounding joins context questions to asserted target turns", () => {
   assert.deepEqual(unsupported.facts, []);
 });
 
+test("grounding splits turn-delimited questions before affirmative answers", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "The database uses PostgreSQL.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Should the database use PostgreSQL\n\nYes, use that.",
+    "Yes, use that.",
+  );
+
+  assert.equal(result.facts.length, 1);
+});
+
 test("proactive extraction grounds before delinearization", async () => {
   const engine = fixtureEngine({
     localLlmEnabled: true,

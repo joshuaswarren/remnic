@@ -242,14 +242,15 @@ function sourceSentences(source: string): string[] {
     const boundary = character === "!"
       || character === "?"
       || character === ";"
+      || (character === "\n" && nextCharacter === "\n")
       || (character === "." && (
         nextCharacter === undefined
         || /\s/u.test(nextCharacter)
         || /["')\]}]/u.test(nextCharacter)
       ));
     if (!boundary) continue;
-    let sentenceEnd = index + 1;
-    while (/[.!?;]/u.test(source[sentenceEnd] ?? "")) sentenceEnd += 1;
+    let sentenceEnd = character === "\n" ? index : index + 1;
+    while (/[.!?;\n]/u.test(source[sentenceEnd] ?? "")) sentenceEnd += 1;
     const sentence = source.slice(sentenceStart, sentenceEnd).trim();
     if (sentence.length > 0) sentences.push(sentence);
     sentenceStart = sentenceEnd;
@@ -414,13 +415,35 @@ function isGroundedEntityName(name: string, source: string): boolean {
   return nameTokens.length > 0 && nameTokens.every((token) => sourceTokens.has(token));
 }
 
+function hasGroundedPredicateAnchor(candidate: string, sentence: string): boolean {
+  const candidateTokens = groundingTokenSequence(candidate);
+  const sourceTokens = groundingTokenSequence(sentence).map((token) => token.replace(/'$/u, ""));
+  const comparableCandidateTokens = GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateTokens[0] ?? "")
+    ? candidateTokens.slice(1)
+    : candidateTokens;
+  if (comparableCandidateTokens.length < 2) return false;
+  const subjectToken = comparableCandidateTokens[0];
+  if (subjectToken === undefined || !sourceTokens.includes(subjectToken)) {
+    return false;
+  }
+  const candidatePredicateTokens = comparableCandidateTokens.slice(1);
+  const sourceTokenSet = new Set(sourceTokens);
+  const sharedPredicateTokens = candidatePredicateTokens.filter((token) => sourceTokenSet.has(token));
+  const requiredSharedTokens = Math.min(2, candidatePredicateTokens.length);
+  return sharedPredicateTokens.length >= requiredSharedTokens;
+}
 function hasGroundingAnchor(
   candidate: string,
   assertionSource: string,
   includeInterrogativeSource = false,
+  requirePredicateSupport = false,
 ): boolean {
   return sourceSentences(assertionSource).some((sentence) => {
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence)) return false;
+    const exactMatch = containsExactTokenSequence(candidate, sentence)
+      && !hasContradictoryPolarity(candidate, sentence);
+    if (exactMatch) return true;
+    if (requirePredicateSupport && !hasGroundedPredicateAnchor(candidate, sentence)) return false;
     return groundedTokenScore(candidate, sentence) > 0
       || hasRoleNormalizedGrounding(candidate, sentence);
   });
@@ -488,9 +511,13 @@ function isGroundedCandidate(
   if (!sourceGrounded && !roleGrounded) return false;
   if (assertionSource === undefined) return true;
   const clauses = candidateClauses(candidate);
+  const requirePredicateSupport = !includeInterrogativeSource
+    && assertionSource !== undefined
+    && normalizeForExactMatch(assertionSource) !== normalizeForExactMatch(source);
   return clauses.length > 0
     && (
-      clauses.every((clause) => hasGroundingAnchor(clause, assertionSource, includeInterrogativeSource))
+      clauses.every((clause) =>
+        hasGroundingAnchor(clause, assertionSource, includeInterrogativeSource, requirePredicateSupport))
       || hasAffirmativeAnswerSupport(candidate, source, assertionSource)
     );
 }
