@@ -1,5 +1,14 @@
 import type { BufferEntryState, BufferTurn } from "./types.js";
 
+export interface BufferTurnOwner {
+  /**
+   * Server-resolved principal that owns this session at the authenticated
+   * observe/write boundary. Persisted with the buffered turn so lifecycle
+   * flushes do not have to infer ownership from a client-chosen session key.
+   */
+  sessionOwnerPrincipal?: string;
+}
+
 export function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (err === null) return "null";

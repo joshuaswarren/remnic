@@ -222,6 +222,19 @@ import type {
   RecallDisclosure,
   RecallPlanMode,
 } from "./types.js";
+import type {
+  EngramAccessExtractionForceFlushRequest,
+  EngramAccessExtractionForceFlushResponse,
+  EngramAccessLcmCompactionFlushRequest,
+  EngramAccessLcmCompactionFlushResponse,
+} from "./access-service-helpers.js";
+export type {
+  EngramAccessExtractionForceFlushRequest,
+  EngramAccessExtractionForceFlushResponse,
+  EngramAccessLcmCompactionFlushRequest,
+  EngramAccessLcmCompactionFlushResponse,
+};
+
 import { DEFAULT_RECALL_DISCLOSURE, isRecallDisclosure } from "./types.js";
 import { estimateRecallTokens, type RecallXraySnapshot } from "./recall-xray.js";
 import type {
@@ -1080,34 +1093,6 @@ export interface EngramAccessLcmStatusResponse {
   enabled: boolean;
   archiveAvailable: boolean;
   stats?: { totalTurns?: number };
-}
-export interface EngramAccessLcmCompactionFlushRequest extends CodingScopedWriteInput {
-  sessionKey: string;
-  namespace?: string;
-  authenticatedPrincipal?: string;
-}
-
-export interface EngramAccessLcmCompactionFlushResponse {
-  enabled: boolean;
-  flushed: boolean;
-  sessionKey: string;
-  namespace: string;
-  reason?: string;
-}
-
-export interface EngramAccessExtractionForceFlushRequest extends CodingScopedWriteInput {
-  sessionKey: string;
-  namespace?: string;
-  authenticatedPrincipal?: string;
-  deadlineMs?: number;
-  abortSignal?: AbortSignal;
-}
-
-export interface EngramAccessExtractionForceFlushResponse {
-  flushed: boolean;
-  sessionKey: string;
-  namespace: string;
-  effectiveNamespace: string;
 }
 
 
