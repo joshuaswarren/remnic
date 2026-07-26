@@ -691,21 +691,31 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   private tombstoneBlocked(frontmatter: MemoryFrontmatter): boolean {
     return frontmatter.status === "pending_review" && Boolean(frontmatter.blockedBy);
   }
+  private isQueuedReviewFrontmatter(frontmatter: MemoryFrontmatter): boolean {
+    return frontmatter.status === "pending_review" && (frontmatter.tags ?? []).includes("queued-review");
+  }
+  private isQueuedReviewMemory(memory: MemoryFile | null): memory is MemoryFile {
+    return memory !== null && this.isQueuedReviewFrontmatter(memory.frontmatter);
+  }
 
   private async writeTombstoneBlockedMutation(
     blocked: boolean,
     pathname: string,
     fileContent: string,
     identity: string | readonly string[],
-    updateIndex: (rebuildMarker?: string) => Promise<void>,
-    beforeIndexUpdate?: () => Promise<void>
+    updateIndex: (rebuildMarker?: string, current?: MemoryFile | null) => Promise<void>,
+    beforeIndexUpdate?: () => Promise<void>,
+    coordinate = false
   ): Promise<void> {
     let lockIdentity: string | readonly string[] = identity;
+    let mustLock = blocked || coordinate;
     for (;;) {
       let retryIdentity: string | undefined;
       const mutate = async (): Promise<void> => {
-        const current = blocked ? await this.readMemoryByPath(pathname) : null;
-        if (current && this.isTombstoneBlockedMemory(current)) {
+        const current = await this.readMemoryByPath(pathname);
+        const currentBlocked = this.isTombstoneBlockedMemory(current);
+        const currentQueuedReview = this.isQueuedReviewMemory(current);
+        if (currentBlocked || currentQueuedReview) {
           const currentIdentity = this.offlineSyncMemoryIdentity(current);
           const heldIdentities = Array.isArray(lockIdentity) ? lockIdentity : [lockIdentity];
           if (!heldIdentities.includes(currentIdentity)) {
@@ -713,7 +723,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
             return;
           }
         }
-        const rebuildMarker = blocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
+        const rebuildMarker =
+          blocked || currentBlocked ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
         try {
           await this.writeStorageSecureFile(pathname, fileContent);
         } catch (err) {
@@ -738,18 +749,19 @@ export abstract class TombstoneBlockedCaptureIndexHost {
           }
         }
         if (rebuildMarker) await beforeIndexUpdate?.();
-        await updateIndex(rebuildMarker);
+        await updateIndex(rebuildMarker, currentBlocked ? current : undefined);
       };
-      if (!blocked) {
-        await mutate();
-      } else {
+      if (mustLock) {
         await this.withTombstoneBlockedCaptureWriteLock(mutate, lockIdentity);
+      } else {
+        await mutate();
       }
       if (retryIdentity === undefined) return;
       const identities = Array.isArray(lockIdentity)
         ? [...lockIdentity, retryIdentity]
         : [lockIdentity, retryIdentity];
       lockIdentity = [...new Set(identities)];
+      mustLock = true;
     }
   }
 
@@ -822,10 +834,28 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         ...(this.tombstoneBlocked(frontmatter)
           ? [buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector)]
           : []),
+        ...(this.isQueuedReviewMemory(before)
+          ? [
+              buildExplicitCaptureDedupKey(
+                before.content,
+                before.frontmatter.category,
+                before.frontmatter.sourceConnector
+              ),
+            ]
+          : []),
+        ...(this.isQueuedReviewFrontmatter(frontmatter)
+          ? [buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector)]
+          : []),
       ],
-      (rebuildMarker) =>
-        this.getTombstoneBlockedCaptureIndex().syncUpdatedMemory(before, frontmatter, content, rebuildMarker),
-      beforeIndexUpdate
+      (rebuildMarker, current) =>
+        this.getTombstoneBlockedCaptureIndex().syncUpdatedMemory(
+          current ?? before,
+          frontmatter,
+          content,
+          rebuildMarker
+        ),
+      beforeIndexUpdate,
+      this.isQueuedReviewMemory(before) || this.isQueuedReviewFrontmatter(frontmatter)
     );
   }
 
@@ -852,10 +882,27 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         ...(this.tombstoneBlocked(frontmatter)
           ? [buildExplicitCaptureDedupKey(before.content, frontmatter.category, frontmatter.sourceConnector)]
           : []),
+        ...(this.isQueuedReviewMemory(before)
+          ? [
+              buildExplicitCaptureDedupKey(
+                before.content,
+                before.frontmatter.category,
+                before.frontmatter.sourceConnector
+              ),
+            ]
+          : []),
+        ...(this.isQueuedReviewFrontmatter(frontmatter)
+          ? [buildExplicitCaptureDedupKey(before.content, frontmatter.category, frontmatter.sourceConnector)]
+          : []),
       ],
-      (rebuildMarker) =>
-        this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(before, frontmatter, rebuildMarker),
-      beforeIndexUpdate
+      (rebuildMarker, current) =>
+        this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(
+          current ?? before,
+          frontmatter,
+          rebuildMarker
+        ),
+      beforeIndexUpdate,
+      this.isQueuedReviewMemory(before) || this.isQueuedReviewFrontmatter(frontmatter)
     );
   }
 
