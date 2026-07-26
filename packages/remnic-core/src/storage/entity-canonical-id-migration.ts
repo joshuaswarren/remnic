@@ -452,15 +452,6 @@ function mergeDiscoveredMappings(
 ): Record<string, string> {
   const merged = { ...existing };
   const canonicalOwners = new Map<string, string>();
-  for (const [legacyId, canonicalId] of Object.entries(merged)) {
-    const previousOwner = canonicalOwners.get(canonicalId);
-    if (previousOwner !== undefined && previousOwner !== legacyId) {
-      throw new Error(
-        `Cannot migrate legacy entity ids ${previousOwner} and ${legacyId}: both normalize to ${canonicalId}.`,
-      );
-    }
-    canonicalOwners.set(canonicalId, legacyId);
-  }
   for (const [legacyId, canonicalId] of Object.entries(discovered)) {
     const previousMapping = merged[legacyId];
     if (previousMapping !== undefined && previousMapping !== canonicalId) {

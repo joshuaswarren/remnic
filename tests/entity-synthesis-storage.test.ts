@@ -894,6 +894,7 @@ test("ensureDirectories processes intermediate canonical-id mappings before coll
     await writeFile(path.join(dir, "config", "aliases.json"), JSON.stringify({ "café": "coffee" }), "utf-8");
 
     await new StorageManager(dir).ensureDirectories();
+    await new StorageManager(dir).ensureDirectories();
 
     const migratedContent = await readFile(path.join(dir, "entities", `${nextCanonical}.md`), "utf-8");
     assert.match(migratedContent, /# Café/);
