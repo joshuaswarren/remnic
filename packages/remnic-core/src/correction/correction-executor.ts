@@ -306,13 +306,20 @@ export class CorrectionExecutor {
         }
       }
     };
+    let mutationCommitted = false;
+    let cancellationSafeAfterCommit = false;
+    const throwIfAbortedBeforeCommit = (): void => {
+      if (!mutationCommitted || !cancellationSafeAfterCommit) {
+        throwIfAborted(abortSignal, "correction apply aborted");
+      }
+    };
 
     // ── Phase 1: replacement / edit writes (new state first) ───────────────
     // For each supersede with a replacement, write the replacement FIRST. If
     // the write fails, the loser is NOT superseded (§14: never destroy old
     // state for an action whose replacement write failed).
     for (const action of plan.actions) {
-      throwIfAborted(abortSignal, "correction apply aborted");
+      throwIfAbortedBeforeCommit();
       if (action.kind === "supersede" && action.replacement) {
         // Preflight the loser BEFORE writing the replacement (review thread
         // Of0pz): if the loser was deleted between plan and apply, writing a
@@ -355,6 +362,7 @@ export class CorrectionExecutor {
             },
             abortSignal
           );
+          mutationCommitted = true;
           results.push({ action, status: "applied", memoryId: newId });
           appliedTouched.push(newId);
           // A replacement and retirement form one non-destructive transaction.
@@ -374,7 +382,7 @@ export class CorrectionExecutor {
             retiredReplacementActions.add(action);
           }
         } catch (err) {
-          if (abortSignal?.aborted) throw err;
+          if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
           results.push({
             action,
             status: "failed",
@@ -383,19 +391,32 @@ export class CorrectionExecutor {
         }
       } else if (action.kind === "edit") {
         try {
-          const editedId = await this.deps.applyEdit(namespace, action.memoryId, action.patch, abortSignal);
+          const editedId = await this.deps.applyEdit(
+            namespace,
+            action.memoryId,
+            action.patch,
+            cancellationSafeAfterCommit ? undefined : abortSignal
+          );
+          mutationCommitted = true;
+          cancellationSafeAfterCommit = true;
           results.push({ action, status: "applied", memoryId: editedId });
           appliedTouched.push(editedId);
         } catch (err) {
-          if (abortSignal?.aborted) throw err;
+          if (!mutationCommitted && abortSignal?.aborted) throw err;
           results.push({ action, status: "failed", error: errMsg(err) });
         }
       } else if (action.kind === "redaction_rule") {
         try {
-          await this.deps.registerRedactionRule(namespace, action.pattern, abortSignal);
+          await this.deps.registerRedactionRule(
+            namespace,
+            action.pattern,
+            cancellationSafeAfterCommit ? undefined : abortSignal
+          );
+          mutationCommitted = true;
+          cancellationSafeAfterCommit = true;
           results.push({ action, status: "applied" });
         } catch (err) {
-          if (abortSignal?.aborted) throw err;
+          if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
           results.push({ action, status: "failed", error: errMsg(err) });
         }
       }
@@ -405,7 +426,7 @@ export class CorrectionExecutor {
     // Only run for supersede/retract actions whose replacement write (if any)
     // succeeded. A supersede WITHOUT a replacement is a pure retract.
     for (const action of plan.actions) {
-      throwIfAborted(abortSignal, "correction apply aborted");
+      throwIfAbortedBeforeCommit();
       if (action.kind === "supersede" && retiredReplacementActions.has(action)) continue;
       if (action.kind === "supersede") {
         const replacementResult = results.find((r) => r.action === action && r.status === "applied");
@@ -420,13 +441,23 @@ export class CorrectionExecutor {
           results,
           appliedTouched,
           { supersededBy: replacementResult?.memoryId },
-          abortSignal
+          cancellationSafeAfterCommit ? undefined : abortSignal
         );
+        if (results.at(-1)?.status === "applied") mutationCommitted = true;
         if (results.at(-1)?.action === action && results.at(-1)?.status === "applied") {
           removeFailedResultsFor(action);
         }
       } else if (action.kind === "retract") {
-        await this.retireAndTombstone(namespace, action, "retraction", results, appliedTouched, {}, abortSignal);
+        await this.retireAndTombstone(
+          namespace,
+          action,
+          "retraction",
+          results,
+          appliedTouched,
+          {},
+          cancellationSafeAfterCommit ? undefined : abortSignal
+        );
+        if (results.at(-1)?.status === "applied") mutationCommitted = true;
         if (results.at(-1)?.action === action && results.at(-1)?.status === "applied") {
           removeFailedResultsFor(action);
         }
@@ -446,7 +477,14 @@ export class CorrectionExecutor {
             });
             continue;
           }
-          const destId = await this.deps.rescopeMemory(namespace, action.memoryId, action.toNamespace, abortSignal);
+          const destId = await this.deps.rescopeMemory(
+            namespace,
+            action.memoryId,
+            action.toNamespace,
+            cancellationSafeAfterCommit ? undefined : abortSignal
+          );
+          mutationCommitted = true;
+          cancellationSafeAfterCommit = true;
           // #1678 (thread OiiV6): report the DESTINATION memory id, not the
           // source. The source is archived by the move; callers that re-fetch
           // the reported id need the live (destination) memory, otherwise they
@@ -456,18 +494,17 @@ export class CorrectionExecutor {
           // Propagate the destination memory in its namespace too (review
           // thread: propagate-rescoped-destination) — best-effort.
           try {
-            await this.deps.propagate(action.toNamespace, [destId], abortSignal);
-          } catch (err) {
-            if (abortSignal?.aborted) throw err;
+            await this.deps.propagate(action.toNamespace, [destId], undefined);
+          } catch {
             // non-fatal — the source propagation still fires.
           }
         } catch (err) {
-          if (abortSignal?.aborted) throw err;
+          if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
           results.push({ action, status: "failed", error: errMsg(err) });
         }
       }
     }
-    throwIfAborted(abortSignal, "correction apply aborted");
+    throwIfAbortedBeforeCommit();
 
     // ── Phase 3: propagation (post-write reindex + graph) ─────────────────
     // Best-effort: a propagation failure is recorded as a warning on the
@@ -475,14 +512,14 @@ export class CorrectionExecutor {
     const propagationWarnings: string[] = [];
     if (appliedTouched.length > 0) {
       try {
-        await this.deps.propagate(namespace, appliedTouched, abortSignal);
+        await this.deps.propagate(namespace, appliedTouched, cancellationSafeAfterCommit ? undefined : abortSignal);
       } catch (err) {
-        if (abortSignal?.aborted) throw err;
+        if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
         propagationWarnings.push(`propagation failed (non-fatal): ${errMsg(err)}`);
       }
     }
 
-    throwIfAborted(abortSignal, "correction apply aborted");
+    throwIfAbortedBeforeCommit();
     // ── Phase 4: audit record ─────────────────────────────────────────────
     const anyFailed = results.some((r) => r.status === "failed");
     const status: CorrectionOutcome["status"] = anyFailed ? "partial" : "applied";
@@ -506,19 +543,20 @@ export class CorrectionExecutor {
           outcome,
           requestText: plan.request.text,
         },
-        abortSignal
+        cancellationSafeAfterCommit ? undefined : abortSignal
       );
       outcome.auditMemoryId = auditId;
     } catch (err) {
-      if (abortSignal?.aborted) throw err;
+      if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
       // The audit record is part of the contract but a failure to write it
-      // must NOT undo the applied corrections. Record as a warning.
+      // must NOT propagate — applied corrections are already durable. Record
+      // as a warning instead.
       (outcome as CorrectionOutcome & { warnings?: string[] }).warnings = [
         ...propagationWarnings,
         `audit record write failed (non-fatal): ${errMsg(err)}`,
       ];
     }
-    throwIfAborted(abortSignal, "correction apply aborted");
+    throwIfAbortedBeforeCommit();
 
     // ── Phase 5: mark plan consumed ───────────────────────────────────────
     // Corrections are already applied (phases 1-4 succeeded). A markConsumed

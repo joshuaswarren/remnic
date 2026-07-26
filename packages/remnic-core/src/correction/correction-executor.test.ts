@@ -850,6 +850,88 @@ test("#2128 cancellation after tombstone commit still retires the source", async
   });
 });
 
+test("#2128 committed actions terminalize plans after cancellation", async () => {
+  const actions: CorrectionAction[] = [
+    { kind: "edit", memoryId: "mem-edit", patch: "edited" },
+    { kind: "redaction_rule", pattern: "secret-token-\\d+" },
+    { kind: "rescope", memoryId: "mem-rescope", toNamespace: "other-ns" },
+  ];
+
+  for (const action of actions) {
+    await withTempDir(async (dir) => {
+      const memoryId = action.kind === "rescope" ? action.memoryId : action.kind === "edit" ? action.memoryId : "mem-redact";
+      const candidates = new Map<string, PlannerCandidate>([
+        [memoryId, { memoryId, path: `facts/${memoryId}.md`, content: "old", excerpt: "old", score: 1 }],
+      ]);
+      const state: FakeState = {
+        memories: new Map([[memoryId, fakeMemory({ memoryId, content: "old" })]]),
+        tombstones: [],
+        redactionRules: [],
+        auditRecords: [],
+        propagateCalls: 0,
+        writtenReplacements: [],
+      };
+      const abortController = new AbortController();
+      const plannerDeps: PlannerDeps = {
+        ...makePlannerDeps(dir, candidates),
+        classifyAndDraft: async () => ({
+          classification: "outdated",
+          confidence: 0.9,
+          actions: [action],
+          relevance: [{ memoryId, why: "test" }],
+          warnings: [],
+        }),
+      };
+      const planner = new CorrectionPlanner(plannerDeps);
+      const plan = await planner.plan({ text: "old", targetIds: [memoryId] }, ["default"]);
+      const baseDeps = makeExecutorDeps(state);
+      let deps = baseDeps;
+      if (action.kind === "edit") {
+        deps = {
+          ...baseDeps,
+          applyEdit: async (namespace, id, patch, signal) => {
+            const editedId = await baseDeps.applyEdit(namespace, id, patch, signal);
+            abortController.abort(new Error("caller disconnected"));
+            return editedId;
+          },
+        };
+      } else if (action.kind === "redaction_rule") {
+        deps = {
+          ...baseDeps,
+          registerRedactionRule: async (namespace, pattern, signal) => {
+            await baseDeps.registerRedactionRule(namespace, pattern, signal);
+            abortController.abort(new Error("caller disconnected"));
+          },
+        };
+      } else {
+        deps = {
+          ...baseDeps,
+          rescopeMemory: async (namespace, id, toNamespace, signal) => {
+            const destinationId = await baseDeps.rescopeMemory(namespace, id, toNamespace, signal);
+            abortController.abort(new Error("caller disconnected"));
+            return destinationId;
+          },
+        };
+      }
+
+      const outcome = await new CorrectionExecutor(deps, planner).apply("default", plan.planId, {
+        confirm: true,
+        abortSignal: abortController.signal,
+      });
+      assert.equal(outcome.status, "applied", `${action.kind} outcome`);
+      assert.equal((await planner.loadPlan("default", plan.planId))?.status, "applied", `${action.kind} plan`);
+      assert.equal(state.auditRecords.length, 1, `${action.kind} audit`);
+      if (action.kind === "edit") {
+        assert.equal(state.memories.get(action.memoryId)?.content, "edited");
+      } else if (action.kind === "redaction_rule") {
+        assert.deepEqual(state.redactionRules, [action.pattern]);
+      } else if (action.kind === "rescope") {
+        assert.equal(state.memories.get(action.memoryId)?.status, "rescoped");
+      }
+    });
+  }
+});
+
 test("Of0pz: supersede with a missing loser writes NO replacement (preflight before write)", async () => {
   await withTempDir(async (dir) => {
     const candidates = new Map<string, PlannerCandidate>([
