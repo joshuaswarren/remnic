@@ -942,3 +942,24 @@ test("speaker-aware grounding keeps profile and identity evidence from their own
   assert.deepEqual(result.profileUpdates, ["The user works at Globex."]);
   assert.equal(result.identityReflection, "The assistant works at Acme.");
 });
+
+test("grounding rejects substring matches that do not preserve token boundaries", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [
+        {
+          category: "fact",
+          content: "Art is archived.",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Cart is archived.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});

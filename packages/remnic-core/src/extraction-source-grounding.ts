@@ -149,6 +149,16 @@ function tokenSequence(text: string): string[] {
     ?? [];
 }
 
+function containsExactTokenSequence(candidate: string, source: string): boolean {
+  const candidateTokens = tokenSequence(candidate);
+  const sourceTokens = tokenSequence(source);
+  if (candidateTokens.length === 0 || candidateTokens.length > sourceTokens.length) return false;
+  return sourceTokens.some((_, index) =>
+    candidateTokens.every((token, offset) => sourceTokens[index + offset] === token),
+  );
+
+}
+
 function isNegationCue(token: string): boolean {
   return GROUNDING_NEGATION_TOKENS.has(token) || token.endsWith("n't");
 }
@@ -305,7 +315,7 @@ function isSourceGroundedClause(
     }
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence)) continue;
     const sentenceText = normalizeForExactMatch(sentence);
-    if (sentenceText.includes(candidate)) {
+    if (containsExactTokenSequence(candidate, sentenceText)) {
       if (!hasContradictoryPolarity(candidate, sentenceText)) return true;
       bestContradictedScore = Math.max(bestContradictedScore, 1);
       continue;
@@ -334,7 +344,7 @@ function isSourceGrounded(
     const sentenceText = normalizeForExactMatch(sentence);
     const isExplanatoryLabel = sentenceText.startsWith(`${candidateText}:`);
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence) && !isExplanatoryLabel) return false;
-    return sentenceText.includes(candidateText)
+    return containsExactTokenSequence(candidateText, sentenceText)
       && !hasContradictoryPolarity(candidateText, sentenceText);
   });
   if (hasSupportedExactMatch) return true;
