@@ -3130,11 +3130,6 @@ export interface MemoryFile {
   path: string;
   frontmatter: MemoryFrontmatter;
   content: string;
-  /**
-   * Original YAML block, retained so targeted migrations can patch one field
-   * without dropping adapter-defined metadata that the typed model does not know.
-   */
-  rawFrontmatter?: string;
 }
 
 /**

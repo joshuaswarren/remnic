@@ -39,6 +39,8 @@ import {
   type EntityCanonicalIdMigrationHost,
 } from "./storage/entity-canonical-id-migration-adapter.js";
 import { EntityCanonicalIdMigrationRunner } from "./storage/entity-canonical-id-migration-runner.js";
+import { rememberRawFrontmatter } from "./storage/memory-frontmatter-metadata.js";
+import { createMemoryEntityRefSerializer } from "./storage/memory-migration-serialization.js";
 export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { getCategoryDir, categoryDirName } from "./utils/category-dir.js";
@@ -573,25 +575,6 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
   return lines.join("\n");
 }
 
-function serializeMemoryWithEntityRef(memory: MemoryFile, entityRef: string): string {
-  const rawFrontmatter = memory.rawFrontmatter;
-  if (rawFrontmatter === undefined) {
-    return `${serializeFrontmatter({ ...memory.frontmatter, entityRef })}\n\n${memory.content}\n`;
-  }
-  const lines = rawFrontmatter.split("\n");
-  let entityRefLine = -1;
-  for (let index = 0; index < lines.length; index += 1) {
-    if (/^\s*entityRef\s*:/.test(lines[index] ?? "")) entityRefLine = index;
-  }
-  if (entityRefLine >= 0) {
-    const indent = lines[entityRefLine]!.match(/^\s*/)?.[0] ?? "";
-    lines[entityRefLine] = `${indent}entityRef: ${entityRef}`;
-  } else {
-    lines.push(`entityRef: ${entityRef}`);
-  }
-  return `---\n${lines.join("\n")}\n---\n\n${memory.content}\n`;
-}
-
 function parseStructuredAttributes(raw: string | undefined): Record<string, string> | undefined {
   if (!raw || !raw.trim()) return undefined;
   try {
@@ -699,10 +682,6 @@ function parseReinforcementCountField(raw: string | undefined): number | undefin
   const n = Number(trimmed);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return undefined;
   return n;
-}
-
-export function extractRawFrontmatter(raw: string): string | null {
-  return raw.match(/^---\n([\s\S]*?)\n---\n?/)?.[1] ?? null;
 }
 
 export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter; content: string } | null {
@@ -3659,7 +3638,7 @@ export class StorageManager {
       this as unknown as EntityCanonicalIdMigrationHost,
       (content) => parseEntityFile(content, this.entitySchemas),
       (entity) => serializeEntityFile(entity, this.entitySchemas),
-      serializeMemoryWithEntityRef,
+      createMemoryEntityRefSerializer(serializeFrontmatter),
     );
     this.loadHistoricalEntityCanonicalIdsSync();
     return completionFingerprint;
@@ -4704,7 +4683,7 @@ export class StorageManager {
             const raw = await readMaybeEncryptedFile(fullPath, this._secureStoreKey, this.baseDir);
             const parsed = parseFrontmatter(raw);
             if (!parsed) return null;
-            return {
+            return rememberRawFrontmatter({
               path: fullPath,
               frontmatter: normalizeFrontmatterForPath(
                 parsed.frontmatter,
@@ -4712,8 +4691,7 @@ export class StorageManager {
                 parsed.content
               ),
               content: parsed.content,
-              rawFrontmatter: extractRawFrontmatter(raw) ?? undefined,
-            } satisfies MemoryFile;
+            } satisfies MemoryFile, raw);
           } catch (err) {
             // Re-throw store-locked errors so a locked encrypted store fails
             // loudly rather than appearing as an empty memory corpus (Cursor
@@ -4864,7 +4842,7 @@ export class StorageManager {
               const raw = await readMaybeEncryptedFile(fullPath, this._secureStoreKey, this.baseDir);
               const parsed = parseFrontmatter(raw);
               if (parsed) {
-                memories.push({
+                memories.push(rememberRawFrontmatter({
                   path: fullPath,
                   frontmatter: normalizeFrontmatterForPath(
                     parsed.frontmatter,
@@ -4872,8 +4850,7 @@ export class StorageManager {
                     parsed.content
                   ),
                   content: parsed.content,
-                  rawFrontmatter: extractRawFrontmatter(raw) ?? undefined,
-                });
+                }, raw));
               }
             } catch (err) {
               // Re-throw store-locked errors — a locked encrypted store
