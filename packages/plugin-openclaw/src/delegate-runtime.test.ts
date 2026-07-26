@@ -1171,7 +1171,7 @@ test("delegate restores full canonical history during explicit legacy migration"
   const sessionKey = "legacy-recency-session";
   const current = Array.from({ length: 40 }, (_unused, index) => `team-current-${index}`);
   const legacy = Array.from({ length: 40 }, (_unused, index) => `team-legacy-${index}`);
-  const expected = [...legacy.slice(-23), ...current, "team-explicit"];
+  const expected = [...legacy.slice(-22), ...current, "team-explicit", "team-explicit-second"];
   try {
     const primaryPath = path.join(
       memoryDir,
@@ -1236,18 +1236,32 @@ test("delegate restores full canonical history during explicit legacy migration"
       true,
     );
 
-    await invoke(
-      api,
-      "agent_end",
-      {
-        success: true,
-        messages: [
-          { role: "user", content: "capture the explicit migration namespace" },
-          { role: "assistant", content: "the explicit namespace is bound" },
-        ],
-      },
-      { sessionKey, runtime: { agent: { session: { namespace: "team-explicit" } } } },
-    );
+    await Promise.all([
+      invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: "capture the explicit migration namespace" },
+            { role: "assistant", content: "the explicit namespace is bound" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace: "team-explicit" } } } },
+      ),
+      invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: "capture the second migration namespace" },
+            { role: "assistant", content: "the second namespace is bound" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace: "team-explicit-second" } } } },
+      ),
+    ]);
     await invoke(api, "session_end", { sessionKey });
     const flush = stub.calls.find((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
     assert.ok(flush);

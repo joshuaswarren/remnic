@@ -800,6 +800,25 @@ function createDelegateNamespaceBindingStore(
     bindingPath(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID),
   );
   const migratedLegacySessions = new Set<string>();
+  const sessionMigrationChains = new Map<string, Promise<void>>();
+  const queueSessionMigration = <T>(
+    sessionKey: string,
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const prior = sessionMigrationChains.get(sessionKey) ?? Promise.resolve();
+    const run = prior.catch(() => undefined).then(operation);
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    sessionMigrationChains.set(sessionKey, settled);
+    void settled.then(() => {
+      if (sessionMigrationChains.get(sessionKey) === settled) {
+        sessionMigrationChains.delete(sessionKey);
+      }
+    });
+    return run;
+  };
   const readLegacyNamespaces = async (
     sessionKey: string,
     current: string[],
@@ -851,33 +870,37 @@ function createDelegateNamespaceBindingStore(
   };
   return {
     async namespacesFor(sessionKey: string): Promise<string[]> {
-      const current = await primary.namespacesFor(sessionKey);
-      const previous = await readLegacyNamespaces(sessionKey, current);
-      if (previous.length === 0) return current;
-      const merged = mergeNamespaceHistory(current, previous);
-      const hasMissingLegacy = previous.some((remembered) => !current.includes(remembered));
-      if (!hasMissingLegacy) {
-        await completeLegacyMigration(sessionKey);
-        return current;
-      }
-      try {
-        await persistNamespaceHistory(primary, sessionKey, merged);
-        await completeLegacyMigration(sessionKey);
-      } catch (err) {
-        log.warn(`[${serviceId}] delegate namespace migration failed: ${String(err)}`);
-      }
-      return merged;
+      return queueSessionMigration(sessionKey, async () => {
+        const current = await primary.namespacesFor(sessionKey);
+        const previous = await readLegacyNamespaces(sessionKey, current);
+        if (previous.length === 0) return current;
+        const merged = mergeNamespaceHistory(current, previous);
+        const hasMissingLegacy = previous.some((remembered) => !current.includes(remembered));
+        if (!hasMissingLegacy) {
+          await completeLegacyMigration(sessionKey);
+          return current;
+        }
+        try {
+          await persistNamespaceHistory(primary, sessionKey, merged);
+          await completeLegacyMigration(sessionKey);
+        } catch (err) {
+          log.warn(`[${serviceId}] delegate namespace migration failed: ${String(err)}`);
+        }
+        return merged;
+      });
     },
     async remember(sessionKey: string, namespace: string): Promise<void> {
-      const current = await primary.namespacesFor(sessionKey);
-      const previous = await readLegacyNamespaces(sessionKey, current);
-      if (previous.length === 0) {
-        await primary.remember(sessionKey, namespace);
-        return;
-      }
-      const merged = mergeNamespaceHistory([...current, namespace], previous);
-      await persistNamespaceHistory(primary, sessionKey, merged);
-      await completeLegacyMigration(sessionKey);
+      return queueSessionMigration(sessionKey, async () => {
+        const current = await primary.namespacesFor(sessionKey);
+        const previous = await readLegacyNamespaces(sessionKey, current);
+        if (previous.length === 0) {
+          await primary.remember(sessionKey, namespace);
+          return;
+        }
+        const merged = mergeNamespaceHistory([...current, namespace], previous);
+        await persistNamespaceHistory(primary, sessionKey, merged);
+        await completeLegacyMigration(sessionKey);
+      });
     },
   };
 }
