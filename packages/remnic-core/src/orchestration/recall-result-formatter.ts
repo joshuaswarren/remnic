@@ -31,6 +31,7 @@ import type { VerifiedSemanticRuleResult } from "../semantic-rule-verifier.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
 import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import { CONNECTOR_ID_PATTERN, CONNECTOR_LABEL_MAX_LENGTH } from "../connectors/label.js";
+import { isValidConnectorId } from "../connectors/index.js";
 import type {
   ContinuityIncidentRecord,
   IdentityInjectionMode,
@@ -49,7 +50,7 @@ import type {
  * exact signal this PR adds). One resolver at the single render site.
  */
 function renderConnectorLabel(connector: string | undefined): string | null {
-  if (!connector || !CONNECTOR_ID_PATTERN.test(connector)) return null;
+  if (!isValidConnectorId(connector)) return null;
   return connector.length <= CONNECTOR_LABEL_MAX_LENGTH
     ? connector
     : `${connector.slice(0, CONNECTOR_LABEL_MAX_LENGTH - 1)}…`;

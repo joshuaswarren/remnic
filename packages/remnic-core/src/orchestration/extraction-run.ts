@@ -1067,7 +1067,7 @@ export class ExtractionRunCoordinator {
       result,
       storage,
       threadIdForExtraction,
-      { sessionKey, principal, validAt: sourceValidAt, sourceConnector: deriveSourceConnector(targetTurns as BufferTurn[]) },
+      { sessionKey, principal, validAt: sourceValidAt, sourceConnector: result.sourceConnector },
       // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
       // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,

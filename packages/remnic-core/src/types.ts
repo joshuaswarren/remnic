@@ -23,15 +23,12 @@ export type ExtractionPassSource = "base" | "proactive";
 /**
  * Scope classification for extracted facts (issue #XXX).
  *
- * - `"project"` — knowledge specific to one codebase: file paths, environment
- *   configs, deployment details, project-specific workarounds, team/stakeholder
- *   info tied to one project.
- * - `"global"` — knowledge that applies across projects: core framework bugs,
- *   library behavior, API patterns, user preferences, tool configurations,
- *   general coding patterns, infrastructure knowledge.
+ * - `"project"` — one codebase (paths, env configs, deployment, stakeholders);
+ *   also tool/command or CLI-flag instructions tied to one agent.
+ * - `"global"` — across projects: framework bugs, library/API behavior,
+ *   user preferences, coding patterns, infrastructure.
  *
- * Default is `"project"` when a coding context is active, `"global"` when no
- * coding context is present.
+ * Default is `"project"` with a coding context active, else `"global"`.
  */
 export type MemoryScope = "project" | "global";
 export type SlotMismatchMode = "error" | "warn" | "silent";
@@ -3333,6 +3330,8 @@ export interface ExtractionResult {
   extractionFailure?: string;
   /** Coarse class used by the retry/backoff + circuit-breaker layer (extraction hot loop). */
   extractionFailureClass?: ExtractionFailureClass;
+  /** Trusted source connector resolved over boundedTurns; persisted verbatim by the orchestrator so it is not recomputed (#2183). */
+  sourceConnector?: string;
 }
 
 export interface EntityMention {

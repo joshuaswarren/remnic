@@ -14,5 +14,23 @@
  * stays at its ratchet ceiling.
  */
 export { CONNECTOR_ID_PATTERN } from "./index.js";
+import { loadRegistry, BUILTIN_CONNECTORS } from "./index.js";
 
 export const CONNECTOR_LABEL_MAX_LENGTH = 64;
+
+let knownIds: ReadonlySet<string> | null = null;
+let knownIdsAt = 0;
+const KNOWN_IDS_TTL_MS = 60_000;
+
+export function knownConnectorIds(): ReadonlySet<string> {
+  const now = Date.now();
+  if (knownIds !== null && now - knownIdsAt < KNOWN_IDS_TTL_MS) return knownIds;
+  try {
+    const ids = new Set(loadRegistry().connectors.map((c: { id: string }) => c.id));
+    knownIds = ids;
+    knownIdsAt = now;
+    return knownIds;
+  } catch {
+    return new Set(BUILTIN_CONNECTORS.map((c: { id: string }) => c.id));
+  }
+}
