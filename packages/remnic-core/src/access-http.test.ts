@@ -3233,6 +3233,51 @@ test("HTTP-MCP extraction force-flush aliases consume the write quota", async ()
   }
 });
 
+test("HTTP extraction force-flush records quota after commit when cleanup fails", async () => {
+  let flushes = 0;
+  let committed = 0;
+  const service = {
+    extractionForceFlush: async (request: {
+      onCommitted?: () => void;
+    }) => {
+      flushes += 1;
+      request.onCommitted?.();
+      committed += 1;
+      throw new Error("retained cleanup deadline");
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const flush = () =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/extraction/flush`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ sessionKey: "session-1" }),
+    });
+  try {
+    const first = await flush();
+    assert.equal(first.status, 500);
+    await first.text();
+    const second = await flush();
+    assert.equal(second.status, 429);
+    const rateLimited = await second.json() as { code?: string };
+    assert.equal(rateLimited.code, "write_rate_limited");
+    assert.equal(flushes, 1);
+    assert.equal(committed, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP meetings get returns 400 (not 500) for a malformed percent-encoded id (issue #1900)", async () => {
   let called = 0;
   const service = {

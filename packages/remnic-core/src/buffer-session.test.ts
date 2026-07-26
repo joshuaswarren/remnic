@@ -492,6 +492,32 @@ test("clearRetainedTurnsForSession drains only the force-flushed session", async
   );
 });
 
+test("clearRetainedTurnsForSession flushes another session's pending save when target is absent", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(
+    parseConfig({ bufferSaveDebounceMs: 10_000, triggerMode: "smart", bufferMaxTurns: 10_000 }),
+    storage as any,
+  );
+  const otherTurn = makeTurn("session-a", "pending turn from another session");
+  await buffer.addTurn("session-a", otherTurn);
+
+  const internals = buffer as unknown as DebouncedBufferInternals;
+  assert.equal(storage.saveCount, 0);
+  assert.equal(internals.pendingSave, true);
+  assert.notEqual(internals.saveTimer, null);
+
+  await buffer.clearRetainedTurnsForSession("session-b");
+
+  assert.equal(storage.saveCount, 1);
+  assert.equal(storage.saved?.entries?.["session-a"]?.turns.length, 1);
+  assert.equal(internals.pendingSave, false);
+  assert.equal(internals.saveTimer, null);
+});
+
 test("clearRetainedTurnsForSession drains only the authenticated owner", async () => {
   const storage = new FakeStorage({
     turns: [],

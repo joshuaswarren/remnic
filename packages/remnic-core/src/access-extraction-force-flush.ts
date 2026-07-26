@@ -14,9 +14,12 @@ import { log } from "./logger.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import { SessionOwnershipError, awaitSessionFlushPhase } from "./orchestration/session-context.js";
 
+type PendingObserveExtractionWaiter = (sessionKey: string) => Promise<void>;
+
 export async function extractionForceFlush(
   deps: AccessObserveWriteSurfaceDeps,
   request: EngramAccessExtractionForceFlushRequest,
+  waitForPendingObserveExtraction?: PendingObserveExtractionWaiter,
 ): Promise<EngramAccessExtractionForceFlushResponse> {
   if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
     throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
@@ -95,6 +98,18 @@ export async function extractionForceFlush(
       principalOverride:
         typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined,
     });
+    if (waitForPendingObserveExtraction) {
+      await awaitSessionFlushPhase(
+        () => waitForPendingObserveExtraction(request.sessionKey),
+        {
+          abortSignal: request.abortSignal,
+          extractionDeadlineMs: request.deadlineMs,
+          reason: "access_force_flush",
+          deadlineStage: "pending_observe_extraction",
+        },
+      );
+    }
+    request.onCommitted?.();
     const buffer = deps.orchestrator.buffer;
     if (buffer && typeof buffer.clearRetainedTurnsForSession === "function") {
       try {
@@ -102,7 +117,7 @@ export async function extractionForceFlush(
           () =>
             buffer.clearRetainedTurnsForSession(
               request.sessionKey,
-              scope.principal,
+              namespacesEnabled ? scope.principal : undefined,
               {
                 abortSignal: request.abortSignal,
                 deadlineMs: request.deadlineMs,

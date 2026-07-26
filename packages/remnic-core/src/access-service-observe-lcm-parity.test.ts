@@ -476,6 +476,67 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
   );
 });
 
+test("#2128: single-store force-flush clears retained turns without an owner filter", async () => {
+  const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
+  const cleanupOwners: Array<string | undefined> = [];
+  (probe.orch as unknown as {
+    buffer: {
+      clearRetainedTurnsForSession(
+        sessionKey: string,
+        ownerPrincipal?: string,
+        options?: { abortSignal?: AbortSignal; deadlineMs?: number },
+      ): Promise<void>;
+    };
+  }).buffer = {
+    clearRetainedTurnsForSession: async (_sessionKey, ownerPrincipal) => {
+      cleanupOwners.push(ownerPrincipal);
+    },
+  };
+  const service = new EngramAccessService(probe.orch);
+
+  await service.extractionForceFlush({
+    sessionKey: "single-store-session",
+    authenticatedPrincipal: "pi-geek",
+  });
+
+  assert.deepEqual(cleanupOwners, [undefined]);
+});
+
+test("#2128: force-flush waits for a pending observe extraction", async () => {
+  const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
+  let resolveExtraction!: () => void;
+  const pendingExtraction = new Promise<void>((resolve) => {
+    resolveExtraction = resolve;
+  });
+  probe.orch.ingestReplayBatch = async () => pendingExtraction;
+  const service = new EngramAccessService(probe.orch);
+  const sessionKey = "pending-observe-extraction";
+
+  await service.observe(
+    observeRequest({
+      sessionKey,
+      skipExtraction: false,
+    }),
+  );
+
+  let settled = false;
+  const flushPromise = service.extractionForceFlush({ sessionKey });
+  void flushPromise.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+
+  resolveExtraction();
+  const response = await flushPromise;
+  assert.equal(response.flushed, true);
+});
+
 test("#2128: authenticated opaque sessions persist their trusted owner for force-flush", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);

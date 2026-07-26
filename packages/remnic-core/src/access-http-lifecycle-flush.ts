@@ -49,13 +49,20 @@ export async function maybeHandleLifecycleFlush(
     deps.enforceTokenOp("extraction_force_flush");
     const body = await deps.readValidatedBody("extractionForceFlush");
     deps.ensureWriteRateLimitAvailable();
+    let writeRateLimitRecorded = false;
+    const recordCommittedWrite = (): void => {
+      if (writeRateLimitRecorded) return;
+      writeRateLimitRecorded = true;
+      deps.recordWriteRateLimitHit();
+    };
     const response = await deps.service.extractionForceFlush({
       ...body,
       namespace: deps.resolveNamespace(body.namespace),
       authenticatedPrincipal: deps.resolveRequestPrincipal(),
       abortSignal,
+      onCommitted: recordCommittedWrite,
     });
-    deps.recordWriteRateLimitHit();
+    recordCommittedWrite();
     deps.respondJson(response);
     return true;
   }

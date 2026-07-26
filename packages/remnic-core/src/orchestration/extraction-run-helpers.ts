@@ -144,12 +144,14 @@ export async function runExtractionPostPersistBestEffort(
     operation: () => Promise<unknown>,
     phase: string,
     clearTimerOnError?: boolean,
+    options?: { ignoreAbort?: boolean },
   ) => Promise<unknown>,
   stage: string,
   operation: () => Promise<unknown>,
+  options?: { ignoreAbort?: boolean },
 ): Promise<void> {
   try {
-    await runDeadlineAware(operation, stage, false);
+    await runDeadlineAware(operation, stage, false, options);
   } catch (error) {
     log.warn(`runExtraction: ${stage} failed after persistence (non-fatal)`, error);
   }

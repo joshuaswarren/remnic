@@ -20,6 +20,8 @@ export interface EngramAccessExtractionForceFlushRequest extends CodingScopedWri
   authenticatedPrincipal?: string;
   deadlineMs?: number;
   abortSignal?: AbortSignal;
+  /** Internal HTTP hook invoked after the durable flush and before cleanup. */
+  onCommitted?: () => void;
 }
 
 export interface EngramAccessExtractionForceFlushResponse {

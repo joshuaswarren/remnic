@@ -961,7 +961,13 @@ export class SmartBuffer {
       await this.loadUnlocked();
       assertLifecycle();
       const bufferKeys = this.matchingSessionBufferKeysUnlocked(sessionKey);
-      if (bufferKeys.length === 0) return;
+      if (bufferKeys.length === 0) {
+        if (hadPendingSave) {
+          assertLifecycle();
+          await this.saveNowRetainingPendingOnFailure("clearRetainedTurnsForSession");
+        }
+        return;
+      }
       let changed = false;
       const belongsToOwner = (turn: BufferTurn): boolean => {
         if (turn.sessionKey !== sessionKey) return false;

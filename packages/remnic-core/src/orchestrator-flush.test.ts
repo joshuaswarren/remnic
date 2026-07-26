@@ -2410,6 +2410,9 @@ test("runExtraction still clears the session buffer after persistence even if re
   config.extractionMinUserTurns = 1;
 
   let clearCalls = 0;
+  let retentionCalls = 0;
+  let passiveCaptureCalls = 0;
+  let tierMigrationCalls = 0;
   const abortController = new AbortController();
 
   const orchestrator = Object.create(Orchestrator.prototype) as any;
@@ -2417,6 +2420,9 @@ test("runExtraction still clears the session buffer after persistence even if re
   orchestrator.buffer = {
     clearAfterExtraction: async () => {
       clearCalls += 1;
+    },
+    retainDeferredTurns: async () => {
+      retentionCalls += 1;
     },
   };
   orchestrator.storageRouter = {
@@ -2452,6 +2458,12 @@ test("runExtraction still clears the session buffer after persistence even if re
   });
   orchestrator.maybeScheduleConsolidation = () => undefined;
   orchestrator.requestQmdMaintenance = () => undefined;
+  orchestrator.maybeCapturePassiveCorrections = async () => {
+    passiveCaptureCalls += 1;
+  };
+  orchestrator.runTierMigrationCycle = async () => {
+    tierMigrationCalls += 1;
+  };
   orchestrator.nonZeroExtractionsSinceConsolidation = 0;
 
   await assert.doesNotReject(async () => {
@@ -2460,6 +2472,9 @@ test("runExtraction still clears the session buffer after persistence even if re
       abortSignal: abortController.signal,
     });
   });
+  assert.equal(retentionCalls, 0);
+  assert.equal(passiveCaptureCalls, 0);
+  assert.equal(tierMigrationCalls, 0);
 
   assert.equal(
     clearCalls,

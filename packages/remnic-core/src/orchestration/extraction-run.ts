@@ -744,11 +744,21 @@ export class ExtractionRunCoordinator {
       operation: () => Promise<T>,
       phase: string,
       clearTimerOnError = true,
+      options: { ignoreAbort?: boolean } = {},
     ): Promise<T> => {
+      const operationSignal = options.ignoreAbort
+        ? extractionDeadlineController?.signal
+        : extractionAbortSignal;
       try {
+        if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+          throwIfDeadlineExceeded(phase);
+        }
+        if (operationSignal?.aborted) {
+          throwIfAborted(phase);
+        }
         return await raceRecallAbort(
           operation(),
-          extractionAbortSignal,
+          operationSignal,
           `extraction aborted (${phase})`,
         );
       } catch (error) {
@@ -1113,7 +1123,11 @@ export class ExtractionRunCoordinator {
       }
     });
 
-    await runPostPersistBestEffort("during_buffer_clear", () => clearBuffer({ ignoreAbort: true }));
+    await runPostPersistBestEffort(
+      "during_buffer_clear",
+      () => clearBuffer({ ignoreAbort: true }),
+      { ignoreAbort: true },
+    );
 
     // Passive correction capture (issue #1581) — detect corrections expressed
     // passively in the extracted turns and route to the Correction Contract.

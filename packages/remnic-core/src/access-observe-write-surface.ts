@@ -124,6 +124,32 @@ export interface AccessObserveWriteSurfaceDeps {
 
 export class AccessObserveWriteSurface {
   private quarantineStoreInstance?: WriteQuarantineStore;
+  private readonly pendingObserveExtractions = new Map<string, Promise<void>>();
+
+  private trackPendingObserveExtraction(sessionKey: string, extraction: Promise<void>): void {
+    const previous = this.pendingObserveExtractions.get(sessionKey);
+    const tracked = previous
+      ? Promise.allSettled([previous, extraction]).then((results) => {
+          const rejected = results.find(
+            (result): result is PromiseRejectedResult => result.status === "rejected",
+          );
+          if (rejected) throw rejected.reason;
+        })
+      : extraction;
+    this.pendingObserveExtractions.set(sessionKey, tracked);
+    void tracked
+      .finally(() => {
+        if (this.pendingObserveExtractions.get(sessionKey) === tracked) {
+          this.pendingObserveExtractions.delete(sessionKey);
+        }
+      })
+      .catch(() => {});
+  }
+
+  private async waitForPendingObserveExtraction(sessionKey: string): Promise<void> {
+    const pending = this.pendingObserveExtractions.get(sessionKey);
+    if (pending) await pending;
+  }
 
   constructor(private readonly deps: AccessObserveWriteSurfaceDeps) {}
 
@@ -827,6 +853,7 @@ export class AccessObserveWriteSurface {
         extractionPromise.catch((err) => {
           log.error(`access-observe background extraction failed: ${err}`);
         });
+        this.trackPendingObserveExtraction(request.sessionKey, extractionPromise);
         extractionQueued = true;
       } catch (err) {
         // Synchronous enqueue failure (e.g. orchestrator disposed)
@@ -863,7 +890,11 @@ export class AccessObserveWriteSurface {
   async extractionForceFlush(
     request: EngramAccessExtractionForceFlushRequest,
   ): Promise<EngramAccessExtractionForceFlushResponse> {
-    return extractionForceFlush(this.deps, request);
+    return extractionForceFlush(
+      this.deps,
+      request,
+      (sessionKey) => this.waitForPendingObserveExtraction(sessionKey),
+    );
   }
 
   async workTask(request: {
