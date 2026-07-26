@@ -19,11 +19,7 @@ import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
   resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
-import {
-  CorpusWatermarkCache,
-  computeServiceCorpusCensus,
-  computeServiceCorpusWatermarks,
-} from "./corpus-watermark.js";
+import { CorpusWatermarkCache, computeServiceCorpusCensus } from "./corpus-watermark.js";
 import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
 import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import type {
