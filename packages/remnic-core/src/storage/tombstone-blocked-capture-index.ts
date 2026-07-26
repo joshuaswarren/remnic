@@ -905,6 +905,25 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     this.bumpMemoryStatusVersion();
   }
 
+  protected async runTombstoneBlockedArchive(
+    memory: MemoryFile,
+    task: (current: MemoryFile, markDurable: () => void) => Promise<string | null>
+  ): Promise<string | null> {
+    if (!this.isTombstoneBlockedMemory(memory)) return await task(memory, () => {});
+    let archivedPath: string | null = null;
+    const archived = await this.runTombstoneBlockedInvalidation(
+      memory,
+      async (current, rebuildMarker, markDurable) => {
+        archivedPath = await task(current, markDurable);
+        if (archivedPath !== null) {
+          await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
+        }
+        return archivedPath !== null;
+      }
+    );
+    return archived ? archivedPath : null;
+  }
+
   protected async runTombstoneBlockedInvalidation(
     memory: MemoryFile,
     task: (
