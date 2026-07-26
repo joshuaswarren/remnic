@@ -319,8 +319,8 @@ function findHtmlBlockStart(
   if (rawTag) {
     const completeTag =
       findCompleteHtmlTag(trimmedLine) ?? findHtmlTagPrefix(trimmedLine);
-    if (!completeTag) return null;
-    if (completeTag.isSelfClosing && !hasSpacedSelfClosingSlash(trimmedLine)) {
+    if (!completeTag && normalizedLine.startsWith("</")) return null;
+    if (completeTag?.isSelfClosing && !hasSpacedSelfClosingSlash(trimmedLine)) {
       return { endMarker: null, endsAtBlankLine: true, tagName: null, depth: 0 };
     }
     const endMarker = `</${rawTag}>`;
@@ -429,6 +429,25 @@ function canStartGenericHtmlBlock(
   );
 }
 
+function isHtmlBlockBoundary(
+  lines: ProfileLine[],
+  index: number,
+  htmlTerminatorIndexes: ReadonlySet<number>,
+): boolean {
+  if (htmlTerminatorIndexes.has(index)) return true;
+  const line = lines[index]?.content ?? "";
+  const parserLine = index === 0 && line.startsWith(UTF8_BOM) ? line.slice(1) : line;
+  if (isIndentedCodeLine(parserLine) || getFenceMarker(parserLine)) return false;
+  const trimmedLine = parserLine.trimStart();
+  return (
+    findHtmlBlockStart(
+      trimmedLine.toLowerCase(),
+      trimmedLine,
+      canStartGenericHtmlBlock(lines, index, htmlTerminatorIndexes.has(index - 1)),
+    ) !== null
+  );
+}
+
 function visitProfileMetadataLines(
   lines: ProfileLine[],
   visit: (line: string, index: number) => void,
@@ -481,6 +500,7 @@ function visitProfileMetadataLines(
       canStartGenericHtmlBlock(lines, index, htmlTerminatorIndexes.has(index - 1)),
     );
     if (htmlBlock) {
+      markHtmlTerminator(index);
       if (htmlBlock.tagName) {
         openHtmlBlock = updateHtmlBlockDepth(htmlBlock, normalizedLine, true);
         if (!openHtmlBlock) markHtmlTerminator(index);
@@ -536,13 +556,14 @@ function isMetadataBoundary(
   const listPattern = allowParagraphListInterrupt
     ? MARKDOWN_LIST_ITEM_CAN_INTERRUPT
     : MARKDOWN_LIST_ITEM;
+  const boundaryLine = /^ {0,3}(?=\S)/.test(line) ? line.trimStart() : line;
   return (
     line.trim() === "" ||
-    MARKDOWN_HEADING.test(line) ||
-    listPattern.test(line) ||
-    (allowSetext && MARKDOWN_SETEXT_UNDERLINE.test(line)) ||
-    MARKDOWN_THEMATIC_BREAK.test(line) ||
-    MARKDOWN_BLOCK_QUOTE.test(line) ||
+    MARKDOWN_HEADING.test(boundaryLine) ||
+    listPattern.test(boundaryLine) ||
+    (allowSetext && MARKDOWN_SETEXT_UNDERLINE.test(boundaryLine)) ||
+    MARKDOWN_THEMATIC_BREAK.test(boundaryLine) ||
+    MARKDOWN_BLOCK_QUOTE.test(boundaryLine) ||
     isLastUpdatedHeader(line) ||
     getFenceMarker(line) !== null ||
     htmlTerminator
@@ -570,12 +591,19 @@ function isStandaloneMetadataLine(
     previousWithoutBom,
     htmlTerminatorIndexes.has(index - 1),
   );
-  const nextMetadataBoundary = isMetadataBoundary(
-    nextWithoutBom,
-    htmlTerminatorIndexes.has(index + 1),
-    false,
-    true,
+  const nextHtmlBlockBoundary = isHtmlBlockBoundary(
+    lines,
+    index + 1,
+    htmlTerminatorIndexes,
   );
+  const nextMetadataBoundary =
+    nextHtmlBlockBoundary ||
+    isMetadataBoundary(
+      nextWithoutBom,
+      htmlTerminatorIndexes.has(index + 1),
+      false,
+      true,
+    );
   const previousContainerMarker =
     !MARKDOWN_THEMATIC_BREAK.test(previousWithoutBom) &&
     (MARKDOWN_LIST_ITEM.test(previousWithoutBom) || MARKDOWN_BLOCK_QUOTE.test(previousWithoutBom));

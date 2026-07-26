@@ -971,6 +971,119 @@ test("writeProfile keeps nested same-name HTML blocks opaque", async (t) => {
   }
 });
 
+test("writeProfile keeps metadata inside raw HTML blocks with end-of-line openers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "<pre",
+        "# Literal heading",
+        "*Last updated: literal*",
+        "</pre>",
+        "",
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "",
+        "- Keeps raw HTML content opaque.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "<pre",
+          "# Literal heading",
+          "*Last updated: literal*",
+          "</pre>",
+          "",
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "",
+          "- Keeps raw HTML content opaque.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile treats HTML openers as metadata boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "<div>",
+        "HTML content.",
+        "</div>",
+        "",
+        "- Keeps the HTML block after the header.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        profile.replace(STALE_HEADER, FRESH_HEADER),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("writeProfile recognizes indented Markdown block boundaries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
+  try {
+    await withMemoryDir(async (dir) => {
+      const storage = new StorageManager(dir);
+      const profile = [
+        "# Behavioral Profile",
+        "",
+        STALE_HEADER,
+        "  - list item",
+        STALE_HEADER,
+        "  > block quote",
+        STALE_HEADER,
+        "  ***",
+        "",
+        "- Keeps indented Markdown blocks.",
+        "",
+      ].join("\n");
+
+      await storage.writeProfile(profile);
+
+      assert.equal(
+        await storage.readProfile(),
+        [
+          "# Behavioral Profile",
+          "",
+          FRESH_HEADER,
+          "  - list item",
+          "  > block quote",
+          "  ***",
+          "",
+          "- Keeps indented Markdown blocks.",
+          "",
+        ].join("\n"),
+      );
+    });
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
 test("writeProfile ignores invalid backtick fence openers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(WRITE_TIME) });
   try {
