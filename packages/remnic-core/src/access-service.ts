@@ -223,7 +223,7 @@ import type {
   RecallPlanMode,
 } from "./types.js";
 import {
-  delegateExtractionForceFlush,
+  delegateExtractionForceFlush, withSeededCodingContext,
   type EngramAccessExtractionForceFlushRequest,
   type EngramAccessExtractionForceFlushResponse,
   type EngramAccessLcmCompactionFlushRequest,
@@ -4333,80 +4333,54 @@ export class EngramAccessService {
     if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
       throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
     }
-    const previousCodingContext = this.orchestrator.getCodingContextForSession(request.sessionKey);
-    let seededCodingContext: CodingContext | null = null;
-    const captureSeededCodingContext = (): void => {
-      if (previousCodingContext !== null || seededCodingContext !== null) return;
-      const currentCodingContext = this.orchestrator.getCodingContextForSession(request.sessionKey);
-      if (currentCodingContext !== null) seededCodingContext = currentCodingContext;
-    };
-    const clearSeededCodingContext = (): void => {
-      if (previousCodingContext !== null || seededCodingContext === null) return;
-      if (this.orchestrator.getCodingContextForSession(request.sessionKey) === seededCodingContext) {
-        this.orchestrator.setCodingContextForSession(request.sessionKey, null);
-      }
-    };
+    return withSeededCodingContext(this.orchestrator, request.sessionKey, async (captureSeededCodingContext) => {
+        // Authorize compaction against the SAME effective write namespace `observe`
+        // archived under, not a premature default writable-namespace check (#1505).
+        // The single resolveMemoryScopePlan gate permits a principal self/project
+        // overlay under restrictive default WRITE policy and falls back to default
+        // only when no overlay applies.
+        const scope = await this.resolveMemoryScopePlan(request);
+        captureSeededCodingContext();
+        // Legacy `namespace` response field: pre-#1505 semantics were exactly
+        // the writable-namespace resolver (overlay-agnostic) — the
+        // authorized explicit namespace when supplied, else `config.defaultNamespace`.
+        // DERIVED from the scope plan (NOT a second auth pass, #1505 thread jvO):
+        // explicit ⇒ writeNamespace; user-project coding overlay ⇒ defaultNamespace;
+        // non-user scope-profile layer/no overlay ⇒ writeNamespace. Identical to
+        // observe's legacy field.
+        const namespace = this.legacyResponseNamespaceForScope(scope);
+        if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
+          return {
+            enabled: false,
+            flushed: false,
+            sessionKey: request.sessionKey,
+            namespace,
+            reason: "LCM is disabled",
+          };
+        }
 
-    // Authorize compaction against the SCOPED WRITE TARGET — the SAME effective
-    // write namespace `observe` archived the LCM queue under — NOT a premature
-    // the writable-namespace resolver (undefined ⇒ config.defaultNamespace) (#1505
-    // thread NBHWs). Under a restrictive `default` WRITE policy where the
-    // principal can still write its self/project overlay, that premature default
-    // write-auth threw `namespace is not writable: default` BEFORE the scoped key
-    // was computed, so the overlay queue `observe` just wrote could never be
-    // flushed. `resolveMemoryScopePlan` is the ONE write-scoped plan/gate observe
-    // uses (rule 22 / 39 / 42): it authorizes the principal self base for an
-    // overlay write and only collapses to `config.defaultNamespace` (always
-    // writable) when no overlay applies — so it never throws `not writable:
-    // default` for a validly scoped observe's queue.
-    try {
-    const scope = await this.resolveMemoryScopePlan(request);
-    captureSeededCodingContext();
-    // Legacy `namespace` response field: pre-#1505 semantics were exactly
-    // the writable-namespace resolver (overlay-agnostic) — the
-    // authorized explicit namespace when supplied, else `config.defaultNamespace`.
-    // DERIVED from the scope plan (NOT a second auth pass, #1505 thread jvO):
-    // explicit ⇒ writeNamespace; user-project coding overlay ⇒ defaultNamespace;
-    // non-user scope-profile layer/no overlay ⇒ writeNamespace. Identical to
-    // observe's legacy field.
-    const namespace = this.legacyResponseNamespaceForScope(scope);
-    if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
-      clearSeededCodingContext();
-      return {
-        enabled: false,
-        flushed: false,
-        sessionKey: request.sessionKey,
-        namespace,
-        reason: "LCM is disabled",
-      };
-    }
-
-    // Flush the SAME LCM session_id `observe` archived under: encode the scope
-    // plan's EFFECTIVE write namespace (the coding overlay when one applies, else
-    // the default store) through the SAME `lcmSessionKeyForNamespace` helper
-    // observe uses for archival, so the flush key is byte-for-byte the write key
-    // (#1495 thread 2 / #1505 thread NBHWs, rule 42). A write-only / self-omitted
-    // principal still flushes the overlay queue because the scope plan authorized
-    // the write target by WRITE policy, not readability.
-    const lcmSessionKey =
-      lcmSessionKeyForNamespace(
-        scope.writeNamespace,
-        request.sessionKey,
-        this.orchestrator.config.defaultNamespace,
-      ) ?? request.sessionKey;
-    await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
-    await this.orchestrator.lcmEngine.preCompactionFlush(lcmSessionKey);
-    clearSeededCodingContext();
-    return {
-      enabled: true,
-      flushed: true,
-      sessionKey: request.sessionKey,
-      namespace,
-    };
-    } catch (error) {
-      clearSeededCodingContext();
-      throw error;
-    }
+        // Flush the SAME LCM session_id `observe` archived under: encode the scope
+        // plan's EFFECTIVE write namespace (the coding overlay when one applies, else
+        // the default store) through the SAME `lcmSessionKeyForNamespace` helper
+        // observe uses for archival, so the flush key is byte-for-byte the write key
+        // (#1495 thread 2 / #1505 thread NBHWs, rule 42). A write-only / self-omitted
+        // principal still flushes the overlay queue because the scope plan authorized
+        // the write target by WRITE policy, not readability.
+        const lcmSessionKey =
+          lcmSessionKeyForNamespace(
+            scope.writeNamespace,
+            request.sessionKey,
+            this.orchestrator.config.defaultNamespace,
+          ) ?? request.sessionKey;
+        await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
+        await this.orchestrator.lcmEngine.preCompactionFlush(lcmSessionKey);
+        return {
+          enabled: true,
+          flushed: true,
+          sessionKey: request.sessionKey,
+          namespace,
+        };
+    });
   }
 
   async extractionForceFlush(request: EngramAccessExtractionForceFlushRequest): Promise<EngramAccessExtractionForceFlushResponse> {
