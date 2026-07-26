@@ -63,6 +63,7 @@ function createInlineCaptureProcessorProbe(
     authoritativeFactHashMiss?: boolean;
     tombstoneBlockedCaptureIndexHit?: boolean;
     failWrites?: boolean;
+    failPrimaryWrites?: boolean;
     duplicateReadDelayMs?: number;
     lockBusyAttempts?: number;
   } = {}
@@ -104,7 +105,9 @@ function createInlineCaptureProcessorProbe(
         frontmatter: { ...memory.frontmatter },
       })),
     writeSealedMemory: async (envelope: SealedMemoryEnvelope) => {
-      if (options.failWrites) throw new Error("simulated sealed write failure");
+      if (options.failWrites || (options.failPrimaryWrites && envelope.source === "explicit-inline")) {
+        throw new Error("simulated sealed write failure");
+      }
       const id = `memory-${nextId++}`;
       envelopes.push(envelope);
       memories.push({
@@ -675,6 +678,27 @@ test("inline capture processor reports failed review fallback without claiming c
   assert.equal(result.queued, 0);
   assert.equal(result.failed, 1);
   assert.equal(result.content, "Keep this visible turn.");
+});
+
+test("inline capture does not queue review after a validated persistence failure", async () => {
+  const probe = createInlineCaptureProcessorProbe({ failPrimaryWrites: true });
+  const result = await probe.processor.process({
+    captureMode: "hybrid",
+    content: [
+      "Keep this visible turn.",
+      "<memory_note>",
+      "content: A validated note must remain retryable after primary persistence fails.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+  });
+
+  assert.equal(result.processed, 0);
+  assert.equal(result.accepted, 0);
+  assert.equal(result.queued, 0);
+  assert.equal(result.failed, 1);
+  assert.equal(probe.envelopes.length, 0);
+  assert.equal(probe.memories.length, 0);
 });
 
 test("inline capture defers bounded lock contention for a later retry", async () => {

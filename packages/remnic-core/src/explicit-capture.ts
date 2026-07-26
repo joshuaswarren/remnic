@@ -167,6 +167,10 @@ function normalizeExplicitCaptureError(error: unknown): string {
   return rendered.length > 0 ? rendered : "explicit capture failed";
 }
 
+function isUnsupportedExplicitCaptureNamespaceError(error: unknown): boolean {
+  return normalizeExplicitCaptureError(error).startsWith("unsupported namespace:");
+}
+
 function resolveExplicitCaptureReviewNamespace(
   orchestrator: Orchestrator,
   namespace: string | undefined
@@ -944,6 +948,11 @@ export class InlineExplicitCaptureProcessor {
             captureError = retryError;
           }
         }
+        if (validationSucceeded && !isUnsupportedExplicitCaptureNamespaceError(captureError)) {
+          log.warn(`explicit inline capture persistence failed: ${normalizeExplicitCaptureError(captureError)}`);
+          return { processed: 0, accepted: 0, queued: 0, duplicates: 0, failed: 1 };
+        }
+
         const queueInput = request.namespacePreResolved === true ? { ...input, namespacePreResolved: true } : input;
         const reviewNamespace =
           request.reviewNamespacePreResolved === true &&
