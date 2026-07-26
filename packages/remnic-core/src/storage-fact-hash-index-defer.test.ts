@@ -2237,6 +2237,78 @@ test("chunked offline sync reserves the incoming blocked identity before streami
   });
 });
 
+test("chunked offline sync scans oversized frontmatter before locking its identity", async () => {
+  await withMemoryDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "default",
+    });
+    const content = `Oversized frontmatter sync ${"x".repeat(900_000)}`;
+    const tombstoneId = await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "oversized-frontmatter-sync",
+      rawContent: content,
+    });
+    assert.ok(tombstoneId);
+    const result = await storage.writeMemory("fact", content, {
+      source: "test",
+      sourceConnector: "provider-a",
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
+    assert.ok(memory);
+
+    const largeTags = Array.from({ length: 22_000 }, (_, index) => `"tag-${index}"`).join(", ");
+    const updatedFile = [
+      "---",
+      `id: ${memory.frontmatter.id}`,
+      "category: fact",
+      `created: ${memory.frontmatter.created}`,
+      `updated: ${new Date(Date.now() + 1_000).toISOString()}`,
+      `source: ${memory.frontmatter.source}`,
+      `confidence: ${memory.frontmatter.confidence}`,
+      `confidenceTier: ${memory.frontmatter.confidenceTier}`,
+      `tags: [${largeTags}]`,
+      "sourceConnector: provider-b",
+      "status: pending_review",
+      `blockedBy: ${memory.frontmatter.blockedBy}`,
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n");
+    const chunks = (async function* (): AsyncIterable<Buffer> {
+      for (let offset = 0; offset < updatedFile.length; offset += 32 * 1024) {
+        yield Buffer.from(updatedFile.slice(offset, offset + 32 * 1024), "utf8");
+      }
+    })();
+    const incomingIdentity = buildExplicitCaptureDedupKey(content, "fact", "provider-b");
+    const releaseState = Promise.withResolvers<void>();
+    const enteredState = Promise.withResolvers<void>();
+    const held = storage.withTombstoneBlockedCaptureWriteLock(async () => {
+      enteredState.resolve();
+      await releaseState.promise;
+    }, incomingIdentity);
+    await enteredState.promise;
+
+    let completed = false;
+    const pending = storage.writeOfflineSyncFileChunks(memory.path, chunks).then(() => {
+      completed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(completed, false, "oversized frontmatter sync must wait for its incoming identity lock");
+    releaseState.resolve();
+    await held;
+    await pending;
+    assert.equal(await storage.hasTombstoneBlockedExplicitCapture(content, "fact", "provider-b"), true);
+  });
+});
+
 test("chunked offline sync encrypts oversized staging files when secure storage is enabled", async () => {
   await withMemoryDir(async (dir) => {
     const storage = new StorageManager(dir);

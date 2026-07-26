@@ -25,7 +25,7 @@ import type { TombstoneBlockedCaptureIndexOptions } from "./tombstone-blocked-ca
 
 const OFFLINE_SYNC_BUFFER_LIMIT_BYTES = 1_048_576;
 const OFFLINE_SYNC_STAGE_READ_BYTES = 64 * 1024;
-const OFFLINE_SYNC_FRONTMATTER_LIMIT_BYTES = 128 * 1024;
+const OFFLINE_SYNC_FRONTMATTER_DELIMITER = Buffer.from("\n---\n", "utf8");
 
 type StreamedOfflineSyncIdentity = {
   identityHash: string;
@@ -92,6 +92,48 @@ async function forEachStagedTextChunk(
   }
   const finalText = decoder.decode();
   if (finalText.length > 0) onText(finalText);
+}
+
+async function findStagedBodyOffset(
+  stagePath: string,
+  key: Buffer | null,
+  memoryDir: string
+): Promise<number | null> {
+  let scannedBytes = 0;
+  let tail = Buffer.alloc(0);
+  for await (const chunk of readMaybeEncryptedFileFromChunks(stagePath, key, memoryDir)) {
+    const window = tail.length > 0 ? Buffer.concat([tail, chunk]) : chunk;
+    const windowStart = scannedBytes - tail.length;
+    for (let searchFrom = 0; ; ) {
+      const delimiterStart = window.indexOf(OFFLINE_SYNC_FRONTMATTER_DELIMITER, searchFrom);
+      if (delimiterStart < 0) break;
+      if (windowStart + delimiterStart >= 4) {
+        return windowStart + delimiterStart + OFFLINE_SYNC_FRONTMATTER_DELIMITER.length;
+      }
+      searchFrom = delimiterStart + 1;
+    }
+    scannedBytes += chunk.length;
+    const tailLength = Math.min(OFFLINE_SYNC_FRONTMATTER_DELIMITER.length - 1, window.length);
+    tail = Buffer.from(window.subarray(window.length - tailLength));
+  }
+  return null;
+}
+
+async function readStagedPrefix(
+  stagePath: string,
+  byteLimit: number,
+  key: Buffer | null,
+  memoryDir: string
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let bytesRead = 0;
+  for await (const chunk of readMaybeEncryptedFileFromChunks(stagePath, key, memoryDir)) {
+    const length = Math.min(chunk.length, byteLimit - bytesRead);
+    if (length > 0) chunks.push(chunk.subarray(0, length));
+    bytesRead += length;
+    if (bytesRead >= byteLimit) break;
+  }
+  return Buffer.concat(chunks, bytesRead);
 }
 
 export type OfflineSyncMemoryParser = (filePath: string, content: Buffer) => MemoryFile | null;
@@ -660,25 +702,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     parseMemory: OfflineSyncMemoryParser
   ): Promise<PreparedOfflineSyncChunks> {
     const options = this.tombstoneBlockedCaptureIndexOptions();
-    const prefixChunks: Buffer[] = [];
-    let prefixBytes = 0;
-    for await (const chunk of readMaybeEncryptedFileFromChunks(
-      stagePath,
-      options.secureStoreKeyProvider(),
-      options.memoryDir
-    )) {
-      const length = Math.min(chunk.length, OFFLINE_SYNC_FRONTMATTER_LIMIT_BYTES - prefixBytes);
-      if (length > 0) prefixChunks.push(chunk.subarray(0, length));
-      prefixBytes += length;
-      if (prefixBytes >= OFFLINE_SYNC_FRONTMATTER_LIMIT_BYTES) break;
-    }
-    const prefix = Buffer.concat(prefixChunks, prefixBytes);
-    const delimiter = Buffer.from("\n---\n", "utf8");
-    const delimiterStart = prefix.indexOf(delimiter, 4);
-    if (delimiterStart < 0) {
+    const key = options.secureStoreKeyProvider();
+    const bodyOffset = await findStagedBodyOffset(stagePath, key, options.memoryDir);
+    if (bodyOffset === null) {
       return { after: null, chunks: this.readStagedOfflineSyncChunks(stagePath), stagePath };
     }
-    const bodyOffset = delimiterStart + delimiter.length;
+    const prefix = await readStagedPrefix(stagePath, bodyOffset, key, options.memoryDir);
     let after: MemoryFile | null = null;
     try {
       after = parseMemory(target, prefix.subarray(0, bodyOffset));
