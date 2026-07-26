@@ -340,7 +340,7 @@ test("observe writes objective-state snapshots into the coding namespace overlay
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "remnic-access-objective-state-project-"));
   const service = createObjectiveStateObserveService(memoryDir, {
     namespacesEnabled: true,
-    storageDirs: { "global-project-a": projectDir },
+    storageDirs: { "global-project-tag-project-a": projectDir },
     codingMode: {
       projectScope: true,
       branchScope: false,
@@ -420,7 +420,7 @@ test("observe bases implicit objective-state snapshots on the principal namespac
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "remnic-access-objective-state-principal-"));
   const service = createObjectiveStateObserveService(memoryDir, {
     namespacesEnabled: true,
-    storageDirs: { "alice-project-a": projectDir },
+    storageDirs: { "alice-project-tag-project-a": projectDir },
     namespacePolicies: [
       {
         name: "alice",

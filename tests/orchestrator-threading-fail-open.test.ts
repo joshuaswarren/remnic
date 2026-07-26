@@ -11,7 +11,7 @@ test("runExtraction handles pre-persist threading errors fail-open", () => {
 
   assert.match(
     source,
-    /try\s*\{\s*threadIdForExtraction\s*=\s*await\s*this\.deps\.getThreading\(\)\.processTurn\(lastTurn,\s*\[\]\);\s*\}\s*catch\s*\(err\)\s*\{[\s\S]*?non-fatal/m,
+    /try\s*\{\s*threadIdForExtraction\s*=\s*await\s*runDeadlineAware\(\s*\(\)\s*=>\s*this\.deps\.getThreading\(\)\.processTurn\(lastTurn,\s*\[\]\),[\s\S]*?\);\s*\}\s*catch\s*\(err\)\s*\{[\s\S]*?non-fatal/m,
     "threading.processTurn before persistence should be wrapped in fail-open try/catch",
   );
 });
