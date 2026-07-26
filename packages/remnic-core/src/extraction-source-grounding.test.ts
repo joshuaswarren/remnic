@@ -952,6 +952,25 @@ test("grounding rejects embedded whether questions as factual evidence", () => {
   assert.deepEqual(result.facts, []);
   assert.deepEqual(result.profileUpdates, []);
 });
+test("grounding rejects comma-spliced unsupported claims", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice works at Acme, Bob owns Mars.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: ["Alice works at Acme, Bob owns Mars."],
+      entities: [],
+      questions: [],
+    },
+    "Alice works at Acme.",
+  );
+
+  assert.deepEqual(result.facts, []);
+  assert.deepEqual(result.profileUpdates, []);
+});
 
 test("grounding preserves a supported question while clearing unsupported context", () => {
   const result = filterExtractionResultBySource(
