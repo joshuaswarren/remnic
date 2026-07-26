@@ -43,9 +43,22 @@ const FS_ROOTS = "(?:etc|var|usr|tmp|home|opt|srv|proc|dev)";
 // prose. A slash form is allowed only as a single non-filesystem-root segment,
 // so a quoted path (`/etc/remnic/config.json`, `/var/log/remnic`) never
 // qualifies. Bounded {1,60} keeps the match linear (CodeQL js/polynomial-redos).
+// CLI flag (--force, -f, --no-color): a LEADING -- or - then a letter +
+// alphanum/kebab segments. A leading dash distinguishes a flag from an inline
+// hyphenated prose word ("2024-2025", "well-tested") or an em-dash; admitted
+// only beside a tool/command keyword, after an invocation verb, or as an
+// argument trailing a tool identifier.
+const FLAG = "(?:--|-)[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*\\b";
+// A short argument operand (filename, value, search term) trailing a flag in
+// a command-with-args run.
+const OPCODE = "[A-Za-z0-9_./-]{1,20}";
+
 const NO_SLASH_TOKEN = "[A-Za-z0-9_.-]{1,60}";
 const SLASH_CMD_TOKEN = "/(?!" + FS_ROOTS + "\\b)[A-Za-z0-9_.-]{1,60}";
-const QUOTED_CONTENT = "(?:" + NO_SLASH_TOKEN + "|" + SLASH_CMD_TOKEN + ")";
+// A quoted command-with-args: MUST start with a known name + a flag, so a
+// quoted prose phrase ("least privilege", "database migrations") never qualifies.
+const QUOTED_CMD_ARGS = "\\b(?:" + KNOWN_NAMES_ALT + ")\\b\\s+" + FLAG + "(?:\\s+" + OPCODE + "){0,4}";
+const QUOTED_CONTENT = "(?:" + QUOTED_CMD_ARGS + "|" + NO_SLASH_TOKEN + "|" + SLASH_CMD_TOKEN + ")";
 const QUOTED_TOKEN =
   "(?:" + BT + QUOTED_CONTENT + BT + "|\"" + QUOTED_CONTENT + "\"|'" + QUOTED_CONTENT + "')";
 
@@ -60,12 +73,6 @@ const KEYWORD = "\\b(?:mcp[ _]tool|slash[ _]command|cli[ _]flag|subcommand|tool|
 // names and separator-bearing identifiers admitted, the bare arm is a CLOSED
 // set, not a heuristic.
 const BARE_SNAKE_KEBAB = "(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+)\\b";
-
-// CLI flag (--force, -f, --no-color): a LEADING -- or - then a letter +
-// alphanum/kebab segments. A leading dash distinguishes a flag from an inline
-// hyphenated prose word ("2024-2025", "well-tested") or an em-dash; admitted
-// only beside a tool/command keyword or after an invocation verb.
-const FLAG = "(?:--|-)[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*\\b";
 
 // Identifier admitted NEXT TO an explicit tool/command keyword: a token-like
 // quoted identifier, a known tool/CLI name, or a snake/kebab bare identifier.
@@ -89,8 +96,11 @@ const CLAUSE_BOUNDARY = "(?:$|[.,;(:]|(?:when|before|after|to|with|for|on|in|if|
 
 // Imperative invocation: verb + (token-like quoted identifier | known tool/CLI
 // name | snake/kebab bare identifier | slash command) + clause boundary.
+// Optional flag-first argument run after the identifier (Run rg --files …);
+// the run must start with a flag so plain prose operands cannot extend a match.
+const ARGS = "(?:\\s+" + FLAG + "(?:\\s+" + OPCODE + "){0,4})?";
 const INVOCATION =
-  VERB + "\\s+(?:" + QUOTED_TOKEN + "|" + KNOWN_NAMES_CI + "|" + BARE_SNAKE_KEBAB + "|" + SLASH_GENERIC + "|" + FLAG + ")(?=\\s*" + CLAUSE_BOUNDARY + ")";
+  VERB + "\\s+(?:" + QUOTED_TOKEN + "|" + KNOWN_NAMES_CI + "|" + BARE_SNAKE_KEBAB + "|" + SLASH_GENERIC + "|" + FLAG + ")" + ARGS + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
 
 const TOOL_REFERENCE = new RegExp(
   "(?:" +

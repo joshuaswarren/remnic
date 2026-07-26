@@ -59,6 +59,9 @@ const EXTRA_POSITIVE: string[] = [
   "Run rg() to find symbols",
   "Use --force when reinstalling",
   "The --format cli flag selects JSON",
+  "Run rg --files before editing",
+  "Use grep -n TODO when reviewing",
+  "Run `rg --files` before editing",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {

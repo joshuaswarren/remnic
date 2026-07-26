@@ -615,8 +615,8 @@ export class ExtractionPersistCoordinator {
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
     }): Promise<void> => {
-      if (lifecycleCaps.extractionScopeClassification && withholdToolScopedFromSharedNamespace(options)) return;
       await promoteMemoryToProfileTargets(options);
+      if (lifecycleCaps.extractionScopeClassification && withholdToolScopedFromSharedNamespace(options)) return;
       if (
         !shouldPromoteToShared(
           this.deps.config,

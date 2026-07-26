@@ -8,6 +8,7 @@ import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { StorageManager } from "../src/storage.js";
 import type { PluginConfig, ExtractionResult } from "../src/types.js";
+import type { ResolvedScopeProfilePlan } from "../packages/remnic-core/src/namespaces/scope-profiles.js";
 
 // ---------------------------------------------------------------------------
 // Issue #2183 — tool-scoped global-promotion guard.
@@ -517,6 +518,111 @@ test("auto-promote: capability off (extractionScopeClassificationEnabled=false) 
     assert.ok(
       sharedMems.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
       "with scope classification off, the tool-scope guard is inert and the fact auto-promotes (escape hatch)",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// Profile-target over-block regression (#2183 round 11): the tool-scope guard
+// must NOT withhold from a NON-serverShared profile target (a local routing leg
+// that never crosses an integration boundary), only from the shared/serverShared
+// leg. promoteMemoryToProfileTargets already excludes serverShared, so the guard
+// sits AFTER it and gates only the shared write.
+// ---------------------------------------------------------------------------
+function scopeProfilePlanWithLocalAndShared(): ResolvedScopeProfilePlan {
+  return {
+    profileId: "test",
+    profile: {
+      readOrder: ["self", "serverShared"],
+      writeDefault: "self",
+      autoPromote: { enabled: true, targets: ["localTeam", "serverShared"], categories: ["fact"], minConfidenceTier: "explicit" },
+    } as ResolvedScopeProfilePlan["profile"],
+    baseNamespace: "default",
+    writeLayer: "self",
+    writeNamespace: "default",
+    readNamespaces: ["default", "shared"],
+    layers: [
+      { id: "self", kind: "user-project", namespace: "default", readable: true, writable: true, promotable: true, reason: "" },
+      { id: "serverShared", kind: "server-shared", namespace: "shared", readable: true, writable: true, promotable: true, reason: "" },
+    ],
+    promotionTargets: [
+      { target: "localTeam", namespace: "localteam", authorized: true, reason: "" },
+      { target: "serverShared", namespace: "shared", authorized: true, reason: "" },
+    ],
+    warnings: [],
+  } as ResolvedScopeProfilePlan;
+}
+
+test("profile targets: attributed tool-scoped fact still promotes to a non-serverShared target, withheld only from shared", async () => {
+  const memoryDir = tmpDir("tool-scoped-profile-targets");
+  try {
+    const orchestrator = new Orchestrator(baseConfig(memoryDir));
+    stubBackgroundWork(orchestrator);
+    const plan = scopeProfilePlanWithLocalAndShared();
+    const defaultStorage = await orchestrator.getStorageForNamespace("default");
+    await defaultStorage.ensureDirectories();
+    const localStorage = await orchestrator.getStorageForNamespace("localteam");
+    await localStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorageForNamespace("shared");
+    await sharedStorage.ensureDirectories();
+
+    const projectToolFact: ExtractionResult = {
+      facts: [{ content: TOOL_FACT, category: "fact", confidence: 0.95, tags: [], scope: "project" }],
+      entities: [], questions: [], profileUpdates: [],
+    };
+    // Tool-scoped + attributed: the LOCAL (non-serverShared) profile target still
+    // receives the fact; the shared/serverShared leg is withheld.
+    await orchestrator.persistExtraction(
+      projectToolFact,
+      defaultStorage,
+      "thread-1",
+      { sourceConnector: "pi" },
+      "default",
+      plan,
+    );
+    const defaultAfterTool = await defaultStorage.readAllMemories();
+    const localAfterTool = await localStorage.readAllMemories();
+    const sharedAfterTool = await sharedStorage.readAllMemories();
+    assert.ok(
+      defaultAfterTool.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
+      "fact must actually be persisted in the source namespace (non-vacuous)",
+    );
+    assert.ok(
+      localAfterTool.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
+      "non-serverShared profile target must still receive an attributed tool-scoped fact (no over-block)",
+    );
+    assert.equal(
+      sharedAfterTool.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
+      false,
+      "shared/serverShared leg is withheld for an attributed tool-scoped fact",
+    );
+
+    // Portable fact: both the local target and shared promote.
+    const projectPortableFact: ExtractionResult = {
+      facts: [{ content: PORTABLE_FACT, category: "fact", confidence: 0.95, tags: [], scope: "project" }],
+      entities: [], questions: [], profileUpdates: [],
+    };
+    await orchestrator.persistExtraction(
+      projectPortableFact,
+      defaultStorage,
+      "thread-2",
+      { sourceConnector: "pi" },
+      "default",
+      plan,
+    );
+    const localAfterPortable = await localStorage.readAllMemories();
+    const sharedAfterPortable = await sharedStorage.readAllMemories();
+    assert.ok(
+      localAfterPortable.some((m) => m.content?.includes(PORTABLE_FACT.slice(0, 20))),
+      "portable fact promotes to the non-serverShared profile target",
+    );
+    assert.ok(
+      sharedAfterPortable.some((m) => m.content?.includes(PORTABLE_FACT.slice(0, 20))),
+      "portable fact promotes to shared",
     );
   } finally {
     StorageManager.clearAllStaticCaches();
