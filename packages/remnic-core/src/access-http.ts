@@ -1680,6 +1680,7 @@ export class EngramAccessHttpServer {
         response: res, ensureWriteRateLimitAvailable: () => this.ensureWriteRateLimitAvailable(req),
         recordWriteRateLimitHit: () => this.recordWriteRateLimitHit(req),
         resolveNamespace: (namespace) => this.resolveNamespace(req, namespace),
+        defaultNamespace: this.service.configRef?.defaultNamespace,
         resolveRequestPrincipal: () => this.resolveRequestPrincipal(req), respondJson: this.respondJson.bind(this),
       });
       return;

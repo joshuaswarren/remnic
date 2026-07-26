@@ -1210,7 +1210,7 @@ test("delegate ignores a corrupt legacy binding file when canonical scope is ava
   }
 });
 
-test("delegate restores full canonical history during explicit legacy migration", async () => {
+test("delegate restores full canonical history during concurrent explicit legacy migration", async () => {
   const stub = await startDaemonStub(() => ({ flushed: true }));
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-bindings-"));
   const priorMode = process.env.REMNIC_BRIDGE_MODE;
@@ -1261,9 +1261,32 @@ test("delegate restores full canonical history during explicit legacy migration"
     process.env.REMNIC_HOST = "127.0.0.1";
     process.env.REMNIC_PORT = String(stub.port);
     const api = recordingApi();
+    const secondApi = recordingApi();
     assert.equal(
       maybeRegisterDelegateRuntime(
         api,
+        {
+          serviceId: "openclaw-remnic",
+          configBridgeMode: "delegate",
+          passive: false,
+          allowPromptInjection: true,
+          gateHeartbeatTurns: false,
+          recallBudgetChars: 8_000,
+          memoryDir,
+          sessionTogglesEnabled: false,
+          respectBundledActiveMemoryToggle: false,
+          cleanUserMessage: (text: string) => text,
+          hookTimeoutMs: 5_000,
+          shouldSkipRecall: () => false,
+          flushOnResetEnabled: true,
+        },
+        { checkHealth: () => true },
+      ),
+      true,
+    );
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        secondApi,
         {
           serviceId: "openclaw-remnic",
           configBridgeMode: "delegate",
@@ -1298,7 +1321,7 @@ test("delegate restores full canonical history during explicit legacy migration"
         { sessionKey, runtime: { agent: { session: { namespace: "team-explicit" } } } },
       ),
       invoke(
-        api,
+        secondApi,
         "agent_end",
         {
           success: true,

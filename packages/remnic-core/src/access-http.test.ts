@@ -203,6 +203,65 @@ test("HTTP batch LCM flush isolates namespace failures and charges one write quo
   }
 });
 
+test("HTTP batch LCM flush deduplicates aliases after effective namespace resolution", async () => {
+  const calls: Array<{ namespace?: string; sessionKey: string; authenticatedPrincipal?: string }> = [];
+  const service = {
+    configRef: parseConfig({ namespacesEnabled: true, defaultNamespace: "default" }),
+    lcmCompactionFlush: async (request: {
+      namespace?: string;
+      sessionKey: string;
+      authenticatedPrincipal?: string;
+    }) => {
+      calls.push(request);
+      return { enabled: true, flushed: true };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/lcm/compaction/flush`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "effective-namespace-session",
+        namespaces: ["", "default"],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      enabled: true,
+      flushed: true,
+      sessionKey: "effective-namespace-session",
+      namespaces: [""],
+      results: [
+        {
+          status: "fulfilled",
+          namespace: "",
+          result: { enabled: true, flushed: true },
+        },
+      ],
+    });
+    assert.deepEqual(calls, [
+      {
+        sessionKey: "effective-namespace-session",
+        namespace: undefined,
+        authenticatedPrincipal: undefined,
+      },
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
 
 test("HTTP batch LCM flush isolates per-namespace authorization failures", async () => {
   const calls: string[] = [];

@@ -805,38 +805,52 @@ function activeDelegateAuthorizationOperations(
     ? DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS
     : DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS.slice(1);
 }
+const delegateNamespaceMigrationChains = new Map<string, Map<string, Promise<void>>>();
+const queueDelegateNamespaceMigration = <T>(
+  bindingPath: string,
+  sessionKey: string,
+  operation: () => Promise<T>,
+): Promise<T> => {
+  let sessionChains = delegateNamespaceMigrationChains.get(bindingPath);
+  if (sessionChains === undefined) {
+    sessionChains = new Map();
+    delegateNamespaceMigrationChains.set(bindingPath, sessionChains);
+  }
+  const prior = sessionChains.get(sessionKey) ?? Promise.resolve();
+  const run = prior.catch(() => undefined).then(operation);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  sessionChains.set(sessionKey, settled);
+  void settled.then(() => {
+    if (sessionChains?.get(sessionKey) !== settled) return;
+    sessionChains.delete(sessionKey);
+    if (sessionChains.size === 0 && delegateNamespaceMigrationChains.get(bindingPath) === sessionChains) {
+      delegateNamespaceMigrationChains.delete(bindingPath);
+    }
+  });
+  return run;
+};
+
 function createDelegateNamespaceBindingStore(
   memoryDir: string,
   serviceId: string,
 ): SessionNamespaceBindingStore {
   const bindingPath = (pluginId: string): string =>
     path.join(memoryDir, "state", "plugins", pluginId, "session-namespace-bindings.json");
-  const primary = createFileSessionNamespaceBindingStore(bindingPath(serviceId));
+  const primaryPath = bindingPath(serviceId);
+  const primary = createFileSessionNamespaceBindingStore(primaryPath);
   if (serviceId !== REMNIC_OPENCLAW_PLUGIN_ID) return primary;
 
   const legacy = createFileSessionNamespaceBindingStore(
     bindingPath(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID),
   );
   const migratedLegacySessions = new Set<string>();
-  const sessionMigrationChains = new Map<string, Promise<void>>();
   const queueSessionMigration = <T>(
     sessionKey: string,
     operation: () => Promise<T>,
-  ): Promise<T> => {
-    const prior = sessionMigrationChains.get(sessionKey) ?? Promise.resolve();
-    const run = prior.catch(() => undefined).then(operation);
-    const settled = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    sessionMigrationChains.set(sessionKey, settled);
-    void settled.then(() => {
-      if (sessionMigrationChains.get(sessionKey) === settled) {
-        sessionMigrationChains.delete(sessionKey);
-      }
-    });
-    return run;
-  };
+  ): Promise<T> => queueDelegateNamespaceMigration(primaryPath, sessionKey, operation);
   const readLegacyNamespaces = async (
     sessionKey: string,
     current: string[],
