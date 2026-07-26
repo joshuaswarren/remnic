@@ -225,6 +225,23 @@ test("entity retrieval treats combining marks as Unicode word continuations", as
   assert.equal(marked, "project-कि");
 });
 
+test("entity retrieval treats supplementary-plane letters as Unicode word continuations", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-supplementary-boundary");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const name = "𐐀𐐨";
+  await writeEntity(storage, name, "project", ["Deseret entity fact."], "Deseret entity summary.");
+
+  const exact = await buildSection(config, storage, name);
+  assert.ok(exact);
+  assert.match(exact!, /Deseret entity summary/);
+  assert.equal(await buildSection(config, storage, `${name}𐐨`), null);
+});
+
 test("entity retrieval uses script-aware boundaries for Thai mentions", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-thai-boundary");
   t.after(async () => {

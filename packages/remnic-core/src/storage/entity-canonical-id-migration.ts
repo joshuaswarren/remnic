@@ -128,6 +128,29 @@ async function assertNotSymlink(filePath: string, label: string): Promise<void> 
     throw new Error(`Refusing entity canonical-id migration through symlink: ${label}.`);
   }
 }
+async function assertNotMemorySymlink(filePath: string): Promise<void> {
+  let stat;
+  try {
+    stat = await lstat(filePath);
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) return;
+    throw error;
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Refusing entity canonical-id migration through symlinked memory: ${filePath}.`);
+  }
+}
+async function assertEntityContentUnchanged(
+  deps: EntityCanonicalIdMigrationDependencies,
+  filePath: string,
+  expectedContent: string,
+  legacyId: string,
+): Promise<void> {
+  const latestContent = await deps.readStorageSecureFile(filePath);
+  if (latestContent !== expectedContent) {
+    throw new Error(`Legacy entity id ${legacyId} changed while migration was running; retry migration.`);
+  }
+}
 
 async function readSafeEntityEntries(entitiesDir: string): Promise<string[]> {
   const rootStat = await lstat(entitiesDir);
@@ -215,6 +238,7 @@ async function rewriteReferences(
       const previousEntityRef = memory.frontmatter.entityRef;
       const canonicalId = previousEntityRef ? mappings[previousEntityRef] : undefined;
       if (!previousEntityRef || !canonicalId) continue;
+      await assertNotMemorySymlink(memory.path);
       if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
       const latestMemory = await deps.readMemoryByPath(memory.path);
       if (!latestMemory) continue;
@@ -389,6 +413,24 @@ function mergeDiscoveredMappings(
   }
   return merged;
 }
+function collapseMappings(mappings: Readonly<Record<string, string>>): Record<string, string> {
+  const collapsed: Record<string, string> = {};
+  for (const legacyId of Object.keys(mappings)) {
+    let current = legacyId;
+    const seen = new Set<string>();
+    while (true) {
+      const next = mappings[current];
+      if (!next || next === current) break;
+      if (seen.has(current)) {
+        throw new Error(`Entity canonical-id migration mapping cycle includes ${legacyId}.`);
+      }
+      seen.add(current);
+      current = next;
+    }
+    if (current !== legacyId) collapsed[legacyId] = current;
+  }
+  return collapsed;
+}
 
 export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMigrationDependencies): Promise<void> {
   await withHeldFileLock(
@@ -408,11 +450,19 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
           mappings: {},
         };
       }
+      const previousMappings = state.mappings;
+      const collapsedMappings = collapseMappings(previousMappings);
+      const mappingsChanged =
+        Object.keys(collapsedMappings).length !== Object.keys(previousMappings).length
+        || Object.entries(collapsedMappings).some(([legacyId, canonicalId]) =>
+          previousMappings[legacyId] !== canonicalId
+        );
+      state = { ...state, mappings: collapsedMappings };
       for (let migrationPass = 0; migrationPass < ENTITY_MAPPING_RESCAN_MAX_PASSES; migrationPass += 1) {
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
         const discoveredBefore = await discoverMappings(deps, state.mappings);
-        const mergedBefore = mergeDiscoveredMappings(state.mappings, discoveredBefore);
-        if (state.complete && Object.keys(discoveredBefore).length === 0) return;
+        const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
+        if (state.complete && Object.keys(discoveredBefore).length === 0 && !mappingsChanged) return;
         if (
           state.complete
           || Object.keys(discoveredBefore).length > 0
@@ -431,7 +481,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
           state = {
             ...state,
             complete: false,
-            mappings: mergeDiscoveredMappings(state.mappings, discoveredAfter),
+            mappings: collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredAfter)),
           };
           await writeState(deps, state);
           continue;
@@ -467,6 +517,8 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
             }
             if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
             await deps.snapshotBeforeWrite(legacyPath, "write");
+            await assertNotSymlink(legacyPath, legacyId);
+            await assertEntityContentUnchanged(deps, legacyPath, legacyContent, legacyId);
             await unlink(legacyPath);
             continue;
           }
@@ -477,12 +529,16 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
           if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
           const entityEncrypted = await deps.isEncryptedStorageFile(legacyPath);
           const entityContent = await deps.readStorageSecureFile(legacyPath);
-          await deps.snapshotBeforeWrite(legacyPath, "write");
+          await assertNotSymlink(legacyPath, legacyId);
+          await assertEntityContentUnchanged(deps, legacyPath, entityContent, legacyId);
           await deps.writeStorageSecureFile(canonicalPath, entityContent, entityEncrypted);
           if ((await deps.readStorageSecureFile(canonicalPath)) !== entityContent) {
             throw new Error(`Cannot verify migrated entity id ${canonicalId}.`);
           }
           if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
+          await deps.snapshotBeforeWrite(legacyPath, "write");
+          await assertNotSymlink(legacyPath, legacyId);
+          await assertEntityContentUnchanged(deps, legacyPath, entityContent, legacyId);
           await unlink(legacyPath);
         }
 
@@ -506,7 +562,7 @@ export async function migrateLegacyEntityCanonicalIds(deps: EntityCanonicalIdMig
         state = {
           ...state,
           complete: false,
-          mappings: mergeDiscoveredMappings(state.mappings, discoveredAfter),
+          mappings: collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredAfter)),
         };
         await writeState(deps, state);
       }

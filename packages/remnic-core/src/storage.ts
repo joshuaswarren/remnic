@@ -3641,7 +3641,6 @@ export class StorageManager {
       invalidateColdMemoriesCache: this.invalidateColdMemoriesCache.bind(this),
       bumpMemoryStatusVersion: this.bumpMemoryStatusVersion.bind(this),
     });
-    this.entityCanonicalIdMigration.markComplete();
   }
 
   async ensureDirectories(): Promise<void> {

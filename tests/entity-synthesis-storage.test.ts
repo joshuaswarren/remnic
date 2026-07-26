@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { link, mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import {
   StorageManager,
   compareEntityTimestamps,
@@ -160,15 +160,15 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
     const seed = new StorageManager(dir);
     await seed.ensureDirectories();
     await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
-    await rename(
-      path.join(dir, "entities", `${canonical}.md`),
-      path.join(dir, "entities", `${legacyCanonical}.md`),
-    );
     const relatedCanonical = await seed.writeEntity("Aurora", "project", ["Aurora is synthetic."]);
     await seed.addEntityRelationship(relatedCanonical, {
       target: legacyCanonical,
       label: "depends on",
     });
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+    );
     const day = new Date().toISOString().slice(0, 10);
     const legacyMemoryDocument = (id: string) => [
       "---",
@@ -222,6 +222,7 @@ test("ensureDirectories migrates legacy Unicode entity ids and memory references
       supersessionKey: legacySupersessionKey,
     });
 
+    seed.invalidateMemoryCachesForTiers(["cold"]);
     await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
     await rebuildMemoryProjection({
       memoryDir: dir,
@@ -460,15 +461,15 @@ test("ensureDirectories preserves relationships added after migration discovery"
     const seed = new StorageManager(dir);
     await seed.ensureDirectories();
     await seed.writeEntity(name, type, ["Moonlight has a synthetic legacy fact."]);
-    await rename(
-      path.join(dir, "entities", `${canonical}.md`),
-      path.join(dir, "entities", `${legacyCanonical}.md`),
-    );
     const relatedCanonical = await seed.writeEntity("Aurora", type, ["Aurora is synthetic."]);
     await seed.addEntityRelationship(relatedCanonical, {
       target: legacyCanonical,
       label: "depends on",
     });
+    await rename(
+      path.join(dir, "entities", `${canonical}.md`),
+      path.join(dir, "entities", `${legacyCanonical}.md`),
+    );
     const staleRelatedContent = await seed.readEntity(relatedCanonical);
     await seed.addEntityRelationship(relatedCanonical, {
       target: "project-sun",
@@ -653,9 +654,9 @@ test("setSecureStoreKey resumes entity migration after a locked startup", async 
     const entityContent = await seed.readEntity(canonical);
     const legacyPath = path.join(dir, "entities", `${legacyCanonical}.md`);
     const canonicalPath = path.join(dir, "entities", `${canonical}.md`);
+    await seed.writeMemory("fact", "Legacy entity reference.", { entityRef: legacyCanonical });
     await writeMaybeEncryptedFile(legacyPath, entityContent, key, {}, dir);
     await rm(canonicalPath);
-    await seed.writeMemory("fact", "Legacy entity reference.", { entityRef: legacyCanonical });
     await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
 
     const upgraded = new StorageManager(dir);
@@ -821,12 +822,11 @@ test("ensureDirectories preserves entities whose legacy and canonical paths shar
     const canonicalPath = path.join(dir, "entities", `${canonical}.md`);
     const legacyPath = path.join(dir, "entities", `${legacy}.md`);
     const memory = await seed.writeMemory("fact", "Legacy entity memory.", { entityRef: legacy });
-    const memoryPath = path.join(
-      dir,
-      "facts",
-      new Date().toISOString().slice(0, 10),
-      `${memory.id}.md`,
+    const persistedMemory = (await seed.readAllMemories()).find(
+      (candidate) => candidate.frontmatter.id === memory.id,
     );
+    assert.ok(persistedMemory);
+    const memoryPath = persistedMemory.path;
     assert.match(await readFile(memoryPath, "utf-8"), new RegExp(`entityRef: ${legacy}\n`));
     await link(canonicalPath, legacyPath);
     await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
@@ -902,6 +902,42 @@ test("ensureDirectories rejects symlinked entity roots and entries", async () =>
       rm(entryDir, { recursive: true, force: true }),
       rm(rootDir, { recursive: true, force: true }),
     ]);
+  }
+});
+
+test("ensureDirectories rejects symlinked cold memories before entity-ref migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-memory-symlink-migration-"));
+  try {
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    const name = "Café";
+    const type = "project";
+    await seed.writeEntity(name, type, ["Canonical entity fact."]);
+    const canonical = normalizeEntityName(name, type);
+    const legacy = normalizeLegacyEntityName(name, type);
+    const canonicalPath = path.join(dir, "entities", `${canonical}.md`);
+    const legacyPath = path.join(dir, "entities", `${legacy}.md`);
+    const memory = await seed.writeMemory("fact", "Legacy entity memory.", { entityRef: legacy });
+    const persistedMemory = (await seed.readAllMemories()).find(
+      (candidate) => candidate.frontmatter.id === memory.id,
+    );
+    assert.ok(persistedMemory);
+    const originalMemory = await readFile(persistedMemory.path, "utf-8");
+    const outsideMemory = path.join(dir, "outside-memory.md");
+    await writeFile(outsideMemory, originalMemory, "utf-8");
+    await writeFile(legacyPath, await readFile(canonicalPath, "utf-8"), "utf-8");
+    const coldLink = path.join(dir, "cold", "facts", "linked.md");
+    await mkdir(path.dirname(coldLink), { recursive: true });
+    await symlink(outsideMemory, coldLink);
+
+    await assert.rejects(
+      () => new StorageManager(dir).ensureDirectories(),
+      /symlinked memory/i,
+    );
+    assert.equal((await lstat(coldLink)).isSymbolicLink(), true);
+    assert.equal(await readFile(outsideMemory, "utf-8"), originalMemory);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

@@ -91,6 +91,15 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 const UNICODE_WORD_OR_NUMBER_RE = /[\p{L}\p{M}\p{N}]/u;
+function firstUnicodeCharacter(value: string): string {
+  const codePoint = value.codePointAt(0);
+  return codePoint === undefined ? "" : String.fromCodePoint(codePoint);
+}
+
+function lastUnicodeCharacter(value: string): string {
+  const codePoint = [...value].at(-1);
+  return codePoint ?? "";
+}
 const JAPANESE_PARTICLE_RE = /^[のはがをにへともやかでだ]$/u;
 const JAPANESE_MULTI_CHARACTER_PARTICLES = ["って"] as const;
 const KOREAN_PARTICLES = [
@@ -132,7 +141,7 @@ function isKoreanParticleBoundary(suffix: string): boolean {
     if (!particle) return false;
     offset += particle.length;
   }
-  const nextCharacter = suffix.slice(particleRun.length).at(0) ?? "";
+  const nextCharacter = firstUnicodeCharacter(suffix.slice(particleRun.length));
   return (
     particleRun.length > 0 &&
     (nextCharacter.length === 0 || !UNICODE_WORD_OR_NUMBER_RE.test(nextCharacter))
@@ -163,11 +172,11 @@ function containsPhrase(haystack: string, needle: string): boolean {
   }
   let offset = haystack.indexOf(needle);
   while (offset >= 0) {
-    const before = haystack.slice(0, offset).at(-1) ?? "";
+    const before = lastUnicodeCharacter(haystack.slice(0, offset));
     const after = haystack.slice(offset + needle.length);
     if (
       isUnicodePhraseBoundary(before, "", haystack, offset) &&
-      isUnicodePhraseBoundary(after.at(0) ?? "", after, haystack, offset + needle.length)
+      isUnicodePhraseBoundary(firstUnicodeCharacter(after), after, haystack, offset + needle.length)
     ) {
       return true;
     }

@@ -12,6 +12,7 @@ test("entity migration runner waits for an in-flight migration during directory 
     };
   });
   let runCount = 0;
+  let initializationDone = false;
   const runner = new EntityCanonicalIdMigrationRunner(
     () => true,
     async () => {
@@ -21,13 +22,30 @@ test("entity migration runner waits for an in-flight migration during directory 
   );
 
   const inFlight = runner.ensure();
-  const initialization = runner.markDirectoriesInitialized();
+  const initialization = runner.markDirectoriesInitialized().then(() => {
+    initializationDone = true;
+  });
   await Promise.resolve();
   assert.equal(migrationDone, false);
-
+  assert.equal(initializationDone, false);
   releaseMigration();
   await initialization;
   await inFlight;
   assert.equal(migrationDone, true);
+  assert.equal(initializationDone, true);
   assert.equal(runCount, 1);
+});
+
+test("entity migration runner rechecks after an in-process completion", async () => {
+  let runCount = 0;
+  const runner = new EntityCanonicalIdMigrationRunner(
+    () => true,
+    async () => {
+      runCount += 1;
+    },
+  );
+
+  await runner.markDirectoriesInitialized();
+  await runner.ensure();
+  assert.equal(runCount, 2);
 });

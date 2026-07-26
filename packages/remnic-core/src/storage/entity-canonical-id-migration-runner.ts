@@ -1,5 +1,4 @@
 export class EntityCanonicalIdMigrationRunner {
-  private complete = false;
   private inFlight: Promise<void> | null = null;
   private directoriesInitialized = false;
 
@@ -14,7 +13,7 @@ export class EntityCanonicalIdMigrationRunner {
   }
 
   public ensure(): Promise<void> {
-    if (this.complete || !this.canRun()) return Promise.resolve();
+    if (!this.canRun()) return Promise.resolve();
     if (this.inFlight) return this.inFlight;
     const migration = this.runMigration();
     this.inFlight = migration;
@@ -28,10 +27,6 @@ export class EntityCanonicalIdMigrationRunner {
   public triggerAfterUnlock(): Promise<void> {
     if (!this.directoriesInitialized) return Promise.resolve();
     return this.ensure();
-  }
-
-  public markComplete(): void {
-    this.complete = true;
   }
 
   private clearInFlight(migration: Promise<void>): void {
