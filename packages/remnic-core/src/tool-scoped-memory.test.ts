@@ -123,6 +123,9 @@ const EXTRA_NEGATIVE: string[] = [
   "Use `config.json` for configuration",
   "Use `/health` for readiness checks",
   "Writers use edit passes",
+  "Use macOS for development",
+  "Use iOS for mobile apps",
+  "Use eBay for purchases",
   "Use least-privilege when designing authorization",
   "Use TypeScript-first for new packages",
 ];

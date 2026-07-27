@@ -127,7 +127,7 @@ function hasCamelCaseToolName(content: string): boolean {
   // host-tool naming convention (bashExecution, memoryStore, webFetch). Ordinary
   // English words are never camelCase, and PascalCase (PostgreSQL, TypeScript)
   // starts uppercase so is handled by hasCapitalisedToolName instead.
-  const camelRe = /\b([a-z][a-z0-9]*[A-Z][A-Za-z0-9]*)\b/g;
+  const camelRe = /\b([a-z]{3,}[a-z0-9]*[A-Z][a-z][A-Za-z0-9]*)\b/g;
   let m;
   while ((m = camelRe.exec(content)) !== null) {
     const token = m[1];
