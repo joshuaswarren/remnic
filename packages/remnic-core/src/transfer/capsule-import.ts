@@ -4,6 +4,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
+  canonicalizeEntityRefFrontmatter,
+  loadHistoricalEntityCanonicalIds,
+} from "../storage/entity-canonical-id-migration.js";
+import {
   createVersion,
   type VersioningConfig,
   type VersioningLogger,
@@ -381,6 +385,11 @@ export async function importCapsule(
   // atomic (mkdir + writeFile pair).
   const imported: ImportCapsuleImportedRecord[] = [];
   const skipped: ImportCapsuleSkippedRecord[] = [];
+  // The target's completed migration journal is a write boundary here too
+  // (issue #2213): a capsule can carry pre-migration memories whose entityRef
+  // the target already renamed, and no recurring reconciliation pass exists
+  // to absorb a stale ref after the fact. Loaded once per import run.
+  const historicalIds = loadHistoricalEntityCanonicalIds(path.join(rootReal, "state"));
 
   // Sort by source path so the imported/skipped lists are deterministic
   // regardless of bundle order. (`exportCapsule` already sorts; we re-sort
@@ -428,10 +437,10 @@ export async function importCapsule(
       }
     }
 
-    let contentToWrite = rec.content;
+    let contentToWrite = canonicalizeEntityRefFrontmatter(rec.content, historicalIds);
     let rewroteId = false;
     if (mode === "fork") {
-      const forked = rewriteFrontmatterIdForFork(rec.content, capsule.id, opts.now);
+      const forked = rewriteFrontmatterIdForFork(contentToWrite, capsule.id, opts.now);
       contentToWrite = forked.content;
       rewroteId = forked.rewrote;
     }

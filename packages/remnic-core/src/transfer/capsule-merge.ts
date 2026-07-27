@@ -3,6 +3,10 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
+  canonicalizeEntityRefFrontmatter,
+  loadHistoricalEntityCanonicalIds,
+} from "../storage/entity-canonical-id-migration.js";
+import {
   createVersion,
   type VersioningConfig,
   type VersioningLogger,
@@ -349,6 +353,9 @@ export async function mergeCapsule(
   const merged: MergeCapsuleWrittenRecord[] = [];
   const skipped: MergeCapsuleSkippedRecord[] = [];
   const conflicts: MergeCapsuleConflictRecord[] = [];
+  // Same write-boundary rule as capsule-import (issue #2213): records land
+  // with their entityRef resolved through the target's migration journal.
+  const historicalIds = loadHistoricalEntityCanonicalIds(path.join(rootReal, "state"));
 
   // Sort by source path for deterministic output (mirrors capsule-import.ts).
   const sortedRecords = [...bundle.records].sort((a, b) =>
@@ -358,22 +365,28 @@ export async function mergeCapsule(
   for (const rec of sortedRecords) {
     const targetAbs = path.join(rootReal, fromPosixRelPath(rec.path));
     const entry = manifestIndex.get(rec.path)!; // validated above
+    const canonicalContent = canonicalizeEntityRefFrontmatter(rec.content, historicalIds);
 
     const localContent = await readLocalFile(targetAbs);
 
     if (localContent === null) {
       // No local copy — always write regardless of mode.
       await mkdir(path.dirname(targetAbs), { recursive: true });
-      await writeFile(targetAbs, rec.content, "utf-8");
+      await writeFile(targetAbs, canonicalContent, "utf-8");
       bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
       merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted: false });
       continue;
     }
 
-    // Local file exists. Check if it is byte-identical to the archive entry.
+    // Local file exists. Check if it is byte-identical to the archive entry —
+    // or to its canonicalized form, so re-merging the same capsule after a
+    // ref rewrite stays an identical-skip instead of a phantom conflict.
     const { sha256: localSha256 } = sha256String(localContent);
 
-    if (localSha256 === entry.sha256) {
+    if (
+      localSha256 === entry.sha256
+      || (canonicalContent !== rec.content && localSha256 === sha256String(canonicalContent).sha256)
+    ) {
       // Byte-identical — no write needed.
       skipped.push({ path: rec.path, reason: "identical" });
       continue;
@@ -409,7 +422,7 @@ export async function mergeCapsule(
       snapshotted = true;
     }
 
-    await writeFile(targetAbs, rec.content, "utf-8");
+    await writeFile(targetAbs, canonicalContent, "utf-8");
     bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
     merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted });
   }

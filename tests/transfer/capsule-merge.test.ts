@@ -759,3 +759,45 @@ test("conflict record contains accurate sha256 values for both sides", async () 
   assert.equal(c.archiveSha256, sha256String(archiveContent).sha256);
   assert.equal(c.localSha256, sha256String(localContent).sha256);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #2213: the target's migration journal is a write boundary for merges
+// ---------------------------------------------------------------------------
+
+test("merge canonicalizes a legacy entityRef and re-merge stays identical-skip", async () => {
+  const archivePath = await exportFixtures(
+    [{
+      rel: "facts/2026-04-25/fact-legacy-ref.md",
+      content: "---\nid: fact-legacy-ref\nentityRef: automation-nightly-ingest\n---\n\nbody\n",
+    }],
+    "legacy-ref-merge",
+  );
+
+  const dst = await makeTargetDir();
+  await mkdir(path.join(dst, "state"), { recursive: true });
+  await writeFile(
+    path.join(dst, "state", "entity-canonical-id-migration-v1.json"),
+    JSON.stringify({
+      version: 1,
+      complete: true,
+      mappings: { "automation-nightly-ingest": "automation-cron-job-nightly-ingest" },
+    }),
+    "utf-8",
+  );
+
+  const first = await mergeCapsule({ sourceArchive: archivePath, targetRoot: dst });
+  assert.equal(first.merged.length, 1);
+  const written = await readFile(path.join(dst, "facts", "2026-04-25", "fact-legacy-ref.md"), "utf-8");
+  assert.match(written, /entityRef: automation-cron-job-nightly-ingest/);
+  assert.doesNotMatch(written, /entityRef: automation-nightly-ingest/);
+
+  // Re-merging the same capsule must recognize the canonicalized local copy
+  // as identical, not surface a phantom conflict.
+  const second = await mergeCapsule({ sourceArchive: archivePath, targetRoot: dst });
+  assert.equal(second.merged.length, 0);
+  assert.equal(second.conflicts.length, 0);
+  assert.deepEqual(
+    second.skipped.map((s) => s.reason),
+    ["identical"],
+  );
+});

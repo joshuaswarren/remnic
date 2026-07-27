@@ -117,6 +117,30 @@ export function canonicalizeEntityRefOption<T extends { entityRef?: string }>(
   return { ...options, entityRef: resolveHistoricalEntityCanonicalId(options.entityRef, mappings) };
 }
 
+/**
+ * Canonicalize the `entityRef:` line inside a raw memory record's leading
+ * frontmatter block (issue #2213). Bulk writers that persist record bytes
+ * verbatim — capsule import/merge — are a write boundary too: a capsule can
+ * carry pre-migration memories whose refs the target's completed journal
+ * already renamed, and no later reconciliation pass exists to absorb them.
+ * Non-frontmatter content, records without an `entityRef` line, and ids the
+ * journal does not map all pass through byte-identical.
+ */
+export function canonicalizeEntityRefFrontmatter(
+  content: string,
+  mappings: Readonly<Record<string, string>>,
+): string {
+  if (Object.keys(mappings).length === 0 || !content.startsWith("---\n")) return content;
+  const end = content.indexOf("\n---", 4);
+  if (end === -1) return content;
+  const head = content.slice(0, end);
+  const rewritten = head.replace(/^entityRef:[ \t]*(\S+)[ \t]*$/m, (line, id: string) => {
+    const canonical = resolveHistoricalEntityCanonicalId(id, mappings);
+    return canonical === id ? line : `entityRef: ${canonical}`;
+  });
+  return rewritten === head ? content : rewritten + content.slice(end);
+}
+
 const EntityCanonicalIdMigrationStateSchema = z.object({
   version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),
   complete: z.boolean(),

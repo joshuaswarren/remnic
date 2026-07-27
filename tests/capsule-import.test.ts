@@ -1187,3 +1187,38 @@ test("symlinked root pointing to a sensitive path is rejected", async () => {
   const files = await listMemoryFiles(sensitiveDir);
   assert.deepEqual(files, [], "writes must not reach the symlink target");
 });
+
+// ---------------------------------------------------------------------------
+// Issue #2213: the target's migration journal is a write boundary for imports
+// ---------------------------------------------------------------------------
+
+test("import canonicalizes a legacy entityRef through the target's migration journal", async () => {
+  const { archivePath } = await exportTo(
+    [{
+      rel: "facts/2026-04-25/fact-legacy-ref.md",
+      content: "---\nid: fact-legacy-ref\nentityRef: automation-nightly-ingest\n---\n\nbody\n",
+    }],
+    "legacy-ref",
+  );
+
+  const dst = await makeEmptyMemoryDir();
+  await mkdir(path.join(dst, "state"), { recursive: true });
+  await writeFile(
+    path.join(dst, "state", "entity-canonical-id-migration-v1.json"),
+    JSON.stringify({
+      version: 1,
+      complete: true,
+      mappings: { "automation-nightly-ingest": "automation-cron-job-nightly-ingest" },
+    }),
+    "utf-8",
+  );
+
+  const result = await importCapsule({ archivePath, root: dst });
+  assert.equal(result.imported.length, 1);
+  const written = await readFile(path.join(dst, "facts", "2026-04-25", "fact-legacy-ref.md"), "utf-8");
+  assert.match(written, /entityRef: automation-cron-job-nightly-ingest/);
+  assert.doesNotMatch(written, /entityRef: automation-nightly-ingest/);
+  // Body and unrelated frontmatter stay byte-identical.
+  assert.match(written, /id: fact-legacy-ref/);
+  assert.match(written, /body\n$/);
+});
