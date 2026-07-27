@@ -12,8 +12,12 @@ import {
   extractNonRecoverableBackendReason,
   extractNonRecoverableBackendReasonFromErrorText,
   isAbortError,
+  probeFetch,
+  resolveUnavailableVerdict,
+  type ProbeFetchResult,
   normalizeBackendTripReason,
   waitForRetryBackoff,
+  SingleFlightProbe,
 } from "./local-llm-helpers.js";
 
 /** Trim trailing slash characters without backtracking regex. */
@@ -256,6 +260,7 @@ export class LocalLlmClient {
   private config: PluginConfig;
   private isAvailable: boolean | null = null;
   private lastHealthCheck: number = 0;
+  private readonly availabilityProbe = new SingleFlightProbe();
   private detectedType: LocalLlmType | null = null;
   private cachedModelInfo: LocalModelInfo | null = null;
   private cachedLmsContext: number | null = null;
@@ -371,39 +376,20 @@ export class LocalLlmClient {
 
 
   /**
-   * Fetch with timeout for health checks
+   * Fetch with timeout for health checks. Body lives in the sibling helper so
+   * this file stays under its size ceiling (issue #1995).
    */
   private async fetchWithTimeout(
     url: string,
     timeoutMs: number = 2000,
     headers?: Record<string, string>,
     signal?: AbortSignal,
-  ): Promise<{ ok: boolean; data: unknown; status: number | null }> {
-    const controller = new AbortController();
-    const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-      const response = await fetch(url, {
-        signal: requestSignal,
-        headers: this.buildRequestHeaders({ Accept: "application/json", ...(headers ?? {}) }),
-      });
-      clearTimeout(timeout);
-
-      if (!response.ok) {
-        return { ok: false, data: null, status: response.status };
-      }
-
-      const contentType = response.headers.get("content-type");
-      if (contentType?.includes("application/json")) {
-        return { ok: true, data: await response.json(), status: response.status };
-      } else {
-        return { ok: true, data: await response.text(), status: response.status };
-      }
-    } catch (err) {
-      clearTimeout(timeout);
-      return { ok: false, data: null, status: null };
-    }
+  ): Promise<ProbeFetchResult> {
+    return await probeFetch(url, {
+      timeoutMs,
+      headers: this.buildRequestHeaders({ Accept: "application/json", ...(headers ?? {}) }),
+      signal,
+    });
   }
 
   private async probeLmStudioNativeModels(
@@ -445,8 +431,11 @@ export class LocalLlmClient {
     if (this.isAvailable !== null && now - this.lastHealthCheck < LocalLlmClient.HEALTH_CHECK_INTERVAL_MS) {
       return this.isAvailable;
     }
+    return await this.availabilityProbe.run((probeSignal) => this.probeAvailability(probeSignal), signal);
+  }
 
-    // Normalize URL - replace localhost with 127.0.0.1, remove trailing slashes.
+  private async probeAvailability(signal?: AbortSignal): Promise<boolean> {
+    const now = Date.now();
     // Probe server-native endpoints from the server root even when users configure
     // the OpenAI-compatible `/v1` base URL for chat completions.
     const configuredBaseUrl = trimTrailingSlashes(
@@ -454,6 +443,10 @@ export class LocalLlmClient {
     );
     const probeBaseUrl = stripTrailingV1Path(configuredBaseUrl);
     let sawUnauthorizedProbe = false;
+    // A probe that TIMED OUT says the event loop was busy, not that the backend
+    // is down (issue #2210). Tracked separately so a loaded daemon cannot cache
+    // itself into a blackout.
+    let sawAbortedProbe = false;
 
     // Try to detect which server type is running
     if (signal?.aborted) return false;
@@ -462,6 +455,7 @@ export class LocalLlmClient {
       log.debug(`checking ${serverConfig.type} at ${healthUrl}`);
 
       const result = await this.fetchWithTimeout(healthUrl, 2000, undefined, signal);
+      if (result.aborted) sawAbortedProbe = true;
       if (signal?.aborted) return false;
       if (result.ok && serverConfig.detectFn(result.data)) {
         if (serverConfig.type === "mlx") {
@@ -481,6 +475,7 @@ export class LocalLlmClient {
         if (serverConfig.type === "llamacpp") {
           let sawLlamaCppSignal = false;
           const propsProbe = await this.fetchWithTimeout(`${probeBaseUrl}/props`, 2000, undefined, signal);
+          if (propsProbe.aborted) sawAbortedProbe = true;
           if (signal?.aborted) return false;
           if (propsProbe.ok && isLlamaCppPropsResponse(propsProbe.data)) {
             sawLlamaCppSignal = true;
@@ -491,6 +486,7 @@ export class LocalLlmClient {
 
           const modelsUrl = `${probeBaseUrl}${serverConfig.modelsEndpoint}`;
           const modelsProbe = await this.fetchWithTimeout(modelsUrl, 2000, undefined, signal);
+          if (modelsProbe.aborted) sawAbortedProbe = true;
           if (signal?.aborted) return false;
           if (modelsProbe.ok && isLlamaCppModelsResponse(modelsProbe.data)) {
             sawLlamaCppSignal = true;
@@ -523,6 +519,7 @@ export class LocalLlmClient {
     try {
       const modelsUrl = `${probeBaseUrl}/v1/models`;
       const result = await this.fetchWithTimeout(modelsUrl, 2000, undefined, signal);
+      if (result.aborted) sawAbortedProbe = true;
       if (signal?.aborted) return false;
       if (result.ok) {
         this.isAvailable = true;
@@ -538,14 +535,21 @@ export class LocalLlmClient {
       // Fall through to unavailable
     }
 
-    this.isAvailable = false;
+    const wasAvailable = this.isAvailable;
     this.detectedType = null;
-    this.lastHealthCheck = now;
     if (sawUnauthorizedProbe) {
       log.warn(
         `local LLM availability probe was unauthorized at ${configuredBaseUrl}; verify localLlmApiKey and localLlmAuthHeader settings`,
       );
     }
+    const verdict = resolveUnavailableVerdict({
+      baseUrl: configuredBaseUrl,
+      sawAbortedProbe,
+      wasAvailable,
+    });
+    this.isAvailable = verdict.cacheVerdict ? false : null;
+    this.lastHealthCheck = verdict.cacheVerdict ? now : 0;
+    if (verdict.warning) log.warn(verdict.warning);
     log.debug("local LLM not available at", configuredBaseUrl);
     return false;
   }

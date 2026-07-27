@@ -907,3 +907,148 @@ test("LocalLlmClient getLoadedModelInfo sends auth headers to models probe", asy
     globalThis.fetch = originalFetch;
   }
 });
+
+/**
+ * Issue #2210: a busy event loop can burn the health probe's fixed 2s budget
+ * before the socket is even scheduled. The probe aborts, and the client used to
+ * record that as "backend unavailable" and cache it — taking extraction offline
+ * while the backend was answering other callers in single-digit milliseconds.
+ */
+test("a timed-out availability probe leaves availability unknown instead of caching a blackout", async () => {
+  initLogger(undefined, false);
+  const client = new LocalLlmClient(buildConfig());
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    throw abortError();
+  }) as typeof fetch;
+  try {
+    assert.equal(await client.checkAvailability(), false, "this call still fails");
+    const afterFirst = calls;
+    assert.ok(afterFirst > 0, "probes ran");
+
+    // The point: the next call must RE-PROBE. A cached false would serve the
+    // stale verdict for the whole health-check interval with no new requests.
+    assert.equal(await client.checkAvailability(), false);
+    assert.ok(calls > afterFirst, "a timed-out probe must not be cached as a verdict");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a definitive probe failure IS cached for the health-check interval", async () => {
+  initLogger(undefined, false);
+  const client = new LocalLlmClient(buildConfig());
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  // A backend that ANSWERS and says no is a real verdict, unlike a timeout.
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response("nope", { status: 500, headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
+  try {
+    assert.equal(await client.checkAvailability(), false);
+    const afterFirst = calls;
+    assert.ok(afterFirst > 0, "probes ran");
+    assert.equal(await client.checkAvailability(), false);
+    assert.equal(calls, afterFirst, "a definitive failure must be cached, not re-probed every request");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("concurrent availability checks share one probe sequence", async () => {
+  initLogger(undefined, false);
+  const client = new LocalLlmClient(buildConfig());
+  const originalFetch = globalThis.fetch;
+  let probes = 0;
+  let releaseProbes!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseProbes = resolve;
+  });
+  // Hold every probe open so all five callers are genuinely in flight at once.
+  globalThis.fetch = (async () => {
+    probes += 1;
+    await gate;
+    return new Response("nope", { status: 500, headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
+  try {
+    const callers = [1, 2, 3, 4, 5].map(() => client.checkAvailability());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const concurrentProbes = probes;
+    releaseProbes();
+    const results = await Promise.all(callers);
+    assert.deepEqual(results, [false, false, false, false, false]);
+    assert.equal(
+      concurrentProbes,
+      1,
+      "five concurrent callers must not each start their own probe sequence",
+    );
+  } finally {
+    releaseProbes();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("one caller cancelling does not abort a probe the others still await", async () => {
+  initLogger(undefined, false);
+  const client = new LocalLlmClient(buildConfig());
+  const originalFetch = globalThis.fetch;
+  let releaseProbes!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseProbes = resolve;
+  });
+  let completedProbes = 0;
+  globalThis.fetch = (async () => {
+    await gate;
+    completedProbes += 1;
+    return new Response(JSON.stringify({ models: [{ id: "m" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  const quitter = new AbortController();
+  try {
+    const abandoned = client.checkAvailability(quitter.signal);
+    const stayer = client.checkAvailability();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    quitter.abort();
+    assert.equal(await abandoned, false, "the cancelling caller gets a prompt negative");
+    releaseProbes();
+    assert.equal(await stayer, true, "the remaining caller still gets a real verdict");
+    assert.ok(completedProbes > 0, "the shared probe was not aborted out from under the stayer");
+  } finally {
+    releaseProbes();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a caller arriving after the last waiter cancels starts a fresh probe", async () => {
+  initLogger(undefined, false);
+  const client = new LocalLlmClient(buildConfig());
+  const originalFetch = globalThis.fetch;
+  let sequences = 0;
+  // Ignore cancellation entirely: the doomed sequence stays pending, which is
+  // exactly the window where a late caller could join it.
+  globalThis.fetch = (async () => {
+    sequences += 1;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return new Response(JSON.stringify({ models: [{ id: "m" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  const quitter = new AbortController();
+  try {
+    const abandoned = client.checkAvailability(quitter.signal);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    quitter.abort();
+    assert.equal(await abandoned, false);
+    const late = await client.checkAvailability();
+    assert.equal(late, true, "a late caller must get a real verdict, not the aborted one's false");
+    assert.ok(sequences >= 2, "the late caller must start its own sequence, not join the doomed one");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
