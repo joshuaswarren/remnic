@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { computeSupersessionKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { EntityFile, MemoryFile } from "../types.js";
@@ -52,21 +52,30 @@ export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Rec
 }
 
 /**
- * Journal mapping table keyed by the shared memory-status version, so a
- * long-lived StorageManager never canonicalizes against a constructor-time
- * snapshot after a PEER process completes a migration (the migration bumps
- * memory-status whenever it changes the mapping set, and that version lives
- * in a shared file). Reload cost is one version read per lookup and one
- * journal parse per actual change.
+ * Journal mapping table keyed by the journal FILE's identity, so a long-lived
+ * StorageManager never canonicalizes against a stale snapshot after ANY other
+ * writer changes the journal — a peer process completing a migration, or
+ * `pruneBlocked()` parking a contested mapping (which rewrites the journal
+ * without bumping any shared version). `writeState` publishes via
+ * temp-file-plus-rename, so every journal write swaps the inode and the key
+ * always moves. Reload cost is one lstat per lookup and one journal parse per
+ * actual change.
  */
 export class HistoricalEntityCanonicalIdCache {
   private mappings: Readonly<Record<string, string>> = {};
-  private version = -1;
+  private key: string | null = null;
 
-  get(stateDir: string, version: number): Readonly<Record<string, string>> {
-    if (version !== this.version) {
+  get(stateDir: string): Readonly<Record<string, string>> {
+    let key = "missing";
+    try {
+      const s = lstatSync(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
+      key = `${s.dev}:${s.ino}:${s.mtimeMs}:${s.ctimeMs}:${s.size}`;
+    } catch {
+      // Missing journal — an empty mapping table is the correct read.
+    }
+    if (key !== this.key) {
       this.mappings = loadHistoricalEntityCanonicalIds(stateDir);
-      this.version = version;
+      this.key = key;
     }
     return this.mappings;
   }

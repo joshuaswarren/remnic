@@ -535,3 +535,37 @@ test("a manager that predates a peer's migration still canonicalizes reference w
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a park written without any version bump still invalidates peer mapping caches", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-park-invalidation-"));
+  try {
+    // Completed migration retaining legacy→canonical.
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    // A long-lived manager loads the mapping and redirects the legacy id.
+    const a = new StorageManager(dir);
+    await a.ensureDirectories();
+    assert.equal(a.normalizeEntityName("Nightly Ingest", "automation"), canonical);
+
+    // The collision re-forms out of band; a peer's migration run parks the
+    // mapping — pruneBlocked rewrites the journal WITHOUT bumping any shared
+    // version. The stale manager must stop redirecting the contested id.
+    await writeFile(
+      path.join(dir, "entities", `${legacy}.md`),
+      `---\nid: ${legacy}\ncreated: 2026-03-02T00:00:00.000Z\nupdated: 2026-03-02T00:00:00.000Z\n---\n\n`
+      + `# Nightly Ingest\n\n**Type:** automation-cron-job\n\nRuns at 04:00 — diverged.\n`,
+      "utf8",
+    );
+    await new StorageManager(dir).ensureDirectories();
+    assert.equal(
+      a.normalizeEntityName("Nightly Ingest", "automation"),
+      legacy,
+      "a parked mapping must not keep redirecting through a stale in-memory table",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

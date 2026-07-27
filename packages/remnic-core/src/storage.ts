@@ -3523,7 +3523,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private userAliases: Record<string, string> = {};
   private readonly historicalEntityCanonicalIds = new entityMigration.HistoricalEntityCanonicalIdCache();
   private currentHistoricalIds(): Readonly<Record<string, string>> {
-    return this.historicalEntityCanonicalIds.get(this.stateDir, this.getMemoryStatusVersion());
+    return this.historicalEntityCanonicalIds.get(this.stateDir);
   }
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
@@ -6065,9 +6065,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Deduplicates by target+label.
    */
   async addEntityRelationship(name: string, rel: EntityRelationship): Promise<void> {
-    // Resolve both ends through the migration journal (issue #2213) — legacy ids name renamed-away nodes.
-    name = entityMigration.resolveHistoricalEntityCanonicalId(name, this.currentHistoricalIds());
-    const target = entityMigration.resolveHistoricalEntityCanonicalId(rel.target, this.currentHistoricalIds());
+    const historicalIds = this.currentHistoricalIds();
+    name = entityMigration.resolveHistoricalEntityCanonicalId(name, historicalIds);
+    const target = entityMigration.resolveHistoricalEntityCanonicalId(rel.target, historicalIds);
     const filePath = path.join(this.entitiesDir, `${name}.md`);
     let entity: EntityFile;
     try {
