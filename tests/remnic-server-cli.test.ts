@@ -675,12 +675,14 @@ async function startServerWithDebug(
     "utf8",
   );
 
+  // Resolve the port BEFORE patching console: a rejection here would otherwise
+  // leave the global patched for every later test in the file.
+  const port = await getFreePort();
   const debugLines: string[] = [];
   const originalDebug = console.debug;
   console.debug = (...args: unknown[]) => {
     debugLines.push(args.map((a) => String(a)).join(" "));
   };
-  const port = await getFreePort();
   try {
     const result = await startServer({ configPath, port });
     result.cancelStartupSync();
@@ -700,10 +702,9 @@ test("startServer honors debug:true from the config file", async (t) => {
   );
 });
 
-test("startServer stays quiet when debug is not set", async (t) => {
+test("startServer emits no debug output when debug:false", async (t) => {
   const { debugLines } = await startServerWithDebug(t, false);
-  assert.equal(
-    debugLines.filter((line) => line.includes("debug logging enabled from config")).length,
-    0,
-  );
+  // Assert the whole channel is silent, not just that our marker is absent:
+  // filtering for one message would pass while every other debug line leaked.
+  assert.deepEqual(debugLines, []);
 });
