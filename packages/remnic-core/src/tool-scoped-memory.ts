@@ -68,16 +68,20 @@ const ARGS = "(?:\\s+" + FLAG + "(?:\\s+" + OPCODE + "){0,4})?";
 const CLI_ARG_TOKEN = "(?:[a-z][a-z0-9-]{0,15}|" + FLAG_NAKED + "|" + OPCODE + ")";
 const CLI_ARG_RUN = "(?:\\s+" + CLI_ARG_TOKEN + "){1,4}";
 
+// Shared: a CLI tool or slash command optionally followed by a bounded
+// argument run. Used by BOTH the quoted and unquoted invocation arms so
+// quoting cannot diverge from unquoted again (#2183 round 20).
+const CMD_WITH_ARGS = "(?:(?:" + CLI_NAMES_CI + "|" + SLASH_GENERIC + ")" + CLI_ARG_RUN + ")";
 const QSTRICT_CONTENT =
   "(?:" + KNOWN_NAMES_ALT + "|[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+" + "|" + FLAG_NAKED + "|" + SLASH_CMD_TOKEN +
-  "|(?:" + KNOWN_NAMES_ALT + ")" + CLI_ARG_RUN + ")";
+  "|" + CMD_WITH_ARGS + ")";
 const QUOTED_STRICT =
   "(?:" + BT + QSTRICT_CONTENT + BT + "|\"" + QSTRICT_CONTENT + "\"|'" + QSTRICT_CONTENT + "')";
 
 const INVOCATION_FLAG_ARGS =
   VERB + "\\s+(?:" + QUOTED_STRICT + "|" + KNOWN_NAMES_CI + "|" + SNAKE + "|" + SLASH_GENERIC + "|" + FLAG + ")" + ARGS + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
 const INVOCATION_CLI_ARGS =
-  VERB + "\\s+(?:" + CLI_NAMES_CI + "|" + SLASH_GENERIC + ")" + CLI_ARG_RUN + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
+  VERB + "\\s+" + CMD_WITH_ARGS + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
 const INVOCATION = "(?:" + INVOCATION_FLAG_ARGS + "|" + INVOCATION_CLI_ARGS + ")";
 
 const TOOL_REFERENCE_CI = new RegExp(

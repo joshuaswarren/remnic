@@ -78,6 +78,7 @@ const EXTRA_POSITIVE: string[] = [
   "Call bashExecution() to persist data",
   "Use /remnic flush before reset",
   "The /remnic command controls memory",
+  "Use `/remnic flush` before reset",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {
