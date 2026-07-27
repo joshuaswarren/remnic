@@ -1023,3 +1023,32 @@ test("one caller cancelling does not abort a probe the others still await", asyn
     globalThis.fetch = originalFetch;
   }
 });
+
+test("a caller arriving after the last waiter cancels starts a fresh probe", async () => {
+  initLogger(undefined, false);
+  const client = new LocalLlmClient(buildConfig());
+  const originalFetch = globalThis.fetch;
+  let sequences = 0;
+  // Ignore cancellation entirely: the doomed sequence stays pending, which is
+  // exactly the window where a late caller could join it.
+  globalThis.fetch = (async () => {
+    sequences += 1;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return new Response(JSON.stringify({ models: [{ id: "m" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  const quitter = new AbortController();
+  try {
+    const abandoned = client.checkAvailability(quitter.signal);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    quitter.abort();
+    assert.equal(await abandoned, false);
+    const late = await client.checkAvailability();
+    assert.equal(late, true, "a late caller must get a real verdict, not the aborted one's false");
+    assert.ok(sequences >= 2, "the late caller must start its own sequence, not join the doomed one");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -197,7 +197,13 @@ export class SingleFlightProbe {
       if (released) return;
       released = true;
       entry.waiters -= 1;
-      if (entry.waiters <= 0) entry.controller.abort();
+      if (entry.waiters > 0) return;
+      // Detach BEFORE aborting. `pending` would otherwise still point at this
+      // doomed entry until the task's own `finally` runs a microtask later, and
+      // a caller arriving in that window would join an aborted sequence and
+      // read its `false` as a verdict.
+      if (this.pending === entry) this.pending = null;
+      entry.controller.abort();
     };
     if (!signal) return entry.promise.finally(release);
     return new Promise<boolean>((resolve, reject) => {
