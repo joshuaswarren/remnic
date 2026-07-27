@@ -122,9 +122,36 @@ function hasCapitalisedToolName(content: string): boolean {
   return false;
 }
 
+function hasCamelCaseToolName(content: string): boolean {
+  // Case-sensitive: camelCase (lowercase start, interior uppercase) is a common
+  // host-tool naming convention (bashExecution, memoryStore, webFetch). Ordinary
+  // English words are never camelCase, and PascalCase (PostgreSQL, TypeScript)
+  // starts uppercase so is handled by hasCapitalisedToolName instead.
+  const camelRe = /\b([a-z][a-z0-9]*[A-Z][A-Za-z0-9]*)\b/g;
+  let m;
+  while ((m = camelRe.exec(content)) !== null) {
+    const token = m[1];
+    const start = m.index!;
+    const end = start + token.length;
+    const before = content.slice(Math.max(0, start - 20), start);
+    const after = content.slice(end);
+    // Invocation: preceded by a verb, followed by a clause boundary or call syntax.
+    if (/(?:^|\s)(?:use|run|call|invoke)\s*$/i.test(before) &&
+        /^(?:\s*(?:$|[.,;(:]|(?:when|before|after|to|with|for|on|in|if|unless|whenever)\b))/i.test(after)) {
+      return true;
+    }
+    // Keyword-adjacent: camelCase beside a tool/command keyword.
+    if (/^(?:\s*(?:tool|command|subcommand)\b)/i.test(after) ||
+        /(?:tool|command|subcommand)\s*$/i.test(before)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function referencesAgentSpecificTool(content: string): boolean {
   if (typeof content !== "string" || content.length === 0) return false;
-  return TOOL_REFERENCE_CI.test(content) || hasCapitalisedToolName(content);
+  return TOOL_REFERENCE_CI.test(content) || hasCapitalisedToolName(content) || hasCamelCaseToolName(content);
 }
 
 export interface ToolScopeWithholdInputs {
