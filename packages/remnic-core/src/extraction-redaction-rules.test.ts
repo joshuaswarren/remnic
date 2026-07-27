@@ -20,6 +20,7 @@ import {
   type CompiledRedactionRule,
 } from "./extraction-redaction-rules.js";
 import { validateRedactionPattern } from "./correction/correction-contract.js";
+import { shouldPromoteGlobalFactToShared } from "./tool-scoped-memory.js";
 
 const withTempDir = <T>(fn: (dir: string) => Promise<T>): Promise<T> =>
   managedWithTempDir(fn, "remnic-redact-");
@@ -375,6 +376,58 @@ test("#1713 (codex): non-global fact is NOT scope-routed to shared", async () =>
       const targetRules: CompiledRedactionRule[] = [];
       const factRedactionRules: CompiledRedactionRule[] = [...baseRules, ...targetRules];
       assert.equal(factRedactionRules.length, 0, "no rules consulted for a scope-local fact");
+    });
+  });
+});
+test("#2183: pre-judge consults the SESSION namespace rules for a tool-scoped global fact (not shared)", async () => {
+  // The pre-judge namespace prediction and the write-loop scope-routing block
+  // share shouldPromoteGlobalFactToShared, so a tool-scoped global fact from a
+  // known integration is predicted to stay in the session namespace: its
+  // redaction is evaluated against the SESSION rules, not the shared ones. A
+  // portable global fact is still predicted shared and consults shared rules.
+  // This is the read/write namespace-invariant coupling the guard preserves.
+  await withTempDir(async (sourceDir) => {
+    await withTempDir(async (sharedDir) => {
+      await writeRule(sourceDir, "session-only-secret");
+      await writeRule(sharedDir, "shared-only-secret");
+
+      const sourceNamespace: string = "default";
+      const sharedNamespace: string = "shared";
+      const sourceConnector = "pi";
+
+      // Mirror the pre-judge pass: predicted target namespace = shared ONLY
+      // when shouldPromoteGlobalFactToShared says so; load that namespace's
+      // rules and combine with the base (source) rules.
+      async function consultedRulesFor(fact: { scope: string; content: string }): Promise<CompiledRedactionRule[]> {
+        const baseRules = await loadRedactionRules(sourceDir);
+        const promote = shouldPromoteGlobalFactToShared({
+          scope: fact.scope,
+          content: fact.content,
+          sourceConnector,
+        });
+        const factNs = promote ? sharedNamespace : undefined;
+        const targetRules =
+          factNs && factNs !== sourceNamespace ? await loadRedactionRules(sharedDir) : [];
+        return [...baseRules, ...targetRules];
+      }
+
+      // (a) tool-scoped global fact + sourceConnector -> predicted SESSION.
+      const toolRules = await consultedRulesFor({ scope: "global", content: "Prefer the search tool when locating code." });
+      assert.ok(
+        contentMatchesRedactionRules("session-only-secret here", toolRules),
+        "session rules are consulted for a tool-scoped global fact",
+      );
+      assert.ok(
+        !contentMatchesRedactionRules("shared-only-secret here", toolRules),
+        "shared rules are NOT consulted for a tool-scoped global fact (the #2183 fix)",
+      );
+
+      // (b) portable global fact + sourceConnector -> predicted SHARED.
+      const portableRules = await consultedRulesFor({ scope: "global", content: "User prefers dark mode in all editors" });
+      assert.ok(
+        contentMatchesRedactionRules("shared-only-secret here", portableRules),
+        "shared rules ARE consulted for a portable global fact (no regression)",
+      );
     });
   });
 });

@@ -82,6 +82,7 @@ import {
   stripCitationForTemplate,
 } from "../source-attribution.js";
 import { classifyMemoryKind } from "../himem.js";
+import { shouldPromoteGlobalFactToShared, withholdToolScopedFromSharedNamespace } from "../tool-scoped-memory.js";
 import {
   buildBehaviorSignalsForMemory,
   dedupeBehaviorSignalsByMemoryAndHash,
@@ -394,6 +395,7 @@ export class ExtractionPersistCoordinator {
     // (pre-judge + write-loop) so no new scattered config.*Enabled read is
     // introduced (ratchet scatteredConfigFlagReads; see #1523).
     const namespacesEnabled = resolveNamespaceCapabilities(this.deps.config).namespaces;
+    const sourceConnector = sourceContext?.sourceConnector; // #2183 tool-scope guard input
     const promoteMemoryToProfileTargets = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -607,11 +609,14 @@ export class ExtractionPersistCoordinator {
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
       source: string;
+      sourceConnector?: string;
+      procedureSteps?: ReadonlyArray<{ toolCall?: { kind?: string } }>;
       /** Claim-level provenance spans (issue #1575 PR 2). */
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
     }): Promise<void> => {
       await promoteMemoryToProfileTargets(options);
+      if (lifecycleCaps.extractionScopeClassification && withholdToolScopedFromSharedNamespace(options)) return;
       if (
         !shouldPromoteToShared(
           this.deps.config,
@@ -629,7 +634,6 @@ export class ExtractionPersistCoordinator {
           this.deps.config.sharedNamespace,
         );
         // Dedup gate: canonicalize content before hashing.
-        //
         // Issue #369 (PR #401): When inline attribution is enabled,
         // `applyInlineCitation` appends a timestamp-bearing marker (e.g.
         // `[Source: ..., ts=2026-04-11T...]`).  Because the timestamp changes
@@ -639,7 +643,6 @@ export class ExtractionPersistCoordinator {
         // `fact.content`, which can already carry an inline citation (e.g. a
         // relayed or reprocessed fact).  Strip any pre-existing citation so the
         // dedup key matches the hash stored from the original un-cited write.
-        //
         // PR #402 round-6 (Fix #2 / chatgpt-codex P1 PRRT_kwDORJXyws56U74n):
         // Compute the enriched content before the hash-dedup check so the
         // lookup uses the same content that writeMemory will actually store.
@@ -652,7 +655,6 @@ export class ExtractionPersistCoordinator {
         // key order and casing are canonical — identical to the enrichment
         // applied by storage.writeMemory — preventing spurious hash misses
         // when attribute maps arrive with different insertion orders or casing.
-        //
         // Fix #4 (Low PRRT_kwDORJXyws56VHth): sanitize the base content before
         // building dedupContent.  writeMemory runs sanitizeMemoryContent on the
         // enriched body before hashing; if sanitization redacts the content to
@@ -660,7 +662,6 @@ export class ExtractionPersistCoordinator {
         // the raw form.  Computing dedupContent from sanitized.text here ensures
         // the hash lookup and the normalizedIncoming comparison both use the
         // same content that writeMemory will actually store.
-        //
         // Combined fix: strip any pre-existing citation FIRST to obtain
         // rawContent (the canonical body), then sanitize rawContent (not
         // options.content) when building dedupContent, so that citation
@@ -1350,20 +1351,18 @@ export class ExtractionPersistCoordinator {
           // + PBJEe/PBKAj).
           let factRedactionRules = preJudgeRedactionRules;
           let factNs = preRoutedNamespaceByFact[fi];
-          // #1713 (codex PRRT_kwDORJXyws6PBj5X): scope classification can route
-          // a scope=global fact to the shared namespace independent of routing
-          // rules. If so, the pre-judge filter must consult the shared
-          // namespace's rules too, or a never-store pattern under shared is
-          // missed at pre-judge and only caught at the write gate — letting the
-          // content reach the extraction judge/training path. Mirror the write
-          // loop's scope-routing conditions exactly.
+          // #1713: predict the same target namespace the write loop will route
+          // this global fact to (shared, via shouldPromoteGlobalFactToShared) so
+          // the pre-judge redaction filter consults that namespace's rules.
           if (
             !factNs &&
             lifecycleCaps.extractionScopeClassification &&
             namespacesEnabled &&
             f.scope === "global" &&
             profileAllowsSharedWrites &&
-            this.deps.storageDirNamespace(storage.dir) !== this.deps.config.sharedNamespace
+            this.deps.storageDirNamespace(storage.dir) !== this.deps.config.sharedNamespace &&
+            shouldPromoteGlobalFactToShared({ scope: f.scope, content: f.content,
+              sourceConnector, procedureSteps: f.procedureSteps })
           ) {
             factNs = this.deps.config.sharedNamespace;
           }
@@ -1611,14 +1610,9 @@ export class ExtractionPersistCoordinator {
         }
       }
 
-      // Scope-based namespace routing: when scope classification is enabled
-      // and the LLM tagged this fact as "global", route it to the shared
-      // namespace so cross-project knowledge is visible everywhere. Only
-      // applies when namespaces are enabled and the fact was not already
-      // routed to a specific namespace by a routing rule (routing rules
-      // that set an explicit namespace take precedence; category-only rules
-      // do not block scope routing). Rule 30: gated by
-      // extractionScopeClassificationEnabled.
+      // Scope-based namespace routing: a `global` fact (scope classification
+      // on, no explicit routing-rule namespace) is promoted to the shared
+      // namespace unless the tool-scope guard withholds it (#2183).
       if (
         lifecycleCaps.extractionScopeClassification &&
         namespacesEnabled &&
@@ -1627,18 +1621,21 @@ export class ExtractionPersistCoordinator {
       ) {
         const currentNs = this.deps.storageDirNamespace(targetStorage.dir);
         if (currentNs !== this.deps.config.sharedNamespace && profileAllowsSharedWrites) {
-          try {
-            targetStorage = await this.deps.getStorageRouter().storageFor(
-              this.deps.config.sharedNamespace,
-            );
-            targetNamespaceName = this.deps.config.sharedNamespace;
-            log.debug(
-              `scope-routing: fact "${fact.content.slice(0, 60)}…" routed to shared namespace (scope=global)`,
-            );
-          } catch (scopeRouteErr) {
-            log.warn(
-              `scope-routing: failed to resolve shared namespace storage; writing to session namespace (fail-open): ${scopeRouteErr}`,
-            );
+          if (shouldPromoteGlobalFactToShared({ scope: fact.scope, content: fact.content,
+            sourceConnector, procedureSteps: fact.procedureSteps })) {
+            try {
+              targetStorage = await this.deps.getStorageRouter().storageFor(
+                this.deps.config.sharedNamespace,
+              );
+              targetNamespaceName = this.deps.config.sharedNamespace;
+              log.debug(
+                `scope-routing: fact "${fact.content.slice(0, 60)}…" routed to shared namespace (scope=global)`,
+              );
+            } catch (scopeRouteErr) {
+              log.warn(
+                `scope-routing: failed to resolve shared namespace storage; writing to session namespace (fail-open): ${scopeRouteErr}`,
+              );
+            }
           }
         } else if (currentNs !== this.deps.config.sharedNamespace) {
           log.debug(
@@ -2404,6 +2401,7 @@ export class ExtractionPersistCoordinator {
               : {}),
             source: extractionWriteSource,
             ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+            ...(fact.procedureSteps && fact.procedureSteps.length ? { procedureSteps: fact.procedureSteps } : {}),
             ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
             ...(fact.provenance ? { provenance: fact.provenance } : {}),
           });
@@ -2704,6 +2702,7 @@ export class ExtractionPersistCoordinator {
             : {}),
           source: extractionWriteSource,
           ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+          ...(fact.procedureSteps && fact.procedureSteps.length ? { procedureSteps: fact.procedureSteps } : {}),
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
         });

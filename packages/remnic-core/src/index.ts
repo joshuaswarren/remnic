@@ -1439,7 +1439,6 @@ export {
   type ForkLineage,
 } from "./transfer/capsule-fork.js";
 
-
 // ---------------------------------------------------------------------------
 // Coding-graph engine contract (#1551 PR1) — types owned by core,
 // implemented by @remnic/coding-graph (à-la-carte optional).
@@ -1460,3 +1459,4 @@ export type {
   ParseResult,
   SymbolIR,
 } from "./coding/coding-graph-types.js";
+export type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
