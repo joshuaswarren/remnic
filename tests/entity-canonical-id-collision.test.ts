@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { StorageManager, normalizeEntityName } from "../packages/remnic-core/src/storage.js";
+import { getFingerprint } from "../packages/remnic-core/src/storage/entity-canonical-id-migration.js";
 
 /**
  * A legacy entity file and its canonical successor can both exist with
@@ -415,6 +416,59 @@ test("a park whose legacy file is already gone still rewrites references", async
       canonical,
       "a park resolved before completion must still rewrite its references",
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stable completed journal with retained mappings is a no-op on re-init", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-stable-journal-"));
+  try {
+    // Reach the steady state every long-lived deployment lands in: a
+    // completed migration whose journal retains mappings for read compat
+    // (here via the delete-the-legacy-side resolution, as above).
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    // Re-initializing on that stable journal must be a pure no-op (issue
+    // #2213): the old fast path re-ran the full-corpus reference rewrite and
+    // bumped memory-status (invalidating every cache) on EVERY
+    // ensureDirectories — a hot loop on write-active daemons.
+    const storage = new StorageManager(dir);
+    const statusBefore = storage.getMemoryStatusVersion();
+    await storage.ensureDirectories();
+    assert.equal(
+      storage.getMemoryStatusVersion(),
+      statusBefore,
+      "a stable completed journal must not bump memory-status (cache-invalidation churn) on re-init",
+    );
+    // The retained mapping still serves reads.
+    assert.equal(storage.normalizeEntityName("Nightly Ingest", "automation"), canonical);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("plain memory writes do not change the migration fingerprint; entity writes do", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-fingerprint-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const readFp = () =>
+      getFingerprint(dir, path.join(dir, "entities"), () => String(storage.getMemoryStatusVersion()));
+
+    const before = await readFp();
+    await storage.writeMemory("fact", "The ingest runs nightly.");
+    assert.equal(
+      await readFp(),
+      before,
+      "a plain fact create must not re-trigger the canonical-id migration (issue #2213)",
+    );
+
+    await storage.writeEntity("Nightly Ingest", "automation-cron-job", ["Runs at 02:00."]);
+    assert.notEqual(await readFp(), before, "an entity mutation must re-trigger the migration");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

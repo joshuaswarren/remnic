@@ -29,7 +29,7 @@ export interface EntityCanonicalIdMigrationHost {
   invalidateAllMemoriesCache(): void;
   invalidateColdMemoriesCache(): void;
   bumpMemoryStatusVersion(): void;
-  getCorpusScanVersion(): string;
+  getMemoryStatusVersion(): number;
 }
 
 export async function runLegacyEntityCanonicalIdMigration(
@@ -39,7 +39,7 @@ export async function runLegacyEntityCanonicalIdMigration(
   serializeMemoryWithEntityRef: (memory: MemoryFile, entityRef: string) => string,
 ): Promise<string> {
   const readMigrationFingerprint = () =>
-    getFingerprint(host.baseDir, host.entitiesDir, () => host.getCorpusScanVersion());
+    getFingerprint(host.baseDir, host.entitiesDir, () => String(host.getMemoryStatusVersion()));
   const completionFingerprint = await migrateLegacyEntityCanonicalIds({
     stateDir: host.stateDir,
     entitiesDir: host.entitiesDir,

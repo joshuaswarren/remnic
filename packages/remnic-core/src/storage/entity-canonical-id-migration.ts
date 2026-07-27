@@ -66,6 +66,24 @@ export function resolveHistoricalEntityCanonicalId(
   return current;
 }
 
+/**
+ * Canonicalize the `entityRef` a memory-write caller supplied (issue #2213).
+ *
+ * Extraction and capture callers pass whatever id the LLM or user produced,
+ * which can name a legacy id this migration already renamed. Resolving at the
+ * WRITE boundary means store-mediated writes can never re-introduce legacy
+ * references — which is what let the completed migration retire its recurring
+ * full-corpus reference rewrite. It also keeps write-time tombstone lookups on
+ * the same id space as migrated tombstones. Unknown ids pass through verbatim.
+ */
+export function canonicalizeEntityRefOption<T extends { entityRef?: string }>(
+  options: T,
+  mappings: Readonly<Record<string, string>>,
+): T {
+  if (options.entityRef === undefined) return options;
+  return { ...options, entityRef: resolveHistoricalEntityCanonicalId(options.entityRef, mappings) };
+}
+
 const EntityCanonicalIdMigrationStateSchema = z.object({
   version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),
   complete: z.boolean(),
@@ -124,16 +142,27 @@ async function fingerprintPath(filePath: string): Promise<string> {
     : "missing";
 }
 
+/**
+ * Completion fingerprint for the migration runner's skip gate. Incorporates
+ * only state that can change what a re-run would DO: the entities directory
+ * (creates/deletes/renames), the alias table (normalization inputs), and the
+ * caller-supplied entity-mutation version (store-mediated entity content
+ * edits, which touch neither of the first two). It must NOT incorporate the
+ * memory-corpus write version: plain memory creates cannot introduce legacy
+ * entity references (writes normalize through the historical mapping table),
+ * and keying the gate to them re-ran the migration after every fact write —
+ * the issue #2213 hot loop.
+ */
 export async function getFingerprint(
   baseDir: string,
   entitiesDir: string,
-  getCorpusScanVersion: () => string,
+  getEntityMutationVersion: () => string,
 ): Promise<string> {
   const [entityFingerprint, aliasFingerprint] = await Promise.all([
     fingerprintPath(entitiesDir),
     fingerprintPath(path.join(baseDir, "config", "aliases.json")),
   ]);
-  return `${entityFingerprint}:${aliasFingerprint}:${getCorpusScanVersion()}`;
+  return `${entityFingerprint}:${aliasFingerprint}:${getEntityMutationVersion()}`;
 }
 
 export async function validateRoots(
@@ -923,19 +952,25 @@ export async function migrateLegacyEntityCanonicalIds(
           state.mappings,
           await discoverMappings(deps, state.mappings, blocked),
         );
-        await pruneBlocked();
+        const revivedBefore = await pruneBlocked();
         const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
-        if (state.complete && Object.keys(discoveredBefore).length === 0 && !mappingsChanged) {
-          if (Object.keys(state.mappings).length === 0) return finish();
-          const rewroteColdMemory = await rewriteKnownReferences(
-            deps,
-            state.mappings,
-            () => lock.refresh(),
-          );
-          deps.invalidateKnowledgeIndexCache();
-          deps.invalidateAllMemoriesCache();
-          if (rewroteColdMemory) deps.invalidateColdMemoriesCache();
-          deps.bumpMemoryStatusVersion();
+        // Stable completed journal → no-op (issue #2213). Retained mappings are
+        // read-compat state whose references were already rewritten (to
+        // convergence) before `complete: true` was persisted, so re-running
+        // `rewriteKnownReferences` here re-read the ENTIRE hot+cold+archived
+        // corpus — twice — and invalidated every memory cache on EVERY
+        // `ensureDirectories()`. On a write-active daemon that was a
+        // self-sustaining hot loop (multi-GB/s of re-reads, caches never warm,
+        // recall degraded to the fallback path). A park revived by THIS run's
+        // pruneBlocked still owes its reference rewrite: it falls through to
+        // the main flow below, which demotes `complete` BEFORE rewriting — so
+        // a crash mid-rewrite resumes, which the old in-place rewrite did not.
+        if (
+          state.complete
+          && Object.keys(discoveredBefore).length === 0
+          && !mappingsChanged
+          && !revivedBefore
+        ) {
           return finish();
         }
         if (

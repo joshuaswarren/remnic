@@ -3526,7 +3526,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
     () => this.runLegacyEntityCanonicalIdMigration(),
-    () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => this.getCorpusScanVersion()),
+    () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => String(this.getMemoryStatusVersion())),
   );
   normalizeEntityName(raw: string, type: string): string {
     return entityMigration.resolveHistoricalEntityCanonicalId(
@@ -3676,6 +3676,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     options: WriteMemoryOptions = {}
   ): Promise<MemoryWriteResult> {
     await this.ensureDirectories();
+    options = entityMigration.canonicalizeEntityRefOption(options, this.historicalEntityCanonicalIds);
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const id = `${category}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -6684,6 +6685,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     } = {}
   ): Promise<string> {
     await this.ensureDirectories();
+    options = entityMigration.canonicalizeEntityRefOption(options, this.historicalEntityCanonicalIds);
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const id = `${parentId}-chunk-${chunkIndex}`;
