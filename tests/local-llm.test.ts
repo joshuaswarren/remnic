@@ -957,3 +957,69 @@ test("a definitive probe failure IS cached for the health-check interval", async
     globalThis.fetch = originalFetch;
   }
 });
+
+test("concurrent availability checks share one probe sequence", async () => {
+  initLogger(undefined, false);
+  const client = new LocalLlmClient(buildConfig());
+  const originalFetch = globalThis.fetch;
+  let probes = 0;
+  let releaseProbes!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseProbes = resolve;
+  });
+  // Hold every probe open so all five callers are genuinely in flight at once.
+  globalThis.fetch = (async () => {
+    probes += 1;
+    await gate;
+    return new Response("nope", { status: 500, headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
+  try {
+    const callers = [1, 2, 3, 4, 5].map(() => client.checkAvailability());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const concurrentProbes = probes;
+    releaseProbes();
+    const results = await Promise.all(callers);
+    assert.deepEqual(results, [false, false, false, false, false]);
+    assert.equal(
+      concurrentProbes,
+      1,
+      "five concurrent callers must not each start their own probe sequence",
+    );
+  } finally {
+    releaseProbes();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("one caller cancelling does not abort a probe the others still await", async () => {
+  initLogger(undefined, false);
+  const client = new LocalLlmClient(buildConfig());
+  const originalFetch = globalThis.fetch;
+  let releaseProbes!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseProbes = resolve;
+  });
+  let completedProbes = 0;
+  globalThis.fetch = (async () => {
+    await gate;
+    completedProbes += 1;
+    return new Response(JSON.stringify({ models: [{ id: "m" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  const quitter = new AbortController();
+  try {
+    const abandoned = client.checkAvailability(quitter.signal);
+    const stayer = client.checkAvailability();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    quitter.abort();
+    assert.equal(await abandoned, false, "the cancelling caller gets a prompt negative");
+    releaseProbes();
+    assert.equal(await stayer, true, "the remaining caller still gets a real verdict");
+    assert.ok(completedProbes > 0, "the shared probe was not aborted out from under the stayer");
+  } finally {
+    releaseProbes();
+    globalThis.fetch = originalFetch;
+  }
+});

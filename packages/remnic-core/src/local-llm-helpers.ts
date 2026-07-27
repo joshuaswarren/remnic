@@ -156,3 +156,68 @@ export async function probeFetch(
     return { ok: false, data: null, status: null, aborted };
   }
 }
+
+interface PendingProbe {
+  promise: Promise<boolean>;
+  controller: AbortController;
+  /** Callers still awaiting this sequence; at zero the sequence is aborted. */
+  waiters: number;
+}
+
+/**
+ * Collapses concurrent probe sequences onto one in-flight run.
+ *
+ * A timed-out availability probe deliberately caches nothing (issue #2210),
+ * which removed the false verdict that used to absorb concurrent callers:
+ * every queued request would then run its own full probe sequence, on a host
+ * already slow enough to blow the probe budget.
+ *
+ * Cancellation is refcounted rather than shared: one caller walking away must
+ * not abort a sequence the others are still waiting on, so the underlying task
+ * is aborted only once every waiter has gone.
+ */
+export class SingleFlightProbe {
+  private pending: PendingProbe | null = null;
+
+  run(task: (signal: AbortSignal) => Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
+    let active = this.pending;
+    if (!active) {
+      const controller = new AbortController();
+      const created: PendingProbe = { promise: Promise.resolve(false), controller, waiters: 0 };
+      created.promise = task(controller.signal).finally(() => {
+        if (this.pending === created) this.pending = null;
+      });
+      this.pending = created;
+      active = created;
+    }
+    const entry = active;
+    entry.waiters += 1;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      entry.waiters -= 1;
+      if (entry.waiters <= 0) entry.controller.abort();
+    };
+    if (!signal) return entry.promise.finally(release);
+    return new Promise<boolean>((resolve, reject) => {
+      const onAbort = () => {
+        release();
+        resolve(false);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      entry.promise.then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          release();
+          resolve(value);
+        },
+        (err: unknown) => {
+          signal.removeEventListener("abort", onAbort);
+          release();
+          reject(err instanceof Error ? err : new Error(String(err)));
+        },
+      );
+    });
+  }
+}

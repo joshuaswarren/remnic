@@ -17,6 +17,7 @@ import {
   type ProbeFetchResult,
   normalizeBackendTripReason,
   waitForRetryBackoff,
+  SingleFlightProbe,
 } from "./local-llm-helpers.js";
 
 /** Trim trailing slash characters without backtracking regex. */
@@ -259,6 +260,7 @@ export class LocalLlmClient {
   private config: PluginConfig;
   private isAvailable: boolean | null = null;
   private lastHealthCheck: number = 0;
+  private readonly availabilityProbe = new SingleFlightProbe();
   private detectedType: LocalLlmType | null = null;
   private cachedModelInfo: LocalModelInfo | null = null;
   private cachedLmsContext: number | null = null;
@@ -429,8 +431,11 @@ export class LocalLlmClient {
     if (this.isAvailable !== null && now - this.lastHealthCheck < LocalLlmClient.HEALTH_CHECK_INTERVAL_MS) {
       return this.isAvailable;
     }
+    return await this.availabilityProbe.run((probeSignal) => this.probeAvailability(probeSignal), signal);
+  }
 
-    // Normalize URL - replace localhost with 127.0.0.1, remove trailing slashes.
+  private async probeAvailability(signal?: AbortSignal): Promise<boolean> {
+    const now = Date.now();
     // Probe server-native endpoints from the server root even when users configure
     // the OpenAI-compatible `/v1` base URL for chat completions.
     const configuredBaseUrl = trimTrailingSlashes(
