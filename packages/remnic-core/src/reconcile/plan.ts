@@ -75,6 +75,9 @@ export interface ReconcilePlanEntry {
 export type ReconcileReason =
   | "peer_only"
   | "local_only"
+  /** Cursor showed only that side moved since agreement; both still hold the path. */
+  | "peer_changed"
+  | "local_changed"
   | "same_content"
   | "both_modified"
   | "peer_deleted"
@@ -325,7 +328,9 @@ function assertNoPathAlias(
   // fold - upper-then-lower, which collapses forms a bare toLowerCase() keeps
   // apart, such as final sigma `ς` against `σ`. Lowercasing alone would leave
   // those distinct and the planner would emit both a push and a pull.
-  const folded = path.normalize("NFC").toUpperCase().toLowerCase();
+  // `ß` upper-folds to `ss` while `ẞ` folds to `ß`, so one more pass equalizes
+  // the pair that a single upper-then-lower still leaves apart.
+  const folded = path.normalize("NFC").toUpperCase().toLowerCase().replace(/\u00df/g, "ss");
   const existing = seen.get(folded);
   if (existing !== undefined && existing !== path) {
     throw new ReconcilePlanInputError(
@@ -394,6 +399,13 @@ function parseTombstonedDigests(
   if (typeof value === "string") {
     throw new ReconcilePlanInputError(
       `reconcile: ${field} for namespace ${namespace} must be a collection of digests, not a single string`,
+    );
+  }
+  if (value === null || typeof value !== "object" || typeof value[Symbol.iterator] !== "function") {
+    // Otherwise the for...of below throws a raw TypeError and a caller handling
+    // ReconcilePlanInputError cannot tell a bad request from a planner bug.
+    throw new ReconcilePlanInputError(
+      `reconcile: ${field} for namespace ${namespace} must be an iterable collection of digests`,
     );
   }
   const digests = new Set<string>();
@@ -608,7 +620,7 @@ export function planNamespaceReconciliation(
         path,
         namespace,
         action: "pull",
-        reason: "peer_only",
+        reason: "peer_changed",
         localSha256: localFile.sha256,
         peerSha256: peerFile.sha256,
         baseSha256,
@@ -620,7 +632,7 @@ export function planNamespaceReconciliation(
         path,
         namespace,
         action: "push",
-        reason: "local_only",
+        reason: "local_changed",
         localSha256: localFile.sha256,
         peerSha256: peerFile.sha256,
         baseSha256,
@@ -720,6 +732,13 @@ export function planReconciliation(
   if (!Array.isArray(namespaces)) {
     throw new ReconcilePlanInputError("reconcile: planReconciliation expects an array of namespace inputs");
   }
+  // Validated here too: with an empty array the per-namespace path never runs,
+  // and a malformed options envelope would return `converged` instead of
+  // raising - the same call failing or succeeding based on list length.
+  if (!isPlainObject(options)) {
+    throw new ReconcilePlanInputError("reconcile: options must be a plain object");
+  }
+  assertConflictPolicy(options.conflictPolicy);
   const entries: ReconcilePlanEntry[] = [];
   // Two inputs for one namespace are planned independently, so the same
   // (namespace, path) can draw contradictory actions - and because those

@@ -124,6 +124,10 @@ test("a base turns a one-sided change back into an ordinary transfer", () => {
   // Only the peer moved on a.md, only we moved on b.md — neither is a conflict.
   assert.equal(entryFor(entries, "facts/a.md").action, "pull");
   assert.equal(entryFor(entries, "facts/b.md").action, "push");
+  // Both censuses still hold the path, so these are NOT the bootstrap
+  // "one side has never seen it" reasons.
+  assert.equal(entryFor(entries, "facts/a.md").reason, "peer_changed");
+  assert.equal(entryFor(entries, "facts/b.md").reason, "local_changed");
   assert.equal(entries.filter((e) => e.action === "conflict").length, 0);
 });
 
@@ -911,4 +915,44 @@ test("non-plain objects are not accepted as envelopes", () => {
       Object.assign(Object.create(null), { conflictPolicy: "manual" }) as Record<string, never>,
     ),
   );
+});
+
+test("an empty namespace list still validates its options", () => {
+  // The same call must not pass or fail depending on list length.
+  for (const bad of [null, new Date(), { conflictPolicy: "nope" }]) {
+    assert.throws(
+      () => planReconciliation([], bad as unknown as Record<string, never>),
+      ReconcilePlanInputError,
+      `options ${Object.prototype.toString.call(bad)}`,
+    );
+  }
+  assert.equal(planReconciliation([], { conflictPolicy: "keep-both" }).converged, true);
+});
+
+test("sharp-S aliases fold together", () => {
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [file("facts/stra\u00dfe.md", "one")],
+        peer: [file("facts/stra\u1e9ee.md", "two")],
+      }),
+    /aliasing paths/,
+  );
+});
+
+test("a malformed tombstone collection raises the planner's error, not a TypeError", () => {
+  for (const bad of [null, 42, { a: 1 }]) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation({
+          namespace: "default",
+          local: [],
+          peer: [],
+          tombstonedFileSha256: bad as unknown as string[],
+        }),
+      ReconcilePlanInputError,
+      `tombstonedFileSha256 ${JSON.stringify(bad)}`,
+    );
+  }
 });
