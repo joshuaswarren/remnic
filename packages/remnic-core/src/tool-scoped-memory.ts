@@ -22,7 +22,14 @@
 
 const BT = "`";
 
-const GENERIC_TOOL_NAMES = ["read", "write", "search", "fetch", "browser", "exec", "shell", "memory"];
+// Generic tool names + host-tool names emitted by the agent adapters.
+// Evidence: "edit" — Pi messages.test.ts:43 ({ type: "toolCall", name: "edit" }).
+// "bash" — Pi messages.test.ts:70 (bashExecution tool rendering). "glob",
+// "webfetch", "task" — standard Claude Code tools (Pi wraps Claude Code).
+const GENERIC_TOOL_NAMES = [
+  "read", "write", "search", "fetch", "browser", "exec", "shell", "memory",
+  "edit", "bash", "glob", "webfetch", "task",
+];
 const KNOWN_CLI_NAMES = [
   "grep", "curl", "git", "npm", "pnpm", "sed", "awk", "jq", "cat", "ssh",
   "docker", "kubectl", "make", "rg", "ls", "cd",

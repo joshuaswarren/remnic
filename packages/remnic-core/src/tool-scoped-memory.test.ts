@@ -72,6 +72,7 @@ const EXTRA_POSITIVE: string[] = [
   "Run `git status` before committing",
   "Use `npm install` to add dependencies",
   "Run `git checkout -b feature` before editing",
+  "Use edit before saving",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {
@@ -118,6 +119,7 @@ const EXTRA_NEGATIVE: string[] = [
   "Use `TypeScript` for new packages",
   "Use `config.json` for configuration",
   "Use `/health` for readiness checks",
+  "Writers use edit passes",
   "Use least-privilege when designing authorization",
   "Use TypeScript-first for new packages",
 ];
