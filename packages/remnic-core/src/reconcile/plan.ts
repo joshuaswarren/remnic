@@ -61,6 +61,15 @@ export interface ReconcilePlanEntry {
    * delete the live copy instead of the retracted one.
    */
   suppressSide?: "local" | "peer" | "both";
+  /**
+   * Which revision is newer, set only for a `supersede-link` resolution.
+   *
+   * The contract is that the older revision is linked as superseded by the
+   * newer one, so transport needs the direction. Absent when the timestamps
+   * cannot order the two - which is exactly when `newest-wins` degrades to
+   * `supersede-link` - and the link direction is then an operator decision.
+   */
+  newerSide?: "local" | "peer";
 }
 
 export type ReconcileReason =
@@ -267,6 +276,10 @@ function assertIterable(value: unknown, side: string, namespace: string): Iterab
  * compares canonically), and Win32 trailing dots/spaces, which the Windows API
  * strips before touching disk.
  */
+// eslint-disable-next-line no-control-regex -- control characters are exactly what this rejects
+const WIN32_INVALID_CHARS = /[<>:"|?*\u0000-\u001f]/;
+const WIN32_RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
 function assertPortablePathSegments(path: string, side: string, namespace: string): void {
   for (const segment of path.split("/")) {
     if (segment.length === 0) continue;
@@ -274,6 +287,19 @@ function assertPortablePathSegments(path: string, side: string, namespace: strin
       throw new ReconcilePlanInputError(
         `reconcile: ${side} census for namespace ${namespace} path ${path} has a segment ending in a dot or space; ` +
           "Windows strips those and would alias it onto another file",
+      );
+    }
+    // `:` opens an alternate data stream, the rest cannot be created at all,
+    // and a reserved device name resolves to hardware. A plan containing any of
+    // them cannot be applied on a Windows participant.
+    if (WIN32_INVALID_CHARS.test(segment)) {
+      throw new ReconcilePlanInputError(
+        `reconcile: ${side} census for namespace ${namespace} path ${path} contains a character Windows cannot store`,
+      );
+    }
+    if (WIN32_RESERVED_NAMES.test(segment.split(".")[0] ?? "")) {
+      throw new ReconcilePlanInputError(
+        `reconcile: ${side} census for namespace ${namespace} path ${path} uses a reserved Windows device name`,
       );
     }
   }
@@ -394,6 +420,21 @@ function compareEntries(a: ReconcilePlanEntry, b: ReconcilePlanEntry): number {
   if (a.namespace !== b.namespace) return a.namespace < b.namespace ? -1 : 1;
   if (a.path !== b.path) return a.path < b.path ? -1 : 1;
   return 0;
+}
+
+/**
+ * Direction for a supersede link, when the timestamps can order the pair.
+ * Omitted otherwise so an unordered link is visibly unordered rather than
+ * silently defaulted to one side.
+ */
+function newerSideOf(
+  local: ReconcileFileState,
+  peer: ReconcileFileState,
+): { newerSide?: "local" | "peer" } {
+  const localMs = local.mtimeMs;
+  const peerMs = peer.mtimeMs;
+  if (typeof localMs !== "number" || typeof peerMs !== "number" || localMs === peerMs) return {};
+  return { newerSide: localMs > peerMs ? "local" : "peer" };
 }
 
 function resolveConflict(
@@ -573,6 +614,7 @@ export function planNamespaceReconciliation(
       });
       continue;
     }
+    const resolution = resolveConflict(policy, localFile, peerFile);
     entries.push({
       path,
       namespace,
@@ -581,7 +623,8 @@ export function planNamespaceReconciliation(
       localSha256: localFile.sha256,
       peerSha256: peerFile.sha256,
       ...(baseSha256 === undefined ? {} : { baseSha256 }),
-      resolution: resolveConflict(policy, localFile, peerFile),
+      resolution,
+      ...(resolution === "supersede-link" ? newerSideOf(localFile, peerFile) : {}),
     });
   }
 

@@ -769,3 +769,65 @@ test("Win32-aliasing path segments are rejected", () => {
     );
   }
 });
+
+test("a supersede link names the newer revision", () => {
+  // Without a direction transport must re-derive it or guess which side is
+  // linked as superseding the other.
+  const newerPeer = planNamespaceReconciliation(
+    {
+      namespace: "default",
+      local: [file("facts/a.md", "local", 1000)],
+      peer: [file("facts/a.md", "peer", 2000)],
+    },
+    { conflictPolicy: "keep-both" },
+  );
+  assert.equal(entryFor(newerPeer, "facts/a.md").newerSide, "peer");
+
+  const newerLocal = planNamespaceReconciliation(
+    {
+      namespace: "default",
+      local: [file("facts/a.md", "local", 2000)],
+      peer: [file("facts/a.md", "peer", 1000)],
+    },
+    { conflictPolicy: "keep-both" },
+  );
+  assert.equal(entryFor(newerLocal, "facts/a.md").newerSide, "local");
+});
+
+test("an unorderable supersede link says so instead of picking a side", () => {
+  for (const pair of [
+    [file("facts/a.md", "local", 5000), file("facts/a.md", "peer", 5000)],
+    [file("facts/a.md", "local"), file("facts/a.md", "peer", 5000)],
+  ] as const) {
+    const entries = planNamespaceReconciliation(
+      { namespace: "default", local: [pair[0]], peer: [pair[1]] },
+      { conflictPolicy: "keep-both" },
+    );
+    const entry = entryFor(entries, "facts/a.md");
+    assert.equal(entry.resolution, "supersede-link");
+    assert.equal(entry.newerSide, undefined, "an unordered link must be visibly unordered");
+  }
+});
+
+test("Windows-unstorable and reserved path names are rejected", () => {
+  for (const bad of ["facts/a:b.md", "facts/CON.md", "facts/com1.txt", 'facts/a"b.md', "facts/a\u0001b.md"]) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation({
+          namespace: "default",
+          local: [{ path: bad, sha256: digest("x") }],
+          peer: [],
+        }),
+      ReconcilePlanInputError,
+      `path ${JSON.stringify(bad)} must be rejected`,
+    );
+  }
+  // A name that merely CONTAINS a reserved word is fine.
+  assert.doesNotThrow(() =>
+    planNamespaceReconciliation({
+      namespace: "default",
+      local: [file("facts/console.md", "x")],
+      peer: [],
+    }),
+  );
+});
