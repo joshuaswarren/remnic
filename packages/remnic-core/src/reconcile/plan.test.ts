@@ -831,3 +831,47 @@ test("Windows-unstorable and reserved path names are rejected", () => {
     }),
   );
 });
+
+test("a directionless supersede link is reported as unresolved", () => {
+  // The policy nominally settled it, but with no orderable timestamp the link
+  // direction is an operator call — reporting unresolved: 0 would hide that.
+  const entries = planNamespaceReconciliation(
+    {
+      namespace: "default",
+      local: [file("facts/a.md", "local", 5000)],
+      peer: [file("facts/a.md", "peer", 5000)],
+    },
+    { conflictPolicy: "keep-both" },
+  );
+  assert.equal(entryFor(entries, "facts/a.md").newerSide, undefined);
+  assert.deepEqual(summarizeReconcilePlan(entries), [
+    { namespace: "default", pull: 0, push: 0, identical: 0, conflict: 1, suppress: 0, unresolved: 1 },
+  ]);
+});
+
+test("an ordered supersede link is not counted as unresolved", () => {
+  const entries = planNamespaceReconciliation(
+    {
+      namespace: "default",
+      local: [file("facts/a.md", "local", 1000)],
+      peer: [file("facts/a.md", "peer", 2000)],
+    },
+    { conflictPolicy: "keep-both" },
+  );
+  assert.equal(summarizeReconcilePlan(entries)[0]?.unresolved, 0);
+});
+
+test("superscript COM and LPT device aliases are rejected", () => {
+  for (const bad of ["facts/COM\u00b9.txt", "facts/LPT\u00b2", "facts/com\u00b3.md"]) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation({
+          namespace: "default",
+          local: [{ path: bad, sha256: digest("x") }],
+          peer: [],
+        }),
+      /reserved Windows device name/,
+      `path ${JSON.stringify(bad)} must be rejected`,
+    );
+  }
+});

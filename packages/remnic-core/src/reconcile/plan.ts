@@ -92,7 +92,10 @@ export interface ReconcileNamespaceReport {
   conflict: number;
   /** Local retractions the peer must be told about before the pair agrees. */
   suppress: number;
-  /** Conflicts the policy could not settle; these need an operator. */
+  /**
+   * Conflicts still needing an operator: those the policy declined to settle,
+   * plus supersede links whose direction could not be determined.
+   */
   unresolved: number;
 }
 
@@ -278,7 +281,8 @@ function assertIterable(value: unknown, side: string, namespace: string): Iterab
  */
 // eslint-disable-next-line no-control-regex -- control characters are exactly what this rejects
 const WIN32_INVALID_CHARS = /[<>:"|?*\u0000-\u001f]/;
-const WIN32_RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+// Windows treats the superscripts as their digits in COM/LPT device names.
+const WIN32_RESERVED_NAMES = /^(con|prn|aux|nul|(com|lpt)[1-9\u00b9\u00b2\u00b3])$/i;
 
 function assertPortablePathSegments(path: string, side: string, namespace: string): void {
   for (const segment of path.split("/")) {
@@ -682,7 +686,13 @@ export function summarizeReconcilePlan(entries: readonly ReconcilePlanEntry[]): 
       byNamespace.set(entry.namespace, report);
     }
     report[entry.action] += 1;
-    if (entry.action === "conflict" && entry.resolution === "unresolved") report.unresolved += 1;
+    // A supersede link with no `newerSide` could not be ordered, and the link
+    // direction is then an operator decision - so it counts as unresolved even
+    // though the policy nominally settled it.
+    const needsOperator =
+      entry.resolution === "unresolved"
+      || (entry.resolution === "supersede-link" && entry.newerSide === undefined);
+    if (entry.action === "conflict" && needsOperator) report.unresolved += 1;
   }
   return [...byNamespace.values()].sort((a, b) => (a.namespace === b.namespace ? 0 : a.namespace < b.namespace ? -1 : 1));
 }
