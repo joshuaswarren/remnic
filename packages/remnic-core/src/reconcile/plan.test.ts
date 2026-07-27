@@ -426,7 +426,7 @@ test("paths differing only by case are rejected across censuses", () => {
         local: [file("Facts/A.md", "one")],
         peer: [file("facts/a.md", "two")],
       }),
-    /differing only by case/,
+    /aliasing paths/,
   );
 });
 
@@ -560,7 +560,7 @@ test("the base census participates in case-collision detection", () => {
         peer: [],
         base: [file("Facts/A.md", "one")],
       }),
-    /differing only by case/,
+    /aliasing paths/,
   );
 });
 
@@ -705,7 +705,7 @@ test("canonically equivalent Unicode paths are treated as one file", () => {
         local: [file("facts/\u00e9.md", "one")],
         peer: [file("facts/e\u0301.md", "two")],
       }),
-    /differing only by case/,
+    /aliasing paths/,
   );
 });
 
@@ -722,4 +722,50 @@ test("an array is not a valid options or input envelope", () => {
     () => planNamespaceReconciliation([] as unknown as { namespace: string; local: []; peer: [] }),
     /namespace input must be a plain object/,
   );
+});
+
+test("a peer retraction suppresses our surviving copy instead of pushing it back", () => {
+  // Bootstrap: the peer census simply OMITS what it retracted, so without its
+  // tombstone set this is indistinguishable from "never had it" and we push
+  // the file back, undoing the peer's retraction.
+  const entries = planNamespaceReconciliation({
+    namespace: "default",
+    local: [file("facts/retracted-there.md", "gone"), file("facts/mine.md", "keep")],
+    peer: [],
+    peerTombstonedFileSha256: [digest("gone")],
+  });
+  const suppressed = entryFor(entries, "facts/retracted-there.md");
+  assert.equal(suppressed.action, "suppress");
+  assert.equal(suppressed.suppressSide, "local", "the copy to remove is ours");
+  assert.equal(entryFor(entries, "facts/mine.md").action, "push", "unretracted files still push");
+});
+
+test("the peer tombstone set is validated like our own", () => {
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [],
+        peer: [],
+        peerTombstonedFileSha256: digest("x") as unknown as string[],
+      }),
+    /peerTombstonedFileSha256 for namespace default must be a collection of digests/,
+  );
+});
+
+test("Win32-aliasing path segments are rejected", () => {
+  // Windows strips trailing dots and spaces, so `a.md.` and `a.md` are one
+  // file there while the fold key keeps them distinct.
+  for (const bad of ["facts/a.md.", "facts/a.md ", "facts/dir./a.md"]) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation({
+          namespace: "default",
+          local: [{ path: bad, sha256: digest("x") }],
+          peer: [],
+        }),
+      /dot or space/,
+      `path ${JSON.stringify(bad)} must be rejected`,
+    );
+  }
 });

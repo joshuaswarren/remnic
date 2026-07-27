@@ -127,6 +127,15 @@ export interface ReconcileNamespaceInput {
    * resurrect every retracted fact, so the parameter name states the form.
    */
   tombstonedFileSha256?: Iterable<string>;
+  /**
+   * Digests the PEER has retracted, same form.
+   *
+   * Without this a bootstrap merge cannot tell "the peer never had it" from
+   * "the peer deliberately retracted it": the peer census simply omits both,
+   * so a file we still hold is planned `push` and the peer's retraction is
+   * undone. Reconciliation is symmetric, so retraction has to be too.
+   */
+  peerTombstonedFileSha256?: Iterable<string>;
 }
 
 export interface ReconcileOptions {
@@ -177,6 +186,7 @@ function assertCensusRecord(
   } catch (err) {
     throw new ReconcilePlanInputError(err instanceof Error ? err.message : String(err));
   }
+  assertPortablePathSegments(path, side, namespace);
   return {
     ...file,
     path,
@@ -249,12 +259,27 @@ function assertIterable(value: unknown, side: string, namespace: string): Iterab
 }
 
 /**
- * Paths that differ only by case are the SAME file on a case-insensitive
- * participant (macOS, Windows), so planning a push AND a pull for them lets
- * application order decide which revision survives. Remnic is explicitly
- * multi-platform, so the collision is rejected rather than raced.
+ * Two paths that a participant's filesystem resolves to ONE file must not draw
+ * separate push/pull work, or application order decides which revision
+ * survives. Remnic is explicitly multi-platform, so all three aliasing rules
+ * are folded together and a collision is rejected rather than raced:
+ * case (macOS, Windows), Unicode normalization (macOS stores decomposed and
+ * compares canonically), and Win32 trailing dots/spaces, which the Windows API
+ * strips before touching disk.
  */
-function assertNoCaseCollision(
+function assertPortablePathSegments(path: string, side: string, namespace: string): void {
+  for (const segment of path.split("/")) {
+    if (segment.length === 0) continue;
+    if (segment.endsWith(".") || segment.endsWith(" ")) {
+      throw new ReconcilePlanInputError(
+        `reconcile: ${side} census for namespace ${namespace} path ${path} has a segment ending in a dot or space; ` +
+          "Windows strips those and would alias it onto another file",
+      );
+    }
+  }
+}
+
+function assertNoPathAlias(
   seen: Map<string, string>,
   path: string,
   namespace: string,
@@ -266,8 +291,8 @@ function assertNoCaseCollision(
   const existing = seen.get(folded);
   if (existing !== undefined && existing !== path) {
     throw new ReconcilePlanInputError(
-      `reconcile: namespace ${namespace} has paths differing only by case (${existing}, ${path}); ` +
-        "they are one file on a case-insensitive peer",
+      `reconcile: namespace ${namespace} has aliasing paths (${existing}, ${path}); ` +
+        "they resolve to one file on a case-insensitive or Unicode-normalizing peer",
     );
   }
   seen.set(folded, path);
@@ -322,16 +347,20 @@ function indexByPath(
  * retracted file is planned as `pull` and resurrected. Reject the scalar and
  * canonicalize every member.
  */
-function parseTombstonedDigests(value: Iterable<string> | undefined, namespace: string): Set<string> {
+function parseTombstonedDigests(
+  value: Iterable<string> | undefined,
+  namespace: string,
+  field = "tombstonedFileSha256",
+): Set<string> {
   if (value === undefined) return new Set();
   if (typeof value === "string") {
     throw new ReconcilePlanInputError(
-      `reconcile: tombstonedFileSha256 for namespace ${namespace} must be a collection of digests, not a single string`,
+      `reconcile: ${field} for namespace ${namespace} must be a collection of digests, not a single string`,
     );
   }
   const digests = new Set<string>();
   for (const entry of value) {
-    digests.add(assertDigest(entry, `tombstonedFileSha256 for namespace ${namespace}`));
+    digests.add(assertDigest(entry, `${field} for namespace ${namespace}`));
   }
   return digests;
 }
@@ -421,6 +450,11 @@ export function planNamespaceReconciliation(
     ? null
     : compactDigests(indexByPath(assertIterable(input.base, "base", namespace), "base", namespace));
   const tombstoned = parseTombstonedDigests(input.tombstonedFileSha256, namespace);
+  const peerTombstoned = parseTombstonedDigests(
+    input.peerTombstonedFileSha256,
+    namespace,
+    "peerTombstonedFileSha256",
+  );
   const entries: ReconcilePlanEntry[] = [];
 
   // Path -> digest only, never the file objects: enough to make the stream
@@ -429,7 +463,7 @@ export function planNamespaceReconciliation(
   // Base paths participate in the collision check: a base `Facts/A.md` against
   // a local `facts/a.md` is the same delete/change ambiguity on a
   // case-insensitive participant.
-  if (base) for (const basePath of base.keys()) assertNoCaseCollision(caseFold, basePath, namespace);
+  if (base) for (const basePath of base.keys()) assertNoPathAlias(caseFold, basePath, namespace);
   // Path -> decision-relevant fields only, never the whole record: enough to
   // make the stream idempotent and to catch contradictory duplicates without
   // materializing the second census.
@@ -437,7 +471,7 @@ export function planNamespaceReconciliation(
   for (const rawLocal of localCensus) {
     const localFile = assertCensusRecord(rawLocal, "local", namespace);
     const path = localFile.path;
-    assertNoCaseCollision(caseFold, path, namespace);
+    assertNoPathAlias(caseFold, path, namespace);
     const seen = seenLocal.get(path);
     if (seen !== undefined) {
       // Same rule the indexed censuses get: mtimeMs is decision-relevant under
@@ -455,8 +489,12 @@ export function planNamespaceReconciliation(
     // retracted LOCAL revision would otherwise be pushed - which is also how a
     // suppression undoes itself on the next run, since the local copy survives
     // the peer-side delete (round 4).
-    const localRetracted = tombstoned.has(localFile.sha256);
-    const peerRetracted = peerFile !== undefined && tombstoned.has(peerFile.sha256);
+    // Either side's retraction removes the copy that carries the digest, so a
+    // peer retraction of something we still hold suppresses OUR copy rather
+    // than pushing it back.
+    const localRetracted = tombstoned.has(localFile.sha256) || peerTombstoned.has(localFile.sha256);
+    const peerRetracted =
+      peerFile !== undefined && (tombstoned.has(peerFile.sha256) || peerTombstoned.has(peerFile.sha256));
     if (localRetracted || peerRetracted) {
       entries.push({
         path,
@@ -548,9 +586,9 @@ export function planNamespaceReconciliation(
   }
 
   for (const [path, peerFile] of peer) {
-    assertNoCaseCollision(caseFold, path, namespace);
+    assertNoPathAlias(caseFold, path, namespace);
     const baseSha256 = base?.get(path);
-    if (tombstoned.has(peerFile.sha256)) {
+    if (tombstoned.has(peerFile.sha256) || peerTombstoned.has(peerFile.sha256)) {
       // Retracted here on purpose, and the peer still serves it. Pulling it
       // back would undo the retraction; calling it `identical` would be worse,
       // because a converged plan lets transport skip everything and the peer
