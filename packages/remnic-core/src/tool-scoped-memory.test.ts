@@ -79,6 +79,7 @@ const EXTRA_POSITIVE: string[] = [
   "Use /remnic flush before reset",
   "The /remnic command controls memory",
   "Use `/remnic flush` before reset",
+  "Use `search --path src` when locating code",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {

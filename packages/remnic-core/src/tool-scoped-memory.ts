@@ -74,7 +74,7 @@ const CLI_ARG_RUN = "(?:\\s+" + CLI_ARG_TOKEN + "){1,4}";
 const CMD_WITH_ARGS = "(?:(?:" + CLI_NAMES_CI + "|" + SLASH_GENERIC + ")" + CLI_ARG_RUN + ")";
 const QSTRICT_CONTENT =
   "(?:" + KNOWN_NAMES_ALT + "|[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+" + "|" + FLAG_NAKED + "|" + SLASH_CMD_TOKEN +
-  "|" + CMD_WITH_ARGS + ")";
+  "|" + CMD_WITH_ARGS + "|(?:" + KNOWN_NAMES_ALT + ")" + CLI_ARG_RUN + ")";
 const QUOTED_STRICT =
   "(?:" + BT + QSTRICT_CONTENT + BT + "|\"" + QSTRICT_CONTENT + "\"|'" + QSTRICT_CONTENT + "')";
 
