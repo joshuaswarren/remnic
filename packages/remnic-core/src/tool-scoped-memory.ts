@@ -57,11 +57,12 @@ const VERB = "\\b(?:use|run|call|invoke)\\b";
 const SLASH_GENERIC = "/(?:" + GENERIC_NAMES_ALT + ")\\b";
 const CLAUSE_BOUNDARY = "(?:$|[.,;(:]|(?:when|before|after|to|with|for|on|in|if|unless|whenever)\\b)";
 const ARGS = "(?:\\s+" + FLAG + "(?:\\s+" + OPCODE + "){0,4})?";
-const CLI_ARG_RUN = "(?:\\s+(?:[a-z][a-z0-9-]{0,15}|" + FLAG_NAKED + ")){1,4}";
+const CLI_ARG_TOKEN = "(?:[a-z][a-z0-9-]{0,15}|" + FLAG_NAKED + "|" + OPCODE + ")";
+const CLI_ARG_RUN = "(?:\\s+" + CLI_ARG_TOKEN + "){1,4}";
 
 const QSTRICT_CONTENT =
   "(?:" + KNOWN_NAMES_ALT + "|[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+" + "|" + FLAG_NAKED + "|" + SLASH_CMD_TOKEN +
-  "|(?:" + KNOWN_NAMES_ALT + ")\\s+" + FLAG_NAKED + "(?:\\s+" + OPCODE + "){0,4}" + ")";
+  "|(?:" + KNOWN_NAMES_ALT + ")" + CLI_ARG_RUN + ")";
 const QUOTED_STRICT =
   "(?:" + BT + QSTRICT_CONTENT + BT + "|\"" + QSTRICT_CONTENT + "\"|'" + QSTRICT_CONTENT + "')";
 

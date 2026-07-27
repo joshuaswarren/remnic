@@ -69,6 +69,9 @@ const EXTRA_POSITIVE: string[] = [
   "Use npm install to add dependencies",
   "The Bash Tool executes commands",
   "Run git checkout -b feature before editing",
+  "Run `git status` before committing",
+  "Use `npm install` to add dependencies",
+  "Run `git checkout -b feature` before editing",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {

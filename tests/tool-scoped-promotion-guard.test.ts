@@ -8,7 +8,7 @@ import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { StorageManager } from "../src/storage.js";
 import type { PluginConfig, ExtractionResult } from "../src/types.js";
-import type { ResolvedScopeProfilePlan } from "../packages/remnic-core/src/namespaces/scope-profiles.js";
+import type { ResolvedScopeProfilePlan } from "@remnic/core";
 
 // ---------------------------------------------------------------------------
 // Issue #2183 — tool-scoped global-promotion guard.
