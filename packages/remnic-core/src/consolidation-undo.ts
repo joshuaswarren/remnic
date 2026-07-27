@@ -26,6 +26,7 @@ import { constants as fsConstants } from "node:fs";
 import type { StorageManager } from "./storage.js";
 import type { VersioningConfig } from "./page-versioning.js";
 import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
+import { requestEntityCanonicalIdReconcile } from "./storage/entity-canonical-id-migration.js";
 import { getVersion } from "./page-versioning.js";
 
 /**
@@ -654,6 +655,9 @@ export async function runConsolidationUndo(options: {
         // restores would stay invisible to recall until an unrelated mutation or
         // restart (esp. with hotMemoriesCacheTtlMs: 0). Issue #1902, Codex Medium.
         bumpMemoryCorpusVersionForDir(memoryDir);
+        // Restored bytes predate the current migration journal and can carry
+        // legacy entity references (issue #2213) — request one reconcile pass.
+        await requestEntityCanonicalIdReconcile(path.join(memoryDir, "state"));
         result.restores.push({
           entry: p.entry,
           sourcePath: p.sourcePath,

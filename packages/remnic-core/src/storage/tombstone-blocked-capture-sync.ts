@@ -7,6 +7,7 @@ import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { markProjectedMemoryPathInvalid } from "../memory-projection-store.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { requestEntityCanonicalIdReconcile } from "./entity-canonical-id-migration.js";
 import {
   readMaybeEncryptedFileFromChunks,
   writeMaybeEncryptedFileFromChunks,
@@ -822,11 +823,15 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
     await this.writeTombstoneBlockedOfflineSyncFile(target, content);
+    // Replicated bytes are opaque (possibly encrypted) and can carry legacy
+    // entity references a completed migration already renamed (issue #2213).
+    await requestEntityCanonicalIdReconcile(this.tombstoneBlockedCaptureIndexOptions().stateDir);
   }
 
   async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
     await this.writeTombstoneBlockedOfflineSyncFileChunks(target, chunks);
+    await requestEntityCanonicalIdReconcile(this.tombstoneBlockedCaptureIndexOptions().stateDir);
   }
 
   async deleteOfflineSyncFile(filePath: string): Promise<void> {

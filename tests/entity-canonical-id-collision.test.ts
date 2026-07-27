@@ -569,3 +569,46 @@ test("a park written without any version bump still invalidates peer mapping cac
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("an offline-sync raw write triggers one reconcile pass, then quiesces", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-reconcile-marker-"));
+  try {
+    // Completed migration retaining legacy→canonical.
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    // Offline sync replicates a memory file with a legacy entityRef — raw
+    // bytes the store cannot canonicalize inline. The write must request a
+    // reconcile pass (issue #2213).
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const syncedPath = path.join(dir, "facts", "2026-03-01", "fact-synced.md");
+    await storage.writeOfflineSyncFile(
+      syncedPath,
+      Buffer.from(
+        `---\nid: fact-synced\ncategory: fact\nconfidence: 0.9\n`
+        + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+        + `entityRef: ${legacy}\nstatus: active\n---\n\nSynced from a peer.\n`,
+        "utf-8",
+      ),
+    );
+    const marker = path.join(dir, "state", "entity-canonical-id-reconcile.pending");
+    assert.match(await readFile(marker, "utf8"), /T/, "raw sync write must request reconciliation");
+
+    // A fresh init honors the marker: the reference is rewritten and the
+    // marker consumed.
+    await new StorageManager(dir).ensureDirectories();
+    assert.equal(/^entityRef: (.*)$/m.exec(await readFile(syncedPath, "utf8"))?.[1], canonical);
+    await assert.rejects(() => readFile(marker, "utf8"), "the reconcile marker must be consumed");
+
+    // And the pass does not loop: with the marker gone, a re-init is a no-op.
+    const idle = new StorageManager(dir);
+    const statusBefore = idle.getMemoryStatusVersion();
+    await idle.ensureDirectories();
+    assert.equal(idle.getMemoryStatusVersion(), statusBefore);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

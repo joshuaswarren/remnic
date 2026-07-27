@@ -118,27 +118,65 @@ export function canonicalizeEntityRefOption<T extends { entityRef?: string }>(
 }
 
 /**
- * Canonicalize the `entityRef:` line inside a raw memory record's leading
- * frontmatter block (issue #2213). Bulk writers that persist record bytes
- * verbatim — capsule import/merge — are a write boundary too: a capsule can
- * carry pre-migration memories whose refs the target's completed journal
+ * Canonicalize the effective `entityRef:` line inside a raw memory record's
+ * leading frontmatter block (issue #2213). Bulk writers that persist record
+ * bytes verbatim — capsule import/merge — are a write boundary too: a capsule
+ * can carry pre-migration memories whose refs the target's completed journal
  * already renamed, and no later reconciliation pass exists to absorb them.
- * Non-frontmatter content, records without an `entityRef` line, and ids the
- * journal does not map all pass through byte-identical.
+ *
+ * Line selection mirrors the frontmatter parser and the migration's own
+ * serializer: the LAST `entityRef` key wins (indentation tolerated), its
+ * indent is preserved, and CRLF records keep their line endings. The closing
+ * delimiter must be a standalone `---` line. Non-frontmatter content, records
+ * without an `entityRef` line, and ids the journal does not map all pass
+ * through byte-identical.
  */
 export function canonicalizeEntityRefFrontmatter(
   content: string,
   mappings: Readonly<Record<string, string>>,
 ): string {
-  if (Object.keys(mappings).length === 0 || !content.startsWith("---\n")) return content;
-  const end = content.indexOf("\n---", 4);
-  if (end === -1) return content;
-  const head = content.slice(0, end);
-  const rewritten = head.replace(/^entityRef:[ \t]*(\S+)[ \t]*$/m, (line, id: string) => {
-    const canonical = resolveHistoricalEntityCanonicalId(id, mappings);
-    return canonical === id ? line : `entityRef: ${canonical}`;
-  });
-  return rewritten === head ? content : rewritten + content.slice(end);
+  if (Object.keys(mappings).length === 0 || !/^---\r?\n/.test(content)) return content;
+  const close = /\r?\n---(?:\r?\n|$)/g;
+  close.lastIndex = content.indexOf("\n") + 1;
+  const closeMatch = close.exec(content);
+  if (!closeMatch) return content;
+  const lines = content.slice(0, closeMatch.index).split("\n");
+  let effective = -1;
+  for (let index = 1; index < lines.length; index += 1) {
+    if (/^\s*entityRef\s*:/.test(lines[index] ?? "")) effective = index;
+  }
+  if (effective === -1) return content;
+  const line = lines[effective]!;
+  const value = line.slice(line.indexOf(":") + 1).replace(/\r$/, "").trim();
+  if (value.length === 0) return content;
+  const canonical = resolveHistoricalEntityCanonicalId(value, mappings);
+  if (canonical === value) return content;
+  const indent = /^\s*/.exec(line)?.[0] ?? "";
+  lines[effective] = `${indent}entityRef: ${canonical}${line.endsWith("\r") ? "\r" : ""}`;
+  return lines.join("\n") + content.slice(closeMatch.index);
+}
+
+/**
+ * Reconcile-pending marker (issue #2213). Raw-byte memory writers that CANNOT
+ * canonicalize inline — offline-sync file replication (opaque, possibly
+ * encrypted buffers), consolidation-undo restores, governance-run restores —
+ * touch this marker instead. The next migration invocation honors it by
+ * running ONE bounded reference-reconciliation pass over the completed
+ * journal's retained mappings, then clears it. This replaces the retired
+ * every-run corpus rewrite with a signal that fires only when a raw writer
+ * actually landed unvetted bytes.
+ */
+export const ENTITY_CANONICAL_ID_RECONCILE_MARKER = "entity-canonical-id-reconcile.pending";
+
+export async function requestEntityCanonicalIdReconcile(stateDir: string): Promise<void> {
+  try {
+    await writeFile(path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER), `${new Date().toISOString()}\n`, "utf-8");
+  } catch (error) {
+    // Best effort by design: a marker failure must not fail the restore/sync
+    // that requested it (AGENTS.md §4). The reference stays legacy-but-readable
+    // until the next mapping change.
+    log.warn(`could not request entity canonical-id reconcile: ${error}`);
+  }
 }
 
 const EntityCanonicalIdMigrationStateSchema = z.object({
@@ -202,24 +240,26 @@ async function fingerprintPath(filePath: string): Promise<string> {
 /**
  * Completion fingerprint for the migration runner's skip gate. Incorporates
  * only state that can change what a re-run would DO: the entities directory
- * (creates/deletes/renames), the alias table (normalization inputs), and the
+ * (creates/deletes/renames), the alias table (normalization inputs), the
  * caller-supplied entity-mutation version (store-mediated entity content
- * edits, which touch neither of the first two). It must NOT incorporate the
- * memory-corpus write version: plain memory creates cannot introduce legacy
- * entity references (writes normalize through the historical mapping table),
- * and keying the gate to them re-ran the migration after every fact write —
- * the issue #2213 hot loop.
+ * edits, which touch neither of the first two), and the reconcile-pending
+ * marker raw-byte writers touch. It must NOT incorporate the memory-corpus
+ * write version: plain memory creates cannot introduce legacy entity
+ * references (writes normalize through the historical mapping table), and
+ * keying the gate to them re-ran the migration after every fact write — the
+ * issue #2213 hot loop.
  */
 export async function getFingerprint(
   baseDir: string,
   entitiesDir: string,
   getEntityMutationVersion: () => string,
 ): Promise<string> {
-  const [entityFingerprint, aliasFingerprint] = await Promise.all([
+  const [entityFingerprint, aliasFingerprint, reconcileFingerprint] = await Promise.all([
     fingerprintPath(entitiesDir),
     fingerprintPath(path.join(baseDir, "config", "aliases.json")),
+    fingerprintPath(path.join(baseDir, "state", ENTITY_CANONICAL_ID_RECONCILE_MARKER)),
   ]);
-  return `${entityFingerprint}:${aliasFingerprint}:${getEntityMutationVersion()}`;
+  return `${entityFingerprint}:${aliasFingerprint}:${reconcileFingerprint}:${getEntityMutationVersion()}`;
 }
 
 export async function validateRoots(
@@ -916,6 +956,11 @@ export async function migrateLegacyEntityCanonicalIds(
       if (!acquired) throw new Error("Timed out waiting for active entity canonical-id migration.");
       await deps.validateMemoryScanRoots?.();
       await readSafeEntityEntries(deps.entitiesDir);
+      // A raw-byte writer (offline sync, consolidation-undo, governance
+      // restore) may have landed memory bytes this process never vetted; the
+      // marker requests ONE reference-reconciliation pass (issue #2213).
+      const reconcileMarkerPath = path.join(deps.stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER);
+      const reconcileRequested = await fileExists(reconcileMarkerPath);
       let state = await readState(deps);
       if (!state) {
         state = {
@@ -927,13 +972,23 @@ export async function migrateLegacyEntityCanonicalIds(
       const blocked: BlockedEntityPairs = new Map();
       // ONE aggregated line per run, not one per pair per restart: this used to
       // abort the daemon, so the operator needs the whole list and the remedy.
-      const finish = (): Promise<string | undefined> | string | undefined => {
+      const finish = async (): Promise<string | undefined> => {
         if (blocked.size > 0) {
           const pairs = [...blocked].map(([legacyId, canonicalId]) => `${legacyId} -> ${canonicalId}`).join(", ");
           log.warn(
             `entity canonical-id migration skipped ${blocked.size} unresolvable pair(s): ${pairs}. `
             + "Both files were kept and the legacy id still resolves; merge or delete one side to migrate it.",
           );
+        }
+        // Every finish() path either just rewrote references (main/reconcile
+        // paths), has none to rewrite (empty mappings), or observed no marker
+        // (stable no-op) — so an observed marker is consumed here, and a crash
+        // before this point leaves it set for the next run (rewrite is
+        // idempotent).
+        if (reconcileRequested) {
+          await unlink(reconcileMarkerPath).catch((error: unknown) => {
+            if (!isErrnoCode(error, "ENOENT")) throw error;
+          });
         }
         return deps.readMigrationFingerprint?.();
       };
@@ -1028,6 +1083,20 @@ export async function migrateLegacyEntityCanonicalIds(
           && !mappingsChanged
           && !revivedBefore
         ) {
+          // Stable journal, but a raw-byte writer requested reconciliation:
+          // run ONE bounded rewrite pass over the retained mappings, then let
+          // finish() consume the marker.
+          if (reconcileRequested && Object.keys(state.mappings).length > 0) {
+            const rewroteColdMemory = await rewriteKnownReferences(
+              deps,
+              state.mappings,
+              () => lock.refresh(),
+            );
+            deps.invalidateKnowledgeIndexCache();
+            deps.invalidateAllMemoriesCache();
+            if (rewroteColdMemory) deps.invalidateColdMemoriesCache();
+            deps.bumpMemoryStatusVersion();
+          }
           return finish();
         }
         if (
