@@ -247,6 +247,12 @@ function assertDigest(value: unknown, context: string): string {
   return value.toLowerCase();
 }
 
+function isPlainObject(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 function assertNamespace(namespace: unknown): string {
   if (typeof namespace !== "string" || namespace.length === 0) {
     throw new ReconcilePlanInputError("reconcile: every namespace input needs a non-empty namespace");
@@ -315,9 +321,11 @@ function assertNoPathAlias(
   namespace: string,
 ): void {
   // NFC first: macOS stores decomposed names and compares canonically, so
-  // `é` (U+00E9) and `é` (e + U+0301) are ONE file there. Case folding alone
-  // leaves them distinct and the planner would emit both a push and a pull.
-  const folded = path.normalize("NFC").toLowerCase();
+  // `é` (U+00E9) and `é` (e + U+0301) are ONE file there. Then a FULL caseless
+  // fold - upper-then-lower, which collapses forms a bare toLowerCase() keeps
+  // apart, such as final sigma `ς` against `σ`. Lowercasing alone would leave
+  // those distinct and the planner would emit both a push and a pull.
+  const folded = path.normalize("NFC").toUpperCase().toLowerCase();
   const existing = seen.get(folded);
   if (existing !== undefined && existing !== path) {
     throw new ReconcilePlanInputError(
@@ -470,12 +478,13 @@ export function planNamespaceReconciliation(
   input: ReconcileNamespaceInput,
   options: ReconcileOptions = {},
 ): ReconcilePlanEntry[] {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+  if (!isPlainObject(input)) {
     throw new ReconcilePlanInputError("reconcile: namespace input must be a plain object");
   }
-  if (options === null || typeof options !== "object" || Array.isArray(options)) {
-    // An array passes a bare typeof check and would silently take the default
-    // policy, hiding a malformed request behind `manual`.
+  if (!isPlainObject(options)) {
+    // A Date, Map or RegExp passes a bare typeof check, exposes no
+    // `conflictPolicy`, and would silently take the default policy - hiding a
+    // malformed request behind `manual`.
     throw new ReconcilePlanInputError("reconcile: options must be a plain object");
   }
   const namespace = assertNamespace(input.namespace);

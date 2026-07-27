@@ -875,3 +875,40 @@ test("superscript COM and LPT device aliases are rejected", () => {
     );
   }
 });
+
+test("a full caseless fold catches sigma-style aliases", () => {
+  // Unicode-case-insensitive filesystems treat final and medial sigma as one
+  // name; a bare toLowerCase() keeps them distinct.
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [file("facts/\u03c2.md", "one")],
+        peer: [file("facts/\u03c3.md", "two")],
+      }),
+    /aliasing paths/,
+  );
+});
+
+test("non-plain objects are not accepted as envelopes", () => {
+  // Each passes typeof === "object" and is not an array, exposes no
+  // conflictPolicy, and would silently run under the default policy.
+  for (const bad of [new Date(), new Map(), /re/]) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation(
+          { namespace: "default", local: [], peer: [] },
+          bad as unknown as Record<string, never>,
+        ),
+      /options must be a plain object/,
+      `options ${Object.prototype.toString.call(bad)}`,
+    );
+  }
+  // A null-prototype record is still a record.
+  assert.doesNotThrow(() =>
+    planNamespaceReconciliation(
+      { namespace: "default", local: [], peer: [] },
+      Object.assign(Object.create(null), { conflictPolicy: "manual" }) as Record<string, never>,
+    ),
+  );
+});
