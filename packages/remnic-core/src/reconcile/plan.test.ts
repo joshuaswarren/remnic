@@ -608,7 +608,9 @@ test("the same namespace supplied twice is rejected", () => {
 });
 
 test("an out-of-range mtimeMs cannot decide newest-wins", () => {
-  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, 8_640_000_000_000_001, "2000"]) {
+  // 1.5 is deliberately absent: fs.stat reports fractional mtimes and
+  // offline-sync forwards them unrounded, so they are valid input.
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 8_640_000_000_000_001, "2000"]) {
     for (const side of ["local", "peer", "base"] as const) {
       const record = { path: "facts/a.md", sha256: digest("x"), mtimeMs: bad as unknown as number };
       assert.throws(
@@ -646,5 +648,49 @@ test("malformed public API envelopes raise ReconcilePlanInputError, not TypeErro
         null as unknown as Record<string, never>,
       ),
     ReconcilePlanInputError,
+  );
+});
+
+test("a fractional mtime from fs.stat is accepted", () => {
+  // Node reports sub-millisecond mtimes on common filesystems; rejecting them
+  // would fail every normally generated census before planning could start.
+  const entries = planNamespaceReconciliation(
+    {
+      namespace: "default",
+      local: [file("facts/a.md", "local", 1_700_000_000_123.456)],
+      peer: [file("facts/a.md", "peer", 1_700_000_000_999.789)],
+    },
+    { conflictPolicy: "newest-wins" },
+  );
+  assert.equal(entryFor(entries, "facts/a.md").resolution, "peer-wins");
+});
+
+test("a non-canonical namespace is rejected so duplicates cannot slip past", () => {
+  assert.throws(
+    () => planNamespaceReconciliation({ namespace: " team ", local: [], peer: [] }),
+    /is not canonical; pass "team"/,
+  );
+  // The dedup guard would otherwise see two distinct keys for one namespace.
+  assert.throws(
+    () =>
+      planReconciliation([
+        { namespace: "team", local: [file("facts/a.md", "one")], peer: [] },
+        { namespace: " team ", local: [], peer: [file("facts/a.md", "two")] },
+      ]),
+    ReconcilePlanInputError,
+  );
+});
+
+test("a null base cursor is rejected rather than read as a bootstrap", () => {
+  // Silently bootstrapping would turn the peer's deletion into a push.
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [file("facts/a.md", "v1")],
+        peer: [],
+        base: null as unknown as undefined,
+      }),
+    /must be iterable/,
   );
 });

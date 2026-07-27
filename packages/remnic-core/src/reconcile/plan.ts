@@ -1,3 +1,4 @@
+import { normalizeNamespaceIdentity } from "../namespaces/identity.js";
 import { OFFLINE_SYNC_MAX_MTIME_MS } from "../offline-sync.js";
 import { validateArchiveRelativePath } from "../transfer/fs-utils.js";
 import type { OfflineSyncFileState } from "../offline-sync.js";
@@ -187,20 +188,23 @@ function assertCensusRecord(
 }
 
 /**
- * `newest-wins` decides which corpus keeps its history from this number, so it
- * gets the same bounds offline-sync applies: a NaN, an Infinity or a value past
- * the Date range must not be allowed to pick the winner.
+ * `newest-wins` decides which corpus keeps its history from this number, so a
+ * NaN, an Infinity or a value past the Date range must not pick the winner.
+ *
+ * Fractional values ARE valid: `fs.stat()` reports sub-millisecond mtimes on
+ * common filesystems and offline-sync forwards them unrounded, so this matches
+ * its `assertOfflineSyncMtimeMs` — non-negative finite within Date range — and
+ * deliberately does not require an integer.
  */
 function assertMtimeMs(value: unknown, context: string): number {
   if (
     typeof value !== "number"
     || !Number.isFinite(value)
-    || !Number.isInteger(value)
     || value < 0
     || value > OFFLINE_SYNC_MAX_MTIME_MS
   ) {
     throw new ReconcilePlanInputError(
-      `reconcile: ${context} has an out-of-range mtimeMs; expected an integer between 0 and ${OFFLINE_SYNC_MAX_MTIME_MS}`,
+      `reconcile: ${context} has an out-of-range mtimeMs; expected a finite value between 0 and ${OFFLINE_SYNC_MAX_MTIME_MS}`,
     );
   }
   return value;
@@ -224,6 +228,15 @@ function assertDigest(value: unknown, context: string): string {
 function assertNamespace(namespace: unknown): string {
   if (typeof namespace !== "string" || namespace.length === 0) {
     throw new ReconcilePlanInputError("reconcile: every namespace input needs a non-empty namespace");
+  }
+  // `team` and ` team ` are one namespace to the rest of core, so accepting
+  // both here would slip two inputs past the duplicate check and let them plan
+  // contradictory actions for the same path. Rejected rather than silently
+  // rewritten, so the namespace on every entry is the caller's own string.
+  if (normalizeNamespaceIdentity(namespace) !== namespace) {
+    throw new ReconcilePlanInputError(
+      `reconcile: namespace ${JSON.stringify(namespace)} is not canonical; pass ${JSON.stringify(normalizeNamespaceIdentity(namespace))}`,
+    );
   }
   return namespace;
 }
@@ -396,9 +409,12 @@ export function planNamespaceReconciliation(
   const peer = indexByPath(assertIterable(input.peer, "peer", namespace), "peer", namespace);
   // Only `base.sha256` is ever read, so the base is compacted to path -> digest
   // instead of a second full record index (round 7, codex P2).
-  const base = input.base
-    ? compactDigests(indexByPath(assertIterable(input.base, "base", namespace), "base", namespace))
-    : null;
+  // Only an ABSENT base means bootstrap. A null/invalid cursor silently read as
+  // "no prior agreement" would turn a peer-side deletion into a push and
+  // resurrect it.
+  const base = input.base === undefined
+    ? null
+    : compactDigests(indexByPath(assertIterable(input.base, "base", namespace), "base", namespace));
   const tombstoned = parseTombstonedDigests(input.tombstonedFileSha256, namespace);
   const entries: ReconcilePlanEntry[] = [];
 
