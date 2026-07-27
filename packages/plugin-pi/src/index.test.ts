@@ -765,7 +765,7 @@ test("empty recall responses do not suppress retry for same query", async (t) =>
   const result = await emit("context", event, ctx) as { messages?: Array<{ content?: Array<{ text?: string }> }> };
 
   assert.equal(calls, 2);
-  const injected = result.messages?.at(-1);
+  const injected = result.messages?.[0];
   assert.ok(injected?.content?.[0]?.text?.includes("remembered context"));
   assert.equal(
     (injected as { excludeFromContext?: unknown } | undefined)?.excludeFromContext,
@@ -777,37 +777,36 @@ test("empty recall responses do not suppress retry for same query", async (t) =>
   );
 });
 
-test("context recall appends injected context after stable conversation history", async (t) => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
+test("context recall prepends injected context before conversation history", async (t) => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () =>
+		new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
+	t.after(() => {
+		globalThis.fetch = originalFetch;
+	});
 
-  const { pi, emit } = makePiHarness();
-  const extension = createRemnicPiExtension({
-    config: {
-      ...baseConfig(),
-      authToken: "test-token",
-      observeEnabled: false,
-      compactionEnabled: false,
-      mcpToolsEnabled: false,
-      statusEnabled: false,
-    },
-  });
-  await extension(pi as any);
+	const { pi, emit } = makePiHarness();
+	const extension = createRemnicPiExtension({
+		config: {
+			...baseConfig(),
+			authToken: "test-token",
+			observeEnabled: false,
+			compactionEnabled: false,
+		},
+	});
+	await extension(pi as any);
 
-  const firstMessage = { role: "system", content: "stable prefix" };
-  const userMessage = { role: "user", content: "same prompt" };
-  const result = await emit("context", { messages: [firstMessage, userMessage] }, {
-    cwd: "/tmp/remnic-pi",
-    sessionManager: { getSessionId: () => "append-recall-test" },
-  }) as { messages?: Array<Record<string, unknown>> };
+	const firstMessage = { role: "system", content: "stable prefix" };
+	const userMessage = { role: "user", content: "same prompt" };
+	const result = await emit("context", { messages: [firstMessage, userMessage] }, {
+		cwd: "/tmp/remnic-pi",
+		sessionManager: { getSessionId: () => "append-recall-test" },
+	}) as { messages?: Array<Record<string, unknown>> };
 
-  assert.equal(result.messages?.[0], firstMessage);
-  assert.equal(result.messages?.[1], userMessage);
-  assert.equal(result.messages?.[2]?.remnicInjected, true);
+	// Injected system message is now at index 0 (prepended)
+	assert.equal(result.messages?.[0]?.remnicInjected, true);
+	assert.equal(result.messages?.[1], firstMessage);
+	assert.equal(result.messages?.[2], userMessage);
 });
 
 test("context recall does not load full session history", async (t) => {
@@ -846,7 +845,7 @@ test("context recall does not load full session history", async (t) => {
     sessionManager,
   }) as { messages?: Array<Record<string, unknown>> };
 
-  assert.equal(result.messages?.at(-1)?.remnicInjected, true);
+  assert.equal(result.messages?.[0]?.remnicInjected, true);
 });
 
 test("context recall skips stale Pi ctx before snapshot", async (t) => {
@@ -911,7 +910,7 @@ test("context recall keeps pi:default fallback when session manager is missing",
     cwd: "/tmp/remnic-pi",
   }) as { messages?: Array<Record<string, unknown>> };
 
-  assert.equal(result.messages?.at(-1)?.remnicInjected, true);
+  assert.equal(result.messages?.[0]?.remnicInjected, true);
   assert.equal(recallBodies[0]?.sessionKey, "pi:default");
   assert.equal(recallBodies[0]?.cwd, "/tmp/remnic-pi");
 });
@@ -943,7 +942,7 @@ test("recall context truncation stays within the configured budget", async (t) =
     sessionManager: { getSessionId: () => "recall-budget-test" },
   }) as { messages?: Array<{ content?: Array<{ text?: string }> }> };
 
-  const text = result.messages?.at(-1)?.content?.[0]?.text ?? "";
+  const text = result.messages?.[0]?.content?.[0]?.text ?? "";
   const context = text.split("Remnic recalled context for this turn:\n\n")[1] ?? "";
   assert.equal(context.length, 40);
   assert.ok(context.endsWith("[Remnic context truncated]"));

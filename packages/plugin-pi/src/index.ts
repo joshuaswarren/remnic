@@ -4,7 +4,6 @@ import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./confi
 import { RemnicClient, isTransientNetworkError, type McpTool, type ObserveMessage } from "./client.js";
 import {
   hashObservedMessage,
-  latestUserRecallTarget,
   observedMessageDedupeKey,
   sessionKeyFromContext,
   summarizeMessages,
@@ -33,7 +32,8 @@ const SESSION_OWNED_FIELDS = new Set(["sessionKey", "namespace", "cwd"]);
 type PiSessionState = {
   observedHashes: Set<string>;
   liveObservedReplayKeys: Map<string, number>;
-  lastInjectedRecallKey: string;
+  /** Cached recall context from session_start — injected once, reused byte-identically. */
+  cachedContext: string | null;
 };
 
 type NotifyLevel = "info" | "success" | "warning" | "error";
@@ -63,6 +63,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
       restoreObservedState(session, state.observedHashes);
+
       // Probe health + update the circuit breaker UNCONDITIONALLY so an offline
       // daemon is marked unreachable even when the status UI is off; otherwise
       // the namespace preflight and every later hook each burn a full request
@@ -75,47 +76,66 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         );
       }
       await runNamespacePreflight(pi, session, client, config);
+
+      // Single recall at session start — context is cached and reused
+      // byte-identically across all turns for KV cache prefix stability.
+      // Retries on transient failure so a startup blip doesn't permanently
+      // disable context for the session.
+      if (config.recallEnabled && config.authToken && client.isReachable()) {
+        const maxRetries = 2;
+        let lastError: unknown;
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          try {
+            const recalled = await client.recall(
+              "current session context",
+              session.sessionKey,
+              session.cwd,
+              { timeoutMs: config.startupRequestTimeoutMs },
+            );
+            client.markReachable();
+            const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
+            if (context) {
+              state.cachedContext = context;
+            }
+            break;
+          } catch (err) {
+            lastError = err;
+            if (!isTransientNetworkError(err)) {
+              // Non-transient error — trip breaker immediately
+              if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
+              break;
+            }
+            // Transient — retry with backoff
+            if (attempt < maxRetries) {
+              await new Promise((r) => setTimeout(r, 200 * Math.pow(2, attempt)));
+            }
+          }
+        }
+        if (!state.cachedContext && lastError) {
+          if (isDaemonUnreachableError(lastError)) client.markUnreachable(config.daemonCooldownMs);
+          session.notify(`Remnic startup recall unavailable: ${errorMessage(lastError)}`, "warning");
+        }
+      }
     });
 
     pi.on("context", async (event, ctx) => {
       const session = snapshotPiContext(ctx);
       if (!session) return;
-      if (!config.recallEnabled || !config.authToken) return;
-      // Circuit breaker: skip recall fast while the daemon is known-down so a
-      // dead host doesn't block every turn on a doomed request (#1626).
-      if (!client.isReachable()) return;
-      const recallTarget = latestUserRecallTarget(Array.isArray(event.messages) ? event.messages : []);
-      if (!recallTarget) return;
-      const { query } = recallTarget;
       const { state } = getSessionState(session.sessionKey, sessionStates);
-      if (recallTarget.dedupeKey === state.lastInjectedRecallKey) return;
 
-      try {
-        const recalled = await client.recall(query, session.sessionKey, session.cwd, {
-          timeoutMs: config.turnRequestTimeoutMs,
-        });
-        client.markReachable();
-        const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
-        if (!context) return;
-        state.lastInjectedRecallKey = recallTarget.dedupeKey;
-        return {
-          messages: [
-            ...event.messages,
-            {
-              role: "user",
-              content: [{ type: "text", text: `Remnic recalled context for this turn:\n\n${context}` }],
-              remnicInjected: true,
-              timestamp: Date.now(),
-            },
-          ],
-        };
-      } catch (err) {
-        // Only trip the breaker when the daemon is genuinely unreachable
-        // (timeout or connection-level failure) — not on a transient HTTP
-        // error, so a one-off failure still retries on the next turn (#1626).
-        if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
-        session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
-      }
+      // Inject cached context as a system message — byte-identical across turns
+      // so the KV cache prefix is preserved. No timestamp, no per-turn recall.
+      if (!state.cachedContext) return;
+      return {
+        messages: [
+          {
+            role: "system",
+            content: [{ type: "text", text: state.cachedContext }],
+            remnicInjected: true,
+          },
+          ...event.messages,
+        ],
+      };
     });
 
     pi.on("message_end", async (event, ctx) => {
@@ -408,7 +428,7 @@ function getSessionState(sessionKey: string, states: Map<string, PiSessionState>
     state = {
       observedHashes: new Set<string>(),
       liveObservedReplayKeys: new Map<string, number>(),
-      lastInjectedRecallKey: "",
+      cachedContext: null,
     };
     states.set(sessionKey, state);
     pruneSessionStates(states);
