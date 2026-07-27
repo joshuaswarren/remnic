@@ -694,3 +694,32 @@ test("a null base cursor is rejected rather than read as a bootstrap", () => {
     /must be iterable/,
   );
 });
+
+test("canonically equivalent Unicode paths are treated as one file", () => {
+  // macOS stores decomposed names and compares canonically, so these are the
+  // same file there; planning a push AND a pull would race them.
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [file("facts/\u00e9.md", "one")],
+        peer: [file("facts/e\u0301.md", "two")],
+      }),
+    /differing only by case/,
+  );
+});
+
+test("an array is not a valid options or input envelope", () => {
+  assert.throws(
+    () =>
+      planNamespaceReconciliation(
+        { namespace: "default", local: [], peer: [] },
+        [] as unknown as Record<string, never>,
+      ),
+    /options must be a plain object/,
+  );
+  assert.throws(
+    () => planNamespaceReconciliation([] as unknown as { namespace: string; local: []; peer: [] }),
+    /namespace input must be a plain object/,
+  );
+});

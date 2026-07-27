@@ -259,7 +259,10 @@ function assertNoCaseCollision(
   path: string,
   namespace: string,
 ): void {
-  const folded = path.toLowerCase();
+  // NFC first: macOS stores decomposed names and compares canonically, so
+  // `é` (U+00E9) and `é` (e + U+0301) are ONE file there. Case folding alone
+  // leaves them distinct and the planner would emit both a push and a pull.
+  const folded = path.normalize("NFC").toLowerCase();
   const existing = seen.get(folded);
   if (existing !== undefined && existing !== path) {
     throw new ReconcilePlanInputError(
@@ -393,11 +396,13 @@ export function planNamespaceReconciliation(
   input: ReconcileNamespaceInput,
   options: ReconcileOptions = {},
 ): ReconcilePlanEntry[] {
-  if (input === null || typeof input !== "object") {
-    throw new ReconcilePlanInputError("reconcile: namespace input must be an object");
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new ReconcilePlanInputError("reconcile: namespace input must be a plain object");
   }
-  if (options === null || typeof options !== "object") {
-    throw new ReconcilePlanInputError("reconcile: options must be an object");
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    // An array passes a bare typeof check and would silently take the default
+    // policy, hiding a malformed request behind `manual`.
+    throw new ReconcilePlanInputError("reconcile: options must be a plain object");
   }
   const namespace = assertNamespace(input.namespace);
   const policy = assertConflictPolicy(options.conflictPolicy);
