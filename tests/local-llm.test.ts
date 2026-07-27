@@ -942,23 +942,18 @@ test("a definitive probe failure IS cached for the health-check interval", async
   const client = new LocalLlmClient(buildConfig());
   const originalFetch = globalThis.fetch;
   let calls = 0;
-  globalThis.fetch = (async () =>
-    new Response("nope", { status: 500, headers: { "content-type": "text/plain" } })) as unknown as typeof fetch;
-  const counting: typeof fetch = (async (...args: Parameters<typeof fetch>) => {
+  // A backend that ANSWERS and says no is a real verdict, unlike a timeout.
+  globalThis.fetch = (async () => {
     calls += 1;
-    return await (globalThis.fetch as typeof fetch)(...args);
-  }) as typeof fetch;
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = counting;
+    return new Response("nope", { status: 500, headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
   try {
     assert.equal(await client.checkAvailability(), false);
     const afterFirst = calls;
-    // A backend that answered and said 500 is a real verdict — cache it, or the
-    // daemon hammers a known-bad endpoint on every request.
+    assert.ok(afterFirst > 0, "probes ran");
     assert.equal(await client.checkAvailability(), false);
-    assert.equal(calls, afterFirst, "a definitive failure must be cached");
+    assert.equal(calls, afterFirst, "a definitive failure must be cached, not re-probed every request");
   } finally {
     globalThis.fetch = originalFetch;
-    void realFetch;
   }
 });
