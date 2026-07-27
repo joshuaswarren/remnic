@@ -80,7 +80,10 @@ export function canonicalizeEntityRefOption<T extends { entityRef?: string }>(
   options: T,
   mappings: Readonly<Record<string, string>>,
 ): T {
-  if (options.entityRef === undefined) return options;
+  // Non-strings (absent, or a JS caller's null/junk) pass through untouched:
+  // this boundary canonicalizes ids, it does not take over input validation
+  // the write path never performed — serialization already drops falsy refs.
+  if (typeof options.entityRef !== "string") return options;
   return { ...options, entityRef: resolveHistoricalEntityCanonicalId(options.entityRef, mappings) };
 }
 

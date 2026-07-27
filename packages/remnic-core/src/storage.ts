@@ -2305,7 +2305,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // loadAliases() explicitly — every creation path must still get the
     // store's own aliases, never an empty or foreign table.
     this.loadAliasesSync();
-    this.loadHistoricalEntityCanonicalIdsSync();
+    this.historicalEntityCanonicalIds = entityMigration.loadHistoricalEntityCanonicalIds(this.stateDir);
   }
 
   /** Set the process-wide hot-memories cache default (issue #1902). The
@@ -3579,10 +3579,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       log.debug("no config/aliases.json found — using built-in aliases only");
     }
   }
-  private loadHistoricalEntityCanonicalIdsSync(): void {
-    this.historicalEntityCanonicalIds = entityMigration.loadHistoricalEntityCanonicalIds(this.stateDir);
-  }
-
   private async runLegacyEntityCanonicalIdMigration(): Promise<string> {
     const completionFingerprint = await runLegacyEntityCanonicalIdMigration(
       this as unknown as EntityCanonicalIdMigrationHost,
@@ -3590,7 +3586,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       (entity) => serializeEntityFile(entity, this.entitySchemas),
       createMemoryEntityRefSerializer(serializeFrontmatter),
     );
-    this.loadHistoricalEntityCanonicalIdsSync();
+    this.historicalEntityCanonicalIds = entityMigration.loadHistoricalEntityCanonicalIds(this.stateDir);
     return completionFingerprint;
   }
 
@@ -5153,6 +5149,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     patch: Partial<MemoryFrontmatter>,
     lifecycle?: MemoryLifecycleEventWriteOptions
   ): Promise<boolean> {
+    patch = entityMigration.canonicalizeEntityRefOption(patch, this.historicalEntityCanonicalIds);
     const beforeStatus = memory.frontmatter.status ?? "active";
     const updated: MemoryFrontmatter = {
       ...memory.frontmatter,
@@ -6067,6 +6064,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Deduplicates by target+label.
    */
   async addEntityRelationship(name: string, rel: EntityRelationship): Promise<void> {
+    // Resolve both ends through the migration journal (issue #2213): a legacy
+    // `name` no-ops (file renamed away); a legacy target strands the edge.
+    name = entityMigration.resolveHistoricalEntityCanonicalId(name, this.historicalEntityCanonicalIds);
+    const target = entityMigration.resolveHistoricalEntityCanonicalId(rel.target, this.historicalEntityCanonicalIds);
     const filePath = path.join(this.entitiesDir, `${name}.md`);
     let entity: EntityFile;
     try {
@@ -6080,10 +6081,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
 
     // Dedupe by target+label
-    const exists = entity.relationships.some((r) => r.target === rel.target && r.label === rel.label);
+    const exists = entity.relationships.some((r) => r.target === target && r.label === rel.label);
     if (exists) return;
 
-    entity.relationships.push(rel);
+    entity.relationships.push({ ...rel, target });
     entity.updated = new Date().toISOString();
     await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
     this.invalidateKnowledgeIndexCache();

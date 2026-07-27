@@ -473,3 +473,38 @@ test("plain memory writes do not change the migration fingerprint; entity writes
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("addEntityRelationship resolves legacy ids on both ends after migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-relationship-canonical-"));
+  try {
+    // Steady state: completed migration retaining the legacy→canonical mapping.
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const other = normalizeEntityName("Backup Sync", "automation-cron-job");
+    await storage.writeEntity("Backup Sync", "automation-cron-job", ["Runs at 03:00."]);
+
+    // Legacy id as the entity being written: the legacy file no longer
+    // exists, so an unresolved lookup would silently no-op — the edge must
+    // land on the canonical file instead.
+    await storage.addEntityRelationship(legacy, { target: other, label: "precedes" });
+    assert.match(
+      await readFile(path.join(dir, "entities", `${canonical}.md`), "utf8"),
+      new RegExp(`\\[\\[${other}\\]\\] — precedes`),
+    );
+
+    // Legacy id as a relationship target: the stored edge must name the
+    // canonical id, never a node the migration renamed away (issue #2213 —
+    // extraction persists LLM-supplied relationship endpoints verbatim).
+    await storage.addEntityRelationship(other, { target: legacy, label: "follows" });
+    const backup = await readFile(path.join(dir, "entities", `${other}.md`), "utf8");
+    assert.match(backup, new RegExp(`\\[\\[${canonical}\\]\\] — follows`));
+    assert.doesNotMatch(backup, new RegExp(`\\[\\[${legacy}\\]\\]`));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
