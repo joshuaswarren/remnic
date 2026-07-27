@@ -508,3 +508,30 @@ test("addEntityRelationship resolves legacy ids on both ends after migration", a
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a manager that predates a peer's migration still canonicalizes reference writes", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-stale-manager-"));
+  try {
+    // Manager A exists BEFORE any migration journal does.
+    const a = new StorageManager(dir);
+    await a.ensureDirectories();
+    const written = await a.writeMemory("fact", "The ingest runs nightly.");
+
+    // A peer manager seeds a collision, resolves it, and completes the
+    // migration — A never re-runs ensureDirectories after this.
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    // A's reference-mutating write must resolve through the CURRENT journal,
+    // not a constructor-time snapshot: the mapping table is keyed by the
+    // shared memory-status version, which the peer's migration bumped.
+    const memory = (await a.readAllMemories()).find((m) => m.frontmatter.id === written.id);
+    assert.ok(memory, "fixture must persist the fact");
+    await a.writeMemoryFrontmatter(memory, { entityRef: legacy });
+    assert.match(await readFile(memory.path, "utf-8"), new RegExp(`entityRef: ${canonical}`));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

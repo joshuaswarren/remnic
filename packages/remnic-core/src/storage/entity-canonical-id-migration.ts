@@ -51,6 +51,27 @@ export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Rec
   }
 }
 
+/**
+ * Journal mapping table keyed by the shared memory-status version, so a
+ * long-lived StorageManager never canonicalizes against a constructor-time
+ * snapshot after a PEER process completes a migration (the migration bumps
+ * memory-status whenever it changes the mapping set, and that version lives
+ * in a shared file). Reload cost is one version read per lookup and one
+ * journal parse per actual change.
+ */
+export class HistoricalEntityCanonicalIdCache {
+  private mappings: Readonly<Record<string, string>> = {};
+  private version = -1;
+
+  get(stateDir: string, version: number): Readonly<Record<string, string>> {
+    if (version !== this.version) {
+      this.mappings = loadHistoricalEntityCanonicalIds(stateDir);
+      this.version = version;
+    }
+    return this.mappings;
+  }
+}
+
 export function resolveHistoricalEntityCanonicalId(
   normalized: string,
   mappings: Readonly<Record<string, string>>,

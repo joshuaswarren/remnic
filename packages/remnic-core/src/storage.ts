@@ -2305,7 +2305,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // loadAliases() explicitly — every creation path must still get the
     // store's own aliases, never an empty or foreign table.
     this.loadAliasesSync();
-    this.historicalEntityCanonicalIds = entityMigration.loadHistoricalEntityCanonicalIds(this.stateDir);
   }
 
   /** Set the process-wide hot-memories cache default (issue #1902). The
@@ -3522,7 +3521,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * store loaded last rewrite every other store's canonical entity ids.
    */
   private userAliases: Record<string, string> = {};
-  private historicalEntityCanonicalIds: Readonly<Record<string, string>> = {};
+  private readonly historicalEntityCanonicalIds = new entityMigration.HistoricalEntityCanonicalIdCache();
+  private currentHistoricalIds(): Readonly<Record<string, string>> {
+    return this.historicalEntityCanonicalIds.get(this.stateDir, this.getMemoryStatusVersion());
+  }
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
     () => this.runLegacyEntityCanonicalIdMigration(),
@@ -3531,7 +3533,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   normalizeEntityName(raw: string, type: string): string {
     return entityMigration.resolveHistoricalEntityCanonicalId(
       this.entityStore.normalizeEntityName(raw, type),
-      this.historicalEntityCanonicalIds,
+      this.currentHistoricalIds(),
     );
   }
 
@@ -3586,7 +3588,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       (entity) => serializeEntityFile(entity, this.entitySchemas),
       createMemoryEntityRefSerializer(serializeFrontmatter),
     );
-    this.historicalEntityCanonicalIds = entityMigration.loadHistoricalEntityCanonicalIds(this.stateDir);
     return completionFingerprint;
   }
 
@@ -3672,7 +3673,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     options: WriteMemoryOptions = {}
   ): Promise<MemoryWriteResult> {
     await this.ensureDirectories();
-    options = entityMigration.canonicalizeEntityRefOption(options, this.historicalEntityCanonicalIds);
+    options = entityMigration.canonicalizeEntityRefOption(options, this.currentHistoricalIds());
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const id = `${category}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -5149,7 +5150,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     patch: Partial<MemoryFrontmatter>,
     lifecycle?: MemoryLifecycleEventWriteOptions
   ): Promise<boolean> {
-    patch = entityMigration.canonicalizeEntityRefOption(patch, this.historicalEntityCanonicalIds);
+    patch = entityMigration.canonicalizeEntityRefOption(patch, this.currentHistoricalIds());
     const beforeStatus = memory.frontmatter.status ?? "active";
     const updated: MemoryFrontmatter = {
       ...memory.frontmatter,
@@ -6064,10 +6065,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Deduplicates by target+label.
    */
   async addEntityRelationship(name: string, rel: EntityRelationship): Promise<void> {
-    // Resolve both ends through the migration journal (issue #2213): a legacy
-    // `name` no-ops (file renamed away); a legacy target strands the edge.
-    name = entityMigration.resolveHistoricalEntityCanonicalId(name, this.historicalEntityCanonicalIds);
-    const target = entityMigration.resolveHistoricalEntityCanonicalId(rel.target, this.historicalEntityCanonicalIds);
+    // Resolve both ends through the migration journal (issue #2213) — legacy ids name renamed-away nodes.
+    name = entityMigration.resolveHistoricalEntityCanonicalId(name, this.currentHistoricalIds());
+    const target = entityMigration.resolveHistoricalEntityCanonicalId(rel.target, this.currentHistoricalIds());
     const filePath = path.join(this.entitiesDir, `${name}.md`);
     let entity: EntityFile;
     try {
@@ -6686,7 +6686,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     } = {}
   ): Promise<string> {
     await this.ensureDirectories();
-    options = entityMigration.canonicalizeEntityRefOption(options, this.historicalEntityCanonicalIds);
+    options = entityMigration.canonicalizeEntityRefOption(options, this.currentHistoricalIds());
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const id = `${parentId}-chunk-${chunkIndex}`;
