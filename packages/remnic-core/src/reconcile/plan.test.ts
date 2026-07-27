@@ -956,3 +956,49 @@ test("a malformed tombstone collection raises the planner's error, not a TypeErr
     );
   }
 });
+
+test("an unpaired surrogate path is rejected", () => {
+  // Node encodes it as U+FFFD, so it and a literal U+FFFD path are one file on
+  // disk while comparing as two.
+  for (const bad of ["facts/\ud800.md", "facts/\udc00.md"]) {
+    assert.throws(
+      () =>
+        planNamespaceReconciliation({
+          namespace: "default",
+          local: [{ path: bad, sha256: digest("x") }],
+          peer: [],
+        }),
+      /unpaired surrogate/,
+    );
+  }
+  // A well-formed pair is fine.
+  assert.doesNotThrow(() =>
+    planNamespaceReconciliation({
+      namespace: "default",
+      local: [file("facts/\ud83d\ude00.md", "x")],
+      peer: [],
+    }),
+  );
+});
+
+test("the base cursor is validated with the same rules as the other censuses", () => {
+  assert.throws(
+    () =>
+      planNamespaceReconciliation({
+        namespace: "default",
+        local: [],
+        peer: [],
+        base: [file("facts/a.md", "one"), file("facts/a.md", "two")],
+      }),
+    /base census for namespace default lists facts\/a\.md twice with different digests/,
+  );
+  // And it still drives the one-sided-change decision it exists for.
+  const entries = planNamespaceReconciliation({
+    namespace: "default",
+    local: [file("facts/a.md", "v1")],
+    peer: [file("facts/a.md", "v2")],
+    base: [file("facts/a.md", "v1")],
+  });
+  assert.equal(entryFor(entries, "facts/a.md").action, "pull");
+  assert.equal(entryFor(entries, "facts/a.md").baseSha256, digest("v1"));
+});

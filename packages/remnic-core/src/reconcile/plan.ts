@@ -291,6 +291,7 @@ function assertIterable(value: unknown, side: string, namespace: string): Iterab
 // eslint-disable-next-line no-control-regex -- control characters are exactly what this rejects
 const WIN32_INVALID_CHARS = /[<>:"|?*\u0000-\u001f]/;
 // Windows treats the superscripts as their digits in COM/LPT device names.
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const WIN32_RESERVED_NAMES = /^(con|prn|aux|nul|(com|lpt)[1-9\u00b9\u00b2\u00b3])$/i;
 
 function assertPortablePathSegments(path: string, side: string, namespace: string): void {
@@ -305,6 +306,13 @@ function assertPortablePathSegments(path: string, side: string, namespace: strin
     // `:` opens an alternate data stream, the rest cannot be created at all,
     // and a reserved device name resolves to hardware. A plan containing any of
     // them cannot be applied on a Windows participant.
+    if (LONE_SURROGATE.test(segment)) {
+      // Node encodes an unpaired surrogate as U+FFFD, so this path and a
+      // literal U+FFFD path are one file on disk while comparing as distinct.
+      throw new ReconcilePlanInputError(
+        `reconcile: ${side} census for namespace ${namespace} path ${path} contains an unpaired surrogate`,
+      );
+    }
     if (WIN32_INVALID_CHARS.test(segment)) {
       throw new ReconcilePlanInputError(
         `reconcile: ${side} census for namespace ${namespace} path ${path} contains a character Windows cannot store`,
@@ -415,11 +423,27 @@ function parseTombstonedDigests(
   return digests;
 }
 
-function compactDigests(index: Map<string, ReconcileFileState>): Map<string, string> {
-  const compact = new Map<string, string>();
-  for (const [path, file] of index) compact.set(path, file.sha256);
-  index.clear();
-  return compact;
+/**
+ * Validate a census while keeping ONLY path -> digest.
+ *
+ * The base cursor is read for digests alone, so indexing full records and
+ * compacting afterwards would hold a corpus-sized record map and its copy at
+ * once - the peak this avoids.
+ */
+function indexDigestsByPath(
+  files: Iterable<ReconcileFileState>,
+  side: string,
+  namespace: string,
+): Map<string, string> {
+  const index = new Map<string, string>();
+  const seen = new Map<string, { sha256: string; mtimeMs?: number }>();
+  for (const raw of files) {
+    const file = assertCensusRecord(raw, side, namespace);
+    if (rejectConflictingDuplicate(seen.get(file.path), file, file.path, side, namespace)) continue;
+    seen.set(file.path, { sha256: file.sha256, mtimeMs: file.mtimeMs });
+    index.set(file.path, file.sha256);
+  }
+  return index;
 }
 
 const RECONCILE_CONFLICT_POLICIES: readonly ReconcileConflictPolicy[] = ["manual", "newest-wins", "keep-both"];
@@ -514,7 +538,7 @@ export function planNamespaceReconciliation(
   // resurrect it.
   const base = input.base === undefined
     ? null
-    : compactDigests(indexByPath(assertIterable(input.base, "base", namespace), "base", namespace));
+    : indexDigestsByPath(assertIterable(input.base, "base", namespace), "base", namespace);
   const tombstoned = parseTombstonedDigests(input.tombstonedFileSha256, namespace);
   const peerTombstoned = parseTombstonedDigests(
     input.peerTombstonedFileSha256,
