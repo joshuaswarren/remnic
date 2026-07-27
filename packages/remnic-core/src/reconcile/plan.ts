@@ -149,6 +149,14 @@ export interface ReconcileNamespaceInput {
    * "the peer deliberately retracted it": the peer census simply omits both,
    * so a file we still hold is planned `push` and the peer's retraction is
    * undone. Reconciliation is symmetric, so retraction has to be too.
+   *
+   * SCOPE: these sets decide what happens to files that still EXIST on one
+   * side. Sharing the retraction records themselves is not modelled here -
+   * tombstones are corpus files (`state/tombstones.jsonl`), so they reconcile
+   * as ordinary paths through this same plan. A digest both censuses have
+   * already dropped therefore produces no entry, by design: there is no file
+   * left to act on, and synthesizing a path-less entry would hand transport
+   * something it cannot apply.
    */
   peerTombstonedFileSha256?: Iterable<string>;
 }
@@ -264,6 +272,14 @@ function assertNamespace(namespace: unknown): string {
   // both here would slip two inputs past the duplicate check and let them plan
   // contradictory actions for the same path. Rejected rather than silently
   // rewritten, so the namespace on every entry is the caller's own string.
+  if (LONE_SURROGATE.test(namespace)) {
+    // `namespaceIdentityToken()` encodes through TextEncoder, so a lone
+    // surrogate and a literal U+FFFD collapse to ONE storage identity while
+    // comparing as two here - slipping both past the duplicate-namespace guard.
+    throw new ReconcilePlanInputError(
+      "reconcile: namespace contains an unpaired surrogate; it would collide with another namespace on disk",
+    );
+  }
   if (normalizeNamespaceIdentity(namespace) !== namespace) {
     throw new ReconcilePlanInputError(
       `reconcile: namespace ${JSON.stringify(namespace)} is not canonical; pass ${JSON.stringify(normalizeNamespaceIdentity(namespace))}`,

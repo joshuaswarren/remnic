@@ -1002,3 +1002,12 @@ test("the base cursor is validated with the same rules as the other censuses", (
   assert.equal(entryFor(entries, "facts/a.md").action, "pull");
   assert.equal(entryFor(entries, "facts/a.md").baseSha256, digest("v1"));
 });
+
+test("a namespace with an unpaired surrogate is rejected", () => {
+  // namespaceIdentityToken() encodes through TextEncoder, so this and a
+  // literal U+FFFD namespace are one directory on disk.
+  assert.throws(
+    () => planNamespaceReconciliation({ namespace: "\ud800", local: [], peer: [] }),
+    /unpaired surrogate/,
+  );
+});
