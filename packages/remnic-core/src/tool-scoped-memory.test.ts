@@ -133,6 +133,9 @@ const EXTRA_NEGATIVE: string[] = [
   "Automation tool reduces repetitive work",
   "Encryption tool selection should follow the threat model",
   "Monitoring tool availability affects reliability",
+  "Use user_id in API responses",
+  "Use database_name for the connection",
+  "Use feature_flag when rolling out changes",
   "Use least-privilege when designing authorization",
   "Use TypeScript-first for new packages",
 ];

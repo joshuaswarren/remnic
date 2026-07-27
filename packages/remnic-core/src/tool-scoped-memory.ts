@@ -51,6 +51,7 @@ const QUOTED_PERMISSIVE =
   "(?:" + BT + QUOTED_CONTENT + BT + "|\"" + QUOTED_CONTENT + "\"|'" + QUOTED_CONTENT + "')";
 
 const SNAKE = "(?:[a-z][a-z0-9]*(?:_[a-z0-9]+)+)\\b";
+const SNAKE_NON_DATA = "(?:[a-z][a-z0-9]*(?:_[a-z0-9]+)*(?:_(?!id\\b|name\\b|flag\\b|count\\b|at\\b|url\\b|key\\b|type\\b)[a-z0-9]+))\\b";
 const SNAKE_KEBAB = "(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+)\\b";
 
 const KNOWN_NAMES_CI = "\\b(?:" + KNOWN_NAMES_ALT + ")\\b";
@@ -79,7 +80,7 @@ const QUOTED_STRICT =
   "(?:" + BT + QSTRICT_CONTENT + BT + "|\"" + QSTRICT_CONTENT + "\"|'" + QSTRICT_CONTENT + "')";
 
 const INVOCATION_FLAG_ARGS =
-  VERB + "\\s+(?:" + QUOTED_STRICT + "|" + KNOWN_NAMES_CI + "|" + SNAKE + "|" + SLASH_GENERIC + "|" + FLAG + ")" + ARGS + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
+  VERB + "\\s+(?:" + QUOTED_STRICT + "|" + KNOWN_NAMES_CI + "|" + SNAKE_NON_DATA + "|" + SLASH_GENERIC + "|" + FLAG + ")" + ARGS + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
 const INVOCATION_CLI_ARGS =
   VERB + "\\s+" + CMD_WITH_ARGS + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
 const INVOCATION = "(?:" + INVOCATION_FLAG_ARGS + "|" + INVOCATION_CLI_ARGS + ")";
