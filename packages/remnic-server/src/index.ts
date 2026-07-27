@@ -944,6 +944,13 @@ export async function startServer(options?: {
   const parsedServerConfig = parseServerConfig(serverConfig, { portSource });
 
   const config = parseConfig(remnicConfig);
+  // Re-init now that config is known. The call at the top of startServer runs
+  // BEFORE the config file is read, so it could only ever default `debug` to
+  // false — `debug: true` was accepted, documented, and silently inert on the
+  // standalone daemon, which is exactly the flag you reach for when the daemon
+  // is misbehaving (issue #2209).
+  initLogger(undefined, config.debug);
+  log.debug(`debug logging enabled from config (${resolvedConfigPath.source})`);
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
 
