@@ -76,6 +76,8 @@ const EXTRA_POSITIVE: string[] = [
   "Use bashExecution before editing",
   "The bashExecution tool executes commands",
   "Call bashExecution() to persist data",
+  "Use /remnic flush before reset",
+  "The /remnic command controls memory",
 ];
 for (const content of EXTRA_POSITIVE) {
   test(`referencesAgentSpecificTool detects: "${content.slice(0, 44)}…"`, () => {
@@ -126,6 +128,9 @@ const EXTRA_NEGATIVE: string[] = [
   "Use macOS for development",
   "Use iOS for mobile apps",
   "Use eBay for purchases",
+  "Automation tool reduces repetitive work",
+  "Encryption tool selection should follow the threat model",
+  "Monitoring tool availability affects reliability",
   "Use least-privilege when designing authorization",
   "Use TypeScript-first for new packages",
 ];

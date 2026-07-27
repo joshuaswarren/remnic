@@ -29,6 +29,7 @@ const BT = "`";
 const GENERIC_TOOL_NAMES = [
   "read", "write", "search", "fetch", "browser", "exec", "shell", "memory",
   "edit", "bash", "glob", "webfetch", "task",
+  "remnic",
 ];
 const KNOWN_CLI_NAMES = [
   "grep", "curl", "git", "npm", "pnpm", "sed", "awk", "jq", "cat", "ssh",
@@ -76,7 +77,7 @@ const QUOTED_STRICT =
 const INVOCATION_FLAG_ARGS =
   VERB + "\\s+(?:" + QUOTED_STRICT + "|" + KNOWN_NAMES_CI + "|" + SNAKE + "|" + SLASH_GENERIC + "|" + FLAG + ")" + ARGS + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
 const INVOCATION_CLI_ARGS =
-  VERB + "\\s+" + CLI_NAMES_CI + CLI_ARG_RUN + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
+  VERB + "\\s+(?:" + CLI_NAMES_CI + "|" + SLASH_GENERIC + ")" + CLI_ARG_RUN + "(?=\\s*" + CLAUSE_BOUNDARY + ")";
 const INVOCATION = "(?:" + INVOCATION_FLAG_ARGS + "|" + INVOCATION_CLI_ARGS + ")";
 
 const TOOL_REFERENCE_CI = new RegExp(
@@ -88,35 +89,20 @@ const TOOL_REFERENCE_CI = new RegExp(
   "i",
 );
 
-const STOP_WORDS: Record<string, true> = {
-  The: true, A: true, An: true, This: true, That: true, These: true, Those: true,
-  It: true, We: true, They: true, You: true, He: true, She: true, Our: true,
-  Your: true, Their: true, My: true, His: true, Her: true, Its: true, But: true,
-  And: true, Or: true, Nor: true, So: true, Yet: true, Then: true, When: true,
-  While: true, Where: true, If: true, As: true, In: true, On: true, At: true,
-  To: true, For: true, By: true, From: true, With: true, Of: true, About: true,
-  Into: true, Upon: true, Within: true, Without: true, Between: true, Among: true,
-  Through: true, During: true, Before: true, After: true, Since: true, Until: true,
-  Against: true, Although: true, However: true, Therefore: true, Thus: true,
-  Hence: true, Also: true, Moreover: true, Meanwhile: true, Finally: true,
-  First: true, Last: true, Next: true, Now: true, Here: true, There: true,
-  Every: true, Each: true, All: true, Both: true, Some: true, Any: true,
-  No: true, Such: true, Same: true, Other: true, Another: true, Many: true,
-  Few: true, Several: true, One: true, Two: true, Three: true, Which: true,
-  What: true, Who: true, Research: true, Marketing: true, Development: true, Design: true, Production: true, Operations: true, Engineering: true, Communication: true, Leadership: true, Management: true, Strategy: true, Analytics: true, Business: true, Financial: true, Science: true, Quality: true, Technical: true, Academic: true, Educational: true, Medical: true, Legal: true, Planning: true, Line: true,
-};
-
 function hasCapitalisedToolName(content: string): boolean {
+  // Structural discriminator: a capitalised identifier beside a tool/command
+  // keyword qualifies ONLY when preceded by an article or invocation verb (not
+  // sentence-initial), or connected via named/called/aka. This replaces the
+  // blocklist approach — a structural rule beats a growing STOP_WORDS set.
   for (const re of [
-    /\b([A-Za-z][A-Za-z0-9]+)\b[\s'`<>]{0,4}\b(?:tool|command|subcommand)\b/gi,
-    /\b(?:tool|command|subcommand)\b[\s'`<>]{0,4}\b([A-Za-z][A-Za-z0-9]+)\b/gi,
+    /(?:the|a|an|this|that|these|those|use|run|call|invoke)\s+([A-Za-z][A-Za-z0-9]+)\b[\s'`<>]{0,4}\b(?:tool|command|subcommand)\b/gi,
     /\b(?:tool|command|subcommand)\b\s+(?:named|called|aka)\s+([A-Za-z][A-Za-z0-9]+)\b/gi,
   ]) {
     re.lastIndex = 0;
     let match;
     while ((match = re.exec(content)) !== null) {
       const w = match[1];
-      if (w && w[0] >= "A" && w[0] <= "Z" && !(w in STOP_WORDS)) return true;
+      if (w && w[0] >= "A" && w[0] <= "Z") return true;
     }
   }
   return false;
