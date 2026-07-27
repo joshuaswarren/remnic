@@ -651,3 +651,59 @@ test("startServer destroys the orchestrator when HTTP bind fails after initializ
   );
   assert.equal(destroyCalls, 1);
 });
+
+/**
+ * The daemon calls `initLogger()` at the top of `startServer`, before the
+ * config file has been read, so `debug: true` was accepted and then silently
+ * ignored (issue #2209) — the one flag an operator reaches for when the daemon
+ * is misbehaving. These assert the flag reaches the logger either way.
+ */
+async function startServerWithDebug(
+  t: TestContext,
+  debug: boolean,
+): Promise<{ debugLines: string[] }> {
+  restoreEnv(t, ["REMNIC_PORT", "ENGRAM_PORT", "REMNIC_MEMORY_DIR", "ENGRAM_MEMORY_DIR", "REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN"]);
+  for (const key of ["REMNIC_PORT", "ENGRAM_PORT", "REMNIC_MEMORY_DIR", "ENGRAM_MEMORY_DIR"]) delete process.env[key];
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-debug-flag-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const configPath = path.join(tempDir, "config.json");
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      remnic: { memoryDir: tempDir, qmdEnabled: false, qmdDaemonEnabled: false, searchBackend: "noop", debug },
+    }),
+    "utf8",
+  );
+
+  const debugLines: string[] = [];
+  const originalDebug = console.debug;
+  console.debug = (...args: unknown[]) => {
+    debugLines.push(args.map((a) => String(a)).join(" "));
+  };
+  const port = await getFreePort();
+  try {
+    const result = await startServer({ configPath, port });
+    result.cancelStartupSync();
+    result.abortDeferredInit();
+    await result.httpServer.stop();
+  } finally {
+    console.debug = originalDebug;
+  }
+  return { debugLines };
+}
+
+test("startServer honors debug:true from the config file", async (t) => {
+  const { debugLines } = await startServerWithDebug(t, true);
+  assert.ok(
+    debugLines.some((line) => line.includes("debug logging enabled from config")),
+    `expected a debug line, got ${debugLines.length} line(s)`,
+  );
+});
+
+test("startServer stays quiet when debug is not set", async (t) => {
+  const { debugLines } = await startServerWithDebug(t, false);
+  assert.equal(
+    debugLines.filter((line) => line.includes("debug logging enabled from config")).length,
+    0,
+  );
+});
