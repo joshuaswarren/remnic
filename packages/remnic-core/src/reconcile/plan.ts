@@ -452,11 +452,21 @@ function indexDigestsByPath(
   namespace: string,
 ): Map<string, string> {
   const index = new Map<string, string>();
-  const seen = new Map<string, { sha256: string; mtimeMs?: number }>();
   for (const raw of files) {
     const file = assertCensusRecord(raw, side, namespace);
-    if (rejectConflictingDuplicate(seen.get(file.path), file, file.path, side, namespace)) continue;
-    seen.set(file.path, { sha256: file.sha256, mtimeMs: file.mtimeMs });
+    const existing = index.get(file.path);
+    // One map, not a parallel `seen`: the base's own mtimeMs is never a
+    // decision input (only the local and peer timestamps order a conflict), so
+    // a duplicate that agrees on the digest is unambiguous here regardless of
+    // its timestamp, and the digest alone is enough to detect a real clash.
+    if (existing !== undefined) {
+      if (existing !== file.sha256) {
+        throw new ReconcilePlanInputError(
+          `reconcile: ${side} census for namespace ${namespace} lists ${file.path} twice with different digests`,
+        );
+      }
+      continue;
+    }
     index.set(file.path, file.sha256);
   }
   return index;
