@@ -606,3 +606,45 @@ test("the same namespace supplied twice is rejected", () => {
     /namespace default appears twice/,
   );
 });
+
+test("an out-of-range mtimeMs cannot decide newest-wins", () => {
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, 8_640_000_000_000_001, "2000"]) {
+    for (const side of ["local", "peer", "base"] as const) {
+      const record = { path: "facts/a.md", sha256: digest("x"), mtimeMs: bad as unknown as number };
+      assert.throws(
+        () =>
+          planNamespaceReconciliation({
+            namespace: "default",
+            local: side === "local" ? [record] : [],
+            peer: side === "peer" ? [record] : [],
+            base: side === "base" ? [record] : undefined,
+          }),
+        /out-of-range mtimeMs/,
+        `${side} census mtimeMs ${String(bad)} must be rejected`,
+      );
+    }
+  }
+});
+
+test("malformed public API envelopes raise ReconcilePlanInputError, not TypeError", () => {
+  for (const bad of [undefined, null, "nope", 7]) {
+    assert.throws(
+      () => planReconciliation(bad as unknown as []),
+      ReconcilePlanInputError,
+      `planReconciliation(${JSON.stringify(bad)})`,
+    );
+    assert.throws(
+      () => planNamespaceReconciliation(bad as unknown as { namespace: string; local: []; peer: [] }),
+      ReconcilePlanInputError,
+      `planNamespaceReconciliation(${JSON.stringify(bad)})`,
+    );
+  }
+  assert.throws(
+    () =>
+      planNamespaceReconciliation(
+        { namespace: "default", local: [], peer: [] },
+        null as unknown as Record<string, never>,
+      ),
+    ReconcilePlanInputError,
+  );
+});

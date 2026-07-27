@@ -1,3 +1,4 @@
+import { OFFLINE_SYNC_MAX_MTIME_MS } from "../offline-sync.js";
 import { validateArchiveRelativePath } from "../transfer/fs-utils.js";
 import type { OfflineSyncFileState } from "../offline-sync.js";
 
@@ -179,7 +180,30 @@ function assertCensusRecord(
     ...file,
     path,
     sha256: assertDigest(file?.sha256, `${side} census for namespace ${namespace} entry ${path}`),
+    ...(file?.mtimeMs === undefined
+      ? {}
+      : { mtimeMs: assertMtimeMs(file.mtimeMs, `${side} census for namespace ${namespace} entry ${path}`) }),
   };
+}
+
+/**
+ * `newest-wins` decides which corpus keeps its history from this number, so it
+ * gets the same bounds offline-sync applies: a NaN, an Infinity or a value past
+ * the Date range must not be allowed to pick the winner.
+ */
+function assertMtimeMs(value: unknown, context: string): number {
+  if (
+    typeof value !== "number"
+    || !Number.isFinite(value)
+    || !Number.isInteger(value)
+    || value < 0
+    || value > OFFLINE_SYNC_MAX_MTIME_MS
+  ) {
+    throw new ReconcilePlanInputError(
+      `reconcile: ${context} has an out-of-range mtimeMs; expected an integer between 0 and ${OFFLINE_SYNC_MAX_MTIME_MS}`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -296,6 +320,13 @@ function parseTombstonedDigests(value: Iterable<string> | undefined, namespace: 
   return digests;
 }
 
+function compactDigests(index: Map<string, ReconcileFileState>): Map<string, string> {
+  const compact = new Map<string, string>();
+  for (const [path, file] of index) compact.set(path, file.sha256);
+  index.clear();
+  return compact;
+}
+
 const RECONCILE_CONFLICT_POLICIES: readonly ReconcileConflictPolicy[] = ["manual", "newest-wins", "keep-both"];
 
 function assertConflictPolicy(value: ReconcileConflictPolicy | undefined): ReconcileConflictPolicy {
@@ -349,7 +380,13 @@ export function planNamespaceReconciliation(
   input: ReconcileNamespaceInput,
   options: ReconcileOptions = {},
 ): ReconcilePlanEntry[] {
-  const namespace = assertNamespace(input?.namespace);
+  if (input === null || typeof input !== "object") {
+    throw new ReconcilePlanInputError("reconcile: namespace input must be an object");
+  }
+  if (options === null || typeof options !== "object") {
+    throw new ReconcilePlanInputError("reconcile: options must be an object");
+  }
+  const namespace = assertNamespace(input.namespace);
   const policy = assertConflictPolicy(options.conflictPolicy);
   const localCensus = assertIterable(input.local, "local", namespace);
   const caseFold = new Map<string, string>();
@@ -357,8 +394,10 @@ export function planNamespaceReconciliation(
   // each match as it is consumed. Peak residency is one index plus the entry
   // list rather than two full censuses (round 2, codex P2).
   const peer = indexByPath(assertIterable(input.peer, "peer", namespace), "peer", namespace);
+  // Only `base.sha256` is ever read, so the base is compacted to path -> digest
+  // instead of a second full record index (round 7, codex P2).
   const base = input.base
-    ? indexByPath(assertIterable(input.base, "base", namespace), "base", namespace)
+    ? compactDigests(indexByPath(assertIterable(input.base, "base", namespace), "base", namespace))
     : null;
   const tombstoned = parseTombstonedDigests(input.tombstonedFileSha256, namespace);
   const entries: ReconcilePlanEntry[] = [];
@@ -388,7 +427,7 @@ export function planNamespaceReconciliation(
     const peerFile = peer.get(path);
     // Consumed: whatever remains in the index afterwards is peer-only.
     peer.delete(path);
-    const baseSha256 = base?.get(path)?.sha256;
+    const baseSha256 = base?.get(path);
     // Retraction outranks every other decision for this path, on EITHER side.
     // Checked before hash comparison and conflict resolution: a retracted peer
     // revision reaching the conflict ladder can win under `newest-wins`, and a
@@ -489,7 +528,7 @@ export function planNamespaceReconciliation(
 
   for (const [path, peerFile] of peer) {
     assertNoCaseCollision(caseFold, path, namespace);
-    const baseSha256 = base?.get(path)?.sha256;
+    const baseSha256 = base?.get(path);
     if (tombstoned.has(peerFile.sha256)) {
       // Retracted here on purpose, and the peer still serves it. Pulling it
       // back would undo the retraction; calling it `identical` would be worse,
@@ -557,6 +596,9 @@ export function planReconciliation(
   namespaces: readonly ReconcileNamespaceInput[],
   options: ReconcileOptions = {},
 ): ReconcilePlan {
+  if (!Array.isArray(namespaces)) {
+    throw new ReconcilePlanInputError("reconcile: planReconciliation expects an array of namespace inputs");
+  }
   const entries: ReconcilePlanEntry[] = [];
   // Two inputs for one namespace are planned independently, so the same
   // (namespace, path) can draw contradictory actions - and because those
