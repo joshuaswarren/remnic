@@ -907,3 +907,58 @@ test("LocalLlmClient getLoadedModelInfo sends auth headers to models probe", asy
     globalThis.fetch = originalFetch;
   }
 });
+
+/**
+ * Issue #2210: a busy event loop can burn the health probe's fixed 2s budget
+ * before the socket is even scheduled. The probe aborts, and the client used to
+ * record that as "backend unavailable" and cache it — taking extraction offline
+ * while the backend was answering other callers in single-digit milliseconds.
+ */
+test("a timed-out availability probe leaves availability unknown instead of caching a blackout", async () => {
+  initLogger(undefined, false);
+  const client = new LocalLlmClient(buildConfig());
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    throw abortError();
+  }) as typeof fetch;
+  try {
+    assert.equal(await client.checkAvailability(), false, "this call still fails");
+    const afterFirst = calls;
+    assert.ok(afterFirst > 0, "probes ran");
+
+    // The point: the next call must RE-PROBE. A cached false would serve the
+    // stale verdict for the whole health-check interval with no new requests.
+    assert.equal(await client.checkAvailability(), false);
+    assert.ok(calls > afterFirst, "a timed-out probe must not be cached as a verdict");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a definitive probe failure IS cached for the health-check interval", async () => {
+  initLogger(undefined, false);
+  const client = new LocalLlmClient(buildConfig());
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () =>
+    new Response("nope", { status: 500, headers: { "content-type": "text/plain" } })) as unknown as typeof fetch;
+  const counting: typeof fetch = (async (...args: Parameters<typeof fetch>) => {
+    calls += 1;
+    return await (globalThis.fetch as typeof fetch)(...args);
+  }) as typeof fetch;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = counting;
+  try {
+    assert.equal(await client.checkAvailability(), false);
+    const afterFirst = calls;
+    // A backend that answered and said 500 is a real verdict — cache it, or the
+    // daemon hammers a known-bad endpoint on every request.
+    assert.equal(await client.checkAvailability(), false);
+    assert.equal(calls, afterFirst, "a definitive failure must be cached");
+  } finally {
+    globalThis.fetch = originalFetch;
+    void realFetch;
+  }
+});
