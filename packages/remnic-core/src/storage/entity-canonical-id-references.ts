@@ -20,6 +20,7 @@ import {
   constants,
   fstatSync,
   lstatSync,
+  realpathSync,
   openSync,
   readFileSync,
   renameSync,
@@ -45,7 +46,9 @@ function parseJournalMappings(raw: string): Readonly<Record<string, string>> {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !("mappings" in parsed)) return {};
   const mappings = parsed.mappings;
   if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return {};
-  const cleaned: Record<string, string> = {};
+  // Null prototype: journal-supplied ids like `constructor` must be own
+  // entries, never collide with Object.prototype (Codex P2, round 20).
+  const cleaned: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const [legacyId, canonicalId] of Object.entries(mappings)) {
     if (legacyId.length > 0 && typeof canonicalId === "string" && canonicalId.length > 0) {
       cleaned[legacyId] = canonicalId;
@@ -227,7 +230,9 @@ export function resolveHistoricalEntityCanonicalId(
   const seen = new Set<string>();
   while (!seen.has(current)) {
     seen.add(current);
-    const next = mappings[current];
+    // Own properties only: an unmapped id like `constructor` must not read
+    // Object.prototype and return a function (Codex P2, round 20).
+    const next = Object.hasOwn(mappings, current) ? mappings[current] : undefined;
     if (!next || next === current) break;
     current = next;
   }
@@ -338,7 +343,19 @@ export function requestEntityCanonicalIdReconcileSync(stateDir: string): void {
       log.warn(`refusing to write entity canonical-id reconcile marker: ${stateDir} is not a real directory`);
       return;
     }
+    const parentRealPath = realpathSync(stateDir);
     writeFileSync(temporary, `${new Date().toISOString()}\n`, { mode: 0o600 });
+    // Revalidate the parent between the temp write and publication (Codex
+    // P2, round 20): a state-dir swapped for a symlink after the check above
+    // would have landed the temp file through the link. Node has no openat,
+    // so the residual window is the realpath→rename gap — this recheck
+    // reduces check-then-use to the platform primitive's own atomicity.
+    const recheck = lstatSync(stateDir);
+    if (recheck.isSymbolicLink() || !recheck.isDirectory() || realpathSync(stateDir) !== parentRealPath) {
+      rmSync(temporary, { force: true });
+      log.warn(`refusing to publish entity canonical-id reconcile marker: ${stateDir} changed during write`);
+      return;
+    }
     renameSync(temporary, markerPath);
   } catch (error) {
     rmSync(temporary, { force: true });
