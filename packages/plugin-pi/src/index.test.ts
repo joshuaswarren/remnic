@@ -178,18 +178,19 @@ test("default Pi extension creates isolated state for each host invocation", asy
     sessionManager: { getSessionId: () => "shared-session" },
   };
 
-  // Each extension independently recalls at session_start — state maps are
+  // Each extension independently recalls at first context event — state maps are
   // isolated so the same session key produces fetch calls on both instances.
+  // Zero recall calls at session_start; recall fires on first context.
   await first.emit("session_start", {}, ctx);
   await second.emit("session_start", {}, ctx);
-  assert.equal(recallBodies.length, 2, "each extension independently recalled");
+  assert.equal(recallBodies.length, 0, "no recall at session_start");
 
   // Context injection reads from each extension's isolated cachedContext.
   const firstResult = await first.emit("context", { messages: [{ role: "user", content: "hi" }] }, ctx) as { messages?: Array<Record<string, unknown>> };
   const secondResult = await second.emit("context", { messages: [{ role: "user", content: "hi" }] }, ctx) as { messages?: Array<Record<string, unknown>> };
   assert.ok(firstResult.messages?.[0]?.remnicInjected);
   assert.ok(secondResult.messages?.[0]?.remnicInjected);
-  // No additional recall calls from context injection.
+  // One recall call per extension from the first context event.
   assert.equal(recallBodies.length, 2);
 });
 
@@ -713,18 +714,22 @@ test("singleton extension refreshes recall context across sessions via session_s
   };
   const event = { messages: [{ role: "user", content: "same prompt" }] };
 
+  // Session 1: recall fires on first context, not session_start
   await emit("session_start", {}, session1Ctx);
-  assert.equal(recallCalls, 1);
+  assert.equal(recallCalls, 0);
 
   const first = await emit("context", event, session1Ctx) as { messages?: Array<Record<string, unknown>> };
+  assert.equal(recallCalls, 1);
   assert.ok(first.messages?.[0]?.remnicInjected);
 
   await emit("session_shutdown", {}, session1Ctx);
 
+  // Session 2: recall fires again on first context
   await emit("session_start", {}, session2Ctx);
-  assert.equal(recallCalls, 2);
+  assert.equal(recallCalls, 1);
 
   const second = await emit("context", event, session2Ctx) as { messages?: Array<Record<string, unknown>> };
+  assert.equal(recallCalls, 2);
   assert.ok(second.messages?.[0]?.remnicInjected);
 });
 
@@ -761,13 +766,14 @@ test("context injects cached recall across successive context events in the same
   const event = { messages: [{ role: "user", content: "continue" }] };
 
   await emit("session_start", {}, ctx);
-  assert.equal(recallCalls, 1);
+  assert.equal(recallCalls, 0);
 
   const first = await emit("context", event, ctx) as { messages?: Array<Record<string, unknown>> };
+  assert.equal(recallCalls, 1, "recall fired on first context event");
   const second = await emit("context", event, ctx) as { messages?: Array<Record<string, unknown>> };
   const third = await emit("context", event, ctx) as { messages?: Array<Record<string, unknown>> };
 
-  assert.equal(recallCalls, 1);
+  assert.equal(recallCalls, 1, "no additional recall on subsequent context events");
   assert.ok(first.messages?.[0]?.remnicInjected);
   assert.ok(second.messages?.[0]?.remnicInjected);
   assert.ok(third.messages?.[0]?.remnicInjected);
@@ -973,11 +979,14 @@ test("context recall keeps pi:default fallback when session manager is missing",
   const noopCtx = { cwd: "/tmp/remnic-pi" };
   await emit("session_start", {}, noopCtx);
 
-  assert.equal(recallBodies[0]?.sessionKey, "pi:default");
-  assert.equal(recallBodies[0]?.cwd, "/tmp/remnic-pi");
+  // Recall fires on first context, not session_start
+  assert.equal(recallBodies.length, 0);
 
   const result = await emit("context", { messages: [{ role: "user", content: "same prompt" }] }, noopCtx) as { messages?: Array<Record<string, unknown>> };
 
+  assert.equal(recallBodies.length, 1);
+  assert.equal(recallBodies[0]?.sessionKey, "pi:default");
+  assert.equal(recallBodies[0]?.cwd, "/tmp/remnic-pi");
   assert.equal(result.messages?.[0]?.remnicInjected, true);
 });
 
@@ -1018,15 +1027,13 @@ test("recall context truncation stays within the configured budget", async (t) =
   assert.equal(truncatedAt + startMarker.length, 40);
 });
 
-test("startup recall retries a transient failure and caches the context on success", async (t) => {
+test("context recall fires on first context event and caches the result", async (t) => {
   const originalFetch = globalThis.fetch;
-  let failureAttempts = 0;
+  let recallCalls = 0;
   globalThis.fetch = async (input) => {
-    if (!String(input).endsWith("/engram/v1/recall")) {
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    if (String(input).endsWith("/engram/v1/recall")) {
+      recallCalls += 1;
     }
-    failureAttempts += 1;
-    if (failureAttempts === 1) throw new Error("The socket connection was closed unexpectedly.");
     return new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
   };
   t.after(() => {
@@ -1048,23 +1055,33 @@ test("startup recall retries a transient failure and caches the context on succe
 
   const ctx = {
     cwd: "/tmp/remnic-pi",
-    sessionManager: { getSessionId: () => "retry-recall-test" },
+    sessionManager: { getSessionId: () => "first-context-recall" },
   };
   const event = { messages: [{ role: "user", content: "same prompt" }] };
 
-  // session_start recall retries once on transient failure, then caches
+  // No recall at session_start
   await emit("session_start", {}, ctx);
-  assert.equal(failureAttempts, 2);
+  assert.equal(recallCalls, 0);
 
-  // context uses the cached context from the successful retry
+  // First context event fires recall and caches the result
   const result = await emit("context", event, ctx) as { messages?: Array<Record<string, unknown>> };
-  assert.ok(result.messages?.[0]?.remnicInjected);
+  assert.equal(recallCalls, 1, "recall fired on first context event");
+  assert.ok(result.messages?.[0]?.remnicInjected, "context was injected");
 });
 
-test("startup recall failure notification survives stale Pi ctx after await", async (t) => {
+test("context recall failure notification survives stale Pi ctx after await", async (t) => {
   const originalFetch = globalThis.fetch;
-  const stale = makeStaleCtx({ sessionId: "stale-startup-recall" });
-  globalThis.fetch = async () => {
+  const stale = makeStaleCtx({ sessionId: "stale-context-recall" });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    // Let health and namespace probes succeed so snapshotPiContext works
+    // during the context handler.  Only the recall call marks the ctx stale.
+    if (url.endsWith("/engram/v1/health")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (url.includes("/engram/v1/namespace/writable")) {
+      return new Response(JSON.stringify({ ok: true, status: "ok", namespace: "default" }), { status: 200 });
+    }
     stale.markStale();
     throw new Error("offline");
   };
@@ -1085,11 +1102,17 @@ test("startup recall failure notification survives stale Pi ctx after await", as
   });
   await extension(pi as any);
 
+  // session_start does not fire recall
   await assert.doesNotReject(() =>
     emit("session_start", {}, stale.ctx)
   );
+
+  // Context recall fires and fails; notification survives stale ctx.
+  await assert.doesNotReject(() =>
+    emit("context", { messages: [{ role: "user", content: "hi" }] }, stale.ctx)
+  );
   assert.deepEqual(stale.notifications, [
-    { message: "Remnic startup recall unavailable: offline", level: "warning" },
+    { message: "Remnic recall unavailable: offline", level: "warning" },
   ]);
 });
 

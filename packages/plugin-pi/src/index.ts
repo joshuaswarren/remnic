@@ -4,6 +4,7 @@ import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./confi
 import { RemnicClient, isTransientNetworkError, type McpTool, type ObserveMessage } from "./client.js";
 import {
   hashObservedMessage,
+  latestUserRecallTarget,
   observedMessageDedupeKey,
   sessionKeyFromContext,
   summarizeMessages,
@@ -32,8 +33,11 @@ const SESSION_OWNED_FIELDS = new Set(["sessionKey", "namespace", "cwd"]);
 type PiSessionState = {
   observedHashes: Set<string>;
   liveObservedReplayKeys: Map<string, number>;
-  /** Cached recall context from session_start — injected once, reused byte-identically. */
+  /** Cached recall context — populated from the first context event's user prompt,
+   *  reused byte-identically across subsequent turns for KV cache prefix stability. */
   cachedContext: string | null;
+  /** True once recall has been attempted (success or failure) for this session. */
+  recallCompleted: boolean;
 };
 
 type NotifyLevel = "info" | "success" | "warning" | "error";
@@ -64,6 +68,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const { state } = getSessionState(session.sessionKey, sessionStates);
       restoreObservedState(session, state.observedHashes);
       state.cachedContext = null;
+      state.recallCompleted = false;
 
       // Probe health + update the circuit breaker UNCONDITIONALLY so an offline
       // daemon is marked unreachable even when the status UI is off; otherwise
@@ -77,61 +82,38 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         );
       }
       await runNamespacePreflight(pi, session, client, config);
-
-      // Single recall at session start — context is cached and reused
-      // byte-identically across all turns for KV cache prefix stability.
-      // Retries on transient failure so a startup blip doesn't permanently
-      // disable context for the session.  Share ONE timeout deadline across
-      // all retry attempts (including backoff sleep) so the total startup
-      // recall time never exceeds startupRequestTimeoutMs (codex review).
-      if (config.recallEnabled && config.authToken && client.isReachable()) {
-        const maxRetries = 2;
-        const deadline = Date.now() + config.startupRequestTimeoutMs;
-        let lastError: unknown;
-        let hadSuccessfulRecall = false;
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-          const remaining = deadline - Date.now();
-          if (remaining <= 0) break;
-          try {
-            const recalled = await client.recall(
-              "current session context",
-              session.sessionKey,
-              session.cwd,
-              { timeoutMs: remaining, maxRetries: 0 },
-            );
-            hadSuccessfulRecall = true;
-            client.markReachable();
-            const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
-            if (context) {
-              state.cachedContext = context;
-            }
-            break;
-          } catch (err) {
-            lastError = err;
-            if (!isTransientNetworkError(err)) {
-              // Non-transient error — trip breaker immediately
-              if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
-              break;
-            }
-            // Transient — retry with backoff. Check remaining budget before sleeping.
-            if (attempt < maxRetries) {
-              const delayMs = 200 * Math.pow(2, attempt);
-              if (deadline - Date.now() <= delayMs) break;
-              await new Promise((r) => setTimeout(r, delayMs));
-            }
-          }
-        }
-        if (!hadSuccessfulRecall && lastError) {
-          if (isDaemonUnreachableError(lastError)) client.markUnreachable(config.daemonCooldownMs);
-          session.notify(`Remnic startup recall unavailable: ${errorMessage(lastError)}`, "warning");
-        }
-      }
     });
 
     pi.on("context", async (event, ctx) => {
       const session = snapshotPiContext(ctx);
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
+      const messages = Array.isArray(event.messages) ? event.messages : [];
+
+      // On the first context event, populate the cache using the actual user
+      // prompt so semantic recall produces relevant results.  Once populated,
+      // the cached context is reused byte-identically across all subsequent
+      // turns in the same session for KV cache prefix stability (PR #2208).
+      if (!state.recallCompleted && config.recallEnabled && config.authToken && client.isReachable()) {
+        state.recallCompleted = true;
+        const recallTarget = latestUserRecallTarget(messages);
+        if (recallTarget) {
+          try {
+            const recalled = await client.recall(recallTarget.query, session.sessionKey, session.cwd, {
+              timeoutMs: config.turnRequestTimeoutMs,
+              maxRetries: 0,
+            });
+            client.markReachable();
+            const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
+            if (context) {
+              state.cachedContext = context;
+            }
+          } catch (err) {
+            if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
+            session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
+          }
+        }
+      }
 
       // Inject cached context as a system message at position 0 — byte-identical
       // across turns so the KV cache prefix is preserved. This replicates the
@@ -147,7 +129,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
             content: [{ type: "text", text: state.cachedContext }],
             remnicInjected: true,
           },
-          ...event.messages,
+          ...messages,
         ],
       };
     });
@@ -443,6 +425,7 @@ function getSessionState(sessionKey: string, states: Map<string, PiSessionState>
       observedHashes: new Set<string>(),
       liveObservedReplayKeys: new Map<string, number>(),
       cachedContext: null,
+      recallCompleted: false,
     };
     states.set(sessionKey, state);
     pruneSessionStates(states);
