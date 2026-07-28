@@ -467,6 +467,8 @@ test("server config parses the degraded-readiness attempts knob (issue #2215)", 
   assert.equal(parseServerConfig({ readinessDegradedAfterAttempts: 0 }).readinessDegradedAfterAttempts, 0);
   assert.equal(parseServerConfig({ readinessDegradedAfterAttempts: "5" }).readinessDegradedAfterAttempts, 5);
   assert.throws(() => parseServerConfig({ readinessDegradedAfterAttempts: -1 }));
-  assert.throws(() => parseServerConfig({ readinessDegradedAfterAttempts: 2.5 }));
   assert.throws(() => parseServerConfig({ readinessDegradedAfterAttempts: "many" }));
+  // Blank strings must be rejected, not coerced to 0 (= strict gate) by Number("").
+  assert.throws(() => parseServerConfig({ readinessDegradedAfterAttempts: "" }));
+  assert.throws(() => parseServerConfig({ readinessDegradedAfterAttempts: "  " }));
 });

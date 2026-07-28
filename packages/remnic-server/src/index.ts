@@ -118,7 +118,11 @@ function parseOptionalBoolean(value: unknown, source: string): boolean | undefin
 
 function parseOptionalNonNegativeInteger(value: unknown, source: string): number | undefined {
   if (value === undefined) return undefined;
-  const parsed = typeof value === "string" ? Number(value.trim()) : value;
+  // Reject blank strings BEFORE coercion: Number("") is 0, which would
+  // silently enable the 0-means-strict-gate semantics (codex review).
+  const parsed = typeof value === "string"
+    ? value.trim() === "" ? Number.NaN : Number(value.trim())
+    : value;
   if (typeof parsed !== "number" || !Number.isInteger(parsed) || parsed < 0) {
     throw new Error(`Invalid ${source}: expected a non-negative integer`);
   }
