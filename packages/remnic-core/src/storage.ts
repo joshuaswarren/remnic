@@ -3828,9 +3828,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         frontmatter: fm,
         rewrite: async () => {
           // The final ref changed — re-run the resurrection gate so a
-          // tombstone keyed under the NEW claimant still blocks, then rewrite.
+          // tombstone keyed under the NEW claimant still blocks, then rewrite
+          // THROUGH the blocked-capture surface: a gate that newly blocks
+          // must register in TombstoneBlockedCaptureIndex, or offline-sync
+          // and explicit-capture lookups miss the record until a rebuild.
           await applyTombstoneGate();
-          await this.writeStorageSecureFile(filePath, `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`);
+          await this.writeTombstoneBlockedMemory(
+            filePath,
+            `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`,
+            fm,
+            sanitized.text,
+            async () => {
+              this.invalidateAllMemoriesCache();
+            },
+          );
           this.invalidateAllMemoriesCache();
         },
       });

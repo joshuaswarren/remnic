@@ -488,13 +488,9 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   const body = canonicalizeEntityRefFrontmatter(rawBody, historicalIds);
 
   fs.writeFileSync(filePath, body);
-  // Bump the corpus sentinel per write (out-of-band create) so a concurrent
-  // same-process readAllMemories rescans and sees this statement immediately,
-  // never a stale/partial corpus mid-batch (Cursor Medium, #1902).
-  bumpMemoryCorpusVersionForDir(memoryDir);
   // Post-write REPAIR (issue #2213): a peer process publishing the journal
   // across this write would otherwise strand the reference — the corpus bump
-  // above no longer re-triggers the migration, and a parked mapping cannot be
+  // below no longer re-triggers the migration, and a parked mapping cannot be
   // fixed after the fact by the reconcile pass.
   repairContentAfterJournalMoveSync({
     stateDir: path.join(memoryDir, "state"),
@@ -504,6 +500,11 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
     lastWritten: body,
     rewrite: (next) => fs.writeFileSync(filePath, next),
   });
+  // Bump the corpus sentinel per write (out-of-band create) so a concurrent
+  // same-process readAllMemories rescans and sees this statement immediately,
+  // never a stale/partial corpus mid-batch (Cursor Medium, #1902). AFTER the
+  // repair, so a rescan never captures pre-repair bytes.
+  bumpMemoryCorpusVersionForDir(memoryDir);
   return filePath;
 }
 

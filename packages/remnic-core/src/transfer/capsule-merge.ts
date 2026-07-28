@@ -5,6 +5,7 @@ import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
+  pathMayCarryEntityRefs,
   repairContentAfterJournalMove,
 } from "../storage/entity-canonical-id-references.js";
 import {
@@ -362,12 +363,19 @@ export async function mergeCapsule(
   const historicalIdCache = new HistoricalEntityCanonicalIdCache();
   // Write a record with its entityRef resolved AT the write, then repair if
   // the journal moved across the write itself — a parked mapping cannot be
-  // fixed after the fact by the reconcile pass (issue #2213).
+  // fixed after the fact by the reconcile pass (issue #2213). Only records
+  // under the migration's scan tiers participate — transcripts, peer/profile
+  // data, and other included kinds merge losslessly. The corpus bump lands
+  // AFTER the repair so a warm cache rescan never captures pre-repair bytes.
   const writeCanonicalRecord = async (targetAbs: string, rawContent: string): Promise<void> => {
+    if (!pathMayCarryEntityRefs(rootReal, targetAbs)) {
+      await writeFile(targetAbs, rawContent, "utf-8");
+      bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
+      return;
+    }
     const idsAtWrite = historicalIdCache.get(journalStateDir);
     const written = canonicalizeEntityRefFrontmatter(rawContent, idsAtWrite);
     await writeFile(targetAbs, written, "utf-8");
-    bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
     await repairContentAfterJournalMove({
       stateDir: journalStateDir,
       cache: historicalIdCache,
@@ -376,6 +384,7 @@ export async function mergeCapsule(
       lastWritten: written,
       rewrite: (content) => writeFile(targetAbs, content, "utf-8"),
     });
+    bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
   };
 
   // Sort by source path for deterministic output (mirrors capsule-import.ts).
@@ -407,7 +416,9 @@ export async function mergeCapsule(
     // bytes while a mapping applies is UPGRADED in place — skipping would
     // leave the legacy entityRef on disk forever, since corpus bumps no
     // longer trigger migration rewrites (issue #2213).
-    const canonicalContent = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
+    const canonicalContent = pathMayCarryEntityRefs(rootReal, targetAbs)
+      ? canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir))
+      : rec.content;
     const { sha256: localSha256 } = sha256String(localContent);
     const canonicalSha256 =
       canonicalContent === rec.content ? entry.sha256 : sha256String(canonicalContent).sha256;

@@ -27,7 +27,10 @@ import {
 } from "node:fs/promises";
 import { ALL_CATEGORY_DIRS, RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
-import { requestEntityCanonicalIdReconcile } from "./storage/entity-canonical-id-references.js";
+import {
+  pathMayCarryEntityRefs,
+  requestEntityCanonicalIdReconcile,
+} from "./storage/entity-canonical-id-references.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -347,13 +350,14 @@ export async function revertToVersion(
   if (inRecallTier) {
     bumpMemoryCorpusVersionForDir(resolvedMemoryDir);
   }
-  // A pre-migration snapshot can reintroduce a legacy entityRef the target's
-  // completed journal already renamed (issue #2213); the revert keeps the
-  // snapshot bytes faithful, so request one bounded reconcile pass instead.
-  // Cold- and archive-tier pages (`cold/<category>/…`, `archive/<date>/…`)
-  // are in the migration's scan even though they are outside the hot recall
-  // corpus, so they need the marker WITHOUT the corpus bump.
-  if (inRecallTier || revertedTop === "cold" || revertedTop === "archive") {
+  // A pre-migration snapshot can reintroduce a legacy entityRef — or, under
+  // entities/, a legacy relationship target rewriteRelationshipTargets had
+  // migrated — that the target's completed journal already renamed (issue
+  // #2213); the revert keeps the snapshot bytes faithful, so request one
+  // bounded reconcile pass instead. pathMayCarryEntityRefs is the migration's
+  // own scan scope (hot recall + cold + archive + entities), which is wider
+  // than the corpus bump above on purpose.
+  if (pathMayCarryEntityRefs(resolvedMemoryDir, pagePath)) {
     await requestEntityCanonicalIdReconcile(path.join(resolvedMemoryDir, "state"));
   }
   log.debug(`page-versioning: reverted ${pagePath} to version ${versionId}`);
