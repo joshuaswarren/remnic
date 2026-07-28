@@ -35,6 +35,7 @@ import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import * as entityRefs from "./storage/entity-canonical-id-references.js";
+import { rewriteProjectedMemoryEntityReference } from "./memory-projection-mutations.js";
 import {
   runLegacyEntityCanonicalIdMigration,
   type EntityCanonicalIdMigrationHost,
@@ -3065,29 +3066,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!this.tombstonesConfig.enabled) return null;
     try {
       const store = await this.getTombstoneStore();
-      // Chokepoint citation strip (#1579 review): strip citation annotations
-      // from the raw body so BOTH the exact-tier hash (when the caller omits
-      // contentHash and the store computes it from rawContent) AND the
-      // normalized-text tier match re-extraction, which hashes/normalizes the
-      // citation-stripped contentHashSource. Idempotent on already-stripped
-      // text, so callers that pre-strip (e.g. recordSupersession) are unaffected.
+      // Chokepoint citation strip (#1579 review): both the exact-tier hash
+      // and the normalized-text tier must match re-extraction, which hashes
+      // the citation-stripped contentHashSource. Idempotent on pre-stripped
+      // text (e.g. recordSupersession).
       const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate);
-      // Chokepoint id canonicalization (issue #2213): resolve stale emitter
-      // ids through the CURRENT journal so the guard lands in the id space
-      // write-time lookups canonicalize to.
-      const { entityRef, supersessionKey } = entityRefs.canonicalizeTombstoneIdentity(
-        input.entityRef,
-        input.supersessionKey,
-        this.currentHistoricalIds(),
+      // Id canonicalization + post-append journal recheck (#2213) live in
+      // the references helper; the store marks its own mtime (#1579).
+      return await entityRefs.appendCanonicalizedTombstone(
+        input,
+        () => this.currentHistoricalIds(),
+        (identity) => store.appendTombstone({ ...input, rawContent: strippedRawContent, ...identity }),
+        input.sourceMemoryId,
       );
-      // The store records its own mtime after the append (markWritten) so the
-      // staleness probe does not treat this write as a peer append (#1579).
-      return await store.appendTombstone({
-        ...input,
-        rawContent: strippedRawContent,
-        entityRef,
-        supersessionKey,
-      });
     } catch (err) {
       log.warn(`tombstone append failed (memory=${input.sourceMemoryId}): ${err}`);
       return null;
@@ -3465,6 +3456,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     refIds: Readonly<Record<string, string>>,
     body: string,
   ): Promise<void> {
+    const refBeforeRepair = fm.entityRef;
     await entityRefs.repairEntityRefAfterJournalMove({
       stateDir: this.stateDir,
       currentIds: () => this.currentHistoricalIds(),
@@ -3472,13 +3464,30 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       rawRef,
       frontmatter: fm,
       rewrite: async () => {
-        // Through the blocked-capture surface (Bugbot): a repair rewrite of a
-        // tombstone-blocked record must keep TombstoneBlockedCaptureIndex
-        // consistent; unblocked records degrade to a plain secure write.
+        // Blocked-capture surface: a repair rewrite of a tombstone-blocked
+        // record must keep TombstoneBlockedCaptureIndex consistent.
         await this.writeTombstoneBlockedMemory(filePath, `${serializeFrontmatter(fm)}\n\n${body}\n`, fm, body);
         this.invalidateAllMemoriesCache();
       },
     });
+    await this.syncProjectionAfterRefRepair(fm.id, refBeforeRepair, fm.entityRef);
+  }
+  /**
+   * Projection rows written under the pre-repair claimant cannot be restored
+   * by later reconciliation once the mapping is parked (Codex P1). Fail-open:
+   * the projection is a rebuildable index.
+   */
+  private async syncProjectionAfterRefRepair(
+    memoryId: string,
+    refBefore: string | undefined,
+    refAfter: string | undefined,
+  ): Promise<void> {
+    if (typeof refBefore !== "string" || typeof refAfter !== "string" || refBefore === refAfter) return;
+    try {
+      await rewriteProjectedMemoryEntityReference(this.baseDir, memoryId, refBefore, refAfter);
+    } catch (err) {
+      log.warn(`projection entityRef sync failed for ${memoryId}: ${err}`);
+    }
   }
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
@@ -3846,6 +3855,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       };
     }
     if (refIds && typeof rawEntityRef === "string") {
+      const refBeforeRepair = fm.entityRef;
       await entityRefs.repairEntityRefAfterJournalMove({
         stateDir: this.stateDir,
         currentIds: () => this.currentHistoricalIds(),
@@ -3866,6 +3876,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           this.invalidateAllMemoriesCache();
         },
       });
+      await this.syncProjectionAfterRefRepair(id, refBeforeRepair, fm.entityRef);
     }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
@@ -4893,37 +4904,32 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return path.join(root, dir, this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
   }
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {
-    // Whole-record rewrite (tier moves route here) — issue #2213. Repair, not
-    // just detect: the source is unlinked after the move, so a mapping parked
-    // across this write would otherwise strand the moved copy on a
-    // since-contested claimant with nothing left to reconcile from.
+    // Whole-record rewrite (tier moves) — #2213. Repair, not just detect:
+    // the source is unlinked after the move, so a mapping parked across this
+    // write would strand the moved copy with nothing left to reconcile from.
     const refIdsAtWrite = this.currentHistoricalIds();
     const rawRef = memory.frontmatter.entityRef;
     const frontmatter = entityRefs.canonicalizeEntityRefOption(memory.frontmatter, refIdsAtWrite);
-    await writeMaybeEncryptedFile(
-      targetPath,
-      `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`,
-      this.resolveWriteKey(),
-      {},
-      this.baseDir,
-    );
+    const persist = (): Promise<void> =>
+      writeMaybeEncryptedFile(
+        targetPath,
+        `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`,
+        this.resolveWriteKey(),
+        {},
+        this.baseDir,
+      );
+    await persist();
     if (typeof rawRef === "string") {
+      const refBeforeRepair = frontmatter.entityRef;
       await entityRefs.repairEntityRefAfterJournalMove({
         stateDir: this.stateDir,
         currentIds: () => this.currentHistoricalIds(),
         idsAtResolve: refIdsAtWrite,
         rawRef,
         frontmatter,
-        rewrite: async () => {
-          await writeMaybeEncryptedFile(
-            targetPath,
-            `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`,
-            this.resolveWriteKey(),
-            {},
-            this.baseDir,
-          );
-        },
+        rewrite: persist,
       });
+      await this.syncProjectionAfterRefRepair(memory.frontmatter.id, refBeforeRepair, frontmatter.entityRef);
     }
     this.invalidateAllMemoriesCache();
     this.notifyCatalogWrite();
@@ -6399,10 +6405,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             memory.path, newFm, memory.frontmatter.entityRef, rowIds, memory.content,
           );
         }
-        // Patch the hot corpus cache entry in place with the new accessCount/
-        // lastAccessed (issue #1902). The shared sentinel is bumped once after
-        // the loop for cross-process coherence; the re-key below keeps this
-        // process's patched entries warm.
+        // Patch the hot corpus cache entry in place (#1902); the shared
+        // sentinel is bumped once after the loop for cross-process coherence.
         if (warm) {
           updateCacheOnWrite(this.baseDir, { ...memory, frontmatter: newFm }, keyId);
         }

@@ -15,7 +15,7 @@
  *   reconciliation pass instead ({@link requestEntityCanonicalIdReconcile}).
  */
 import path from "node:path";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, writeSync } from "node:fs";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -43,17 +43,85 @@ function parseJournalMappings(raw: string): Readonly<Record<string, string>> {
   return cleaned;
 }
 
-export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Record<string, string>> {
-  const statePath = path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE);
+type JournalRead =
+  | { kind: "ok"; raw: string; key: string }
+  | { kind: "missing" }
+  | { kind: "refused" }
+  | { kind: "error" };
+
+/**
+ * Open the journal WITHOUT following symlinks and read content + identity
+ * from the same opened inode (repo rule: reject symlink traversal from
+ * memory directories). O_NOFOLLOW makes the open itself refuse a symlink
+ * (ELOOP), closing the stat→read TOCTOU; on platforms without it the fstat
+ * check still rejects non-regular targets.
+ */
+function readJournalFileNoFollow(statePath: string): JournalRead {
+  let fd: number;
   try {
-    // Never read mappings through a symlinked journal (repo rule: reject
-    // symlink traversal from memory directories) — a link could supply
-    // arbitrary mappings that silently rewrite persisted entityRefs.
-    if (!lstatSync(statePath).isFile()) return {};
-    return parseJournalMappings(readFileSync(statePath, "utf-8"));
+    fd = openSync(statePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) return { kind: "missing" };
+    if (isErrnoCode(error, "ELOOP")) return { kind: "refused" };
+    return { kind: "error" };
+  }
+  try {
+    const s = fstatSync(fd);
+    if (!s.isFile()) return { kind: "refused" };
+    return {
+      kind: "ok",
+      raw: readFileSync(fd, "utf-8"),
+      key: `${s.dev}:${s.ino}:${s.mtimeMs}:${s.ctimeMs}:${s.size}`,
+    };
+  } catch {
+    return { kind: "error" };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Record<string, string>> {
+  const result = readJournalFileNoFollow(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
+  if (result.kind !== "ok") return {};
+  try {
+    return parseJournalMappings(result.raw);
   } catch {
     return {};
   }
+}
+
+/**
+ * Append a tombstone with its identity canonicalized against the CURRENT
+ * journal, then recheck: a peer publishing a mapping inside the
+ * resolve-to-append window would leave the guard under the legacy id while
+ * lookups canonicalize. Tombstones are append-only guards, so re-appending
+ * under the fresh identity is additive-safe (bounded).
+ */
+export async function appendCanonicalizedTombstone(
+  input: { entityRef?: string; supersessionKey?: string },
+  currentIds: () => Readonly<Record<string, string>>,
+  append: (identity: {
+    entityRef: string | undefined;
+    supersessionKey: string | undefined;
+  }) => Promise<string | null>,
+  label: string,
+): Promise<string | null> {
+  let refIds = currentIds();
+  let identity = canonicalizeTombstoneIdentity(input.entityRef, input.supersessionKey, refIds);
+  let result = await append(identity);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const fresh = currentIds();
+    if (fresh === refIds) return result;
+    refIds = fresh;
+    const next = canonicalizeTombstoneIdentity(input.entityRef, input.supersessionKey, fresh);
+    if (next.entityRef === identity.entityRef && next.supersessionKey === identity.supersessionKey) {
+      return result;
+    }
+    identity = next;
+    result = await append(next);
+  }
+  log.warn(`tombstone identity kept moving for ${label}; last append kept`);
+  return result;
 }
 
 /**
@@ -63,8 +131,9 @@ export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Rec
  * `pruneBlocked()` parking a contested mapping (which rewrites the journal
  * without bumping any shared version). `writeState` publishes via
  * temp-file-plus-rename, so every journal write swaps the inode and the key
- * always moves. Reload cost is one lstat per lookup and one journal parse per
- * actual change.
+ * always moves — the identity is taken from the fstat of the SAME opened
+ * inode the content is read from (no stat→read window). Reload cost is one
+ * open per lookup and one journal parse per actual change.
  *
  * Failure semantics: last-known data is served ONLY for the SAME state dir
  * (module-level instances can face several stores — another store's table
@@ -79,32 +148,29 @@ export class HistoricalEntityCanonicalIdCache {
 
   get(stateDir: string): Readonly<Record<string, string>> {
     const lastKnown = this.stateDir === stateDir ? this.mappings : {};
-    const statePath = path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE);
-    let key = "missing";
-    try {
-      const s = lstatSync(statePath);
-      if (!s.isFile()) {
-        // Symlinked/non-regular journal: never follow it, never adopt its
-        // identity — serve this store's last-known table. If it later becomes
-        // a regular file its identity differs from the stored key and reloads.
-        log.warn("ignoring non-regular entity canonical-id journal (symlink refused)");
-        return lastKnown;
-      }
-      key = `${s.dev}:${s.ino}:${s.mtimeMs}:${s.ctimeMs}:${s.size}`;
-    } catch (error) {
-      // A TRANSIENT stat failure (EACCES/EIO) must not dump a valid table for
-      // {}: a write during the outage would skip canonicalization AND its
-      // post-write identity check would compare equal. Serve this store's
-      // last-known table; only a genuine ENOENT means "no journal, empty".
-      if (!isErrnoCode(error, "ENOENT")) return lastKnown;
+    const result = readJournalFileNoFollow(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
+    if (result.kind === "refused") {
+      // Symlinked/non-regular journal: never follow it, never adopt its
+      // identity — serve this store's last-known table. If it later becomes
+      // a regular file its identity differs from the stored key and reloads.
+      log.warn("ignoring non-regular entity canonical-id journal (symlink refused)");
+      return lastKnown;
     }
+    if (result.kind === "error") {
+      // A TRANSIENT open/read failure (EACCES/EIO) must not dump a valid
+      // table for {}: a write during the outage would skip canonicalization
+      // AND its post-write identity check would compare equal. Serve this
+      // store's last-known table; only a genuine ENOENT means "no journal".
+      return lastKnown;
+    }
+    const key = result.kind === "missing" ? "missing" : result.key;
     if (key !== this.key || stateDir !== this.stateDir) {
       let table: Readonly<Record<string, string>> = {};
-      if (key !== "missing") {
+      if (result.kind === "ok") {
         try {
-          table = parseJournalMappings(readFileSync(statePath, "utf-8"));
+          table = parseJournalMappings(result.raw);
         } catch {
-          // Read/parse failed under a VALID identity: do not commit the key —
+          // Parse failed under a VALID identity: do not commit the key —
           // the next lookup retries instead of pinning an empty table.
           return lastKnown;
         }

@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { canonicalizeEntityRefFrontmatter } from "../packages/remnic-core/src/storage/entity-canonical-id-references.js";
+import {
+  canonicalizeEntityRefFrontmatter,
+  canonicalizeTombstoneIdentity,
+  classifyEntityRefWritePath,
+} from "../packages/remnic-core/src/storage/entity-canonical-id-references.js";
 
 const MAPPINGS = { "automation-nightly-ingest": "automation-cron-job-nightly-ingest" } as const;
 
@@ -59,4 +63,44 @@ test("closing delimiter at end of content (no trailing newline) still closes", (
     canonicalizeEntityRefFrontmatter(input, MAPPINGS),
     "---\nentityRef: automation-cron-job-nightly-ingest\n---",
   );
+});
+
+test("canonicalizeTombstoneIdentity rewrites the ref and the key's entity segment", () => {
+  const out = canonicalizeTombstoneIdentity(
+    "automation-nightly-ingest",
+    "automation-nightly-ingest::schedule",
+    MAPPINGS,
+  );
+  assert.equal(out.entityRef, "automation-cron-job-nightly-ingest");
+  assert.equal(out.supersessionKey, "automation-cron-job-nightly-ingest::schedule");
+});
+
+test("canonicalizeTombstoneIdentity is a passthrough when the ref is already canonical", () => {
+  const out = canonicalizeTombstoneIdentity(
+    "automation-cron-job-nightly-ingest",
+    "automation-cron-job-nightly-ingest::schedule",
+    MAPPINGS,
+  );
+  assert.equal(out.entityRef, "automation-cron-job-nightly-ingest");
+  assert.equal(out.supersessionKey, "automation-cron-job-nightly-ingest::schedule");
+});
+
+test("canonicalizeTombstoneIdentity leaves a key with a foreign entity segment alone", () => {
+  const out = canonicalizeTombstoneIdentity(
+    "automation-nightly-ingest",
+    "someone-else::schedule",
+    MAPPINGS,
+  );
+  assert.equal(out.entityRef, "automation-cron-job-nightly-ingest");
+  assert.equal(out.supersessionKey, "someone-else::schedule");
+});
+
+test("classifyEntityRefWritePath separates memory tiers, entity pages, and everything else", () => {
+  assert.equal(classifyEntityRefWritePath("/m", "/m/facts/2026-07-27/f1.md"), "memory");
+  assert.equal(classifyEntityRefWritePath("/m", "/m/cold/facts/f1.md"), "memory");
+  assert.equal(classifyEntityRefWritePath("/m", "/m/archive/2026-01-01/f1.md"), "memory");
+  assert.equal(classifyEntityRefWritePath("/m", "/m/entities/person-a.md"), "entity");
+  assert.equal(classifyEntityRefWritePath("/m", "/m/wearables/limitless/2026-07-27.md"), "outside");
+  assert.equal(classifyEntityRefWritePath("/m", "/m/facts/2026-07-27/blob.bin"), "outside");
+  assert.equal(classifyEntityRefWritePath("/m", "/elsewhere/facts/f1.md"), "outside");
 });
