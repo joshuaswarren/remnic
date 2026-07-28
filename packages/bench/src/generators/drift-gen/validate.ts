@@ -349,6 +349,17 @@ function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[
         errors.push(`${probe.id}: aggregation probe targets fact ${factId} already superseded at epoch ${fact.supersededEpoch}`);
       }
     }
+    const requiredFactCount =
+      probe.category === "transition" ? 2 : probe.category === "aggregation" ? null : 1;
+    if (
+      requiredFactCount !== null &&
+      probe.requiredFactIds.length !== requiredFactCount
+    ) {
+      errors.push(
+        `${probe.id}: ${probe.category} probe must require exactly ${requiredFactCount} fact${requiredFactCount === 1 ? "" : "s"}`,
+      );
+    }
+
     const requiredFacts = probe.requiredFactIds.map((factId) => byId.get(factId));
     if (requiredFacts.every((fact): fact is GoldFact => fact !== undefined)) {
       for (const fact of requiredFacts) {
@@ -360,6 +371,14 @@ function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[
       if (expectedAnswer !== null && probe.expectedAnswer !== expectedAnswer) {
         errors.push(`${probe.id}: expectedAnswer does not match the referenced facts`);
       }
+      if (
+        probe.category === "transition" &&
+        requiredFacts.length === 2 &&
+        requiredFacts[0]!.supersededBy !== requiredFacts[1]!.id
+      ) {
+        errors.push(`${probe.id}: transition probe facts are not linked by supersession`);
+      }
+
     }
     if (probe.category === "current") {
       const fact = byId.get(probe.requiredFactIds[0]);
@@ -463,12 +482,31 @@ function checkDistribution(
   }
 }
 
+function isIntegerAtLeast(value: unknown, minimum: number): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+}
+
+function hasValidDriftRatios(driftingRatio: unknown, contradictedRatio: unknown): boolean {
+  return (
+    typeof driftingRatio === "number" &&
+    Number.isFinite(driftingRatio) &&
+    driftingRatio >= 0 &&
+    driftingRatio <= 1 &&
+    typeof contradictedRatio === "number" &&
+    Number.isFinite(contradictedRatio) &&
+    contradictedRatio >= 0 &&
+    contradictedRatio <= 1 &&
+    driftingRatio + contradictedRatio <= 1
+  );
+}
+
 function isManifestShape(value: unknown): value is DriftGenManifest {
   if (typeof value !== "object" || value === null) return false;
   const m = value as Record<string, unknown>;
   const counts = m.counts as Record<string, unknown> | undefined;
   const generator = m.generator as Record<string, unknown> | undefined;
   return (
+
     typeof m.name === "string" &&
     typeof m.version === "string" &&
     Array.isArray(m.seeds) &&
@@ -476,15 +514,16 @@ function isManifestShape(value: unknown): value is DriftGenManifest {
     m.seeds.every((s) => Number.isSafeInteger(s)) &&
     typeof counts === "object" &&
     counts !== null &&
-    Number.isSafeInteger(counts.users) &&
-    Number.isSafeInteger(counts.epochs) &&
-    Number.isSafeInteger(counts.facts) &&
-    Number.isSafeInteger(counts.probes) &&
+    !Array.isArray(counts) &&
+    isIntegerAtLeast(counts.users, 1) &&
+    isIntegerAtLeast(counts.epochs, 2) &&
+    isIntegerAtLeast(counts.facts, 1) &&
+    isIntegerAtLeast(counts.probes, 1) &&
     typeof generator === "object" &&
     generator !== null &&
-    Number.isSafeInteger(generator.factsPerEpoch) &&
-    typeof generator.driftingRatio === "number" &&
-    typeof generator.contradictedRatio === "number" &&
+    !Array.isArray(generator) &&
+    isIntegerAtLeast(generator.factsPerEpoch, 1) &&
+    hasValidDriftRatios(generator.driftingRatio, generator.contradictedRatio) &&
     typeof m.files === "object" &&
     m.files !== null &&
     !Array.isArray(m.files) &&

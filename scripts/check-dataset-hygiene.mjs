@@ -124,10 +124,17 @@ export function findDisallowedIPv4s(line) {
   return disallowed;
 }
 
-function urlContainsCredentials(url) {
-  if (url.username || url.password) return true;
-  return [...url.searchParams.keys()].some((name) =>
+function hasCredentialParameter(parameters) {
+  return [...parameters.keys()].some((name) =>
     CREDENTIAL_QUERY_PARAMETERS.has(name.toLowerCase()),
+  );
+}
+
+function urlContainsCredentials(url) {
+  return (
+    Boolean(url.username || url.password) ||
+    hasCredentialParameter(url.searchParams) ||
+    hasCredentialParameter(new URLSearchParams(url.hash.slice(1)))
   );
 }
 

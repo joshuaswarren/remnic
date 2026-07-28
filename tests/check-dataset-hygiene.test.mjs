@@ -160,11 +160,12 @@ test("rejects credentials in otherwise allowlisted URLs", () => {
       JSON.stringify({
         queryCredential: "https://example.com/docs?token=not-a-real-secret",
         userInfoCredential: "https://reader:pass@example.com/docs",
+        fragmentCredential: "https://example.com/docs#access_token=not-a-real-secret",
       }),
     );
     const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
     assert.equal(res.status, 1);
-    assert.equal((res.stderr.match(/\[url-allowlist\]/g) || []).length, 2);
+    assert.equal((res.stderr.match(/\[url-allowlist\]/g) || []).length, 3);
     assert.doesNotMatch(res.stderr, /not-a-real-secret|reader:pass/);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

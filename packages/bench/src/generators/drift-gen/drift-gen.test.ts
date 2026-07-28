@@ -22,7 +22,7 @@ import {
 } from "./index.js";
 import { buildCorpusSchedule } from "./schedule.js";
 import { questionAnswerLeakage, validateDriftCorpus } from "./validate.js";
-import type { GoldFact, GoldProbe } from "./types.js";
+import type { DriftGenManifest, GoldFact, GoldProbe } from "./types.js";
 
 const SMALL = { users: 2, epochs: 4, seed: 11, factsPerEpoch: 8 } as const;
 
@@ -211,6 +211,68 @@ test("validator rejects symlinked intermediate corpus directories", async () => 
     assert.ok(
       report.errors.some((error) => error.includes("symlinked corpus directory rejected")),
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("validator rejects rehashed single-fact probes with extra references", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-cardinality-tamper-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    const relativePath = `${SMALL.seed}/gold/probes.jsonl`;
+    const probesPath = path.join(dir, relativePath);
+    const lines = (await readFile(probesPath, "utf8")).trim().split("\n");
+    const facts = (await readFile(path.join(dir, String(SMALL.seed), "gold", "facts.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as GoldFact);
+    const currentIndex = lines.findIndex((line) => parseGoldProbe(line).category === "current");
+    assert.notEqual(currentIndex, -1);
+    const probe = parseGoldProbe(lines[currentIndex]!);
+    const extraFact = facts.find(
+      (fact) =>
+        fact.id !== probe.requiredFactIds[0] &&
+        fact.userId === probe.userId &&
+        fact.introducedEpoch <= probe.epoch &&
+        (fact.supersededEpoch === null || fact.supersededEpoch > probe.epoch),
+    );
+    assert.ok(extraFact);
+    probe.requiredFactIds.push(extraFact.id);
+    probe.expectedAnswer = "tampered answer";
+    lines[currentIndex] = JSON.stringify(probe);
+    await writeFile(probesPath, `${lines.join("\n")}\n`, "utf8");
+    await rehashManifestFile(dir, relativePath);
+
+    const report = await validateDriftCorpus(dir);
+    assert.equal(report.ok, false);
+    assert.ok(report.errors.some((error) => error.includes("must require exactly 1 fact")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("validator rejects an empty rehashed corpus manifest", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-empty-manifest-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    const manifestPath = path.join(dir, "dataset.manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as DriftGenManifest;
+    manifest.counts = { users: 0, epochs: 0, facts: 0, probes: 0 };
+    manifest.generator = {
+      ...manifest.generator,
+      factsPerEpoch: 0,
+      driftingRatio: 0,
+      contradictedRatio: 0,
+    };
+    for (const relativePath of Object.keys(manifest.files)) {
+      await writeFile(path.join(dir, relativePath), "", "utf8");
+      await rehashManifestFile(dir, relativePath);
+    }
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
+
+    const report = await validateDriftCorpus(dir);
+    assert.equal(report.ok, false);
+    assert.ok(report.errors.some((error) => error.includes("expected manifest shape")));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
