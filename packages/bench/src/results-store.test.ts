@@ -65,6 +65,28 @@ test("loadBenchmarkResult preserves OpenAI judge model and rubric provenance", a
     assert.deepEqual(loaded.config.judgeProvider, result.config.judgeProvider);
   });
 });
+test("loadBenchmarkResult accepts task result with valid goldMemories array", async () => {
+  const result = validResult();
+  result.results.tasks[0].goldMemories = ["Fact statement A", "Fact statement B"];
+  await withResultFile(result, async (filePath) => {
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.deepEqual(loaded.results.tasks[0].goldMemories, ["Fact statement A", "Fact statement B"]);
+  });
+});
+
+test("loadBenchmarkResult rejects task result with invalid goldMemories shape", async () => {
+  const badShapes = ["not an array", 123, [123], [null], [{}], true];
+  for (const badShape of badShapes) {
+    const result = validResult();
+    (result.results.tasks[0] as unknown as Record<string, unknown>).goldMemories = badShape;
+    await withResultFile(result, async (filePath) => {
+      await assert.rejects(
+        () => loadBenchmarkResult(filePath),
+        /Invalid benchmark result file/,
+      );
+    });
+  }
+});
 
 async function withResultFile(
   payload: unknown,

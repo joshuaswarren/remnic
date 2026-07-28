@@ -1556,3 +1556,52 @@ test("pairedAnswerReplayKey hashes identical nested retryOptions regardless of p
     );
   });
 });
+test("runPublishedHarness preserves goldMemories on TaskResult in success path", async () => {
+  const { system } = makeFakeSystem();
+  const plan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "s1", messages: [{ role: "user", content: "m" }] }],
+    trials: [
+      {
+        taskId: "t1",
+        question: "q1",
+        expected: "e1",
+        recallSessionIds: ["s1"],
+        goldMemories: ["Gold fact 1", "Gold fact 2"],
+      },
+    ],
+  };
+  const result = await runPublishedHarness({
+    options: makeOptions(system),
+    metricsSpec: { metrics: ["f1"] },
+    plans: [plan],
+  });
+  assert.equal(result.results.tasks.length, 1);
+  assert.deepEqual(result.results.tasks[0]?.goldMemories, ["Gold fact 1", "Gold fact 2"]);
+});
+
+test("runPublishedHarness preserves goldMemories on TaskResult in trial execution failure path", async () => {
+  const { system } = makeFakeSystem();
+  system.responder.respond = async () => {
+    throw new Error("Simulated responder failure");
+  };
+  const plan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "s1", messages: [{ role: "user", content: "m" }] }],
+    trials: [
+      {
+        taskId: "t1",
+        question: "q1",
+        expected: "e1",
+        recallSessionIds: ["s1"],
+        goldMemories: ["Gold fact 1", "Gold fact 2"],
+      },
+    ],
+  };
+  const result = await runPublishedHarness({
+    options: makeOptions(system),
+    metricsSpec: { metrics: ["f1"] },
+    plans: [plan],
+  });
+  assert.equal(result.results.tasks.length, 1);
+  assert.deepEqual(result.results.tasks[0]?.goldMemories, ["Gold fact 1", "Gold fact 2"]);
+  assert.equal(result.results.tasks[0]?.actual, "(error: Simulated responder failure)");
+});

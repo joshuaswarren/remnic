@@ -97,6 +97,67 @@ test("parseBenchArgs accepts non-empty legacy benchmark equals paths", () => {
   assert.equal(parseBenchArgs(["report", "--report=/tmp/report.json"]).action, "report");
 });
 
+test("parseBenchArgs recognizes bench attribute action and requires --run", () => {
+  assert.throws(() => parseBenchArgs(["attribute"]), /attribute requires --run/);
+  const parsed = parseBenchArgs(["attribute", "--run", "run-123", "--threshold", "0.2"]);
+  assert.equal(parsed.action, "attribute");
+  assert.equal(parsed.runRef, "run-123");
+  assert.equal(parsed.threshold, 0.2);
+});
+
+test("parseBenchArgs recognizes bench drift-gen action and subcommands", () => {
+  const genDefault = parseBenchArgs([
+    "drift-gen",
+    "--users", "5",
+    "--epochs", "3",
+    "--seed", "17",
+    "--out", "/tmp/drift-out",
+  ]);
+  assert.equal(genDefault.action, "drift-gen");
+  assert.equal(genDefault.driftGenAction, "generate");
+  assert.equal(genDefault.users, 5);
+  assert.equal(genDefault.epochs, 3);
+  assert.equal(genDefault.seed, 17);
+  assert.equal(genDefault.out, path.resolve("/tmp/drift-out"));
+
+  const genExplicit = parseBenchArgs(["drift-gen", "generate", "--facts-per-epoch", "2"]);
+  assert.equal(genExplicit.action, "drift-gen");
+  assert.equal(genExplicit.driftGenAction, "generate");
+  assert.equal(genExplicit.factsPerEpoch, 2);
+
+  const val = parseBenchArgs(["drift-gen", "validate", "/tmp/corpus"]);
+  assert.equal(val.action, "drift-gen");
+  assert.equal(val.driftGenAction, "validate");
+  assert.equal(val.driftGenDir, path.resolve("/tmp/corpus"));
+
+  assert.throws(
+    () => parseBenchArgs(["drift-gen", "unknown-subcommand"]),
+    /drift-gen subcommand must be "generate" or "validate"/
+  );
+});
+
+test("parseBenchArgs validates integer flags for drift-gen", () => {
+  assert.throws(() => parseBenchArgs(["drift-gen", "--users", "abc"]), /--users must be a positive safe integer/);
+  assert.throws(() => parseBenchArgs(["drift-gen", "--users", "3.7"]), /--users must be a positive safe integer/);
+  assert.throws(() => parseBenchArgs(["drift-gen", "--users", "0"]), /--users must be a positive safe integer/);
+  assert.throws(() => parseBenchArgs(["drift-gen", "--epochs", "-1"]), /--epochs must be a positive safe integer/);
+  assert.throws(() => parseBenchArgs(["drift-gen", "--facts-per-epoch", "0"]), /--facts-per-epoch must be a positive safe integer/);
+  assert.throws(() => parseBenchArgs(["drift-gen", "--seed", "-1"]), /--seed must be a non-negative safe integer/);
+  assert.throws(() => parseBenchArgs(["drift-gen", "--seed", "1.5"]), /--seed must be a non-negative safe integer/);
+});
+
+test("parseBenchArgs validates ratio flags for drift-gen and attribute threshold", () => {
+  assert.throws(() => parseBenchArgs(["drift-gen", "--drifting-ratio", "1.5"]), /--drifting-ratio must be a number between 0 and 1/);
+  assert.throws(() => parseBenchArgs(["drift-gen", "--drifting-ratio", "-0.1"]), /--drifting-ratio must be a number between 0 and 1/);
+  assert.throws(() => parseBenchArgs(["drift-gen", "--contradicted-ratio", "abc"]), /--contradicted-ratio must be a number between 0 and 1/);
+  assert.throws(() => parseBenchArgs(["attribute", "--run", "run-1", "--threshold", "2.0"]), /--threshold must be a number between 0 and 1/);
+});
+
+test("parseBenchArgs throws when value flags are missing values", () => {
+  assert.throws(() => parseBenchArgs(["attribute", "--run"]), /--run requires a value/);
+  assert.throws(() => parseBenchArgs(["drift-gen", "--users"]), /--users requires a value/);
+});
+
 test("retry-failed filters matrix work at profile granularity", () => {
   const workItems = createBenchWorkItems(["locomo"], ["baseline", "real"]);
   const filtered = filterBenchWorkItemsForPreviousStatus(

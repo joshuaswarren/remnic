@@ -210,6 +210,16 @@ test("every recognised command dispatches to its own handler, not the banner", a
   }
 });
 
+test("bench attribute and bench drift-gen dispatch to handlers without falling through to banner", async () => {
+  const attrResult = await runCli(["bench", "attribute", "--help"]);
+  assert.equal(attrResult.stdout.includes(BANNER_MARKER), false);
+  assert.match(attrResult.stdout, /Usage: remnic bench/);
+
+  const driftResult = await runCli(["bench", "drift-gen", "--help"]);
+  assert.equal(driftResult.stdout.includes(BANNER_MARKER), false);
+  assert.match(driftResult.stdout, /Usage: remnic bench/);
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // 3. Happy-path signatures — deterministic output for load-bearing commands
 // ════════════════════════════════════════════════════════════════════════════

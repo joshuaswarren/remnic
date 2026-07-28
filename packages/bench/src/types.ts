@@ -91,6 +91,8 @@ export interface TaskResult {
   scores: Record<string, number>;
   latencyMs: number;
   tokens: TaskTokenUsage;
+  /** Plain-statement gold knowledge points for op-level failure attribution, issue #1954. */
+  goldMemories?: string[];
   details?: Record<string, unknown>;
 }
 

@@ -84,6 +84,8 @@ export interface HarnessTrial {
   expected: string;
   /** Session IDs that should be consulted via `system.recall`. */
   recallSessionIds: string[];
+  /** Optional plain-statement gold knowledge points for op-level failure attribution (issue #1954). */
+  goldMemories?: string[];
   /** Optional answer-shaping protocol for benchmarks with official short/structured outputs. */
   answerFormat?: BenchmarkAnswerFormat;
   /**
@@ -393,6 +395,7 @@ async function executeTrialWithFailure(
       scores: buildFailureScores(ctx.metricsSpec.metrics),
       latencyMs: 0,
       tokens: { input: 0, output: 0 },
+      ...(trial.goldMemories ? { goldMemories: trial.goldMemories } : {}),
       details: {
         // Preserve the trial's category so a failed trial is still attributed
         // to its per-category bucket (computeCategoryAggregates), keeping the
@@ -746,6 +749,7 @@ async function executeTrial(
       input: answered.tokens.input + judgeResult.tokens.input,
       output: answered.tokens.output + judgeResult.tokens.output,
     },
+    ...(trial.goldMemories ? { goldMemories: trial.goldMemories } : {}),
     details,
   };
   if (answerReplayKey && currentProfile === "baseline" && answered.fallbackReason === undefined) {
