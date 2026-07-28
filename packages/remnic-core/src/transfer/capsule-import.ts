@@ -6,8 +6,9 @@ import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
-  pathMayCarryEntityRefs,
+  classifyEntityRefWritePath,
   repairContentAfterJournalMove,
+  requestEntityCanonicalIdReconcile,
 } from "../storage/entity-canonical-id-references.js";
 import {
   createVersion,
@@ -456,10 +457,12 @@ export async function importCapsule(
     // only the corpus version, which the migration fingerprint ignores. The
     // post-write REPAIR re-canonicalizes and rewrites when the journal moved
     // across the write itself (a parked mapping cannot be fixed after the
-    // fact by the reconcile pass). Only records under the migration's scan
-    // tiers participate — transcripts, peer/profile data, and other included
-    // kinds import losslessly.
-    if (pathMayCarryEntityRefs(rootReal, targetAbs)) {
+    // fact by the reconcile pass). Only memory-tier records canonicalize;
+    // entities/ pages carry relationship TARGETS only
+    // rewriteRelationshipTargets understands, so they import byte-faithful
+    // with a reconcile marker; everything else imports losslessly.
+    const targetKind = classifyEntityRefWritePath(rootReal, targetAbs);
+    if (targetKind === "memory") {
       const idsAtWrite = historicalIdCache.get(journalStateDir);
       const rawRecord = contentToWrite;
       contentToWrite = canonicalizeEntityRefFrontmatter(rawRecord, idsAtWrite);
@@ -474,6 +477,9 @@ export async function importCapsule(
       });
     } else {
       await writeFile(targetAbs, contentToWrite, "utf-8");
+      if (targetKind === "entity") {
+        await requestEntityCanonicalIdReconcile(journalStateDir);
+      }
     }
     // Bump the corpus sentinel per write (Cursor Medium, #1902): a concurrent
     // readAllMemories during the import must rescan and see records already on

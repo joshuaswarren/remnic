@@ -261,18 +261,30 @@ export async function reconcileIfJournalMoved(
 }
 
 /**
- * True when a raw write to `filePath` can carry migrated entity references —
- * a markdown record under the hot recall, cold, or archive tiers. Raw writers
- * (offline sync) use this to avoid requesting a full reconcile pass when a
- * sync only touched transcripts, runtime state, or other non-memory files.
+ * Classify a raw write target for entity-reference handling (issue #2213):
+ * - `"memory"` — hot recall / cold / archive record whose FRONTMATTER
+ *   `entityRef` the writer must canonicalize at the write (and repair after).
+ * - `"entity"` — an `entities/` page. Its migrated surface is relationship
+ *   TARGETS in the body, which only `rewriteRelationshipTargets` understands;
+ *   raw writers persist bytes faithfully and request the bounded reconcile
+ *   pass instead of attempting a frontmatter rewrite.
+ * - `"outside"` — transcripts, profiles, runtime state, and every other file
+ *   outside the migration's scan scope: write byte-identical, no marker.
  */
-export function pathMayCarryEntityRefs(baseDir: string, filePath: string): boolean {
-  if (!filePath.endsWith(".md")) return false;
+export type EntityRefWritePathKind = "memory" | "entity" | "outside";
+
+export function classifyEntityRefWritePath(baseDir: string, filePath: string): EntityRefWritePathKind {
+  if (!filePath.endsWith(".md")) return "outside";
   const rel = path.relative(baseDir, filePath);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return "outside";
   const top = rel.split(path.sep)[0] ?? "";
-  // entities/ carries relationship TARGETS the migration also rewrites.
-  return RECALL_FALLBACK_DIRS.includes(top) || top === "cold" || top === "archive" || top === "entities";
+  if (top === "entities") return "entity";
+  return RECALL_FALLBACK_DIRS.includes(top) || top === "cold" || top === "archive" ? "memory" : "outside";
+}
+
+/** True when `filePath` is in the migration's scan scope at all. */
+export function pathMayCarryEntityRefs(baseDir: string, filePath: string): boolean {
+  return classifyEntityRefWritePath(baseDir, filePath) !== "outside";
 }
 
 /**

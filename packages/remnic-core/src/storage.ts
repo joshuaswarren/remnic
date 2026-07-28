@@ -3734,13 +3734,21 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       fm.entityRef = entityRefs.resolveHistoricalEntityCanonicalId(rawEntityRef, refIds);
     }
     let tombstoneBlocked = false;
-    // The gate is a closure so the post-persist repair can RE-RUN it when a
-    // journal move changed the final entityRef: a tombstone keyed only under
-    // the new claimant must still block (issue #2213; the re-run only ever
-    // ADDS blocking — an already-blocked fact stays blocked).
+    let gateRef: string | undefined;
+    let statusBeforeBlock: MemoryFrontmatter["status"];
+    // Closure so the post-persist repair can RE-RUN it when a journal move
+    // changed the final entityRef. A verdict is only valid for the ref it was
+    // computed under (a parked mapping can move the final ref BACK to the
+    // legacy claimant): reset and re-evaluate — entity-independent tiers re-block.
     const applyTombstoneGate = async (): Promise<void> => {
+      if (tombstoneBlocked) {
+        if (fm.entityRef === gateRef) return;
+        tombstoneBlocked = false;
+        fm.status = statusBeforeBlock;
+        delete fm.blockedBy;
+        delete fm.tombstoneBlockTier;
+      }
       if (
-        tombstoneBlocked ||
         category !== "fact" ||
         !this.tombstonesConfig.enabled ||
         factHashSourceForTombstone === null ||
@@ -3774,6 +3782,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           namespace: this.tombstonesConfig.namespace,
         });
         if (match) {
+          gateRef = fm.entityRef;
+          statusBeforeBlock = fm.status;
           tombstoneBlocked = true;
           fm.status = "pending_review";
           fm.blockedBy = match.tombstoneId;
@@ -3827,20 +3837,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         rawRef: rawEntityRef,
         frontmatter: fm,
         rewrite: async () => {
-          // The final ref changed — re-run the resurrection gate so a
-          // tombstone keyed under the NEW claimant still blocks, then rewrite
-          // THROUGH the blocked-capture surface: a gate that newly blocks
-          // must register in TombstoneBlockedCaptureIndex, or offline-sync
-          // and explicit-capture lookups miss the record until a rebuild.
+          // Re-gate under the final ref, then rewrite THROUGH the blocked-
+          // capture surface so any verdict change keeps the index consistent.
           await applyTombstoneGate();
           await this.writeTombstoneBlockedMemory(
             filePath,
             `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`,
             fm,
             sanitized.text,
-            async () => {
-              this.invalidateAllMemoriesCache();
-            },
+            async () => this.invalidateAllMemoriesCache(),
           );
           this.invalidateAllMemoriesCache();
         },
