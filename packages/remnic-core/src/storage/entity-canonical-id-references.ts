@@ -271,7 +271,8 @@ export function pathMayCarryEntityRefs(baseDir: string, filePath: string): boole
   const rel = path.relative(baseDir, filePath);
   if (rel.startsWith("..") || path.isAbsolute(rel)) return false;
   const top = rel.split(path.sep)[0] ?? "";
-  return RECALL_FALLBACK_DIRS.includes(top) || top === "cold" || top === "archive";
+  // entities/ carries relationship TARGETS the migration also rewrites.
+  return RECALL_FALLBACK_DIRS.includes(top) || top === "cold" || top === "archive" || top === "entities";
 }
 
 /**

@@ -106,6 +106,10 @@ import {
   DEFAULT_CITATION_FORMAT,
 } from "./source-attribution.js";
 import {
+  stripCitationMarkersForHashRemoval,
+  stripDefaultCitationMarkersWithoutRegex,
+} from "./storage/citation-hash-source.js";
+import {
   TombstoneStore,
   collectRetiredMemoriesForRebuild,
   buildRetiredFactTombstoneInputs,
@@ -310,92 +314,6 @@ function normalizeMemoryWriteTimestamp(field: string, value: string | undefined)
     throw new Error(`${field} must be a valid ISO timestamp, got ${JSON.stringify(value)}`);
   }
   return new Date(parsed).toISOString();
-}
-
-function trimTrailingSpacesAndTabs(value: string): string {
-  let end = value.length;
-  while (end > 0 && (value[end - 1] === " " || value[end - 1] === "\t")) {
-    end -= 1;
-  }
-  return end === value.length ? value : value.slice(0, end);
-}
-
-function trimLeadingSpacesAndTabs(value: string): string {
-  let start = 0;
-  while (start < value.length && (value[start] === " " || value[start] === "\t")) {
-    start += 1;
-  }
-  return start === 0 ? value : value.slice(start);
-}
-
-function stripDefaultCitationMarkersWithoutRegex(value: string): string {
-  return stripCitationMarkersForHashRemoval(value, DEFAULT_CITATION_FORMAT);
-}
-
-function citationTemplateLiteralParts(template: string): string[] {
-  const parts: string[] = [];
-  let cursor = 0;
-  while (cursor < template.length) {
-    const open = template.indexOf("{", cursor);
-    if (open === -1) {
-      parts.push(template.slice(cursor));
-      break;
-    }
-    parts.push(template.slice(cursor, open));
-    const close = template.indexOf("}", open + 1);
-    if (close === -1) {
-      cursor = open + 1;
-    } else {
-      cursor = close + 1;
-    }
-  }
-  return parts.filter((part) => part.length > 0);
-}
-
-function stripCitationMarkersForHashRemoval(value: string, template: string): string {
-  const parts = citationTemplateLiteralParts(template);
-  if (parts.length === 0) return value;
-  const first = parts[0]!;
-  const lowerValue = value.toLowerCase();
-  const lowerFirst = first.toLowerCase();
-  const lowerParts = parts.map((part) => part.toLowerCase());
-  if (!lowerValue.includes(lowerFirst)) return value;
-
-  let result = "";
-  let cursor = 0;
-  let removed = false;
-  while (cursor < value.length) {
-    const markerStart = lowerValue.indexOf(lowerFirst, cursor);
-    if (markerStart === -1) {
-      result += value.slice(cursor);
-      break;
-    }
-    const boundedEnd = first.startsWith("[") ? value.indexOf("]", markerStart + first.length) : -1;
-    if (first.startsWith("[") && boundedEnd === -1) {
-      result += value.slice(cursor);
-      break;
-    }
-    const searchLimit = boundedEnd === -1 ? value.length : boundedEnd + 1;
-    let markerEnd = markerStart + first.length;
-    let matched = true;
-    for (let i = 1; i < lowerParts.length; i += 1) {
-      const partIndex = lowerValue.indexOf(lowerParts[i]!, markerEnd);
-      if (partIndex === -1 || partIndex + parts[i]!.length > searchLimit) {
-        matched = false;
-        break;
-      }
-      markerEnd = partIndex + parts[i]!.length;
-    }
-    if (!matched) {
-      result += value.slice(cursor);
-      break;
-    }
-    result += trimTrailingSpacesAndTabs(value.slice(cursor, markerStart));
-    cursor = markerEnd;
-    removed = true;
-  }
-
-  return removed ? trimLeadingSpacesAndTabs(result) : value;
 }
 
 function serializeFrontmatter(fm: MemoryFrontmatter): string {
@@ -3816,18 +3734,26 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       fm.entityRef = entityRefs.resolveHistoricalEntityCanonicalId(rawEntityRef, refIds);
     }
     let tombstoneBlocked = false;
-    if (
-      category === "fact" &&
-      this.tombstonesConfig.enabled &&
-      factHashSourceForTombstone !== null &&
-      // Block facts that would become ACTIVE or are already pending_review
-      // (issue #1579 thread ObteQ: wearable/native imports write fact
-      // candidates with status: pending_review; without checking them here,
-      // promoteWearableMemory could later flip a retired fact active without
-      // a tombstone check). A caller that explicitly requests a terminal
-      // non-active status (rejected/retracted/superseded) is respected.
-      (fm.status === undefined || fm.status === "active" || fm.status === "pending_review")
-    ) {
+    // The gate is a closure so the post-persist repair can RE-RUN it when a
+    // journal move changed the final entityRef: a tombstone keyed only under
+    // the new claimant must still block (issue #2213; the re-run only ever
+    // ADDS blocking — an already-blocked fact stays blocked).
+    const applyTombstoneGate = async (): Promise<void> => {
+      if (
+        tombstoneBlocked ||
+        category !== "fact" ||
+        !this.tombstonesConfig.enabled ||
+        factHashSourceForTombstone === null ||
+        // Block facts that would become ACTIVE or are already pending_review
+        // (issue #1579 thread ObteQ: wearable/native imports write fact
+        // candidates with status: pending_review; without checking them here,
+        // promoteWearableMemory could later flip a retired fact active without
+        // a tombstone check). A caller that explicitly requests a terminal
+        // non-active status (rejected/retracted/superseded) is respected.
+        !(fm.status === undefined || fm.status === "active" || fm.status === "pending_review")
+      ) {
+        return;
+      }
       try {
         const tombstoneStore = await this.getTombstoneStore();
         // Derive the keyed-tier supersession key from structured attributes
@@ -3862,7 +3788,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         // store recovers will catch a subsequent re-extraction.
         log.warn(`tombstone lookup failed for fact ${id} (fail-open): ${err}`);
       }
-    }
+    };
+    await applyTombstoneGate();
 
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
@@ -3893,7 +3820,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       };
     }
     if (refIds && typeof rawEntityRef === "string") {
-      await this.repairEntityRefAfterJournalMove(filePath, fm, rawEntityRef, refIds, sanitized.text);
+      await entityRefs.repairEntityRefAfterJournalMove({
+        stateDir: this.stateDir,
+        currentIds: () => this.currentHistoricalIds(),
+        idsAtResolve: refIds,
+        rawRef: rawEntityRef,
+        frontmatter: fm,
+        rewrite: async () => {
+          // The final ref changed — re-run the resurrection gate so a
+          // tombstone keyed under the NEW claimant still blocks, then rewrite.
+          await applyTombstoneGate();
+          await this.writeStorageSecureFile(filePath, `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`);
+          this.invalidateAllMemoriesCache();
+        },
+      });
     }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
@@ -4921,12 +4861,38 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return path.join(root, dir, this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
   }
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {
-    // Whole-record rewrite (tier moves route here) — issue #2213.
+    // Whole-record rewrite (tier moves route here) — issue #2213. Repair, not
+    // just detect: the source is unlinked after the move, so a mapping parked
+    // across this write would otherwise strand the moved copy on a
+    // since-contested claimant with nothing left to reconcile from.
     const refIdsAtWrite = this.currentHistoricalIds();
+    const rawRef = memory.frontmatter.entityRef;
     const frontmatter = entityRefs.canonicalizeEntityRefOption(memory.frontmatter, refIdsAtWrite);
-    const fileContent = `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`;
-    await writeMaybeEncryptedFile(targetPath, fileContent, this.resolveWriteKey(), {}, this.baseDir);
-    await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtWrite, this.currentHistoricalIds());
+    await writeMaybeEncryptedFile(
+      targetPath,
+      `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`,
+      this.resolveWriteKey(),
+      {},
+      this.baseDir,
+    );
+    if (typeof rawRef === "string") {
+      await entityRefs.repairEntityRefAfterJournalMove({
+        stateDir: this.stateDir,
+        currentIds: () => this.currentHistoricalIds(),
+        idsAtResolve: refIdsAtWrite,
+        rawRef,
+        frontmatter,
+        rewrite: async () => {
+          await writeMaybeEncryptedFile(
+            targetPath,
+            `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`,
+            this.resolveWriteKey(),
+            {},
+            this.baseDir,
+          );
+        },
+      });
+    }
     this.invalidateAllMemoriesCache();
     this.notifyCatalogWrite();
   }
@@ -6742,7 +6708,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
       }
     );
-    if (refIds && typeof rawEntityRef === "string") {
+    // Repair only when THIS chunk persisted: a tombstone-dedupe result
+    // returns an existing id without writing filePath, and an unconditional
+    // repair rewrite would create a stray second chunk from scratch.
+    if (written === id && refIds && typeof rawEntityRef === "string") {
       await this.repairEntityRefAfterJournalMove(filePath, fm, rawEntityRef, refIds, sanitized.text);
     }
     return written;
