@@ -133,16 +133,17 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
 
-      // Inject cached context as an assistant message — byte-identical across
-      // turns so the KV cache prefix is preserved. Using "assistant" because
-      // Pi's context hook AgentMessage type does not include "system" (codex
-      // review). The remnicInjected marker excludes it from observation and
+      // Inject cached context as a user message — byte-identical across turns
+      // so the KV cache prefix is preserved. Using "user" because Pi's
+      // AgentMessage type treats "assistant" as a completed model response
+      // with required api/provider/model/usage fields (codex review).
+      // The remnicInjected marker excludes it from observation and
       // recall targeting in downstream filters.
       if (!state.cachedContext) return;
       return {
         messages: [
           {
-            role: "assistant",
+            role: "user",
             content: [{ type: "text", text: state.cachedContext }],
             remnicInjected: true,
           },
