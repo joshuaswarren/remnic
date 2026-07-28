@@ -1496,10 +1496,6 @@ test("outputSchema: no tool falls through to the generic default (every schema h
   }>;
   const fallbacks: string[] = [];
   for (const tool of tools) {
-    // Array-typed schemas (type:"array") legitimately have no `properties` —
-    // they carry `items` instead. They are deliberate, precise schemas, not
-    // the generic {type:"object",additionalProperties:true} fallback.
-    if (tool.outputSchema?.type === "array") continue;
     const props = tool.outputSchema?.properties;
     if (!props || typeof props !== "object" || Object.keys(props).length === 0) {
       fallbacks.push(tool.name);
