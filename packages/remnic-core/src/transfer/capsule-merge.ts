@@ -5,6 +5,7 @@ import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
+  readEntityRefFromFrontmatter,
   classifyEntityRefWritePath,
   repairContentAfterJournalMove,
   requestEntityCanonicalIdReconcile,
@@ -362,6 +363,17 @@ export async function mergeCapsule(
   // completing mid-merge is picked up for every record written after it.
   const journalStateDir = path.join(rootReal, "state");
   const historicalIdCache = new HistoricalEntityCanonicalIdCache();
+  // Entity pages in THIS capsule can re-establish collisions the target's
+  // journal already resolved (Codex P1): once the next migration parks the
+  // mapping, a memory canonicalized onto the canonical claimant is
+  // permanently misattributed. Memories whose ref targets a capsule-supplied
+  // entity id merge byte-faithful behind the reconcile marker instead.
+  const capsuleEntityIds = new Set(
+    bundle.records
+      .filter((record) =>
+        classifyEntityRefWritePath(rootReal, path.join(rootReal, fromPosixRelPath(record.path))) === "entity")
+      .map((record) => path.basename(record.path, ".md")),
+  );
   // Write a record with its entityRef resolved AT the write, then repair if
   // the journal moved across the write itself — a parked mapping cannot be
   // fixed after the fact by the reconcile pass (issue #2213). Only memory-tier
@@ -372,6 +384,16 @@ export async function mergeCapsule(
   // bytes.
   const writeCanonicalRecord = async (targetAbs: string, rawContent: string): Promise<void> => {
     const kind = classifyEntityRefWritePath(rootReal, targetAbs);
+    const rawRef = kind === "memory" ? readEntityRefFromFrontmatter(rawContent) : null;
+    if (kind === "memory" && rawRef !== null && capsuleEntityIds.has(rawRef)) {
+      // Ref targets a capsule-supplied entity page (potential collision
+      // claimant): keep the legacy bytes, let the marker-triggered migration
+      // settle the collision and rewrite per its verdict (Codex P1).
+      await writeFile(targetAbs, rawContent, "utf-8");
+      await requestEntityCanonicalIdReconcile(journalStateDir);
+      bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
+      return;
+    }
     if (kind !== "memory") {
       await writeFile(targetAbs, rawContent, "utf-8");
       if (kind === "entity") {
@@ -438,9 +460,12 @@ export async function mergeCapsule(
     // leave the legacy entityRef on disk forever, since corpus bumps no
     // longer trigger migration rewrites (issue #2213).
     const idsAtCompare = historicalIdCache.get(journalStateDir);
-    const canonicalContent = classifyEntityRefWritePath(rootReal, targetAbs) === "memory"
-      ? canonicalizeEntityRefFrontmatter(rec.content, idsAtCompare)
-      : rec.content;
+    const compareRef = readEntityRefFromFrontmatter(rec.content);
+    const canonicalContent =
+      classifyEntityRefWritePath(rootReal, targetAbs) === "memory"
+      && !(compareRef !== null && capsuleEntityIds.has(compareRef))
+        ? canonicalizeEntityRefFrontmatter(rec.content, idsAtCompare)
+        : rec.content;
     const { sha256: localSha256 } = sha256String(localContent);
     const canonicalSha256 =
       canonicalContent === rec.content ? entry.sha256 : sha256String(canonicalContent).sha256;

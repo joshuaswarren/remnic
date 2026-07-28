@@ -5,6 +5,7 @@ import { gunzipSync } from "node:zlib";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
+  readEntityRefFromFrontmatter,
   canonicalizeEntityRefFrontmatter,
   classifyEntityRefWritePath,
   repairContentAfterJournalMove,
@@ -396,6 +397,18 @@ export async function importCapsule(
   // for every record written after it (one lstat per record).
   const journalStateDir = path.join(rootReal, "state");
   const historicalIdCache = new HistoricalEntityCanonicalIdCache();
+  // Entity pages in THIS capsule can re-establish collisions the target's
+  // journal already resolved (Codex P1): once the next migration parks the
+  // mapping, a memory canonicalized onto the canonical claimant is
+  // permanently misattributed. Memories whose ref targets a capsule-supplied
+  // entity id import byte-faithful behind the reconcile marker instead; the
+  // migration settles the collision and rewrites references per its verdict.
+  const capsuleEntityIds = new Set(
+    bundle.records
+      .map((record) => computeTargetPath(record.path, mode, capsule.id))
+      .filter((rel) => classifyEntityRefWritePath(rootReal, path.join(rootReal, fromPosixRelPath(rel))) === "entity")
+      .map((rel) => path.basename(rel, ".md")),
+  );
 
   // Sort by source path so the imported/skipped lists are deterministic
   // regardless of bundle order. (`exportCapsule` already sorts; we re-sort
@@ -462,7 +475,14 @@ export async function importCapsule(
     // rewriteRelationshipTargets understands, so they import byte-faithful
     // with a reconcile marker; everything else imports losslessly.
     const targetKind = classifyEntityRefWritePath(rootReal, targetAbs);
-    if (targetKind === "memory") {
+    const rawRef = targetKind === "memory" ? readEntityRefFromFrontmatter(contentToWrite) : null;
+    if (targetKind === "memory" && rawRef !== null && capsuleEntityIds.has(rawRef)) {
+      // Ref targets a capsule-supplied entity page (potential collision
+      // claimant): keep the legacy bytes, let the marker-triggered migration
+      // settle the collision and rewrite per its verdict (Codex P1).
+      await writeFile(targetAbs, contentToWrite, "utf-8");
+      await requestEntityCanonicalIdReconcile(journalStateDir);
+    } else if (targetKind === "memory") {
       const idsAtWrite = historicalIdCache.get(journalStateDir);
       const rawRecord = contentToWrite;
       contentToWrite = canonicalizeEntityRefFrontmatter(rawRecord, idsAtWrite);

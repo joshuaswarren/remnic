@@ -63,26 +63,17 @@ type JournalRead =
 /**
  * Open the journal WITHOUT following symlinks and read content + identity
  * from the same opened inode (repo rule: reject symlink traversal from
- * memory directories). O_NOFOLLOW makes the open itself refuse a symlink
- * (ELOOP), closing the stat→read TOCTOU, and protects the FINAL component
- * only — the parent state directory is lstat-verified as a real directory
- * first, so a symlinked `state/` cannot route the open to an external
- * journal. On platforms without O_NOFOLLOW the opened inode is additionally
- * lstat-verified against the path: a symlink — or a swap between open and
- * lstat — surfaces as a non-regular path or a dev/ino mismatch and is
- * refused.
+ * memory directories). O_NOFOLLOW makes the open refuse a symlinked FINAL
+ * component (ELOOP); the parent `state/` directory is verified AFTER the
+ * open, together with a path↔fd identity pairing, so a parent swapped
+ * around the open cannot hold: a swap still in place fails the parent
+ * lstat, and a swap reverted fails the dev/ino pairing against the real
+ * journal. Platforms without O_NOFOLLOW get the same post-open checks.
  */
 function readJournalFileNoFollow(statePath: string): JournalRead {
-  const noFollow = constants.O_NOFOLLOW ?? 0;
-  try {
-    const parent = lstatSync(path.dirname(statePath));
-    if (parent.isSymbolicLink() || !parent.isDirectory()) return { kind: "refused" };
-  } catch (error) {
-    return isErrnoCode(error, "ENOENT") ? { kind: "missing" } : { kind: "error" };
-  }
   let fd: number;
   try {
-    fd = openSync(statePath, constants.O_RDONLY | noFollow);
+    fd = openSync(statePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) return { kind: "missing" };
     if (isErrnoCode(error, "ELOOP")) return { kind: "refused" };
@@ -91,10 +82,10 @@ function readJournalFileNoFollow(statePath: string): JournalRead {
   try {
     const s = fstatSync(fd);
     if (!s.isFile()) return { kind: "refused" };
-    if (noFollow === 0) {
-      const l = lstatSync(statePath);
-      if (l.isSymbolicLink() || l.dev !== s.dev || l.ino !== s.ino) return { kind: "refused" };
-    }
+    const parent = lstatSync(path.dirname(statePath));
+    if (parent.isSymbolicLink() || !parent.isDirectory()) return { kind: "refused" };
+    const l = lstatSync(statePath);
+    if (l.isSymbolicLink() || l.dev !== s.dev || l.ino !== s.ino) return { kind: "refused" };
     return {
       kind: "ok",
       raw: readFileSync(fd, "utf-8"),
@@ -282,25 +273,40 @@ export function canonicalizeEntityRefFrontmatter(
   content: string,
   mappings: Readonly<Record<string, string>>,
 ): string {
-  if (Object.keys(mappings).length === 0 || !/^---\r?\n/.test(content)) return content;
+  if (Object.keys(mappings).length === 0) return content;
+  const loc = locateEntityRefLine(content);
+  if (loc === null) return content;
+  const canonical = resolveHistoricalEntityCanonicalId(loc.value, mappings);
+  if (canonical === loc.value) return content;
+  const line = loc.lines[loc.index]!;
+  const indent = /^\s*/.exec(line)?.[0] ?? "";
+  loc.lines[loc.index] = `${indent}entityRef: ${canonical}${line.endsWith("\r") ? "\r" : ""}`;
+  return loc.lines.join("\n") + content.slice(loc.closeIndex);
+}
+
+/** The raw `entityRef` value in a record's leading frontmatter, or null. */
+export function readEntityRefFromFrontmatter(content: string): string | null {
+  return locateEntityRefLine(content)?.value ?? null;
+}
+
+function locateEntityRefLine(
+  content: string,
+): { lines: string[]; index: number; value: string; closeIndex: number } | null {
+  if (!/^---\r?\n/.test(content)) return null;
   const close = /\r?\n---(?:\r?\n|$)/g;
   close.lastIndex = content.indexOf("\n") + 1;
   const closeMatch = close.exec(content);
-  if (!closeMatch) return content;
+  if (!closeMatch) return null;
   const lines = content.slice(0, closeMatch.index).split("\n");
-  let effective = -1;
-  for (let index = 1; index < lines.length; index += 1) {
-    if (/^\s*entityRef\s*:/.test(lines[index] ?? "")) effective = index;
+  let index = -1;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (/^\s*entityRef\s*:/.test(lines[i] ?? "")) index = i;
   }
-  if (effective === -1) return content;
-  const line = lines[effective]!;
+  if (index === -1) return null;
+  const line = lines[index]!;
   const value = line.slice(line.indexOf(":") + 1).replace(/\r$/, "").trim();
-  if (value.length === 0) return content;
-  const canonical = resolveHistoricalEntityCanonicalId(value, mappings);
-  if (canonical === value) return content;
-  const indent = /^\s*/.exec(line)?.[0] ?? "";
-  lines[effective] = `${indent}entityRef: ${canonical}${line.endsWith("\r") ? "\r" : ""}`;
-  return lines.join("\n") + content.slice(closeMatch.index);
+  if (value.length === 0) return null;
+  return { lines, index, value, closeIndex: closeMatch.index };
 }
 
 /**

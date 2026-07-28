@@ -2365,16 +2365,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   protected bumpMemoryStatusVersion(): void {
     this.bumpSharedVersion("memory-status", StorageManager.memoryStatusVersionByDir);
-    // Also bump the corpus sentinel so peer processes rescan the hot-memories
-    // cache after status/lifecycle/bulk mutations (issue #1902). invalidateAllForDir
-    // below drops the hot layer locally; the corpus bump handles cross-process.
+    // Corpus sentinel too: peer processes rescan the hot-memories cache
+    // after status/lifecycle/bulk mutations (#1902); invalidateAllForDir
+    // below drops the hot layer locally.
     this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
-    // Invalidation chokepoint (issue #1535): status/entity mutations funnel
-    // through this bump — several of them (supersedeMemory, archiveMemories,
-    // writeEntity, cleanExpiredCommitments) do NOT call
-    // invalidateAllMemoriesCache(), so the chokepoint must fire here as well.
-    // Version bumps only invalidate the version-checked layers lazily; the
-    // TTL-based QMD caches need this eager clear.
+    // Invalidation chokepoint (#1535): several status/entity mutations
+    // (supersede, archiveMemories, writeEntity, commitment cleanup) never
+    // call invalidateAllMemoriesCache; the TTL-based QMD caches need this
+    // eager clear.
     invalidateAllForDir(this.baseDir);
   }
 
@@ -2396,28 +2394,22 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   /**
-   * Corpus version sentinel for the hot-memories result cache (issue #1902).
-   * Distinct from memory-status: it bumps on EVERY memory-file mutation
-   * (create/update/delete/bulk) so the version-keyed hot cache stays coherent
-   * across processes, WITHOUT bumping memory-status — which would needlessly
-   * invalidate the version-keyed entity cache on every plain fact create (the
-   * ki-spike regression the sibling perf work removes). memory-status keeps its
-   * lifecycle/status/entity semantics unchanged.
+   * Corpus version sentinel for the hot-memories result cache (#1902).
+   * Distinct from memory-status: bumps on EVERY memory-file mutation so the
+   * version-keyed hot cache stays coherent across processes, WITHOUT
+   * invalidating the version-keyed entity cache on every plain fact create.
    */
   getMemoryCorpusVersion(): number {
     return this.readSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
   }
 
   protected bumpMemoryCorpusVersion(): void {
-    // Bump only — unlike bumpMemoryStatusVersion this must NOT invalidateAllForDir
-    // (that would drop the very hot entry the write path just patched).
+    // Bump only — NOT invalidateAllForDir (that would drop the very hot
+    // entry the write path just patched).
     this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
-    // Also drop the in-flight readAllMemories slot (Cursor Medium, #1902): after
-    // the sentinel advances, a concurrent read must not attach to a scan that
-    // began BEFORE this mutation and receive a pre-mutation corpus. Clearing the
-    // slot forces such a read to start a fresh scan of current disk state. (The
-    // patch path uses bumpMemoryCorpusVersionExclusive and clears the slot
-    // itself; this covers the per-item supersede/archive/TTL-cleanup bumps.)
+    // Drop the in-flight readAllMemories slot (#1902): a concurrent read
+    // must not attach to a scan that began BEFORE this mutation. (The patch
+    // path uses bumpMemoryCorpusVersionExclusive and clears the slot itself.)
     deleteInFlightReadsForDir(this.baseDir);
   }
 
@@ -5027,6 +5019,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         );
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
         const destPath = path.join(destDir, path.basename(current.path));
+        // Snapshot a pre-existing destination (a prior archived copy — e.g.
+        // a retried archive) so a repair failure restores it instead of
+        // deleting the only archived version (§14).
+        const priorDest = await this.readStorageSecureFile(destPath).catch(() => null);
         await this.writeStorageSecureFile(destPath, fileContent);
         if (typeof current.frontmatter.entityRef === "string") {
           try {
@@ -5034,10 +5030,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
               destPath, updatedFm, current.frontmatter.entityRef, refIdsAtWrite, current.content,
             );
           } catch (err) {
-            // Remove the fresh copy before reporting failure (§14): the
-            // source survives, so a retained copy would surface the memory
-            // in BOTH active and archived scans, possibly under a stale ref.
-            await unlink(destPath).catch(() => undefined);
+            // Restore/remove the destination before reporting failure (§14):
+            // the source survives, so a retained fresh copy would surface the
+            // memory in BOTH active and archived scans under a stale ref.
+            if (priorDest === null) {
+              await unlink(destPath).catch(() => undefined);
+            } else {
+              await this.writeStorageSecureFile(destPath, priorDest).catch(() => undefined);
+            }
             throw err;
           }
         }
