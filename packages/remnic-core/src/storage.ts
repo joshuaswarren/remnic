@@ -6369,6 +6369,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // top of whatever is cached at prevVersion — robust to a concurrent scan
     // that republished an UNpatched corpus mid-flush (Cursor Medium #1902).
     const appliedPatches = new Map<string, { accessCount: number; lastAccessed: string }>();
+    // Per-ROW journal snapshot (issue #2213): a mid-batch journal change
+    // (e.g. a contested mapping parked) must not leave later rows resolving
+    // against a frozen table; the first row's snapshot anchors the post-batch
+    // journal-moved check.
     const refIdsAtFlush = this.currentHistoricalIds();
 
     for (const entry of entries) {
@@ -6381,7 +6385,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // access-count flush cannot write a legacy ref back out (issue #2213).
       const newFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
         { ...memory.frontmatter, accessCount: entry.newCount, lastAccessed: entry.lastAccessed },
-        refIdsAtFlush,
+        this.currentHistoricalIds(),
       );
 
       try {
@@ -6873,6 +6877,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const memories = await this.readAllMemories();
     const memoryMap = new Map(memories.map((m) => [m.frontmatter.id, m]));
     let archived = 0;
+    // Per-ROW journal snapshot; the first row's snapshot anchors the
+    // post-batch journal-moved check (issue #2213, see flushAccessTracking).
     const refIdsAtArchive = this.currentHistoricalIds();
 
     for (const id of memoryIds) {
@@ -6883,7 +6889,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // Whole-record rewrite — same inherited-entityRef rule (issue #2213).
       const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
         { ...memory.frontmatter, status: "archived", archivedAt: now, updated: now },
-        refIdsAtArchive,
+        this.currentHistoricalIds(),
       );
 
       try {

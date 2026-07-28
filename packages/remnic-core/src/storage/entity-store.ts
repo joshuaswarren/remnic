@@ -29,6 +29,7 @@ import type {
 import { isErrnoCode } from "../utils/errno.js";
 import {
   reconcileIfJournalMovedSync,
+  requestEntityCanonicalIdReconcileSync,
   resolveHistoricalEntityCanonicalId,
 } from "./entity-canonical-id-references.js";
 import {
@@ -111,8 +112,10 @@ export class EntityStore {
    * takes the same lock) from moving the file between the fallback read and
    * this write — an unlocked write could recreate a just-renamed legacy file.
    * The journal itself is NOT serialized by this lock (`pruneBlocked` can
-   * park a mapping mid-mutation), so the write is followed by a journal
-   * identity check that requests the bounded reconcile pass on movement.
+   * park a mapping mid-mutation), so the journal identity is REVALIDATED
+   * just before committing — a moved journal restarts resolution against the
+   * fresh table instead of writing into a since-contested claimant — and
+   * checked once more after the write for a move across the write itself.
    * `mutate` returns false to skip the write. Resolves true when written.
    */
   private async mutateEntityFile(
@@ -122,17 +125,25 @@ export class EntityStore {
   ): Promise<boolean> {
     const stateDir = path.join(this.deps.baseDir, "state");
     return withEntityCanonicalMutationLock(stateDir, async () => {
-      const idsAtResolve = this.deps.currentHistoricalIds();
-      const located = await this.readEntityForMutation(name, method, idsAtResolve);
-      if (!located || !mutate(located.entity, idsAtResolve)) return false;
-      located.entity.updated = new Date().toISOString();
-      await this.deps.writeStorageSecureFile(
-        located.filePath,
-        serializeEntityFile(located.entity, this.deps.entitySchemas),
-      );
-      reconcileIfJournalMovedSync(stateDir, idsAtResolve, this.deps.currentHistoricalIds());
-      this.deps.invalidateKnowledgeIndexCache();
-      return true;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const idsAtResolve = this.deps.currentHistoricalIds();
+        const located = await this.readEntityForMutation(name, method, idsAtResolve);
+        if (!located || !mutate(located.entity, idsAtResolve)) return false;
+        if (this.deps.currentHistoricalIds() !== idsAtResolve) continue;
+        located.entity.updated = new Date().toISOString();
+        await this.deps.writeStorageSecureFile(
+          located.filePath,
+          serializeEntityFile(located.entity, this.deps.entitySchemas),
+        );
+        reconcileIfJournalMovedSync(stateDir, idsAtResolve, this.deps.currentHistoricalIds());
+        this.deps.invalidateKnowledgeIndexCache();
+        return true;
+      }
+      // The journal kept moving under us: hand the mutation's store state to
+      // the bounded reconcile pass rather than writing off a stale table.
+      log.warn(`${method}: entity canonical-id journal kept changing; requesting reconcile pass`);
+      requestEntityCanonicalIdReconcileSync(stateDir);
+      return false;
     });
   }
 

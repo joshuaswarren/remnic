@@ -22,6 +22,25 @@ import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 
 export const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
 
+/**
+ * Parse a journal document into a mapping table. A document without a valid
+ * `mappings` object is a LEGITIMATELY empty table; an unreadable/unparsable
+ * document THROWS so callers can distinguish "empty" from "failed".
+ */
+function parseJournalMappings(raw: string): Readonly<Record<string, string>> {
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !("mappings" in parsed)) return {};
+  const mappings = parsed.mappings;
+  if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return {};
+  const cleaned: Record<string, string> = {};
+  for (const [legacyId, canonicalId] of Object.entries(mappings)) {
+    if (legacyId.length > 0 && typeof canonicalId === "string" && canonicalId.length > 0) {
+      cleaned[legacyId] = canonicalId;
+    }
+  }
+  return cleaned;
+}
+
 export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Record<string, string>> {
   const statePath = path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE);
   try {
@@ -29,17 +48,7 @@ export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Rec
     // symlink traversal from memory directories) — a link could supply
     // arbitrary mappings that silently rewrite persisted entityRefs.
     if (!lstatSync(statePath).isFile()) return {};
-    const parsed: unknown = JSON.parse(readFileSync(statePath, "utf-8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !("mappings" in parsed)) return {};
-    const mappings = parsed.mappings;
-    if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return {};
-    const cleaned: Record<string, string> = {};
-    for (const [legacyId, canonicalId] of Object.entries(mappings)) {
-      if (legacyId.length > 0 && typeof canonicalId === "string" && canonicalId.length > 0) {
-        cleaned[legacyId] = canonicalId;
-      }
-    }
-    return cleaned;
+    return parseJournalMappings(readFileSync(statePath, "utf-8"));
   } catch {
     return {};
   }
@@ -54,33 +63,53 @@ export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Rec
  * temp-file-plus-rename, so every journal write swaps the inode and the key
  * always moves. Reload cost is one lstat per lookup and one journal parse per
  * actual change.
+ *
+ * Failure semantics: last-known data is served ONLY for the SAME state dir
+ * (module-level instances can face several stores — another store's table
+ * must never leak in), and a failed read/parse never commits the journal's
+ * identity, so the next lookup retries instead of caching an empty table
+ * under a valid key.
  */
 export class HistoricalEntityCanonicalIdCache {
   private mappings: Readonly<Record<string, string>> = {};
   private key: string | null = null;
+  private stateDir: string | null = null;
 
   get(stateDir: string): Readonly<Record<string, string>> {
+    const lastKnown = this.stateDir === stateDir ? this.mappings : {};
+    const statePath = path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE);
     let key = "missing";
     try {
-      const s = lstatSync(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
+      const s = lstatSync(statePath);
       if (!s.isFile()) {
         // Symlinked/non-regular journal: never follow it, never adopt its
-        // identity — keep serving the last-known table. If it later becomes a
-        // regular file its identity differs from the stored key and reloads.
+        // identity — serve this store's last-known table. If it later becomes
+        // a regular file its identity differs from the stored key and reloads.
         log.warn("ignoring non-regular entity canonical-id journal (symlink refused)");
-        return this.mappings;
+        return lastKnown;
       }
       key = `${s.dev}:${s.ino}:${s.mtimeMs}:${s.ctimeMs}:${s.size}`;
     } catch (error) {
       // A TRANSIENT stat failure (EACCES/EIO) must not dump a valid table for
       // {}: a write during the outage would skip canonicalization AND its
-      // post-write identity check would compare equal. Serve the last-known
-      // table; only a genuine ENOENT means "no journal, empty table".
-      if (!isErrnoCode(error, "ENOENT")) return this.mappings;
+      // post-write identity check would compare equal. Serve this store's
+      // last-known table; only a genuine ENOENT means "no journal, empty".
+      if (!isErrnoCode(error, "ENOENT")) return lastKnown;
     }
-    if (key !== this.key) {
-      this.mappings = loadHistoricalEntityCanonicalIds(stateDir);
+    if (key !== this.key || stateDir !== this.stateDir) {
+      let table: Readonly<Record<string, string>> = {};
+      if (key !== "missing") {
+        try {
+          table = parseJournalMappings(readFileSync(statePath, "utf-8"));
+        } catch {
+          // Read/parse failed under a VALID identity: do not commit the key —
+          // the next lookup retries instead of pinning an empty table.
+          return lastKnown;
+        }
+      }
+      this.mappings = table;
       this.key = key;
+      this.stateDir = stateDir;
     }
     return this.mappings;
   }
