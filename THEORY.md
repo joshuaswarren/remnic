@@ -14,4 +14,4 @@ Limit the repair to MCP output-schema registration, operation-boundary presentat
 
 ## Verification
 
-`pnpm exec tsx --test tests/access-mcp.test.ts` passed 25/25. `pnpm --filter @remnic/core check-types` passed. PR #2219 is the repository-owned successor to contributor PR #2181; CI and current-head review gates remain before merge.
+`pnpm exec tsx --test tests/access-mcp.test.ts` passed 25/25. `pnpm --filter @remnic/core check-types` and `pnpm run preflight:quick` passed. PR #2219 is the repository-owned successor to contributor PR #2181; CI and current-head review gates remain before merge.
