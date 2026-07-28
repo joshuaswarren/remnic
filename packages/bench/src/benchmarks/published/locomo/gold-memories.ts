@@ -38,7 +38,7 @@ export function deriveLoCoMoGoldMemories(
         }
         const stmt = item[0];
         const diaIds = item[1];
-        if (typeof stmt !== "string") {
+        if (typeof stmt !== "string" || stmt.trim().length === 0) {
           continue;
         }
 

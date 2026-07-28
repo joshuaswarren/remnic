@@ -1364,3 +1364,18 @@ test("buildLoCoMoPlan attaches goldMemories to trial from synthetic conversation
   assert.deepEqual(plan.trials[0]?.goldMemories, ["Alice enjoys hiking in mountains."]);
   assert.equal(plan.trials[1]?.goldMemories, undefined);
 });
+
+test("deriveLoCoMoGoldMemories skips blank or whitespace-only statements", () => {
+  const observation = {
+    session_1_observation: {
+      Avery: [
+        ["", "D1:1"],
+        ["   ", "D1:1"],
+        ["A substantive statement.", "D1:1"],
+      ],
+    },
+  };
+  assert.deepEqual(deriveLoCoMoGoldMemories(observation, ["D1:1"]), [
+    "A substantive statement.",
+  ]);
+});
