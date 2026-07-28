@@ -9,7 +9,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import type {
   DriftGenManifest,
@@ -122,6 +122,10 @@ async function readJsonl<T>(
 ): Promise<T[]> {
   let raw: string;
   try {
+    if ((await lstat(filePath)).isSymbolicLink()) {
+      errors.push(`symlinked corpus file rejected: ${filePath}`);
+      return [];
+    }
     raw = await readFile(filePath, "utf8");
   } catch {
     errors.push(`missing file: ${filePath}`);
@@ -175,7 +179,15 @@ async function loadSeedDir(
   const usersDir = path.join(seedDir, "users");
   let userIds: string[] = [];
   try {
-    userIds = (await readdir(usersDir)).sort();
+    const entries = await readdir(usersDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) {
+        errors.push(`symlinked corpus entry rejected: ${path.join(usersDir, entry.name)}`);
+        continue;
+      }
+      if (entry.isDirectory()) userIds.push(entry.name);
+    }
+    userIds = userIds.sort();
   } catch {
     errors.push(`missing directory: ${usersDir}`);
   }
@@ -203,8 +215,14 @@ function checkFactIntegrity(loaded: LoadedSeed, epochs: number, errors: string[]
     if ((fact.supersededBy === null) !== (fact.supersededEpoch === null)) {
       errors.push(`${fact.id}: supersededBy and supersededEpoch must be set together`);
     }
-    if (fact.kind !== "stable" && fact.supersededBy === null) {
-      errors.push(`${fact.id}: kind "${fact.kind}" requires a successor; unsuperseded facts must be "stable"`);
+    const realizedKind =
+      fact.supersededEpoch === null
+        ? "stable"
+        : fact.supersededEpoch === fact.introducedEpoch + 1
+          ? "contradicted"
+          : "drifting";
+    if (fact.kind !== realizedKind) {
+      errors.push(`${fact.id}: kind "${fact.kind}" does not match realized lifecycle "${realizedKind}"`);
     }
     if (fact.supersededBy !== null && fact.supersededEpoch !== null) {
       const successor = byId.get(fact.supersededBy);
@@ -250,6 +268,12 @@ function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[
       }
       if (fact.introducedEpoch > probe.epoch) {
         errors.push(`${probe.id}: fact ${factId} is introduced at epoch ${fact.introducedEpoch}, after the probe epoch ${probe.epoch}`);
+      }
+    }
+    if (probe.category === "current") {
+      const fact = byId.get(probe.requiredFactIds[0]);
+      if (fact && fact.supersededEpoch !== null && fact.supersededEpoch <= probe.epoch) {
+        errors.push(`${probe.id}: current probe targets fact ${fact.id} already superseded at epoch ${fact.supersededEpoch}`);
       }
     }
     if (probe.category === "historical") {
@@ -336,15 +360,61 @@ function checkDistribution(
   }
 }
 
+function isManifestShape(value: unknown): value is DriftGenManifest {
+  if (typeof value !== "object" || value === null) return false;
+  const m = value as Record<string, unknown>;
+  const counts = m.counts as Record<string, unknown> | undefined;
+  const generator = m.generator as Record<string, unknown> | undefined;
+  return (
+    typeof m.name === "string" &&
+    typeof m.version === "string" &&
+    Array.isArray(m.seeds) &&
+    m.seeds.length > 0 &&
+    m.seeds.every((s) => Number.isSafeInteger(s)) &&
+    typeof counts === "object" &&
+    counts !== null &&
+    Number.isSafeInteger(counts.users) &&
+    Number.isSafeInteger(counts.epochs) &&
+    Number.isSafeInteger(counts.facts) &&
+    Number.isSafeInteger(counts.probes) &&
+    typeof generator === "object" &&
+    generator !== null &&
+    Number.isSafeInteger(generator.factsPerEpoch) &&
+    typeof generator.driftingRatio === "number" &&
+    typeof generator.contradictedRatio === "number" &&
+    typeof m.files === "object" &&
+    m.files !== null &&
+    !Array.isArray(m.files) &&
+    Object.entries(m.files as Record<string, unknown>).every(
+      ([k, v]) => typeof k === "string" && typeof v === "string",
+    )
+  );
+}
+
 async function checkFileHashes(
   corpusDir: string,
   manifest: DriftGenManifest,
   errors: string[],
 ): Promise<void> {
+  const resolvedRoot = path.resolve(corpusDir);
   for (const [relPath, expected] of Object.entries(manifest.files)) {
+    const absPath = path.resolve(corpusDir, relPath);
+    if (absPath !== resolvedRoot && !absPath.startsWith(resolvedRoot + path.sep)) {
+      errors.push(`manifest lists a path outside the corpus root: ${relPath}`);
+      continue;
+    }
+    try {
+      if ((await lstat(absPath)).isSymbolicLink()) {
+        errors.push(`manifest lists a symlinked file: ${relPath}`);
+        continue;
+      }
+    } catch {
+      errors.push(`manifest lists missing file: ${relPath}`);
+      continue;
+    }
     let data: Buffer;
     try {
-      data = await readFile(path.join(corpusDir, relPath));
+      data = await readFile(absPath);
     } catch {
       errors.push(`manifest lists missing file: ${relPath}`);
       continue;
@@ -373,19 +443,27 @@ export async function validateDriftCorpus(corpusDir: string): Promise<DriftValid
   };
 
   try {
-    const dirStat = await stat(corpusDir);
-    if (!dirStat.isDirectory()) {
+    const rootStat = await lstat(corpusDir);
+    if (rootStat.isSymbolicLink()) {
+      return {
+        ok: false,
+        errors: [`corpus root must not be a symlink: ${corpusDir}`],
+        warnings,
+        stats: emptyStats,
+      };
+    }
+    if (!rootStat.isDirectory()) {
       return { ok: false, errors: [`not a directory: ${corpusDir}`], warnings, stats: emptyStats };
     }
   } catch {
     return { ok: false, errors: [`corpus directory not found: ${corpusDir}`], warnings, stats: emptyStats };
   }
 
-  let manifest: DriftGenManifest;
+  let manifestRaw: unknown;
   try {
-    manifest = JSON.parse(
+    manifestRaw = JSON.parse(
       await readFile(path.join(corpusDir, "dataset.manifest.json"), "utf8"),
-    ) as DriftGenManifest;
+    );
   } catch {
     return {
       ok: false,
@@ -394,14 +472,15 @@ export async function validateDriftCorpus(corpusDir: string): Promise<DriftValid
       stats: emptyStats,
     };
   }
-  if (!manifest.generator || typeof manifest.generator.factsPerEpoch !== "number") {
+  if (!isManifestShape(manifestRaw)) {
     return {
       ok: false,
-      errors: ["manifest lacks generator parameters (generator.factsPerEpoch etc.)"],
+      errors: ["dataset.manifest.json does not match the expected manifest shape (name, version, seeds, counts, generator, files)"],
       warnings,
       stats: emptyStats,
     };
   }
+  const manifest: DriftGenManifest = manifestRaw;
 
   await checkFileHashes(corpusDir, manifest, errors);
 

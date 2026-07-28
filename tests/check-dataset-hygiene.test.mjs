@@ -36,7 +36,8 @@ test("detects email address rule class in temp dir", () => {
     const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[email\]/);
-    assert.match(res.stderr, /alice@realcompany\.com/);
+    assert.match(res.stderr, /al\u2026/);
+    assert.ok(!res.stderr.includes("alice@realcompany.com"), "full email must never be echoed");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -97,7 +98,8 @@ test("detects phone number rule class in temp dir", () => {
     const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[phone\]/);
-    assert.match(res.stderr, /555-867-5309/);
+    assert.match(res.stderr, /55\u2026/);
+    assert.ok(!res.stderr.includes("555-867-5309"), "full phone number must never be echoed");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

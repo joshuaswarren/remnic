@@ -102,7 +102,7 @@ test("attribution labels retrieval_miss with stage cap when rank exceeds recallL
   assert.match(res!.golds[0].stages.retrieval.detail ?? "", /Rank 13/);
 });
 
-test("attribution labels retrieval_miss with stage rank when absent even at replayLimit", async () => {
+test("attribution labels retrieval_miss with stage unknown when absent even at replayLimit", async () => {
   const env: AttributionEnvironment = {
     listMemories: async () => [
       { id: "mem-1", content: "Avery's favorite color is teal blue" },
@@ -126,7 +126,29 @@ test("attribution labels retrieval_miss with stage rank when absent even at repl
   const res = await attributeTask(task, env, { threshold: 0.6 });
   assert.notStrictEqual(res, null);
   assert.strictEqual(res!.overall.class, "retrieval_miss");
-  assert.strictEqual(res!.overall.retrievalStage, "rank");
+  assert.strictEqual(res!.overall.retrievalStage, "unknown");
+});
+
+test("extraction-unavailable + recall miss => unattributed", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => {
+      throw new Error("scan failed");
+    },
+    recall: async () => [],
+    recallLimit: 5,
+  };
+
+  const task = {
+    taskId: "task-ext-unavail",
+    question: "What is Avery's favorite color?",
+    scores: { overall: 0 },
+    goldMemories: ["Avery's favorite color is teal blue"],
+  };
+
+  const res = await attributeTask(task, env, { threshold: 0.6 });
+  assert.notStrictEqual(res, null);
+  assert.strictEqual(res!.overall.class, "unattributed");
+  assert.match(res!.overall.reason ?? "", /extraction check unavailable/);
 });
 
 test("attribution labels use_miss when gold retrieved into context but task failed", async () => {

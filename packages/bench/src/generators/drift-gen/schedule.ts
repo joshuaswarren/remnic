@@ -175,6 +175,13 @@ export function buildCorpusSchedule(options: ScheduleOptions): CorpusSchedule {
 
     for (let epoch = 1; epoch <= options.epochs; epoch++) {
       const due = takeDueSupersessions(pending, epoch);
+      // Contradicted supersessions must land the very next epoch; when the
+      // due set exceeds the per-epoch budget, postpone drifting items first.
+      due.sort((a, b) => {
+        const aPriority = factById.get(a.factId)?.kind === "contradicted" ? 0 : 1;
+        const bPriority = factById.get(b.factId)?.kind === "contradicted" ? 0 : 1;
+        return aPriority === bPriority ? 0 : aPriority < bPriority ? -1 : 1;
+      });
       let created = 0;
 
       for (const item of due) {
@@ -200,12 +207,18 @@ export function buildCorpusSchedule(options: ScheduleOptions): CorpusSchedule {
       }
     }
 
-    // Anything still pending was never superseded within the horizon: the
-    // fact's realized lifecycle is stable, and the validator enforces that
-    // drifting/contradicted facts always carry a successor.
-    for (const leftover of pending) {
-      const fact = factById.get(leftover.factId);
-      if (fact && fact.supersededBy === null) fact.kind = "stable";
+    // Record the realized lifecycle, not the scheduling intent: overflow can
+    // postpone a supersession past its intended epoch, and anything still
+    // pending after the horizon was never superseded at all. The validator
+    // enforces kind/timing consistency on this realized form.
+    for (const fact of facts) {
+      if (fact.supersededEpoch === null) {
+        fact.kind = "stable";
+      } else if (fact.supersededEpoch === fact.introducedEpoch + 1) {
+        fact.kind = "contradicted";
+      } else {
+        fact.kind = "drifting";
+      }
     }
 
     attachSingleFactProbes(facts, factById, options.epochs);

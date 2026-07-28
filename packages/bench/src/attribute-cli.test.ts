@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { unlinkSync } from "node:fs";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -402,6 +402,66 @@ test("scanMemoryDir skips system directories: state, wearables, activity, meetin
     const memories = await scanMemoryDir(tmpDir);
     assert.strictEqual(memories.length, 1);
     assert.strictEqual(memories[0].content, "Normal memory content");
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+test("scan with an unreadable file => extraction unavailable", async () => {
+  if (process.getuid?.() === 0) {
+    return;
+  }
+  const tmpDir = await mkdtemp(path.join(tmpdir(), "remnic-scan-err-"));
+  try {
+    await writeFile(path.join(tmpDir, "fact1.md"), "--- \nid: mem-1\n---\nFact 1 content", "utf8");
+    const unreadableFile = path.join(tmpDir, "unreadable.md");
+    await writeFile(unreadableFile, "--- \nid: mem-2\n---\nUnreadable content", { mode: 0, encoding: "utf8" });
+
+    await assert.rejects(
+      async () => {
+        await scanMemoryDir(tmpDir);
+      },
+      (err: Error) => {
+        return err.message.includes("memory scan incomplete: 1 unreadable entries");
+      }
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("symlinked root accepted", async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), "remnic-symlink-root-"));
+  try {
+    const realDir = path.join(tmpDir, "real-store");
+    await mkdir(realDir, { recursive: true });
+    await writeFile(path.join(realDir, "fact.md"), "--- \nid: mem-1\n---\nAvery Quill prefers Earl Grey tea with lemon", "utf8");
+
+    const symlinkPath = path.join(tmpDir, "store-link");
+    await symlink(realDir, symlinkPath, "dir");
+
+    const memories = await scanMemoryDir(symlinkPath);
+    assert.strictEqual(memories.length, 1);
+    assert.strictEqual(memories[0].content, "Avery Quill prefers Earl Grey tea with lemon");
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("nested dir named meetings under a namespace is scanned while root-level meetings is skipped", async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), "remnic-nested-meetings-"));
+  try {
+    const rootMeetings = path.join(tmpDir, "meetings");
+    await mkdir(rootMeetings, { recursive: true });
+    await writeFile(path.join(rootMeetings, "root.md"), "Root meeting content", "utf8");
+
+    const nestedMeetings = path.join(tmpDir, "namespaces", "meetings");
+    await mkdir(nestedMeetings, { recursive: true });
+    await writeFile(path.join(nestedMeetings, "nested.md"), "--- \nid: mem-nested\n---\nNested meeting memory content", "utf8");
+
+    const memories = await scanMemoryDir(tmpDir);
+    assert.strictEqual(memories.length, 1);
+    assert.strictEqual(memories[0].id, "mem-nested");
+    assert.strictEqual(memories[0].content, "Nested meeting memory content");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }

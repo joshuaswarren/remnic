@@ -2,7 +2,7 @@
  * @remnic/bench — CLI Wiring for Benchmark Failure Attribution (Issue #1954)
  */
 
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   attributeRun,
@@ -51,18 +51,20 @@ const SKIPPED_SYSTEM_DIRS: Record<string, boolean> = {
 };
 
 export async function scanMemoryDir(dirPath: string): Promise<AttributionMemory[]> {
-  const rootStats = await lstat(dirPath);
+  const rootStats = await stat(dirPath);
   if (!rootStats.isDirectory()) {
     throw new Error(`memory-dir "${dirPath}" is not a readable directory`);
   }
 
   const memories: AttributionMemory[] = [];
+  let unreadableEntries = 0;
 
-  async function walk(currentDir: string): Promise<void> {
+  async function walk(currentDir: string, depth: number): Promise<void> {
     let entries;
     try {
       entries = await readdir(currentDir, { withFileTypes: true });
     } catch {
+      unreadableEntries++;
       return;
     }
     for (const entry of entries) {
@@ -76,10 +78,10 @@ export async function scanMemoryDir(dirPath: string): Promise<AttributionMemory[
           continue;
         }
         if (stats.isDirectory()) {
-          if (SKIPPED_SYSTEM_DIRS[entry.name]) {
+          if (depth === 0 && SKIPPED_SYSTEM_DIRS[entry.name]) {
             continue;
           }
-          await walk(fullPath);
+          await walk(fullPath, depth + 1);
         } else if (stats.isFile() && entry.name.endsWith(".md")) {
           const content = await readFile(fullPath, "utf8");
           const { id, body } = parseFrontmatter(content);
@@ -90,12 +92,15 @@ export async function scanMemoryDir(dirPath: string): Promise<AttributionMemory[
           });
         }
       } catch {
-        // Skip inaccessible entries
+        unreadableEntries++;
       }
     }
   }
 
-  await walk(dirPath);
+  await walk(dirPath, 0);
+  if (unreadableEntries > 0) {
+    throw new Error(`memory scan incomplete: ${unreadableEntries} unreadable entries under ${dirPath}`);
+  }
   return memories;
 }
 
@@ -128,7 +133,7 @@ export async function runAttributeCliCommand(options: {
 
   if (options.memoryDir) {
     try {
-      const stats = await lstat(options.memoryDir);
+      const stats = await stat(options.memoryDir);
       if (!stats.isDirectory()) {
         return {
           exitCode: 1,

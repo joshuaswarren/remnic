@@ -212,11 +212,15 @@ export async function attributeGoldMemory(
   // Stage 1: extraction — is the gold statement present in the store at all?
   let memories: AttributionMemory[] = [];
   let extractionRan = false;
-  try {
-    memories = await env.listMemories();
-    extractionRan = true;
-  } catch {
-    extractionRan = false;
+  let extractionErrorDetail: string | undefined;
+  if (typeof env.listMemories === "function") {
+    try {
+      memories = await env.listMemories();
+      extractionRan = true;
+    } catch (err: unknown) {
+      extractionRan = false;
+      extractionErrorDetail = err instanceof Error ? err.message : "listMemories threw error";
+    }
   }
 
   let bestSim = -1;
@@ -296,7 +300,7 @@ export async function attributeGoldMemory(
   } else {
     stages.extraction = {
       status: "unavailable",
-      detail: "listMemories unavailable",
+      detail: extractionErrorDetail ?? "listMemories unavailable",
     };
   }
 
@@ -369,10 +373,10 @@ export async function attributeGoldMemory(
             detail: `Rank ${rank} exceeds recallLimit ${recallLimit}`,
           };
         } else {
-          retrievalStageMiss = "rank";
+          retrievalStageMiss = "unknown";
           stages.retrieval = {
             status: "fail",
-            detail: `Not found within replayLimit ${replayLimit}`,
+            detail: `absent from recall at replayLimit ${replayLimit}; filter vs rank indistinguishable without candidate-stage evidence`,
           };
         }
       }
@@ -412,7 +416,7 @@ export async function attributeGoldMemory(
       stages,
     };
   }
-  if (indexCheckFailed) {
+  if (stages.extraction.status === "pass" && indexCheckFailed) {
     stages.use = { status: "unavailable", detail: "not reached" };
     return {
       goldMemory: goldStatement,
@@ -421,7 +425,7 @@ export async function attributeGoldMemory(
     };
   }
 
-  if (stages.retrieval.status === "fail") {
+  if (stages.extraction.status === "pass" && stages.retrieval.status === "fail") {
     stages.use = { status: "unavailable", detail: "not reached" };
     return {
       goldMemory: goldStatement,
@@ -434,9 +438,10 @@ export async function attributeGoldMemory(
     };
   }
 
-  // Neither index nor retrieval check was available or could be proved
   const missingReason =
-    stages.index.status === "unavailable" && stages.retrieval.status === "unavailable"
+    stages.extraction.status === "unavailable"
+      ? `extraction check unavailable (${stages.extraction.detail})`
+      : stages.index.status === "unavailable" && stages.retrieval.status === "unavailable"
       ? "index/retrieval checks unavailable without live store"
       : stages.index.status === "unavailable"
       ? "index check unavailable"

@@ -10,7 +10,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createSeededRandom } from "../../seeded-random.js";
 import { buildCorpusSchedule } from "./schedule.js";
@@ -159,14 +159,31 @@ export async function generateDriftCorpus(
     await writeFile(manifestStaging, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     await rename(manifestStaging, manifestPath);
   } catch (err) {
+    await rm(finalSeedDir, { recursive: true, force: true });
     if (hadPrevious) {
-      await rm(finalSeedDir, { recursive: true, force: true });
-      await rename(backupDir, finalSeedDir).catch(() => {});
+      try {
+        await rename(backupDir, finalSeedDir);
+      } catch {
+        console.error(
+          `drift-gen: failed to restore the previous corpus; it is preserved at ${backupDir}`,
+        );
+      }
     }
     throw err;
   }
   if (hadPrevious) {
     await rm(backupDir, { recursive: true, force: true });
+  }
+
+  // A regenerated corpus owns its output dir: seed trees absent from the
+  // replacement manifest are stale leftovers from earlier runs and would be
+  // ingested by consumers that enumerate the directory. Only all-digit
+  // directory names are generator-owned and eligible for removal.
+  const staleEntries = await readdir(options.outDir, { withFileTypes: true });
+  for (const entry of staleEntries) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+    if (entry.name === seedDir) continue;
+    await rm(path.join(options.outDir, entry.name), { recursive: true, force: true });
   }
 
   return { manifest, files: [...written.keys()].sort() };

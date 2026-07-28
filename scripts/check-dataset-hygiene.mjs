@@ -239,7 +239,7 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
           file: relPath,
           line: lineNum,
           rule: "email",
-          message: `Non-synthetic email address found: "${em}"`,
+          message: `Non-synthetic email address found: "${em.slice(0, 2)}…" (${em.length} chars, redacted)`,
         });
       }
     }
@@ -262,11 +262,12 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
     // Phone number check
     const phoneMatch = line.match(PHONE_REGEX);
     if (phoneMatch) {
+      const phoneVal = phoneMatch[0];
       findings.push({
         file: relPath,
         line: lineNum,
         rule: "phone",
-        message: `Phone number detected: "${phoneMatch[0]}"`,
+        message: `Phone number detected: "${phoneVal.slice(0, 2)}…" (${phoneVal.length} chars, redacted)`,
       });
     }
 
