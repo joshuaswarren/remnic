@@ -94,8 +94,10 @@ export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Rec
  * Append a tombstone with its identity canonicalized against the CURRENT
  * journal, then recheck: a peer publishing a mapping inside the
  * resolve-to-append window would leave the guard under the legacy id while
- * lookups canonicalize. Tombstones are append-only guards, so re-appending
- * under the fresh identity is additive-safe (bounded).
+ * lookups canonicalize. The superseded append is REVOKED before each
+ * re-append — a park makes the prior canonical claimant a distinct entity,
+ * and a stale keyed guard under it would suppress that entity's facts
+ * (tombstones are append-only; reconciliation cannot move them).
  */
 export async function appendCanonicalizedTombstone(
   input: { entityRef?: string; supersessionKey?: string },
@@ -104,6 +106,7 @@ export async function appendCanonicalizedTombstone(
     entityRef: string | undefined;
     supersessionKey: string | undefined;
   }) => Promise<string | null>,
+  revoke: (tombstoneId: string) => Promise<unknown>,
   label: string,
 ): Promise<string | null> {
   let refIds = currentIds();
@@ -118,6 +121,7 @@ export async function appendCanonicalizedTombstone(
       return result;
     }
     identity = next;
+    if (result !== null) await revoke(result);
     result = await append(next);
   }
   log.warn(`tombstone identity kept moving for ${label}; last append kept`);

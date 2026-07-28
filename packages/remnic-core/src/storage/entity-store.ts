@@ -50,6 +50,8 @@ export interface EntityStoreDeps {
   readonly storageManagerClass: typeof StorageManager;
   readonly baseDir: string;
   bumpMemoryStatusVersion(): void;
+  /** Entity-mutation sentinel for the migration fingerprint (issue #2213). */
+  bumpEntityMutationVersion(): void;
   ensureDirectories(): Promise<void>;
   readonly entitiesDir: string;
   readonly entitySchemas: PluginConfig["entitySchemas"] | undefined;
@@ -141,6 +143,7 @@ export class EntityStore {
         );
         reconcileIfJournalMovedSync(stateDir, idsAtResolve, this.deps.currentHistoricalIds());
         this.deps.invalidateKnowledgeIndexCache();
+        this.deps.bumpEntityMutationVersion();
         return true;
       }
       // The journal kept moving under us. A silent false would DROP the
@@ -336,6 +339,7 @@ export class EntityStore {
     await this.deps.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.deps.entitySchemas));
     this.deps.invalidateKnowledgeIndexCache();
     this.deps.bumpMemoryStatusVersion(); // invalidate entity cache
+    this.deps.bumpEntityMutationVersion();
     log.debug(`wrote entity ${normalized}`);
     return normalized;
   }
@@ -386,6 +390,7 @@ export class EntityStore {
         const filePath = this.deps.resolveEntityFilePath(entityName);
         if (filePath === null) return false;
         await this.deps.writeStorageSecureFile(filePath, serialized);
+        this.deps.bumpEntityMutationVersion();
         return true;
       });
       if (wrote) migrated += 1;
@@ -469,6 +474,7 @@ export class EntityStore {
     ]);
     this.deps.invalidateKnowledgeIndexCache();
     this.deps.bumpMemoryStatusVersion(); // invalidate entity cache
+    this.deps.bumpEntityMutationVersion();
   }
 
   /**
@@ -847,6 +853,7 @@ export class EntityStore {
 
         const canonicalPath = path.join(this.deps.entitiesDir, `${canonical}.md`);
         await this.deps.writeStorageSecureFile(canonicalPath, serializeEntityFile(mergedEntity, this.deps.entitySchemas));
+        this.deps.bumpEntityMutationVersion();
 
         // Remove non-canonical files
         for (const file of files) {

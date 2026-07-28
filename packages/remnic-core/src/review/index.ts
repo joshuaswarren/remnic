@@ -379,14 +379,25 @@ function approveItem(
   const idsAtWrite = historicalIdCache.get(reviewStateDir);
   const promotedWritten = canonicalizeEntityRefFrontmatter(updatedContent, idsAtWrite);
   const promotedPath = writeFileWithoutClobber(outputPath, promotedWritten, itemId);
-  repairContentAfterJournalMoveSync({
-    stateDir: reviewStateDir,
-    cache: historicalIdCache,
-    idsAtWrite,
-    rawContent: updatedContent,
-    lastWritten: promotedWritten,
-    rewrite: (next) => fs.writeFileSync(promotedPath, next, "utf8"),
-  });
+  try {
+    repairContentAfterJournalMoveSync({
+      stateDir: reviewStateDir,
+      cache: historicalIdCache,
+      idsAtWrite,
+      rawContent: updatedContent,
+      lastWritten: promotedWritten,
+      rewrite: (next) => fs.writeFileSync(promotedPath, next, "utf8"),
+    });
+  } catch (err) {
+    // Roll back so a retried approve does not clobber-fail against a partial
+    // promotion; the queue entry survives untouched (Bugbot).
+    try {
+      fs.unlinkSync(promotedPath);
+    } catch {
+      // Best effort — the retryable repair error below is the primary signal.
+    }
+    throw err;
+  }
 
   // Remove from review
   fs.unlinkSync(found.filePath);

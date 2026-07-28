@@ -251,6 +251,8 @@ const ARTIFACT_SEARCH_STOPWORDS = new Set([
   "with",
 ]);
 
+type SharedVersionKind = "memory-status" | "artifact-write" | "cold-write" | "memory-corpus" | "entity-mutation";
+
 type OfflineSyncDigestCacheEntry = {
   statBytes: number;
   mtimeMs: number;
@@ -1759,6 +1761,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   // every plain create). In-process fallback when the on-disk sentinel is
   // unavailable; canonical source is state/.memory-corpus-version.log.
   private static readonly memoryCorpusVersionByDir = new Map<string, number>();
+  // Entity-mutation sentinel: see getEntityMutationVersion.
+  private static readonly entityMutationVersionByDir = new Map<string, number>();
   private static readonly secureStoreEntityCacheKeyIds = new WeakMap<Buffer, number>();
   private static nextSecureStoreEntityCacheKeyId = 1;
   // In-process fallback for the cold-write sentinel (used when the disk file
@@ -2323,20 +2327,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return path.join(workspaceDir, `IDENTITY.${safeNamespace}.md`);
   }
 
-  private versionFilePath(kind: "memory-status" | "artifact-write" | "cold-write" | "memory-corpus"): string {
-    const fileName =
-      kind === "memory-status"
-        ? ".memory-status-version.log"
-        : kind === "artifact-write"
-          ? ".artifact-write-version.log"
-          : kind === "cold-write"
-            ? ".cold-write-version.log"
-            : ".memory-corpus-version.log";
-    return path.join(this.stateDir, fileName);
+  private versionFilePath(kind: SharedVersionKind): string {
+    return path.join(this.stateDir, `.${kind}-version.log`);
   }
 
   private bumpSharedVersion(
-    kind: "memory-status" | "artifact-write" | "cold-write" | "memory-corpus",
+    kind: SharedVersionKind,
     fallbackMap: Map<string, number>
   ): number {
     const filePath = this.versionFilePath(kind);
@@ -2354,7 +2350,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   private readSharedVersion(
-    kind: "memory-status" | "artifact-write" | "cold-write" | "memory-corpus",
+    kind: SharedVersionKind,
     fallbackMap: Map<string, number>
   ): number {
     const filePath = this.versionFilePath(kind);
@@ -2382,6 +2378,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   getMemoryStatusVersion(): number {
     return this.readSharedVersion("memory-status", StorageManager.memoryStatusVersionByDir);
+  }
+
+  /**
+   * Entity-mutation sentinel: advanced only by entity file content writes
+   * (entity-store). The migration runner's completion fingerprint keys on
+   * this instead of memory-status, so supersede/archive/delete no longer
+   * re-trigger entity discovery scans (issue #2213 review).
+   */
+  getEntityMutationVersion(): number {
+    return this.readSharedVersion("entity-mutation", StorageManager.entityMutationVersionByDir);
+  }
+
+  protected bumpEntityMutationVersion(): void {
+    this.bumpSharedVersion("entity-mutation", StorageManager.entityMutationVersionByDir);
   }
 
   /**
@@ -3077,6 +3087,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         input,
         () => this.currentHistoricalIds(),
         (identity) => store.appendTombstone({ ...input, rawContent: strippedRawContent, ...identity }),
+        (tombstoneId) => store.revoke(tombstoneId, input.createdBy),
         input.sourceMemoryId,
       );
     } catch (err) {
@@ -3492,7 +3503,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
     () => this.runLegacyEntityCanonicalIdMigration(),
-    () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => String(this.getMemoryStatusVersion())),
+    () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => String(this.getEntityMutationVersion())),
   );
   normalizeEntityName(raw: string, type: string): string {
     return entityRefs.resolveHistoricalEntityCanonicalId(
@@ -6153,24 +6164,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.entityStore.updateEntitySynthesis(name, synthesis, options);
   }
 
-  /**
-   * Backward-compatible alias for legacy callers/tests.
-   */
+  /** Backward-compatible alias for legacy callers/tests. */
   async updateEntitySummary(name: string, summary: string): Promise<void> {
     const updatedAt = new Date().toISOString();
-    let synthesisTimelineCount: number | undefined;
-    try {
-      const filePath = path.join(this.entitiesDir, `${name}.md`);
-      const content = await this.readStorageSecureFile(filePath);
-      synthesisTimelineCount = parseEntityFile(content, this.entitySchemas).timeline.length;
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      synthesisTimelineCount = undefined;
-    }
+    const raw = await this.readEntity(name);
     await this.updateEntitySynthesis(name, summary, {
       entityUpdatedAt: updatedAt,
-      synthesisTimelineCount,
+      synthesisTimelineCount: raw ? parseEntityFile(raw, this.entitySchemas).timeline.length : undefined,
       updatedAt,
     });
   }
