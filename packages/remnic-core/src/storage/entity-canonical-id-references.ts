@@ -121,8 +121,19 @@ export async function appendCanonicalizedTombstone(
       return result;
     }
     identity = next;
-    if (result !== null) await revoke(result);
+    // Append the replacement BEFORE revoking the superseded guard (AGENTS.md
+    // §14): revoking first would leave the retired fact with NO active
+    // tombstone if this append fails. A failed revoke merely leaves a stale
+    // over-blocking guard — warn and keep the new one.
+    const superseded = result;
     result = await append(next);
+    if (superseded !== null) {
+      try {
+        await revoke(superseded);
+      } catch (err) {
+        log.warn(`failed to revoke superseded tombstone ${superseded} for ${label}: ${err}`);
+      }
+    }
   }
   log.warn(`tombstone identity kept moving for ${label}; last append kept`);
   return result;
