@@ -18,6 +18,19 @@ import {
 // Write-boundary journal cache for review-queue promotions (issue #2213).
 const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
+/**
+ * In-place raw rewrite under the uniform write-boundary rule (issue #2213):
+ * canonicalize the effective entityRef at the write and verify the journal
+ * did not move across it — these rewrites re-serialize whole records, so an
+ * unrelated approve/dismiss/flag must not write a legacy ref back out.
+ */
+function writeReviewFileCanonicalized(memoryDir: string, filePath: string, content: string): void {
+  const stateDir = path.join(memoryDir, "state");
+  const idsAtWrite = historicalIdCache.get(stateDir);
+  fs.writeFileSync(filePath, canonicalizeEntityRefFrontmatter(content, idsAtWrite), "utf8");
+  reconcileIfJournalMovedSync(stateDir, idsAtWrite, historicalIdCache.get(stateDir));
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ReviewItem {
@@ -332,7 +345,7 @@ function approveItem(
   });
 
   if (found.location === "category") {
-    fs.writeFileSync(found.filePath, updatedContent, "utf8");
+    writeReviewFileCanonicalized(memoryDir, found.filePath, updatedContent);
     return {
       itemId,
       action: "approve",
@@ -391,13 +404,13 @@ function dismissItem(
   }
 
   const content = fs.readFileSync(found.filePath, "utf8");
-  fs.writeFileSync(
+  writeReviewFileCanonicalized(
+    memoryDir,
     found.filePath,
     updateFrontmatterFields(content, {
       reviewDismissed: "true",
       reviewDismissedAt: new Date().toISOString(),
     }),
-    "utf8",
   );
   return {
     itemId,
@@ -422,7 +435,7 @@ function flagItem(
     flagged: "true",
     flaggedAt: new Date().toISOString(),
   });
-  fs.writeFileSync(found.filePath, fixed);
+  writeReviewFileCanonicalized(memoryDir, found.filePath, fixed);
   return {
     itemId,
     action: "flag",

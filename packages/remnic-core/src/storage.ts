@@ -5153,13 +5153,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     patch: Partial<MemoryFrontmatter>,
     lifecycle?: MemoryLifecycleEventWriteOptions
   ): Promise<boolean> {
-    const refIds = typeof patch.entityRef === "string" ? this.currentHistoricalIds() : null;
-    if (refIds) patch = entityRefs.canonicalizeEntityRefOption(patch, refIds);
     const beforeStatus = memory.frontmatter.status ?? "active";
-    const updated: MemoryFrontmatter = {
-      ...memory.frontmatter,
-      ...patch,
-    };
+    // Canonicalize the EFFECTIVE merged entityRef (issue #2213): a patch that
+    // never mentions entityRef still re-serializes the on-disk value, and an
+    // unrelated status patch must not rewrite a legacy ref back out unmapped.
+    const resolveIds = this.currentHistoricalIds();
+    const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+      { ...memory.frontmatter, ...patch },
+      resolveIds,
+    );
+    const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
     const afterStatus = updated.status ?? "active";
 
     const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
