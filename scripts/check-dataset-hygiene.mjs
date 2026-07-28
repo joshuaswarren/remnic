@@ -15,7 +15,7 @@
  * - REMNIC_HYGIENE_DENYLIST: path to denylist file (default: scripts/dataset-name-denylist.txt)
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -47,9 +47,11 @@ const DATA_FILE_EXTENSIONS = new Set([
   ".csv",
 ]);
 
+// Regex matching URL shapes
+const URL_REGEX = /\bhttps?:\/\/[^\s"'<>()]+/gi;
+
 // Email addresses: Standard regex. Synthetic example domains (.example, .synthetic, .test, .invalid, .localhost per RFC 2606 / bench conventions) are permitted in test datasets.
 const EMAIL_REGEX = /\b[\w.+-]+@[\w-]+\.[\w.]+\b/g;
-
 // Phone numbers: Conservative pattern requiring 3-3-4 digit grouping with optional leading plus and standard delimiters to avoid false-positives on timestamps, hashes, or numeric IDs.
 const PHONE_REGEX = /\b\+?\d{3}[-. ]\d{3}[-. ]\d{4}\b/;
 
@@ -141,12 +143,53 @@ export function checkUrlAllowed(urlStr) {
 
     return false;
   } catch {
-    return true;
+    return false;
   }
 }
 
-export function collectFiles(targetPath, fileList = []) {
-  if (!existsSync(targetPath)) return fileList;
+export function stripAllowlistedUrls(line) {
+  return line.replace(URL_REGEX, (urlMatch) => {
+    if (checkUrlAllowed(urlMatch)) {
+      return " ";
+    }
+    return urlMatch;
+  });
+}
+
+export function collectFiles(targetPath, fileList = [], rootPath = targetPath) {
+  let lstat;
+  try {
+    lstat = lstatSync(targetPath);
+  } catch {
+    return fileList;
+  }
+
+  if (lstat.isSymbolicLink()) {
+    if (path.resolve(targetPath) === path.resolve(rootPath)) {
+      console.error(`Error: Configured root directory is a symlink: "${targetPath}"`);
+      process.exit(1);
+    }
+    console.error(`[symlink-skipped] Skipping symlink: ${targetPath}`);
+    return fileList;
+  }
+
+  let resolvedRoot;
+  let resolvedTarget;
+  try {
+    resolvedRoot = realpathSync(rootPath);
+    resolvedTarget = realpathSync(targetPath);
+  } catch {
+    return fileList;
+  }
+
+  if (
+    resolvedTarget !== resolvedRoot &&
+    !resolvedTarget.startsWith(resolvedRoot + path.sep)
+  ) {
+    console.error(`[symlink-skipped] Skipping path outside allowed root: ${targetPath}`);
+    return fileList;
+  }
+
   const stat = statSync(targetPath);
   if (stat.isFile()) {
     const ext = path.extname(targetPath).toLowerCase();
@@ -156,7 +199,7 @@ export function collectFiles(targetPath, fileList = []) {
   } else if (stat.isDirectory()) {
     const entries = readdirSync(targetPath);
     for (const entry of entries) {
-      collectFiles(path.join(targetPath, entry), fileList);
+      collectFiles(path.join(targetPath, entry), fileList, rootPath);
     }
   }
   return fileList;
@@ -175,10 +218,11 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
     const lineNum = idx + 1;
     const line = lines[idx];
 
-    // Denylist check
+    // Denylist check (strip allowlisted URLs first)
+    const lineForDenylist = stripAllowlistedUrls(line);
     for (const name of denylist) {
       const re = new RegExp(`\\b${escapeRegExp(name)}\\b`, "gi");
-      if (re.test(line)) {
+      if (re.test(lineForDenylist)) {
         findings.push({
           file: relPath,
           line: lineNum,
@@ -187,7 +231,6 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
         });
       }
     }
-
     // Email check
     const emailMatches = line.match(EMAIL_REGEX) || [];
     for (const em of emailMatches) {
@@ -238,7 +281,7 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
 
     // URL check (data files only)
     if (isDataFile) {
-      const urlMatches = line.match(/\bhttps?:\/\/[^\s"'<>()]+/gi) || [];
+      const urlMatches = line.match(URL_REGEX) || [];
       for (const rawUrl of urlMatches) {
         if (!checkUrlAllowed(rawUrl)) {
           findings.push({

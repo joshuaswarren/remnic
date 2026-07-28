@@ -10,7 +10,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createSeededRandom } from "../../seeded-random.js";
 import { buildCorpusSchedule } from "./schedule.js";
@@ -61,7 +61,7 @@ export function buildDriftCorpus(
     driftingRatio,
     contradictedRatio,
   });
-  const renderRng = createSeededRandom(options.seed + 0x5f3759);
+  const renderRng = createSeededRandom((options.seed ^ 0x5f3759) >>> 0);
   const sessions: DriftSession[] = [];
   for (const user of schedule.users) {
     sessions.push(...renderUserSessions(renderRng, user, options.epochs));
@@ -131,11 +131,20 @@ export async function generateDriftCorpus(
     ...(options.audit ? { audit: options.audit } : {}),
   };
 
+  // Stage the seed tree, then swap it into place so a partial write never
+  // corrupts an existing corpus, and stale files from a previous larger run
+  // cannot survive a regeneration. The manifest is written last: it is the
+  // success marker and must never point at half-written data.
+  const stagingDir = path.join(options.outDir, `.staging-${options.seed}`);
+  await rm(stagingDir, { recursive: true, force: true });
   for (const [relPath, content] of written) {
-    const absPath = path.join(options.outDir, relPath);
+    const absPath = path.join(stagingDir, path.relative(seedDir, relPath));
     await mkdir(path.dirname(absPath), { recursive: true });
     await writeFile(absPath, content, "utf8");
   }
+  const finalSeedDir = path.join(options.outDir, seedDir);
+  await rm(finalSeedDir, { recursive: true, force: true });
+  await rename(stagingDir, finalSeedDir);
   await writeFile(
     path.join(options.outDir, "dataset.manifest.json"),
     `${JSON.stringify(manifest, null, 2)}\n`,

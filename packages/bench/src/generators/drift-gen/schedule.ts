@@ -200,6 +200,14 @@ export function buildCorpusSchedule(options: ScheduleOptions): CorpusSchedule {
       }
     }
 
+    // Anything still pending was never superseded within the horizon: the
+    // fact's realized lifecycle is stable, and the validator enforces that
+    // drifting/contradicted facts always carry a successor.
+    for (const leftover of pending) {
+      const fact = factById.get(leftover.factId);
+      if (fact && fact.supersededBy === null) fact.kind = "stable";
+    }
+
     attachSingleFactProbes(facts, factById, options.epochs);
     const aggregation = buildAggregationProbes(rng, userId, facts, options.epochs);
 
@@ -387,7 +395,12 @@ function attachSingleFactProbes(
     if (fact.supersededEpoch !== null && fact.supersededBy !== null) {
       const successor = factById.get(fact.supersededBy);
       const afterEpoch = fact.supersededEpoch + 1;
-      if (successor && afterEpoch <= epochs) {
+      // Historical/transition questions ask about the MOST RECENT change, so
+      // they are only valid while the successor itself is still current.
+      const successorCurrentAtProbe =
+        successor !== undefined &&
+        (successor.supersededEpoch === null || successor.supersededEpoch > afterEpoch);
+      if (successor && successorCurrentAtProbe && afterEpoch <= epochs) {
         fact.probes.push({
           id: `${fact.id}-p${++n}`,
           userId: fact.userId,
@@ -457,7 +470,7 @@ function buildAggregationProbes(
 }
 
 function compareProbes(a: GoldProbe, b: GoldProbe): number {
-  if (a.epoch !== b.epoch) return a.epoch - b.epoch;
+  if (a.epoch !== b.epoch) return a.epoch < b.epoch ? -1 : 1;
   if (a.userId !== b.userId) return a.userId < b.userId ? -1 : 1;
   if (a.id !== b.id) return a.id < b.id ? -1 : 1;
   return 0;

@@ -305,3 +305,167 @@ test("attributeRun aggregates totals, handles skipped tasks, and sorts determini
   assert.match(tableStr, /Attribution Report \(Run: test-run-123\)/);
   assert.match(tableStr, /task-Z/);
 });
+test("oracle search misses but recall surfaces gold memory -> use_miss with implied pass detail", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => [
+      { id: "mem-1", content: "Avery's favorite color is teal blue" },
+    ],
+    oracleSearch: async () => [{ id: "mem-other" }], // oracle query misses
+    recall: async () => [{ id: "mem-1", content: "Avery's favorite color is teal blue" }], // recall surfaces gold
+    recallLimit: 5,
+  };
+
+  const task = {
+    taskId: "task-witness-1",
+    question: "What is Avery's favorite color?",
+    scores: { overall: 0 },
+    goldMemories: ["Avery's favorite color is teal blue"],
+  };
+
+  const res = await attributeTask(task, env, { threshold: 0.6 });
+  assert.notStrictEqual(res, null);
+  assert.strictEqual(res!.overall.class, "use_miss");
+  assert.strictEqual(res!.golds[0].stages.index.status, "pass");
+  assert.strictEqual(
+    res!.golds[0].stages.index.detail,
+    "implied pass from retrieval (oracle query missed)"
+  );
+});
+
+test("oracle search misses but recalledText surfaces gold memory -> use_miss with implied pass detail", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => [
+      { id: "mem-1", content: "Avery's favorite color is teal blue" },
+    ],
+    oracleSearch: async () => [{ id: "mem-other" }], // oracle query misses
+    recall: async () => [], // recall returns empty
+    recallLimit: 5,
+  };
+
+  const task = {
+    taskId: "task-witness-2",
+    question: "What is Avery's favorite color?",
+    scores: { overall: 0 },
+    goldMemories: ["Avery's favorite color is teal blue"],
+    details: { recalledText: "Avery's favorite color is teal blue" },
+  };
+
+  const res = await attributeTask(task, env, { threshold: 0.6 });
+  assert.notStrictEqual(res, null);
+  assert.strictEqual(res!.overall.class, "use_miss");
+  assert.strictEqual(res!.golds[0].stages.index.status, "pass");
+  assert.strictEqual(
+    res!.golds[0].stages.index.detail,
+    "implied pass from retrieval (oracle query missed)"
+  );
+});
+
+test("oracle search misses and recall/recalledText ALSO miss -> index_miss", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => [
+      { id: "mem-1", content: "Avery's favorite color is teal blue" },
+    ],
+    oracleSearch: async () => [{ id: "mem-other" }], // oracle misses
+    recall: async () => [], // recall misses
+    recallLimit: 5,
+  };
+
+  const task = {
+    taskId: "task-witness-3",
+    question: "What is Avery's favorite color?",
+    scores: { overall: 0 },
+    goldMemories: ["Avery's favorite color is teal blue"],
+  };
+
+  const res = await attributeTask(task, env, { threshold: 0.6 });
+  assert.notStrictEqual(res, null);
+  assert.strictEqual(res!.overall.class, "index_miss");
+  assert.strictEqual(res!.golds[0].stages.index.status, "fail");
+  assert.strictEqual(res!.golds[0].stages.index.detail, "Not found in oracle search");
+});
+
+test("memoized listMemories calls underlying listMemories at most once per run", async () => {
+  let callCount = 0;
+  const env: AttributionEnvironment = {
+    listMemories: async () => {
+      callCount++;
+      return [{ id: "mem-1", content: "Avery's favorite color is teal blue" }];
+    },
+    recallLimit: 5,
+  };
+
+  const runResult = {
+    meta: { id: "memoize-test-run" },
+    results: {
+      tasks: [
+        {
+          taskId: "task-1",
+          question: "Question 1",
+          scores: { overall: 0 },
+          goldMemories: [
+            "Avery's favorite color is teal blue",
+            "Avery's favorite tea is Earl Grey",
+          ],
+        },
+        {
+          taskId: "task-2",
+          question: "Question 2",
+          scores: { overall: 0 },
+          goldMemories: ["Avery's favorite color is teal blue"],
+        },
+      ],
+    },
+  };
+
+  await attributeRun(runResult, env, { threshold: 0.6 });
+  assert.strictEqual(callCount, 1);
+});
+
+test("empty store detail specifies store contains no memories", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => [],
+    recallLimit: 5,
+  };
+
+  const task = {
+    taskId: "task-empty-store",
+    question: "What is Avery's favorite color?",
+    scores: { overall: 0 },
+    goldMemories: ["Avery's favorite color is teal blue"],
+  };
+
+  const res = await attributeTask(task, env, { threshold: 0.6 });
+  assert.notStrictEqual(res, null);
+  assert.strictEqual(res!.overall.class, "extraction_miss");
+  assert.strictEqual(res!.overall.reason, "store contains no memories");
+  assert.strictEqual(res!.golds[0].stages.extraction.detail, "store contains no memories");
+});
+
+test("threshold validation throws on non-finite or out-of-range values", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => [],
+    recallLimit: 5,
+  };
+
+  const task = {
+    taskId: "task-thresh",
+    question: "Question",
+    scores: { overall: 0 },
+    goldMemories: ["Gold statement"],
+  };
+
+  await assert.rejects(
+    async () => attributeTask(task, env, { threshold: NaN }),
+    /attribution threshold must be a finite number between 0 and 1/
+  );
+
+  await assert.rejects(
+    async () => attributeTask(task, env, { threshold: 1.5 }),
+    /attribution threshold must be a finite number between 0 and 1/
+  );
+
+  await assert.rejects(
+    async () => attributeTask(task, env, { threshold: -0.1 }),
+    /attribution threshold must be a finite number between 0 and 1/
+  );
+});

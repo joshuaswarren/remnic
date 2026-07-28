@@ -16,7 +16,7 @@ import {
   resolveBenchmarkResultReference,
 } from "./results-store.js";
 
-function parseFrontmatter(fileContent: string): { id?: string; body: string } {
+export function parseFrontmatter(fileContent: string): { id?: string; body: string } {
   const lines = fileContent.split(/\r?\n/);
   if (lines.length > 0 && lines[0].trim() === "---") {
     let closingIndex = -1;
@@ -26,7 +26,7 @@ function parseFrontmatter(fileContent: string): { id?: string; body: string } {
         break;
       }
     }
-    if (closingIndex > 1) {
+    if (closingIndex >= 1) {
       const fmLines = lines.slice(1, closingIndex);
       let id: string | undefined = undefined;
       for (const line of fmLines) {
@@ -43,7 +43,19 @@ function parseFrontmatter(fileContent: string): { id?: string; body: string } {
   return { body: fileContent };
 }
 
-async function scanMemoryDir(dirPath: string): Promise<AttributionMemory[]> {
+const SKIPPED_SYSTEM_DIRS: Record<string, boolean> = {
+  state: true,
+  wearables: true,
+  activity: true,
+  meetings: true,
+};
+
+export async function scanMemoryDir(dirPath: string): Promise<AttributionMemory[]> {
+  const rootStats = await lstat(dirPath);
+  if (!rootStats.isDirectory()) {
+    throw new Error(`memory-dir "${dirPath}" is not a readable directory`);
+  }
+
   const memories: AttributionMemory[] = [];
 
   async function walk(currentDir: string): Promise<void> {
@@ -64,7 +76,7 @@ async function scanMemoryDir(dirPath: string): Promise<AttributionMemory[]> {
           continue;
         }
         if (stats.isDirectory()) {
-          if (entry.name === "state" || entry.name === "wearables") {
+          if (SKIPPED_SYSTEM_DIRS[entry.name]) {
             continue;
           }
           await walk(fullPath);
@@ -105,17 +117,30 @@ export async function runAttributeCliCommand(options: {
   let result;
   try {
     result = await loadBenchmarkResult(summary.path);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+  } catch {
     return {
       exitCode: 1,
-      output: `Error loading benchmark result file "${summary.path}": ${msg}\n`,
+      output: `Error: failed to load benchmark result for run "${options.runRef}": file unreadable or invalid\n`,
     };
   }
 
   let listMemoriesFn: () => Promise<AttributionMemory[]>;
 
   if (options.memoryDir) {
+    try {
+      const stats = await lstat(options.memoryDir);
+      if (!stats.isDirectory()) {
+        return {
+          exitCode: 1,
+          output: `Error: memory-dir "${options.memoryDir}" is not a readable directory\n`,
+        };
+      }
+    } catch {
+      return {
+        exitCode: 1,
+        output: `Error: memory-dir "${options.memoryDir}" is not a readable directory\n`,
+      };
+    }
     listMemoriesFn = () => scanMemoryDir(options.memoryDir!);
   } else {
     listMemoriesFn = async () => {

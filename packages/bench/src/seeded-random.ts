@@ -9,8 +9,8 @@
 export type SeededRandom = () => number;
 
 export function createSeededRandom(seed: number): SeededRandom {
-  if (!Number.isSafeInteger(seed) || seed < 0) {
-    throw new Error("seed must be a non-negative safe integer");
+  if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new Error("seed must be an integer in [0, 2^32 - 1]");
   }
   let state = seed >>> 0;
   return () => {

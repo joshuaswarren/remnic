@@ -121,6 +121,9 @@ function checkFactIntegrity(loaded: LoadedSeed, epochs: number, errors: string[]
     if ((fact.supersededBy === null) !== (fact.supersededEpoch === null)) {
       errors.push(`${fact.id}: supersededBy and supersededEpoch must be set together`);
     }
+    if (fact.kind !== "stable" && fact.supersededBy === null) {
+      errors.push(`${fact.id}: kind "${fact.kind}" requires a successor; unsuperseded facts must be "stable"`);
+    }
     if (fact.supersededBy !== null && fact.supersededEpoch !== null) {
       const successor = byId.get(fact.supersededBy);
       if (!successor) {
@@ -223,7 +226,8 @@ function checkDistribution(
   }
   for (const [key, count] of [...perUserEpoch.entries()].sort()) {
     if (Math.abs(count - target) > target * FACT_COUNT_TOLERANCE) {
-      errors.push(`seed ${loaded.seed}: ${key.replace("|", " epoch ")} introduces ${count} facts, outside ±10% of target ${target}`);
+      const [userId, epoch] = key.split("|");
+      errors.push(`seed ${loaded.seed}: ${userId} epoch ${epoch} introduces ${count} facts, outside ±10% of target ${target}`);
     }
   }
 

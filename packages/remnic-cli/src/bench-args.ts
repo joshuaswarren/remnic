@@ -769,7 +769,10 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   let threshold: number | undefined;
   if (thresholdRaw !== undefined) {
     threshold = Number(thresholdRaw);
-    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+    if (!Number.isFinite(threshold) || threshold < 0) {
+      throw new Error("ERROR: --threshold must be a non-negative number.");
+    }
+    if (action === "attribute" && threshold > 1) {
       throw new Error("ERROR: --threshold must be a number between 0 and 1.");
     }
   }

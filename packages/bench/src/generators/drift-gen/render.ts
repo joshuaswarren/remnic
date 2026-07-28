@@ -99,6 +99,12 @@ const CORPUS_START_MONTH = 3;
 
 /** Fictional session date: epoch 1 = March 2021, one epoch per month. */
 export function epochDate(epoch: number, dayOfMonth: number): string {
+  if (!Number.isSafeInteger(epoch) || epoch < 1) {
+    throw new Error("epochDate epoch must be an integer >= 1");
+  }
+  if (!Number.isSafeInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 28) {
+    throw new Error("epochDate dayOfMonth must be an integer in [1, 28]");
+  }
   const monthIndex = CORPUS_START_MONTH - 1 + (epoch - 1);
   const year = CORPUS_START_YEAR + Math.floor(monthIndex / 12);
   const month = (monthIndex % 12) + 1;

@@ -6,6 +6,12 @@
  * 2. index: search reachability of gold statement (oracleSearch)
  * 3. retrieval: question recall replay and rank/cap analysis (recall)
  * 4. use: context presence vs answer correctness (recalledText / answer)
+ *
+ * Witness validation:
+ * An oracle query miss at the index stage is recorded as a pending failure until retrieval witnesses
+ * (recall or recalledText) are checked. If retrieval surfaces the gold memory, the index stage passes
+ * implicitly ("implied pass from retrieval (oracle query missed)") and attribution proceeds to the use stage.
+ * If retrieval also misses, index_miss is finalized as the earlier stage failure.
  */
 
 export type AttributionClass =
@@ -158,6 +164,19 @@ export function isTaskFailed(task: { scores?: Record<string, number> }): boolean
   return minScore < 1;
 }
 
+export function withMemoizedListMemories(env: AttributionEnvironment): AttributionEnvironment {
+  let cache: Promise<AttributionMemory[]> | null = null;
+  return {
+    ...env,
+    listMemories() {
+      if (!cache) {
+        cache = env.listMemories();
+      }
+      return cache;
+    },
+  };
+}
+
 export async function attributeGoldMemory(
   goldStatement: string,
   question: string,
@@ -165,6 +184,17 @@ export async function attributeGoldMemory(
   options: AttributeOptions = {},
   recalledText?: string
 ): Promise<GoldMemoryAttribution> {
+  if (options.threshold !== undefined) {
+    if (
+      typeof options.threshold !== "number" ||
+      !Number.isFinite(options.threshold) ||
+      options.threshold < 0 ||
+      options.threshold > 1
+    ) {
+      throw new RangeError("attribution threshold must be a finite number between 0 and 1");
+    }
+  }
+
   const threshold = options.threshold ?? 0.6;
   const simFn = options.similarity ?? lexicalSimilarity;
 
@@ -189,6 +219,19 @@ export async function attributeGoldMemory(
   let matchedMem: AttributionMemory | null = null;
 
   if (extractionRan) {
+    if (memories.length === 0) {
+      const detail = "store contains no memories";
+      stages.extraction = { status: "fail", detail };
+      stages.index = { status: "unavailable", detail: "not reached" };
+      stages.retrieval = { status: "unavailable", detail: "not reached" };
+      stages.use = { status: "unavailable", detail: "not reached" };
+      return {
+        goldMemory: goldStatement,
+        label: { class: "extraction_miss", reason: detail },
+        stages,
+      };
+    }
+
     for (const mem of memories) {
       const sim = simFn(goldStatement, mem.content);
       if (sim > bestSim) {
@@ -228,6 +271,7 @@ export async function attributeGoldMemory(
   const replayLimit = env.replayLimit ?? Math.max(25, recallLimit * 5);
 
   let indexCheckPassed = false;
+  let indexCheckFailed = false;
 
   if (typeof env.oracleSearch === "function" && extractionRan) {
     try {
@@ -246,14 +290,8 @@ export async function attributeGoldMemory(
       if (indexCheckPassed) {
         stages.index = { status: "pass", detail: "Found in oracle search" };
       } else {
+        indexCheckFailed = true;
         stages.index = { status: "fail", detail: "Not found in oracle search" };
-        stages.retrieval = { status: "unavailable", detail: "not reached" };
-        stages.use = { status: "unavailable", detail: "not reached" };
-        return {
-          goldMemory: goldStatement,
-          label: { class: "index_miss", reason: "Gold statement missing from search index" },
-          stages,
-        };
       }
     } catch {
       stages.index = { status: "unavailable", detail: "oracleSearch threw error" };
@@ -319,9 +357,14 @@ export async function attributeGoldMemory(
   }
 
   // A passing retrieval retroactively proves reachability (implied index pass).
-  if (retrievalCheckPassed && stages.index.status === "unavailable") {
-    stages.index = { status: "pass", detail: "implied pass from retrieval" };
-    indexCheckPassed = true;
+  if (retrievalCheckPassed) {
+    if (indexCheckFailed) {
+      stages.index = { status: "pass", detail: "implied pass from retrieval (oracle query missed)" };
+      indexCheckPassed = true;
+    } else if (stages.index.status === "unavailable") {
+      stages.index = { status: "pass", detail: "implied pass from retrieval" };
+      indexCheckPassed = true;
+    }
   }
 
   // Stage 4: use — evidence reached the context yet the answer was still wrong.
@@ -333,6 +376,14 @@ export async function attributeGoldMemory(
     return {
       goldMemory: goldStatement,
       label: { class: "use_miss", reason: "Gold memory present in context but task failed" },
+      stages,
+    };
+  }
+  if (indexCheckFailed) {
+    stages.use = { status: "unavailable", detail: "not reached" };
+    return {
+      goldMemory: goldStatement,
+      label: { class: "index_miss", reason: "Gold statement missing from search index" },
       stages,
     };
   }
@@ -383,11 +434,12 @@ export async function attributeTask(
     return null;
   }
 
+  const memoizedEnv = withMemoizedListMemories(env);
   const recalledText = typeof task.details?.recalledText === "string" ? task.details.recalledText : undefined;
 
   const goldAttributions: GoldMemoryAttribution[] = [];
   for (const gold of golds) {
-    const attr = await attributeGoldMemory(gold, task.question, env, options, recalledText);
+    const attr = await attributeGoldMemory(gold, task.question, memoizedEnv, options, recalledText);
     goldAttributions.push(attr);
   }
 
@@ -418,6 +470,7 @@ export async function attributeRun(
   options: AttributeOptions = {}
 ): Promise<AttributionReport> {
   const runId = result.meta?.runId ?? result.meta?.id ?? "unknown-run";
+  const memoizedEnv = withMemoizedListMemories(env);
 
   const totals: Record<AttributionClass, number> = {
     extraction_miss: 0,
@@ -445,7 +498,6 @@ export async function attributeRun(
       });
       continue;
     }
-
     if (!isTaskFailed(task)) {
       skippedTasks.push({
         taskId: task.taskId,
@@ -454,7 +506,7 @@ export async function attributeRun(
       continue;
     }
 
-    const taskAttr = await attributeTask(task, env, options);
+    const taskAttr = await attributeTask(task, memoizedEnv, options);
     if (taskAttr) {
       items.push(taskAttr);
     }

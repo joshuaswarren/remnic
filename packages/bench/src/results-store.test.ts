@@ -74,6 +74,15 @@ test("loadBenchmarkResult accepts task result with valid goldMemories array", as
   });
 });
 
+test("loadBenchmarkResult accepts task result with an empty goldMemories array", async () => {
+  const result = validResult();
+  result.results.tasks[0].goldMemories = [];
+  await withResultFile(result, async (filePath) => {
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.deepEqual(loaded.results.tasks[0].goldMemories, []);
+  });
+});
+
 test("loadBenchmarkResult rejects task result with invalid goldMemories shape", async () => {
   const badShapes = ["not an array", 123, [123], [null], [{}], true];
   for (const badShape of badShapes) {
