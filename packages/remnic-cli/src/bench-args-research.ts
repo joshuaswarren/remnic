@@ -69,11 +69,16 @@ export function parseBenchResearchArgs(
     }
   }
 
+  const epochs = readPositiveInteger(args, "--epochs");
+  if (action === "drift-gen" && epochs !== undefined && epochs < 2) {
+    throw new Error("ERROR: --epochs must be at least 2 (supersession needs two epochs).");
+  }
+
   return {
     runRef,
     memoryDir: memoryDirRaw ? path.resolve(expandTilde(memoryDirRaw)) : undefined,
     users: readPositiveInteger(args, "--users"),
-    epochs: readPositiveInteger(args, "--epochs"),
+    epochs,
     seed,
     out,
     factsPerEpoch: readPositiveInteger(args, "--facts-per-epoch"),

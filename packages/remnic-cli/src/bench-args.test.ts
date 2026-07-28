@@ -141,6 +141,7 @@ test("parseBenchArgs validates integer flags for drift-gen", () => {
   assert.throws(() => parseBenchArgs(["drift-gen", "--users", "3.7"]), /--users must be a positive safe integer/);
   assert.throws(() => parseBenchArgs(["drift-gen", "--users", "0"]), /--users must be a positive safe integer/);
   assert.throws(() => parseBenchArgs(["drift-gen", "--epochs", "-1"]), /--epochs must be a positive safe integer/);
+  assert.throws(() => parseBenchArgs(["drift-gen", "--epochs", "1"]), /--epochs must be at least 2/);
   assert.throws(() => parseBenchArgs(["drift-gen", "--facts-per-epoch", "0"]), /--facts-per-epoch must be a positive safe integer/);
   assert.throws(() => parseBenchArgs(["drift-gen", "--seed", "-1"]), /--seed must be a non-negative safe integer/);
   assert.throws(() => parseBenchArgs(["drift-gen", "--seed", "1.5"]), /--seed must be a non-negative safe integer/);

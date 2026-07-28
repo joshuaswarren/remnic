@@ -21,7 +21,7 @@ test("CLI source wires remnic bench ui to the local bench-ui package", async () 
 
   assert.match(parserSource, /\| "ui"/);
   assert.match(parserSource, /first === "ui"/);
-  assert.match(source, /remnic bench <list\|run\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers>/);
+  assert.match(source, /remnic bench <list\|run\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|attribute\|drift-gen>/);
   assert.match(source, /ui\s+Launch the local benchmark overview UI/);
   assert.match(source, /if \(parsed\.action === "ui"\) \{\s*await launchBenchUi\(parsed\.resultsDir \?\? resolveBenchOutputDir\(\)\);\s*return;\s*\}/s);
   assert.match(source, /async function launchBenchUi\(resultsDir: string\): Promise<void>/);
