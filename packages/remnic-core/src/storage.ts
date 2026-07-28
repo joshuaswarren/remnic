@@ -4865,6 +4865,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
       await this.entityRefRepair.syncProjection(memory.frontmatter.id, refBeforeRepair, frontmatter.entityRef);
     }
+    // Sync the caller's record with the ref the file now carries: tier-move
+    // callers keep using the passed MemoryFile, and a stale legacy ref would
+    // mis-route later attribution/projection work (Cursor Medium, round 21).
+    if (memory.frontmatter.entityRef !== frontmatter.entityRef) {
+      memory.frontmatter.entityRef = frontmatter.entityRef;
+    }
     this.invalidateAllMemoriesCache();
     this.notifyCatalogWrite();
   }
