@@ -80,18 +80,25 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // Single recall at session start — context is cached and reused
       // byte-identically across all turns for KV cache prefix stability.
       // Retries on transient failure so a startup blip doesn't permanently
-      // disable context for the session.
+      // disable context for the session.  Share ONE timeout deadline across
+      // all retry attempts (including backoff sleep) so the total startup
+      // recall time never exceeds startupRequestTimeoutMs (codex review).
       if (config.recallEnabled && config.authToken && client.isReachable()) {
         const maxRetries = 2;
+        const deadline = Date.now() + config.startupRequestTimeoutMs;
         let lastError: unknown;
+        let hadSuccessfulRecall = false;
         for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
           try {
             const recalled = await client.recall(
               "current session context",
               session.sessionKey,
               session.cwd,
-              { timeoutMs: config.startupRequestTimeoutMs },
+              { timeoutMs: remaining },
             );
+            hadSuccessfulRecall = true;
             client.markReachable();
             const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
             if (context) {
@@ -105,13 +112,15 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
               if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
               break;
             }
-            // Transient — retry with backoff
+            // Transient — retry with backoff. Check remaining budget before sleeping.
             if (attempt < maxRetries) {
-              await new Promise((r) => setTimeout(r, 200 * Math.pow(2, attempt)));
+              const delayMs = 200 * Math.pow(2, attempt);
+              if (deadline - Date.now() <= delayMs) break;
+              await new Promise((r) => setTimeout(r, delayMs));
             }
           }
         }
-        if (!state.cachedContext && lastError) {
+        if (!hadSuccessfulRecall && lastError) {
           if (isDaemonUnreachableError(lastError)) client.markUnreachable(config.daemonCooldownMs);
           session.notify(`Remnic startup recall unavailable: ${errorMessage(lastError)}`, "warning");
         }
@@ -123,13 +132,16 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
 
-      // Inject cached context as a system message — byte-identical across turns
-      // so the KV cache prefix is preserved. No timestamp, no per-turn recall.
+      // Inject cached context as an assistant message — byte-identical across
+      // turns so the KV cache prefix is preserved. Using "assistant" because
+      // Pi's context hook AgentMessage type does not include "system" (codex
+      // review). The remnicInjected marker excludes it from observation and
+      // recall targeting in downstream filters.
       if (!state.cachedContext) return;
       return {
         messages: [
           {
-            role: "system",
+            role: "assistant",
             content: [{ type: "text", text: state.cachedContext }],
             remnicInjected: true,
           },
