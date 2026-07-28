@@ -145,8 +145,9 @@ test("detects URL rule class for hosts outside allowlist in data files", () => {
     const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[url-allowlist\]/);
-    assert.match(res.stderr, /unauthorized-domain\.com/);
-    assert.match(res.stderr, /otheruser\/otherrepo/);
+    assert.match(res.stderr, /URL host outside allowlist \(redacted\)/);
+    assert.doesNotMatch(res.stderr, /unauthorized-domain\.com/);
+    assert.doesNotMatch(res.stderr, /otheruser\/otherrepo/);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -258,7 +259,7 @@ test("detects malformed URL parse failure as a finding", () => {
     const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /url-allowlist/);
-    assert.match(res.stderr, /https:\/\/api\.example\.com:abc\/x/);
+    assert.doesNotMatch(res.stderr, /https:\/\/api\.example\.com:abc\/x/);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

@@ -291,7 +291,7 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
             file: relPath,
             line: lineNum,
             rule: "url-allowlist",
-            message: `URL host outside allowlist: "${rawUrl}"`,
+            message: "URL host outside allowlist (redacted)",
           });
         }
       }

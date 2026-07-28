@@ -51,7 +51,12 @@ const SKIPPED_SYSTEM_DIRS: Record<string, boolean> = {
 };
 
 async function assertReadableMemoryDir(dirPath: string): Promise<void> {
-  const rootStats = await lstat(dirPath);
+  let rootStats;
+  try {
+    rootStats = await lstat(dirPath);
+  } catch {
+    throw new Error(`memory-dir "${dirPath}" is not a readable directory`);
+  }
   if (rootStats.isSymbolicLink()) {
     throw new Error(`memory-dir "${dirPath}" must not be a symlink`);
   }
@@ -141,10 +146,10 @@ export async function runAttributeCliCommand(options: {
   if (options.memoryDir) {
     try {
       await assertReadableMemoryDir(options.memoryDir);
-    } catch {
+    } catch (error) {
       return {
         exitCode: 1,
-        output: `Error: memory-dir "${options.memoryDir}" is not a readable directory\n`,
+        output: `Error: ${error instanceof Error ? error.message : `memory-dir "${options.memoryDir}" is not a readable directory`}\n`,
       };
     }
     listMemoriesFn = () => scanMemoryDir(options.memoryDir!);

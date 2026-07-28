@@ -55,6 +55,7 @@ export function questionAnswerLeakage(question: string, answer: string): number 
 
 const FACT_KINDS = new Set(["stable", "drifting", "contradicted"]);
 const PROBE_CATEGORIES = new Set(["current", "historical", "transition", "aggregation"]);
+const SESSION_TURN_ROLES = new Set(["user", "assistant"]);
 
 function isGoldFactShape(row: unknown): row is GoldFact {
   if (typeof row !== "object" || row === null) return false;
@@ -105,6 +106,7 @@ function isDriftSessionShape(row: unknown): row is DriftSession {
         typeof t === "object" &&
         t !== null &&
         typeof (t as Record<string, unknown>).role === "string" &&
+        SESSION_TURN_ROLES.has((t as Record<string, unknown>).role as string) &&
         typeof (t as Record<string, unknown>).content === "string",
     )
   );
@@ -193,6 +195,10 @@ async function hasNoSymlinkComponents(
   return true;
 }
 
+function corpusRelativePath(corpusDir: string, targetPath: string): string {
+  return path.relative(corpusDir, targetPath).split(path.sep).join("/");
+}
+
 interface LoadedSeed {
   seed: number;
   facts: GoldFact[];
@@ -217,7 +223,10 @@ async function loadSeedDir(
   let probes: GoldProbe[] = [];
   const consumedFiles: string[] = [];
   if (await isNonSymlinkDirectory(goldDir, errors)) {
-    consumedFiles.push(path.relative(corpusDir, factsPath), path.relative(corpusDir, probesPath));
+    consumedFiles.push(
+      corpusRelativePath(corpusDir, factsPath),
+      corpusRelativePath(corpusDir, probesPath),
+    );
     facts = await readJsonl<GoldFact>(factsPath, errors, isGoldFactShape);
     probes = await readJsonl<GoldProbe>(probesPath, errors, isGoldProbeShape);
   }
@@ -247,8 +256,7 @@ async function loadSeedDir(
   for (const userId of userIds.sort()) {
     const userDir = path.join(usersDir, userId);
     const sessionsPath = path.join(userDir, "sessions.jsonl");
-    if (!(await isNonSymlinkDirectory(userDir, errors))) continue;
-    consumedFiles.push(path.relative(corpusDir, sessionsPath));
+    consumedFiles.push(corpusRelativePath(corpusDir, sessionsPath));
     sessions.push(...(await readJsonl<DriftSession>(sessionsPath, errors, isDriftSessionShape)));
   }
 
@@ -321,6 +329,13 @@ function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[
       if (fact.introducedEpoch > probe.epoch) {
         errors.push(`${probe.id}: fact ${factId} is introduced at epoch ${fact.introducedEpoch}, after the probe epoch ${probe.epoch}`);
       }
+      if (
+        probe.category === "aggregation" &&
+        fact.supersededEpoch !== null &&
+        fact.supersededEpoch <= probe.epoch
+      ) {
+        errors.push(`${probe.id}: aggregation probe targets fact ${factId} already superseded at epoch ${fact.supersededEpoch}`);
+      }
     }
     if (probe.category === "current") {
       const fact = byId.get(probe.requiredFactIds[0]);
@@ -346,15 +361,27 @@ function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[
   }
 }
 
-function checkSessions(loaded: LoadedSeed, epochs: number, errors: string[]): void {
+function checkSessions(
+  loaded: LoadedSeed,
+  users: number,
+  epochs: number,
+  errors: string[],
+): void {
   const sessionText = new Map<string, string>();
   for (const session of loaded.sessions) {
     if (session.epoch < 1 || session.epoch > epochs) {
       errors.push(`${session.sessionId}: epoch ${session.epoch} out of range`);
     }
-    sessionText.set(
-      `${session.userId}|${session.epoch}`,
-      session.turns.map((t) => t.content).join("\n").toLowerCase(),
+    const key = `${session.userId}|${session.epoch}`;
+    if (sessionText.has(key)) {
+      errors.push(`${session.sessionId}: duplicate session for ${key}`);
+      continue;
+    }
+    sessionText.set(key, session.turns.map((t) => t.content).join("\n").toLowerCase());
+  }
+  if (sessionText.size !== users * epochs) {
+    errors.push(
+      `seed ${loaded.seed}: expected ${users * epochs} unique user/epoch sessions, found ${sessionText.size}`,
     );
   }
   for (const fact of loaded.facts) {
@@ -560,7 +587,7 @@ export async function validateDriftCorpus(corpusDir: string): Promise<DriftValid
     checkConsumedFilesAreHashed(loaded, manifest, errors);
     checkFactIntegrity(loaded, manifest.counts.epochs, errors);
     checkProbeIntegrity(loaded, manifest.counts.epochs, errors);
-    checkSessions(loaded, manifest.counts.epochs, errors);
+    checkSessions(loaded, manifest.counts.users, manifest.counts.epochs, errors);
     checkDistribution(loaded, manifest, errors, warnings);
     totalFacts += loaded.facts.length;
     totalProbes += loaded.probes.length;

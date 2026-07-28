@@ -81,11 +81,11 @@ export async function generateDriftCorpus(
   const written = new Map<string, string>();
 
   written.set(
-    path.join(seedDir, "gold", "facts.jsonl"),
+    path.posix.join(seedDir, "gold", "facts.jsonl"),
     toJsonl(corpus.facts),
   );
   written.set(
-    path.join(seedDir, "gold", "probes.jsonl"),
+    path.posix.join(seedDir, "gold", "probes.jsonl"),
     toJsonl(corpus.probes),
   );
   const sessionsByUser = new Map<string, DriftSession[]>();
@@ -96,7 +96,7 @@ export async function generateDriftCorpus(
   }
   for (const [userId, sessions] of [...sessionsByUser.entries()].sort()) {
     written.set(
-      path.join(seedDir, "users", userId, "sessions.jsonl"),
+      path.posix.join(seedDir, "users", userId, "sessions.jsonl"),
       toJsonl(sessions),
     );
   }
