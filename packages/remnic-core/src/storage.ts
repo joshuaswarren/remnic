@@ -4970,15 +4970,21 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const today = now.toISOString().slice(0, 10);
         const destDir = path.join(this.archiveDir, today);
         await mkdir(destDir, { recursive: true });
-        const updatedFm: MemoryFrontmatter = {
-          ...current.frontmatter,
-          status: "archived",
-          archivedAt: now.toISOString(),
-          updated: now.toISOString(),
-        };
+        // Whole-record rewrite — same inherited-entityRef rule (issue #2213).
+        const refIdsAtWrite = this.currentHistoricalIds();
+        const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+          {
+            ...current.frontmatter,
+            status: "archived",
+            archivedAt: now.toISOString(),
+            updated: now.toISOString(),
+          },
+          refIdsAtWrite,
+        );
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
         const destPath = path.join(destDir, path.basename(current.path));
         await this.writeStorageSecureFile(destPath, fileContent);
+        await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtWrite, this.currentHistoricalIds());
         await unlink(current.path);
         markDurable();
         markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
