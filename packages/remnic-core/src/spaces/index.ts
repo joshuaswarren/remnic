@@ -891,6 +891,11 @@ function copyMemories(
       })
       .map((p) => path.basename(p, ".md")),
   );
+  // The reconcile marker is published ONCE, after every record landed
+  // (Codex P1, round 21): a per-record marker could be consumed by a peer
+  // between a legacy-preserving memory write and its colliding entity page,
+  // canonicalizing the memory onto the wrong claimant irreversibly.
+  let reconcileNeeded = false;
   for (const sourcePath of sourceFiles) {
     const sourceRealPath = safeRealpath(sourcePath);
     if (!sourceRealPath || !isPathInsideRoot(sourceRealPath, sourceRoot)) {
@@ -1032,17 +1037,17 @@ function copyMemories(
       }
     } else if (targetKind === "memory") {
       // Ref targets a batch-supplied entity page (potential collision
-      // claimant): keep the legacy bytes, let the marker-triggered migration
-      // settle the collision and rewrite per its verdict (Codex P1, round 19).
+      // claimant): keep the legacy bytes; the DEFERRED marker below lets the
+      // migration settle the collision and rewrite per its verdict (Codex P1).
       fs.writeFileSync(targetPath, content);
-      requestEntityCanonicalIdReconcileSync(stateDir);
+      reconcileNeeded = true;
     } else {
       fs.writeFileSync(targetPath, content);
       if (targetKind === "entity") {
         // Entity pages carry relationship TARGETS only rewriteRelationshipTargets
-        // understands — copy bytes faithfully and request the bounded reconcile
+        // understands — copy bytes faithfully behind the deferred reconcile
         // pass (issue #2213).
-        requestEntityCanonicalIdReconcileSync(stateDir);
+        reconcileNeeded = true;
       }
     }
     merged++;
@@ -1055,6 +1060,12 @@ function copyMemories(
     // would otherwise diverge, and a once-after bump leaves in-batch reads
     // stale).
     bumpMemoryCorpusVersionForDir(targetRoot);
+  }
+
+  // Every record — including every collision claimant entity page — is on
+  // disk; NOW the reconcile pass can settle collisions safely.
+  if (reconcileNeeded) {
+    requestEntityCanonicalIdReconcileSync(path.join(targetRoot, "state"));
   }
 
   return { merged, conflicts, skipped };

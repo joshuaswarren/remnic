@@ -417,6 +417,11 @@ export async function importCapsule(
     a.path.localeCompare(b.path),
   );
 
+  // The reconcile marker is published ONCE, after every record landed
+  // (Codex P1, round 21): a per-record marker could be consumed by a peer
+  // between a legacy-preserving memory write and its colliding entity page,
+  // canonicalizing the memory onto the wrong claimant irreversibly.
+  let reconcileNeeded = false;
   for (const rec of sortedRecords) {
     const targetRel = computeTargetPath(rec.path, mode, capsule.id);
     // Use rootReal (realpath-resolved) to stay consistent with phase 1's
@@ -478,10 +483,10 @@ export async function importCapsule(
     const rawRef = targetKind === "memory" ? readEntityRefFromFrontmatter(contentToWrite) : null;
     if (targetKind === "memory" && rawRef !== null && capsuleEntityIds.has(rawRef)) {
       // Ref targets a capsule-supplied entity page (potential collision
-      // claimant): keep the legacy bytes, let the marker-triggered migration
-      // settle the collision and rewrite per its verdict (Codex P1).
+      // claimant): keep the legacy bytes; the DEFERRED marker below lets the
+      // migration settle the collision and rewrite per its verdict (Codex P1).
       await writeFile(targetAbs, contentToWrite, "utf-8");
-      await requestEntityCanonicalIdReconcile(journalStateDir);
+      reconcileNeeded = true;
     } else if (targetKind === "memory") {
       const idsAtWrite = historicalIdCache.get(journalStateDir);
       const rawRecord = contentToWrite;
@@ -512,7 +517,7 @@ export async function importCapsule(
     } else {
       await writeFile(targetAbs, contentToWrite, "utf-8");
       if (targetKind === "entity") {
-        await requestEntityCanonicalIdReconcile(journalStateDir);
+        reconcileNeeded = true;
       }
     }
     // Bump the corpus sentinel per write (Cursor Medium, #1902): a concurrent
@@ -525,6 +530,12 @@ export async function importCapsule(
       snapshotted,
       rewroteId,
     });
+  }
+
+  // Every record — including every collision claimant entity page — is on
+  // disk; NOW the reconcile pass can settle collisions safely.
+  if (reconcileNeeded) {
+    await requestEntityCanonicalIdReconcile(journalStateDir);
   }
 
   // Sort skipped for stable output (see comment above).

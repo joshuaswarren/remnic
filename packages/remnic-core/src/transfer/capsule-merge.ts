@@ -382,22 +382,27 @@ export async function mergeCapsule(
   // a reconcile marker; everything else merges losslessly. The corpus bump
   // lands AFTER the repair so a warm cache rescan never captures pre-repair
   // bytes.
+  // The reconcile marker is published ONCE, after every record landed
+  // (Codex P1, round 21): a per-record marker could be consumed by a peer
+  // between a legacy-preserving memory write and its colliding entity page,
+  // canonicalizing the memory onto the wrong claimant irreversibly.
+  let reconcileNeeded = false;
   const writeCanonicalRecord = async (targetAbs: string, rawContent: string): Promise<void> => {
     const kind = classifyEntityRefWritePath(rootReal, targetAbs);
     const rawRef = kind === "memory" ? readEntityRefFromFrontmatter(rawContent) : null;
     if (kind === "memory" && rawRef !== null && capsuleEntityIds.has(rawRef)) {
       // Ref targets a capsule-supplied entity page (potential collision
-      // claimant): keep the legacy bytes, let the marker-triggered migration
-      // settle the collision and rewrite per its verdict (Codex P1).
+      // claimant): keep the legacy bytes; the deferred marker lets the
+      // migration settle the collision and rewrite per its verdict (Codex P1).
       await writeFile(targetAbs, rawContent, "utf-8");
-      await requestEntityCanonicalIdReconcile(journalStateDir);
+      reconcileNeeded = true;
       bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
       return;
     }
     if (kind !== "memory") {
       await writeFile(targetAbs, rawContent, "utf-8");
       if (kind === "entity") {
-        await requestEntityCanonicalIdReconcile(journalStateDir);
+        reconcileNeeded = true;
       }
       bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
       return;
@@ -519,6 +524,12 @@ export async function mergeCapsule(
     // snapshot/read awaits give a peer migration a real window.
     await writeCanonicalRecord(targetAbs, rec.content);
     merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted });
+  }
+
+  // Every record — including every collision claimant entity page — is on
+  // disk; NOW the reconcile pass can settle collisions safely.
+  if (reconcileNeeded) {
+    await requestEntityCanonicalIdReconcile(journalStateDir);
   }
 
   // Sort output lists for determinism.
