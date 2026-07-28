@@ -76,9 +76,12 @@ test("detects API key rule class in temp dir", () => {
     const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[api-key\]/);
-    assert.match(res.stderr, new RegExp(FAKE_SK));
-    assert.match(res.stderr, new RegExp(FAKE_GHP));
-    assert.match(res.stderr, new RegExp(FAKE_AKIA));
+    assert.match(res.stderr, new RegExp(`${FAKE_SK.slice(0, 6)}\\u2026`));
+    assert.match(res.stderr, new RegExp(`${FAKE_GHP.slice(0, 6)}\\u2026`));
+    assert.match(res.stderr, new RegExp(`${FAKE_AKIA.slice(0, 6)}\\u2026`));
+    assert.ok(!res.stderr.includes(FAKE_SK), "full token must never be echoed");
+    assert.ok(!res.stderr.includes(FAKE_GHP), "full token must never be echoed");
+    assert.ok(!res.stderr.includes(FAKE_AKIA), "full token must never be echoed");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

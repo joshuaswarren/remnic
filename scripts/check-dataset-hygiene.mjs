@@ -244,15 +244,17 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
       }
     }
 
-    // API Key check
+    // API key check. Never echo the matched token: CI logs would duplicate a
+    // real credential. Report a short prefix and length only.
     for (const apiRe of API_KEY_REGEXES) {
       const match = line.match(apiRe);
       if (match) {
+        const token = match[0];
         findings.push({
           file: relPath,
           line: lineNum,
           rule: "api-key",
-          message: `API key shape detected: "${match[0]}"`,
+          message: `API key shape detected: "${token.slice(0, 6)}…" (${token.length} chars, redacted)`,
         });
       }
     }

@@ -1378,4 +1378,14 @@ test("deriveLoCoMoGoldMemories skips blank or whitespace-only statements", () =>
   assert.deepEqual(deriveLoCoMoGoldMemories(observation, ["D1:1"]), [
     "A substantive statement.",
   ]);
+
+  const allBlank = {
+    session_1_observation: {
+      Avery: [
+        ["", "D1:1"],
+        ["   ", "D1:1"],
+      ],
+    },
+  };
+  assert.equal(deriveLoCoMoGoldMemories(allBlank, ["D1:1"]), undefined);
 });

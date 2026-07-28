@@ -469,3 +469,114 @@ test("threshold validation throws on non-finite or out-of-range values", async (
     /attribution threshold must be a finite number between 0 and 1/
   );
 });
+
+test("recalledText rescues empty store case into use_miss with implied pass detail", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => [],
+    recallLimit: 5,
+  };
+
+  const task = {
+    taskId: "task-empty-store-rescued",
+    question: "What is Avery's favorite color?",
+    scores: { overall: 0 },
+    goldMemories: ["Avery's favorite color is teal blue"],
+    details: { recalledText: "Avery's favorite color is teal blue" },
+  };
+
+  const res = await attributeTask(task, env, { threshold: 0.6 });
+  assert.notStrictEqual(res, null);
+  assert.strictEqual(res!.overall.class, "use_miss");
+  assert.strictEqual(res!.golds[0].stages.extraction.status, "pass");
+  assert.strictEqual(
+    res!.golds[0].stages.extraction.detail,
+    "implied pass from recalled context (post-hoc store scan missed)"
+  );
+  assert.strictEqual(res!.golds[0].stages.index.status, "pass");
+  assert.strictEqual(
+    res!.golds[0].stages.index.detail,
+    "implied pass from recalled context (post-hoc store scan missed)"
+  );
+  assert.strictEqual(res!.golds[0].stages.retrieval.status, "pass");
+  assert.strictEqual(
+    res!.golds[0].stages.retrieval.detail,
+    "implied pass from recalled context (post-hoc store scan missed)"
+  );
+  assert.strictEqual(res!.golds[0].stages.use.status, "fail");
+  assert.strictEqual(
+    res!.golds[0].stages.use.detail,
+    "Gold memory present in context but answer was incorrect"
+  );
+});
+
+test("recalledText rescues low-similarity store case into use_miss with implied pass detail", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => [
+      { id: "mem-unrelated", content: "Something completely different" },
+    ],
+    recallLimit: 5,
+  };
+
+  const task = {
+    taskId: "task-low-sim-rescued",
+    question: "What is Avery's favorite color?",
+    scores: { overall: 0 },
+    goldMemories: ["Avery's favorite color is teal blue"],
+    details: { recalledText: "Avery's favorite color is teal blue" },
+  };
+
+  const res = await attributeTask(task, env, { threshold: 0.6 });
+  assert.notStrictEqual(res, null);
+  assert.strictEqual(res!.overall.class, "use_miss");
+  assert.strictEqual(res!.golds[0].stages.extraction.status, "pass");
+  assert.strictEqual(
+    res!.golds[0].stages.extraction.detail,
+    "implied pass from recalled context (post-hoc store scan missed)"
+  );
+  assert.strictEqual(res!.golds[0].stages.index.status, "pass");
+  assert.strictEqual(
+    res!.golds[0].stages.index.detail,
+    "implied pass from recalled context (post-hoc store scan missed)"
+  );
+  assert.strictEqual(res!.golds[0].stages.retrieval.status, "pass");
+  assert.strictEqual(
+    res!.golds[0].stages.retrieval.detail,
+    "implied pass from recalled context (post-hoc store scan missed)"
+  );
+  assert.strictEqual(res!.golds[0].stages.use.status, "fail");
+  assert.strictEqual(
+    res!.golds[0].stages.use.detail,
+    "Gold memory present in context but answer was incorrect"
+  );
+});
+
+test("attributeRun skips benchmarkFailure tasks with trial execution failure reason", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => [],
+    recallLimit: 5,
+  };
+
+  const runResult = {
+    meta: { id: "benchmark-failure-run" },
+    results: {
+      tasks: [
+        {
+          taskId: "task-infra-fail",
+          question: "Question",
+          scores: { overall: -1 },
+          goldMemories: ["Gold statement"],
+          details: { benchmarkFailure: { kind: "trial_execution_failure" } },
+        },
+      ],
+    },
+  };
+
+  const report = await attributeRun(runResult, env, { threshold: 0.6 });
+  assert.strictEqual(report.attributedTasks, 0);
+  assert.strictEqual(report.skippedTasks.length, 1);
+  assert.strictEqual(report.skippedTasks[0].taskId, "task-infra-fail");
+  assert.strictEqual(
+    report.skippedTasks[0].reason,
+    "trial execution failure (not an answer failure)"
+  );
+});

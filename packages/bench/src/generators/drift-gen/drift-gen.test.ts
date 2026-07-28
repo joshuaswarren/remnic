@@ -277,3 +277,38 @@ test("committed drift-gen-core fixture matches a fresh regeneration and validate
     await rm(regenDir, { recursive: true, force: true });
   }
 });
+
+test("regenerating into the same out dir replaces the seed tree completely", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-regen-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    await generateDriftCorpus({ ...SMALL, users: 1, outDir: dir });
+    const entries = await readdir(path.join(dir, String(SMALL.seed), "users"));
+    assert.deepEqual(entries.sort(), ["u1"]);
+    const report = await validateDriftCorpus(dir);
+    assert.deepEqual(report.errors, []);
+    const leftovers = (await readdir(dir)).filter((name) => name.startsWith(".staging") || name.startsWith(".backup"));
+    assert.deepEqual(leftovers, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("validator reports malformed rows instead of crashing", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-malformed-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    const probesPath = path.join(dir, String(SMALL.seed), "gold", "probes.jsonl");
+    const lines = (await readFile(probesPath, "utf8")).trim().split("\n");
+    const broken = JSON.parse(lines[0]) as Record<string, unknown>;
+    delete broken.requiredFactIds;
+    lines[0] = JSON.stringify(broken);
+    await writeFile(probesPath, `${lines.join("\n")}\n`, "utf8");
+
+    const report = await validateDriftCorpus(dir);
+    assert.equal(report.ok, false);
+    assert.ok(report.errors.some((e) => e.includes("does not match the expected record shape")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -298,57 +298,59 @@ test("runAttributeCliCommand handles store run reference and options", async () 
 });
 test("runAttributeCliCommand returns exitCode 1 for invalid or unreadable memoryDir", async () => {
   const tmpDir = await mkdtemp(path.join(tmpdir(), "bench-cli-badmem-"));
-  const resultsDir = path.join(tmpDir, "results");
-  await mkdir(resultsDir, { recursive: true });
+  try {
+    const resultsDir = path.join(tmpDir, "results");
+    await mkdir(resultsDir, { recursive: true });
 
-  const fakeResult: BenchmarkResult = {
-    meta: {
-      id: "run-badmem-123",
-      benchmark: "locomo",
-      benchmarkTier: "remnic",
-      version: "1.0.0",
-      remnicVersion: "9.35.3",
-      gitSha: "abc1234",
-      timestamp: "2026-07-28T12:00:00Z",
-      mode: "full",
-      runCount: 1,
-      seeds: [42],
-    },
-    config: {
-      systemProvider: null,
-      judgeProvider: null,
-      adapterMode: "real",
-      remnicConfig: { recallLimit: 5 },
-    },
-    cost: {
-      totalTokens: 100,
-      inputTokens: 80,
-      outputTokens: 20,
-      estimatedCostUsd: 0.001,
-      totalLatencyMs: 500,
-      meanQueryLatencyMs: 50,
-    },
-    results: { tasks: [], aggregates: {} },
-    environment: { os: "linux", nodeVersion: "v22.0.0" },
-  };
+    const fakeResult: BenchmarkResult = {
+      meta: {
+        id: "run-badmem-123",
+        benchmark: "locomo",
+        benchmarkTier: "remnic",
+        version: "1.0.0",
+        remnicVersion: "9.35.3",
+        gitSha: "abc1234",
+        timestamp: "2026-07-28T12:00:00Z",
+        mode: "full",
+        runCount: 1,
+        seeds: [42],
+      },
+      config: {
+        systemProvider: null,
+        judgeProvider: null,
+        adapterMode: "real",
+        remnicConfig: { recallLimit: 5 },
+      },
+      cost: {
+        totalTokens: 100,
+        inputTokens: 80,
+        outputTokens: 20,
+        estimatedCostUsd: 0.001,
+        totalLatencyMs: 500,
+        meanQueryLatencyMs: 50,
+      },
+      results: { tasks: [], aggregates: {} },
+      environment: { os: "linux", nodeVersion: "v22.0.0" },
+    };
 
-  await writeFile(
-    path.join(resultsDir, "run-badmem-123.json"),
-    JSON.stringify(fakeResult, null, 2),
-    "utf8"
-  );
+    await writeFile(
+      path.join(resultsDir, "run-badmem-123.json"),
+      JSON.stringify(fakeResult, null, 2),
+      "utf8"
+    );
 
-  const badMemPath = path.join(tmpDir, "nonexistent-memories");
-  const res = await runAttributeCliCommand({
-    runRef: "run-badmem-123",
-    resultsDir,
-    memoryDir: badMemPath,
-  });
+    const badMemPath = path.join(tmpDir, "nonexistent-memories");
+    const res = await runAttributeCliCommand({
+      runRef: "run-badmem-123",
+      resultsDir,
+      memoryDir: badMemPath,
+    });
 
-  assert.strictEqual(res.exitCode, 1);
-  assert.match(res.output, /memory-dir ".*" is not a readable directory/);
-
-  await rm(tmpDir, { recursive: true, force: true });
+    assert.strictEqual(res.exitCode, 1);
+    assert.match(res.output, /memory-dir ".*" is not a readable directory/);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
 });
 
 // The result-reference resolver validates files before resolving, so a
@@ -357,22 +359,24 @@ test("runAttributeCliCommand returns exitCode 1 for invalid or unreadable memory
 // resolve-then-load race window and stays untestable without mocking.)
 test("runAttributeCliCommand reports corrupt result files with a stable not-found error", async () => {
   const tmpDir = await mkdtemp(path.join(tmpdir(), "bench-cli-badfile-"));
-  const resultsDir = path.join(tmpDir, "results");
-  await mkdir(resultsDir, { recursive: true });
+  try {
+    const resultsDir = path.join(tmpDir, "results");
+    await mkdir(resultsDir, { recursive: true });
 
-  const resultPath = path.join(resultsDir, "run-corrupt-123.json");
-  await writeFile(resultPath, "{ invalid json", "utf8");
+    const resultPath = path.join(resultsDir, "run-corrupt-123.json");
+    await writeFile(resultPath, "{ invalid json", "utf8");
 
-  const res = await runAttributeCliCommand({
-    runRef: resultPath,
-    resultsDir,
-  });
+    const res = await runAttributeCliCommand({
+      runRef: resultPath,
+      resultsDir,
+    });
 
-  assert.strictEqual(res.exitCode, 1);
-  assert.match(res.output, /was not found in/);
-  assert.doesNotMatch(res.output, /invalid json/);
-
-  await rm(tmpDir, { recursive: true, force: true });
+    assert.strictEqual(res.exitCode, 1);
+    assert.match(res.output, /was not found in/);
+    assert.doesNotMatch(res.output, /invalid json/);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
 });
 test("parseFrontmatter handles empty frontmatter block without leaking delimiters", () => {
   const input = "---\n---\nHere is the actual memory body text";
@@ -383,21 +387,22 @@ test("parseFrontmatter handles empty frontmatter block without leaking delimiter
 
 test("scanMemoryDir skips system directories: state, wearables, activity, meetings", async () => {
   const tmpDir = await mkdtemp(path.join(tmpdir(), "bench-cli-sysdirs-"));
+  try {
+    const sysDirs = ["state", "wearables", "activity", "meetings"];
+    for (const sysDir of sysDirs) {
+      const dir = path.join(tmpDir, sysDir);
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, "fact.md"), "System fact content", "utf8");
+    }
 
-  const sysDirs = ["state", "wearables", "activity", "meetings"];
-  for (const sysDir of sysDirs) {
-    const dir = path.join(tmpDir, sysDir);
-    await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, "fact.md"), "System fact content", "utf8");
+    const normalDir = path.join(tmpDir, "normal");
+    await mkdir(normalDir, { recursive: true });
+    await writeFile(path.join(normalDir, "fact.md"), "Normal memory content", "utf8");
+
+    const memories = await scanMemoryDir(tmpDir);
+    assert.strictEqual(memories.length, 1);
+    assert.strictEqual(memories[0].content, "Normal memory content");
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
   }
-
-  const normalDir = path.join(tmpDir, "normal");
-  await mkdir(normalDir, { recursive: true });
-  await writeFile(path.join(normalDir, "fact.md"), "Normal memory content", "utf8");
-
-  const memories = await scanMemoryDir(tmpDir);
-  assert.strictEqual(memories.length, 1);
-  assert.strictEqual(memories[0].content, "Normal memory content");
-
-  await rm(tmpDir, { recursive: true, force: true });
 });

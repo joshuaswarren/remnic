@@ -131,10 +131,11 @@ export async function generateDriftCorpus(
     ...(options.audit ? { audit: options.audit } : {}),
   };
 
-  // Stage the seed tree, then swap it into place so a partial write never
-  // corrupts an existing corpus, and stale files from a previous larger run
-  // cannot survive a regeneration. The manifest is written last: it is the
-  // success marker and must never point at half-written data.
+  // Stage the seed tree, swap it into place, and only then discard the old
+  // corpus: the previous version is renamed aside (not deleted) until the
+  // replacement is committed, and a failed swap rolls it back. The manifest
+  // is replaced last via atomic rename: it is the success marker and must
+  // never point at half-written data.
   const stagingDir = path.join(options.outDir, `.staging-${options.seed}`);
   await rm(stagingDir, { recursive: true, force: true });
   for (const [relPath, content] of written) {
@@ -143,13 +144,30 @@ export async function generateDriftCorpus(
     await writeFile(absPath, content, "utf8");
   }
   const finalSeedDir = path.join(options.outDir, seedDir);
-  await rm(finalSeedDir, { recursive: true, force: true });
-  await rename(stagingDir, finalSeedDir);
-  await writeFile(
-    path.join(options.outDir, "dataset.manifest.json"),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-    "utf8",
-  );
+  const backupDir = path.join(options.outDir, `.backup-${options.seed}`);
+  await rm(backupDir, { recursive: true, force: true });
+  let hadPrevious = true;
+  try {
+    await rename(finalSeedDir, backupDir);
+  } catch {
+    hadPrevious = false;
+  }
+  try {
+    await rename(stagingDir, finalSeedDir);
+    const manifestPath = path.join(options.outDir, "dataset.manifest.json");
+    const manifestStaging = path.join(options.outDir, ".staging-manifest.json");
+    await writeFile(manifestStaging, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    await rename(manifestStaging, manifestPath);
+  } catch (err) {
+    if (hadPrevious) {
+      await rm(finalSeedDir, { recursive: true, force: true });
+      await rename(backupDir, finalSeedDir).catch(() => {});
+    }
+    throw err;
+  }
+  if (hadPrevious) {
+    await rm(backupDir, { recursive: true, force: true });
+  }
 
   return { manifest, files: [...written.keys()].sort() };
 }

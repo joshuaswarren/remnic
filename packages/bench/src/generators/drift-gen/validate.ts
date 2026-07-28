@@ -53,7 +53,73 @@ export function questionAnswerLeakage(question: string, answer: string): number 
   return overlap / answerWords.size;
 }
 
-async function readJsonl<T>(filePath: string, errors: string[]): Promise<T[]> {
+const FACT_KINDS = new Set(["stable", "drifting", "contradicted"]);
+const PROBE_CATEGORIES = new Set(["current", "historical", "transition", "aggregation"]);
+
+function isGoldFactShape(row: unknown): row is GoldFact {
+  if (typeof row !== "object" || row === null) return false;
+  const f = row as Record<string, unknown>;
+  return (
+    typeof f.id === "string" &&
+    typeof f.userId === "string" &&
+    typeof f.statement === "string" &&
+    typeof f.subject === "string" &&
+    typeof f.attribute === "string" &&
+    typeof f.value === "string" &&
+    Number.isSafeInteger(f.introducedEpoch) &&
+    (f.supersededEpoch === null || Number.isSafeInteger(f.supersededEpoch)) &&
+    (f.supersededBy === null || typeof f.supersededBy === "string") &&
+    typeof f.kind === "string" &&
+    FACT_KINDS.has(f.kind) &&
+    Array.isArray(f.probes)
+  );
+}
+
+function isGoldProbeShape(row: unknown): row is GoldProbe {
+  if (typeof row !== "object" || row === null) return false;
+  const p = row as Record<string, unknown>;
+  return (
+    typeof p.id === "string" &&
+    typeof p.userId === "string" &&
+    Number.isSafeInteger(p.epoch) &&
+    typeof p.question === "string" &&
+    typeof p.expectedAnswer === "string" &&
+    Array.isArray(p.requiredFactIds) &&
+    p.requiredFactIds.every((id) => typeof id === "string") &&
+    typeof p.category === "string" &&
+    PROBE_CATEGORIES.has(p.category)
+  );
+}
+
+function isDriftSessionShape(row: unknown): row is DriftSession {
+  if (typeof row !== "object" || row === null) return false;
+  const s = row as Record<string, unknown>;
+  return (
+    typeof s.sessionId === "string" &&
+    typeof s.userId === "string" &&
+    Number.isSafeInteger(s.epoch) &&
+    typeof s.date === "string" &&
+    Array.isArray(s.turns) &&
+    s.turns.every(
+      (t) =>
+        typeof t === "object" &&
+        t !== null &&
+        typeof (t as Record<string, unknown>).role === "string" &&
+        typeof (t as Record<string, unknown>).content === "string",
+    )
+  );
+}
+
+/**
+ * Externally supplied corpora can be syntactically valid JSON with mistyped
+ * fields; every row is shape-checked here so malformed data surfaces as a
+ * validation error instead of a crash in the integrity checks.
+ */
+async function readJsonl<T>(
+  filePath: string,
+  errors: string[],
+  isShape: (row: unknown) => row is T,
+): Promise<T[]> {
   let raw: string;
   try {
     raw = await readFile(filePath, "utf8");
@@ -66,11 +132,18 @@ async function readJsonl<T>(filePath: string, errors: string[]): Promise<T[]> {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (line.length === 0) continue;
+    let parsed: unknown;
     try {
-      rows.push(JSON.parse(line) as T);
+      parsed = JSON.parse(line);
     } catch {
       errors.push(`${filePath}:${i + 1}: invalid JSON line`);
+      continue;
     }
+    if (!isShape(parsed)) {
+      errors.push(`${filePath}:${i + 1}: row does not match the expected record shape`);
+      continue;
+    }
+    rows.push(parsed);
   }
   return rows;
 }
@@ -88,8 +161,16 @@ async function loadSeedDir(
   errors: string[],
 ): Promise<LoadedSeed> {
   const seedDir = path.join(corpusDir, String(seed));
-  const facts = await readJsonl<GoldFact>(path.join(seedDir, "gold", "facts.jsonl"), errors);
-  const probes = await readJsonl<GoldProbe>(path.join(seedDir, "gold", "probes.jsonl"), errors);
+  const facts = await readJsonl<GoldFact>(
+    path.join(seedDir, "gold", "facts.jsonl"),
+    errors,
+    isGoldFactShape,
+  );
+  const probes = await readJsonl<GoldProbe>(
+    path.join(seedDir, "gold", "probes.jsonl"),
+    errors,
+    isGoldProbeShape,
+  );
   const sessions: DriftSession[] = [];
   const usersDir = path.join(seedDir, "users");
   let userIds: string[] = [];
@@ -103,6 +184,7 @@ async function loadSeedDir(
       ...(await readJsonl<DriftSession>(
         path.join(usersDir, userId, "sessions.jsonl"),
         errors,
+        isDriftSessionShape,
       )),
     );
   }

@@ -198,6 +198,10 @@ export async function attributeGoldMemory(
   const threshold = options.threshold ?? 0.6;
   const simFn = options.similarity ?? lexicalSimilarity;
 
+  // recalledText is the stored run's injected context: a secondary retrieval witness.
+  const goldInRecalledText =
+    typeof recalledText === "string" && simFn(goldStatement, recalledText) >= threshold;
+
   const stages: GoldMemoryAttribution["stages"] = {
     extraction: { status: "unavailable" },
     index: { status: "unavailable" },
@@ -220,6 +224,22 @@ export async function attributeGoldMemory(
 
   if (extractionRan) {
     if (memories.length === 0) {
+      if (goldInRecalledText) {
+        const impliedDetail = "implied pass from recalled context (post-hoc store scan missed)";
+        stages.extraction = { status: "pass", detail: impliedDetail };
+        stages.index = { status: "pass", detail: impliedDetail };
+        stages.retrieval = { status: "pass", detail: impliedDetail };
+        stages.use = {
+          status: "fail",
+          detail: "Gold memory present in context but answer was incorrect",
+        };
+        return {
+          goldMemory: goldStatement,
+          label: { class: "use_miss", reason: "Gold memory present in context but task failed" },
+          stages,
+        };
+      }
+
       const detail = "store contains no memories";
       stages.extraction = { status: "fail", detail };
       stages.index = { status: "unavailable", detail: "not reached" };
@@ -241,6 +261,22 @@ export async function attributeGoldMemory(
     }
 
     if (bestSim < threshold || !matchedMem) {
+      if (goldInRecalledText) {
+        const impliedDetail = "implied pass from recalled context (post-hoc store scan missed)";
+        stages.extraction = { status: "pass", detail: impliedDetail };
+        stages.index = { status: "pass", detail: impliedDetail };
+        stages.retrieval = { status: "pass", detail: impliedDetail };
+        stages.use = {
+          status: "fail",
+          detail: "Gold memory present in context but answer was incorrect",
+        };
+        return {
+          goldMemory: goldStatement,
+          label: { class: "use_miss", reason: "Gold memory present in context but task failed" },
+          stages,
+        };
+      }
+
       const detail = `Best similarity ${bestSim >= 0 ? bestSim.toFixed(3) : 0} below threshold ${threshold}`;
       stages.extraction = { status: "fail", detail };
       stages.index = { status: "unavailable", detail: "not reached" };
@@ -347,9 +383,6 @@ export async function attributeGoldMemory(
     stages.retrieval = { status: "unavailable", detail: "retrieval check unavailable" };
   }
 
-  // recalledText is the stored run's injected context: a secondary retrieval witness.
-  const goldInRecalledText =
-    typeof recalledText === "string" && simFn(goldStatement, recalledText) >= threshold;
 
   if (!retrievalCheckPassed && goldInRecalledText) {
     retrievalCheckPassed = true;
@@ -491,6 +524,13 @@ export async function attributeRun(
   const skippedTasks: { taskId: string; reason: string }[] = [];
 
   for (const task of result.results.tasks) {
+    if (task.details?.benchmarkFailure && typeof task.details.benchmarkFailure === "object") {
+      skippedTasks.push({
+        taskId: task.taskId,
+        reason: "trial execution failure (not an answer failure)",
+      });
+      continue;
+    }
     if (!task.goldMemories || task.goldMemories.length === 0) {
       skippedTasks.push({
         taskId: task.taskId,
