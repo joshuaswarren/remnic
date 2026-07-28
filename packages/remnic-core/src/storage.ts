@@ -1060,23 +1060,6 @@ const FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS = 50;
 // Attribute normalization helper
 // ---------------------------------------------------------------------------
 
-/**
- * Render a structured-attributes map into a stable, canonical string fragment
- * suitable for appending to enriched memory content before hashing.
- *
- * Normalization rules:
- *   - Keys are trimmed and lowercased (values are trimmed but preserve case)
- *   - Key-value pairs are sorted alphabetically by normalized key
- *   - Pairs are joined with "; " and rendered as "key: value"
- *
- * Using this helper at BOTH the write path (enrichedContent) and the
- * dedup-lookup path (dedupContent) guarantees identical output regardless of
- * the insertion order or casing used by the caller.
- *
- * @example
- *   normalizeAttributePairs({ foo: "bar", BAZ: "qux" })
- *   // → "baz: qux; foo: bar"
- */
 // `stripAttributesSuffix` now lives in ./structured-attributes.ts (shared with
 // the coding surfaces + wearable service). Imported here so internal callers
 // (snapshotBeforeWrite, snapshotForProvenance) resolve, and re-exported to
@@ -4922,17 +4905,31 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         {},
         this.baseDir,
       );
+    // Snapshot pre-write destination bytes (raw — encryption-agnostic) so a
+    // repair failure restores them or removes a fresh copy (§14): a retained
+    // destination would duplicate the record across tiers under a stale ref.
+    const priorDest = await readFile(targetPath).catch(() => null);
     await persist();
     if (typeof rawRef === "string") {
       const refBeforeRepair = frontmatter.entityRef;
-      await entityRefs.repairEntityRefAfterJournalMove({
-        stateDir: this.stateDir,
-        currentIds: () => this.currentHistoricalIds(),
-        idsAtResolve: refIdsAtWrite,
-        rawRef,
-        frontmatter,
-        rewrite: persist,
-      });
+      try {
+        await entityRefs.repairEntityRefAfterJournalMove({
+          stateDir: this.stateDir,
+          currentIds: () => this.currentHistoricalIds(),
+          idsAtResolve: refIdsAtWrite,
+          rawRef,
+          frontmatter,
+          rewrite: persist,
+        });
+      } catch (err) {
+        if (priorDest === null) {
+          await unlink(targetPath).catch(() => undefined);
+        } else {
+          await writeFile(targetPath, priorDest).catch(() => undefined);
+        }
+        this.invalidateAllMemoriesCache();
+        throw err;
+      }
       await this.syncProjectionAfterRefRepair(memory.frontmatter.id, refBeforeRepair, frontmatter.entityRef);
     }
     this.invalidateAllMemoriesCache();
