@@ -22,21 +22,44 @@ const historicalIdCache = new HistoricalEntityCanonicalIdCache();
  * In-place raw rewrite under the uniform write-boundary rule (issue #2213):
  * canonicalize the effective entityRef at the write and REPAIR when the
  * journal moved across it — these rewrites re-serialize whole records, so an
- * unrelated approve/dismiss/flag must not write a legacy ref back out.
+ * unrelated approve/dismiss/flag must not write a legacy ref back out. On
+ * repair exhaustion the ORIGINAL bytes are restored before the retryable
+ * error propagates: performReview bumps the corpus sentinel only after the
+ * action returns, so a half-applied rewrite would be invisible to a warm
+ * cache while the caller is told the action failed.
  */
 function writeReviewFileCanonicalized(memoryDir: string, filePath: string, content: string): void {
   const stateDir = path.join(memoryDir, "state");
   const idsAtWrite = historicalIdCache.get(stateDir);
+  let originalBytes: string | null = null;
+  try {
+    originalBytes = fs.readFileSync(filePath, "utf8");
+  } catch {
+    originalBytes = null; // new file — rollback is removal
+  }
   const written = canonicalizeEntityRefFrontmatter(content, idsAtWrite);
   fs.writeFileSync(filePath, written, "utf8");
-  repairContentAfterJournalMoveSync({
-    stateDir,
-    cache: historicalIdCache,
-    idsAtWrite,
-    rawContent: content,
-    lastWritten: written,
-    rewrite: (next) => fs.writeFileSync(filePath, next, "utf8"),
-  });
+  try {
+    repairContentAfterJournalMoveSync({
+      stateDir,
+      cache: historicalIdCache,
+      idsAtWrite,
+      rawContent: content,
+      lastWritten: written,
+      rewrite: (next) => fs.writeFileSync(filePath, next, "utf8"),
+    });
+  } catch (err) {
+    try {
+      if (originalBytes === null) {
+        fs.unlinkSync(filePath);
+      } else {
+        fs.writeFileSync(filePath, originalBytes, "utf8");
+      }
+    } catch {
+      // Best effort — the retryable repair error is the primary signal.
+    }
+    throw err;
+  }
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
