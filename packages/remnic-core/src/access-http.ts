@@ -66,6 +66,12 @@ export interface AccessHttpReadinessState {
   ready: boolean;
   warmupAttempts: number;
   lastError?: string | null;
+  /**
+   * True when the standalone init gate opened before search warm-up completed
+   * (issue #2215): the service is functional (recall serves via fallback
+   * retrieval), so health answers 200 with degraded info instead of 503.
+   */
+  degraded?: boolean;
 }
 
 export interface EngramAccessHttpServerOptions {
@@ -801,18 +807,13 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/health") {
-      const readiness = this.readiness();
-      if (!readiness.ready) {
+      const { ready, warmupAttempts, lastError } = this.readiness();
+      if (!ready) {
         this.respondJson(res, 503, {
-          ok: false,
-          ready: false,
-          warmupAttempts: readiness.warmupAttempts,
-          lastError: readiness.lastError ?? null,
-          code: "not_ready",
+          ok: false, ready: false, warmupAttempts, lastError: lastError ?? null, code: "not_ready",
         });
         return;
       }
-
     }
 
     // Run any host-supplied pre-auth request handler. It runs AFTER the
@@ -888,7 +889,11 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/health") {
-      this.respondJson(res, 200, await this.service.health());
+      const { degraded, warmupAttempts, lastError } = this.readiness();
+      const health = await this.service.health();
+      this.respondJson(res, 200, degraded !== true ? health : {
+        ...health, degraded: true, warmupAttempts, lastError: lastError ?? null,
+      });
       return;
     }
     if (req.method === "GET" && pathname === "/engram/v1/capabilities") return respondLcmCompactionCapabilitiesHttp(res);

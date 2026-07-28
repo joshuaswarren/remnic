@@ -307,3 +307,41 @@ test("envOverrides write rate limit env: precedence, legacy fallback, invalid re
     }
   }
 });
+
+test("envOverrides honors REMNIC_READY_DEGRADED_AFTER_ATTEMPTS with legacy fallback (issue #2215)", () => {
+  const keys = ["REMNIC_READY_DEGRADED_AFTER_ATTEMPTS", "ENGRAM_READY_DEGRADED_AFTER_ATTEMPTS"];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  const clear = () => {
+    for (const k of keys) delete process.env[k];
+  };
+  try {
+    clear();
+    assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 3);
+
+    process.env.REMNIC_READY_DEGRADED_AFTER_ATTEMPTS = "0";
+    assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 0);
+
+    // REMNIC_ wins over a conflicting legacy ENGRAM_ value.
+    process.env.REMNIC_READY_DEGRADED_AFTER_ATTEMPTS = "7";
+    process.env.ENGRAM_READY_DEGRADED_AFTER_ATTEMPTS = "9";
+    assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 7);
+
+    // Legacy ENGRAM_ name is honored when the REMNIC_ name is unset.
+    clear();
+    process.env.ENGRAM_READY_DEGRADED_AFTER_ATTEMPTS = "0";
+    assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 0);
+
+    // Invalid env values reach validation and are rejected, not silently dropped.
+    clear();
+    process.env.REMNIC_READY_DEGRADED_AFTER_ATTEMPTS = "nope";
+    assert.throws(
+      () => parseServerConfig(envOverrides()),
+      /server\.readinessDegradedAfterAttempts: expected a non-negative integer/,
+    );
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+});

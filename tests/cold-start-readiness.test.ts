@@ -91,10 +91,13 @@ test("a successful retry opens readiness on attempt N", async () => {
     ready: true,
     warmupAttempts: 3,
     lastError: null,
+    degraded: false,
   });
 });
 
 test("persistent warm-up failure keeps health at 503 and reports rising attempt state", async () => {
+  // degradedAfterAttempts: 0 pins the strict gate so this test's contract
+  // (health stays 503 forever) survives the degraded-mode default (issue #2215).
   const readiness = { ready: false, warmupAttempts: 0 };
   const shutdown = new AbortController();
   const service = {
@@ -118,6 +121,7 @@ test("persistent warm-up failure keeps health at 503 and reports rising attempt 
     },
     timeoutMs: 100,
     retryIntervalMs: 5,
+    degradedAfterAttempts: 0,
     state: readiness,
     openGate: () => {
       readiness.ready = true;
@@ -142,6 +146,95 @@ test("persistent warm-up failure keeps health at 503 and reports rising attempt 
     assert.equal(await readinessTask, "cancelled");
     await server.stop();
   }
+});
+
+test("persistent warm-up failure opens the gate in degraded mode and health answers 200 with degraded info (issue #2215)", async () => {
+  const readiness = { ready: false, warmupAttempts: 0, degraded: false };
+  const shutdown = new AbortController();
+  const service = {
+    health: async () => ({ ok: true }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    readiness: () => readiness,
+  });
+  const status = await server.start();
+  const gateOpened = Promise.withResolvers<void>();
+
+  const readinessTask = completeStartupReadiness({
+    deferredReady: Promise.resolve(),
+    warmup: async () => {
+      throw new TypeError("search backend unavailable");
+    },
+    timeoutMs: 100,
+    retryIntervalMs: 5,
+    degradedAfterAttempts: 2,
+    state: readiness,
+    openGate: () => {
+      readiness.ready = true;
+      gateOpened.resolve();
+    },
+    shutdownSignal: shutdown.signal,
+  });
+
+  try {
+    await gateOpened.promise;
+    assert.equal(readiness.degraded, true);
+    assert.ok(readiness.warmupAttempts >= 2);
+
+    const response = await fetchHealth(status.port, "Bearer test-token");
+    assert.equal(response.status, 200);
+    const body = await response.json() as {
+      ok: boolean;
+      degraded?: boolean;
+      warmupAttempts?: number;
+      lastError?: string | null;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.degraded, true);
+    assert.ok((body.warmupAttempts ?? 0) >= 2);
+    assert.equal(body.lastError, "TypeError");
+
+    // The unauthenticated 503 short-circuit no longer fires once degraded.
+    assert.equal((await fetchHealth(status.port)).status, 401);
+  } finally {
+    shutdown.abort();
+    assert.equal(await readinessTask, "cancelled");
+    await server.stop();
+  }
+});
+
+test("a warm-up success after degraded mode clears the degraded flag", async () => {
+  const readiness = { ready: false, warmupAttempts: 0, degraded: false };
+  let gateOpens = 0;
+
+  const outcome = await completeStartupReadiness({
+    deferredReady: Promise.resolve(),
+    warmup: async () => {
+      if (readiness.warmupAttempts < 3) throw new Error("still cold");
+    },
+    timeoutMs: 100,
+    retryIntervalMs: 1,
+    degradedAfterAttempts: 1,
+    state: readiness,
+    openGate: () => {
+      gateOpens += 1;
+      readiness.ready = true;
+    },
+  });
+
+  assert.equal(outcome, "warmed");
+  assert.deepEqual(readiness, {
+    ready: true,
+    warmupAttempts: 3,
+    lastError: null,
+    degraded: false,
+  });
+  // Opened once for the degraded transition, again on recovery — idempotent.
+  assert.ok(gateOpens >= 2);
 });
 
 test("shutdown during retry delay never opens readiness", async () => {
@@ -282,6 +375,7 @@ test("intentionally disabled search opens readiness without a warm-up", async ()
     ready: true,
     warmupAttempts: 0,
     lastError: null,
+    degraded: false,
   });
 });
 
@@ -358,6 +452,7 @@ test("the emergency override opens readiness at once and logs the exposure", asy
     ready: true,
     warmupAttempts: 0,
     lastError: null,
+    degraded: false,
   });
   assert.equal(errors.length, 1);
   assert.match(errors[0], /emergency readiness override.*cold search backend.*traffic/i);
@@ -365,4 +460,15 @@ test("the emergency override opens readiness at once and logs the exposure", asy
 
 test("server config accepts the emergency readiness override", () => {
   assert.equal(parseServerConfig({ readinessOverride: true }).readinessOverride, true);
+});
+
+test("server config parses the degraded-readiness attempts knob (issue #2215)", () => {
+  assert.equal(parseServerConfig({}).readinessDegradedAfterAttempts, 3);
+  assert.equal(parseServerConfig({ readinessDegradedAfterAttempts: 0 }).readinessDegradedAfterAttempts, 0);
+  assert.equal(parseServerConfig({ readinessDegradedAfterAttempts: "5" }).readinessDegradedAfterAttempts, 5);
+  assert.throws(() => parseServerConfig({ readinessDegradedAfterAttempts: -1 }));
+  assert.throws(() => parseServerConfig({ readinessDegradedAfterAttempts: "many" }));
+  // Blank strings must be rejected, not coerced to 0 (= strict gate) by Number("").
+  assert.throws(() => parseServerConfig({ readinessDegradedAfterAttempts: "" }));
+  assert.throws(() => parseServerConfig({ readinessDegradedAfterAttempts: "  " }));
 });

@@ -254,6 +254,50 @@ test("session_start status probe uses the startup timeout", async (t) => {
   assert.deepEqual(statuses, [["remnic", "Remnic offline"]]);
 });
 
+test("session_start renders 'Remnic starting' when health answers 503 not_ready (issue #2215)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/health")) {
+      // The daemon is up but startup search warm-up has not completed — it must
+      // render as starting, not offline, because recall still serves (issue #2215).
+      return new Response(
+        JSON.stringify({ ok: false, ready: false, warmupAttempts: 154, lastError: "StartupSyncPendingError", code: "not_ready" }),
+        { status: 503 },
+      );
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+    },
+  });
+  await extension(pi as any);
+
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: {
+      setStatus: (key: string, value: string) => statuses.push([key, value]),
+    },
+    sessionManager: { getSessionId: () => "starting-status-test", getEntries: () => [] },
+  });
+
+  assert.deepEqual(statuses, [["remnic", "Remnic starting"]]);
+});
+
 test("observeMessages only records dedupe hashes after a successful observe", async () => {
   const observedHashes = new Set<string>();
   const ctx = {

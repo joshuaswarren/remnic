@@ -76,6 +76,26 @@ binary, unsupported version, or collection probe problem. The API path remains
 
 To bind to all interfaces (e.g., for LAN access from other machines), use `--host 0.0.0.0`. Only do this on trusted networks or behind a reverse proxy.
 
+### Startup readiness and degraded mode
+
+While startup search warm-up is still running, `/engram/v1/health` answers
+`503` with `code: "not_ready"` and a rising `warmupAttempts` counter. Recall
+and every other route serve normally during this window — the gate only
+affects the health signal.
+
+If warm-up cannot complete (for example the `qmd` binary is missing from a
+long-lived service's `PATH`), the server does not stay `not_ready` forever:
+after `server.readinessDegradedAfterAttempts` failed attempts (default `3`,
+roughly two minutes) health switches to `200` with `degraded: true`,
+`warmupAttempts`, and `lastError` merged into the normal health payload, and
+warm-up retries continue in the background until they succeed. Set
+`server.readinessDegradedAfterAttempts` to `0` (or the
+`REMNIC_READY_DEGRADED_AFTER_ATTEMPTS` env var; legacy `ENGRAM_` prefix also
+supported) to keep the strict gate, e.g. when an orchestrator must hold
+traffic until the search index is warm.
+`server.readinessOverride` (`REMNIC_READY_OVERRIDE`) still forces the gate
+open immediately.
+
 ## Connecting agent harnesses
 
 ### OpenClaw (plugin mode)

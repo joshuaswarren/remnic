@@ -18,7 +18,20 @@ import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchest
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
 import { envOverrides, readCompatEnv } from "./server-env.js";
+import {
+  STARTUP_DEGRADED_AFTER_ATTEMPTS,
+  abortableDelay,
+  completeStartupReadiness,
+  runStartupSearchWarmup,
+  type StartupReadinessState,
+} from "./startup-readiness.js";
 export { envOverrides };
+export {
+  completeStartupReadiness,
+  runStartupSearchWarmup,
+  type StartupReadinessOutcome,
+  type StartupReadinessState,
+} from "./startup-readiness.js";
 
 // ── Config loading ──────────────────────────────────────────────────────────
 
@@ -38,6 +51,12 @@ export interface ServerConfig {
     adminConsolePublicDir?: string;
     adminConsolePrefillToken?: boolean;
     readinessOverride?: boolean;
+    /**
+     * Failed search warm-up attempts before the init gate opens in degraded
+     * mode (issue #2215). 0 keeps the strict gate (health stays 503 until
+     * warm-up completes).
+     */
+    readinessDegradedAfterAttempts?: unknown;
     /** OAuth authorization-server facade for ChatGPT dev-mode apps (parsed by oauth.ts). */
     oauth?: unknown;
   };
@@ -97,6 +116,19 @@ function parseOptionalBoolean(value: unknown, source: string): boolean | undefin
   throw new Error(`Invalid ${source}: expected a boolean`);
 }
 
+function parseOptionalNonNegativeInteger(value: unknown, source: string): number | undefined {
+  if (value === undefined) return undefined;
+  // Reject blank strings BEFORE coercion: Number("") is 0, which would
+  // silently enable the 0-means-strict-gate semantics (codex review).
+  const parsed = typeof value === "string"
+    ? value.trim() === "" ? Number.NaN : Number(value.trim())
+    : value;
+  if (typeof parsed !== "number" || !Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Invalid ${source}: expected a non-negative integer`);
+  }
+  return parsed;
+}
+
 export interface ParsedServerConfig {
   host: string;
   port: number;
@@ -109,6 +141,7 @@ export interface ParsedServerConfig {
   adminConsolePublicDir?: string;
   adminConsolePrefillToken: boolean;
   readinessOverride: boolean;
+  readinessDegradedAfterAttempts: number;
 }
 
 export function parseServerConfig(
@@ -135,6 +168,11 @@ export function parseServerConfig(
     adminConsolePublicDir: parseOptionalString(raw.adminConsolePublicDir, "server.adminConsolePublicDir"),
     adminConsolePrefillToken: parseOptionalBoolean(raw.adminConsolePrefillToken, "server.adminConsolePrefillToken") ?? false,
     readinessOverride: parseOptionalBoolean(raw.readinessOverride, "server.readinessOverride") ?? false,
+    readinessDegradedAfterAttempts:
+      parseOptionalNonNegativeInteger(
+        raw.readinessDegradedAfterAttempts,
+        "server.readinessDegradedAfterAttempts",
+      ) ?? STARTUP_DEGRADED_AFTER_ATTEMPTS,
   };
 }
 
@@ -660,205 +698,6 @@ export function createAdminControls(
   };
 }
 
-interface PromiseResolvers<T> {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-  reject: (reason?: unknown) => void;
-}
-
-type PromiseConstructorWithResolvers = PromiseConstructor & {
-  withResolvers<T>(): PromiseResolvers<T>;
-};
-
-/**
- * Like `setTimeout` wrapped in a Promise, but respects an `AbortSignal`.
- * Resolves immediately (without throwing) when the signal fires so the
- * caller can check `signal.aborted` and exit cleanly.
- */
-function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-  const { promise, resolve } = (Promise as PromiseConstructorWithResolvers).withResolvers<void>();
-  const timer = setTimeout(resolve, ms);
-  const onAbort = () => {
-    clearTimeout(timer);
-    resolve();
-  };
-  signal.addEventListener("abort", onAbort, { once: true });
-  return promise.finally(() => signal.removeEventListener("abort", onAbort));
-}
-
-const STARTUP_WARMUP_TIMEOUT_MS = 20_000;
-const STARTUP_WARMUP_RETRY_INTERVAL_MS = 30_000;
-
-export interface StartupReadinessState {
-  ready: boolean;
-  warmupAttempts: number;
-  lastError?: string | null;
-}
-
-export type StartupReadinessOutcome = "warmed" | "cancelled" | "overridden" | "search-disabled";
-
-class StartupWarmupDegradationError extends Error {
-  constructor(code: string) {
-    super(`startup search degraded: ${code}`);
-    this.name = "StartupWarmupDegradationError";
-  }
-}
-
-class StartupSyncPendingError extends Error {
-  constructor() {
-    super("startup search sync is not complete");
-    this.name = "StartupSyncPendingError";
-  }
-}
-
-export async function runStartupSearchWarmup(options: {
-  signal: AbortSignal;
-  isAvailable: () => boolean;
-  search: (onDegradation: (code: string) => void) => Promise<unknown>;
-}): Promise<void> {
-  let degradationCode: string | undefined;
-  await options.search((code) => {
-    degradationCode = code;
-  });
-  if (options.signal.aborted) return;
-  if (degradationCode) throw new StartupWarmupDegradationError(degradationCode);
-  if (!options.isAvailable()) {
-    throw new StartupWarmupDegradationError("backend_unavailable");
-  }
-}
-
-export async function completeStartupReadiness(options: {
-  deferredReady: Promise<void>;
-  warmup: (signal: AbortSignal) => Promise<unknown>;
-  prepareWarmup?: (signal: AbortSignal) => Promise<boolean>;
-  state: StartupReadinessState;
-  timeoutMs?: number;
-  retryIntervalMs?: number;
-  override?: boolean;
-  skipWarmup?: () => boolean;
-  openGate: () => void;
-  shutdownSignal?: AbortSignal;
-  warn?: (message: string) => void;
-  info?: (message: string) => void;
-  error?: (message: string) => void;
-}): Promise<StartupReadinessOutcome> {
-  const timeoutMs = options.timeoutMs ?? STARTUP_WARMUP_TIMEOUT_MS;
-  const retryIntervalMs = options.retryIntervalMs ?? STARTUP_WARMUP_RETRY_INTERVAL_MS;
-  const warn = options.warn ?? ((message: string) => log.warn(message));
-  const info = options.info ?? ((message: string) => log.info(message));
-  const error = options.error ?? ((message: string) => log.error(message));
-
-  options.state.ready = false;
-  options.state.lastError = null;
-  if (options.override) {
-    options.openGate();
-    options.state.ready = true;
-    error(
-      "CRITICAL: emergency readiness override enabled; exposing a cold search backend to traffic",
-    );
-    return "overridden";
-  }
-  if (options.skipWarmup?.()) {
-    options.openGate();
-    options.state.ready = true;
-    info("Standalone init gate opened without search warm-up (search intentionally disabled)");
-    return "search-disabled";
-  }
-
-
-  let removeDeferredShutdownListener: () => void = () => undefined;
-  const deferredShutdown = new Promise<"shutdown">((resolve) => {
-    if (options.shutdownSignal?.aborted) {
-      resolve("shutdown");
-      return;
-    }
-    const onDeferredShutdown = () => resolve("shutdown");
-    options.shutdownSignal?.addEventListener("abort", onDeferredShutdown, { once: true });
-    removeDeferredShutdownListener = () =>
-      options.shutdownSignal?.removeEventListener("abort", onDeferredShutdown);
-  });
-  try {
-    const deferredOutcome = await Promise.race([
-      options.deferredReady.then(() => "ready" as const),
-      deferredShutdown,
-    ]);
-    if (deferredOutcome === "shutdown") return "cancelled";
-  } catch (err) {
-    if (options.shutdownSignal?.aborted) return "cancelled";
-    options.state.lastError = err instanceof Error ? err.name : typeof err;
-    warn(`Standalone deferred initialization failed; warm-up retries will continue: ${err}`);
-  } finally {
-    removeDeferredShutdownListener();
-  }
-  if (options.shutdownSignal?.aborted) return "cancelled";
-
-  const lifecycleAbort = new AbortController();
-  const onShutdown = () => lifecycleAbort.abort(options.shutdownSignal?.reason);
-  options.shutdownSignal?.addEventListener("abort", onShutdown, { once: true });
-
-  try {
-    while (!lifecycleAbort.signal.aborted) {
-      if (options.skipWarmup?.()) {
-        options.openGate();
-        options.state.ready = true;
-        info("Standalone init gate opened without search warm-up (search intentionally disabled)");
-        return "search-disabled";
-      }
-      options.state.warmupAttempts += 1;
-      const warmupAbort = new AbortController();
-      const onLifecycleAbort = () => warmupAbort.abort(lifecycleAbort.signal.reason);
-      lifecycleAbort.signal.addEventListener("abort", onLifecycleAbort, { once: true });
-      const timeout = (Promise as PromiseConstructorWithResolvers).withResolvers<never>();
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        warmupAbort.abort();
-        timeout.reject(new Error(`startup warm-up timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      timer.unref();
-
-      try {
-        const attempt = async () => {
-          if (options.prepareWarmup && !await options.prepareWarmup(warmupAbort.signal)) {
-            throw new StartupSyncPendingError();
-          }
-          return options.warmup(warmupAbort.signal);
-        };
-        await Promise.race([attempt(), timeout.promise]);
-        if (lifecycleAbort.signal.aborted) return "cancelled";
-        options.state.lastError = null;
-        options.openGate();
-        options.state.ready = true;
-        info(
-          `Standalone init gate opened after search warm-up attempt ${options.state.warmupAttempts}`,
-        );
-        return "warmed";
-      } catch (err) {
-        if (lifecycleAbort.signal.aborted) return "cancelled";
-        options.state.lastError = timedOut
-          ? "TimeoutError"
-          : err instanceof Error
-            ? err.name
-            : typeof err;
-        warn(
-          timedOut
-            ? `Standalone startup warm-up attempt ${options.state.warmupAttempts} timed out after ${timeoutMs}ms; retrying in ${retryIntervalMs}ms`
-            : `Standalone startup warm-up attempt ${options.state.warmupAttempts} failed (${options.state.lastError}); retrying in ${retryIntervalMs}ms`,
-        );
-      } finally {
-        clearTimeout(timer);
-        lifecycleAbort.signal.removeEventListener("abort", onLifecycleAbort);
-      }
-
-      await abortableDelay(retryIntervalMs, lifecycleAbort.signal);
-    }
-    return "cancelled";
-  } finally {
-    options.shutdownSignal?.removeEventListener("abort", onShutdown);
-  }
-}
-
 async function cleanupFailedStartup(
   orchestrator: Orchestrator,
   httpServer: EngramAccessHttpServer,
@@ -957,7 +796,7 @@ export async function startServer(options?: {
   // Start the HTTP server immediately so health checks, MCP handshakes,
   // and liveness probes can connect while deferred init is still running.
   const service = new EngramAccessService(orchestrator);
-  const readiness: StartupReadinessState = { ready: false, warmupAttempts: 0, lastError: null };
+  const readiness: StartupReadinessState = { ready: false, warmupAttempts: 0, lastError: null, degraded: false };
 
   const authToken = parsedServerConfig.authToken ?? readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN") ?? "";
 
@@ -1062,6 +901,7 @@ export async function startServer(options?: {
     prepareWarmup: ensureStartupSync,
     state: readiness,
     override: parsedServerConfig.readinessOverride,
+    degradedAfterAttempts: parsedServerConfig.readinessDegradedAfterAttempts,
     skipWarmup: () => orchestrator.qmd.debugStatus() === "backend=noop",
     openGate: () => {
       readiness.ready = true;

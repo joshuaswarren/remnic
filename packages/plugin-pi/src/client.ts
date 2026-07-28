@@ -57,6 +57,8 @@ export class RemnicHttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Machine-readable error code from the daemon's JSON error body (e.g. `not_ready`). */
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -359,12 +361,13 @@ export class RemnicClient {
       }
       if (!response.ok) {
         const message = responseErrorMessage(response, text, payload, parseError);
+        const code = responseErrorCode(payload, parseError);
         if (response.status === 413) {
           // Surface the body size so operators can tune the cap (#1600).
           const bodyBytes = body === undefined ? 0 : jsonBytes(body);
-          throw new RemnicHttpError(response.status, `${message} (observed body ${bodyBytes} bytes; cap via observeMaxBytes)`);
+          throw new RemnicHttpError(response.status, `${message} (observed body ${bodyBytes} bytes; cap via observeMaxBytes)`, code);
         }
-        throw new RemnicHttpError(response.status, message);
+        throw new RemnicHttpError(response.status, message, code);
       }
       if (parseError) {
         const reason = parseError instanceof Error ? parseError.message : String(parseError);
@@ -652,4 +655,12 @@ function responseErrorMessage(response: Response, text: string, payload: unknown
     return response.statusText ? `${response.statusText}: ${snippet}` : snippet;
   }
   return response.statusText || `HTTP ${response.status}`;
+}
+
+function responseErrorCode(payload: unknown, parseError: unknown): string | undefined {
+  if (parseError || !payload || typeof payload !== "object") return undefined;
+  if ("code" in payload && typeof payload.code === "string" && payload.code.trim().length > 0) {
+    return payload.code;
+  }
+  return undefined;
 }
