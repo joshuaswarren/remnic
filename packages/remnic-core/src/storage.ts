@@ -3854,26 +3854,34 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
     if (refIds && typeof rawEntityRef === "string") {
       const refBeforeRepair = fm.entityRef;
-      await entityRefs.repairEntityRefAfterJournalMove({
-        stateDir: this.stateDir,
-        currentIds: () => this.currentHistoricalIds(),
-        idsAtResolve: refIds,
-        rawRef: rawEntityRef,
-        frontmatter: fm,
-        rewrite: async () => {
-          // Re-gate under the final ref, then rewrite THROUGH the blocked-
-          // capture surface so any verdict change keeps the index consistent.
-          await applyTombstoneGate();
-          await this.writeTombstoneBlockedMemory(
-            filePath,
-            `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`,
-            fm,
-            sanitized.text,
-            async () => this.invalidateAllMemoriesCache(),
-          );
-          this.invalidateAllMemoriesCache();
-        },
-      });
+      try {
+        await entityRefs.repairEntityRefAfterJournalMove({
+          stateDir: this.stateDir,
+          currentIds: () => this.currentHistoricalIds(),
+          idsAtResolve: refIds,
+          rawRef: rawEntityRef,
+          frontmatter: fm,
+          rewrite: async () => {
+            // Re-gate under the final ref, then rewrite THROUGH the blocked-
+            // capture surface so any verdict change keeps the index consistent.
+            await applyTombstoneGate();
+            await this.writeTombstoneBlockedMemory(
+              filePath,
+              `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`,
+              fm,
+              sanitized.text,
+              async () => this.invalidateAllMemoriesCache(),
+            );
+            this.invalidateAllMemoriesCache();
+          },
+        });
+      } catch (err) {
+        // Remove the just-created file before propagating (§14): it would
+        // linger un-bumped/un-indexed and a retry would duplicate it.
+        await unlink(filePath).catch(() => undefined);
+        this.invalidateAllMemoriesCache();
+        throw err;
+      }
       await this.syncProjectionAfterRefRepair(id, refBeforeRepair, fm.entityRef);
     }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
@@ -3890,16 +3898,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       ],
     });
     if (category === "fact" && !tombstoneBlocked) {
-      // Rule 44 (#1579): a tombstone-blocked fact MUST NOT be registered as an
-      // active dedup/index entry — otherwise the block is invisible to dedup
-      // and the content is silently banned on the next extraction. Only active
-      // (un-blocked) facts enter the hash index.
+      // Rule 44 (#1579): only active (un-blocked) facts enter the hash
+      // index — a blocked entry would silently ban the content on the next
+      // extraction.
       try {
         const factHashIndex = await this.getFactHashIndex();
-        // When the caller provides a separate contentHashSource (e.g. the raw
-        // fact text before citation annotation), index THAT string so that
-        // hasFactContentHash(rawFact) returns true on subsequent extractions.
-        // Otherwise fall back to the sanitized persisted body as before.
+        // Index the caller's contentHashSource (raw fact text before
+        // citation annotation) when provided, so hasFactContentHash(rawFact)
+        // matches subsequent extractions; else the sanitized persisted body.
         const hashText =
           options.contentHashSource !== undefined && options.contentHashSource.length > 0
             ? sanitizeMemoryContent(options.contentHashSource).text
@@ -5019,9 +5025,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         );
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
         const destPath = path.join(destDir, path.basename(current.path));
-        // Snapshot a pre-existing destination (a prior archived copy — e.g.
-        // a retried archive) so a repair failure restores it instead of
-        // deleting the only archived version (§14).
+        // Snapshot a pre-existing destination (retried archive) so a repair
+        // failure restores it instead of deleting the only archived copy (§14).
         const priorDest = await this.readStorageSecureFile(destPath).catch(() => null);
         await this.writeStorageSecureFile(destPath, fileContent);
         if (typeof current.frontmatter.entityRef === "string") {
@@ -5031,8 +5036,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             );
           } catch (err) {
             // Restore/remove the destination before reporting failure (§14):
-            // the source survives, so a retained fresh copy would surface the
-            // memory in BOTH active and archived scans under a stale ref.
+            // a retained fresh copy would surface the memory in BOTH scans.
             if (priorDest === null) {
               await unlink(destPath).catch(() => undefined);
             } else {
@@ -5071,13 +5075,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return await this.runTombstoneBlockedArchive(memory, archiveCurrent);
   }
 
+  /** Alias of listEntityNames (kept for legacy callers; sorted). */
   async readEntities(): Promise<string[]> {
-    try {
-      const entries = await readdir(this.entitiesDir);
-      return entries.filter((e) => e.endsWith(".md")).map((e) => e.replace(".md", ""));
-    } catch {
-      return [];
-    }
+    return this.entityStore.listEntityNames();
   }
 
   async readEntity(name: string): Promise<string> {
