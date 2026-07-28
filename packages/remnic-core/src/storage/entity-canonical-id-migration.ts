@@ -255,6 +255,23 @@ async function writeState(
   }
 }
 
+/**
+ * Every journal publish — additive merges, completion markers, prunes —
+ * serializes under the entity MUTATION lock (issue #2213 review): entity
+ * writers, post-persist repair settles, and tombstone appends revalidate
+ * the journal identity under that lock, so an unlocked publish could land
+ * inside their resolve→write window and strand the write on a superseded
+ * id space.
+ */
+async function publishState(
+  deps: EntityCanonicalIdMigrationDependencies,
+  state: EntityCanonicalIdMigrationState
+): Promise<void> {
+  await withEntityCanonicalMutationLock(deps.stateDir, async () => {
+    await writeState(deps, state);
+  });
+}
+
 async function fileExists(filePath: string): Promise<boolean> {
   try {
     await access(filePath);
@@ -916,16 +933,12 @@ export async function migrateLegacyEntityCanonicalIds(
           Object.keys(a).length === Object.keys(b).length
           && Object.entries(a).every(([key, value]) => b[key] === value);
         if (same(collapsed, current.mappings) && same(parked, current.blocked ?? {})) return revived;
-        // Publish under the entity MUTATION lock: parking/removing an active
-        // mapping mid-entity-write would otherwise land an alias/activity/
-        // relationship mutation on a now-unrelated canonical claimant — the
-        // reconcile pass rewrites references, it cannot move a misplaced
-        // mutation. Entity writers revalidate the journal inside this lock,
-        // so serializing the publish closes their pre-commit window.
-        await withEntityCanonicalMutationLock(deps.stateDir, async () => {
-          state = { ...current, mappings: collapsed, blocked: parked };
-          await writeState(deps, state);
-        });
+        // Parking/removing an active mapping mid-entity-write would land an
+        // alias/activity/relationship mutation on a now-unrelated canonical
+        // claimant — the reconcile pass rewrites references, it cannot move
+        // a misplaced mutation. publishState serializes under the lock.
+        state = { ...current, mappings: collapsed, blocked: parked };
+        await publishState(deps, state);
         return revived;
       };
       const previousMappings = state.mappings;
@@ -983,7 +996,7 @@ export async function migrateLegacyEntityCanonicalIds(
           || Object.keys(mergedBefore).length !== Object.keys(state.mappings).length
         ) {
           state = { ...state, complete: false, mappings: mergedBefore };
-          await writeState(deps, state);
+          await publishState(deps, state);
         }
         if (Object.keys(state.mappings).length === 0) {
           if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
@@ -997,7 +1010,7 @@ export async function migrateLegacyEntityCanonicalIds(
           // that already reflects the deletion - so no later run revisits it.
           const revivedInRescan = await pruneBlocked();
           if (Object.keys(discoveredAfter).length === 0 && !revivedInRescan) {
-            await writeState(deps, { ...state, complete: true });
+            await publishState(deps, { ...state, complete: true });
             return finish();
           }
           state = {
@@ -1005,7 +1018,7 @@ export async function migrateLegacyEntityCanonicalIds(
             complete: false,
             mappings: collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredAfter)),
           };
-          await writeState(deps, state);
+          await publishState(deps, state);
           continue;
         }
         let pendingMappings = Object.entries(state.mappings);
@@ -1055,7 +1068,7 @@ export async function migrateLegacyEntityCanonicalIds(
         // retries and those references stay stranded.
         const revivedAfterRewrite = await pruneBlocked();
         if (Object.keys(discoveredAfter).length === 0 && !revivedAfterRewrite) {
-          await writeState(deps, { ...state, complete: true });
+          await publishState(deps, { ...state, complete: true });
           return finish();
         }
         state = {
@@ -1063,7 +1076,7 @@ export async function migrateLegacyEntityCanonicalIds(
           complete: false,
           mappings: collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredAfter)),
         };
-        await writeState(deps, state);
+        await publishState(deps, state);
       }
       throw new Error("Entity canonical-id migration mappings changed while migration was running; retry migration.");
     }

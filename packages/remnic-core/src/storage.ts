@@ -114,6 +114,8 @@ import {
   TombstoneStore,
   collectRetiredMemoriesForRebuild,
   buildRetiredFactTombstoneInputs,
+  applyTombstoneResurrectionGate,
+  type TombstoneMatch,
   type TombstoneStoreOptions,
   type TombstoneFileIo,
   type TombstoneReason,
@@ -3057,6 +3059,42 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   /**
+   * Shared lookup+apply core for the write-time resurrection gate (#1579 /
+   * #2213): fail-open, add-only; writeMemory's gate + chunk-repair re-gate (rule 43).
+   */
+  private async runTombstoneResurrectionGate(
+    fm: MemoryFrontmatter,
+    hashSource: string,
+    structuredAttributes?: Record<string, string>,
+  ): Promise<TombstoneMatch | null> {
+    if (!this.tombstonesConfig.enabled) return null;
+    try {
+      const store = await this.getTombstoneStore();
+      // Pass EVERY derived key (thread Ociag/Oci-W): emitters register one
+      // tombstone per key, so the block can be on any of them.
+      const supersessionKeys =
+        fm.entityRef && structuredAttributes
+          ? supersessionKeysForFact({ entityRef: fm.entityRef, structuredAttributes })
+          : [];
+      const match = applyTombstoneResurrectionGate(store, fm, {
+        normalizedText: ContentHashIndex.normalizeContent(hashSource),
+        supersessionKeys,
+        namespace: this.tombstonesConfig.namespace,
+      });
+      if (match) {
+        log.info(
+          `tombstone: blocked resurrection of fact ${fm.id} (tier=${match.matchedTier}, tombstone=${match.tombstoneId}, reason=${match.reason})`
+        );
+      }
+      return match;
+    } catch (err) {
+      // Fail-open (rule 34): a lookup error must not block the write.
+      log.warn(`tombstone lookup failed for fact ${fm.id} (fail-open): ${err}`);
+      return null;
+    }
+  }
+
+  /**
    * Append a tombstone for a retired memory (issue #1579 emitters).
    * Best-effort: a tombstone append failure MUST NOT fail the supersession /
    * correction that triggered it (gotcha #13 / rule 34). The memory is
@@ -3459,13 +3497,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private currentHistoricalIds(): Readonly<Record<string, string>> {
     return this.historicalEntityCanonicalIds.get(this.stateDir);
   }
-  /** Post-persist repair delegate (issue #2213) — see references module. */
+  /**
+   * Post-persist repair delegate (issue #2213) — see references module.
+   * `regateFact` re-runs the add-only resurrection gate under the FINAL ref
+   * before rewriting (chunk writes, where `body` IS the hash source).
+   */
   private async repairEntityRefAfterJournalMove(
     filePath: string,
     fm: MemoryFrontmatter,
     rawRef: string,
     refIds: Readonly<Record<string, string>>,
     body: string,
+    regateFact = false,
   ): Promise<void> {
     const refBeforeRepair = fm.entityRef;
     await entityRefs.repairEntityRefAfterJournalMove({
@@ -3475,6 +3518,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       rawRef,
       frontmatter: fm,
       rewrite: async () => {
+        if (regateFact && fm.category === "fact") {
+          await this.runTombstoneResurrectionGate(fm, body, undefined);
+        }
         // Blocked-capture surface: a repair rewrite of a tombstone-blocked
         // record must keep TombstoneBlockedCaptureIndex consistent.
         await this.writeTombstoneBlockedMemory(filePath, `${serializeFrontmatter(fm)}\n\n${body}\n`, fm, body);
@@ -3485,8 +3531,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
   /**
    * Projection rows written under the pre-repair claimant cannot be restored
-   * by later reconciliation once the mapping is parked (Codex P1). Fail-open:
-   * the projection is a rebuildable index.
+   * once the mapping is parked (Codex P1). Fail-open: projection is rebuildable.
    */
   private async syncProjectionAfterRefRepair(
     memoryId: string,
@@ -3754,17 +3799,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
 
     // ── Non-resurrection chokepoint (issue #1579) ────────────────────────
-    // Before a new fact becomes active, consult the tombstone index. If a
-    // retired fact matches (exact / normalized / keyed / semantic), persist
-    // the candidate as pending_review + blockedBy instead — VISIBLE, never a
-    // silent drop (rule 34) — and skip the active dedup/index registration
-    // (rule 44). This is the SINGLE storage persist path: every write
-    // (extraction, import, consolidation, dreams, pattern-reinforcement)
-    // funnels through writeMemory, so the five resurrection paths are blocked
-    // here without per-path code (rule 43).
-    // Pre-gate revalidation (issue #2213): re-resolve from the caller's
-    // ORIGINAL ref so the tombstone lookup and the persisted ref share one id
-    // space; moves across later awaits are caught by the post-persist repair.
+    // A match persists the fact as pending_review + blockedBy — VISIBLE,
+    // never a silent drop (rule 34) — and skips active dedup registration
+    // (rule 44). Pre-gate revalidation (#2213): re-resolve from the caller's
+    // ORIGINAL ref so the lookup and the persisted ref share one id space.
     if (refIds && typeof rawEntityRef === "string" && this.currentHistoricalIds() !== refIds) {
       refIds = this.currentHistoricalIds();
       fm.entityRef = entityRefs.resolveHistoricalEntityCanonicalId(rawEntityRef, refIds);
@@ -3773,9 +3811,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     let gateRef: string | undefined;
     let statusBeforeBlock: MemoryFrontmatter["status"];
     // Closure so the post-persist repair can RE-RUN it when a journal move
-    // changed the final entityRef. A verdict is only valid for the ref it was
-    // computed under (a parked mapping can move the final ref BACK to the
-    // legacy claimant): reset and re-evaluate — entity-independent tiers re-block.
+    // changed the final entityRef: a verdict is only valid for the ref it was
+    // computed under, so reset and re-evaluate (parked mappings fall BACK to
+    // the legacy claimant; entity-independent tiers re-block in the lookup).
     const applyTombstoneGate = async (): Promise<void> => {
       if (tombstoneBlocked) {
         if (fm.entityRef === gateRef) return;
@@ -3784,55 +3822,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         delete fm.blockedBy;
         delete fm.tombstoneBlockTier;
       }
-      if (
-        category !== "fact" ||
-        !this.tombstonesConfig.enabled ||
-        factHashSourceForTombstone === null ||
-        // Block facts that would become ACTIVE or are already pending_review
-        // (issue #1579 thread ObteQ: wearable/native imports write fact
-        // candidates with status: pending_review; without checking them here,
-        // promoteWearableMemory could later flip a retired fact active without
-        // a tombstone check). A caller that explicitly requests a terminal
-        // non-active status (rejected/retracted/superseded) is respected.
-        !(fm.status === undefined || fm.status === "active" || fm.status === "pending_review")
-      ) {
-        return;
-      }
-      try {
-        const tombstoneStore = await this.getTombstoneStore();
-        // Derive the keyed-tier supersession key from structured attributes
-        // using the SAME helper write-time supersession uses (one helper).
-        const keyedSupersession =
-          fm.entityRef && options.structuredAttributes
-            ? supersessionKeysForFact({
-                entityRef: fm.entityRef,
-                structuredAttributes: options.structuredAttributes,
-              })
-            : [];
-        // Issue #1579 thread Ociag/Oci-W: pass EVERY key — emitters register one tombstone per key, so the block can be on any later key.
-        const match = tombstoneStore.lookup({
-          contentHash: fm.contentHash,
-          normalizedText: ContentHashIndex.normalizeContent(factHashSourceForTombstone),
-          ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
-          ...(keyedSupersession.length > 0 ? { supersessionKeys: keyedSupersession } : {}),
-          namespace: this.tombstonesConfig.namespace,
-        });
-        if (match) {
-          gateRef = fm.entityRef;
-          statusBeforeBlock = fm.status;
-          tombstoneBlocked = true;
-          fm.status = "pending_review";
-          fm.blockedBy = match.tombstoneId;
-          fm.tombstoneBlockTier = match.matchedTier;
-          log.info(
-            `tombstone: blocked resurrection of fact ${id} (tier=${match.matchedTier}, tombstone=${match.tombstoneId}, reason=${match.reason})`
-          );
-        }
-      } catch (err) {
-        // Fail-open (rule 34 spirit): a tombstone lookup error must not block
-        // the write. The fact persists as active; the next lookup after the
-        // store recovers will catch a subsequent re-extraction.
-        log.warn(`tombstone lookup failed for fact ${id} (fail-open): ${err}`);
+      // Status semantics (thread ObteQ: pending_review candidates included,
+      // terminal statuses respected) live in applyTombstoneResurrectionGate.
+      if (category !== "fact" || factHashSourceForTombstone === null) return;
+      const statusBefore = fm.status;
+      const match = await this.runTombstoneResurrectionGate(fm, factHashSourceForTombstone, options.structuredAttributes);
+      if (match) {
+        gateRef = fm.entityRef;
+        statusBeforeBlock = statusBefore;
+        tombstoneBlocked = true;
       }
     };
     await applyTombstoneGate();
@@ -6734,9 +6732,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
     // Repair only when THIS chunk persisted: a tombstone-dedupe result
     // returns an existing id without writing filePath, and an unconditional
-    // repair rewrite would create a stray second chunk from scratch.
+    // repair rewrite would create a stray second chunk from scratch. The
+    // rewrite RE-GATES under the final ref (Bugbot): a journal move into
+    // tombstone-blocked identity space must not leave a fact chunk active.
     if (written === id && refIds && typeof rawEntityRef === "string") {
-      await this.repairEntityRefAfterJournalMove(filePath, fm, rawEntityRef, refIds, sanitized.text);
+      await this.repairEntityRefAfterJournalMove(filePath, fm, rawEntityRef, refIds, sanitized.text, true);
     }
     return written;
   }

@@ -343,15 +343,28 @@ async function stageRedirect(
         if (kind === "memory") {
           const idsAtWrite = historicalIdCache.get(stateDir);
           const written = canonicalizeEntityRefFrontmatter(update.content, idsAtWrite);
+          // Snapshot the ORIGINAL bytes: if repair fails after the write, the
+          // catch below reports a failed redirect, so the file must return to
+          // its pre-redirect state — a retry needs the original reference,
+          // and the skipped corpus bump means a warm cache would otherwise
+          // keep serving bytes that no longer match disk (AGENTS.md §14).
+          const originalBytes = await readMarkdownFile(update.mdPath).catch(() => null);
           await writeMarkdownFile(update.mdPath, written);
-          await repairContentAfterJournalMove({
-            stateDir,
-            cache: historicalIdCache,
-            idsAtWrite,
-            rawContent: update.content,
-            lastWritten: written,
-            rewrite: (next) => writeMarkdownFile(update.mdPath, next),
-          });
+          try {
+            await repairContentAfterJournalMove({
+              stateDir,
+              cache: historicalIdCache,
+              idsAtWrite,
+              rawContent: update.content,
+              lastWritten: written,
+              rewrite: (next) => writeMarkdownFile(update.mdPath, next),
+            });
+          } catch (err) {
+            if (originalBytes !== null) {
+              await writeMarkdownFile(update.mdPath, originalBytes).catch(() => undefined);
+            }
+            throw err;
+          }
         } else {
           await writeMarkdownFile(update.mdPath, update.content);
           if (kind === "entity") {

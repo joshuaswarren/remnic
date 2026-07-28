@@ -836,6 +836,46 @@ export function collectRetiredMemoriesForRebuild(
 }
 
 /**
+ * One-shot write-time resurrection gate (issue #1579 / #2213). Looks up the
+ * fact's identity in the tombstone store and, on a match, downgrades the
+ * frontmatter to `pending_review` + `blockedBy` IN PLACE. ADD-ONLY: an
+ * already-blocked or terminal-status record is left untouched. Pure over its
+ * inputs (no I/O beyond the injected store) so both `writeMemory`'s gate and
+ * the chunk-repair re-gate share one lookup + apply.
+ */
+export function applyTombstoneResurrectionGate(
+  store: Pick<TombstoneStore, "lookup">,
+  fm: {
+    id: string;
+    status?: string;
+    blockedBy?: string;
+    tombstoneBlockTier?: TombstoneMatchTier;
+    entityRef?: string;
+    contentHash?: string;
+  },
+  query: {
+    normalizedText: string;
+    supersessionKeys: string[];
+    namespace: string;
+  },
+): TombstoneMatch | null {
+  if (fm.status === "pending_review" && fm.blockedBy) return null;
+  if (!(fm.status === undefined || fm.status === "active" || fm.status === "pending_review")) return null;
+  const match = store.lookup({
+    contentHash: fm.contentHash,
+    normalizedText: query.normalizedText,
+    ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
+    ...(query.supersessionKeys.length > 0 ? { supersessionKeys: query.supersessionKeys } : {}),
+    namespace: query.namespace,
+  });
+  if (!match) return null;
+  fm.status = "pending_review";
+  fm.blockedBy = match.tombstoneId;
+  fm.tombstoneBlockTier = match.matchedTier;
+  return match;
+}
+
+/**
  * Build the live-emission tombstone inputs for a single retired FACT — one
  * input per derived supersession key (or a single keyless record when no
  * structured attributes are present). Pure (no I/O) so the emitters in
