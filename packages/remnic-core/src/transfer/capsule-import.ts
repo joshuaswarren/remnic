@@ -1,8 +1,16 @@
-import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
+import {
+  HistoricalEntityCanonicalIdCache,
+  readEntityRefFromFrontmatter,
+  canonicalizeEntityRefFrontmatter,
+  classifyEntityRefWritePath,
+  repairContentAfterJournalMove,
+  requestEntityCanonicalIdReconcile,
+} from "../storage/entity-canonical-id-references.js";
 import {
   createVersion,
   type VersioningConfig,
@@ -381,6 +389,26 @@ export async function importCapsule(
   // atomic (mkdir + writeFile pair).
   const imported: ImportCapsuleImportedRecord[] = [];
   const skipped: ImportCapsuleSkippedRecord[] = [];
+  // The target's completed migration journal is a write boundary here too
+  // (issue #2213): a capsule can carry pre-migration memories whose entityRef
+  // the target already renamed, and no recurring reconciliation pass exists
+  // to absorb a stale ref after the fact. Read through the identity-keyed
+  // cache PER RECORD so a peer migration completing mid-import is picked up
+  // for every record written after it (one lstat per record).
+  const journalStateDir = path.join(rootReal, "state");
+  const historicalIdCache = new HistoricalEntityCanonicalIdCache();
+  // Entity pages in THIS capsule can re-establish collisions the target's
+  // journal already resolved (Codex P1): once the next migration parks the
+  // mapping, a memory canonicalized onto the canonical claimant is
+  // permanently misattributed. Memories whose ref targets a capsule-supplied
+  // entity id import byte-faithful behind the reconcile marker instead; the
+  // migration settles the collision and rewrites references per its verdict.
+  const capsuleEntityIds = new Set(
+    bundle.records
+      .map((record) => computeTargetPath(record.path, mode, capsule.id))
+      .filter((rel) => classifyEntityRefWritePath(rootReal, path.join(rootReal, fromPosixRelPath(rel))) === "entity")
+      .map((rel) => path.basename(rel, ".md")),
+  );
 
   // Sort by source path so the imported/skipped lists are deterministic
   // regardless of bundle order. (`exportCapsule` already sorts; we re-sort
@@ -389,6 +417,11 @@ export async function importCapsule(
     a.path.localeCompare(b.path),
   );
 
+  // The reconcile marker is published ONCE, after every record landed
+  // (Codex P1, round 21): a per-record marker could be consumed by a peer
+  // between a legacy-preserving memory write and its colliding entity page,
+  // canonicalizing the memory onto the wrong claimant irreversibly.
+  let reconcileNeeded = false;
   for (const rec of sortedRecords) {
     const targetRel = computeTargetPath(rec.path, mode, capsule.id);
     // Use rootReal (realpath-resolved) to stay consistent with phase 1's
@@ -431,13 +464,62 @@ export async function importCapsule(
     let contentToWrite = rec.content;
     let rewroteId = false;
     if (mode === "fork") {
-      const forked = rewriteFrontmatterIdForFork(rec.content, capsule.id, opts.now);
+      const forked = rewriteFrontmatterIdForFork(contentToWrite, capsule.id, opts.now);
       contentToWrite = forked.content;
       rewroteId = forked.rewrote;
     }
 
     await mkdir(path.dirname(targetAbs), { recursive: true });
-    await writeFile(targetAbs, contentToWrite, "utf-8");
+    // Resolve at the write itself (mirrors capsule-merge): a peer migration
+    // can complete during the snapshot/mkdir awaits, and capsule writes bump
+    // only the corpus version, which the migration fingerprint ignores. The
+    // post-write REPAIR re-canonicalizes and rewrites when the journal moved
+    // across the write itself (a parked mapping cannot be fixed after the
+    // fact by the reconcile pass). Only memory-tier records canonicalize;
+    // entities/ pages carry relationship TARGETS only
+    // rewriteRelationshipTargets understands, so they import byte-faithful
+    // with a reconcile marker; everything else imports losslessly.
+    const targetKind = classifyEntityRefWritePath(rootReal, targetAbs);
+    const rawRef = targetKind === "memory" ? readEntityRefFromFrontmatter(contentToWrite) : null;
+    if (targetKind === "memory" && rawRef !== null && capsuleEntityIds.has(rawRef)) {
+      // Ref targets a capsule-supplied entity page (potential collision
+      // claimant): keep the legacy bytes; the DEFERRED marker below lets the
+      // migration settle the collision and rewrite per its verdict (Codex P1).
+      await writeFile(targetAbs, contentToWrite, "utf-8");
+      reconcileNeeded = true;
+    } else if (targetKind === "memory") {
+      const idsAtWrite = historicalIdCache.get(journalStateDir);
+      const rawRecord = contentToWrite;
+      contentToWrite = canonicalizeEntityRefFrontmatter(rawRecord, idsAtWrite);
+      // Snapshot the pre-write bytes: a repair failure after the write must
+      // restore them (or remove a newly created target), or the import
+      // reports failure while an overwrite already destroyed the prior state
+      // and the skipped corpus bump leaves warm caches stale (AGENTS.md §14).
+      const originalBytes = await readFile(targetAbs, "utf-8").catch(() => null);
+      await writeFile(targetAbs, contentToWrite, "utf-8");
+      try {
+        await repairContentAfterJournalMove({
+          stateDir: journalStateDir,
+          cache: historicalIdCache,
+          idsAtWrite,
+          rawContent: rawRecord,
+          lastWritten: contentToWrite,
+          rewrite: (content) => writeFile(targetAbs, content, "utf-8"),
+        });
+      } catch (err) {
+        if (originalBytes === null) {
+          await unlink(targetAbs).catch(() => undefined);
+        } else {
+          await writeFile(targetAbs, originalBytes, "utf-8").catch(() => undefined);
+        }
+        throw err;
+      }
+    } else {
+      await writeFile(targetAbs, contentToWrite, "utf-8");
+      if (targetKind === "entity") {
+        reconcileNeeded = true;
+      }
+    }
     // Bump the corpus sentinel per write (Cursor Medium, #1902): a concurrent
     // readAllMemories during the import must rescan and see records already on
     // disk, never the pre-import corpus, mid-batch.
@@ -448,6 +530,12 @@ export async function importCapsule(
       snapshotted,
       rewroteId,
     });
+  }
+
+  // Every record — including every collision claimant entity page — is on
+  // disk; NOW the reconcile pass can settle collisions safely.
+  if (reconcileNeeded) {
+    await requestEntityCanonicalIdReconcile(journalStateDir);
   }
 
   // Sort skipped for stable output (see comment above).

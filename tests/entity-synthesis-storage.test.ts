@@ -392,7 +392,7 @@ test("ensureDirectories rejects a symlinked tombstone ledger before rewriting", 
   }
 });
 
-test("ensureDirectories reapplies completed mappings to memories created later", async () => {
+test("writeMemory canonicalizes a legacy entityRef after migration completion", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-completed-reapply-"));
   try {
     const name = "月光";
@@ -408,29 +408,18 @@ test("ensureDirectories reapplies completed mappings to memories created later",
     );
     await storage.ensureDirectories();
 
-    const day = new Date().toISOString().slice(0, 10);
-    const memoryPath = path.join(dir, "facts", day, "created-after-migration.md");
-    await mkdir(path.dirname(memoryPath), { recursive: true });
-    await writeFile(
-      memoryPath,
-      [
-        "---",
-        "id: created-after-migration",
-        "category: fact",
-        "created: 2026-07-25T00:00:00.000Z",
-        `entityRef: ${legacyCanonical}`,
-        "---",
-        "",
-        "Created after the migration completed.",
-        "",
-      ].join("\n"),
-      "utf-8",
-    );
-    (storage as unknown as { bumpMemoryCorpusVersion(): void }).bumpMemoryCorpusVersion();
-
-    await storage.ensureDirectories();
-
-    assert.match(await readFile(memoryPath, "utf-8"), new RegExp(`entityRef: ${canonical}`));
+    // Issue #2213: the migration no longer re-runs its full-corpus reference
+    // rewrite after every corpus write (that was a hot loop on write-active
+    // daemons). Instead the WRITE boundary resolves legacy ids through the
+    // completed journal, so a later write naming the legacy id — extraction
+    // output, explicit capture — lands canonical with no reconciliation pass.
+    const written = await storage.writeMemory("fact", "Created after the migration completed.", {
+      entityRef: legacyCanonical,
+    });
+    const memory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === written.id);
+    assert.ok(memory, "fixture must persist the fact");
+    assert.equal(memory.frontmatter.entityRef, canonical);
+    assert.match(await readFile(memory.path, "utf-8"), new RegExp(`entityRef: ${canonical}`));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

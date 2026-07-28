@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { StorageManager, normalizeEntityName } from "../packages/remnic-core/src/storage.js";
+import { getFingerprint } from "../packages/remnic-core/src/storage/entity-canonical-id-migration.js";
 
 /**
  * A legacy entity file and its canonical successor can both exist with
@@ -414,6 +415,273 @@ test("a park whose legacy file is already gone still rewrites references", async
       /^entityRef: (.*)$/m.exec(await readFile(factPath, "utf8"))?.[1],
       canonical,
       "a park resolved before completion must still rewrite its references",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stable completed journal with retained mappings is a no-op on re-init", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-stable-journal-"));
+  try {
+    // Reach the steady state every long-lived deployment lands in: a
+    // completed migration whose journal retains mappings for read compat
+    // (here via the delete-the-legacy-side resolution, as above).
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    // Re-initializing on that stable journal must be a pure no-op (issue
+    // #2213): the old fast path re-ran the full-corpus reference rewrite and
+    // bumped memory-status (invalidating every cache) on EVERY
+    // ensureDirectories — a hot loop on write-active daemons.
+    const storage = new StorageManager(dir);
+    const statusBefore = storage.getMemoryStatusVersion();
+    await storage.ensureDirectories();
+    assert.equal(
+      storage.getMemoryStatusVersion(),
+      statusBefore,
+      "a stable completed journal must not bump memory-status (cache-invalidation churn) on re-init",
+    );
+    // The retained mapping still serves reads.
+    assert.equal(storage.normalizeEntityName("Nightly Ingest", "automation"), canonical);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("plain memory writes do not change the migration fingerprint; entity writes do", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-fingerprint-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    // Same provider the runner AND adapter use: the entity-mutation sentinel,
+    // NOT memory-status — a regression bumping it on plain fact writes must
+    // fail this test (it would reintroduce the #2213 hot loop).
+    const readFp = () =>
+      getFingerprint(dir, path.join(dir, "entities"), () => String(storage.getEntityMutationVersion()));
+
+    const before = await readFp();
+    const first = await storage.writeMemory("fact", "The ingest runs nightly.");
+    const second = await storage.writeMemory("fact", "The ingest runs at 02:00 nightly.");
+    assert.equal(
+      await readFp(),
+      before,
+      "a plain fact create must not re-trigger the canonical-id migration (issue #2213)",
+    );
+    // A REAL supersession bumps memory-status; the migration fingerprint must
+    // not move with it.
+    assert.equal(await storage.supersedeMemory(first.id, second.id, "test"), true);
+    assert.equal(
+      await readFp(),
+      before,
+      "status/lifecycle version bumps must not re-trigger the canonical-id migration",
+    );
+
+    await storage.writeEntity("Nightly Ingest", "automation-cron-job", ["Runs at 02:00."]);
+    assert.notEqual(await readFp(), before, "an entity mutation must re-trigger the migration");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("addEntityRelationship resolves legacy ids on both ends after migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-relationship-canonical-"));
+  try {
+    // Steady state: completed migration retaining the legacy→canonical mapping.
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const other = normalizeEntityName("Backup Sync", "automation-cron-job");
+    await storage.writeEntity("Backup Sync", "automation-cron-job", ["Runs at 03:00."]);
+
+    // Legacy id as the entity being written: the legacy file no longer
+    // exists, so an unresolved lookup would silently no-op — the edge must
+    // land on the canonical file instead.
+    await storage.addEntityRelationship(legacy, { target: other, label: "precedes" });
+    assert.match(
+      await readFile(path.join(dir, "entities", `${canonical}.md`), "utf8"),
+      new RegExp(`\\[\\[${other}\\]\\] — precedes`),
+    );
+
+    // Legacy id as a relationship target: the stored edge must name the
+    // canonical id, never a node the migration renamed away (issue #2213 —
+    // extraction persists LLM-supplied relationship endpoints verbatim).
+    await storage.addEntityRelationship(other, { target: legacy, label: "follows" });
+    const backup = await readFile(path.join(dir, "entities", `${other}.md`), "utf8");
+    assert.match(backup, new RegExp(`\\[\\[${canonical}\\]\\] — follows`));
+    assert.doesNotMatch(backup, new RegExp(`\\[\\[${legacy}\\]\\]`));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a manager that predates a peer's migration still canonicalizes reference writes", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-stale-manager-"));
+  try {
+    // Manager A exists BEFORE any migration journal does.
+    const a = new StorageManager(dir);
+    await a.ensureDirectories();
+    const written = await a.writeMemory("fact", "The ingest runs nightly.");
+
+    // A peer manager seeds a collision, resolves it, and completes the
+    // migration — A never re-runs ensureDirectories after this.
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    // A's reference-mutating write must resolve through the CURRENT journal,
+    // not a constructor-time snapshot: the mapping table is keyed by the
+    // shared memory-status version, which the peer's migration bumped.
+    const memory = (await a.readAllMemories()).find((m) => m.frontmatter.id === written.id);
+    assert.ok(memory, "fixture must persist the fact");
+    await a.writeMemoryFrontmatter(memory, { entityRef: legacy });
+    assert.match(await readFile(memory.path, "utf-8"), new RegExp(`entityRef: ${canonical}`));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a park written without any version bump still invalidates peer mapping caches", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-park-invalidation-"));
+  try {
+    // Completed migration retaining legacy→canonical.
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    // A long-lived manager loads the mapping and redirects the legacy id.
+    const a = new StorageManager(dir);
+    await a.ensureDirectories();
+    assert.equal(a.normalizeEntityName("Nightly Ingest", "automation"), canonical);
+
+    // The collision re-forms out of band; a peer's migration run parks the
+    // mapping — pruneBlocked rewrites the journal WITHOUT bumping any shared
+    // version. The stale manager must stop redirecting the contested id.
+    await writeFile(
+      path.join(dir, "entities", `${legacy}.md`),
+      `---\nid: ${legacy}\ncreated: 2026-03-02T00:00:00.000Z\nupdated: 2026-03-02T00:00:00.000Z\n---\n\n`
+      + `# Nightly Ingest\n\n**Type:** automation-cron-job\n\nRuns at 04:00 — diverged.\n`,
+      "utf8",
+    );
+    await new StorageManager(dir).ensureDirectories();
+    assert.equal(
+      a.normalizeEntityName("Nightly Ingest", "automation"),
+      legacy,
+      "a parked mapping must not keep redirecting through a stale in-memory table",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an offline-sync raw write triggers one reconcile pass, then quiesces", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-reconcile-marker-"));
+  try {
+    // Completed migration retaining legacy→canonical.
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    // Offline sync replicates a memory file with a legacy entityRef — raw
+    // bytes the store cannot canonicalize inline. The write must request a
+    // reconcile pass (issue #2213).
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const syncedPath = path.join(dir, "facts", "2026-03-01", "fact-synced.md");
+    await storage.writeOfflineSyncFile(
+      syncedPath,
+      Buffer.from(
+        `---\nid: fact-synced\ncategory: fact\nconfidence: 0.9\n`
+        + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+        + `entityRef: ${legacy}\nstatus: active\n---\n\nSynced from a peer.\n`,
+        "utf-8",
+      ),
+    );
+    const marker = path.join(dir, "state", "entity-canonical-id-reconcile.pending");
+    assert.match(await readFile(marker, "utf8"), /T/, "raw sync write must request reconciliation");
+
+    // A fresh init honors the marker: the reference is rewritten and the
+    // marker consumed.
+    await new StorageManager(dir).ensureDirectories();
+    assert.equal(/^entityRef: (.*)$/m.exec(await readFile(syncedPath, "utf8"))?.[1], canonical);
+    await assert.rejects(() => readFile(marker, "utf8"), "the reconcile marker must be consumed");
+
+    // And the pass does not loop: with the marker gone, a re-init is a no-op.
+    const idle = new StorageManager(dir);
+    const statusBefore = idle.getMemoryStatusVersion();
+    await idle.ensureDirectories();
+    assert.equal(idle.getMemoryStatusVersion(), statusBefore);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a .consuming marker left by a crashed run still triggers the reconcile pass", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-reconcile-crash-"));
+  try {
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    // Simulate a crash mid-reconcile: the marker generation was renamed
+    // aside but never consumed, and the raw-written file was not rewritten.
+    const rawPath = path.join(dir, "facts", "2026-03-01", "fact-crashed.md");
+    await mkdir(path.dirname(rawPath), { recursive: true });
+    await writeFile(
+      rawPath,
+      `---\nid: fact-crashed\ncategory: fact\nconfidence: 0.9\n`
+      + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+      + `entityRef: ${legacy}\nstatus: active\n---\n\nLanded before the crash.\n`,
+      "utf8",
+    );
+    const consuming = path.join(dir, "state", "entity-canonical-id-reconcile.pending.consuming");
+    await writeFile(consuming, "2026-03-01T00:00:00.000Z\n", "utf8");
+
+    await new StorageManager(dir).ensureDirectories();
+    assert.equal(/^entityRef: (.*)$/m.exec(await readFile(rawPath, "utf8"))?.[1], canonical);
+    await assert.rejects(() => readFile(consuming, "utf8"), "a crashed generation must be consumed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("addEntityRelationship falls back to the legacy file while its rename is in flight", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-midflight-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const legacy = normalizeEntityName("Nightly Ingest", "automation");
+    const canonical = normalizeEntityName("Nightly Ingest", "automation-cron-job");
+    // The mid-migration window: the journal already maps legacy → canonical,
+    // but the entity file has not physically moved yet.
+    await writeFile(
+      path.join(dir, "entities", `${legacy}.md`),
+      `---\nid: ${legacy}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# Nightly Ingest\n\n**Type:** automation-cron-job\n\nRuns at 02:00.\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: { [legacy]: canonical } }),
+      "utf8",
+    );
+
+    // Resolving only the canonical path (whose file does not exist yet) would
+    // silently drop the edge; the fallback must land it on the legacy file.
+    await storage.addEntityRelationship(legacy, { target: "automation-cron-job-backup-sync", label: "precedes" });
+    assert.match(
+      await readFile(path.join(dir, "entities", `${legacy}.md`), "utf8"),
+      /\[\[automation-cron-job-backup-sync\]\] — precedes/,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

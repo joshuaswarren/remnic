@@ -13,13 +13,25 @@
 import { readdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
-import { withEntityCanonicalMutationLock } from "./entity-canonical-id-migration.js";
+import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
 import { log } from "../logger.js";
 import { getCachedEntities, setCachedEntities } from "../memory-cache.js";
 import type { VersionTrigger } from "../page-versioning.js";
 import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
-import type { EntityFile, EntityStructuredSection, PluginConfig, ScoredEntity } from "../types.js";
+import type {
+  EntityActivityEntry,
+  EntityFile,
+  EntityRelationship,
+  EntityStructuredSection,
+  PluginConfig,
+  ScoredEntity,
+} from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
+import {
+  reconcileIfJournalMovedSync,
+  requestEntityCanonicalIdReconcileSync,
+  resolveHistoricalEntityCanonicalId,
+} from "./entity-canonical-id-references.js";
 import {
   buildEntitySchemaCacheKey,
   compareEntityTimestamps,
@@ -38,9 +50,12 @@ export interface EntityStoreDeps {
   readonly storageManagerClass: typeof StorageManager;
   readonly baseDir: string;
   bumpMemoryStatusVersion(): void;
+  /** Entity-mutation sentinel for the migration fingerprint (issue #2213). */
+  bumpEntityMutationVersion(): void;
   ensureDirectories(): Promise<void>;
   readonly entitiesDir: string;
   readonly entitySchemas: PluginConfig["entitySchemas"] | undefined;
+  currentHistoricalIds(): Readonly<Record<string, string>>;
   findMatchingEntity(proposedName: string, type: string): Promise<string | null>;
   getEntityCacheSecureStoreKey(): string;
   getMemoryStatusVersion(): number;
@@ -64,6 +79,118 @@ export class EntityStore {
   /** Normalize an entity name using this store's alias table. */
   normalizeEntityName(raw: string, type: string): string {
     return normalizeEntityNameShared(raw, type, this.deps.userAliases);
+  }
+
+  /**
+   * Read an entity file by id, resolving through the migration journal with a
+   * fallback to the caller's original id (issue #2213): mid-migration, the
+   * journal maps legacy → canonical BEFORE the file moves — writing the
+   * still-existing legacy file is safe (the rename retry carries it), while
+   * resolving only the canonical path silently drops the mutation.
+   */
+  private async readEntityForMutation(
+    name: string,
+    method: string,
+    historicalIds: Readonly<Record<string, string>>,
+  ): Promise<{ filePath: string; entity: EntityFile } | null> {
+    const canonical = resolveHistoricalEntityCanonicalId(name, historicalIds);
+    for (const candidate of canonical === name ? [name] : [canonical, name]) {
+      const filePath = path.join(this.deps.entitiesDir, `${candidate}.md`);
+      try {
+        const entity = parseEntityFile(await this.deps.readStorageSecureFile(filePath), this.deps.entitySchemas);
+        return { filePath, entity };
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      }
+    }
+    log.debug(`${method}: entity file ${canonical}.md not found`);
+    return null;
+  }
+
+  /**
+   * Locked read-modify-write for the entity-file mutators (issue #2213):
+   * holding the entity-mutation lock keeps `migrateEntityFilePair` (which
+   * takes the same lock) from moving the file between the fallback read and
+   * this write — an unlocked write could recreate a just-renamed legacy file.
+   * The journal itself is NOT serialized by this lock (`pruneBlocked` can
+   * park a mapping mid-mutation), so the journal identity is REVALIDATED
+   * just before committing — a moved journal restarts resolution against the
+   * fresh table instead of writing into a since-contested claimant — and
+   * checked once more after the write for a move across the write itself.
+   * `mutate` returns false to skip the write. Resolves true when written.
+   */
+  private async mutateEntityFile(
+    name: string,
+    method: string,
+    mutate: (entity: EntityFile, historicalIds: Readonly<Record<string, string>>) => boolean,
+  ): Promise<boolean> {
+    const stateDir = path.join(this.deps.baseDir, "state");
+    return withEntityCanonicalMutationLock(stateDir, async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const idsAtResolve = this.deps.currentHistoricalIds();
+        const located = await this.readEntityForMutation(name, method, idsAtResolve);
+        const mutated = located !== null && mutate(located.entity, idsAtResolve);
+        // Revalidate BEFORE honoring either verdict: a journal that moved
+        // makes both the resolution AND a dedupe-based no-op stale (a parked
+        // mapping can make "already present on the claimant" wrong).
+        if (this.deps.currentHistoricalIds() !== idsAtResolve) continue;
+        if (!located || !mutated) return false;
+        located.entity.updated = new Date().toISOString();
+        await this.deps.writeStorageSecureFile(
+          located.filePath,
+          serializeEntityFile(located.entity, this.deps.entitySchemas),
+        );
+        reconcileIfJournalMovedSync(stateDir, idsAtResolve, this.deps.currentHistoricalIds());
+        this.deps.invalidateKnowledgeIndexCache();
+        this.deps.bumpEntityMutationVersion();
+        return true;
+      }
+      // The journal kept moving under us. A silent false would DROP the
+      // requested mutation (the reconcile pass rewrites existing references;
+      // it cannot replay a mutation that was never written) — surface a
+      // retryable error so the caller's persist machinery logs/retries it.
+      requestEntityCanonicalIdReconcileSync(stateDir);
+      throw new Error(
+        `${method}: entity canonical-id journal kept changing; mutation not applied — retry`,
+      );
+    });
+  }
+
+  /** Add a relationship to an entity file. Deduplicates by target+label. */
+  async addEntityRelationship(name: string, rel: EntityRelationship): Promise<void> {
+    await this.mutateEntityFile(name, "addEntityRelationship", (entity, historicalIds) => {
+      // Resolve the target with the SAME snapshot the locked read used, and
+      // dedupe against CANONICALIZED stored targets — an existing edge the
+      // migration has not rewritten yet still names the legacy id, and a
+      // plain equality check would miss it and leave duplicates after the
+      // rewrite (issue #2213).
+      const target = resolveHistoricalEntityCanonicalId(rel.target, historicalIds);
+      const duplicate = entity.relationships.some(
+        (r) => resolveHistoricalEntityCanonicalId(r.target, historicalIds) === target && r.label === rel.label,
+      );
+      if (duplicate) return false;
+      entity.relationships.push({ ...rel, target });
+      return true;
+    });
+  }
+
+  /** Add an activity entry to an entity file; prunes oldest beyond maxEntries. */
+  async addEntityActivity(name: string, entry: EntityActivityEntry, maxEntries: number): Promise<void> {
+    await this.mutateEntityFile(name, "addEntityActivity", (entity) => {
+      entity.activity.unshift(entry);
+      if (entity.activity.length > maxEntries) entity.activity = entity.activity.slice(0, maxEntries);
+      return true;
+    });
+  }
+
+  async addEntityAlias(name: string, alias: string): Promise<void> {
+    const wrote = await this.mutateEntityFile(name, "addEntityAlias", (entity) => {
+      if (entity.aliases.includes(alias)) return false;
+      entity.aliases.push(alias);
+      return true;
+    });
+    if (wrote) this.deps.bumpMemoryStatusVersion();
   }
 
   async writeEntity(
@@ -212,6 +339,7 @@ export class EntityStore {
     await this.deps.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.deps.entitySchemas));
     this.deps.invalidateKnowledgeIndexCache();
     this.deps.bumpMemoryStatusVersion(); // invalidate entity cache
+    this.deps.bumpEntityMutationVersion();
     log.debug(`wrote entity ${normalized}`);
     return normalized;
   }
@@ -241,6 +369,37 @@ export class EntityStore {
     } catch {
       return [];
     }
+  }
+
+  /** Re-serialize every entity file into the compiled-truth timeline shape. */
+  async migrateEntityFilesToCompiledTruthTimeline(): Promise<{ total: number; migrated: number }> {
+    const entityNames = await this.listEntityNames();
+    const stateDir = path.join(this.deps.baseDir, "state");
+    let migrated = 0;
+    for (const entityName of entityNames) {
+      // Read+rewrite under the entity MUTATION lock (issue #2213): an
+      // unlocked whole-record rewrite could restore relationship targets a
+      // peer migration rewrote between the read and the write, and this
+      // path bumps only the status version, which never re-triggers the
+      // completed migration's reference scan.
+      const wrote = await withEntityCanonicalMutationLock(stateDir, async () => {
+        const raw = await this.readEntity(entityName);
+        if (!raw) return false;
+        const serialized = serializeEntityFile(parseEntityFile(raw, this.deps.entitySchemas), this.deps.entitySchemas);
+        if (raw.trimEnd() === serialized.trimEnd()) return false;
+        const filePath = this.deps.resolveEntityFilePath(entityName);
+        if (filePath === null) return false;
+        await this.deps.writeStorageSecureFile(filePath, serialized);
+        this.deps.bumpEntityMutationVersion();
+        return true;
+      });
+      if (wrote) migrated += 1;
+    }
+    if (migrated > 0) {
+      this.deps.invalidateKnowledgeIndexCache();
+      this.deps.bumpMemoryStatusVersion();
+    }
+    return { total: entityNames.length, migrated };
   }
 
   /**
@@ -315,6 +474,7 @@ export class EntityStore {
     ]);
     this.deps.invalidateKnowledgeIndexCache();
     this.deps.bumpMemoryStatusVersion(); // invalidate entity cache
+    this.deps.bumpEntityMutationVersion();
   }
 
   /**
@@ -693,6 +853,7 @@ export class EntityStore {
 
         const canonicalPath = path.join(this.deps.entitiesDir, `${canonical}.md`);
         await this.deps.writeStorageSecureFile(canonicalPath, serializeEntityFile(mergedEntity, this.deps.entitySchemas));
+        this.deps.bumpEntityMutationVersion();
 
         // Remove non-canonical files
         for (const file of files) {

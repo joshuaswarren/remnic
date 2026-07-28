@@ -34,6 +34,8 @@ import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
+import * as entityRefs from "./storage/entity-canonical-id-references.js";
+import { EntityRefRepair } from "./storage/entity-ref-repair.js";
 import {
   runLegacyEntityCanonicalIdMigration,
   type EntityCanonicalIdMigrationHost,
@@ -104,6 +106,10 @@ import {
   stripCitationForTemplate,
   DEFAULT_CITATION_FORMAT,
 } from "./source-attribution.js";
+import {
+  stripCitationMarkersForHashRemoval,
+  stripDefaultCitationMarkersWithoutRegex,
+} from "./storage/citation-hash-source.js";
 import {
   TombstoneStore,
   collectRetiredMemoriesForRebuild,
@@ -245,6 +251,8 @@ const ARTIFACT_SEARCH_STOPWORDS = new Set([
   "with",
 ]);
 
+type SharedVersionKind = "memory-status" | "artifact-write" | "cold-write" | "memory-corpus" | "entity-mutation";
+
 type OfflineSyncDigestCacheEntry = {
   statBytes: number;
   mtimeMs: number;
@@ -309,92 +317,6 @@ function normalizeMemoryWriteTimestamp(field: string, value: string | undefined)
     throw new Error(`${field} must be a valid ISO timestamp, got ${JSON.stringify(value)}`);
   }
   return new Date(parsed).toISOString();
-}
-
-function trimTrailingSpacesAndTabs(value: string): string {
-  let end = value.length;
-  while (end > 0 && (value[end - 1] === " " || value[end - 1] === "\t")) {
-    end -= 1;
-  }
-  return end === value.length ? value : value.slice(0, end);
-}
-
-function trimLeadingSpacesAndTabs(value: string): string {
-  let start = 0;
-  while (start < value.length && (value[start] === " " || value[start] === "\t")) {
-    start += 1;
-  }
-  return start === 0 ? value : value.slice(start);
-}
-
-function stripDefaultCitationMarkersWithoutRegex(value: string): string {
-  return stripCitationMarkersForHashRemoval(value, DEFAULT_CITATION_FORMAT);
-}
-
-function citationTemplateLiteralParts(template: string): string[] {
-  const parts: string[] = [];
-  let cursor = 0;
-  while (cursor < template.length) {
-    const open = template.indexOf("{", cursor);
-    if (open === -1) {
-      parts.push(template.slice(cursor));
-      break;
-    }
-    parts.push(template.slice(cursor, open));
-    const close = template.indexOf("}", open + 1);
-    if (close === -1) {
-      cursor = open + 1;
-    } else {
-      cursor = close + 1;
-    }
-  }
-  return parts.filter((part) => part.length > 0);
-}
-
-function stripCitationMarkersForHashRemoval(value: string, template: string): string {
-  const parts = citationTemplateLiteralParts(template);
-  if (parts.length === 0) return value;
-  const first = parts[0]!;
-  const lowerValue = value.toLowerCase();
-  const lowerFirst = first.toLowerCase();
-  const lowerParts = parts.map((part) => part.toLowerCase());
-  if (!lowerValue.includes(lowerFirst)) return value;
-
-  let result = "";
-  let cursor = 0;
-  let removed = false;
-  while (cursor < value.length) {
-    const markerStart = lowerValue.indexOf(lowerFirst, cursor);
-    if (markerStart === -1) {
-      result += value.slice(cursor);
-      break;
-    }
-    const boundedEnd = first.startsWith("[") ? value.indexOf("]", markerStart + first.length) : -1;
-    if (first.startsWith("[") && boundedEnd === -1) {
-      result += value.slice(cursor);
-      break;
-    }
-    const searchLimit = boundedEnd === -1 ? value.length : boundedEnd + 1;
-    let markerEnd = markerStart + first.length;
-    let matched = true;
-    for (let i = 1; i < lowerParts.length; i += 1) {
-      const partIndex = lowerValue.indexOf(lowerParts[i]!, markerEnd);
-      if (partIndex === -1 || partIndex + parts[i]!.length > searchLimit) {
-        matched = false;
-        break;
-      }
-      markerEnd = partIndex + parts[i]!.length;
-    }
-    if (!matched) {
-      result += value.slice(cursor);
-      break;
-    }
-    result += trimTrailingSpacesAndTabs(value.slice(cursor, markerStart));
-    cursor = markerEnd;
-    removed = true;
-  }
-
-  return removed ? trimLeadingSpacesAndTabs(result) : value;
 }
 
 function serializeFrontmatter(fm: MemoryFrontmatter): string {
@@ -1136,23 +1058,6 @@ const FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS = 50;
 // Attribute normalization helper
 // ---------------------------------------------------------------------------
 
-/**
- * Render a structured-attributes map into a stable, canonical string fragment
- * suitable for appending to enriched memory content before hashing.
- *
- * Normalization rules:
- *   - Keys are trimmed and lowercased (values are trimmed but preserve case)
- *   - Key-value pairs are sorted alphabetically by normalized key
- *   - Pairs are joined with "; " and rendered as "key: value"
- *
- * Using this helper at BOTH the write path (enrichedContent) and the
- * dedup-lookup path (dedupContent) guarantees identical output regardless of
- * the insertion order or casing used by the caller.
- *
- * @example
- *   normalizeAttributePairs({ foo: "bar", BAZ: "qux" })
- *   // → "baz: qux; foo: bar"
- */
 // `stripAttributesSuffix` now lives in ./structured-attributes.ts (shared with
 // the coding surfaces + wearable service). Imported here so internal callers
 // (snapshotBeforeWrite, snapshotForProvenance) resolve, and re-exported to
@@ -1839,6 +1744,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   // every plain create). In-process fallback when the on-disk sentinel is
   // unavailable; canonical source is state/.memory-corpus-version.log.
   private static readonly memoryCorpusVersionByDir = new Map<string, number>();
+  // Entity-mutation sentinel: see getEntityMutationVersion.
+  private static readonly entityMutationVersionByDir = new Map<string, number>();
   private static readonly secureStoreEntityCacheKeyIds = new WeakMap<Buffer, number>();
   private static nextSecureStoreEntityCacheKeyId = 1;
   // In-process fallback for the cold-write sentinel (used when the disk file
@@ -2305,7 +2212,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // loadAliases() explicitly — every creation path must still get the
     // store's own aliases, never an empty or foreign table.
     this.loadAliasesSync();
-    this.loadHistoricalEntityCanonicalIdsSync();
   }
 
   /** Set the process-wide hot-memories cache default (issue #1902). The
@@ -2404,20 +2310,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return path.join(workspaceDir, `IDENTITY.${safeNamespace}.md`);
   }
 
-  private versionFilePath(kind: "memory-status" | "artifact-write" | "cold-write" | "memory-corpus"): string {
-    const fileName =
-      kind === "memory-status"
-        ? ".memory-status-version.log"
-        : kind === "artifact-write"
-          ? ".artifact-write-version.log"
-          : kind === "cold-write"
-            ? ".cold-write-version.log"
-            : ".memory-corpus-version.log";
-    return path.join(this.stateDir, fileName);
+  private versionFilePath(kind: SharedVersionKind): string {
+    return path.join(this.stateDir, `.${kind}-version.log`);
   }
 
   private bumpSharedVersion(
-    kind: "memory-status" | "artifact-write" | "cold-write" | "memory-corpus",
+    kind: SharedVersionKind,
     fallbackMap: Map<string, number>
   ): number {
     const filePath = this.versionFilePath(kind);
@@ -2435,7 +2333,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   private readSharedVersion(
-    kind: "memory-status" | "artifact-write" | "cold-write" | "memory-corpus",
+    kind: SharedVersionKind,
     fallbackMap: Map<string, number>
   ): number {
     const filePath = this.versionFilePath(kind);
@@ -2448,16 +2346,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   protected bumpMemoryStatusVersion(): void {
     this.bumpSharedVersion("memory-status", StorageManager.memoryStatusVersionByDir);
-    // Also bump the corpus sentinel so peer processes rescan the hot-memories
-    // cache after status/lifecycle/bulk mutations (issue #1902). invalidateAllForDir
-    // below drops the hot layer locally; the corpus bump handles cross-process.
+    // Corpus sentinel too: peer processes rescan the hot-memories cache
+    // after status/lifecycle/bulk mutations (#1902); invalidateAllForDir
+    // below drops the hot layer locally.
     this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
-    // Invalidation chokepoint (issue #1535): status/entity mutations funnel
-    // through this bump — several of them (supersedeMemory, archiveMemories,
-    // writeEntity, cleanExpiredCommitments) do NOT call
-    // invalidateAllMemoriesCache(), so the chokepoint must fire here as well.
-    // Version bumps only invalidate the version-checked layers lazily; the
-    // TTL-based QMD caches need this eager clear.
+    // Invalidation chokepoint (#1535): several status/entity mutations
+    // (supersede, archiveMemories, writeEntity, commitment cleanup) never
+    // call invalidateAllMemoriesCache; the TTL-based QMD caches need this
+    // eager clear.
     invalidateAllForDir(this.baseDir);
   }
 
@@ -2466,38 +2362,43 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   /**
-   * Corpus version sentinel for the hot-memories result cache (issue #1902).
-   * Distinct from memory-status: it bumps on EVERY memory-file mutation
-   * (create/update/delete/bulk) so the version-keyed hot cache stays coherent
-   * across processes, WITHOUT bumping memory-status — which would needlessly
-   * invalidate the version-keyed entity cache on every plain fact create (the
-   * ki-spike regression the sibling perf work removes). memory-status keeps its
-   * lifecycle/status/entity semantics unchanged.
+   * Entity-mutation sentinel: advanced only by entity-store content writes.
+   * The migration fingerprint keys on this instead of memory-status, so
+   * supersede/archive/delete no longer re-trigger discovery scans (#2213).
+   */
+  getEntityMutationVersion(): number {
+    return this.readSharedVersion("entity-mutation", StorageManager.entityMutationVersionByDir);
+  }
+
+  protected bumpEntityMutationVersion(): void {
+    this.bumpSharedVersion("entity-mutation", StorageManager.entityMutationVersionByDir);
+  }
+
+  /**
+   * Corpus version sentinel for the hot-memories result cache (#1902).
+   * Distinct from memory-status: bumps on EVERY memory-file mutation so the
+   * version-keyed hot cache stays coherent across processes, WITHOUT
+   * invalidating the version-keyed entity cache on every plain fact create.
    */
   getMemoryCorpusVersion(): number {
     return this.readSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
   }
 
   protected bumpMemoryCorpusVersion(): void {
-    // Bump only — unlike bumpMemoryStatusVersion this must NOT invalidateAllForDir
-    // (that would drop the very hot entry the write path just patched).
+    // Bump only — NOT invalidateAllForDir (that would drop the very hot
+    // entry the write path just patched).
     this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
-    // Also drop the in-flight readAllMemories slot (Cursor Medium, #1902): after
-    // the sentinel advances, a concurrent read must not attach to a scan that
-    // began BEFORE this mutation and receive a pre-mutation corpus. Clearing the
-    // slot forces such a read to start a fresh scan of current disk state. (The
-    // patch path uses bumpMemoryCorpusVersionExclusive and clears the slot
-    // itself; this covers the per-item supersede/archive/TTL-cleanup bumps.)
+    // Drop the in-flight readAllMemories slot (#1902): a concurrent read
+    // must not attach to a scan that began BEFORE this mutation. (The patch
+    // path uses bumpMemoryCorpusVersionExclusive and clears the slot itself.)
     deleteInFlightReadsForDir(this.baseDir);
   }
 
   /**
-   * Corpus bump that reports whether THIS process's append was the only one
-   * since the pre-bump size (issue #1902, Codex P1). appendFileSync is atomic
-   * per write, but a peer process can append concurrently; the `exclusive`
-   * flag lets patchHotMemoriesCache refuse to re-key its locally patched
-   * (peer-incomplete) corpus at a version that already reflects a peer's
-   * still-unread write.
+   * Corpus bump reporting whether THIS process's append was the only one
+   * since the pre-bump size (#1902, Codex P1): the `exclusive` flag lets
+   * patchHotMemoriesCache refuse to re-key its locally patched corpus at a
+   * version already reflecting a peer's still-unread concurrent append.
    */
   private bumpMemoryCorpusVersionExclusive(): { produced: number; exclusive: boolean } {
     const filePath = this.versionFilePath("memory-corpus");
@@ -3147,16 +3048,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!this.tombstonesConfig.enabled) return null;
     try {
       const store = await this.getTombstoneStore();
-      // Chokepoint citation strip (#1579 review): strip citation annotations
-      // from the raw body so BOTH the exact-tier hash (when the caller omits
-      // contentHash and the store computes it from rawContent) AND the
-      // normalized-text tier match re-extraction, which hashes/normalizes the
-      // citation-stripped contentHashSource. Idempotent on already-stripped
-      // text, so callers that pre-strip (e.g. recordSupersession) are unaffected.
+      // Chokepoint citation strip (#1579 review): both the exact-tier hash
+      // and the normalized-text tier must match re-extraction, which hashes
+      // the citation-stripped contentHashSource. Idempotent on pre-stripped
+      // text (e.g. recordSupersession).
       const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate);
-      // The store records its own mtime after the append (markWritten) so the
-      // staleness probe does not treat this write as a peer append (#1579).
-      return await store.appendTombstone({ ...input, rawContent: strippedRawContent });
+      // Canonicalization + post-append recheck (#2213) live in the helper.
+      return await entityRefs.appendCanonicalizedTombstone(
+        this.stateDir,
+        input,
+        () => this.currentHistoricalIds(),
+        (identity) => store.appendTombstone({ ...input, rawContent: strippedRawContent, ...identity }),
+        (tombstoneId) => store.revoke(tombstoneId, input.createdBy),
+        input.sourceMemoryId,
+      );
     } catch (err) {
       log.warn(`tombstone append failed (memory=${input.sourceMemoryId}): ${err}`);
       return null;
@@ -3522,16 +3427,38 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * store loaded last rewrite every other store's canonical entity ids.
    */
   private userAliases: Record<string, string> = {};
-  private historicalEntityCanonicalIds: Readonly<Record<string, string>> = {};
+  private readonly historicalEntityCanonicalIds = new entityRefs.HistoricalEntityCanonicalIdCache();
+  private currentHistoricalIds(): Readonly<Record<string, string>> {
+    return this.historicalEntityCanonicalIds.get(this.stateDir);
+  }
+  /** Post-persist repair subsystem (issue #2213) — storage/entity-ref-repair.ts. */
+  private _entityRefRepair: EntityRefRepair | undefined;
+  private get entityRefRepair(): EntityRefRepair {
+    if (!this._entityRefRepair) {
+      this._entityRefRepair = new EntityRefRepair({
+        stateDir: this.stateDir,
+        baseDir: this.baseDir,
+        currentHistoricalIds: () => this.currentHistoricalIds(),
+        serializeFrontmatter,
+        writeTombstoneBlockedMemory: (pathname, fileContent, frontmatter, content) =>
+          this.writeTombstoneBlockedMemory(pathname, fileContent, frontmatter, content),
+        invalidateAllMemoriesCache: () => this.invalidateAllMemoriesCache(),
+        getTombstoneStore: () => this.getTombstoneStore(),
+        tombstonesEnabled: () => this.tombstonesConfig.enabled,
+        tombstonesNamespace: () => this.tombstonesConfig.namespace,
+      });
+    }
+    return this._entityRefRepair;
+  }
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
     () => this.runLegacyEntityCanonicalIdMigration(),
-    () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => this.getCorpusScanVersion()),
+    () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => String(this.getEntityMutationVersion())),
   );
   normalizeEntityName(raw: string, type: string): string {
-    return entityMigration.resolveHistoricalEntityCanonicalId(
+    return entityRefs.resolveHistoricalEntityCanonicalId(
       this.entityStore.normalizeEntityName(raw, type),
-      this.historicalEntityCanonicalIds,
+      this.currentHistoricalIds(),
     );
   }
 
@@ -3579,18 +3506,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       log.debug("no config/aliases.json found — using built-in aliases only");
     }
   }
-  private loadHistoricalEntityCanonicalIdsSync(): void {
-    this.historicalEntityCanonicalIds = entityMigration.loadHistoricalEntityCanonicalIds(this.stateDir);
-  }
-
-  private async runLegacyEntityCanonicalIdMigration(): Promise<string> {
+  private async runLegacyEntityCanonicalIdMigration(): Promise<string | undefined> {
     const completionFingerprint = await runLegacyEntityCanonicalIdMigration(
       this as unknown as EntityCanonicalIdMigrationHost,
       (content) => parseEntityFile(content, this.entitySchemas),
       (entity) => serializeEntityFile(entity, this.entitySchemas),
       createMemoryEntityRefSerializer(serializeFrontmatter),
     );
-    this.loadHistoricalEntityCanonicalIdsSync();
     return completionFingerprint;
   }
 
@@ -3676,6 +3598,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     options: WriteMemoryOptions = {}
   ): Promise<MemoryWriteResult> {
     await this.ensureDirectories();
+    const rawEntityRef = options.entityRef;
+    let refIds = typeof options.entityRef === "string" ? this.currentHistoricalIds() : null;
+    if (refIds) options = entityRefs.canonicalizeEntityRefOption(options, refIds);
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const id = `${category}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -3779,62 +3704,41 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
 
     // ── Non-resurrection chokepoint (issue #1579) ────────────────────────
-    // Before a new fact becomes active, consult the tombstone index. If a
-    // retired fact matches (exact / normalized / keyed / semantic), persist
-    // the candidate as pending_review + blockedBy instead — VISIBLE, never a
-    // silent drop (rule 34) — and skip the active dedup/index registration
-    // (rule 44). This is the SINGLE storage persist path: every write
-    // (extraction, import, consolidation, dreams, pattern-reinforcement)
-    // funnels through writeMemory, so the five resurrection paths are blocked
-    // here without per-path code (rule 43).
-    let tombstoneBlocked = false;
-    if (
-      category === "fact" &&
-      this.tombstonesConfig.enabled &&
-      factHashSourceForTombstone !== null &&
-      // Block facts that would become ACTIVE or are already pending_review
-      // (issue #1579 thread ObteQ: wearable/native imports write fact
-      // candidates with status: pending_review; without checking them here,
-      // promoteWearableMemory could later flip a retired fact active without
-      // a tombstone check). A caller that explicitly requests a terminal
-      // non-active status (rejected/retracted/superseded) is respected.
-      (fm.status === undefined || fm.status === "active" || fm.status === "pending_review")
-    ) {
-      try {
-        const tombstoneStore = await this.getTombstoneStore();
-        // Derive the keyed-tier supersession key from structured attributes
-        // using the SAME helper write-time supersession uses (one helper).
-        const keyedSupersession =
-          options.entityRef && options.structuredAttributes
-            ? supersessionKeysForFact({
-                entityRef: options.entityRef,
-                structuredAttributes: options.structuredAttributes,
-              })
-            : [];
-        // Issue #1579 thread Ociag/Oci-W: pass EVERY key — emitters register one tombstone per key, so the block can be on any later key.
-        const match = tombstoneStore.lookup({
-          contentHash: fm.contentHash,
-          normalizedText: ContentHashIndex.normalizeContent(factHashSourceForTombstone),
-          ...(options.entityRef ? { entityRef: options.entityRef } : {}),
-          ...(keyedSupersession.length > 0 ? { supersessionKeys: keyedSupersession } : {}),
-          namespace: this.tombstonesConfig.namespace,
-        });
-        if (match) {
-          tombstoneBlocked = true;
-          fm.status = "pending_review";
-          fm.blockedBy = match.tombstoneId;
-          fm.tombstoneBlockTier = match.matchedTier;
-          log.info(
-            `tombstone: blocked resurrection of fact ${id} (tier=${match.matchedTier}, tombstone=${match.tombstoneId}, reason=${match.reason})`
-          );
-        }
-      } catch (err) {
-        // Fail-open (rule 34 spirit): a tombstone lookup error must not block
-        // the write. The fact persists as active; the next lookup after the
-        // store recovers will catch a subsequent re-extraction.
-        log.warn(`tombstone lookup failed for fact ${id} (fail-open): ${err}`);
-      }
+    // A match persists the fact as pending_review + blockedBy — VISIBLE,
+    // never a silent drop (rule 34) — and skips active dedup registration
+    // (rule 44). Pre-gate revalidation (#2213): re-resolve from the caller's
+    // ORIGINAL ref so the lookup and the persisted ref share one id space.
+    if (refIds && typeof rawEntityRef === "string" && this.currentHistoricalIds() !== refIds) {
+      refIds = this.currentHistoricalIds();
+      fm.entityRef = entityRefs.resolveHistoricalEntityCanonicalId(rawEntityRef, refIds);
     }
+    let tombstoneBlocked = false;
+    let gateRef: string | undefined;
+    let statusBeforeBlock: MemoryFrontmatter["status"];
+    // Closure so the post-persist repair can RE-RUN it when a journal move
+    // changed the final entityRef: a verdict is only valid for the ref it was
+    // computed under, so reset and re-evaluate (parked mappings fall BACK to
+    // the legacy claimant; entity-independent tiers re-block in the lookup).
+    const applyTombstoneGate = async (): Promise<void> => {
+      if (tombstoneBlocked) {
+        if (fm.entityRef === gateRef) return;
+        tombstoneBlocked = false;
+        fm.status = statusBeforeBlock;
+        delete fm.blockedBy;
+        delete fm.tombstoneBlockTier;
+      }
+      // Status semantics (thread ObteQ: pending_review candidates included,
+      // terminal statuses respected) live in applyTombstoneResurrectionGate.
+      if (category !== "fact" || factHashSourceForTombstone === null) return;
+      const statusBefore = fm.status;
+      const match = await this.entityRefRepair.gate(fm, factHashSourceForTombstone, options.structuredAttributes);
+      if (match) {
+        gateRef = fm.entityRef;
+        statusBeforeBlock = statusBefore;
+        tombstoneBlocked = true;
+      }
+    };
+    await applyTombstoneGate();
 
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
@@ -3864,6 +3768,38 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         duplicateOf: duplicateBlocked.frontmatter.id,
       };
     }
+    if (refIds && typeof rawEntityRef === "string") {
+      const refBeforeRepair = fm.entityRef;
+      try {
+        await entityRefs.repairEntityRefAfterJournalMove({
+          stateDir: this.stateDir,
+          currentIds: () => this.currentHistoricalIds(),
+          idsAtResolve: refIds,
+          rawRef: rawEntityRef,
+          frontmatter: fm,
+          rewrite: async () => {
+            // Re-gate under the final ref, then rewrite THROUGH the blocked-
+            // capture surface so any verdict change keeps the index consistent.
+            await applyTombstoneGate();
+            await this.writeTombstoneBlockedMemory(
+              filePath,
+              `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`,
+              fm,
+              sanitized.text,
+              async () => this.invalidateAllMemoriesCache(),
+            );
+            this.invalidateAllMemoriesCache();
+          },
+        });
+      } catch (err) {
+        // Remove the just-created file before propagating (§14): it would
+        // linger un-bumped/un-indexed and a retry would duplicate it.
+        await unlink(filePath).catch(() => undefined);
+        this.invalidateAllMemoriesCache();
+        throw err;
+      }
+      await this.entityRefRepair.syncProjection(id, refBeforeRepair, fm.entityRef);
+    }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
@@ -3878,16 +3814,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       ],
     });
     if (category === "fact" && !tombstoneBlocked) {
-      // Rule 44 (#1579): a tombstone-blocked fact MUST NOT be registered as an
-      // active dedup/index entry — otherwise the block is invisible to dedup
-      // and the content is silently banned on the next extraction. Only active
-      // (un-blocked) facts enter the hash index.
+      // Rule 44 (#1579): only active (un-blocked) facts enter the hash
+      // index — a blocked entry would silently ban the content on the next
+      // extraction.
       try {
         const factHashIndex = await this.getFactHashIndex();
-        // When the caller provides a separate contentHashSource (e.g. the raw
-        // fact text before citation annotation), index THAT string so that
-        // hasFactContentHash(rawFact) returns true on subsequent extractions.
-        // Otherwise fall back to the sanitized persisted body as before.
+        // Index the caller's contentHashSource (raw fact text before
+        // citation annotation) when provided, so hasFactContentHash(rawFact)
+        // matches subsequent extractions; else the sanitized persisted body.
         const hashText =
           options.contentHashSource !== undefined && options.contentHashSource.length > 0
             ? sanitizeMemoryContent(options.contentHashSource).text
@@ -4890,8 +4824,53 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return path.join(root, dir, this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
   }
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {
-    const fileContent = `${serializeFrontmatter(memory.frontmatter)}\n\n${memory.content}\n`;
-    await writeMaybeEncryptedFile(targetPath, fileContent, this.resolveWriteKey(), {}, this.baseDir);
+    // Whole-record rewrite (tier moves) — #2213. Repair, not just detect:
+    // the source is unlinked after the move, so a mapping parked across this
+    // write would strand the moved copy with nothing left to reconcile from.
+    const refIdsAtWrite = this.currentHistoricalIds();
+    const rawRef = memory.frontmatter.entityRef;
+    const frontmatter = entityRefs.canonicalizeEntityRefOption(memory.frontmatter, refIdsAtWrite);
+    const persist = (): Promise<void> =>
+      writeMaybeEncryptedFile(
+        targetPath,
+        `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`,
+        this.resolveWriteKey(),
+        {},
+        this.baseDir,
+      );
+    // Snapshot pre-write destination bytes (raw — encryption-agnostic) so a
+    // repair failure restores them or removes a fresh copy (§14): a retained
+    // destination would duplicate the record across tiers under a stale ref.
+    const priorDest = await readFile(targetPath).catch(() => null);
+    await persist();
+    if (typeof rawRef === "string") {
+      const refBeforeRepair = frontmatter.entityRef;
+      try {
+        await entityRefs.repairEntityRefAfterJournalMove({
+          stateDir: this.stateDir,
+          currentIds: () => this.currentHistoricalIds(),
+          idsAtResolve: refIdsAtWrite,
+          rawRef,
+          frontmatter,
+          rewrite: persist,
+        });
+      } catch (err) {
+        if (priorDest === null) {
+          await unlink(targetPath).catch(() => undefined);
+        } else {
+          await writeFile(targetPath, priorDest).catch(() => undefined);
+        }
+        this.invalidateAllMemoriesCache();
+        throw err;
+      }
+      await this.entityRefRepair.syncProjection(memory.frontmatter.id, refBeforeRepair, frontmatter.entityRef);
+    }
+    // Sync the caller's record with the ref the file now carries: tier-move
+    // callers keep using the passed MemoryFile, and a stale legacy ref would
+    // mis-route later attribution/projection work (Cursor Medium, round 21).
+    if (memory.frontmatter.entityRef !== frontmatter.entityRef) {
+      memory.frontmatter.entityRef = frontmatter.entityRef;
+    }
     this.invalidateAllMemoriesCache();
     this.notifyCatalogWrite();
   }
@@ -4969,15 +4948,39 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const today = now.toISOString().slice(0, 10);
         const destDir = path.join(this.archiveDir, today);
         await mkdir(destDir, { recursive: true });
-        const updatedFm: MemoryFrontmatter = {
-          ...current.frontmatter,
-          status: "archived",
-          archivedAt: now.toISOString(),
-          updated: now.toISOString(),
-        };
+        // Whole-record rewrite — inherited-entityRef rule (issue #2213).
+        const refIdsAtWrite = this.currentHistoricalIds();
+        const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+          {
+            ...current.frontmatter,
+            status: "archived",
+            archivedAt: now.toISOString(),
+            updated: now.toISOString(),
+          },
+          refIdsAtWrite,
+        );
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
         const destPath = path.join(destDir, path.basename(current.path));
+        // Snapshot a pre-existing destination (retried archive) so a repair
+        // failure restores it instead of deleting the only archived copy (§14).
+        const priorDest = await this.readStorageSecureFile(destPath).catch(() => null);
         await this.writeStorageSecureFile(destPath, fileContent);
+        if (typeof current.frontmatter.entityRef === "string") {
+          try {
+            await this.entityRefRepair.repair(
+              destPath, updatedFm, current.frontmatter.entityRef, refIdsAtWrite, current.content,
+            );
+          } catch (err) {
+            // Restore/remove the destination before reporting failure (§14):
+            // a retained fresh copy would surface the memory in BOTH scans.
+            if (priorDest === null) {
+              await unlink(destPath).catch(() => undefined);
+            } else {
+              await this.writeStorageSecureFile(destPath, priorDest).catch(() => undefined);
+            }
+            throw err;
+          }
+        }
         await unlink(current.path);
         markDurable();
         markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
@@ -5008,13 +5011,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return await this.runTombstoneBlockedArchive(memory, archiveCurrent);
   }
 
+  /** Alias of listEntityNames (kept for legacy callers; sorted). */
   async readEntities(): Promise<string[]> {
-    try {
-      const entries = await readdir(this.entitiesDir);
-      return entries.filter((e) => e.endsWith(".md")).map((e) => e.replace(".md", ""));
-    } catch {
-      return [];
-    }
+    return this.entityStore.listEntityNames();
   }
 
   async readEntity(name: string): Promise<string> {
@@ -5109,15 +5108,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       (v, i, a) => a.indexOf(v) === i
     ); // dedupe
 
-    const updated: MemoryFrontmatter = {
-      ...memory.frontmatter,
-      updated: new Date().toISOString(),
-      supersedes: options?.supersedes ?? memory.frontmatter.supersedes,
-      lineage: mergedLineage.length > 0 ? mergedLineage : undefined,
-      ...(memory.frontmatter.sourceConnector === undefined && options?.sourceConnector
-        ? { sourceConnector: options.sourceConnector }
-        : {}),
-    };
+    // Whole-record rewrite — inherited-entityRef rule (issue #2213).
+    const refIdsAtWrite = this.currentHistoricalIds();
+    const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+      {
+        ...memory.frontmatter,
+        updated: new Date().toISOString(),
+        supersedes: options?.supersedes ?? memory.frontmatter.supersedes,
+        lineage: mergedLineage.length > 0 ? mergedLineage : undefined,
+        ...(memory.frontmatter.sourceConnector === undefined && options?.sourceConnector
+          ? { sourceConnector: options.sourceConnector }
+          : {}),
+      },
+      refIdsAtWrite,
+    );
     const sanitized = sanitizeMemoryContent(newContent);
     if (!sanitized.clean) {
       log.warn(`updated memory content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
@@ -5126,6 +5130,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
       this.invalidateAllMemoriesCache();
     });
+    if (typeof memory.frontmatter.entityRef === "string") {
+      await this.entityRefRepair.repair(
+        memory.path, updated, memory.frontmatter.entityRef, refIdsAtWrite, sanitized.text,
+        { onFailRestore: memory },
+      );
+    }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
       memoryId: id,
@@ -5153,10 +5163,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     lifecycle?: MemoryLifecycleEventWriteOptions
   ): Promise<boolean> {
     const beforeStatus = memory.frontmatter.status ?? "active";
-    const updated: MemoryFrontmatter = {
-      ...memory.frontmatter,
-      ...patch,
-    };
+    // Canonicalize the EFFECTIVE merged entityRef (issue #2213) — an
+    // unrelated patch must not rewrite an inherited legacy ref back out.
+    const resolveIds = this.currentHistoricalIds();
+    const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+      { ...memory.frontmatter, ...patch },
+      resolveIds,
+    );
+    const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
     const afterStatus = updated.status ?? "active";
 
     const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
@@ -5167,6 +5181,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         this.invalidateColdMemoriesCache();
       }
     });
+    const rawMergedRef = typeof patch.entityRef === "string" ? patch.entityRef : memory.frontmatter.entityRef;
+    if (refIds && typeof rawMergedRef === "string") {
+      await this.entityRefRepair.repair(
+        memory.path, updated, rawMergedRef, refIds, memory.content,
+        { onFailRestore: memory },
+      );
+    }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
@@ -6057,82 +6078,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     log.debug(`appended namespace-local reflection to ${this.identityReflectionsPath}`);
   }
 
-  // ---------------------------------------------------------------------------
-  // Entity mutation helpers (Knowledge Graph v7.0)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Add a relationship to an entity file.
-   * Deduplicates by target+label.
-   */
+  // Entity-file mutators live on EntityStore (issue #2213): journal-resolved
+  // with legacy-file fallback, under the entity-mutation lock.
   async addEntityRelationship(name: string, rel: EntityRelationship): Promise<void> {
-    const filePath = path.join(this.entitiesDir, `${name}.md`);
-    let entity: EntityFile;
-    try {
-      const content = await this.readStorageSecureFile(filePath);
-      entity = parseEntityFile(content, this.entitySchemas);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      log.debug(`addEntityRelationship: entity file ${name}.md not found`);
-      return;
-    }
-
-    // Dedupe by target+label
-    const exists = entity.relationships.some((r) => r.target === rel.target && r.label === rel.label);
-    if (exists) return;
-
-    entity.relationships.push(rel);
-    entity.updated = new Date().toISOString();
-    await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
-    this.invalidateKnowledgeIndexCache();
+    return this.entityStore.addEntityRelationship(name, rel);
   }
 
-  /**
-   * Add an activity entry to an entity file.
-   * Prepends to the beginning, prunes oldest entries beyond maxEntries.
-   */
   async addEntityActivity(name: string, entry: EntityActivityEntry, maxEntries: number): Promise<void> {
-    const filePath = path.join(this.entitiesDir, `${name}.md`);
-    let entity: EntityFile;
-    try {
-      const content = await this.readStorageSecureFile(filePath);
-      entity = parseEntityFile(content, this.entitySchemas);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      log.debug(`addEntityActivity: entity file ${name}.md not found`);
-      return;
-    }
-
-    entity.activity.unshift(entry);
-    if (entity.activity.length > maxEntries) {
-      entity.activity = entity.activity.slice(0, maxEntries);
-    }
-    entity.updated = new Date().toISOString();
-    await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
-    this.invalidateKnowledgeIndexCache();
+    return this.entityStore.addEntityActivity(name, entry, maxEntries);
   }
 
   async addEntityAlias(name: string, alias: string): Promise<void> {
-    const filePath = path.join(this.entitiesDir, `${name}.md`);
-    let entity: EntityFile;
-    try {
-      const content = await this.readStorageSecureFile(filePath);
-      entity = parseEntityFile(content, this.entitySchemas);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      log.debug(`addEntityAlias: entity file ${name}.md not found`);
-      return;
-    }
-
-    if (entity.aliases.includes(alias)) return;
-    entity.aliases.push(alias);
-    entity.updated = new Date().toISOString();
-    await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
-    this.invalidateKnowledgeIndexCache();
-    this.bumpMemoryStatusVersion();
+    return this.entityStore.addEntityAlias(name, alias);
   }
 
   async updateEntitySynthesis(
@@ -6150,24 +6107,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.entityStore.updateEntitySynthesis(name, synthesis, options);
   }
 
-  /**
-   * Backward-compatible alias for legacy callers/tests.
-   */
+  /** Backward-compatible alias for legacy callers/tests. */
   async updateEntitySummary(name: string, summary: string): Promise<void> {
     const updatedAt = new Date().toISOString();
-    let synthesisTimelineCount: number | undefined;
-    try {
-      const filePath = path.join(this.entitiesDir, `${name}.md`);
-      const content = await this.readStorageSecureFile(filePath);
-      synthesisTimelineCount = parseEntityFile(content, this.entitySchemas).timeline.length;
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      synthesisTimelineCount = undefined;
-    }
+    const raw = await this.readEntity(name);
     await this.updateEntitySynthesis(name, summary, {
       entityUpdatedAt: updatedAt,
-      synthesisTimelineCount,
+      synthesisTimelineCount: raw ? parseEntityFile(raw, this.entitySchemas).timeline.length : undefined,
       updatedAt,
     });
   }
@@ -6243,28 +6189,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
   }
 
-  async migrateEntityFilesToCompiledTruthTimeline(): Promise<{
-    total: number;
-    migrated: number;
-  }> {
-    const entityNames = await this.listEntityNames();
-    let migrated = 0;
-    for (const entityName of entityNames) {
-      const raw = await this.readEntity(entityName);
-      if (!raw) continue;
-      const serialized = serializeEntityFile(parseEntityFile(raw, this.entitySchemas), this.entitySchemas);
-      if (raw.trimEnd() === serialized.trimEnd()) continue;
-      await this.writeStorageSecureFile(path.join(this.entitiesDir, `${entityName}.md`), serialized);
-      migrated += 1;
-    }
-    if (migrated > 0) {
-      this.invalidateKnowledgeIndexCache();
-      this.bumpMemoryStatusVersion();
-    }
-    return {
-      total: entityNames.length,
-      migrated,
-    };
+  async migrateEntityFilesToCompiledTruthTimeline(): Promise<{ total: number; migrated: number }> {
+    return this.entityStore.migrateEntityFilesToCompiledTruthTimeline();
   }
 
   // ---------------------------------------------------------------------------
@@ -6408,19 +6334,24 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         : memoryMap.get(entry.memoryId);
       if (!memory) continue;
 
-      const newFm: MemoryFrontmatter = {
-        ...memory.frontmatter,
-        accessCount: entry.newCount,
-        lastAccessed: entry.lastAccessed,
-      };
+      const rowIds = this.currentHistoricalIds();
+      const newFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+        { ...memory.frontmatter, accessCount: entry.newCount, lastAccessed: entry.lastAccessed },
+        rowIds,
+      );
 
       try {
         const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
-        // Patch the hot corpus cache entry in place with the new accessCount/
-        // lastAccessed (issue #1902). The shared sentinel is bumped once after
-        // the loop for cross-process coherence; the re-key below keeps this
-        // process's patched entries warm.
+        if (typeof memory.frontmatter.entityRef === "string") {
+          // onFailRestore (§14): the count patch was never reported applied.
+          await this.entityRefRepair.repair(
+            memory.path, newFm, memory.frontmatter.entityRef, rowIds, memory.content,
+            { onFailRestore: memory },
+          );
+        }
+        // Patch the hot corpus cache entry in place (#1902); the shared
+        // sentinel is bumped once after the loop for cross-process coherence.
         if (warm) {
           updateCacheOnWrite(this.baseDir, { ...memory, frontmatter: newFm }, keyId);
         }
@@ -6684,6 +6615,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     } = {}
   ): Promise<string> {
     await this.ensureDirectories();
+    const rawEntityRef = options.entityRef;
+    let refIds = typeof options.entityRef === "string" ? this.currentHistoricalIds() : null;
+    if (refIds) options = entityRefs.canonicalizeEntityRefOption(options, refIds);
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const id = `${parentId}-chunk-${chunkIndex}`;
@@ -6727,11 +6661,24 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!sanitized.clean) {
       log.warn(`chunk content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
     }
-    const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
-
     const filePath = await this.resolveCategoryWritePath(category, id, today);
+    const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
+    // A retried chunk write lands on the SAME deterministic path, so the
+    // target can already hold a valid prior chunk: snapshot it, and a repair
+    // failure restores it — unlink only a file THIS invocation created
+    // (Codex P2, round 22).
+    let priorChunk: MemoryFile | null = null;
+    try {
+      const priorRaw = await readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
+      const parsedPrior = parseFrontmatter(priorRaw);
+      if (parsedPrior) {
+        priorChunk = { path: filePath, frontmatter: parsedPrior.frontmatter, content: parsedPrior.content };
+      }
+    } catch {
+      priorChunk = null;
+    }
 
-    return await this.writeTombstoneBlockedChunk(
+    const written = await this.writeTombstoneBlockedChunk(
       filePath,
       fileContent,
       fm,
@@ -6744,6 +6691,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
       }
     );
+    // Repair only when THIS chunk persisted: a tombstone-dedupe result
+    // returns an existing id without writing filePath, and an unconditional
+    // repair rewrite would create a stray second chunk from scratch. The
+    // rewrite RE-GATES under the final ref (Bugbot): a journal move into
+    // tombstone-blocked identity space must not leave a fact chunk active.
+    if (written === id && refIds && typeof rawEntityRef === "string") {
+      await this.entityRefRepair.repair(filePath, fm, rawEntityRef, refIds, sanitized.text, {
+        regateFact: true,
+        ...(priorChunk ? { onFailRestore: priorChunk } : { onFailRemove: filePath }),
+      });
+    }
+    return written;
   }
 
   /**
@@ -6771,18 +6730,25 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!oldMemory) return false;
 
     const now = new Date().toISOString();
-    const updatedFm: MemoryFrontmatter = {
-      ...oldMemory.frontmatter,
-      status: "superseded",
-      supersededBy: newMemoryId,
-      supersededAt: now,
-      updated: now,
-    };
+    // Whole-record rewrite — inherited-entityRef rule (issue #2213).
+    const refIdsAtWrite = this.currentHistoricalIds();
+    const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+      { ...oldMemory.frontmatter, status: "superseded", supersededBy: newMemoryId, supersededAt: now, updated: now },
+      refIdsAtWrite,
+    );
 
     const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${oldMemory.content}\n`;
 
     try {
       await this.writeStorageSecureFile(oldMemory.path, fileContent);
+      if (typeof oldMemory.frontmatter.entityRef === "string") {
+        // onFailRestore (§14): a record left superseded on disk would skip
+        // its non-resurrection tombstone while caches expose the old state.
+        await this.entityRefRepair.repair(
+          oldMemory.path, updatedFm, oldMemory.frontmatter.entityRef, refIdsAtWrite, oldMemory.content,
+          { onFailRestore: oldMemory },
+        );
+      }
       // Advance the corpus sentinel immediately after the on-disk write, BEFORE
       // the awaited lifecycle append (Cursor Medium, #1902). Otherwise a warm
       // hot-memories cache keeps serving the pre-supersede snapshot during the
@@ -6802,20 +6768,17 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       this.bumpMemoryStatusVersion();
       log.debug(`superseded memory ${oldMemoryId} by ${newMemoryId}: ${reason}`);
 
-      // Issue #1579 — emit a tombstone so the superseded fact cannot
-      // resurrect. Contradiction resolution verbs (keep-a/keep-b/merge) all
-      // funnel through supersedeMemory, so emitting here covers every verb
-      // exactly once (rule 22). Only facts participate. Thread Oci-Y: emit
-      // one tombstone PER derived supersession key (buildRetiredFactTombstoneInputs)
-      // so a paraphrased re-write is caught on the keyed tier — a single
-      // entityRef-only record missed and the fact resurrected until rebuild.
+      // #1579 — every contradiction verb (keep-a/keep-b/merge) funnels here,
+      // so emitting covers each exactly once (rule 22); facts only. One
+      // tombstone PER derived supersession key (thread Oci-Y) so a
+      // paraphrased re-write is caught on the keyed tier.
       if (oldMemory.frontmatter.category === "fact") {
         for (const input of buildRetiredFactTombstoneInputs(
           {
             id: oldMemoryId,
             content: stripCitationForTemplate(oldMemory.content, this.citationTemplate),
             contentHash: oldMemory.frontmatter.contentHash,
-            entityRef: oldMemory.frontmatter.entityRef,
+            entityRef: updatedFm.entityRef,
             structuredAttributes: oldMemory.frontmatter.structuredAttributes,
           },
           {
@@ -6901,20 +6864,24 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (!memory) continue;
 
       const now = new Date().toISOString();
-      const updatedFm: MemoryFrontmatter = {
-        ...memory.frontmatter,
-        status: "archived",
-        archivedAt: now,
-        updated: now,
-      };
+      const rowIds = this.currentHistoricalIds();
+      const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+        { ...memory.frontmatter, status: "archived", archivedAt: now, updated: now },
+        rowIds,
+      );
 
       try {
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
-        // Corpus sentinel bump per file write, BEFORE the awaited lifecycle
-        // append (Cursor Medium, #1902): the end-of-loop bumpMemoryStatusVersion
-        // fires only after the whole batch, so without this a warm cache serves
-        // pre-archive state for every file during the loop's await windows.
+        if (typeof memory.frontmatter.entityRef === "string") {
+          // onFailRestore (§14): the method reports the row NOT archived.
+          await this.entityRefRepair.repair(
+            memory.path, updatedFm, memory.frontmatter.entityRef, rowIds, memory.content,
+            { onFailRestore: memory },
+          );
+        }
+        // Per-file corpus bump BEFORE the awaited lifecycle append (#1902):
+        // the end-of-loop status bump fires only after the whole batch.
         this.bumpMemoryCorpusVersion();
         await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.archiveMemories", {
           memoryId: id,

@@ -14,6 +14,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { readEnvVar, resolveHomeDir } from "../runtime/env.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
+import {
+  HistoricalEntityCanonicalIdCache,
+  canonicalizeEntityRefFrontmatter,
+  classifyEntityRefWritePath,
+  readEntityRefFromFrontmatter,
+  repairContentAfterJournalMoveSync,
+  requestEntityCanonicalIdReconcileSync,
+} from "../storage/entity-canonical-id-references.js";
+
+// Write-boundary journal cache for promoted copies (issue #2213).
+const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -862,6 +873,29 @@ function copyMemories(
   const targetRoot = fs.realpathSync(targetDir);
 
   const sourceFiles = walkMd(sourceRoot);
+  // Entity pages in THIS copy batch can re-establish collisions the target's
+  // journal already resolved (Codex P1, round 19; mirrors capsule-merge):
+  // once the next migration parks the mapping, a memory canonicalized onto
+  // the target's canonical claimant is permanently misattributed. Memories
+  // whose ref targets a batch-supplied entity id copy byte-faithful behind
+  // the reconcile marker instead.
+  const sourceEntityIds = new Set(
+    sourceFiles
+      .filter((p) => {
+        const rp = safeRealpath(p);
+        if (!rp || !isPathInsideRoot(rp, sourceRoot)) return false;
+        const rel = path.relative(sourceRoot, rp);
+        const mapped = path.resolve(targetRoot, rel);
+        if (!isPathInsideRoot(mapped, targetRoot)) return false;
+        return classifyEntityRefWritePath(targetRoot, mapped) === "entity";
+      })
+      .map((p) => path.basename(p, ".md")),
+  );
+  // The reconcile marker is published ONCE, after every record landed
+  // (Codex P1, round 21): a per-record marker could be consumed by a peer
+  // between a legacy-preserving memory write and its colliding entity page,
+  // canonicalizing the memory onto the wrong claimant irreversibly.
+  let reconcileNeeded = false;
   for (const sourcePath of sourceFiles) {
     const sourceRealPath = safeRealpath(sourcePath);
     if (!sourceRealPath || !isPathInsideRoot(sourceRealPath, sourceRoot)) {
@@ -881,6 +915,21 @@ function copyMemories(
       continue;
     }
 
+    // The target's migration journal is a write boundary for promoted copies
+    // too (issue #2213): a pre-migration source memory can carry a legacy
+    // entityRef the target already renamed, and corpus bumps no longer
+    // re-trigger the migration. Read per record so a mid-batch journal change
+    // applies to later copies. Only memory-tier records canonicalize —
+    // entities/ pages carry relationship targets (reconcile-marker territory,
+    // below) and everything else copies byte-faithful.
+    const targetKind = classifyEntityRefWritePath(targetRoot, targetPath);
+    const idsAtCompare = historicalIdCache.get(path.join(targetRoot, "state"));
+    const sourceRef = targetKind === "memory" ? readEntityRefFromFrontmatter(content) : null;
+    const refHasSourceClaimant = sourceRef !== null && sourceEntityIds.has(sourceRef);
+    const canonicalContent =
+      targetKind === "memory" && !refHasSourceClaimant
+        ? canonicalizeEntityRefFrontmatter(content, idsAtCompare)
+        : content;
     const sourceHash = hashContent(content);
 
     // Filter by IDs if specified
@@ -910,7 +959,21 @@ function copyMemories(
       const targetContent = fs.readFileSync(targetPath, "utf8");
       const targetHash = hashContent(targetContent);
 
-      if (sourceHash !== targetHash) {
+      // A target already holding the CANONICALIZED form is the same memory —
+      // done, and re-promoting after a ref rewrite must not report a conflict.
+      // The verdict is only valid for the snapshot it was computed under
+      // (Codex P1): a mapping parked/removed mid-compare would leave the
+      // target's formerly-canonical ref with nothing left to repair it — a
+      // moved journal falls through to the write path, which resolves at the
+      // write and repairs after it.
+      if (
+        hashContent(canonicalContent) === targetHash
+        && historicalIdCache.get(path.join(targetRoot, "state")) === idsAtCompare
+      ) {
+        skipped++;
+        continue;
+      }
+      if (hashContent(canonicalContent) !== targetHash && sourceHash !== targetHash) {
         conflicts.push({
           memoryId: parseSimpleFrontmatter(content)?.id ?? relativePath,
           sourcePath,
@@ -921,10 +984,10 @@ function copyMemories(
         });
         continue;
       }
-
-      // Same content — skip
-      skipped++;
-      continue;
+      // Fall through and rewrite in place: the target matches the RAW source
+      // while a mapping applies (a skip would leave the legacy entityRef on
+      // disk forever), or it matched the canonical form under a journal that
+      // moved mid-compare (the write path re-resolves and repairs) (#2213).
     }
 
     // Copy file
@@ -934,7 +997,59 @@ function copyMemories(
       skipped++;
       continue;
     }
-    fs.writeFileSync(targetPath, content);
+    const stateDir = path.join(targetRoot, "state");
+    if (targetKind === "memory" && !refHasSourceClaimant) {
+      // Re-resolve at the write and REPAIR afterwards: a peer process can
+      // publish the journal at any point in this loop, and the corpus bump
+      // below no longer re-triggers the migration.
+      const idsAtWrite = historicalIdCache.get(stateDir);
+      const written = canonicalizeEntityRefFrontmatter(content, idsAtWrite);
+      // Snapshot the prior target: a repair failure must restore it (or
+      // remove a newly created file) before propagating — a reported-failed
+      // copy must not replace the prior claimant's bytes (AGENTS.md §14).
+      let priorTarget: string | null = null;
+      try {
+        priorTarget = fs.readFileSync(targetPath, "utf8");
+      } catch {
+        priorTarget = null;
+      }
+      fs.writeFileSync(targetPath, written);
+      try {
+        repairContentAfterJournalMoveSync({
+          stateDir,
+          cache: historicalIdCache,
+          idsAtWrite,
+          rawContent: content,
+          lastWritten: written,
+          rewrite: (next) => fs.writeFileSync(targetPath, next),
+        });
+      } catch (err) {
+        try {
+          if (priorTarget === null) {
+            fs.unlinkSync(targetPath);
+          } else {
+            fs.writeFileSync(targetPath, priorTarget);
+          }
+        } catch {
+          // Best effort — the retryable repair error is the primary signal.
+        }
+        throw err;
+      }
+    } else if (targetKind === "memory") {
+      // Ref targets a batch-supplied entity page (potential collision
+      // claimant): keep the legacy bytes; the DEFERRED marker below lets the
+      // migration settle the collision and rewrite per its verdict (Codex P1).
+      fs.writeFileSync(targetPath, content);
+      reconcileNeeded = true;
+    } else {
+      fs.writeFileSync(targetPath, content);
+      if (targetKind === "entity") {
+        // Entity pages carry relationship TARGETS only rewriteRelationshipTargets
+        // understands — copy bytes faithfully behind the deferred reconcile
+        // pass (issue #2213).
+        reconcileNeeded = true;
+      }
+    }
     merged++;
     // Bump the target's corpus sentinel per write (out-of-band — not through a
     // StorageManager mutation), on the CANONICAL root (targetRoot), matching
@@ -945,6 +1060,12 @@ function copyMemories(
     // would otherwise diverge, and a once-after bump leaves in-batch reads
     // stale).
     bumpMemoryCorpusVersionForDir(targetRoot);
+  }
+
+  // Every record — including every collision claimant entity page — is on
+  // disk; NOW the reconcile pass can settle collisions safely.
+  if (reconcileNeeded) {
+    requestEntityCanonicalIdReconcileSync(path.join(targetRoot, "state"));
   }
 
   return { merged, conflicts, skipped };

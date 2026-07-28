@@ -8,6 +8,10 @@ import { markProjectedMemoryPathInvalid } from "../memory-projection-store.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
 import {
+  pathMayCarryEntityRefs,
+  requestEntityCanonicalIdReconcile,
+} from "./entity-canonical-id-references.js";
+import {
   readMaybeEncryptedFileFromChunks,
   writeMaybeEncryptedFileFromChunks,
 } from "../secure-store/secure-fs.js";
@@ -822,11 +826,25 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
     await this.writeTombstoneBlockedOfflineSyncFile(target, content);
+    await this.requestSyncReconcileIfMemoryPath(target);
   }
 
   async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
     await this.writeTombstoneBlockedOfflineSyncFileChunks(target, chunks);
+    await this.requestSyncReconcileIfMemoryPath(target);
+  }
+
+  /**
+   * Replicated bytes are opaque (possibly encrypted) and can carry legacy
+   * entity references a completed migration already renamed (issue #2213) —
+   * but only memory-tier markdown can, so transcript/state/other sync traffic
+   * must not trigger the full-corpus reconcile pass.
+   */
+  private async requestSyncReconcileIfMemoryPath(target: string): Promise<void> {
+    const stateDir = this.tombstoneBlockedCaptureIndexOptions().stateDir;
+    if (!pathMayCarryEntityRefs(path.dirname(stateDir), target)) return;
+    await requestEntityCanonicalIdReconcile(stateDir);
   }
 
   async deleteOfflineSyncFile(filePath: string): Promise<void> {

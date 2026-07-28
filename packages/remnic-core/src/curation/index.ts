@@ -10,6 +10,11 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { getCategoryDir, ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
+import {
+  HistoricalEntityCanonicalIdCache,
+  canonicalizeEntityRefFrontmatter,
+  repairContentAfterJournalMoveSync,
+} from "../storage/entity-canonical-id-references.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -444,6 +449,10 @@ function loadExistingMemories(memoryDir: string): Map<string, ExistingMemory> {
 
 // ── Writing ──────────────────────────────────────────────────────────────────
 
+// Curation writes raw frontmatter directly, so it is a write boundary for
+// entity references too (issue #2213): resolve through the target's journal.
+const historicalIdCache = new HistoricalEntityCanonicalIdCache();
+
 function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   const now = new Date();
   const dateDir = now.toISOString().split("T")[0];
@@ -454,8 +463,12 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
 
   const fileName = `${stmt.category}-${Date.now()}-${stmt.id.slice(0, 8)}.md`;
   const filePath = path.join(dir, fileName);
+  const historicalIds = historicalIdCache.get(path.join(memoryDir, "state"));
 
-  const frontmatter = [
+  // Keep the caller's ORIGINAL ref in the raw form: repair-after-write must
+  // re-resolve from it, including the direction where a mapping was parked
+  // and the resolution falls back to the legacy claimant (issue #2213).
+  const rawBody = `${[
     "---",
     `id: ${stmt.id}`,
     `category: ${stmt.category}`,
@@ -471,14 +484,37 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
     "---",
   ]
     .filter(Boolean)
-    .join("\n");
-
-  const body = `${frontmatter}\n\n${stmt.content}\n`;
+    .join("\n")}\n\n${stmt.content}\n`;
+  const body = canonicalizeEntityRefFrontmatter(rawBody, historicalIds);
 
   fs.writeFileSync(filePath, body);
+  // Post-write REPAIR (issue #2213): a peer process publishing the journal
+  // across this write would otherwise strand the reference — the corpus bump
+  // below no longer re-triggers the migration, and a parked mapping cannot be
+  // fixed after the fact by the reconcile pass. On repair exhaustion, remove
+  // the just-created file so the retryable error leaves no untracked partial
+  // statement (a retry would otherwise duplicate it).
+  try {
+    repairContentAfterJournalMoveSync({
+      stateDir: path.join(memoryDir, "state"),
+      cache: historicalIdCache,
+      idsAtWrite: historicalIds,
+      rawContent: rawBody,
+      lastWritten: body,
+      rewrite: (next) => fs.writeFileSync(filePath, next),
+    });
+  } catch (err) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      // Best effort — the retryable repair error is the primary signal.
+    }
+    throw err;
+  }
   // Bump the corpus sentinel per write (out-of-band create) so a concurrent
   // same-process readAllMemories rescans and sees this statement immediately,
-  // never a stale/partial corpus mid-batch (Cursor Medium, #1902).
+  // never a stale/partial corpus mid-batch (Cursor Medium, #1902). AFTER the
+  // repair, so a rescan never captures pre-repair bytes.
   bumpMemoryCorpusVersionForDir(memoryDir);
   return filePath;
 }

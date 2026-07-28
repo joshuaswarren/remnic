@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { computeSupersessionKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { EntityFile, MemoryFile } from "../types.js";
@@ -20,51 +20,22 @@ import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
+import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
+
+import {
+  ENTITY_CANONICAL_ID_MIGRATION_FILE,
+  ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER,
+  ENTITY_CANONICAL_ID_RECONCILE_MARKER,
+  resolveHistoricalEntityCanonicalId,
+} from "./entity-canonical-id-references.js";
 
 const ENTITY_CANONICAL_ID_MIGRATION_VERSION = 1;
-export const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
 const ENTITY_CANONICAL_ID_MIGRATION_LOCK_STALE_MS = 60_000;
 const ENTITY_CANONICAL_ID_MIGRATION_LOCK_MAX_WAIT_MS = 300_000;
 const TOMBSTONE_LOCK_STALE_MS = 30_000;
 const TOMBSTONE_LOCK_MAX_WAIT_MS = 5_000;
-const ENTITY_CANONICAL_ID_MUTATION_LOCK_STALE_MS = 60_000;
-const ENTITY_CANONICAL_ID_MUTATION_LOCK_MAX_WAIT_MS = 300_000;
 const MEMORY_REWRITE_MAX_PASSES = 3;
 const ENTITY_MAPPING_RESCAN_MAX_PASSES = 3;
-
-export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Record<string, string>> {
-  const statePath = path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE);
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(statePath, "utf-8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const mappings = (parsed as { mappings?: unknown }).mappings;
-    if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return {};
-    const cleaned: Record<string, string> = {};
-    for (const [legacyId, canonicalId] of Object.entries(mappings)) {
-      if (legacyId.length > 0 && typeof canonicalId === "string" && canonicalId.length > 0) {
-        cleaned[legacyId] = canonicalId;
-      }
-    }
-    return cleaned;
-  } catch {
-    return {};
-  }
-}
-
-export function resolveHistoricalEntityCanonicalId(
-  normalized: string,
-  mappings: Readonly<Record<string, string>>,
-): string {
-  let current = normalized;
-  const seen = new Set<string>();
-  while (!seen.has(current)) {
-    seen.add(current);
-    const next = mappings[current];
-    if (!next || next === current) break;
-    current = next;
-  }
-  return current;
-}
 
 const EntityCanonicalIdMigrationStateSchema = z.object({
   version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),
@@ -124,16 +95,33 @@ async function fingerprintPath(filePath: string): Promise<string> {
     : "missing";
 }
 
+/**
+ * Completion fingerprint for the migration runner's skip gate. Incorporates
+ * only state that can change what a re-run would DO: the entities directory
+ * (creates/deletes/renames), the alias table (normalization inputs), the
+ * caller-supplied entity-mutation version (store-mediated entity content
+ * edits, which touch neither of the first two), and the reconcile-pending
+ * marker raw-byte writers touch. It must NOT incorporate the memory-corpus
+ * write version: plain memory creates cannot introduce legacy entity
+ * references (writes normalize through the historical mapping table), and
+ * keying the gate to them re-ran the migration after every fact write — the
+ * issue #2213 hot loop.
+ */
 export async function getFingerprint(
   baseDir: string,
   entitiesDir: string,
-  getCorpusScanVersion: () => string,
+  getEntityMutationVersion: () => string,
 ): Promise<string> {
-  const [entityFingerprint, aliasFingerprint] = await Promise.all([
+  const [entityFingerprint, aliasFingerprint, reconcileFingerprint, consumingFingerprint] = await Promise.all([
     fingerprintPath(entitiesDir),
     fingerprintPath(path.join(baseDir, "config", "aliases.json")),
+    fingerprintPath(path.join(baseDir, "state", ENTITY_CANONICAL_ID_RECONCILE_MARKER)),
+    // A `.consuming` generation stranded by a crashed PEER process must also
+    // re-invoke a live runner whose cached fingerprint predates it.
+    fingerprintPath(path.join(baseDir, "state", ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER)),
   ]);
-  return `${entityFingerprint}:${aliasFingerprint}:${getCorpusScanVersion()}`;
+  return [entityFingerprint, aliasFingerprint, reconcileFingerprint, consumingFingerprint, getEntityMutationVersion()]
+    .join(":");
 }
 
 export async function validateRoots(
@@ -229,22 +217,6 @@ function lockPath(deps: EntityCanonicalIdMigrationDependencies): string {
   return path.join(deps.stateDir, "entity-canonical-id-migration.lock");
 }
 
-export async function withEntityCanonicalMutationLock<T>(
-  stateDir: string,
-  task: (refreshLock: () => Promise<boolean>) => Promise<T>,
-): Promise<T> {
-  return withHeldFileLock(
-    path.join(stateDir, "entity-canonical-id-mutation.lock"),
-    {
-      staleMs: ENTITY_CANONICAL_ID_MUTATION_LOCK_STALE_MS,
-      maxWaitMs: ENTITY_CANONICAL_ID_MUTATION_LOCK_MAX_WAIT_MS,
-    },
-    async (acquired, lock) => {
-      if (!acquired) throw new Error("Timed out waiting for entity mutation lock.");
-      return task(() => lock.refresh());
-    },
-  );
-}
 
 async function readState(
   deps: EntityCanonicalIdMigrationDependencies
@@ -281,6 +253,23 @@ async function writeState(
   } finally {
     await unlink(temporary).catch(() => undefined);
   }
+}
+
+/**
+ * Every journal publish — additive merges, completion markers, prunes —
+ * serializes under the entity MUTATION lock (issue #2213 review): entity
+ * writers, post-persist repair settles, and tombstone appends revalidate
+ * the journal identity under that lock, so an unlocked publish could land
+ * inside their resolve→write window and strand the write on a superseded
+ * id space.
+ */
+async function publishState(
+  deps: EntityCanonicalIdMigrationDependencies,
+  state: EntityCanonicalIdMigrationState
+): Promise<void> {
+  await withEntityCanonicalMutationLock(deps.stateDir, async () => {
+    await writeState(deps, state);
+  });
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -830,6 +819,23 @@ export async function migrateLegacyEntityCanonicalIds(
       if (!acquired) throw new Error("Timed out waiting for active entity canonical-id migration.");
       await deps.validateMemoryScanRoots?.();
       await readSafeEntityEntries(deps.entitiesDir);
+      // A raw-byte writer (offline sync, consolidation-undo, governance
+      // restore) may have landed memory bytes this process never vetted; the
+      // marker requests ONE reference-reconciliation pass (issue #2213). The
+      // observed generation is RENAMED aside before the pass so a request made
+      // WHILE this run scans creates a fresh marker that survives finish() —
+      // and a `.consuming` file left by a crashed run still owes its pass.
+      const reconcileMarkerPath = path.join(deps.stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER);
+      const consumingMarkerPath = path.join(deps.stateDir, ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER);
+      let reconcileRequested = await fileExists(consumingMarkerPath);
+      if (await fileExists(reconcileMarkerPath)) {
+        try {
+          await rename(reconcileMarkerPath, consumingMarkerPath);
+          reconcileRequested = true;
+        } catch (error) {
+          if (!isErrnoCode(error, "ENOENT")) throw error;
+        }
+      }
       let state = await readState(deps);
       if (!state) {
         state = {
@@ -841,7 +847,7 @@ export async function migrateLegacyEntityCanonicalIds(
       const blocked: BlockedEntityPairs = new Map();
       // ONE aggregated line per run, not one per pair per restart: this used to
       // abort the daemon, so the operator needs the whole list and the remedy.
-      const finish = (): Promise<string | undefined> | string | undefined => {
+      const finish = async (): Promise<string | undefined> => {
         if (blocked.size > 0) {
           const pairs = [...blocked].map(([legacyId, canonicalId]) => `${legacyId} -> ${canonicalId}`).join(", ");
           log.warn(
@@ -849,7 +855,29 @@ export async function migrateLegacyEntityCanonicalIds(
             + "Both files were kept and the legacy id still resolves; merge or delete one side to migrate it.",
           );
         }
-        return deps.readMigrationFingerprint?.();
+        // Every finish() path either just rewrote references (main/reconcile
+        // paths), has none to rewrite (empty mappings), or observed no marker
+        // (stable no-op) — so the CONSUMED generation is removed here. A fresh
+        // marker written mid-run is untouched, and a crash before this point
+        // leaves `.consuming` set for the next run (the rewrite is idempotent).
+        if (reconcileRequested) {
+          await unlink(consumingMarkerPath).catch((error: unknown) => {
+            if (!isErrnoCode(error, "ENOENT")) throw error;
+          });
+        }
+        // A FRESH marker written while this run scanned means bytes landed the
+        // pass may not have covered. Withholding the completion fingerprint
+        // makes the runner's stability check fail, so it immediately retries —
+        // and the retry consumes the fresh generation. ORDER MATTERS: read the
+        // fingerprint BEFORE the marker check. A marker landing after the
+        // fingerprint read but before the check is caught by the check; one
+        // landing after the check is absent from the returned fingerprint, so
+        // the live marker mismatches the runner's cached completion and the
+        // next ensure() re-invokes. Checking first left a window where the
+        // fingerprint could SEAL a marker the check never saw.
+        const completionFingerprint = await deps.readMigrationFingerprint?.();
+        if (await fileExists(reconcileMarkerPath)) return undefined;
+        return completionFingerprint;
       };
       /**
        * Drop blocked pairs from the working set. Discovery only refuses to
@@ -905,8 +933,12 @@ export async function migrateLegacyEntityCanonicalIds(
           Object.keys(a).length === Object.keys(b).length
           && Object.entries(a).every(([key, value]) => b[key] === value);
         if (same(collapsed, current.mappings) && same(parked, current.blocked ?? {})) return revived;
+        // Parking/removing an active mapping mid-entity-write would land an
+        // alias/activity/relationship mutation on a now-unrelated canonical
+        // claimant — the reconcile pass rewrites references, it cannot move
+        // a misplaced mutation. publishState serializes under the lock.
         state = { ...current, mappings: collapsed, blocked: parked };
-        await writeState(deps, state);
+        await publishState(deps, state);
         return revived;
       };
       const previousMappings = state.mappings;
@@ -923,19 +955,39 @@ export async function migrateLegacyEntityCanonicalIds(
           state.mappings,
           await discoverMappings(deps, state.mappings, blocked),
         );
-        await pruneBlocked();
+        const revivedBefore = await pruneBlocked();
         const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
-        if (state.complete && Object.keys(discoveredBefore).length === 0 && !mappingsChanged) {
-          if (Object.keys(state.mappings).length === 0) return finish();
-          const rewroteColdMemory = await rewriteKnownReferences(
-            deps,
-            state.mappings,
-            () => lock.refresh(),
-          );
-          deps.invalidateKnowledgeIndexCache();
-          deps.invalidateAllMemoriesCache();
-          if (rewroteColdMemory) deps.invalidateColdMemoriesCache();
-          deps.bumpMemoryStatusVersion();
+        // Stable completed journal → no-op (issue #2213). Retained mappings are
+        // read-compat state whose references were already rewritten (to
+        // convergence) before `complete: true` was persisted, so re-running
+        // `rewriteKnownReferences` here re-read the ENTIRE hot+cold+archived
+        // corpus — twice — and invalidated every memory cache on EVERY
+        // `ensureDirectories()`. On a write-active daemon that was a
+        // self-sustaining hot loop (multi-GB/s of re-reads, caches never warm,
+        // recall degraded to the fallback path). A park revived by THIS run's
+        // pruneBlocked still owes its reference rewrite: it falls through to
+        // the main flow below, which demotes `complete` BEFORE rewriting — so
+        // a crash mid-rewrite resumes, which the old in-place rewrite did not.
+        if (
+          state.complete
+          && Object.keys(discoveredBefore).length === 0
+          && !mappingsChanged
+          && !revivedBefore
+        ) {
+          // Stable journal, but a raw-byte writer requested reconciliation:
+          // run ONE bounded rewrite pass over the retained mappings, then let
+          // finish() consume the marker.
+          if (reconcileRequested && Object.keys(state.mappings).length > 0) {
+            const rewroteColdMemory = await rewriteKnownReferences(
+              deps,
+              state.mappings,
+              () => lock.refresh(),
+            );
+            deps.invalidateKnowledgeIndexCache();
+            deps.invalidateAllMemoriesCache();
+            if (rewroteColdMemory) deps.invalidateColdMemoriesCache();
+            deps.bumpMemoryStatusVersion();
+          }
           return finish();
         }
         if (
@@ -944,7 +996,7 @@ export async function migrateLegacyEntityCanonicalIds(
           || Object.keys(mergedBefore).length !== Object.keys(state.mappings).length
         ) {
           state = { ...state, complete: false, mappings: mergedBefore };
-          await writeState(deps, state);
+          await publishState(deps, state);
         }
         if (Object.keys(state.mappings).length === 0) {
           if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
@@ -958,7 +1010,7 @@ export async function migrateLegacyEntityCanonicalIds(
           // that already reflects the deletion - so no later run revisits it.
           const revivedInRescan = await pruneBlocked();
           if (Object.keys(discoveredAfter).length === 0 && !revivedInRescan) {
-            await writeState(deps, { ...state, complete: true });
+            await publishState(deps, { ...state, complete: true });
             return finish();
           }
           state = {
@@ -966,7 +1018,7 @@ export async function migrateLegacyEntityCanonicalIds(
             complete: false,
             mappings: collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredAfter)),
           };
-          await writeState(deps, state);
+          await publishState(deps, state);
           continue;
         }
         let pendingMappings = Object.entries(state.mappings);
@@ -1016,7 +1068,7 @@ export async function migrateLegacyEntityCanonicalIds(
         // retries and those references stay stranded.
         const revivedAfterRewrite = await pruneBlocked();
         if (Object.keys(discoveredAfter).length === 0 && !revivedAfterRewrite) {
-          await writeState(deps, { ...state, complete: true });
+          await publishState(deps, { ...state, complete: true });
           return finish();
         }
         state = {
@@ -1024,7 +1076,7 @@ export async function migrateLegacyEntityCanonicalIds(
           complete: false,
           mappings: collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredAfter)),
         };
-        await writeState(deps, state);
+        await publishState(deps, state);
       }
       throw new Error("Entity canonical-id migration mappings changed while migration was running; retry migration.");
     }

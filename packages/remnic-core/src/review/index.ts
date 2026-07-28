@@ -9,6 +9,58 @@ import fs from "node:fs";
 import path from "node:path";
 import { getCategoryDir, ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
+import {
+  HistoricalEntityCanonicalIdCache,
+  canonicalizeEntityRefFrontmatter,
+  repairContentAfterJournalMoveSync,
+} from "../storage/entity-canonical-id-references.js";
+
+// Write-boundary journal cache for review-queue promotions (issue #2213).
+const historicalIdCache = new HistoricalEntityCanonicalIdCache();
+
+/**
+ * In-place raw rewrite under the uniform write-boundary rule (issue #2213):
+ * canonicalize the effective entityRef at the write and REPAIR when the
+ * journal moved across it — these rewrites re-serialize whole records, so an
+ * unrelated approve/dismiss/flag must not write a legacy ref back out. On
+ * repair exhaustion the ORIGINAL bytes are restored before the retryable
+ * error propagates: performReview bumps the corpus sentinel only after the
+ * action returns, so a half-applied rewrite would be invisible to a warm
+ * cache while the caller is told the action failed.
+ */
+function writeReviewFileCanonicalized(memoryDir: string, filePath: string, content: string): void {
+  const stateDir = path.join(memoryDir, "state");
+  const idsAtWrite = historicalIdCache.get(stateDir);
+  let originalBytes: string | null = null;
+  try {
+    originalBytes = fs.readFileSync(filePath, "utf8");
+  } catch {
+    originalBytes = null; // new file — rollback is removal
+  }
+  const written = canonicalizeEntityRefFrontmatter(content, idsAtWrite);
+  fs.writeFileSync(filePath, written, "utf8");
+  try {
+    repairContentAfterJournalMoveSync({
+      stateDir,
+      cache: historicalIdCache,
+      idsAtWrite,
+      rawContent: content,
+      lastWritten: written,
+      rewrite: (next) => fs.writeFileSync(filePath, next, "utf8"),
+    });
+  } catch (err) {
+    try {
+      if (originalBytes === null) {
+        fs.unlinkSync(filePath);
+      } else {
+        fs.writeFileSync(filePath, originalBytes, "utf8");
+      }
+    } catch {
+      // Best effort — the retryable repair error is the primary signal.
+    }
+    throw err;
+  }
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -295,13 +347,16 @@ function approveItem(
   const fm = parseFrontmatter(content);
   if (!fm) return { itemId, action: "approve", message: "Could not parse frontmatter" };
 
-  // Issue #1579 — when approving a tombstone-blocked memory, fire the
-  // revocation hook so the content is re-allowed (append-only log: a
-  // `kind: "revocation"` entry supersedes the tombstone at lookup). Clear
-  // blockedBy/tombstoneBlockTier on the promoted memory so it is fully
-  // active. Fire-and-forget: a hook failure never fails the approval.
+  // Issue #1579 — approving a tombstone-blocked memory fires the revocation
+  // hook so the content is re-allowed (append-only log: a `kind: "revocation"`
+  // entry supersedes the tombstone at lookup). Deferred until the approval's
+  // writes commit (Codex P2, round 19): revoking before the promote left a
+  // failed repair with the non-resurrection guard already destroyed, letting
+  // a later extraction resurrect the content. Fire-and-forget once invoked:
+  // a hook failure never fails the approval.
   const blockedBy = typeof fm.blockedBy === "string" ? fm.blockedBy : null;
-  if (blockedBy && options.onApproveBlockedMemory) {
+  const fireBlockedRevocation = (): void => {
+    if (!blockedBy || !options.onApproveBlockedMemory) return;
     try {
       const maybe = options.onApproveBlockedMemory(blockedBy, itemId);
       if (maybe && typeof (maybe as Promise<void>).then === "function") {
@@ -310,7 +365,7 @@ function approveItem(
     } catch {
       /* fire-and-forget — never fail the approval (gotcha #13) */
     }
-  }
+  };
 
   const updatedContent = updateFrontmatterFields(content, {
     confidence: "0.9",
@@ -324,7 +379,8 @@ function approveItem(
   });
 
   if (found.location === "category") {
-    fs.writeFileSync(found.filePath, updatedContent, "utf8");
+    writeReviewFileCanonicalized(memoryDir, found.filePath, updatedContent);
+    fireBlockedRevocation();
     return {
       itemId,
       action: "approve",
@@ -342,10 +398,38 @@ function approveItem(
   const outputPath = path.join(targetDir, dateDir, path.basename(found.filePath));
 
   ensureSafeDirectory(rootReal, path.dirname(outputPath));
-  const promotedPath = writeFileWithoutClobber(outputPath, updatedContent, itemId);
+  // The suggestions/review queue dirs sit OUTSIDE the migration's reference
+  // scan, so a queued pre-migration item can still carry a legacy entityRef
+  // (issue #2213): promote it canonicalized against the target journal, and
+  // REPAIR when the journal moved across the write.
+  const reviewStateDir = path.join(memoryDir, "state");
+  const idsAtWrite = historicalIdCache.get(reviewStateDir);
+  const promotedWritten = canonicalizeEntityRefFrontmatter(updatedContent, idsAtWrite);
+  const promotedPath = writeFileWithoutClobber(outputPath, promotedWritten, itemId);
+  try {
+    repairContentAfterJournalMoveSync({
+      stateDir: reviewStateDir,
+      cache: historicalIdCache,
+      idsAtWrite,
+      rawContent: updatedContent,
+      lastWritten: promotedWritten,
+      rewrite: (next) => fs.writeFileSync(promotedPath, next, "utf8"),
+    });
+  } catch (err) {
+    // Roll back so a retried approve does not clobber-fail against a partial
+    // promotion; the queue entry survives untouched (Bugbot).
+    try {
+      fs.unlinkSync(promotedPath);
+    } catch {
+      // Best effort — the retryable repair error below is the primary signal.
+    }
+    throw err;
+  }
 
-  // Remove from review
+  // Remove from review, THEN revoke: the guard only falls once the approval
+  // has fully committed (promoted file repaired + queue entry gone).
   fs.unlinkSync(found.filePath);
+  fireBlockedRevocation();
 
   return {
     itemId,
@@ -372,13 +456,13 @@ function dismissItem(
   }
 
   const content = fs.readFileSync(found.filePath, "utf8");
-  fs.writeFileSync(
+  writeReviewFileCanonicalized(
+    memoryDir,
     found.filePath,
     updateFrontmatterFields(content, {
       reviewDismissed: "true",
       reviewDismissedAt: new Date().toISOString(),
     }),
-    "utf8",
   );
   return {
     itemId,
@@ -403,7 +487,7 @@ function flagItem(
     flagged: "true",
     flaggedAt: new Date().toISOString(),
   });
-  fs.writeFileSync(found.filePath, fixed);
+  writeReviewFileCanonicalized(memoryDir, found.filePath, fixed);
   return {
     itemId,
     action: "flag",

@@ -6,6 +6,7 @@ import type { MemoryFile, MemoryStatus } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
+import { requestEntityCanonicalIdReconcile } from "../storage/entity-canonical-id-references.js";
 
 export type MemoryGovernanceMode = "shadow" | "apply";
 export type MemoryGovernanceReasonCode =
@@ -1021,6 +1022,9 @@ export async function restoreMemoryGovernanceRun(
     // same-process or peer readAllMemories rescans mid-batch and never serves a
     // partially-restored corpus (Cursor Medium, #1902).
     bumpMemoryCorpusVersionForDir(options.memoryDir);
+    // Restored bytes predate the current migration journal and can carry
+    // legacy entity references (issue #2213) — request one reconcile pass.
+    await requestEntityCanonicalIdReconcile(path.join(options.memoryDir, "state"));
   }
 
   return {

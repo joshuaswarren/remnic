@@ -1,0 +1,557 @@
+/**
+ * Write-boundary surface of the entity canonical-id migration (issue #2213).
+ *
+ * The migration itself (entity-canonical-id-migration.ts) renames legacy
+ * entity files and rewrites references ONCE, to convergence, then retires.
+ * Everything here exists so nothing can re-introduce a legacy reference
+ * afterwards without the migration having to rescan the corpus:
+ *
+ * - store-mediated writes canonicalize the caller-supplied `entityRef`
+ *   ({@link canonicalizeEntityRefOption});
+ * - bulk writers that persist raw record bytes (capsule import/merge)
+ *   canonicalize the frontmatter line ({@link canonicalizeEntityRefFrontmatter});
+ * - raw-byte writers that CANNOT parse what they write (offline sync,
+ *   consolidation-undo, governance restores) request one bounded
+ *   reconciliation pass instead ({@link requestEntityCanonicalIdReconcile}).
+ */
+import path from "node:path";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  realpathSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
+import { log } from "../logger.js";
+import { isErrnoCode } from "../utils/errno.js";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
+import { normalizeSupersessionKey } from "../temporal-supersession.js";
+
+export const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
+
+/**
+ * Parse a journal document into a mapping table. A document without a valid
+ * `mappings` object is a LEGITIMATELY empty table; an unreadable/unparsable
+ * document THROWS so callers can distinguish "empty" from "failed".
+ */
+function parseJournalMappings(raw: string): Readonly<Record<string, string>> {
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !("mappings" in parsed)) return {};
+  const mappings = parsed.mappings;
+  if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return {};
+  // Null prototype: journal-supplied ids like `constructor` must be own
+  // entries, never collide with Object.prototype (Codex P2, round 20).
+  const cleaned: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const [legacyId, canonicalId] of Object.entries(mappings)) {
+    if (legacyId.length > 0 && typeof canonicalId === "string" && canonicalId.length > 0) {
+      cleaned[legacyId] = canonicalId;
+    }
+  }
+  return cleaned;
+}
+
+type JournalRead =
+  | { kind: "ok"; raw: string; key: string }
+  | { kind: "missing" }
+  | { kind: "refused" }
+  | { kind: "error" };
+
+/**
+ * Open the journal WITHOUT following symlinks and read content + identity
+ * from the same opened inode (repo rule: reject symlink traversal from
+ * memory directories). O_NOFOLLOW makes the open refuse a symlinked FINAL
+ * component (ELOOP); the parent `state/` directory is verified AFTER the
+ * open, together with a path↔fd identity pairing, so a parent swapped
+ * around the open cannot hold: a swap still in place fails the parent
+ * lstat, and a swap reverted fails the dev/ino pairing against the real
+ * journal. Platforms without O_NOFOLLOW get the same post-open checks.
+ */
+function readJournalFileNoFollow(statePath: string): JournalRead {
+  let fd: number;
+  try {
+    fd = openSync(statePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) return { kind: "missing" };
+    if (isErrnoCode(error, "ELOOP")) return { kind: "refused" };
+    return { kind: "error" };
+  }
+  try {
+    const s = fstatSync(fd);
+    if (!s.isFile()) return { kind: "refused" };
+    const parent = lstatSync(path.dirname(statePath));
+    if (parent.isSymbolicLink() || !parent.isDirectory()) return { kind: "refused" };
+    const l = lstatSync(statePath);
+    if (l.isSymbolicLink() || l.dev !== s.dev || l.ino !== s.ino) return { kind: "refused" };
+    return {
+      kind: "ok",
+      raw: readFileSync(fd, "utf-8"),
+      key: `${s.dev}:${s.ino}:${s.mtimeMs}:${s.ctimeMs}:${s.size}`,
+    };
+  } catch {
+    return { kind: "error" };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Record<string, string>> {
+  const result = readJournalFileNoFollow(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
+  if (result.kind !== "ok") return {};
+  try {
+    return parseJournalMappings(result.raw);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Append a tombstone with its identity canonicalized against the CURRENT
+ * journal, then recheck: a peer publishing a mapping inside the
+ * resolve-to-append window would leave the guard under the legacy id while
+ * lookups canonicalize. Each identity change appends the replacement FIRST
+ * (AGENTS.md §14 — the retired fact must never be without an active guard),
+ * then revokes the superseded one — a park makes the prior canonical
+ * claimant a distinct entity, and a stale keyed guard under it would
+ * suppress that entity's facts. When the journal will not settle, one final
+ * replacement runs under the entity MUTATION lock (parks publish under it).
+ */
+export async function appendCanonicalizedTombstone(
+  stateDir: string,
+  input: { entityRef?: string; supersessionKey?: string },
+  currentIds: () => Readonly<Record<string, string>>,
+  append: (identity: TombstoneIdentity) => Promise<string | null>,
+  revoke: (tombstoneId: string) => Promise<unknown>,
+  label: string,
+): Promise<string | null> {
+  let refIds = currentIds();
+  let identity = canonicalizeTombstoneIdentity(input.entityRef, input.supersessionKey, refIds);
+  let result = await append(identity);
+  const replaceIfChanged = async (next: TombstoneIdentity): Promise<boolean> => {
+    if (next.entityRef === identity.entityRef && next.supersessionKey === identity.supersessionKey) {
+      return false;
+    }
+    identity = next;
+    const superseded = result;
+    result = await append(next);
+    if (superseded !== null) {
+      try {
+        await revoke(superseded);
+      } catch (err) {
+        log.warn(`failed to revoke superseded tombstone ${superseded} for ${label}: ${err}`);
+      }
+    }
+    return true;
+  };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const fresh = currentIds();
+    if (fresh === refIds) return result;
+    refIds = fresh;
+    if (!(await replaceIfChanged(canonicalizeTombstoneIdentity(input.entityRef, input.supersessionKey, fresh)))) {
+      return result;
+    }
+  }
+  await withEntityCanonicalMutationLock(stateDir, async () => {
+    await replaceIfChanged(canonicalizeTombstoneIdentity(input.entityRef, input.supersessionKey, currentIds()));
+  });
+  return result;
+}
+
+/**
+ * Journal mapping table keyed by the journal FILE's identity, so a long-lived
+ * StorageManager never canonicalizes against a stale snapshot after ANY other
+ * writer changes the journal — a peer process completing a migration, or
+ * `pruneBlocked()` parking a contested mapping (which rewrites the journal
+ * without bumping any shared version). `writeState` publishes via
+ * temp-file-plus-rename, so every journal write swaps the inode and the key
+ * always moves — the identity is taken from the fstat of the SAME opened
+ * inode the content is read from (no stat→read window). Reload cost is one
+ * open per lookup and one journal parse per actual change.
+ *
+ * Failure semantics: last-known data is served ONLY for the SAME state dir
+ * (module-level instances can face several stores — another store's table
+ * must never leak in), and a failed read/parse never commits the journal's
+ * identity, so the next lookup retries instead of caching an empty table
+ * under a valid key.
+ */
+export class HistoricalEntityCanonicalIdCache {
+  private mappings: Readonly<Record<string, string>> = {};
+  private key: string | null = null;
+  private stateDir: string | null = null;
+
+  get(stateDir: string): Readonly<Record<string, string>> {
+    const lastKnown = this.stateDir === stateDir ? this.mappings : {};
+    const result = readJournalFileNoFollow(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
+    if (result.kind === "refused") {
+      // Symlinked/non-regular journal: never follow it, never adopt its
+      // identity — serve this store's last-known table. If it later becomes
+      // a regular file its identity differs from the stored key and reloads.
+      log.warn("ignoring non-regular entity canonical-id journal (symlink refused)");
+      return lastKnown;
+    }
+    if (result.kind === "error") {
+      // A TRANSIENT open/read failure (EACCES/EIO) must not dump a valid
+      // table for {}: a write during the outage would skip canonicalization
+      // AND its post-write identity check would compare equal. Serve this
+      // store's last-known table; only a genuine ENOENT means "no journal".
+      return lastKnown;
+    }
+    const key = result.kind === "missing" ? "missing" : result.key;
+    if (key !== this.key || stateDir !== this.stateDir) {
+      let table: Readonly<Record<string, string>> = {};
+      if (result.kind === "ok") {
+        try {
+          table = parseJournalMappings(result.raw);
+        } catch {
+          // Parse failed under a VALID identity: do not commit the key —
+          // the next lookup retries instead of pinning an empty table.
+          return lastKnown;
+        }
+      }
+      this.mappings = table;
+      this.key = key;
+      this.stateDir = stateDir;
+    }
+    return this.mappings;
+  }
+}
+
+export function resolveHistoricalEntityCanonicalId(
+  normalized: string,
+  mappings: Readonly<Record<string, string>>,
+): string {
+  let current = normalized;
+  const seen = new Set<string>();
+  while (!seen.has(current)) {
+    seen.add(current);
+    // Own properties only: an unmapped id like `constructor` must not read
+    // Object.prototype and return a function (Codex P2, round 20).
+    const next = Object.hasOwn(mappings, current) ? mappings[current] : undefined;
+    if (!next || next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Canonicalize the `entityRef` a memory-write caller supplied (issue #2213).
+ *
+ * Extraction and capture callers pass whatever id the LLM or user produced,
+ * which can name a legacy id this migration already renamed. Resolving at the
+ * WRITE boundary means store-mediated writes can never re-introduce legacy
+ * references — which is what let the completed migration retire its recurring
+ * full-corpus reference rewrite. It also keeps write-time tombstone lookups on
+ * the same id space as migrated tombstones. Unknown ids pass through verbatim.
+ */
+export function canonicalizeEntityRefOption<T extends { entityRef?: string }>(
+  options: T,
+  mappings: Readonly<Record<string, string>>,
+): T {
+  // Non-strings (absent, or a JS caller's null/junk) pass through untouched:
+  // this boundary canonicalizes ids, it does not take over input validation
+  // the write path never performed — serialization already drops falsy refs.
+  if (typeof options.entityRef !== "string") return options;
+  return { ...options, entityRef: resolveHistoricalEntityCanonicalId(options.entityRef, mappings) };
+}
+
+/**
+ * Canonicalize the effective `entityRef:` line inside a raw memory record's
+ * leading frontmatter block (issue #2213). Bulk writers that persist record
+ * bytes verbatim — capsule import/merge — are a write boundary too: a capsule
+ * can carry pre-migration memories whose refs the target's completed journal
+ * already renamed, and no later reconciliation pass exists to absorb them.
+ *
+ * Line selection mirrors the frontmatter parser and the migration's own
+ * serializer: the LAST `entityRef` key wins (indentation tolerated), its
+ * indent is preserved, and CRLF records keep their line endings. The closing
+ * delimiter must be a standalone `---` line. Non-frontmatter content, records
+ * without an `entityRef` line, and ids the journal does not map all pass
+ * through byte-identical.
+ */
+export function canonicalizeEntityRefFrontmatter(
+  content: string,
+  mappings: Readonly<Record<string, string>>,
+): string {
+  if (Object.keys(mappings).length === 0) return content;
+  const loc = locateEntityRefLine(content);
+  if (loc === null) return content;
+  const canonical = resolveHistoricalEntityCanonicalId(loc.value, mappings);
+  if (canonical === loc.value) return content;
+  const line = loc.lines[loc.index]!;
+  const indent = /^\s*/.exec(line)?.[0] ?? "";
+  loc.lines[loc.index] = `${indent}entityRef: ${canonical}${line.endsWith("\r") ? "\r" : ""}`;
+  return loc.lines.join("\n") + content.slice(loc.closeIndex);
+}
+
+/** The raw `entityRef` value in a record's leading frontmatter, or null. */
+export function readEntityRefFromFrontmatter(content: string): string | null {
+  return locateEntityRefLine(content)?.value ?? null;
+}
+
+function locateEntityRefLine(
+  content: string,
+): { lines: string[]; index: number; value: string; closeIndex: number } | null {
+  if (!/^---\r?\n/.test(content)) return null;
+  const close = /\r?\n---(?:\r?\n|$)/g;
+  close.lastIndex = content.indexOf("\n") + 1;
+  const closeMatch = close.exec(content);
+  if (!closeMatch) return null;
+  const lines = content.slice(0, closeMatch.index).split("\n");
+  let index = -1;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (/^\s*entityRef\s*:/.test(lines[i] ?? "")) index = i;
+  }
+  if (index === -1) return null;
+  const line = lines[index]!;
+  const value = line.slice(line.indexOf(":") + 1).replace(/\r$/, "").trim();
+  if (value.length === 0) return null;
+  return { lines, index, value, closeIndex: closeMatch.index };
+}
+
+/**
+ * Reconcile-pending marker (issue #2213). Raw-byte memory writers that CANNOT
+ * canonicalize inline — offline-sync file replication (opaque, possibly
+ * encrypted buffers), consolidation-undo restores, governance-run restores —
+ * touch this marker instead. The next migration invocation honors it by
+ * running ONE bounded reference-reconciliation pass over the completed
+ * journal's retained mappings, then clears it. This replaces the retired
+ * every-run corpus rewrite with a signal that fires only when a raw writer
+ * actually landed unvetted bytes.
+ */
+export const ENTITY_CANONICAL_ID_RECONCILE_MARKER = "entity-canonical-id-reconcile.pending";
+/** The generation a migration run renamed aside for consumption; a crash can strand it. */
+export const ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER = `${ENTITY_CANONICAL_ID_RECONCILE_MARKER}.consuming`;
+
+export function requestEntityCanonicalIdReconcileSync(stateDir: string): void {
+  const markerPath = path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER);
+  const temporary = `${markerPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    // Never write THROUGH a symlinked marker OR a symlinked state dir (repo
+    // rule: reject symlink traversal from memory directories). The parent is
+    // lstat-verified as a real directory — direct restore/import callers can
+    // reach this helper without validateRoots() — and temp-file-plus-rename
+    // handles the final component: rename() replaces a planted link ITSELF
+    // rather than following it, with no O_NOFOLLOW dependency.
+    const parent = lstatSync(stateDir);
+    if (parent.isSymbolicLink() || !parent.isDirectory()) {
+      log.warn(`refusing to write entity canonical-id reconcile marker: ${stateDir} is not a real directory`);
+      return;
+    }
+    const parentRealPath = realpathSync(stateDir);
+    writeFileSync(temporary, `${new Date().toISOString()}\n`, { mode: 0o600 });
+    // Revalidate the parent between the temp write and publication (Codex
+    // P2, round 20): a state-dir swapped for a symlink after the check above
+    // would have landed the temp file through the link. Node has no openat,
+    // so the residual window is the realpath→rename gap — this recheck
+    // reduces check-then-use to the platform primitive's own atomicity.
+    const recheck = lstatSync(stateDir);
+    if (recheck.isSymbolicLink() || !recheck.isDirectory() || realpathSync(stateDir) !== parentRealPath) {
+      rmSync(temporary, { force: true });
+      log.warn(`refusing to publish entity canonical-id reconcile marker: ${stateDir} changed during write`);
+      return;
+    }
+    renameSync(temporary, markerPath);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    // Best effort by design: a marker failure must not fail the restore/sync
+    // that requested it (AGENTS.md §4). The reference stays legacy-but-readable
+    // until the next mapping change.
+    log.warn(`could not request entity canonical-id reconcile: ${error}`);
+  }
+}
+
+export async function requestEntityCanonicalIdReconcile(stateDir: string): Promise<void> {
+  requestEntityCanonicalIdReconcileSync(stateDir);
+}
+
+/**
+ * Post-persist TOCTOU guard (issue #2213). A writer resolves `entityRef`
+ * against one journal generation, then awaits (snapshots, locks, fsyncs)
+ * before its bytes land — a peer migration can publish AND finish its final
+ * reference scan inside that window, leaving the just-written file behind.
+ * Callers pass the mapping table captured at resolve time plus a fresh cache
+ * read taken AFTER the write: the cache returns the identical object while
+ * the journal file is unchanged, so an identity mismatch means the journal
+ * moved mid-write and one bounded reconcile pass is requested.
+ */
+export function reconcileIfJournalMovedSync(
+  stateDir: string,
+  idsAtResolve: Readonly<Record<string, string>>,
+  idsAfterWrite: Readonly<Record<string, string>>,
+): void {
+  if (idsAtResolve === idsAfterWrite) return;
+  requestEntityCanonicalIdReconcileSync(stateDir);
+}
+
+export async function reconcileIfJournalMoved(
+  stateDir: string,
+  idsAtResolve: Readonly<Record<string, string>>,
+  idsAfterWrite: Readonly<Record<string, string>>,
+): Promise<void> {
+  reconcileIfJournalMovedSync(stateDir, idsAtResolve, idsAfterWrite);
+}
+
+/**
+ * Classify a raw write target for entity-reference handling (issue #2213):
+ * - `"memory"` — hot recall / cold / archive record whose FRONTMATTER
+ *   `entityRef` the writer must canonicalize at the write (and repair after).
+ * - `"entity"` — an `entities/` page. Its migrated surface is relationship
+ *   TARGETS in the body, which only `rewriteRelationshipTargets` understands;
+ *   raw writers persist bytes faithfully and request the bounded reconcile
+ *   pass instead of attempting a frontmatter rewrite.
+ * - `"outside"` — transcripts, profiles, runtime state, and every other file
+ *   outside the migration's scan scope: write byte-identical, no marker.
+ */
+export type EntityRefWritePathKind = "memory" | "entity" | "outside";
+
+export function classifyEntityRefWritePath(baseDir: string, filePath: string): EntityRefWritePathKind {
+  if (!filePath.endsWith(".md")) return "outside";
+  const rel = path.relative(baseDir, filePath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return "outside";
+  const top = rel.split(path.sep)[0] ?? "";
+  if (top === "entities") return "entity";
+  return RECALL_FALLBACK_DIRS.includes(top) || top === "cold" || top === "archive" ? "memory" : "outside";
+}
+
+/** True when `filePath` is in the migration's scan scope at all. */
+export function pathMayCarryEntityRefs(baseDir: string, filePath: string): boolean {
+  return classifyEntityRefWritePath(baseDir, filePath) !== "outside";
+}
+
+/**
+ * Canonicalize a tombstone's identity fields at the append chokepoint
+ * (issue #2213): emitters (forget, temporal supersession, pattern
+ * reinforcement, supersede) build inputs from records that may have been
+ * read before a peer migration completed. The supersession key embeds the
+ * NORMALIZED entity segment (`entity::attr`), so it is re-prefixed when the
+ * ref moved — otherwise the keyed guard lands in the legacy id space while
+ * write-time lookups canonicalize, and a paraphrase resurrects.
+ */
+export interface TombstoneIdentity {
+  entityRef: string | undefined;
+  supersessionKey: string | undefined;
+}
+
+export function canonicalizeTombstoneIdentity(
+  entityRef: string | undefined,
+  supersessionKey: string | undefined,
+  refIds: Readonly<Record<string, string>>,
+): TombstoneIdentity {
+  if (typeof entityRef !== "string") return { entityRef, supersessionKey };
+  const canonical = resolveHistoricalEntityCanonicalId(entityRef, refIds);
+  if (canonical === entityRef) return { entityRef, supersessionKey };
+  if (supersessionKey) {
+    const stalePrefix = `${normalizeSupersessionKey(entityRef)}::`;
+    if (supersessionKey.startsWith(stalePrefix)) {
+      supersessionKey = `${normalizeSupersessionKey(canonical)}::${supersessionKey.slice(stalePrefix.length)}`;
+    }
+  }
+  return { entityRef: canonical, supersessionKey };
+}
+
+/**
+ * Post-persist repair (issue #2213): when the journal moved across a persist,
+ * re-resolve the caller's ORIGINAL ref against the fresh table and rewrite
+ * the file in place (bounded). When the journal will not settle, take the
+ * entity MUTATION lock — parks/removals (the direction the reconcile pass
+ * cannot repair, because the removed mapping is gone from the table) publish
+ * under it — settle once, then request the marker for additive moves only.
+ */
+export async function repairEntityRefAfterJournalMove(options: {
+  stateDir: string;
+  currentIds: () => Readonly<Record<string, string>>;
+  idsAtResolve: Readonly<Record<string, string>>;
+  rawRef: string;
+  frontmatter: { entityRef?: string };
+  rewrite: () => Promise<void>;
+}): Promise<void> {
+  let refIds = options.idsAtResolve;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const fresh = options.currentIds();
+    if (fresh === refIds) return;
+    refIds = fresh;
+    const desired = resolveHistoricalEntityCanonicalId(options.rawRef, fresh);
+    if (desired === options.frontmatter.entityRef) return;
+    options.frontmatter.entityRef = desired;
+    await options.rewrite();
+  }
+  await withEntityCanonicalMutationLock(options.stateDir, async () => {
+    const desired = resolveHistoricalEntityCanonicalId(options.rawRef, options.currentIds());
+    if (desired !== options.frontmatter.entityRef) {
+      options.frontmatter.entityRef = desired;
+      await options.rewrite();
+    }
+  });
+  await requestEntityCanonicalIdReconcile(options.stateDir);
+}
+
+/**
+ * Content-form counterpart of {@link repairEntityRefAfterJournalMove} for
+ * async writers that persist raw record bytes (capsule import/merge,
+ * binary-lifecycle redirects): same bounded loop, same locked settle.
+ */
+export async function repairContentAfterJournalMove(options: {
+  stateDir: string;
+  cache: HistoricalEntityCanonicalIdCache;
+  idsAtWrite: Readonly<Record<string, string>>;
+  rawContent: string;
+  lastWritten: string;
+  rewrite: (content: string) => Promise<void>;
+}): Promise<void> {
+  let refIds = options.idsAtWrite;
+  let written = options.lastWritten;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const fresh = options.cache.get(options.stateDir);
+    if (fresh === refIds) return;
+    refIds = fresh;
+    const desired = canonicalizeEntityRefFrontmatter(options.rawContent, fresh);
+    if (desired === written) return;
+    written = desired;
+    await options.rewrite(desired);
+  }
+  await withEntityCanonicalMutationLock(options.stateDir, async () => {
+    const desired = canonicalizeEntityRefFrontmatter(options.rawContent, options.cache.get(options.stateDir));
+    if (desired !== written) {
+      written = desired;
+      await options.rewrite(desired);
+    }
+  });
+  await requestEntityCanonicalIdReconcile(options.stateDir);
+}
+
+/**
+ * Sync variant (space promotion, curation, review actions). Sync callers
+ * cannot take the async mutation lock, so exhaustion surfaces a retryable
+ * error after requesting the marker — a silent return could leave the bytes
+ * on a parked canonical claimant the reconcile pass cannot restore.
+ */
+export function repairContentAfterJournalMoveSync(options: {
+  stateDir: string;
+  cache: HistoricalEntityCanonicalIdCache;
+  idsAtWrite: Readonly<Record<string, string>>;
+  rawContent: string;
+  lastWritten: string;
+  rewrite: (content: string) => void;
+}): void {
+  let refIds = options.idsAtWrite;
+  let written = options.lastWritten;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const fresh = options.cache.get(options.stateDir);
+    if (fresh === refIds) return;
+    refIds = fresh;
+    const desired = canonicalizeEntityRefFrontmatter(options.rawContent, fresh);
+    if (desired === written) return;
+    written = desired;
+    options.rewrite(desired);
+  }
+  requestEntityCanonicalIdReconcileSync(options.stateDir);
+  throw new Error(
+    "entity canonical-id journal kept changing during post-write repair; retry the write",
+  );
+}

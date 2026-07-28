@@ -20,6 +20,16 @@ import { readManifest, writeManifest } from "./manifest.js";
 import { scanForBinaries } from "./scanner.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+import {
+  HistoricalEntityCanonicalIdCache,
+  canonicalizeEntityRefFrontmatter,
+  classifyEntityRefWritePath,
+  repairContentAfterJournalMove,
+  requestEntityCanonicalIdReconcile,
+} from "../storage/entity-canonical-id-references.js";
+
+// Write-boundary journal cache for redirect rewrites (issue #2213).
+const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
 /**
  * True when `mdPath` is an active recall-corpus memory file under `memoryDir`
@@ -319,7 +329,48 @@ async function stageRedirect(
     let writeFailCount = 0;
     for (const update of updates) {
       try {
-        await writeMarkdownFile(update.mdPath, update.content);
+        // Whole-record rewrite of bytes read earlier (issue #2213): for
+        // memory-tier records, resolve the frontmatter entityRef through the
+        // CURRENT journal at the write and REPAIR afterwards — writing back
+        // the as-read bytes could revert a rewrite a peer migration performed
+        // since the read. findMarkdownFiles also surfaces transcripts,
+        // profiles, and other Markdown outside the migration's scope: those
+        // keep their bytes (plus the redirect) untouched, and entities/ pages
+        // get the bounded reconcile marker instead — their migrated surface
+        // is relationship targets, not an entityRef frontmatter field.
+        const stateDir = path.join(memoryDir, "state");
+        const kind = classifyEntityRefWritePath(memoryDir, update.mdPath);
+        if (kind === "memory") {
+          const idsAtWrite = historicalIdCache.get(stateDir);
+          const written = canonicalizeEntityRefFrontmatter(update.content, idsAtWrite);
+          // Snapshot the ORIGINAL bytes: if repair fails after the write, the
+          // catch below reports a failed redirect, so the file must return to
+          // its pre-redirect state — a retry needs the original reference,
+          // and the skipped corpus bump means a warm cache would otherwise
+          // keep serving bytes that no longer match disk (AGENTS.md §14).
+          const originalBytes = await readMarkdownFile(update.mdPath).catch(() => null);
+          await writeMarkdownFile(update.mdPath, written);
+          try {
+            await repairContentAfterJournalMove({
+              stateDir,
+              cache: historicalIdCache,
+              idsAtWrite,
+              rawContent: update.content,
+              lastWritten: written,
+              rewrite: (next) => writeMarkdownFile(update.mdPath, next),
+            });
+          } catch (err) {
+            if (originalBytes !== null) {
+              await writeMarkdownFile(update.mdPath, originalBytes).catch(() => undefined);
+            }
+            throw err;
+          }
+        } else {
+          await writeMarkdownFile(update.mdPath, update.content);
+          if (kind === "entity") {
+            await requestEntityCanonicalIdReconcile(stateDir);
+          }
+        }
         // The redirect rewrote an on-disk memory file out-of-band (not through a
         // StorageManager mutation). Bump the corpus sentinel per write so a warm
         // hot-memories cache rescans — mid-batch too, never serving pre-redirect
