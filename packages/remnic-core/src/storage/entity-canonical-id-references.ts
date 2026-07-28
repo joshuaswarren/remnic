@@ -18,12 +18,17 @@ import path from "node:path";
 import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 
 export const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
 
 export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Record<string, string>> {
   const statePath = path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE);
   try {
+    // Never read mappings through a symlinked journal (repo rule: reject
+    // symlink traversal from memory directories) — a link could supply
+    // arbitrary mappings that silently rewrite persisted entityRefs.
+    if (!lstatSync(statePath).isFile()) return {};
     const parsed: unknown = JSON.parse(readFileSync(statePath, "utf-8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !("mappings" in parsed)) return {};
     const mappings = parsed.mappings;
@@ -58,9 +63,20 @@ export class HistoricalEntityCanonicalIdCache {
     let key = "missing";
     try {
       const s = lstatSync(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
+      if (!s.isFile()) {
+        // Symlinked/non-regular journal: never follow it, never adopt its
+        // identity — keep serving the last-known table. If it later becomes a
+        // regular file its identity differs from the stored key and reloads.
+        log.warn("ignoring non-regular entity canonical-id journal (symlink refused)");
+        return this.mappings;
+      }
       key = `${s.dev}:${s.ino}:${s.mtimeMs}:${s.ctimeMs}:${s.size}`;
-    } catch {
-      // Missing journal — an empty mapping table is the correct read.
+    } catch (error) {
+      // A TRANSIENT stat failure (EACCES/EIO) must not dump a valid table for
+      // {}: a write during the outage would skip canonicalization AND its
+      // post-write identity check would compare equal. Serve the last-known
+      // table; only a genuine ENOENT means "no journal, empty table".
+      if (!isErrnoCode(error, "ENOENT")) return this.mappings;
     }
     if (key !== this.key) {
       this.mappings = loadHistoricalEntityCanonicalIds(stateDir);
@@ -213,4 +229,18 @@ export async function reconcileIfJournalMoved(
   idsAfterWrite: Readonly<Record<string, string>>,
 ): Promise<void> {
   reconcileIfJournalMovedSync(stateDir, idsAtResolve, idsAfterWrite);
+}
+
+/**
+ * True when a raw write to `filePath` can carry migrated entity references —
+ * a markdown record under the hot recall, cold, or archive tiers. Raw writers
+ * (offline sync) use this to avoid requesting a full reconcile pass when a
+ * sync only touched transcripts, runtime state, or other non-memory files.
+ */
+export function pathMayCarryEntityRefs(baseDir: string, filePath: string): boolean {
+  if (!filePath.endsWith(".md")) return false;
+  const rel = path.relative(baseDir, filePath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  const top = rel.split(path.sep)[0] ?? "";
+  return RECALL_FALLBACK_DIRS.includes(top) || top === "cold" || top === "archive";
 }
