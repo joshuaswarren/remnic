@@ -4891,8 +4891,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return path.join(root, dir, this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
   }
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {
-    const fileContent = `${serializeFrontmatter(memory.frontmatter)}\n\n${memory.content}\n`;
+    // Whole-record rewrite (tier moves route here) — same inherited-entityRef
+    // rule as writeMemoryFrontmatter (issue #2213).
+    const refIdsAtWrite = this.currentHistoricalIds();
+    const frontmatter = entityRefs.canonicalizeEntityRefOption(memory.frontmatter, refIdsAtWrite);
+    const fileContent = `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`;
     await writeMaybeEncryptedFile(targetPath, fileContent, this.resolveWriteKey(), {}, this.baseDir);
+    await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtWrite, this.currentHistoricalIds());
     this.invalidateAllMemoriesCache();
     this.notifyCatalogWrite();
   }
@@ -5116,15 +5121,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       (v, i, a) => a.indexOf(v) === i
     ); // dedupe
 
-    const updated: MemoryFrontmatter = {
-      ...memory.frontmatter,
-      updated: new Date().toISOString(),
-      supersedes: options?.supersedes ?? memory.frontmatter.supersedes,
-      lineage: mergedLineage.length > 0 ? mergedLineage : undefined,
-      ...(memory.frontmatter.sourceConnector === undefined && options?.sourceConnector
-        ? { sourceConnector: options.sourceConnector }
-        : {}),
-    };
+    // Whole-record rewrite — same inherited-entityRef rule (issue #2213).
+    const refIdsAtWrite = this.currentHistoricalIds();
+    const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+      {
+        ...memory.frontmatter,
+        updated: new Date().toISOString(),
+        supersedes: options?.supersedes ?? memory.frontmatter.supersedes,
+        lineage: mergedLineage.length > 0 ? mergedLineage : undefined,
+        ...(memory.frontmatter.sourceConnector === undefined && options?.sourceConnector
+          ? { sourceConnector: options.sourceConnector }
+          : {}),
+      },
+      refIdsAtWrite,
+    );
     const sanitized = sanitizeMemoryContent(newContent);
     if (!sanitized.clean) {
       log.warn(`updated memory content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
@@ -5133,6 +5143,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
       this.invalidateAllMemoriesCache();
     });
+    if (typeof updated.entityRef === "string") {
+      await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtWrite, this.currentHistoricalIds());
+    }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
       memoryId: id,
