@@ -295,18 +295,24 @@ function createFakeService(): EngramAccessService {
         warnings: [],
       },
     ],
-    wearablesTranscriptDay: async () => [
-      {
-        source: "limitless",
-        date: "2026-07-11",
-        meta: null,
-        body: "A test transcript.",
-        overlapsWith: [],
-      },
-    ],
-    wearablesTranscriptSearch: async () => [
-      { source: "limitless", date: "2026-07-11", score: 0.9, snippet: "test transcript", backend: "scan" as const },
-    ],
+    wearablesTranscriptDay: async (request: Parameters<EngramAccessService["wearablesTranscriptDay"]>[0]) => {
+      assert.equal(request.date, "2026-07-11");
+      return [
+        {
+          source: "limitless",
+          date: "2026-07-11",
+          meta: null,
+          body: "A test transcript.",
+          overlapsWith: [],
+        },
+      ];
+    },
+    wearablesTranscriptSearch: async (request: Parameters<EngramAccessService["wearablesTranscriptSearch"]>[0]) => {
+      assert.equal(request.query, "meeting");
+      return [
+        { source: "limitless", date: "2026-07-11", score: 0.9, snippet: "test transcript", backend: "scan" as const },
+      ];
+    },
     wearablesTranscriptMemories: async () => [
       {
         id: "memory-1",
@@ -819,7 +825,7 @@ test("MCP day_summary tolerates injected git context keys", async () => {
   });
 });
 
-test("MCP day_summary omits structuredContent when the service returns null", async () => {
+test("MCP day_summary returns an object sentinel when the service returns null", async () => {
   const service = createFakeService();
   service.daySummary = async () => null;
   const server = new EngramMcpServer(service);
@@ -843,10 +849,10 @@ test("MCP day_summary omits structuredContent when the service returns null", as
     content?: Array<{ type: string; text: string }>;
   };
   assert.equal(result?.isError, false);
-  assert.equal("structuredContent" in result, false);
-  assert.equal(result?.content?.[0]?.text, "null");
+  assert.deepEqual(result?.structuredContent, {});
+  assert.equal(result?.content?.[0]?.text, "{}");
 });
-test("MCP day_summary serializes undefined service results as null text", async () => {
+test("MCP day_summary returns an object sentinel for undefined service results", async () => {
   const service = {
     ...createFakeService(),
     daySummary: async () => undefined,
@@ -872,8 +878,8 @@ test("MCP day_summary serializes undefined service results as null text", async 
     content?: Array<{ type: string; text: string }>;
   };
   assert.equal(result?.isError, false);
-  assert.equal("structuredContent" in result, false);
-  assert.equal(result?.content?.[0]?.text, "null");
+  assert.deepEqual(result?.structuredContent, {});
+  assert.equal(result?.content?.[0]?.text, "{}");
 });
 
 
