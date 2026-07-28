@@ -141,7 +141,6 @@ test("default Pi extension creates isolated state for each host invocation", asy
   const configPath = path.join(root, "remnic.config.json");
   fs.writeFileSync(configPath, JSON.stringify({
     authToken: "test-token",
-    recallEnabled: false,
     observeEnabled: false,
     compactionEnabled: false,
     mcpToolsEnabled: false,
@@ -150,10 +149,16 @@ test("default Pi extension creates isolated state for each host invocation", asy
 
   const previousConfig = process.env.REMNIC_PI_CONFIG;
   const originalFetch = globalThis.fetch;
-  const fetchBodies: unknown[] = [];
+  const recallBodies: unknown[] = [];
   process.env.REMNIC_PI_CONFIG = configPath;
-  globalThis.fetch = async (_input, init) => {
-    fetchBodies.push(JSON.parse(String(init?.body ?? "{}")));
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/engram/v1/health")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      return new Response(JSON.stringify({ ok: true, status: "ok", namespace: "default" }), { status: 200 });
+    }
+    recallBodies.push(JSON.parse(String(init?.body ?? "{}")));
     return new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
   };
   t.after(() => {
@@ -173,12 +178,19 @@ test("default Pi extension creates isolated state for each host invocation", asy
     sessionManager: { getSessionId: () => "shared-session" },
   };
 
-  // Both extensions registered and can process events without error —
-  // each manages its own session state independently.
-  await first.emit("context", { messages: [{ role: "user", content: "hi" }] }, ctx);
-  await second.emit("context", { messages: [{ role: "user", content: "hi" }] }, ctx);
+  // Each extension independently recalls at session_start — state maps are
+  // isolated so the same session key produces fetch calls on both instances.
+  await first.emit("session_start", {}, ctx);
+  await second.emit("session_start", {}, ctx);
+  assert.equal(recallBodies.length, 2, "each extension independently recalled");
 
-  assert.equal(fetchBodies.length, 0);
+  // Context injection reads from each extension's isolated cachedContext.
+  const firstResult = await first.emit("context", { messages: [{ role: "user", content: "hi" }] }, ctx) as { messages?: Array<Record<string, unknown>> };
+  const secondResult = await second.emit("context", { messages: [{ role: "user", content: "hi" }] }, ctx) as { messages?: Array<Record<string, unknown>> };
+  assert.ok(firstResult.messages?.[0]?.remnicInjected);
+  assert.ok(secondResult.messages?.[0]?.remnicInjected);
+  // No additional recall calls from context injection.
+  assert.equal(recallBodies.length, 2);
 });
 
 test("MCP tool registration uses the startup timeout instead of the general request timeout", async (t) => {

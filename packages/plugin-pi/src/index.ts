@@ -63,6 +63,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
       restoreObservedState(session, state.observedHashes);
+      state.cachedContext = null;
 
       // Probe health + update the circuit breaker UNCONDITIONALLY so an offline
       // daemon is marked unreachable even when the status UI is off; otherwise
@@ -96,7 +97,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
               "current session context",
               session.sessionKey,
               session.cwd,
-              { timeoutMs: remaining },
+              { timeoutMs: remaining, maxRetries: 0 },
             );
             hadSuccessfulRecall = true;
             client.markReachable();
