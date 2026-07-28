@@ -16,8 +16,9 @@
  */
 import path from "node:path";
 import { lstatSync, readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { lstat, writeFile } from "node:fs/promises";
 import { log } from "../logger.js";
+import { isErrnoCode } from "../utils/errno.js";
 
 export const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
 
@@ -160,8 +161,20 @@ export const ENTITY_CANONICAL_ID_RECONCILE_MARKER = "entity-canonical-id-reconci
 export const ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER = `${ENTITY_CANONICAL_ID_RECONCILE_MARKER}.consuming`;
 
 export async function requestEntityCanonicalIdReconcile(stateDir: string): Promise<void> {
+  const markerPath = path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER);
   try {
-    await writeFile(path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER), `${new Date().toISOString()}\n`, "utf-8");
+    // Never write through a symlinked marker (repo rule: reject symlink
+    // traversal from memory directories) — a link here would let writeFile
+    // truncate whatever file it points at.
+    const existing = await lstat(markerPath).catch((error: unknown) => {
+      if (isErrnoCode(error, "ENOENT")) return null;
+      throw error;
+    });
+    if (existing && !existing.isFile()) {
+      log.warn(`refusing to write entity canonical-id reconcile marker: ${markerPath} is not a regular file`);
+      return;
+    }
+    await writeFile(markerPath, `${new Date().toISOString()}\n`, "utf-8");
   } catch (error) {
     // Best effort by design: a marker failure must not fail the restore/sync
     // that requested it (AGENTS.md §4). The reference stays legacy-but-readable

@@ -128,8 +128,12 @@ export class EntityStore {
 
   /** Add a relationship to an entity file. Deduplicates by target+label. */
   async addEntityRelationship(name: string, rel: EntityRelationship): Promise<void> {
-    const target = resolveHistoricalEntityCanonicalId(rel.target, this.deps.currentHistoricalIds());
     await this.mutateEntityFile(name, "addEntityRelationship", (entity) => {
+      // Resolve the target INSIDE the locked callback: a migration can
+      // publish legacy → canonical between an outside lookup and lock
+      // acquisition, and its relationship scan may already have passed this
+      // file — the edge must be born canonical (issue #2213).
+      const target = resolveHistoricalEntityCanonicalId(rel.target, this.deps.currentHistoricalIds());
       if (entity.relationships.some((r) => r.target === target && r.label === rel.label)) return false;
       entity.relationships.push({ ...rel, target });
       return true;
