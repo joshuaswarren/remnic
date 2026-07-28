@@ -101,7 +101,6 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
           try {
             const recalled = await client.recall(recallTarget.query, session.sessionKey, session.cwd, {
               timeoutMs: config.turnRequestTimeoutMs,
-              maxRetries: 0,
             });
             client.markReachable();
             const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
