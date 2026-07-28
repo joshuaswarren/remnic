@@ -273,3 +273,32 @@ export function pathMayCarryEntityRefs(baseDir: string, filePath: string): boole
   const top = rel.split(path.sep)[0] ?? "";
   return RECALL_FALLBACK_DIRS.includes(top) || top === "cold" || top === "archive";
 }
+
+/**
+ * Post-persist repair (issue #2213): when the journal moved across a persist,
+ * re-resolve the caller's ORIGINAL ref against the fresh table and rewrite
+ * the file in place (bounded) — a mapping parked mid-write would otherwise
+ * leave the memory on a since-contested canonical claimant, the one direction
+ * the bounded reconcile pass cannot repair. Falls back to requesting the
+ * reconcile pass when the journal keeps moving.
+ */
+export async function repairEntityRefAfterJournalMove(options: {
+  stateDir: string;
+  currentIds: () => Readonly<Record<string, string>>;
+  idsAtResolve: Readonly<Record<string, string>>;
+  rawRef: string;
+  frontmatter: { entityRef?: string };
+  rewrite: () => Promise<void>;
+}): Promise<void> {
+  let refIds = options.idsAtResolve;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const fresh = options.currentIds();
+    if (fresh === refIds) return;
+    refIds = fresh;
+    const desired = resolveHistoricalEntityCanonicalId(options.rawRef, fresh);
+    if (desired === options.frontmatter.entityRef) return;
+    options.frontmatter.entityRef = desired;
+    await options.rewrite();
+  }
+  await requestEntityCanonicalIdReconcile(options.stateDir);
+}

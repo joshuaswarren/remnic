@@ -3526,6 +3526,26 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private currentHistoricalIds(): Readonly<Record<string, string>> {
     return this.historicalEntityCanonicalIds.get(this.stateDir);
   }
+  /** Post-persist repair delegate (issue #2213) — see references module. */
+  private async repairEntityRefAfterJournalMove(
+    filePath: string,
+    fm: MemoryFrontmatter,
+    rawRef: string,
+    refIds: Readonly<Record<string, string>>,
+    body: string,
+  ): Promise<void> {
+    await entityRefs.repairEntityRefAfterJournalMove({
+      stateDir: this.stateDir,
+      currentIds: () => this.currentHistoricalIds(),
+      idsAtResolve: refIds,
+      rawRef,
+      frontmatter: fm,
+      rewrite: async () => {
+        await this.writeStorageSecureFile(filePath, `${serializeFrontmatter(fm)}\n\n${body}\n`);
+        this.invalidateAllMemoriesCache();
+      },
+    });
+  }
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
     () => this.runLegacyEntityCanonicalIdMigration(),
@@ -3788,6 +3808,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // (extraction, import, consolidation, dreams, pattern-reinforcement)
     // funnels through writeMemory, so the five resurrection paths are blocked
     // here without per-path code (rule 43).
+    // Pre-gate revalidation (issue #2213): re-resolve from the caller's
+    // ORIGINAL ref so the tombstone lookup and the persisted ref share one id
+    // space; moves across later awaits are caught by the post-persist repair.
+    if (refIds && typeof rawEntityRef === "string" && this.currentHistoricalIds() !== refIds) {
+      refIds = this.currentHistoricalIds();
+      fm.entityRef = entityRefs.resolveHistoricalEntityCanonicalId(rawEntityRef, refIds);
+    }
     let tombstoneBlocked = false;
     if (
       category === "fact" &&
@@ -3806,9 +3833,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         // Derive the keyed-tier supersession key from structured attributes
         // using the SAME helper write-time supersession uses (one helper).
         const keyedSupersession =
-          options.entityRef && options.structuredAttributes
+          fm.entityRef && options.structuredAttributes
             ? supersessionKeysForFact({
-                entityRef: options.entityRef,
+                entityRef: fm.entityRef,
                 structuredAttributes: options.structuredAttributes,
               })
             : [];
@@ -3816,7 +3843,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const match = tombstoneStore.lookup({
           contentHash: fm.contentHash,
           normalizedText: ContentHashIndex.normalizeContent(factHashSourceForTombstone),
-          ...(options.entityRef ? { entityRef: options.entityRef } : {}),
+          ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
           ...(keyedSupersession.length > 0 ? { supersessionKeys: keyedSupersession } : {}),
           namespace: this.tombstonesConfig.namespace,
         });
@@ -3837,14 +3864,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
     }
 
-    // Pre-persist revalidation (issue #2213): a mapping parked since the
-    // resolve above cannot be repaired afterwards (the reconcile pass only
-    // rewrites refs that are still legacy keys), so re-resolve from the
-    // caller's ORIGINAL ref against the fresh table before the bytes land.
-    if (refIds && typeof rawEntityRef === "string" && this.currentHistoricalIds() !== refIds) {
-      refIds = this.currentHistoricalIds();
-      fm.entityRef = entityRefs.resolveHistoricalEntityCanonicalId(rawEntityRef, refIds);
-    }
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
@@ -3873,7 +3892,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         duplicateOf: duplicateBlocked.frontmatter.id,
       };
     }
-    if (refIds) await entityRefs.reconcileIfJournalMoved(this.stateDir, refIds, this.currentHistoricalIds());
+    if (refIds && typeof rawEntityRef === "string") {
+      await this.repairEntityRefAfterJournalMove(filePath, fm, rawEntityRef, refIds, sanitized.text);
+    }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
@@ -4900,8 +4921,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return path.join(root, dir, this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
   }
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {
-    // Whole-record rewrite (tier moves route here) — same inherited-entityRef
-    // rule as writeMemoryFrontmatter (issue #2213).
+    // Whole-record rewrite (tier moves route here) — issue #2213.
     const refIdsAtWrite = this.currentHistoricalIds();
     const frontmatter = entityRefs.canonicalizeEntityRefOption(memory.frontmatter, refIdsAtWrite);
     const fileContent = `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`;
@@ -4984,7 +5004,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const today = now.toISOString().slice(0, 10);
         const destDir = path.join(this.archiveDir, today);
         await mkdir(destDir, { recursive: true });
-        // Whole-record rewrite — same inherited-entityRef rule (issue #2213).
+        // Whole-record rewrite — inherited-entityRef rule (issue #2213).
         const refIdsAtWrite = this.currentHistoricalIds();
         const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
           {
@@ -5130,7 +5150,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       (v, i, a) => a.indexOf(v) === i
     ); // dedupe
 
-    // Whole-record rewrite — same inherited-entityRef rule (issue #2213).
+    // Whole-record rewrite — inherited-entityRef rule (issue #2213).
     const refIdsAtWrite = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       {
@@ -5182,9 +5202,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     lifecycle?: MemoryLifecycleEventWriteOptions
   ): Promise<boolean> {
     const beforeStatus = memory.frontmatter.status ?? "active";
-    // Canonicalize the EFFECTIVE merged entityRef (issue #2213): a patch that
-    // never mentions entityRef still re-serializes the on-disk value, and an
-    // unrelated status patch must not rewrite a legacy ref back out unmapped.
+    // Canonicalize the EFFECTIVE merged entityRef (issue #2213) — an
+    // unrelated patch must not rewrite an inherited legacy ref back out.
     const resolveIds = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       { ...memory.frontmatter, ...patch },
@@ -5201,7 +5220,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         this.invalidateColdMemoriesCache();
       }
     });
-    if (refIds) await entityRefs.reconcileIfJournalMoved(this.stateDir, refIds, this.currentHistoricalIds());
+    const rawMergedRef = typeof patch.entityRef === "string" ? patch.entityRef : memory.frontmatter.entityRef;
+    if (refIds && typeof rawMergedRef === "string") {
+      await this.repairEntityRefAfterJournalMove(memory.path, updated, rawMergedRef, refIds, memory.content);
+    }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
@@ -6092,14 +6114,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     log.debug(`appended namespace-local reflection to ${this.identityReflectionsPath}`);
   }
 
-  // ---------------------------------------------------------------------------
-  // Entity mutation helpers (Knowledge Graph v7.0)
-  // ---------------------------------------------------------------------------
-
-  // Entity-file mutators live on EntityStore (issue #2213): they resolve
-  // through the migration journal with a legacy-file fallback and run under
-  // the entity-mutation lock so a mid-flight rename cannot strand or
-  // resurrect a file.
+  // Entity-file mutators live on EntityStore (issue #2213): journal-resolved
+  // with legacy-file fallback, under the entity-mutation lock.
   async addEntityRelationship(name: string, rel: EntityRelationship): Promise<void> {
     return this.entityStore.addEntityRelationship(name, rel);
   }
@@ -6378,10 +6394,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // top of whatever is cached at prevVersion — robust to a concurrent scan
     // that republished an UNpatched corpus mid-flush (Cursor Medium #1902).
     const appliedPatches = new Map<string, { accessCount: number; lastAccessed: string }>();
-    // Per-ROW journal snapshot (issue #2213): a mid-batch journal change
-    // (e.g. a contested mapping parked) must not leave later rows resolving
-    // against a frozen table; the first row's snapshot anchors the post-batch
-    // journal-moved check.
+    // Per-ROW journal reads below; this first snapshot anchors the post-batch
+    // journal-moved check (issue #2213).
     const refIdsAtFlush = this.currentHistoricalIds();
 
     for (const entry of entries) {
@@ -6390,8 +6404,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         : memoryMap.get(entry.memoryId);
       if (!memory) continue;
 
-      // Whole-record rewrite: canonicalize the inherited entityRef so an
-      // access-count flush cannot write a legacy ref back out (issue #2213).
       const newFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
         { ...memory.frontmatter, accessCount: entry.newCount, lastAccessed: entry.lastAccessed },
         this.currentHistoricalIds(),
@@ -6419,8 +6431,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     if (updated > 0) {
       await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtFlush, this.currentHistoricalIds());
-    }
-    if (updated > 0) {
       // Advance the corpus sentinel so PEER processes rescan and don't overwrite
       // this process's increments (Codex P2): WorkspaceOpsCoordinator computes
       // existingCount + update.count from the cached value, so a peer serving a
@@ -6717,11 +6727,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       log.warn(`chunk content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
     }
     const filePath = await this.resolveCategoryWritePath(category, id, today);
-    // Pre-persist revalidation — same rule as writeMemory (issue #2213).
-    if (refIds && typeof rawEntityRef === "string" && this.currentHistoricalIds() !== refIds) {
-      refIds = this.currentHistoricalIds();
-      fm.entityRef = entityRefs.resolveHistoricalEntityCanonicalId(rawEntityRef, refIds);
-    }
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
     const written = await this.writeTombstoneBlockedChunk(
@@ -6737,7 +6742,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
       }
     );
-    if (refIds) await entityRefs.reconcileIfJournalMoved(this.stateDir, refIds, this.currentHistoricalIds());
+    if (refIds && typeof rawEntityRef === "string") {
+      await this.repairEntityRefAfterJournalMove(filePath, fm, rawEntityRef, refIds, sanitized.text);
+    }
     return written;
   }
 
@@ -6766,8 +6773,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!oldMemory) return false;
 
     const now = new Date().toISOString();
-    // Whole-record rewrite — same inherited-entityRef rule as
-    // writeMemoryFrontmatter (issue #2213).
+    // Whole-record rewrite — inherited-entityRef rule (issue #2213).
     const refIdsAtWrite = this.currentHistoricalIds();
     const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       { ...oldMemory.frontmatter, status: "superseded", supersededBy: newMemoryId, supersededAt: now, updated: now },
@@ -6891,8 +6897,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const memories = await this.readAllMemories();
     const memoryMap = new Map(memories.map((m) => [m.frontmatter.id, m]));
     let archived = 0;
-    // Per-ROW journal snapshot; the first row's snapshot anchors the
-    // post-batch journal-moved check (issue #2213, see flushAccessTracking).
+    // First snapshot anchors the post-batch journal-moved check (issue #2213).
     const refIdsAtArchive = this.currentHistoricalIds();
 
     for (const id of memoryIds) {
@@ -6900,7 +6905,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (!memory) continue;
 
       const now = new Date().toISOString();
-      // Whole-record rewrite — same inherited-entityRef rule (issue #2213).
       const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
         { ...memory.frontmatter, status: "archived", archivedAt: now, updated: now },
         this.currentHistoricalIds(),
