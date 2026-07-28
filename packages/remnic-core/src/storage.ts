@@ -35,7 +35,7 @@ import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import * as entityRefs from "./storage/entity-canonical-id-references.js";
-import { rewriteProjectedMemoryEntityReference } from "./memory-projection-mutations.js";
+import { EntityRefRepair } from "./storage/entity-ref-repair.js";
 import {
   runLegacyEntityCanonicalIdMigration,
   type EntityCanonicalIdMigrationHost,
@@ -114,8 +114,6 @@ import {
   TombstoneStore,
   collectRetiredMemoriesForRebuild,
   buildRetiredFactTombstoneInputs,
-  applyTombstoneResurrectionGate,
-  type TombstoneMatch,
   type TombstoneStoreOptions,
   type TombstoneFileIo,
   type TombstoneReason,
@@ -3031,42 +3029,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   /**
-   * Shared lookup+apply core for the write-time resurrection gate (#1579 /
-   * #2213): fail-open, add-only; writeMemory's gate + chunk-repair re-gate (rule 43).
-   */
-  private async runTombstoneResurrectionGate(
-    fm: MemoryFrontmatter,
-    hashSource: string,
-    structuredAttributes?: Record<string, string>,
-  ): Promise<TombstoneMatch | null> {
-    if (!this.tombstonesConfig.enabled) return null;
-    try {
-      const store = await this.getTombstoneStore();
-      // Pass EVERY derived key (thread Ociag/Oci-W): emitters register one
-      // tombstone per key, so the block can be on any of them.
-      const supersessionKeys =
-        fm.entityRef && structuredAttributes
-          ? supersessionKeysForFact({ entityRef: fm.entityRef, structuredAttributes })
-          : [];
-      const match = applyTombstoneResurrectionGate(store, fm, {
-        normalizedText: ContentHashIndex.normalizeContent(hashSource),
-        supersessionKeys,
-        namespace: this.tombstonesConfig.namespace,
-      });
-      if (match) {
-        log.info(
-          `tombstone: blocked resurrection of fact ${fm.id} (tier=${match.matchedTier}, tombstone=${match.tombstoneId}, reason=${match.reason})`
-        );
-      }
-      return match;
-    } catch (err) {
-      // Fail-open (rule 34): a lookup error must not block the write.
-      log.warn(`tombstone lookup failed for fact ${fm.id} (fail-open): ${err}`);
-      return null;
-    }
-  }
-
-  /**
    * Append a tombstone for a retired memory (issue #1579 emitters).
    * Best-effort: a tombstone append failure MUST NOT fail the supersession /
    * correction that triggered it (gotcha #13 / rule 34). The memory is
@@ -3469,53 +3431,24 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private currentHistoricalIds(): Readonly<Record<string, string>> {
     return this.historicalEntityCanonicalIds.get(this.stateDir);
   }
-  /**
-   * Post-persist repair delegate (issue #2213) — see references module.
-   * `regateFact` re-runs the add-only resurrection gate under the FINAL ref
-   * before rewriting (chunk writes, where `body` IS the hash source).
-   */
-  private async repairEntityRefAfterJournalMove(
-    filePath: string,
-    fm: MemoryFrontmatter,
-    rawRef: string,
-    refIds: Readonly<Record<string, string>>,
-    body: string,
-    regateFact = false,
-  ): Promise<void> {
-    const refBeforeRepair = fm.entityRef;
-    await entityRefs.repairEntityRefAfterJournalMove({
-      stateDir: this.stateDir,
-      currentIds: () => this.currentHistoricalIds(),
-      idsAtResolve: refIds,
-      rawRef,
-      frontmatter: fm,
-      rewrite: async () => {
-        if (regateFact && fm.category === "fact") {
-          await this.runTombstoneResurrectionGate(fm, body, undefined);
-        }
-        // Blocked-capture surface: a repair rewrite of a tombstone-blocked
-        // record must keep TombstoneBlockedCaptureIndex consistent.
-        await this.writeTombstoneBlockedMemory(filePath, `${serializeFrontmatter(fm)}\n\n${body}\n`, fm, body);
-        this.invalidateAllMemoriesCache();
-      },
-    });
-    await this.syncProjectionAfterRefRepair(fm.id, refBeforeRepair, fm.entityRef);
-  }
-  /**
-   * Projection rows written under the pre-repair claimant cannot be restored
-   * once the mapping is parked (Codex P1). Fail-open: projection is rebuildable.
-   */
-  private async syncProjectionAfterRefRepair(
-    memoryId: string,
-    refBefore: string | undefined,
-    refAfter: string | undefined,
-  ): Promise<void> {
-    if (typeof refBefore !== "string" || typeof refAfter !== "string" || refBefore === refAfter) return;
-    try {
-      await rewriteProjectedMemoryEntityReference(this.baseDir, memoryId, refBefore, refAfter);
-    } catch (err) {
-      log.warn(`projection entityRef sync failed for ${memoryId}: ${err}`);
+  /** Post-persist repair subsystem (issue #2213) — storage/entity-ref-repair.ts. */
+  private _entityRefRepair: EntityRefRepair | undefined;
+  private get entityRefRepair(): EntityRefRepair {
+    if (!this._entityRefRepair) {
+      this._entityRefRepair = new EntityRefRepair({
+        stateDir: this.stateDir,
+        baseDir: this.baseDir,
+        currentHistoricalIds: () => this.currentHistoricalIds(),
+        serializeFrontmatter,
+        writeTombstoneBlockedMemory: (pathname, fileContent, frontmatter, content) =>
+          this.writeTombstoneBlockedMemory(pathname, fileContent, frontmatter, content),
+        invalidateAllMemoriesCache: () => this.invalidateAllMemoriesCache(),
+        getTombstoneStore: () => this.getTombstoneStore(),
+        tombstonesEnabled: () => this.tombstonesConfig.enabled,
+        tombstonesNamespace: () => this.tombstonesConfig.namespace,
+      });
     }
+    return this._entityRefRepair;
   }
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
@@ -3798,7 +3731,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // terminal statuses respected) live in applyTombstoneResurrectionGate.
       if (category !== "fact" || factHashSourceForTombstone === null) return;
       const statusBefore = fm.status;
-      const match = await this.runTombstoneResurrectionGate(fm, factHashSourceForTombstone, options.structuredAttributes);
+      const match = await this.entityRefRepair.gate(fm, factHashSourceForTombstone, options.structuredAttributes);
       if (match) {
         gateRef = fm.entityRef;
         statusBeforeBlock = statusBefore;
@@ -3865,7 +3798,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         this.invalidateAllMemoriesCache();
         throw err;
       }
-      await this.syncProjectionAfterRefRepair(id, refBeforeRepair, fm.entityRef);
+      await this.entityRefRepair.syncProjection(id, refBeforeRepair, fm.entityRef);
     }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
@@ -4930,7 +4863,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         this.invalidateAllMemoriesCache();
         throw err;
       }
-      await this.syncProjectionAfterRefRepair(memory.frontmatter.id, refBeforeRepair, frontmatter.entityRef);
+      await this.entityRefRepair.syncProjection(memory.frontmatter.id, refBeforeRepair, frontmatter.entityRef);
     }
     this.invalidateAllMemoriesCache();
     this.notifyCatalogWrite();
@@ -5028,7 +4961,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         await this.writeStorageSecureFile(destPath, fileContent);
         if (typeof current.frontmatter.entityRef === "string") {
           try {
-            await this.repairEntityRefAfterJournalMove(
+            await this.entityRefRepair.repair(
               destPath, updatedFm, current.frontmatter.entityRef, refIdsAtWrite, current.content,
             );
           } catch (err) {
@@ -5192,8 +5125,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       this.invalidateAllMemoriesCache();
     });
     if (typeof memory.frontmatter.entityRef === "string") {
-      await this.repairEntityRefAfterJournalMove(
+      await this.entityRefRepair.repair(
         memory.path, updated, memory.frontmatter.entityRef, refIdsAtWrite, sanitized.text,
+        { onFailRestore: memory },
       );
     }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
@@ -5243,7 +5177,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
     const rawMergedRef = typeof patch.entityRef === "string" ? patch.entityRef : memory.frontmatter.entityRef;
     if (refIds && typeof rawMergedRef === "string") {
-      await this.repairEntityRefAfterJournalMove(memory.path, updated, rawMergedRef, refIds, memory.content);
+      await this.entityRefRepair.repair(
+        memory.path, updated, rawMergedRef, refIds, memory.content,
+        { onFailRestore: memory },
+      );
     }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
@@ -6401,8 +6338,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
         if (typeof memory.frontmatter.entityRef === "string") {
-          await this.repairEntityRefAfterJournalMove(
+          // onFailRestore (§14): the count patch was never reported applied.
+          await this.entityRefRepair.repair(
             memory.path, newFm, memory.frontmatter.entityRef, rowIds, memory.content,
+            { onFailRestore: memory },
           );
         }
         // Patch the hot corpus cache entry in place (#1902); the shared
@@ -6738,7 +6677,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // rewrite RE-GATES under the final ref (Bugbot): a journal move into
     // tombstone-blocked identity space must not leave a fact chunk active.
     if (written === id && refIds && typeof rawEntityRef === "string") {
-      await this.repairEntityRefAfterJournalMove(filePath, fm, rawEntityRef, refIds, sanitized.text, true);
+      await this.entityRefRepair.repair(filePath, fm, rawEntityRef, refIds, sanitized.text, {
+        regateFact: true,
+        onFailRemove: filePath,
+      });
     }
     return written;
   }
@@ -6780,8 +6722,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     try {
       await this.writeStorageSecureFile(oldMemory.path, fileContent);
       if (typeof oldMemory.frontmatter.entityRef === "string") {
-        await this.repairEntityRefAfterJournalMove(
+        // onFailRestore (§14): a record left superseded on disk would skip
+        // its non-resurrection tombstone while caches expose the old state.
+        await this.entityRefRepair.repair(
           oldMemory.path, updatedFm, oldMemory.frontmatter.entityRef, refIdsAtWrite, oldMemory.content,
+          { onFailRestore: oldMemory },
         );
       }
       // Advance the corpus sentinel immediately after the on-disk write, BEFORE
@@ -6909,8 +6854,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
         if (typeof memory.frontmatter.entityRef === "string") {
-          await this.repairEntityRefAfterJournalMove(
+          // onFailRestore (§14): the method reports the row NOT archived.
+          await this.entityRefRepair.repair(
             memory.path, updatedFm, memory.frontmatter.entityRef, rowIds, memory.content,
+            { onFailRestore: memory },
           );
         }
         // Per-file corpus bump BEFORE the awaited lifecycle append (#1902):

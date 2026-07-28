@@ -327,11 +327,17 @@ export function requestEntityCanonicalIdReconcileSync(stateDir: string): void {
   const markerPath = path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER);
   const temporary = `${markerPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    // Never write THROUGH a symlinked marker (repo rule: reject symlink
-    // traversal from memory directories). Temp-file-plus-rename is the
-    // platform-safe primitive: rename() replaces a symlink ITSELF rather
-    // than following it, so a planted link is displaced — never its target
-    // truncated — with no O_NOFOLLOW dependency and no check→write window.
+    // Never write THROUGH a symlinked marker OR a symlinked state dir (repo
+    // rule: reject symlink traversal from memory directories). The parent is
+    // lstat-verified as a real directory — direct restore/import callers can
+    // reach this helper without validateRoots() — and temp-file-plus-rename
+    // handles the final component: rename() replaces a planted link ITSELF
+    // rather than following it, with no O_NOFOLLOW dependency.
+    const parent = lstatSync(stateDir);
+    if (parent.isSymbolicLink() || !parent.isDirectory()) {
+      log.warn(`refusing to write entity canonical-id reconcile marker: ${stateDir} is not a real directory`);
+      return;
+    }
     writeFileSync(temporary, `${new Date().toISOString()}\n`, { mode: 0o600 });
     renameSync(temporary, markerPath);
   } catch (error) {
