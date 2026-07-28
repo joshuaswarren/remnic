@@ -456,15 +456,27 @@ test("plain memory writes do not change the migration fingerprint; entity writes
   try {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
+    // Same provider the runner AND adapter use: the entity-mutation sentinel,
+    // NOT memory-status — a regression bumping it on plain fact writes must
+    // fail this test (it would reintroduce the #2213 hot loop).
     const readFp = () =>
-      getFingerprint(dir, path.join(dir, "entities"), () => String(storage.getMemoryStatusVersion()));
+      getFingerprint(dir, path.join(dir, "entities"), () => String(storage.getEntityMutationVersion()));
 
     const before = await readFp();
-    await storage.writeMemory("fact", "The ingest runs nightly.");
+    const first = await storage.writeMemory("fact", "The ingest runs nightly.");
+    const second = await storage.writeMemory("fact", "The ingest runs at 02:00 nightly.");
     assert.equal(
       await readFp(),
       before,
       "a plain fact create must not re-trigger the canonical-id migration (issue #2213)",
+    );
+    // A REAL supersession bumps memory-status; the migration fingerprint must
+    // not move with it.
+    assert.equal(await storage.supersedeMemory(first.id, second.id, "test"), true);
+    assert.equal(
+      await readFp(),
+      before,
+      "status/lifecycle version bumps must not re-trigger the canonical-id migration",
     );
 
     await storage.writeEntity("Nightly Ingest", "automation-cron-job", ["Runs at 02:00."]);

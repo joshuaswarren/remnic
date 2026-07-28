@@ -3081,9 +3081,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // the citation-stripped contentHashSource. Idempotent on pre-stripped
       // text (e.g. recordSupersession).
       const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate);
-      // Id canonicalization + post-append journal recheck (#2213) live in
-      // the references helper; the store marks its own mtime (#1579).
+      // Canonicalization + post-append recheck (#2213) live in the helper.
       return await entityRefs.appendCanonicalizedTombstone(
+        this.stateDir,
         input,
         () => this.currentHistoricalIds(),
         (identity) => store.appendTombstone({ ...input, rawContent: strippedRawContent, ...identity }),

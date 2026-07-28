@@ -970,14 +970,22 @@ function copyMemories(
       const idsAtWrite = historicalIdCache.get(stateDir);
       const written = canonicalizeEntityRefFrontmatter(content, idsAtWrite);
       fs.writeFileSync(targetPath, written);
-      repairContentAfterJournalMoveSync({
-        stateDir,
-        cache: historicalIdCache,
-        idsAtWrite,
-        rawContent: content,
-        lastWritten: written,
-        rewrite: (next) => fs.writeFileSync(targetPath, next),
-      });
+      try {
+        repairContentAfterJournalMoveSync({
+          stateDir,
+          cache: historicalIdCache,
+          idsAtWrite,
+          rawContent: content,
+          lastWritten: written,
+          rewrite: (next) => fs.writeFileSync(targetPath, next),
+        });
+      } catch (err) {
+        // The copy IS on disk (possibly overwriting a prior version, so no
+        // unlink rollback) — complete the sentinel bookkeeping before the
+        // retryable error propagates, or a warm cache serves stale bytes.
+        bumpMemoryCorpusVersionForDir(targetRoot);
+        throw err;
+      }
     } else {
       fs.writeFileSync(targetPath, content);
       if (targetKind === "entity") {

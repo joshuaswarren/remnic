@@ -94,37 +94,29 @@ export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Rec
  * Append a tombstone with its identity canonicalized against the CURRENT
  * journal, then recheck: a peer publishing a mapping inside the
  * resolve-to-append window would leave the guard under the legacy id while
- * lookups canonicalize. The superseded append is REVOKED before each
- * re-append — a park makes the prior canonical claimant a distinct entity,
- * and a stale keyed guard under it would suppress that entity's facts
- * (tombstones are append-only; reconciliation cannot move them).
+ * lookups canonicalize. Each identity change appends the replacement FIRST
+ * (AGENTS.md §14 — the retired fact must never be without an active guard),
+ * then revokes the superseded one — a park makes the prior canonical
+ * claimant a distinct entity, and a stale keyed guard under it would
+ * suppress that entity's facts. When the journal will not settle, one final
+ * replacement runs under the entity MUTATION lock (parks publish under it).
  */
 export async function appendCanonicalizedTombstone(
+  stateDir: string,
   input: { entityRef?: string; supersessionKey?: string },
   currentIds: () => Readonly<Record<string, string>>,
-  append: (identity: {
-    entityRef: string | undefined;
-    supersessionKey: string | undefined;
-  }) => Promise<string | null>,
+  append: (identity: TombstoneIdentity) => Promise<string | null>,
   revoke: (tombstoneId: string) => Promise<unknown>,
   label: string,
 ): Promise<string | null> {
   let refIds = currentIds();
   let identity = canonicalizeTombstoneIdentity(input.entityRef, input.supersessionKey, refIds);
   let result = await append(identity);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const fresh = currentIds();
-    if (fresh === refIds) return result;
-    refIds = fresh;
-    const next = canonicalizeTombstoneIdentity(input.entityRef, input.supersessionKey, fresh);
+  const replaceIfChanged = async (next: TombstoneIdentity): Promise<boolean> => {
     if (next.entityRef === identity.entityRef && next.supersessionKey === identity.supersessionKey) {
-      return result;
+      return false;
     }
     identity = next;
-    // Append the replacement BEFORE revoking the superseded guard (AGENTS.md
-    // §14): revoking first would leave the retired fact with NO active
-    // tombstone if this append fails. A failed revoke merely leaves a stale
-    // over-blocking guard — warn and keep the new one.
     const superseded = result;
     result = await append(next);
     if (superseded !== null) {
@@ -134,8 +126,19 @@ export async function appendCanonicalizedTombstone(
         log.warn(`failed to revoke superseded tombstone ${superseded} for ${label}: ${err}`);
       }
     }
+    return true;
+  };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const fresh = currentIds();
+    if (fresh === refIds) return result;
+    refIds = fresh;
+    if (!(await replaceIfChanged(canonicalizeTombstoneIdentity(input.entityRef, input.supersessionKey, fresh)))) {
+      return result;
+    }
   }
-  log.warn(`tombstone identity kept moving for ${label}; last append kept`);
+  await withEntityCanonicalMutationLock(stateDir, async () => {
+    await replaceIfChanged(canonicalizeTombstoneIdentity(input.entityRef, input.supersessionKey, currentIds()));
+  });
   return result;
 }
 
@@ -386,11 +389,16 @@ export function pathMayCarryEntityRefs(baseDir: string, filePath: string): boole
  * ref moved — otherwise the keyed guard lands in the legacy id space while
  * write-time lookups canonicalize, and a paraphrase resurrects.
  */
+export interface TombstoneIdentity {
+  entityRef: string | undefined;
+  supersessionKey: string | undefined;
+}
+
 export function canonicalizeTombstoneIdentity(
   entityRef: string | undefined,
   supersessionKey: string | undefined,
   refIds: Readonly<Record<string, string>>,
-): { entityRef: string | undefined; supersessionKey: string | undefined } {
+): TombstoneIdentity {
   if (typeof entityRef !== "string") return { entityRef, supersessionKey };
   const canonical = resolveHistoricalEntityCanonicalId(entityRef, refIds);
   if (canonical === entityRef) return { entityRef, supersessionKey };

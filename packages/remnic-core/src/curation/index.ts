@@ -491,15 +491,26 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   // Post-write REPAIR (issue #2213): a peer process publishing the journal
   // across this write would otherwise strand the reference — the corpus bump
   // below no longer re-triggers the migration, and a parked mapping cannot be
-  // fixed after the fact by the reconcile pass.
-  repairContentAfterJournalMoveSync({
-    stateDir: path.join(memoryDir, "state"),
-    cache: historicalIdCache,
-    idsAtWrite: historicalIds,
-    rawContent: rawBody,
-    lastWritten: body,
-    rewrite: (next) => fs.writeFileSync(filePath, next),
-  });
+  // fixed after the fact by the reconcile pass. On repair exhaustion, remove
+  // the just-created file so the retryable error leaves no untracked partial
+  // statement (a retry would otherwise duplicate it).
+  try {
+    repairContentAfterJournalMoveSync({
+      stateDir: path.join(memoryDir, "state"),
+      cache: historicalIdCache,
+      idsAtWrite: historicalIds,
+      rawContent: rawBody,
+      lastWritten: body,
+      rewrite: (next) => fs.writeFileSync(filePath, next),
+    });
+  } catch (err) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      // Best effort — the retryable repair error is the primary signal.
+    }
+    throw err;
+  }
   // Bump the corpus sentinel per write (out-of-band create) so a concurrent
   // same-process readAllMemories rescans and sees this statement immediately,
   // never a stale/partial corpus mid-batch (Cursor Medium, #1902). AFTER the
