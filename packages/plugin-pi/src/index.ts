@@ -1,7 +1,7 @@
 import { Type, type TSchema } from "@sinclair/typebox";
 
 import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./config.js";
-import { RemnicClient, isTransientNetworkError, type McpTool, type ObserveMessage } from "./client.js";
+import { RemnicClient, RemnicHttpError, isTransientNetworkError, type McpTool, type ObserveMessage } from "./client.js";
 import {
   hashObservedMessage,
   latestUserRecallTarget,
@@ -67,12 +67,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // daemon is marked unreachable even when the status UI is off; otherwise
       // the namespace preflight and every later hook each burn a full request
       // budget on a doomed call. The status LABEL stays gated on statusEnabled.
-      const reachable = await probeDaemonHealth(client, config);
+      const probe = await probeDaemonHealth(client, config);
       if (config.statusEnabled) {
-        session.setStatus(
-          "remnic",
-          reachable ? `Remnic ${config.namespace ? `(${config.namespace})` : "ready"}` : "Remnic offline",
-        );
+        session.setStatus("remnic", remnicStatusLabel(probe, config.namespace));
       }
       await runNamespacePreflight(pi, session, client, config);
     });
@@ -593,28 +590,47 @@ function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
   });
 }
 
+/** Result of the session_start daemon probe. */
+type DaemonProbeResult = "ready" | "starting" | "unreachable";
+
 /**
- * Probe the daemon and update the shared circuit breaker. Returns whether the
- * daemon is reachable so the caller can render a status label. This runs at
- * session_start regardless of `statusEnabled`: the breaker update is a
- * data-path concern (a down daemon must be marked unreachable so the namespace
- * preflight and every later hook fast-skip instead of each burning a full
- * request budget), independent of whether the status UI is shown.
+ * Probe the daemon and update the shared circuit breaker. Returns the probe
+ * outcome so the caller can render a status label. This runs at session_start
+ * regardless of `statusEnabled`: the breaker update is a data-path concern (a
+ * down daemon must be marked unreachable so the namespace preflight and every
+ * later hook fast-skip instead of each burning a full request budget),
+ * independent of whether the status UI is shown.
+ *
+ * A 503 `not_ready` answer is NOT offline (issue #2215): the daemon responded
+ * — it is up and serving recall via fallback retrieval while startup search
+ * warm-up is still running — so it counts as reachable and renders as
+ * "starting" instead of tripping the breaker or claiming the service is down.
  */
-async function probeDaemonHealth(client: RemnicClient, config: RemnicPiConfig): Promise<boolean> {
+async function probeDaemonHealth(client: RemnicClient, config: RemnicPiConfig): Promise<DaemonProbeResult> {
   try {
     await client.health({ timeoutMs: config.startupRequestTimeoutMs });
     // A successful probe means the daemon is reachable, so clear any stale
     // cooldown a prior recall/observe timeout left on the shared client.
     client.markReachable();
-    return true;
+    return "ready";
   } catch (err) {
+    if (err instanceof RemnicHttpError && err.status === 503 && err.code === "not_ready") {
+      client.markReachable();
+      return "starting";
+    }
     // Startup just proved the daemon is unreachable, so trip the fast-skip
     // breaker — otherwise the first live hook spends the full turn budget on a
     // doomed request before the breaker would trip on its own.
     if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
-    return false;
+    return "unreachable";
   }
+}
+
+/** Status-line label for the session_start probe outcome. */
+function remnicStatusLabel(probe: DaemonProbeResult, namespace: string | undefined): string {
+  if (probe === "unreachable") return "Remnic offline";
+  if (probe === "starting") return "Remnic starting";
+  return `Remnic ${namespace ? `(${namespace})` : "ready"}`;
 }
 
 /**

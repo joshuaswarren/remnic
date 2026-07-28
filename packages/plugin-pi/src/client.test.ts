@@ -121,6 +121,30 @@ test("RemnicClient preserves HTTP status for non-JSON internal server errors", a
   );
 });
 
+test("RemnicHttpError carries the daemon's machine-readable error code (issue #2215)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({ ok: false, ready: false, warmupAttempts: 154, lastError: "StartupSyncPendingError", code: "not_ready" }),
+      { status: 503, statusText: "Service Unavailable" },
+    );
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient(baseConfig());
+
+  await assert.rejects(
+    () => client.health(),
+    (err) => {
+      assert.ok(err instanceof RemnicHttpError);
+      assert.equal(err.status, 503);
+      assert.equal(err.code, "not_ready");
+      return true;
+    },
+  );
+});
+
 
 test("RemnicClient reports invalid JSON clearly for successful daemon responses", async (t) => {
   const originalFetch = globalThis.fetch;

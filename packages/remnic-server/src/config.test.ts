@@ -307,3 +307,28 @@ test("envOverrides write rate limit env: precedence, legacy fallback, invalid re
     }
   }
 });
+
+test("envOverrides honors REMNIC_READY_DEGRADED_AFTER_ATTEMPTS (issue #2215)", () => {
+  const key = "REMNIC_READY_DEGRADED_AFTER_ATTEMPTS";
+  const saved = process.env[key];
+  try {
+    delete process.env[key];
+    assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 3);
+
+    process.env[key] = "0";
+    assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 0);
+
+    process.env[key] = "7";
+    assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 7);
+
+    // Invalid env values reach validation and are rejected, not silently dropped.
+    process.env[key] = "nope";
+    assert.throws(
+      () => parseServerConfig(envOverrides()),
+      /server\.readinessDegradedAfterAttempts: expected a non-negative integer/,
+    );
+  } finally {
+    if (saved === undefined) delete process.env[key];
+    else process.env[key] = saved;
+  }
+});
