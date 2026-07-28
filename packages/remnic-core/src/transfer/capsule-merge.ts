@@ -423,19 +423,24 @@ export async function mergeCapsule(
     // bytes while a mapping applies is UPGRADED in place — skipping would
     // leave the legacy entityRef on disk forever, since corpus bumps no
     // longer trigger migration rewrites (issue #2213).
+    const idsAtCompare = historicalIdCache.get(journalStateDir);
     const canonicalContent = classifyEntityRefWritePath(rootReal, targetAbs) === "memory"
-      ? canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir))
+      ? canonicalizeEntityRefFrontmatter(rec.content, idsAtCompare)
       : rec.content;
     const { sha256: localSha256 } = sha256String(localContent);
     const canonicalSha256 =
       canonicalContent === rec.content ? entry.sha256 : sha256String(canonicalContent).sha256;
 
-    if (localSha256 === canonicalSha256) {
-      // Byte-identical to the canonical form — no write needed.
+    // The identical verdict is only valid for the snapshot it was computed
+    // under (Codex P1): a mapping parked/removed mid-compare can make the
+    // local copy's formerly-canonical ref stale with nothing left to repair
+    // it. A moved journal falls through to the write path, which resolves at
+    // the write and repairs after it.
+    if (localSha256 === canonicalSha256 && historicalIdCache.get(journalStateDir) === idsAtCompare) {
       skipped.push({ path: rec.path, reason: "identical" });
       continue;
     }
-    if (localSha256 === entry.sha256) {
+    if (localSha256 === canonicalSha256 || localSha256 === entry.sha256) {
       await writeCanonicalRecord(targetAbs, rec.content);
       merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted: false });
       continue;

@@ -15,7 +15,8 @@
  *   reconciliation pass instead ({@link requestEntityCanonicalIdReconcile}).
  */
 import path from "node:path";
-import { closeSync, constants, fstatSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -292,29 +293,17 @@ export const ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER = `${ENTITY_CANONICA
 
 export function requestEntityCanonicalIdReconcileSync(stateDir: string): void {
   const markerPath = path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER);
+  const temporary = `${markerPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    // Never write through a symlinked marker (repo rule: reject symlink
-    // traversal from memory directories) — a link here would let the write
-    // truncate whatever file it points at. O_NOFOLLOW closes the TOCTOU
-    // between a pre-check and the write: the open itself refuses a symlink
-    // (ELOOP), and the opened inode is verified to be a regular file before
-    // any bytes land. On platforms without O_NOFOLLOW the fstat check still
-    // rejects non-regular targets.
-    const fd = openSync(
-      markerPath,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0),
-      0o600,
-    );
-    try {
-      if (!fstatSync(fd).isFile()) {
-        log.warn(`refusing to write entity canonical-id reconcile marker: ${markerPath} is not a regular file`);
-        return;
-      }
-      writeSync(fd, `${new Date().toISOString()}\n`);
-    } finally {
-      closeSync(fd);
-    }
+    // Never write THROUGH a symlinked marker (repo rule: reject symlink
+    // traversal from memory directories). Temp-file-plus-rename is the
+    // platform-safe primitive: rename() replaces a symlink ITSELF rather
+    // than following it, so a planted link is displaced — never its target
+    // truncated — with no O_NOFOLLOW dependency and no check→write window.
+    writeFileSync(temporary, `${new Date().toISOString()}\n`, { mode: 0o600 });
+    renameSync(temporary, markerPath);
   } catch (error) {
+    rmSync(temporary, { force: true });
     // Best effort by design: a marker failure must not fail the restore/sync
     // that requested it (AGENTS.md §4). The reference stays legacy-but-readable
     // until the next mapping change.

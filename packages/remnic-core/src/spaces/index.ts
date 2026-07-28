@@ -899,9 +899,10 @@ function copyMemories(
     // entities/ pages carry relationship targets (reconcile-marker territory,
     // below) and everything else copies byte-faithful.
     const targetKind = classifyEntityRefWritePath(targetRoot, targetPath);
+    const idsAtCompare = historicalIdCache.get(path.join(targetRoot, "state"));
     const canonicalContent =
       targetKind === "memory"
-        ? canonicalizeEntityRefFrontmatter(content, historicalIdCache.get(path.join(targetRoot, "state")))
+        ? canonicalizeEntityRefFrontmatter(content, idsAtCompare)
         : content;
     const sourceHash = hashContent(content);
 
@@ -934,11 +935,19 @@ function copyMemories(
 
       // A target already holding the CANONICALIZED form is the same memory —
       // done, and re-promoting after a ref rewrite must not report a conflict.
-      if (hashContent(canonicalContent) === targetHash) {
+      // The verdict is only valid for the snapshot it was computed under
+      // (Codex P1): a mapping parked/removed mid-compare would leave the
+      // target's formerly-canonical ref with nothing left to repair it — a
+      // moved journal falls through to the write path, which resolves at the
+      // write and repairs after it.
+      if (
+        hashContent(canonicalContent) === targetHash
+        && historicalIdCache.get(path.join(targetRoot, "state")) === idsAtCompare
+      ) {
         skipped++;
         continue;
       }
-      if (sourceHash !== targetHash) {
+      if (hashContent(canonicalContent) !== targetHash && sourceHash !== targetHash) {
         conflicts.push({
           memoryId: parseSimpleFrontmatter(content)?.id ?? relativePath,
           sourcePath,
@@ -949,10 +958,10 @@ function copyMemories(
         });
         continue;
       }
-      // Target matches the RAW source but a mapping applies: fall through and
-      // upgrade it in place — a skip would leave the legacy entityRef on disk
-      // forever, since corpus bumps no longer trigger migration rewrites
-      // (issue #2213).
+      // Fall through and rewrite in place: the target matches the RAW source
+      // while a mapping applies (a skip would leave the legacy entityRef on
+      // disk forever), or it matched the canonical form under a journal that
+      // moved mid-compare (the write path re-resolves and repairs) (#2213).
     }
 
     // Copy file
