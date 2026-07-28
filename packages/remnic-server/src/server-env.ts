@@ -31,7 +31,10 @@ export function envOverrides(): Partial<ServerConfig["server"]> & { remnic?: Rec
   const adminConsolePublicDir = readCompatEnv("REMNIC_ADMIN_CONSOLE_PUBLIC_DIR", "ENGRAM_ADMIN_CONSOLE_PUBLIC_DIR");
   const adminConsolePrefillToken = readCompatEnv("REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN", "ENGRAM_ADMIN_CONSOLE_PREFILL_TOKEN");
   const readinessOverride = process.env.REMNIC_READY_OVERRIDE;
-  const readinessDegradedAfterAttempts = process.env.REMNIC_READY_DEGRADED_AFTER_ATTEMPTS;
+  const readinessDegradedAfterAttempts = readCompatEnv(
+    "REMNIC_READY_DEGRADED_AFTER_ATTEMPTS",
+    "ENGRAM_READY_DEGRADED_AFTER_ATTEMPTS",
+  );
   // issue #2029: size the global write rate limit from env. The standalone
   // server already honors `server.writeRateLimit*` in config; this makes it
   // settable via the launchd/systemd environment without editing config.json.

@@ -90,8 +90,9 @@ roughly two minutes) health switches to `200` with `degraded: true`,
 `warmupAttempts`, and `lastError` merged into the normal health payload, and
 warm-up retries continue in the background until they succeed. Set
 `server.readinessDegradedAfterAttempts` to `0` (or the
-`REMNIC_READY_DEGRADED_AFTER_ATTEMPTS` env var) to keep the strict gate, e.g.
-when an orchestrator must hold traffic until the search index is warm.
+`REMNIC_READY_DEGRADED_AFTER_ATTEMPTS` env var; legacy `ENGRAM_` prefix also
+supported) to keep the strict gate, e.g. when an orchestrator must hold
+traffic until the search index is warm.
 `server.readinessOverride` (`REMNIC_READY_OVERRIDE`) still forces the gate
 open immediately.
 
