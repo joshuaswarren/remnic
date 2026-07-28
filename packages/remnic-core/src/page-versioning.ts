@@ -27,6 +27,7 @@ import {
 } from "node:fs/promises";
 import { ALL_CATEGORY_DIRS, RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
+import { requestEntityCanonicalIdReconcile } from "./storage/entity-canonical-id-references.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -344,6 +345,10 @@ export async function revertToVersion(
   const revertedTop = relPath(pagePath, resolvedMemoryDir).split(path.sep)[0];
   if ((RECALL_FALLBACK_DIRS as readonly string[]).includes(revertedTop)) {
     bumpMemoryCorpusVersionForDir(resolvedMemoryDir);
+    // A pre-migration snapshot can reintroduce a legacy entityRef the target's
+    // completed journal already renamed (issue #2213); the revert keeps the
+    // snapshot bytes faithful, so request one bounded reconcile pass instead.
+    await requestEntityCanonicalIdReconcile(path.join(resolvedMemoryDir, "state"));
   }
   log.debug(`page-versioning: reverted ${pagePath} to version ${versionId}`);
 

@@ -6065,73 +6065,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   // Entity mutation helpers (Knowledge Graph v7.0)
   // ---------------------------------------------------------------------------
 
-  /**
-   * Read an entity file by id, resolving through the migration journal with a
-   * fallback to the caller's original id (issue #2213): mid-migration, the
-   * journal maps legacy → canonical BEFORE the file moves — writing the
-   * still-existing legacy file is safe (the rename retry carries it), while
-   * resolving only the canonical path silently drops the mutation.
-   */
-  private async readEntityForMutation(
-    name: string,
-    method: string,
-  ): Promise<{ filePath: string; entity: EntityFile } | null> {
-    const canonical = entityRefs.resolveHistoricalEntityCanonicalId(name, this.currentHistoricalIds());
-    for (const candidate of canonical === name ? [name] : [canonical, name]) {
-      const filePath = path.join(this.entitiesDir, `${candidate}.md`);
-      try {
-        return { filePath, entity: parseEntityFile(await this.readStorageSecureFile(filePath), this.entitySchemas) };
-      } catch (err) {
-        if (err instanceof SecureStoreLockedError) throw err;
-        if (!isErrnoCode(err, "ENOENT")) throw err;
-      }
-    }
-    log.debug(`${method}: entity file ${canonical}.md not found`);
-    return null;
-  }
-
-  /**
-   * Add a relationship to an entity file.
-   * Deduplicates by target+label.
-   */
+  // Entity-file mutators live on EntityStore (issue #2213): they resolve
+  // through the migration journal with a legacy-file fallback and run under
+  // the entity-mutation lock so a mid-flight rename cannot strand or
+  // resurrect a file.
   async addEntityRelationship(name: string, rel: EntityRelationship): Promise<void> {
-    const target = entityRefs.resolveHistoricalEntityCanonicalId(rel.target, this.currentHistoricalIds());
-    const located = await this.readEntityForMutation(name, "addEntityRelationship");
-    if (!located) return;
-    const { filePath, entity } = located;
-    if (entity.relationships.some((r) => r.target === target && r.label === rel.label)) return;
-
-    entity.relationships.push({ ...rel, target });
-    entity.updated = new Date().toISOString();
-    await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
-    this.invalidateKnowledgeIndexCache();
+    return this.entityStore.addEntityRelationship(name, rel);
   }
 
-  /**
-   * Add an activity entry to an entity file.
-   * Prepends to the beginning, prunes oldest entries beyond maxEntries.
-   */
   async addEntityActivity(name: string, entry: EntityActivityEntry, maxEntries: number): Promise<void> {
-    const located = await this.readEntityForMutation(name, "addEntityActivity");
-    if (!located) return;
-    const { filePath, entity } = located;
-    entity.activity.unshift(entry);
-    if (entity.activity.length > maxEntries) entity.activity = entity.activity.slice(0, maxEntries);
-    entity.updated = new Date().toISOString();
-    await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
-    this.invalidateKnowledgeIndexCache();
+    return this.entityStore.addEntityActivity(name, entry, maxEntries);
   }
 
   async addEntityAlias(name: string, alias: string): Promise<void> {
-    const located = await this.readEntityForMutation(name, "addEntityAlias");
-    if (!located) return;
-    const { filePath, entity } = located;
-    if (entity.aliases.includes(alias)) return;
-    entity.aliases.push(alias);
-    entity.updated = new Date().toISOString();
-    await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
-    this.invalidateKnowledgeIndexCache();
-    this.bumpMemoryStatusVersion();
+    return this.entityStore.addEntityAlias(name, alias);
   }
 
   async updateEntitySynthesis(
