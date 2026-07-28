@@ -9,6 +9,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { getCategoryDir, ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
+import {
+  HistoricalEntityCanonicalIdCache,
+  canonicalizeEntityRefFrontmatter,
+  reconcileIfJournalMovedSync,
+} from "../storage/entity-canonical-id-references.js";
+
+// Write-boundary journal cache for review-queue promotions (issue #2213).
+const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -342,7 +350,18 @@ function approveItem(
   const outputPath = path.join(targetDir, dateDir, path.basename(found.filePath));
 
   ensureSafeDirectory(rootReal, path.dirname(outputPath));
-  const promotedPath = writeFileWithoutClobber(outputPath, updatedContent, itemId);
+  // The suggestions/review queue dirs sit OUTSIDE the migration's reference
+  // scan, so a queued pre-migration item can still carry a legacy entityRef
+  // (issue #2213): promote it canonicalized against the target journal, and
+  // verify the journal did not move across the write.
+  const reviewStateDir = path.join(memoryDir, "state");
+  const idsAtWrite = historicalIdCache.get(reviewStateDir);
+  const promotedPath = writeFileWithoutClobber(
+    outputPath,
+    canonicalizeEntityRefFrontmatter(updatedContent, idsAtWrite),
+    itemId,
+  );
+  reconcileIfJournalMovedSync(reviewStateDir, idsAtWrite, historicalIdCache.get(reviewStateDir));
 
   // Remove from review
   fs.unlinkSync(found.filePath);

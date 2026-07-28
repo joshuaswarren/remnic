@@ -5,6 +5,7 @@ import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
+  reconcileIfJournalMoved,
 } from "../storage/entity-canonical-id-references.js";
 import {
   createVersion,
@@ -368,27 +369,30 @@ export async function mergeCapsule(
   for (const rec of sortedRecords) {
     const targetAbs = path.join(rootReal, fromPosixRelPath(rec.path));
     const entry = manifestIndex.get(rec.path)!; // validated above
-    const canonicalContent = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
 
     const localContent = await readLocalFile(targetAbs);
 
     if (localContent === null) {
-      // No local copy — always write regardless of mode. Re-resolve at the
-      // write itself: a peer migration can complete during the awaits above,
-      // and capsule writes bump only the corpus version, which the migration
-      // fingerprint deliberately ignores — nothing later would repair a
-      // reference resolved against the pre-completion journal.
+      // No local copy — always write regardless of mode. Resolve at the write
+      // itself and verify the journal afterwards: a peer migration completing
+      // during any of these awaits (or the write) would otherwise strand the
+      // reference — capsule writes bump only the corpus version, which the
+      // migration fingerprint deliberately ignores.
       await mkdir(path.dirname(targetAbs), { recursive: true });
-      const freshCanonical = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
-      await writeFile(targetAbs, freshCanonical, "utf-8");
+      const idsAtWrite = historicalIdCache.get(journalStateDir);
+      await writeFile(targetAbs, canonicalizeEntityRefFrontmatter(rec.content, idsAtWrite), "utf-8");
       bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
+      await reconcileIfJournalMoved(journalStateDir, idsAtWrite, historicalIdCache.get(journalStateDir));
       merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted: false });
       continue;
     }
 
     // Local file exists. Check if it is byte-identical to the archive entry —
-    // or to its canonicalized form, so re-merging the same capsule after a
-    // ref rewrite stays an identical-skip instead of a phantom conflict.
+    // or to its canonicalized form (computed AFTER the local read, so a
+    // journal published during that await is reflected), so re-merging the
+    // same capsule after a ref rewrite stays an identical-skip instead of a
+    // phantom conflict.
+    const canonicalContent = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
     const { sha256: localSha256 } = sha256String(localContent);
 
     if (
@@ -430,11 +434,12 @@ export async function mergeCapsule(
       snapshotted = true;
     }
 
-    // Same write-time re-resolve as above — the snapshot/read awaits give a
-    // peer migration a real window to complete after the earlier lookup.
-    const freshCanonical = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
-    await writeFile(targetAbs, freshCanonical, "utf-8");
+    // Same write-time re-resolve + post-write verify as above — the
+    // snapshot/read awaits give a peer migration a real window.
+    const idsAtWrite = historicalIdCache.get(journalStateDir);
+    await writeFile(targetAbs, canonicalizeEntityRefFrontmatter(rec.content, idsAtWrite), "utf-8");
     bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
+    await reconcileIfJournalMoved(journalStateDir, idsAtWrite, historicalIdCache.get(journalStateDir));
     merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted });
   }
 

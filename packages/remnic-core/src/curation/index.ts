@@ -12,6 +12,7 @@ import { getCategoryDir, ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
+  reconcileIfJournalMovedSync,
   resolveHistoricalEntityCanonicalId,
 } from "../storage/entity-canonical-id-references.js";
 
@@ -489,6 +490,14 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   // same-process readAllMemories rescans and sees this statement immediately,
   // never a stale/partial corpus mid-batch (Cursor Medium, #1902).
   bumpMemoryCorpusVersionForDir(memoryDir);
+  // Post-write verify (issue #2213): a peer process publishing the journal
+  // across this write would otherwise strand the reference — the corpus bump
+  // above no longer re-triggers the migration.
+  reconcileIfJournalMovedSync(
+    path.join(memoryDir, "state"),
+    historicalIds,
+    historicalIdCache.get(path.join(memoryDir, "state")),
+  );
   return filePath;
 }
 

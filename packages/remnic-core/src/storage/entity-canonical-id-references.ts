@@ -15,8 +15,7 @@
  *   reconciliation pass instead ({@link requestEntityCanonicalIdReconcile}).
  */
 import path from "node:path";
-import { lstatSync, readFileSync } from "node:fs";
-import { lstat, writeFile } from "node:fs/promises";
+import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
 
@@ -160,27 +159,33 @@ export const ENTITY_CANONICAL_ID_RECONCILE_MARKER = "entity-canonical-id-reconci
 /** The generation a migration run renamed aside for consumption; a crash can strand it. */
 export const ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER = `${ENTITY_CANONICAL_ID_RECONCILE_MARKER}.consuming`;
 
-export async function requestEntityCanonicalIdReconcile(stateDir: string): Promise<void> {
+export function requestEntityCanonicalIdReconcileSync(stateDir: string): void {
   const markerPath = path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER);
   try {
     // Never write through a symlinked marker (repo rule: reject symlink
-    // traversal from memory directories) — a link here would let writeFile
+    // traversal from memory directories) — a link here would let the write
     // truncate whatever file it points at.
-    const existing = await lstat(markerPath).catch((error: unknown) => {
-      if (isErrnoCode(error, "ENOENT")) return null;
-      throw error;
-    });
+    let existing = null;
+    try {
+      existing = lstatSync(markerPath);
+    } catch (error) {
+      if (!isErrnoCode(error, "ENOENT")) throw error;
+    }
     if (existing && !existing.isFile()) {
       log.warn(`refusing to write entity canonical-id reconcile marker: ${markerPath} is not a regular file`);
       return;
     }
-    await writeFile(markerPath, `${new Date().toISOString()}\n`, "utf-8");
+    writeFileSync(markerPath, `${new Date().toISOString()}\n`, "utf-8");
   } catch (error) {
     // Best effort by design: a marker failure must not fail the restore/sync
     // that requested it (AGENTS.md §4). The reference stays legacy-but-readable
     // until the next mapping change.
     log.warn(`could not request entity canonical-id reconcile: ${error}`);
   }
+}
+
+export async function requestEntityCanonicalIdReconcile(stateDir: string): Promise<void> {
+  requestEntityCanonicalIdReconcileSync(stateDir);
 }
 
 /**
@@ -193,11 +198,19 @@ export async function requestEntityCanonicalIdReconcile(stateDir: string): Promi
  * the journal file is unchanged, so an identity mismatch means the journal
  * moved mid-write and one bounded reconcile pass is requested.
  */
+export function reconcileIfJournalMovedSync(
+  stateDir: string,
+  idsAtResolve: Readonly<Record<string, string>>,
+  idsAfterWrite: Readonly<Record<string, string>>,
+): void {
+  if (idsAtResolve === idsAfterWrite) return;
+  requestEntityCanonicalIdReconcileSync(stateDir);
+}
+
 export async function reconcileIfJournalMoved(
   stateDir: string,
   idsAtResolve: Readonly<Record<string, string>>,
   idsAfterWrite: Readonly<Record<string, string>>,
 ): Promise<void> {
-  if (idsAtResolve === idsAfterWrite) return;
-  await requestEntityCanonicalIdReconcile(stateDir);
+  reconcileIfJournalMovedSync(stateDir, idsAtResolve, idsAfterWrite);
 }

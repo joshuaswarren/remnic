@@ -868,9 +868,16 @@ export async function migrateLegacyEntityCanonicalIds(
         // A FRESH marker written while this run scanned means bytes landed the
         // pass may not have covered. Withholding the completion fingerprint
         // makes the runner's stability check fail, so it immediately retries —
-        // and the retry consumes the fresh generation.
+        // and the retry consumes the fresh generation. ORDER MATTERS: read the
+        // fingerprint BEFORE the marker check. A marker landing after the
+        // fingerprint read but before the check is caught by the check; one
+        // landing after the check is absent from the returned fingerprint, so
+        // the live marker mismatches the runner's cached completion and the
+        // next ensure() re-invokes. Checking first left a window where the
+        // fingerprint could SEAL a marker the check never saw.
+        const completionFingerprint = await deps.readMigrationFingerprint?.();
         if (await fileExists(reconcileMarkerPath)) return undefined;
-        return deps.readMigrationFingerprint?.();
+        return completionFingerprint;
       };
       /**
        * Drop blocked pairs from the working set. Discovery only refuses to
