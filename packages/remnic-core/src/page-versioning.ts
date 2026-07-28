@@ -343,11 +343,17 @@ export async function revertToVersion(
   // non-memory queue dirs (questions/). Use RECALL_FALLBACK_DIRS — a revert of a
   // questions/ page must NOT bump the recall corpus sentinel and force a rescan.
   const revertedTop = relPath(pagePath, resolvedMemoryDir).split(path.sep)[0];
-  if ((RECALL_FALLBACK_DIRS as readonly string[]).includes(revertedTop)) {
+  const inRecallTier = (RECALL_FALLBACK_DIRS as readonly string[]).includes(revertedTop);
+  if (inRecallTier) {
     bumpMemoryCorpusVersionForDir(resolvedMemoryDir);
-    // A pre-migration snapshot can reintroduce a legacy entityRef the target's
-    // completed journal already renamed (issue #2213); the revert keeps the
-    // snapshot bytes faithful, so request one bounded reconcile pass instead.
+  }
+  // A pre-migration snapshot can reintroduce a legacy entityRef the target's
+  // completed journal already renamed (issue #2213); the revert keeps the
+  // snapshot bytes faithful, so request one bounded reconcile pass instead.
+  // Cold-tier pages (`cold/<category>/…`) are in the migration's scan even
+  // though they are outside the hot recall corpus, so they need the marker
+  // WITHOUT the corpus bump.
+  if (inRecallTier || revertedTop === "cold") {
     await requestEntityCanonicalIdReconcile(path.join(resolvedMemoryDir, "state"));
   }
   log.debug(`page-versioning: reverted ${pagePath} to version ${versionId}`);

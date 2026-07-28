@@ -6350,6 +6350,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // top of whatever is cached at prevVersion — robust to a concurrent scan
     // that republished an UNpatched corpus mid-flush (Cursor Medium #1902).
     const appliedPatches = new Map<string, { accessCount: number; lastAccessed: string }>();
+    const refIdsAtFlush = this.currentHistoricalIds();
 
     for (const entry of entries) {
       const memory = entry.memoryPath
@@ -6357,11 +6358,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         : memoryMap.get(entry.memoryId);
       if (!memory) continue;
 
-      const newFm: MemoryFrontmatter = {
-        ...memory.frontmatter,
-        accessCount: entry.newCount,
-        lastAccessed: entry.lastAccessed,
-      };
+      // Whole-record rewrite: canonicalize the inherited entityRef so an
+      // access-count flush cannot write a legacy ref back out (issue #2213).
+      const newFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+        { ...memory.frontmatter, accessCount: entry.newCount, lastAccessed: entry.lastAccessed },
+        refIdsAtFlush,
+      );
 
       try {
         const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
@@ -6383,6 +6385,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
     }
 
+    if (updated > 0) {
+      await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtFlush, this.currentHistoricalIds());
+    }
     if (updated > 0) {
       // Advance the corpus sentinel so PEER processes rescan and don't overwrite
       // this process's increments (Codex P2): WorkspaceOpsCoordinator computes
@@ -6724,18 +6729,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!oldMemory) return false;
 
     const now = new Date().toISOString();
-    const updatedFm: MemoryFrontmatter = {
-      ...oldMemory.frontmatter,
-      status: "superseded",
-      supersededBy: newMemoryId,
-      supersededAt: now,
-      updated: now,
-    };
+    // Whole-record rewrite — same inherited-entityRef rule as
+    // writeMemoryFrontmatter (issue #2213).
+    const refIdsAtWrite = this.currentHistoricalIds();
+    const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+      { ...oldMemory.frontmatter, status: "superseded", supersededBy: newMemoryId, supersededAt: now, updated: now },
+      refIdsAtWrite,
+    );
 
     const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${oldMemory.content}\n`;
 
     try {
       await this.writeStorageSecureFile(oldMemory.path, fileContent);
+      await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtWrite, this.currentHistoricalIds());
       // Advance the corpus sentinel immediately after the on-disk write, BEFORE
       // the awaited lifecycle append (Cursor Medium, #1902). Otherwise a warm
       // hot-memories cache keeps serving the pre-supersede snapshot during the
@@ -6848,18 +6854,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const memories = await this.readAllMemories();
     const memoryMap = new Map(memories.map((m) => [m.frontmatter.id, m]));
     let archived = 0;
+    const refIdsAtArchive = this.currentHistoricalIds();
 
     for (const id of memoryIds) {
       const memory = memoryMap.get(id);
       if (!memory) continue;
 
       const now = new Date().toISOString();
-      const updatedFm: MemoryFrontmatter = {
-        ...memory.frontmatter,
-        status: "archived",
-        archivedAt: now,
-        updated: now,
-      };
+      // Whole-record rewrite — same inherited-entityRef rule (issue #2213).
+      const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+        { ...memory.frontmatter, status: "archived", archivedAt: now, updated: now },
+        refIdsAtArchive,
+      );
 
       try {
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
@@ -6886,6 +6892,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
 
     if (archived > 0) {
+      await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtArchive, this.currentHistoricalIds());
       this.bumpMemoryStatusVersion();
       log.debug(`archived ${archived} memories for summary ${summaryId}`);
     }
