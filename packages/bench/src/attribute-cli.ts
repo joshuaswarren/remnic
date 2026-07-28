@@ -2,7 +2,7 @@
  * @remnic/bench — CLI Wiring for Benchmark Failure Attribution (Issue #1954)
  */
 
-import { lstat, readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   attributeRun,
@@ -50,11 +50,18 @@ const SKIPPED_SYSTEM_DIRS: Record<string, boolean> = {
   meetings: true,
 };
 
-export async function scanMemoryDir(dirPath: string): Promise<AttributionMemory[]> {
-  const rootStats = await stat(dirPath);
+async function assertReadableMemoryDir(dirPath: string): Promise<void> {
+  const rootStats = await lstat(dirPath);
+  if (rootStats.isSymbolicLink()) {
+    throw new Error(`memory-dir "${dirPath}" must not be a symlink`);
+  }
   if (!rootStats.isDirectory()) {
     throw new Error(`memory-dir "${dirPath}" is not a readable directory`);
   }
+}
+
+export async function scanMemoryDir(dirPath: string): Promise<AttributionMemory[]> {
+  await assertReadableMemoryDir(dirPath);
 
   const memories: AttributionMemory[] = [];
   let unreadableEntries = 0;
@@ -133,13 +140,7 @@ export async function runAttributeCliCommand(options: {
 
   if (options.memoryDir) {
     try {
-      const stats = await stat(options.memoryDir);
-      if (!stats.isDirectory()) {
-        return {
-          exitCode: 1,
-          output: `Error: memory-dir "${options.memoryDir}" is not a readable directory\n`,
-        };
-      }
+      await assertReadableMemoryDir(options.memoryDir);
     } catch {
       return {
         exitCode: 1,

@@ -152,11 +152,53 @@ async function readJsonl<T>(
   return rows;
 }
 
+async function isNonSymlinkDirectory(dirPath: string, errors: string[]): Promise<boolean> {
+  try {
+    const stats = await lstat(dirPath);
+    if (stats.isSymbolicLink()) {
+      errors.push(`symlinked corpus directory rejected: ${dirPath}`);
+      return false;
+    }
+    if (!stats.isDirectory()) {
+      errors.push(`corpus path is not a directory: ${dirPath}`);
+      return false;
+    }
+    return true;
+  } catch {
+    errors.push(`missing directory: ${dirPath}`);
+    return false;
+  }
+}
+
+async function hasNoSymlinkComponents(
+  rootDir: string,
+  targetPath: string,
+  errors: string[],
+  description: string,
+): Promise<boolean> {
+  let current = rootDir;
+  for (const part of path.relative(rootDir, targetPath).split(path.sep)) {
+    if (part.length === 0 || part === ".") continue;
+    current = path.join(current, part);
+    try {
+      if ((await lstat(current)).isSymbolicLink()) {
+        errors.push(`${description} contains a symlinked path component: ${path.relative(rootDir, current)}`);
+        return false;
+      }
+    } catch {
+      errors.push(`${description} is missing: ${path.relative(rootDir, current)}`);
+      return false;
+    }
+  }
+  return true;
+}
+
 interface LoadedSeed {
   seed: number;
   facts: GoldFact[];
   probes: GoldProbe[];
   sessions: DriftSession[];
+  consumedFiles: string[];
 }
 
 async function loadSeedDir(
@@ -165,42 +207,52 @@ async function loadSeedDir(
   errors: string[],
 ): Promise<LoadedSeed> {
   const seedDir = path.join(corpusDir, String(seed));
-  const facts = await readJsonl<GoldFact>(
-    path.join(seedDir, "gold", "facts.jsonl"),
-    errors,
-    isGoldFactShape,
-  );
-  const probes = await readJsonl<GoldProbe>(
-    path.join(seedDir, "gold", "probes.jsonl"),
-    errors,
-    isGoldProbeShape,
-  );
+  const empty: LoadedSeed = { seed, facts: [], probes: [], sessions: [], consumedFiles: [] };
+  if (!(await isNonSymlinkDirectory(seedDir, errors))) return empty;
+
+  const goldDir = path.join(seedDir, "gold");
+  const factsPath = path.join(goldDir, "facts.jsonl");
+  const probesPath = path.join(goldDir, "probes.jsonl");
+  let facts: GoldFact[] = [];
+  let probes: GoldProbe[] = [];
+  const consumedFiles: string[] = [];
+  if (await isNonSymlinkDirectory(goldDir, errors)) {
+    consumedFiles.push(path.relative(corpusDir, factsPath), path.relative(corpusDir, probesPath));
+    facts = await readJsonl<GoldFact>(factsPath, errors, isGoldFactShape);
+    probes = await readJsonl<GoldProbe>(probesPath, errors, isGoldProbeShape);
+  }
+
   const sessions: DriftSession[] = [];
   const usersDir = path.join(seedDir, "users");
-  let userIds: string[] = [];
+  if (!(await isNonSymlinkDirectory(usersDir, errors))) {
+    return { seed, facts, probes, sessions, consumedFiles };
+  }
+
+  const userIds: string[] = [];
   try {
     const entries = await readdir(usersDir, { withFileTypes: true });
     for (const entry of entries) {
+      const userDir = path.join(usersDir, entry.name);
       if (entry.isSymbolicLink()) {
-        errors.push(`symlinked corpus entry rejected: ${path.join(usersDir, entry.name)}`);
+        errors.push(`symlinked corpus entry rejected: ${userDir}`);
         continue;
       }
       if (entry.isDirectory()) userIds.push(entry.name);
     }
-    userIds = userIds.sort();
   } catch {
     errors.push(`missing directory: ${usersDir}`);
+    return { seed, facts, probes, sessions, consumedFiles };
   }
-  for (const userId of userIds) {
-    sessions.push(
-      ...(await readJsonl<DriftSession>(
-        path.join(usersDir, userId, "sessions.jsonl"),
-        errors,
-        isDriftSessionShape,
-      )),
-    );
+
+  for (const userId of userIds.sort()) {
+    const userDir = path.join(usersDir, userId);
+    const sessionsPath = path.join(userDir, "sessions.jsonl");
+    if (!(await isNonSymlinkDirectory(userDir, errors))) continue;
+    consumedFiles.push(path.relative(corpusDir, sessionsPath));
+    sessions.push(...(await readJsonl<DriftSession>(sessionsPath, errors, isDriftSessionShape)));
   }
-  return { seed, facts, probes, sessions };
+
+  return { seed, facts, probes, sessions, consumedFiles };
 }
 
 function checkFactIntegrity(loaded: LoadedSeed, epochs: number, errors: string[]): void {
@@ -403,13 +455,7 @@ async function checkFileHashes(
       errors.push(`manifest lists a path outside the corpus root: ${relPath}`);
       continue;
     }
-    try {
-      if ((await lstat(absPath)).isSymbolicLink()) {
-        errors.push(`manifest lists a symlinked file: ${relPath}`);
-        continue;
-      }
-    } catch {
-      errors.push(`manifest lists missing file: ${relPath}`);
+    if (!await hasNoSymlinkComponents(resolvedRoot, absPath, errors, `manifest path ${relPath}`)) {
       continue;
     }
     let data: Buffer;
@@ -422,6 +468,18 @@ async function checkFileHashes(
     const actual = createHash("sha256").update(data).digest("hex");
     if (actual !== expected) {
       errors.push(`sha256 mismatch for ${relPath}: manifest ${expected}, actual ${actual}`);
+    }
+  }
+}
+
+function checkConsumedFilesAreHashed(
+  loaded: LoadedSeed,
+  manifest: DriftGenManifest,
+  errors: string[],
+): void {
+  for (const relPath of loaded.consumedFiles) {
+    if (!Object.prototype.hasOwnProperty.call(manifest.files, relPath)) {
+      errors.push(`manifest is missing a sha256 entry for consumed corpus file: ${relPath}`);
     }
   }
 }
@@ -499,6 +557,7 @@ export async function validateDriftCorpus(corpusDir: string): Promise<DriftValid
 
   for (const seed of manifest.seeds) {
     const loaded = await loadSeedDir(corpusDir, seed, errors);
+    checkConsumedFilesAreHashed(loaded, manifest, errors);
     checkFactIntegrity(loaded, manifest.counts.epochs, errors);
     checkProbeIntegrity(loaded, manifest.counts.epochs, errors);
     checkSessions(loaded, manifest.counts.epochs, errors);

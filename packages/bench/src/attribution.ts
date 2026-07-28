@@ -425,7 +425,11 @@ export async function attributeGoldMemory(
     };
   }
 
-  if (stages.extraction.status === "pass" && stages.retrieval.status === "fail") {
+  if (
+    stages.extraction.status === "pass" &&
+    stages.index.status === "pass" &&
+    stages.retrieval.status === "fail"
+  ) {
     stages.use = { status: "unavailable", detail: "not reached" };
     return {
       goldMemory: goldStatement,
@@ -442,10 +446,10 @@ export async function attributeGoldMemory(
     stages.extraction.status === "unavailable"
       ? `extraction check unavailable (${stages.extraction.detail})`
       : stages.index.status === "unavailable" && stages.retrieval.status === "unavailable"
-      ? "index/retrieval checks unavailable without live store"
-      : stages.index.status === "unavailable"
-      ? "index check unavailable"
-      : "retrieval check unavailable";
+        ? "index/retrieval checks unavailable without live store"
+        : stages.index.status === "unavailable"
+          ? "index check unavailable; a retrieval miss cannot be isolated from an index miss"
+          : "retrieval check unavailable";
 
   stages.use = { status: "unavailable", detail: "not reached" };
 

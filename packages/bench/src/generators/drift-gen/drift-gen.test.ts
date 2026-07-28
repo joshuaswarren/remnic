@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -114,6 +122,49 @@ test("validator rejects tampered data (hash mismatch) and broken links", async (
     assert.equal(report.ok, false);
     assert.ok(report.errors.some((e) => e.includes("sha256 mismatch")));
     assert.ok(report.errors.some((e) => e.includes("does not exist")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("validator rejects symlinked intermediate corpus directories", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-symlink-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    const seedDir = path.join(dir, String(SMALL.seed));
+    const goldDir = path.join(seedDir, "gold");
+    const movedGoldDir = path.join(dir, "moved-gold");
+    await rename(goldDir, movedGoldDir);
+    await symlink(movedGoldDir, goldDir, "dir");
+
+    const report = await validateDriftCorpus(dir);
+    assert.equal(report.ok, false);
+    assert.ok(
+      report.errors.some((error) => error.includes("symlinked corpus directory rejected")),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("validator requires manifest hashes for every consumed corpus file", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-missing-hash-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    const manifestPath = path.join(dir, "dataset.manifest.json");
+    const manifest = JSON.parse(
+      await readFile(manifestPath, "utf8"),
+    ) as { files: Record<string, string> };
+    delete manifest.files[`${SMALL.seed}/gold/facts.jsonl`];
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
+
+    const report = await validateDriftCorpus(dir);
+    assert.equal(report.ok, false);
+    assert.ok(
+      report.errors.some((error) =>
+        error.includes("manifest is missing a sha256 entry for consumed corpus file"),
+      ),
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -289,6 +340,27 @@ test("regenerating into the same out dir replaces the seed tree completely", asy
     assert.deepEqual(report.errors, []);
     const leftovers = (await readdir(dir)).filter((name) => name.startsWith(".staging") || name.startsWith(".backup"));
     assert.deepEqual(leftovers, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regeneration removes stale numeric seed directories", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-stale-seed-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    await generateDriftCorpus({ ...SMALL, seed: SMALL.seed + 1, outDir: dir });
+
+    const visibleSeeds = (await readdir(dir, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
+    assert.deepEqual(visibleSeeds, [String(SMALL.seed + 1)]);
+
+    const manifest = JSON.parse(
+      await readFile(path.join(dir, "dataset.manifest.json"), "utf8"),
+    ) as { seeds: number[] };
+    assert.deepEqual(manifest.seeds, [SMALL.seed + 1]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

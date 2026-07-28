@@ -429,7 +429,7 @@ test("scan with an unreadable file => extraction unavailable", async () => {
   }
 });
 
-test("symlinked root accepted", async () => {
+test("scanMemoryDir rejects a symlinked root", async () => {
   const tmpDir = await mkdtemp(path.join(tmpdir(), "remnic-symlink-root-"));
   try {
     const realDir = path.join(tmpDir, "real-store");
@@ -439,9 +439,10 @@ test("symlinked root accepted", async () => {
     const symlinkPath = path.join(tmpDir, "store-link");
     await symlink(realDir, symlinkPath, "dir");
 
-    const memories = await scanMemoryDir(symlinkPath);
-    assert.strictEqual(memories.length, 1);
-    assert.strictEqual(memories[0].content, "Avery Quill prefers Earl Grey tea with lemon");
+    await assert.rejects(
+      () => scanMemoryDir(symlinkPath),
+      /must not be a symlink/,
+    );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }

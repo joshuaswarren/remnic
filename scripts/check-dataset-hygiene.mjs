@@ -278,7 +278,7 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
         file: relPath,
         line: lineNum,
         rule: "ipv4",
-        message: `Non-permitted IPv4 address detected: "${ip}"`,
+        message: `Non-permitted IPv4 address detected: "${ip.split(".").slice(0, 2).join(".")}…" (redacted)`,
       });
     }
 

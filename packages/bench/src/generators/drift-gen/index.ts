@@ -131,11 +131,6 @@ export async function generateDriftCorpus(
     ...(options.audit ? { audit: options.audit } : {}),
   };
 
-  // Stage the seed tree, swap it into place, and only then discard the old
-  // corpus: the previous version is renamed aside (not deleted) until the
-  // replacement is committed, and a failed swap rolls it back. The manifest
-  // is replaced last via atomic rename: it is the success marker and must
-  // never point at half-written data.
   const stagingDir = path.join(options.outDir, `.staging-${options.seed}`);
   await rm(stagingDir, { recursive: true, force: true });
   for (const [relPath, content] of written) {
@@ -143,23 +138,44 @@ export async function generateDriftCorpus(
     await mkdir(path.dirname(absPath), { recursive: true });
     await writeFile(absPath, content, "utf8");
   }
+
   const finalSeedDir = path.join(options.outDir, seedDir);
-  const backupDir = path.join(options.outDir, `.backup-${options.seed}`);
-  await rm(backupDir, { recursive: true, force: true });
-  let hadPrevious = true;
+  const backupDir = path.join(options.outDir, `.backup-${options.seed}-${process.pid}`);
+  const staleSeedDirs = (await readdir(options.outDir, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name) && entry.name !== seedDir)
+    .map((entry) => ({
+      source: path.join(options.outDir, entry.name),
+      backup: path.join(options.outDir, `.backup-stale-${entry.name}-${process.pid}`),
+    }));
+  const quarantinedStaleDirs: typeof staleSeedDirs = [];
+  const manifestPath = path.join(options.outDir, "dataset.manifest.json");
+  const manifestStaging = path.join(options.outDir, ".staging-manifest.json");
+  let hadPrevious = false;
+  let replacementInstalled = false;
+
   try {
-    await rename(finalSeedDir, backupDir);
-  } catch {
-    hadPrevious = false;
-  }
-  try {
+    for (const stale of staleSeedDirs) {
+      await rename(stale.source, stale.backup);
+      quarantinedStaleDirs.push(stale);
+    }
+
+    try {
+      await rename(finalSeedDir, backupDir);
+      hadPrevious = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+
     await rename(stagingDir, finalSeedDir);
-    const manifestPath = path.join(options.outDir, "dataset.manifest.json");
-    const manifestStaging = path.join(options.outDir, ".staging-manifest.json");
+    replacementInstalled = true;
     await writeFile(manifestStaging, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     await rename(manifestStaging, manifestPath);
-  } catch (err) {
-    await rm(finalSeedDir, { recursive: true, force: true });
+  } catch (error) {
+    await rm(manifestStaging, { force: true });
+    await rm(stagingDir, { recursive: true, force: true });
+    if (replacementInstalled) {
+      await rm(finalSeedDir, { recursive: true, force: true });
+    }
     if (hadPrevious) {
       try {
         await rename(backupDir, finalSeedDir);
@@ -169,22 +185,23 @@ export async function generateDriftCorpus(
         );
       }
     }
-    throw err;
-  }
-  if (hadPrevious) {
-    await rm(backupDir, { recursive: true, force: true });
+    for (let index = quarantinedStaleDirs.length - 1; index >= 0; index -= 1) {
+      const stale = quarantinedStaleDirs[index];
+      try {
+        await rename(stale.backup, stale.source);
+      } catch {
+        console.error(
+          `drift-gen: failed to restore a stale corpus; it is preserved at ${stale.backup}`,
+        );
+      }
+    }
+    throw error;
   }
 
-  // A regenerated corpus owns its output dir: seed trees absent from the
-  // replacement manifest are stale leftovers from earlier runs and would be
-  // ingested by consumers that enumerate the directory. Only all-digit
-  // directory names are generator-owned and eligible for removal.
-  const staleEntries = await readdir(options.outDir, { withFileTypes: true });
-  for (const entry of staleEntries) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-    if (entry.name === seedDir) continue;
-    await rm(path.join(options.outDir, entry.name), { recursive: true, force: true });
-  }
+  await Promise.all([
+    ...(hadPrevious ? [rm(backupDir, { recursive: true, force: true })] : []),
+    ...quarantinedStaleDirs.map((stale) => rm(stale.backup, { recursive: true, force: true })),
+  ]);
 
   return { manifest, files: [...written.keys()].sort() };
 }

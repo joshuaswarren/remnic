@@ -511,12 +511,13 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   }
   validateBenchFlags(action, args);
 
-  let driftGenDir: string | undefined;
-  if (action === "drift-gen" && driftGenAction === "validate") {
-    if (args[1] && !args[1].startsWith("-")) {
-      driftGenDir = path.resolve(expandTilde(args[1]));
-    }
-  }
+  const driftGenPositionals =
+    action === "drift-gen" && driftGenAction === "validate"
+      ? collectBenchmarks(args.slice(1))
+      : [];
+  const driftGenDir = driftGenPositionals[0]
+    ? path.resolve(expandTilde(driftGenPositionals[0]))
+    : undefined;
 
   const benchmarkArgs =
     action === "baseline" ||

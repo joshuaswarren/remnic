@@ -129,6 +129,31 @@ test("attribution labels retrieval_miss with stage unknown when absent even at r
   assert.strictEqual(res!.overall.retrievalStage, "unknown");
 });
 
+test("attribution leaves a recall miss unattributed when index evidence is unavailable", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => [
+      { id: "mem-1", content: "Avery's favorite color is teal blue" },
+    ],
+    recall: async () => [],
+    recallLimit: 5,
+  };
+
+  const res = await attributeTask(
+    {
+      taskId: "task-index-unavailable",
+      question: "What is Avery's favorite color?",
+      scores: { overall: 0 },
+      goldMemories: ["Avery's favorite color is teal blue"],
+    },
+    env,
+    { threshold: 0.6 },
+  );
+
+  assert.notStrictEqual(res, null);
+  assert.strictEqual(res!.overall.class, "unattributed");
+  assert.match(res!.overall.reason ?? "", /index check unavailable/);
+});
+
 test("extraction-unavailable + recall miss => unattributed", async () => {
   const env: AttributionEnvironment = {
     listMemories: async () => {

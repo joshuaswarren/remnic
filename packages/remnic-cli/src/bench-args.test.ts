@@ -130,6 +130,9 @@ test("parseBenchArgs recognizes bench drift-gen action and subcommands", () => {
   assert.equal(val.driftGenAction, "validate");
   assert.equal(val.driftGenDir, path.resolve("/tmp/corpus"));
 
+  const valAfterFlags = parseBenchArgs(["drift-gen", "validate", "--json", "/tmp/corpus-after-flags"]);
+  assert.equal(valAfterFlags.driftGenDir, path.resolve("/tmp/corpus-after-flags"));
+
   assert.throws(
     () => parseBenchArgs(["drift-gen", "unknown-subcommand"]),
     /drift-gen subcommand must be "generate" or "validate"/
