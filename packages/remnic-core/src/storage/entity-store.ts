@@ -128,8 +128,12 @@ export class EntityStore {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const idsAtResolve = this.deps.currentHistoricalIds();
         const located = await this.readEntityForMutation(name, method, idsAtResolve);
-        if (!located || !mutate(located.entity, idsAtResolve)) return false;
+        const mutated = located !== null && mutate(located.entity, idsAtResolve);
+        // Revalidate BEFORE honoring either verdict: a journal that moved
+        // makes both the resolution AND a dedupe-based no-op stale (a parked
+        // mapping can make "already present on the claimant" wrong).
         if (this.deps.currentHistoricalIds() !== idsAtResolve) continue;
+        if (!located || !mutated) return false;
         located.entity.updated = new Date().toISOString();
         await this.deps.writeStorageSecureFile(
           located.filePath,

@@ -3674,7 +3674,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     options: WriteMemoryOptions = {}
   ): Promise<MemoryWriteResult> {
     await this.ensureDirectories();
-    const refIds = typeof options.entityRef === "string" ? this.currentHistoricalIds() : null;
+    const rawEntityRef = options.entityRef;
+    let refIds = typeof options.entityRef === "string" ? this.currentHistoricalIds() : null;
     if (refIds) options = entityRefs.canonicalizeEntityRefOption(options, refIds);
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
@@ -3836,6 +3837,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
     }
 
+    // Pre-persist revalidation (issue #2213): a mapping parked since the
+    // resolve above cannot be repaired afterwards (the reconcile pass only
+    // rewrites refs that are still legacy keys), so re-resolve from the
+    // caller's ORIGINAL ref against the fresh table before the bytes land.
+    if (refIds && typeof rawEntityRef === "string" && this.currentHistoricalIds() !== refIds) {
+      refIds = this.currentHistoricalIds();
+      fm.entityRef = entityRefs.resolveHistoricalEntityCanonicalId(rawEntityRef, refIds);
+    }
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
@@ -6661,7 +6670,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     } = {}
   ): Promise<string> {
     await this.ensureDirectories();
-    const refIds = typeof options.entityRef === "string" ? this.currentHistoricalIds() : null;
+    const rawEntityRef = options.entityRef;
+    let refIds = typeof options.entityRef === "string" ? this.currentHistoricalIds() : null;
     if (refIds) options = entityRefs.canonicalizeEntityRefOption(options, refIds);
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
@@ -6706,9 +6716,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!sanitized.clean) {
       log.warn(`chunk content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
     }
-    const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
-
     const filePath = await this.resolveCategoryWritePath(category, id, today);
+    // Pre-persist revalidation — same rule as writeMemory (issue #2213).
+    if (refIds && typeof rawEntityRef === "string" && this.currentHistoricalIds() !== refIds) {
+      refIds = this.currentHistoricalIds();
+      fm.entityRef = entityRefs.resolveHistoricalEntityCanonicalId(rawEntityRef, refIds);
+    }
+    const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
     const written = await this.writeTombstoneBlockedChunk(
       filePath,

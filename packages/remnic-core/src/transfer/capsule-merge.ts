@@ -387,20 +387,28 @@ export async function mergeCapsule(
       continue;
     }
 
-    // Local file exists. Check if it is byte-identical to the archive entry —
-    // or to its canonicalized form (computed AFTER the local read, so a
-    // journal published during that await is reflected), so re-merging the
-    // same capsule after a ref rewrite stays an identical-skip instead of a
-    // phantom conflict.
+    // Local file exists. A local copy already holding the CANONICALIZED form
+    // (computed AFTER the local read, so a journal published during that
+    // await is reflected) is done. A local copy matching the RAW archive
+    // bytes while a mapping applies is UPGRADED in place — skipping would
+    // leave the legacy entityRef on disk forever, since corpus bumps no
+    // longer trigger migration rewrites (issue #2213).
     const canonicalContent = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
     const { sha256: localSha256 } = sha256String(localContent);
+    const canonicalSha256 =
+      canonicalContent === rec.content ? entry.sha256 : sha256String(canonicalContent).sha256;
 
-    if (
-      localSha256 === entry.sha256
-      || (canonicalContent !== rec.content && localSha256 === sha256String(canonicalContent).sha256)
-    ) {
-      // Byte-identical — no write needed.
+    if (localSha256 === canonicalSha256) {
+      // Byte-identical to the canonical form — no write needed.
       skipped.push({ path: rec.path, reason: "identical" });
+      continue;
+    }
+    if (localSha256 === entry.sha256) {
+      const idsAtWrite = historicalIdCache.get(journalStateDir);
+      await writeFile(targetAbs, canonicalizeEntityRefFrontmatter(rec.content, idsAtWrite), "utf-8");
+      bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
+      await reconcileIfJournalMoved(journalStateDir, idsAtWrite, historicalIdCache.get(journalStateDir));
+      merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted: false });
       continue;
     }
 
