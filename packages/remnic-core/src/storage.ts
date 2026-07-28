@@ -4984,7 +4984,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
         const destPath = path.join(destDir, path.basename(current.path));
         await this.writeStorageSecureFile(destPath, fileContent);
-        await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtWrite, this.currentHistoricalIds());
+        if (typeof current.frontmatter.entityRef === "string") {
+          await this.repairEntityRefAfterJournalMove(
+            destPath, updatedFm, current.frontmatter.entityRef, refIdsAtWrite, current.content,
+          );
+        }
         await unlink(current.path);
         markDurable();
         markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
@@ -5138,8 +5142,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
       this.invalidateAllMemoriesCache();
     });
-    if (typeof updated.entityRef === "string") {
-      await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtWrite, this.currentHistoricalIds());
+    if (typeof memory.frontmatter.entityRef === "string") {
+      await this.repairEntityRefAfterJournalMove(
+        memory.path, updated, memory.frontmatter.entityRef, refIdsAtWrite, sanitized.text,
+      );
     }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
@@ -6360,9 +6366,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // top of whatever is cached at prevVersion — robust to a concurrent scan
     // that republished an UNpatched corpus mid-flush (Cursor Medium #1902).
     const appliedPatches = new Map<string, { accessCount: number; lastAccessed: string }>();
-    // Per-ROW journal reads below; this first snapshot anchors the post-batch
-    // journal-moved check (issue #2213).
-    const refIdsAtFlush = this.currentHistoricalIds();
 
     for (const entry of entries) {
       const memory = entry.memoryPath
@@ -6370,14 +6373,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         : memoryMap.get(entry.memoryId);
       if (!memory) continue;
 
+      const rowIds = this.currentHistoricalIds();
       const newFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
         { ...memory.frontmatter, accessCount: entry.newCount, lastAccessed: entry.lastAccessed },
-        this.currentHistoricalIds(),
+        rowIds,
       );
 
       try {
         const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
+        if (typeof memory.frontmatter.entityRef === "string") {
+          await this.repairEntityRefAfterJournalMove(
+            memory.path, newFm, memory.frontmatter.entityRef, rowIds, memory.content,
+          );
+        }
         // Patch the hot corpus cache entry in place with the new accessCount/
         // lastAccessed (issue #1902). The shared sentinel is bumped once after
         // the loop for cross-process coherence; the re-key below keeps this
@@ -6396,7 +6405,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
 
     if (updated > 0) {
-      await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtFlush, this.currentHistoricalIds());
       // Advance the corpus sentinel so PEER processes rescan and don't overwrite
       // this process's increments (Codex P2): WorkspaceOpsCoordinator computes
       // existingCount + update.count from the cached value, so a peer serving a
@@ -6753,7 +6761,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     try {
       await this.writeStorageSecureFile(oldMemory.path, fileContent);
-      await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtWrite, this.currentHistoricalIds());
+      if (typeof oldMemory.frontmatter.entityRef === "string") {
+        await this.repairEntityRefAfterJournalMove(
+          oldMemory.path, updatedFm, oldMemory.frontmatter.entityRef, refIdsAtWrite, oldMemory.content,
+        );
+      }
       // Advance the corpus sentinel immediately after the on-disk write, BEFORE
       // the awaited lifecycle append (Cursor Medium, #1902). Otherwise a warm
       // hot-memories cache keeps serving the pre-supersede snapshot during the
@@ -6786,7 +6798,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             id: oldMemoryId,
             content: stripCitationForTemplate(oldMemory.content, this.citationTemplate),
             contentHash: oldMemory.frontmatter.contentHash,
-            entityRef: oldMemory.frontmatter.entityRef,
+            entityRef: updatedFm.entityRef,
             structuredAttributes: oldMemory.frontmatter.structuredAttributes,
           },
           {
@@ -6866,22 +6878,26 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const memories = await this.readAllMemories();
     const memoryMap = new Map(memories.map((m) => [m.frontmatter.id, m]));
     let archived = 0;
-    // First snapshot anchors the post-batch journal-moved check (issue #2213).
-    const refIdsAtArchive = this.currentHistoricalIds();
 
     for (const id of memoryIds) {
       const memory = memoryMap.get(id);
       if (!memory) continue;
 
       const now = new Date().toISOString();
+      const rowIds = this.currentHistoricalIds();
       const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
         { ...memory.frontmatter, status: "archived", archivedAt: now, updated: now },
-        this.currentHistoricalIds(),
+        rowIds,
       );
 
       try {
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
+        if (typeof memory.frontmatter.entityRef === "string") {
+          await this.repairEntityRefAfterJournalMove(
+            memory.path, updatedFm, memory.frontmatter.entityRef, rowIds, memory.content,
+          );
+        }
         // Corpus sentinel bump per file write, BEFORE the awaited lifecycle
         // append (Cursor Medium, #1902): the end-of-loop bumpMemoryStatusVersion
         // fires only after the whole batch, so without this a warm cache serves
@@ -6904,7 +6920,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
 
     if (archived > 0) {
-      await entityRefs.reconcileIfJournalMoved(this.stateDir, refIdsAtArchive, this.currentHistoricalIds());
       this.bumpMemoryStatusVersion();
       log.debug(`archived ${archived} memories for summary ${summaryId}`);
     }

@@ -303,3 +303,54 @@ export async function repairEntityRefAfterJournalMove(options: {
   }
   await requestEntityCanonicalIdReconcile(options.stateDir);
 }
+
+/**
+ * Content-form counterpart of {@link repairEntityRefAfterJournalMove} for
+ * writers that persist raw record bytes (capsule import/merge, space
+ * promotion, curation, review actions): when the journal moved across the
+ * write, re-canonicalize the ORIGINAL bytes against the fresh table and
+ * rewrite (bounded), falling back to the reconcile marker.
+ */
+export async function repairContentAfterJournalMove(options: {
+  stateDir: string;
+  cache: HistoricalEntityCanonicalIdCache;
+  idsAtWrite: Readonly<Record<string, string>>;
+  rawContent: string;
+  lastWritten: string;
+  rewrite: (content: string) => Promise<void>;
+}): Promise<void> {
+  let refIds = options.idsAtWrite;
+  let written = options.lastWritten;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const fresh = options.cache.get(options.stateDir);
+    if (fresh === refIds) return;
+    refIds = fresh;
+    const desired = canonicalizeEntityRefFrontmatter(options.rawContent, fresh);
+    if (desired === written) return;
+    written = desired;
+    await options.rewrite(desired);
+  }
+  await requestEntityCanonicalIdReconcile(options.stateDir);
+}
+
+export function repairContentAfterJournalMoveSync(options: {
+  stateDir: string;
+  cache: HistoricalEntityCanonicalIdCache;
+  idsAtWrite: Readonly<Record<string, string>>;
+  rawContent: string;
+  lastWritten: string;
+  rewrite: (content: string) => void;
+}): void {
+  let refIds = options.idsAtWrite;
+  let written = options.lastWritten;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const fresh = options.cache.get(options.stateDir);
+    if (fresh === refIds) return;
+    refIds = fresh;
+    const desired = canonicalizeEntityRefFrontmatter(options.rawContent, fresh);
+    if (desired === written) return;
+    written = desired;
+    options.rewrite(desired);
+  }
+  requestEntityCanonicalIdReconcileSync(options.stateDir);
+}

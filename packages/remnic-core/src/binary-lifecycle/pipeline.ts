@@ -23,7 +23,7 @@ import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import {
   HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
-  reconcileIfJournalMoved,
+  repairContentAfterJournalMove,
 } from "../storage/entity-canonical-id-references.js";
 
 // Write-boundary journal cache for redirect rewrites (issue #2213).
@@ -329,12 +329,20 @@ async function stageRedirect(
       try {
         // Whole-record rewrite of bytes read earlier (issue #2213): resolve
         // the frontmatter entityRef through the CURRENT journal at the write
-        // and verify afterwards — writing back the as-read bytes could revert
+        // and REPAIR afterwards — writing back the as-read bytes could revert
         // a rewrite a peer migration performed since the read.
         const stateDir = path.join(memoryDir, "state");
         const idsAtWrite = historicalIdCache.get(stateDir);
-        await writeMarkdownFile(update.mdPath, canonicalizeEntityRefFrontmatter(update.content, idsAtWrite));
-        await reconcileIfJournalMoved(stateDir, idsAtWrite, historicalIdCache.get(stateDir));
+        const written = canonicalizeEntityRefFrontmatter(update.content, idsAtWrite);
+        await writeMarkdownFile(update.mdPath, written);
+        await repairContentAfterJournalMove({
+          stateDir,
+          cache: historicalIdCache,
+          idsAtWrite,
+          rawContent: update.content,
+          lastWritten: written,
+          rewrite: (next) => writeMarkdownFile(update.mdPath, next),
+        });
         // The redirect rewrote an on-disk memory file out-of-band (not through a
         // StorageManager mutation). Bump the corpus sentinel per write so a warm
         // hot-memories cache rescans — mid-batch too, never serving pre-redirect

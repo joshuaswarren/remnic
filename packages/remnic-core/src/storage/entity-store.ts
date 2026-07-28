@@ -143,11 +143,14 @@ export class EntityStore {
         this.deps.invalidateKnowledgeIndexCache();
         return true;
       }
-      // The journal kept moving under us: hand the mutation's store state to
-      // the bounded reconcile pass rather than writing off a stale table.
-      log.warn(`${method}: entity canonical-id journal kept changing; requesting reconcile pass`);
+      // The journal kept moving under us. A silent false would DROP the
+      // requested mutation (the reconcile pass rewrites existing references;
+      // it cannot replay a mutation that was never written) — surface a
+      // retryable error so the caller's persist machinery logs/retries it.
       requestEntityCanonicalIdReconcileSync(stateDir);
-      return false;
+      throw new Error(
+        `${method}: entity canonical-id journal kept changing; mutation not applied — retry`,
+      );
     });
   }
 

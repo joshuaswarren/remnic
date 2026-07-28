@@ -5,7 +5,7 @@ import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
-  reconcileIfJournalMoved,
+  repairContentAfterJournalMove,
 } from "../storage/entity-canonical-id-references.js";
 import {
   createVersion,
@@ -360,6 +360,23 @@ export async function mergeCapsule(
   // completing mid-merge is picked up for every record written after it.
   const journalStateDir = path.join(rootReal, "state");
   const historicalIdCache = new HistoricalEntityCanonicalIdCache();
+  // Write a record with its entityRef resolved AT the write, then repair if
+  // the journal moved across the write itself — a parked mapping cannot be
+  // fixed after the fact by the reconcile pass (issue #2213).
+  const writeCanonicalRecord = async (targetAbs: string, rawContent: string): Promise<void> => {
+    const idsAtWrite = historicalIdCache.get(journalStateDir);
+    const written = canonicalizeEntityRefFrontmatter(rawContent, idsAtWrite);
+    await writeFile(targetAbs, written, "utf-8");
+    bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
+    await repairContentAfterJournalMove({
+      stateDir: journalStateDir,
+      cache: historicalIdCache,
+      idsAtWrite,
+      rawContent,
+      lastWritten: written,
+      rewrite: (content) => writeFile(targetAbs, content, "utf-8"),
+    });
+  };
 
   // Sort by source path for deterministic output (mirrors capsule-import.ts).
   const sortedRecords = [...bundle.records].sort((a, b) =>
@@ -379,10 +396,7 @@ export async function mergeCapsule(
       // reference — capsule writes bump only the corpus version, which the
       // migration fingerprint deliberately ignores.
       await mkdir(path.dirname(targetAbs), { recursive: true });
-      const idsAtWrite = historicalIdCache.get(journalStateDir);
-      await writeFile(targetAbs, canonicalizeEntityRefFrontmatter(rec.content, idsAtWrite), "utf-8");
-      bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
-      await reconcileIfJournalMoved(journalStateDir, idsAtWrite, historicalIdCache.get(journalStateDir));
+      await writeCanonicalRecord(targetAbs, rec.content);
       merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted: false });
       continue;
     }
@@ -404,10 +418,7 @@ export async function mergeCapsule(
       continue;
     }
     if (localSha256 === entry.sha256) {
-      const idsAtWrite = historicalIdCache.get(journalStateDir);
-      await writeFile(targetAbs, canonicalizeEntityRefFrontmatter(rec.content, idsAtWrite), "utf-8");
-      bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
-      await reconcileIfJournalMoved(journalStateDir, idsAtWrite, historicalIdCache.get(journalStateDir));
+      await writeCanonicalRecord(targetAbs, rec.content);
       merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted: false });
       continue;
     }
@@ -442,12 +453,9 @@ export async function mergeCapsule(
       snapshotted = true;
     }
 
-    // Same write-time re-resolve + post-write verify as above — the
+    // Same write-time re-resolve + post-write repair as above — the
     // snapshot/read awaits give a peer migration a real window.
-    const idsAtWrite = historicalIdCache.get(journalStateDir);
-    await writeFile(targetAbs, canonicalizeEntityRefFrontmatter(rec.content, idsAtWrite), "utf-8");
-    bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
-    await reconcileIfJournalMoved(journalStateDir, idsAtWrite, historicalIdCache.get(journalStateDir));
+    await writeCanonicalRecord(targetAbs, rec.content);
     merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted });
   }
 

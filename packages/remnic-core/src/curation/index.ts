@@ -12,8 +12,8 @@ import { getCategoryDir, ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
-  reconcileIfJournalMovedSync,
-  resolveHistoricalEntityCanonicalId,
+  canonicalizeEntityRefFrontmatter,
+  repairContentAfterJournalMoveSync,
 } from "../storage/entity-canonical-id-references.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -465,7 +465,10 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   const filePath = path.join(dir, fileName);
   const historicalIds = historicalIdCache.get(path.join(memoryDir, "state"));
 
-  const frontmatter = [
+  // Keep the caller's ORIGINAL ref in the raw form: repair-after-write must
+  // re-resolve from it, including the direction where a mapping was parked
+  // and the resolution falls back to the legacy claimant (issue #2213).
+  const rawBody = `${[
     "---",
     `id: ${stmt.id}`,
     `category: ${stmt.category}`,
@@ -475,29 +478,32 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
     `confidenceTier: ${tierFromConfidence(stmt.confidence)}`,
     `source: ${stmt.provenance.source}`,
     `tags: ${JSON.stringify(stmt.tags)}`,
-    stmt.entityRef ? `entityRef: ${resolveHistoricalEntityCanonicalId(stmt.entityRef, historicalIds)}` : null,
+    stmt.entityRef ? `entityRef: ${stmt.entityRef}` : null,
     `provenanceFile: ${stmt.provenance.relativePath}`,
     `provenanceHash: ${stmt.provenance.sourceFileHash}`,
     "---",
   ]
     .filter(Boolean)
-    .join("\n");
-
-  const body = `${frontmatter}\n\n${stmt.content}\n`;
+    .join("\n")}\n\n${stmt.content}\n`;
+  const body = canonicalizeEntityRefFrontmatter(rawBody, historicalIds);
 
   fs.writeFileSync(filePath, body);
   // Bump the corpus sentinel per write (out-of-band create) so a concurrent
   // same-process readAllMemories rescans and sees this statement immediately,
   // never a stale/partial corpus mid-batch (Cursor Medium, #1902).
   bumpMemoryCorpusVersionForDir(memoryDir);
-  // Post-write verify (issue #2213): a peer process publishing the journal
+  // Post-write REPAIR (issue #2213): a peer process publishing the journal
   // across this write would otherwise strand the reference — the corpus bump
-  // above no longer re-triggers the migration.
-  reconcileIfJournalMovedSync(
-    path.join(memoryDir, "state"),
-    historicalIds,
-    historicalIdCache.get(path.join(memoryDir, "state")),
-  );
+  // above no longer re-triggers the migration, and a parked mapping cannot be
+  // fixed after the fact by the reconcile pass.
+  repairContentAfterJournalMoveSync({
+    stateDir: path.join(memoryDir, "state"),
+    cache: historicalIdCache,
+    idsAtWrite: historicalIds,
+    rawContent: rawBody,
+    lastWritten: body,
+    rewrite: (next) => fs.writeFileSync(filePath, next),
+  });
   return filePath;
 }
 

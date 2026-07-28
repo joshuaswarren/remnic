@@ -12,7 +12,7 @@ import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
-  reconcileIfJournalMovedSync,
+  repairContentAfterJournalMoveSync,
 } from "../storage/entity-canonical-id-references.js";
 
 // Write-boundary journal cache for review-queue promotions (issue #2213).
@@ -20,15 +20,23 @@ const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
 /**
  * In-place raw rewrite under the uniform write-boundary rule (issue #2213):
- * canonicalize the effective entityRef at the write and verify the journal
- * did not move across it — these rewrites re-serialize whole records, so an
+ * canonicalize the effective entityRef at the write and REPAIR when the
+ * journal moved across it — these rewrites re-serialize whole records, so an
  * unrelated approve/dismiss/flag must not write a legacy ref back out.
  */
 function writeReviewFileCanonicalized(memoryDir: string, filePath: string, content: string): void {
   const stateDir = path.join(memoryDir, "state");
   const idsAtWrite = historicalIdCache.get(stateDir);
-  fs.writeFileSync(filePath, canonicalizeEntityRefFrontmatter(content, idsAtWrite), "utf8");
-  reconcileIfJournalMovedSync(stateDir, idsAtWrite, historicalIdCache.get(stateDir));
+  const written = canonicalizeEntityRefFrontmatter(content, idsAtWrite);
+  fs.writeFileSync(filePath, written, "utf8");
+  repairContentAfterJournalMoveSync({
+    stateDir,
+    cache: historicalIdCache,
+    idsAtWrite,
+    rawContent: content,
+    lastWritten: written,
+    rewrite: (next) => fs.writeFileSync(filePath, next, "utf8"),
+  });
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -366,15 +374,19 @@ function approveItem(
   // The suggestions/review queue dirs sit OUTSIDE the migration's reference
   // scan, so a queued pre-migration item can still carry a legacy entityRef
   // (issue #2213): promote it canonicalized against the target journal, and
-  // verify the journal did not move across the write.
+  // REPAIR when the journal moved across the write.
   const reviewStateDir = path.join(memoryDir, "state");
   const idsAtWrite = historicalIdCache.get(reviewStateDir);
-  const promotedPath = writeFileWithoutClobber(
-    outputPath,
-    canonicalizeEntityRefFrontmatter(updatedContent, idsAtWrite),
-    itemId,
-  );
-  reconcileIfJournalMovedSync(reviewStateDir, idsAtWrite, historicalIdCache.get(reviewStateDir));
+  const promotedWritten = canonicalizeEntityRefFrontmatter(updatedContent, idsAtWrite);
+  const promotedPath = writeFileWithoutClobber(outputPath, promotedWritten, itemId);
+  repairContentAfterJournalMoveSync({
+    stateDir: reviewStateDir,
+    cache: historicalIdCache,
+    idsAtWrite,
+    rawContent: updatedContent,
+    lastWritten: promotedWritten,
+    rewrite: (next) => fs.writeFileSync(promotedPath, next, "utf8"),
+  });
 
   // Remove from review
   fs.unlinkSync(found.filePath);

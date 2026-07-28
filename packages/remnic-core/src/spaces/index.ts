@@ -17,7 +17,7 @@ import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
-  reconcileIfJournalMovedSync,
+  repairContentAfterJournalMoveSync,
 } from "../storage/entity-canonical-id-references.js";
 
 // Write-boundary journal cache for promoted copies (issue #2213).
@@ -957,16 +957,21 @@ function copyMemories(
       skipped++;
       continue;
     }
-    // Re-resolve at the write and verify afterwards: a peer process can
+    // Re-resolve at the write and REPAIR afterwards: a peer process can
     // publish the journal at any point in this loop, and the corpus bump
     // below no longer re-triggers the migration.
-    const idsAtWrite = historicalIdCache.get(path.join(targetRoot, "state"));
-    fs.writeFileSync(targetPath, canonicalizeEntityRefFrontmatter(content, idsAtWrite));
-    reconcileIfJournalMovedSync(
-      path.join(targetRoot, "state"),
+    const stateDir = path.join(targetRoot, "state");
+    const idsAtWrite = historicalIdCache.get(stateDir);
+    const written = canonicalizeEntityRefFrontmatter(content, idsAtWrite);
+    fs.writeFileSync(targetPath, written);
+    repairContentAfterJournalMoveSync({
+      stateDir,
+      cache: historicalIdCache,
       idsAtWrite,
-      historicalIdCache.get(path.join(targetRoot, "state")),
-    );
+      rawContent: content,
+      lastWritten: written,
+      rewrite: (next) => fs.writeFileSync(targetPath, next),
+    });
     merged++;
     // Bump the target's corpus sentinel per write (out-of-band — not through a
     // StorageManager mutation), on the CANONICAL root (targetRoot), matching

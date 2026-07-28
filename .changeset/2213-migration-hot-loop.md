@@ -23,10 +23,16 @@ to the multi-second fallback path.
   version, which advanced on every plain fact write and defeated the skip on
   any busy daemon.
 - What the recurring rewrite used to (eventually) absorb is fixed at the
-  source instead: `writeMemory` and `writeChunk` resolve a caller-supplied
-  `entityRef` through the completed journal's historical mappings, so
-  store-mediated writes — extraction output, explicit capture — can never
+  source instead: every writer that persists an `entityRef` — store-mediated
+  (`writeMemory`, `writeChunk`, batch access-count flush, summary archival)
+  AND out-of-band (capsule import/merge, space promotion, curation statements,
+  review-queue actions, binary-lifecycle redirects) — resolves it through the
+  completed journal's historical mappings at the write itself, so no path can
   re-introduce legacy entity references. This also puts write-time tombstone
-  lookups on the same id space as migrated tombstones. Out-of-band file
-  writers remain responsible for their own post-write hooks; reads of legacy
-  ids keep resolving through the journal as before.
+  lookups on the same id space as migrated tombstones.
+- A journal that moves ACROSS a write (a peer process completing a migration
+  between resolve and persist) is repaired, not just detected: each writer
+  re-resolves from the original ref/bytes and rewrites bounded-retry, falling
+  back to a persistent reconcile marker consumed by the next migration gate.
+  Entity-file mutations serialize under a lock and surface a retryable error
+  when the journal will not settle, instead of silently dropping the mutation.

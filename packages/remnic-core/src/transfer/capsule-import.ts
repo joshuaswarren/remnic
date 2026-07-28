@@ -6,7 +6,7 @@ import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
-  reconcileIfJournalMoved,
+  repairContentAfterJournalMove,
 } from "../storage/entity-canonical-id-references.js";
 import {
   createVersion,
@@ -453,12 +453,21 @@ export async function importCapsule(
     // Resolve at the write itself (mirrors capsule-merge): a peer migration
     // can complete during the snapshot/mkdir awaits, and capsule writes bump
     // only the corpus version, which the migration fingerprint ignores. The
-    // post-write verify requests one bounded reconcile pass when the journal
-    // moved across the write syscall itself.
+    // post-write REPAIR re-canonicalizes and rewrites when the journal moved
+    // across the write itself (a parked mapping cannot be fixed after the
+    // fact by the reconcile pass).
     const idsAtWrite = historicalIdCache.get(journalStateDir);
-    contentToWrite = canonicalizeEntityRefFrontmatter(contentToWrite, idsAtWrite);
+    const rawRecord = contentToWrite;
+    contentToWrite = canonicalizeEntityRefFrontmatter(rawRecord, idsAtWrite);
     await writeFile(targetAbs, contentToWrite, "utf-8");
-    await reconcileIfJournalMoved(journalStateDir, idsAtWrite, historicalIdCache.get(journalStateDir));
+    await repairContentAfterJournalMove({
+      stateDir: journalStateDir,
+      cache: historicalIdCache,
+      idsAtWrite,
+      rawContent: rawRecord,
+      lastWritten: contentToWrite,
+      rewrite: (content) => writeFile(targetAbs, content, "utf-8"),
+    });
     // Bump the corpus sentinel per write (Cursor Medium, #1902): a concurrent
     // readAllMemories during the import must rescan and see records already on
     // disk, never the pre-import corpus, mid-batch.
