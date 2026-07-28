@@ -347,13 +347,16 @@ function approveItem(
   const fm = parseFrontmatter(content);
   if (!fm) return { itemId, action: "approve", message: "Could not parse frontmatter" };
 
-  // Issue #1579 — when approving a tombstone-blocked memory, fire the
-  // revocation hook so the content is re-allowed (append-only log: a
-  // `kind: "revocation"` entry supersedes the tombstone at lookup). Clear
-  // blockedBy/tombstoneBlockTier on the promoted memory so it is fully
-  // active. Fire-and-forget: a hook failure never fails the approval.
+  // Issue #1579 — approving a tombstone-blocked memory fires the revocation
+  // hook so the content is re-allowed (append-only log: a `kind: "revocation"`
+  // entry supersedes the tombstone at lookup). Deferred until the approval's
+  // writes commit (Codex P2, round 19): revoking before the promote left a
+  // failed repair with the non-resurrection guard already destroyed, letting
+  // a later extraction resurrect the content. Fire-and-forget once invoked:
+  // a hook failure never fails the approval.
   const blockedBy = typeof fm.blockedBy === "string" ? fm.blockedBy : null;
-  if (blockedBy && options.onApproveBlockedMemory) {
+  const fireBlockedRevocation = (): void => {
+    if (!blockedBy || !options.onApproveBlockedMemory) return;
     try {
       const maybe = options.onApproveBlockedMemory(blockedBy, itemId);
       if (maybe && typeof (maybe as Promise<void>).then === "function") {
@@ -362,7 +365,7 @@ function approveItem(
     } catch {
       /* fire-and-forget — never fail the approval (gotcha #13) */
     }
-  }
+  };
 
   const updatedContent = updateFrontmatterFields(content, {
     confidence: "0.9",
@@ -377,6 +380,7 @@ function approveItem(
 
   if (found.location === "category") {
     writeReviewFileCanonicalized(memoryDir, found.filePath, updatedContent);
+    fireBlockedRevocation();
     return {
       itemId,
       action: "approve",
@@ -422,8 +426,10 @@ function approveItem(
     throw err;
   }
 
-  // Remove from review
+  // Remove from review, THEN revoke: the guard only falls once the approval
+  // has fully committed (promoted file repaired + queue entry gone).
   fs.unlinkSync(found.filePath);
+  fireBlockedRevocation();
 
   return {
     itemId,
