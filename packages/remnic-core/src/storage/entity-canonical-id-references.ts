@@ -156,6 +156,8 @@ export function canonicalizeEntityRefFrontmatter(
  * actually landed unvetted bytes.
  */
 export const ENTITY_CANONICAL_ID_RECONCILE_MARKER = "entity-canonical-id-reconcile.pending";
+/** The generation a migration run renamed aside for consumption; a crash can strand it. */
+export const ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER = `${ENTITY_CANONICAL_ID_RECONCILE_MARKER}.consuming`;
 
 export async function requestEntityCanonicalIdReconcile(stateDir: string): Promise<void> {
   try {

@@ -373,9 +373,14 @@ export async function mergeCapsule(
     const localContent = await readLocalFile(targetAbs);
 
     if (localContent === null) {
-      // No local copy — always write regardless of mode.
+      // No local copy — always write regardless of mode. Re-resolve at the
+      // write itself: a peer migration can complete during the awaits above,
+      // and capsule writes bump only the corpus version, which the migration
+      // fingerprint deliberately ignores — nothing later would repair a
+      // reference resolved against the pre-completion journal.
       await mkdir(path.dirname(targetAbs), { recursive: true });
-      await writeFile(targetAbs, canonicalContent, "utf-8");
+      const freshCanonical = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
+      await writeFile(targetAbs, freshCanonical, "utf-8");
       bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
       merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted: false });
       continue;
@@ -425,7 +430,10 @@ export async function mergeCapsule(
       snapshotted = true;
     }
 
-    await writeFile(targetAbs, canonicalContent, "utf-8");
+    // Same write-time re-resolve as above — the snapshot/read awaits give a
+    // peer migration a real window to complete after the earlier lookup.
+    const freshCanonical = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
+    await writeFile(targetAbs, freshCanonical, "utf-8");
     bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
     merged.push({ sourcePath: rec.path, targetPath: rec.path, snapshotted });
   }

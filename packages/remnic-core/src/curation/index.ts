@@ -10,6 +10,10 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { getCategoryDir, ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
+import {
+  HistoricalEntityCanonicalIdCache,
+  resolveHistoricalEntityCanonicalId,
+} from "../storage/entity-canonical-id-references.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -444,6 +448,10 @@ function loadExistingMemories(memoryDir: string): Map<string, ExistingMemory> {
 
 // ── Writing ──────────────────────────────────────────────────────────────────
 
+// Curation writes raw frontmatter directly, so it is a write boundary for
+// entity references too (issue #2213): resolve through the target's journal.
+const historicalIdCache = new HistoricalEntityCanonicalIdCache();
+
 function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   const now = new Date();
   const dateDir = now.toISOString().split("T")[0];
@@ -454,6 +462,7 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
 
   const fileName = `${stmt.category}-${Date.now()}-${stmt.id.slice(0, 8)}.md`;
   const filePath = path.join(dir, fileName);
+  const historicalIds = historicalIdCache.get(path.join(memoryDir, "state"));
 
   const frontmatter = [
     "---",
@@ -465,7 +474,7 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
     `confidenceTier: ${tierFromConfidence(stmt.confidence)}`,
     `source: ${stmt.provenance.source}`,
     `tags: ${JSON.stringify(stmt.tags)}`,
-    stmt.entityRef ? `entityRef: ${stmt.entityRef}` : null,
+    stmt.entityRef ? `entityRef: ${resolveHistoricalEntityCanonicalId(stmt.entityRef, historicalIds)}` : null,
     `provenanceFile: ${stmt.provenance.relativePath}`,
     `provenanceHash: ${stmt.provenance.sourceFileHash}`,
     "---",

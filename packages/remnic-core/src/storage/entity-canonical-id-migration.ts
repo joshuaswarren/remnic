@@ -23,6 +23,7 @@ import { assertPathInsideRoot } from "../utils/path-containment.js";
 
 import {
   ENTITY_CANONICAL_ID_MIGRATION_FILE,
+  ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER,
   ENTITY_CANONICAL_ID_RECONCILE_MARKER,
   resolveHistoricalEntityCanonicalId,
 } from "./entity-canonical-id-references.js";
@@ -112,12 +113,16 @@ export async function getFingerprint(
   entitiesDir: string,
   getEntityMutationVersion: () => string,
 ): Promise<string> {
-  const [entityFingerprint, aliasFingerprint, reconcileFingerprint] = await Promise.all([
+  const [entityFingerprint, aliasFingerprint, reconcileFingerprint, consumingFingerprint] = await Promise.all([
     fingerprintPath(entitiesDir),
     fingerprintPath(path.join(baseDir, "config", "aliases.json")),
     fingerprintPath(path.join(baseDir, "state", ENTITY_CANONICAL_ID_RECONCILE_MARKER)),
+    // A `.consuming` generation stranded by a crashed PEER process must also
+    // re-invoke a live runner whose cached fingerprint predates it.
+    fingerprintPath(path.join(baseDir, "state", ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER)),
   ]);
-  return `${entityFingerprint}:${aliasFingerprint}:${reconcileFingerprint}:${getEntityMutationVersion()}`;
+  return [entityFingerprint, aliasFingerprint, reconcileFingerprint, consumingFingerprint, getEntityMutationVersion()]
+    .join(":");
 }
 
 export async function validateRoots(
@@ -821,7 +826,7 @@ export async function migrateLegacyEntityCanonicalIds(
       // WHILE this run scans creates a fresh marker that survives finish() —
       // and a `.consuming` file left by a crashed run still owes its pass.
       const reconcileMarkerPath = path.join(deps.stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER);
-      const consumingMarkerPath = `${reconcileMarkerPath}.consuming`;
+      const consumingMarkerPath = path.join(deps.stateDir, ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER);
       let reconcileRequested = await fileExists(consumingMarkerPath);
       if (await fileExists(reconcileMarkerPath)) {
         try {
