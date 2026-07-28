@@ -674,7 +674,7 @@ test("session_before_compact surfaces checkpoint write failures without dropping
   );
 });
 
-test("singleton extension refreshes recall context across sessions via session_start", async (t) => {
+test("singleton extension refreshes recall context across sessions", async (t) => {
   const originalFetch = globalThis.fetch;
   const recallBodies: Array<{ sessionKey?: string }> = [];
   let recallCalls = 0;
@@ -779,7 +779,7 @@ test("context injects cached recall across successive context events in the same
   assert.ok(third.messages?.[0]?.remnicInjected);
 });
 
-test("empty recall at session_start does not inject context but a later session with content does", async (t) => {
+test("empty recall at first context does not inject context but a later session with content does", async (t) => {
   const originalFetch = globalThis.fetch;
   let recallCallIndex = 0;
   globalThis.fetch = async (input) => {
@@ -1434,7 +1434,7 @@ function makeStaleCtx(options: {
 }
 
 
-test("circuit breaker prevents session_start recall after a startup health probe timeout (#1626)", async (t) => {
+test("circuit breaker prevents context recall after a startup health probe timeout (#1626)", async (t) => {
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;
   // fetch hangs until the AbortController fires, simulating an unreachable host.
@@ -1639,55 +1639,6 @@ test("isDaemonUnreachableError recognizes both budget-exceeded wordings so the b
   assert.ok(!isDaemonUnreachableError(new Error("Internal Server Error")), "HTTP errors stay reachable");
 });
 
-test("a successful startup health probe clears a stale circuit breaker (review codex)", async (t) => {
-  const originalFetch = globalThis.fetch;
-  let calls = 0;
-  globalThis.fetch = async (input, init) => {
-    calls += 1;
-    const url = String(input);
-    if (url.endsWith("/engram/v1/health")) {
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-    // recall hangs until the AbortController fires, simulating an unreachable daemon.
-    return new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener("abort", () =>
-        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
-      );
-    });
-  };
-  t.after(() => { globalThis.fetch = originalFetch; });
-
-  const { pi, emit } = makePiHarness();
-  const extension = createRemnicPiExtension({
-    config: {
-      ...baseConfig(),
-      authToken: "test-token",
-      observeEnabled: false,
-      compactionEnabled: false,
-      mcpToolsEnabled: false,
-      statusEnabled: true,
-      startupRequestTimeoutMs: 30,
-      daemonCooldownMs: 60000,
-    },
-  });
-  await extension(pi as any);
-
-  const ctx = {
-    cwd: "/tmp/remnic-pi",
-    ui: { setStatus: () => {}, notify: () => {} },
-    sessionManager: { getSessionId: () => "status-clear-breaker" },
-  };
-
-  // 1) session_start recall times out -> breaker tripped.
-  await emit("session_start", {}, ctx);
-  const callsAfterFirstSession = calls;
-  assert.ok(callsAfterFirstSession >= 2, "session_start made health probe and recall calls");
-
-  // 2) Another session_start: health succeeds -> clears the stale breaker; recall runs again.
-  await emit("session_start", {}, ctx);
-  assert.ok(calls > callsAfterFirstSession, "recall ran after the health probe cleared the breaker");
-});
-
 test("an offline startup health probe trips the circuit breaker so the first turn fast-skips (review codex)", async (t) => {
   const originalFetch = globalThis.fetch;
   let recallCalls = 0;
@@ -1782,10 +1733,12 @@ test("/remnic-recall bounds retry to the general request budget instead of unbou
 
 test("a successful /remnic-recall clears a stale circuit breaker (review cursor)", async (t) => {
   const originalFetch = globalThis.fetch;
-  let calls = 0;
+  let recallCalls = 0;
   globalThis.fetch = async (input, init) => {
-    calls += 1;
     const url = String(input);
+    if (url.endsWith("/engram/v1/recall")) {
+      recallCalls += 1;
+    }
     // Manual recall responds OK; automatic context recall hangs until abort.
     if (url.endsWith("/engram/v1/recall") && init?.body && JSON.parse(String(init.body)).query === "manual") {
       return new Response(JSON.stringify({ context: "manual context" }), { status: 200 });
@@ -1808,6 +1761,7 @@ test("a successful /remnic-recall clears a stale circuit breaker (review cursor)
       mcpToolsEnabled: false,
       statusEnabled: false,
       startupRequestTimeoutMs: 30,
+      turnRequestTimeoutMs: 30,
       daemonCooldownMs: 60000,
     },
   });
@@ -1819,14 +1773,20 @@ test("a successful /remnic-recall clears a stale circuit breaker (review cursor)
     sessionManager: { getSessionId: () => "manual-recall-clears-breaker" },
   };
 
-  // 1) session_start recall times out -> breaker tripped.
+  // 1) session_start: health probe + namespace preflight time out (30ms each).
+  //    `request()` transforms AbortError to `Remnic request timed out after Nms`,
+  //    which IS daemon-unreachable (index.ts:828), so the breaker IS tripped.
   await emit("session_start", {}, ctx);
-  // 2) a successful manual /remnic-recall clears the stale breaker.
+  assert.equal(recallCalls, 0, "no recall at session_start");
+
+  // 2) Manual recall succeeds → markReachable() on the shared client.
   await runCommand("remnic-recall", "manual", ctx);
-  // 3) Another session_start: recall now runs instead of fast-skipping.
-  const callsBeforeSecondSession = calls;
-  await emit("session_start", {}, ctx);
-  assert.ok(calls > callsBeforeSecondSession, "session_start recall ran after the manual recall cleared the breaker");
+
+  // 3) Context event: automatic recall fires now that the daemon is reachable.
+  //    Count only recall requests so health/preflight noise is excluded.
+  const recallCallsBeforeAuto = recallCalls;
+  await emit("context", { messages: [{ role: "user", content: "auto" }] }, ctx);
+  assert.ok(recallCalls > recallCallsBeforeAuto, "automatic recall ran after manual recall cleared the breaker");
 });
 
 test("session_start preflight surfaces a loud persistent remnic_state error when the namespace is not writable", async (t) => {

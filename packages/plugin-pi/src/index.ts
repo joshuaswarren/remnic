@@ -95,9 +95,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // the cached context is reused byte-identically across all subsequent
       // turns in the same session for KV cache prefix stability (PR #2208).
       if (!state.recallCompleted && config.recallEnabled && config.authToken && client.isReachable()) {
-        state.recallCompleted = true;
         const recallTarget = latestUserRecallTarget(messages);
         if (recallTarget) {
+          state.recallCompleted = true;
           try {
             const recalled = await client.recall(recallTarget.query, session.sessionKey, session.cwd, {
               timeoutMs: config.turnRequestTimeoutMs,
