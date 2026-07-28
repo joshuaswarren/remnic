@@ -64,13 +64,22 @@ type JournalRead =
  * Open the journal WITHOUT following symlinks and read content + identity
  * from the same opened inode (repo rule: reject symlink traversal from
  * memory directories). O_NOFOLLOW makes the open itself refuse a symlink
- * (ELOOP), closing the stat→read TOCTOU. On platforms without O_NOFOLLOW
- * the open may follow, so the PATH is lstat-verified against the OPENED
- * inode: a symlink — or a swap between open and lstat — surfaces as a
- * non-regular path or a dev/ino mismatch and is refused.
+ * (ELOOP), closing the stat→read TOCTOU, and protects the FINAL component
+ * only — the parent state directory is lstat-verified as a real directory
+ * first, so a symlinked `state/` cannot route the open to an external
+ * journal. On platforms without O_NOFOLLOW the opened inode is additionally
+ * lstat-verified against the path: a symlink — or a swap between open and
+ * lstat — surfaces as a non-regular path or a dev/ino mismatch and is
+ * refused.
  */
 function readJournalFileNoFollow(statePath: string): JournalRead {
   const noFollow = constants.O_NOFOLLOW ?? 0;
+  try {
+    const parent = lstatSync(path.dirname(statePath));
+    if (parent.isSymbolicLink() || !parent.isDirectory()) return { kind: "refused" };
+  } catch (error) {
+    return isErrnoCode(error, "ENOENT") ? { kind: "missing" } : { kind: "error" };
+  }
   let fd: number;
   try {
     fd = openSync(statePath, constants.O_RDONLY | noFollow);

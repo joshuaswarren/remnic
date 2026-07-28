@@ -2383,10 +2383,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   /**
-   * Entity-mutation sentinel: advanced only by entity file content writes
-   * (entity-store). The migration runner's completion fingerprint keys on
-   * this instead of memory-status, so supersede/archive/delete no longer
-   * re-trigger entity discovery scans (issue #2213 review).
+   * Entity-mutation sentinel: advanced only by entity-store content writes.
+   * The migration fingerprint keys on this instead of memory-status, so
+   * supersede/archive/delete no longer re-trigger discovery scans (#2213).
    */
   getEntityMutationVersion(): number {
     return this.readSharedVersion("entity-mutation", StorageManager.entityMutationVersionByDir);
@@ -2423,12 +2422,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   /**
-   * Corpus bump that reports whether THIS process's append was the only one
-   * since the pre-bump size (issue #1902, Codex P1). appendFileSync is atomic
-   * per write, but a peer process can append concurrently; the `exclusive`
-   * flag lets patchHotMemoriesCache refuse to re-key its locally patched
-   * (peer-incomplete) corpus at a version that already reflects a peer's
-   * still-unread write.
+   * Corpus bump reporting whether THIS process's append was the only one
+   * since the pre-bump size (#1902, Codex P1): the `exclusive` flag lets
+   * patchHotMemoriesCache refuse to re-key its locally patched corpus at a
+   * version already reflecting a peer's still-unread concurrent append.
    */
   private bumpMemoryCorpusVersionExclusive(): { produced: number; exclusive: boolean } {
     const filePath = this.versionFilePath("memory-corpus");
@@ -5032,9 +5029,17 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const destPath = path.join(destDir, path.basename(current.path));
         await this.writeStorageSecureFile(destPath, fileContent);
         if (typeof current.frontmatter.entityRef === "string") {
-          await this.repairEntityRefAfterJournalMove(
-            destPath, updatedFm, current.frontmatter.entityRef, refIdsAtWrite, current.content,
-          );
+          try {
+            await this.repairEntityRefAfterJournalMove(
+              destPath, updatedFm, current.frontmatter.entityRef, refIdsAtWrite, current.content,
+            );
+          } catch (err) {
+            // Remove the fresh copy before reporting failure (§14): the
+            // source survives, so a retained copy would surface the memory
+            // in BOTH active and archived scans, possibly under a stale ref.
+            await unlink(destPath).catch(() => undefined);
+            throw err;
+          }
         }
         await unlink(current.path);
         markDurable();
@@ -6801,13 +6806,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       this.bumpMemoryStatusVersion();
       log.debug(`superseded memory ${oldMemoryId} by ${newMemoryId}: ${reason}`);
 
-      // Issue #1579 — emit a tombstone so the superseded fact cannot
-      // resurrect. Contradiction resolution verbs (keep-a/keep-b/merge) all
-      // funnel through supersedeMemory, so emitting here covers every verb
-      // exactly once (rule 22). Only facts participate. Thread Oci-Y: emit
-      // one tombstone PER derived supersession key (buildRetiredFactTombstoneInputs)
-      // so a paraphrased re-write is caught on the keyed tier — a single
-      // entityRef-only record missed and the fact resurrected until rebuild.
+      // #1579 — every contradiction verb (keep-a/keep-b/merge) funnels here,
+      // so emitting covers each exactly once (rule 22); facts only. One
+      // tombstone PER derived supersession key (thread Oci-Y) so a
+      // paraphrased re-write is caught on the keyed tier.
       if (oldMemory.frontmatter.category === "fact") {
         for (const input of buildRetiredFactTombstoneInputs(
           {
@@ -6914,10 +6916,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             memory.path, updatedFm, memory.frontmatter.entityRef, rowIds, memory.content,
           );
         }
-        // Corpus sentinel bump per file write, BEFORE the awaited lifecycle
-        // append (Cursor Medium, #1902): the end-of-loop bumpMemoryStatusVersion
-        // fires only after the whole batch, so without this a warm cache serves
-        // pre-archive state for every file during the loop's await windows.
+        // Per-file corpus bump BEFORE the awaited lifecycle append (#1902):
+        // the end-of-loop status bump fires only after the whole batch.
         this.bumpMemoryCorpusVersion();
         await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.archiveMemories", {
           memoryId: id,

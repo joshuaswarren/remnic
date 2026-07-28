@@ -978,6 +978,15 @@ function copyMemories(
       // below no longer re-triggers the migration.
       const idsAtWrite = historicalIdCache.get(stateDir);
       const written = canonicalizeEntityRefFrontmatter(content, idsAtWrite);
+      // Snapshot the prior target: a repair failure must restore it (or
+      // remove a newly created file) before propagating — a reported-failed
+      // copy must not replace the prior claimant's bytes (AGENTS.md §14).
+      let priorTarget: string | null = null;
+      try {
+        priorTarget = fs.readFileSync(targetPath, "utf8");
+      } catch {
+        priorTarget = null;
+      }
       fs.writeFileSync(targetPath, written);
       try {
         repairContentAfterJournalMoveSync({
@@ -989,10 +998,15 @@ function copyMemories(
           rewrite: (next) => fs.writeFileSync(targetPath, next),
         });
       } catch (err) {
-        // The copy IS on disk (possibly overwriting a prior version, so no
-        // unlink rollback) — complete the sentinel bookkeeping before the
-        // retryable error propagates, or a warm cache serves stale bytes.
-        bumpMemoryCorpusVersionForDir(targetRoot);
+        try {
+          if (priorTarget === null) {
+            fs.unlinkSync(targetPath);
+          } else {
+            fs.writeFileSync(targetPath, priorTarget);
+          }
+        } catch {
+          // Best effort — the retryable repair error is the primary signal.
+        }
         throw err;
       }
     } else {
