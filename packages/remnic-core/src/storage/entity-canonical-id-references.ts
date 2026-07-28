@@ -15,7 +15,7 @@
  *   reconciliation pass instead ({@link requestEntityCanonicalIdReconcile}).
  */
 import path from "node:path";
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, writeSync } from "node:fs";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -209,18 +209,25 @@ export function requestEntityCanonicalIdReconcileSync(stateDir: string): void {
   try {
     // Never write through a symlinked marker (repo rule: reject symlink
     // traversal from memory directories) — a link here would let the write
-    // truncate whatever file it points at.
-    let existing = null;
+    // truncate whatever file it points at. O_NOFOLLOW closes the TOCTOU
+    // between a pre-check and the write: the open itself refuses a symlink
+    // (ELOOP), and the opened inode is verified to be a regular file before
+    // any bytes land. On platforms without O_NOFOLLOW the fstat check still
+    // rejects non-regular targets.
+    const fd = openSync(
+      markerPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
     try {
-      existing = lstatSync(markerPath);
-    } catch (error) {
-      if (!isErrnoCode(error, "ENOENT")) throw error;
+      if (!fstatSync(fd).isFile()) {
+        log.warn(`refusing to write entity canonical-id reconcile marker: ${markerPath} is not a regular file`);
+        return;
+      }
+      writeSync(fd, `${new Date().toISOString()}\n`);
+    } finally {
+      closeSync(fd);
     }
-    if (existing && !existing.isFile()) {
-      log.warn(`refusing to write entity canonical-id reconcile marker: ${markerPath} is not a regular file`);
-      return;
-    }
-    writeFileSync(markerPath, `${new Date().toISOString()}\n`, "utf-8");
   } catch (error) {
     // Best effort by design: a marker failure must not fail the restore/sync
     // that requested it (AGENTS.md §4). The reference stays legacy-but-readable

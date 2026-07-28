@@ -933,8 +933,16 @@ export async function migrateLegacyEntityCanonicalIds(
           Object.keys(a).length === Object.keys(b).length
           && Object.entries(a).every(([key, value]) => b[key] === value);
         if (same(collapsed, current.mappings) && same(parked, current.blocked ?? {})) return revived;
-        state = { ...current, mappings: collapsed, blocked: parked };
-        await writeState(deps, state);
+        // Publish under the entity MUTATION lock: parking/removing an active
+        // mapping mid-entity-write would otherwise land an alias/activity/
+        // relationship mutation on a now-unrelated canonical claimant — the
+        // reconcile pass rewrites references, it cannot move a misplaced
+        // mutation. Entity writers revalidate the journal inside this lock,
+        // so serializing the publish closes their pre-commit window.
+        await withEntityCanonicalMutationLock(deps.stateDir, async () => {
+          state = { ...current, mappings: collapsed, blocked: parked };
+          await writeState(deps, state);
+        });
         return revived;
       };
       const previousMappings = state.mappings;
