@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
@@ -382,15 +382,29 @@ export async function mergeCapsule(
     }
     const idsAtWrite = historicalIdCache.get(journalStateDir);
     const written = canonicalizeEntityRefFrontmatter(rawContent, idsAtWrite);
+    // Snapshot the pre-write bytes: a repair failure after the write must
+    // restore them (or remove a newly created target) before propagating —
+    // the merge reports failure, so disk must return to its pre-write state
+    // and warm caches stay consistent (AGENTS.md §14).
+    const originalBytes = await readLocalFile(targetAbs);
     await writeFile(targetAbs, written, "utf-8");
-    await repairContentAfterJournalMove({
-      stateDir: journalStateDir,
-      cache: historicalIdCache,
-      idsAtWrite,
-      rawContent,
-      lastWritten: written,
-      rewrite: (content) => writeFile(targetAbs, content, "utf-8"),
-    });
+    try {
+      await repairContentAfterJournalMove({
+        stateDir: journalStateDir,
+        cache: historicalIdCache,
+        idsAtWrite,
+        rawContent,
+        lastWritten: written,
+        rewrite: (content) => writeFile(targetAbs, content, "utf-8"),
+      });
+    } catch (err) {
+      if (originalBytes === null) {
+        await unlink(targetAbs).catch(() => undefined);
+      } else {
+        await writeFile(targetAbs, originalBytes, "utf-8").catch(() => undefined);
+      }
+      throw err;
+    }
     bumpMemoryCorpusVersionForDir(rootReal); // per-write bump (Cursor Medium, #1902)
   };
 

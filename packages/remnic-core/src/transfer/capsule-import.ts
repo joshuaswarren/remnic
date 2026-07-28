@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { gunzipSync } from "node:zlib";
@@ -466,15 +466,29 @@ export async function importCapsule(
       const idsAtWrite = historicalIdCache.get(journalStateDir);
       const rawRecord = contentToWrite;
       contentToWrite = canonicalizeEntityRefFrontmatter(rawRecord, idsAtWrite);
+      // Snapshot the pre-write bytes: a repair failure after the write must
+      // restore them (or remove a newly created target), or the import
+      // reports failure while an overwrite already destroyed the prior state
+      // and the skipped corpus bump leaves warm caches stale (AGENTS.md §14).
+      const originalBytes = await readFile(targetAbs, "utf-8").catch(() => null);
       await writeFile(targetAbs, contentToWrite, "utf-8");
-      await repairContentAfterJournalMove({
-        stateDir: journalStateDir,
-        cache: historicalIdCache,
-        idsAtWrite,
-        rawContent: rawRecord,
-        lastWritten: contentToWrite,
-        rewrite: (content) => writeFile(targetAbs, content, "utf-8"),
-      });
+      try {
+        await repairContentAfterJournalMove({
+          stateDir: journalStateDir,
+          cache: historicalIdCache,
+          idsAtWrite,
+          rawContent: rawRecord,
+          lastWritten: contentToWrite,
+          rewrite: (content) => writeFile(targetAbs, content, "utf-8"),
+        });
+      } catch (err) {
+        if (originalBytes === null) {
+          await unlink(targetAbs).catch(() => undefined);
+        } else {
+          await writeFile(targetAbs, originalBytes, "utf-8").catch(() => undefined);
+        }
+        throw err;
+      }
     } else {
       await writeFile(targetAbs, contentToWrite, "utf-8");
       if (targetKind === "entity") {

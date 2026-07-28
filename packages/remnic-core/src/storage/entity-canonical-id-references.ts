@@ -15,7 +15,17 @@
  *   reconciliation pass instead ({@link requestEntityCanonicalIdReconcile}).
  */
 import path from "node:path";
-import { closeSync, constants, fstatSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -54,13 +64,16 @@ type JournalRead =
  * Open the journal WITHOUT following symlinks and read content + identity
  * from the same opened inode (repo rule: reject symlink traversal from
  * memory directories). O_NOFOLLOW makes the open itself refuse a symlink
- * (ELOOP), closing the stat→read TOCTOU; on platforms without it the fstat
- * check still rejects non-regular targets.
+ * (ELOOP), closing the stat→read TOCTOU. On platforms without O_NOFOLLOW
+ * the open may follow, so the PATH is lstat-verified against the OPENED
+ * inode: a symlink — or a swap between open and lstat — surfaces as a
+ * non-regular path or a dev/ino mismatch and is refused.
  */
 function readJournalFileNoFollow(statePath: string): JournalRead {
+  const noFollow = constants.O_NOFOLLOW ?? 0;
   let fd: number;
   try {
-    fd = openSync(statePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(statePath, constants.O_RDONLY | noFollow);
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) return { kind: "missing" };
     if (isErrnoCode(error, "ELOOP")) return { kind: "refused" };
@@ -69,6 +82,10 @@ function readJournalFileNoFollow(statePath: string): JournalRead {
   try {
     const s = fstatSync(fd);
     if (!s.isFile()) return { kind: "refused" };
+    if (noFollow === 0) {
+      const l = lstatSync(statePath);
+      if (l.isSymbolicLink() || l.dev !== s.dev || l.ino !== s.ino) return { kind: "refused" };
+    }
     return {
       kind: "ok",
       raw: readFileSync(fd, "utf-8"),
