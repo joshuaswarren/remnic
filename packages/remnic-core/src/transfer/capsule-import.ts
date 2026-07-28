@@ -440,7 +440,7 @@ export async function importCapsule(
       }
     }
 
-    let contentToWrite = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
+    let contentToWrite = rec.content;
     let rewroteId = false;
     if (mode === "fork") {
       const forked = rewriteFrontmatterIdForFork(contentToWrite, capsule.id, opts.now);
@@ -449,6 +449,10 @@ export async function importCapsule(
     }
 
     await mkdir(path.dirname(targetAbs), { recursive: true });
+    // Resolve at the write itself (mirrors capsule-merge): a peer migration
+    // can complete during the snapshot/mkdir awaits, and capsule writes bump
+    // only the corpus version, which the migration fingerprint ignores.
+    contentToWrite = canonicalizeEntityRefFrontmatter(contentToWrite, historicalIdCache.get(journalStateDir));
     await writeFile(targetAbs, contentToWrite, "utf-8");
     // Bump the corpus sentinel per write (Cursor Medium, #1902): a concurrent
     // readAllMemories during the import must rescan and see records already on

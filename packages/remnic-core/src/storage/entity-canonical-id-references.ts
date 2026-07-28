@@ -169,3 +169,22 @@ export async function requestEntityCanonicalIdReconcile(stateDir: string): Promi
     log.warn(`could not request entity canonical-id reconcile: ${error}`);
   }
 }
+
+/**
+ * Post-persist TOCTOU guard (issue #2213). A writer resolves `entityRef`
+ * against one journal generation, then awaits (snapshots, locks, fsyncs)
+ * before its bytes land — a peer migration can publish AND finish its final
+ * reference scan inside that window, leaving the just-written file behind.
+ * Callers pass the mapping table captured at resolve time plus a fresh cache
+ * read taken AFTER the write: the cache returns the identical object while
+ * the journal file is unchanged, so an identity mismatch means the journal
+ * moved mid-write and one bounded reconcile pass is requested.
+ */
+export async function reconcileIfJournalMoved(
+  stateDir: string,
+  idsAtResolve: Readonly<Record<string, string>>,
+  idsAfterWrite: Readonly<Record<string, string>>,
+): Promise<void> {
+  if (idsAtResolve === idsAfterWrite) return;
+  await requestEntityCanonicalIdReconcile(stateDir);
+}

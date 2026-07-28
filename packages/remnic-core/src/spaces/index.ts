@@ -14,6 +14,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { readEnvVar, resolveHomeDir } from "../runtime/env.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
+import {
+  HistoricalEntityCanonicalIdCache,
+  canonicalizeEntityRefFrontmatter,
+} from "../storage/entity-canonical-id-references.js";
+
+// Write-boundary journal cache for promoted copies (issue #2213).
+const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -881,6 +888,15 @@ function copyMemories(
       continue;
     }
 
+    // The target's migration journal is a write boundary for promoted copies
+    // too (issue #2213): a pre-migration source memory can carry a legacy
+    // entityRef the target already renamed, and corpus bumps no longer
+    // re-trigger the migration. Read per record so a mid-batch journal change
+    // applies to later copies.
+    const canonicalContent = canonicalizeEntityRefFrontmatter(
+      content,
+      historicalIdCache.get(path.join(targetRoot, "state")),
+    );
     const sourceHash = hashContent(content);
 
     // Filter by IDs if specified
@@ -910,7 +926,9 @@ function copyMemories(
       const targetContent = fs.readFileSync(targetPath, "utf8");
       const targetHash = hashContent(targetContent);
 
-      if (sourceHash !== targetHash) {
+      // A target holding the CANONICALIZED form of this source is the same
+      // memory — re-promoting after a ref rewrite must not report a conflict.
+      if (sourceHash !== targetHash && hashContent(canonicalContent) !== targetHash) {
         conflicts.push({
           memoryId: parseSimpleFrontmatter(content)?.id ?? relativePath,
           sourcePath,
@@ -934,7 +952,7 @@ function copyMemories(
       skipped++;
       continue;
     }
-    fs.writeFileSync(targetPath, content);
+    fs.writeFileSync(targetPath, canonicalContent);
     merged++;
     // Bump the target's corpus sentinel per write (out-of-band — not through a
     // StorageManager mutation), on the CANONICAL root (targetRoot), matching

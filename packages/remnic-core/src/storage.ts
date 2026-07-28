@@ -3674,7 +3674,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     options: WriteMemoryOptions = {}
   ): Promise<MemoryWriteResult> {
     await this.ensureDirectories();
-    options = entityRefs.canonicalizeEntityRefOption(options, this.currentHistoricalIds());
+    const refIds = typeof options.entityRef === "string" ? this.currentHistoricalIds() : null;
+    if (refIds) options = entityRefs.canonicalizeEntityRefOption(options, refIds);
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const id = `${category}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -3863,6 +3864,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         duplicateOf: duplicateBlocked.frontmatter.id,
       };
     }
+    if (refIds) await entityRefs.reconcileIfJournalMoved(this.stateDir, refIds, this.currentHistoricalIds());
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
@@ -5151,7 +5153,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     patch: Partial<MemoryFrontmatter>,
     lifecycle?: MemoryLifecycleEventWriteOptions
   ): Promise<boolean> {
-    patch = entityRefs.canonicalizeEntityRefOption(patch, this.currentHistoricalIds());
+    const refIds = typeof patch.entityRef === "string" ? this.currentHistoricalIds() : null;
+    if (refIds) patch = entityRefs.canonicalizeEntityRefOption(patch, refIds);
     const beforeStatus = memory.frontmatter.status ?? "active";
     const updated: MemoryFrontmatter = {
       ...memory.frontmatter,
@@ -5167,6 +5170,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         this.invalidateColdMemoriesCache();
       }
     });
+    if (refIds) await entityRefs.reconcileIfJournalMoved(this.stateDir, refIds, this.currentHistoricalIds());
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
@@ -6063,11 +6067,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   /**
    * Read an entity file by id, resolving through the migration journal with a
-   * fallback to the caller's original id: mid-migration, the journal can map
-   * legacy → canonical BEFORE the file physically moves, and resolving only
-   * the canonical path would silently drop the mutation (issue #2213). A
-   * write to the still-existing legacy file is safe — the migration's
-   * content-unchanged guard detects it and the retried rename carries it.
+   * fallback to the caller's original id (issue #2213): mid-migration, the
+   * journal maps legacy → canonical BEFORE the file moves — writing the
+   * still-existing legacy file is safe (the rename retry carries it), while
+   * resolving only the canonical path silently drops the mutation.
    */
   private async readEntityForMutation(
     name: string,
@@ -6096,9 +6099,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const located = await this.readEntityForMutation(name, "addEntityRelationship");
     if (!located) return;
     const { filePath, entity } = located;
-
-    const exists = entity.relationships.some((r) => r.target === target && r.label === rel.label);
-    if (exists) return;
+    if (entity.relationships.some((r) => r.target === target && r.label === rel.label)) return;
 
     entity.relationships.push({ ...rel, target });
     entity.updated = new Date().toISOString();
@@ -6114,11 +6115,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const located = await this.readEntityForMutation(name, "addEntityActivity");
     if (!located) return;
     const { filePath, entity } = located;
-
     entity.activity.unshift(entry);
-    if (entity.activity.length > maxEntries) {
-      entity.activity = entity.activity.slice(0, maxEntries);
-    }
+    if (entity.activity.length > maxEntries) entity.activity = entity.activity.slice(0, maxEntries);
     entity.updated = new Date().toISOString();
     await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
     this.invalidateKnowledgeIndexCache();
@@ -6128,7 +6126,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const located = await this.readEntityForMutation(name, "addEntityAlias");
     if (!located) return;
     const { filePath, entity } = located;
-
     if (entity.aliases.includes(alias)) return;
     entity.aliases.push(alias);
     entity.updated = new Date().toISOString();
@@ -6686,7 +6683,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     } = {}
   ): Promise<string> {
     await this.ensureDirectories();
-    options = entityRefs.canonicalizeEntityRefOption(options, this.currentHistoricalIds());
+    const refIds = typeof options.entityRef === "string" ? this.currentHistoricalIds() : null;
+    if (refIds) options = entityRefs.canonicalizeEntityRefOption(options, refIds);
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const id = `${parentId}-chunk-${chunkIndex}`;
@@ -6734,7 +6732,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
 
-    return await this.writeTombstoneBlockedChunk(
+    const written = await this.writeTombstoneBlockedChunk(
       filePath,
       fileContent,
       fm,
@@ -6747,6 +6745,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
       }
     );
+    if (refIds) await entityRefs.reconcileIfJournalMoved(this.stateDir, refIds, this.currentHistoricalIds());
+    return written;
   }
 
   /**
