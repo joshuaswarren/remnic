@@ -13,7 +13,7 @@
 import { readdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
-import { withEntityCanonicalMutationLock } from "./entity-canonical-id-migration.js";
+import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
 import { log } from "../logger.js";
 import { getCachedEntities, setCachedEntities } from "../memory-cache.js";
 import type { VersionTrigger } from "../page-versioning.js";
@@ -365,6 +365,36 @@ export class EntityStore {
     } catch {
       return [];
     }
+  }
+
+  /** Re-serialize every entity file into the compiled-truth timeline shape. */
+  async migrateEntityFilesToCompiledTruthTimeline(): Promise<{ total: number; migrated: number }> {
+    const entityNames = await this.listEntityNames();
+    const stateDir = path.join(this.deps.baseDir, "state");
+    let migrated = 0;
+    for (const entityName of entityNames) {
+      // Read+rewrite under the entity MUTATION lock (issue #2213): an
+      // unlocked whole-record rewrite could restore relationship targets a
+      // peer migration rewrote between the read and the write, and this
+      // path bumps only the status version, which never re-triggers the
+      // completed migration's reference scan.
+      const wrote = await withEntityCanonicalMutationLock(stateDir, async () => {
+        const raw = await this.readEntity(entityName);
+        if (!raw) return false;
+        const serialized = serializeEntityFile(parseEntityFile(raw, this.deps.entitySchemas), this.deps.entitySchemas);
+        if (raw.trimEnd() === serialized.trimEnd()) return false;
+        const filePath = this.deps.resolveEntityFilePath(entityName);
+        if (filePath === null) return false;
+        await this.deps.writeStorageSecureFile(filePath, serialized);
+        return true;
+      });
+      if (wrote) migrated += 1;
+    }
+    if (migrated > 0) {
+      this.deps.invalidateKnowledgeIndexCache();
+      this.deps.bumpMemoryStatusVersion();
+    }
+    return { total: entityNames.length, migrated };
   }
 
   /**

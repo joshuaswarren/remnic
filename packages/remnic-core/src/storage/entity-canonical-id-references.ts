@@ -19,6 +19,8 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, wri
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
+import { normalizeSupersessionKey } from "../temporal-supersession.js";
 
 export const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
 
@@ -295,12 +297,38 @@ export function pathMayCarryEntityRefs(baseDir: string, filePath: string): boole
 }
 
 /**
+ * Canonicalize a tombstone's identity fields at the append chokepoint
+ * (issue #2213): emitters (forget, temporal supersession, pattern
+ * reinforcement, supersede) build inputs from records that may have been
+ * read before a peer migration completed. The supersession key embeds the
+ * NORMALIZED entity segment (`entity::attr`), so it is re-prefixed when the
+ * ref moved — otherwise the keyed guard lands in the legacy id space while
+ * write-time lookups canonicalize, and a paraphrase resurrects.
+ */
+export function canonicalizeTombstoneIdentity(
+  entityRef: string | undefined,
+  supersessionKey: string | undefined,
+  refIds: Readonly<Record<string, string>>,
+): { entityRef: string | undefined; supersessionKey: string | undefined } {
+  if (typeof entityRef !== "string") return { entityRef, supersessionKey };
+  const canonical = resolveHistoricalEntityCanonicalId(entityRef, refIds);
+  if (canonical === entityRef) return { entityRef, supersessionKey };
+  if (supersessionKey) {
+    const stalePrefix = `${normalizeSupersessionKey(entityRef)}::`;
+    if (supersessionKey.startsWith(stalePrefix)) {
+      supersessionKey = `${normalizeSupersessionKey(canonical)}::${supersessionKey.slice(stalePrefix.length)}`;
+    }
+  }
+  return { entityRef: canonical, supersessionKey };
+}
+
+/**
  * Post-persist repair (issue #2213): when the journal moved across a persist,
  * re-resolve the caller's ORIGINAL ref against the fresh table and rewrite
- * the file in place (bounded) — a mapping parked mid-write would otherwise
- * leave the memory on a since-contested canonical claimant, the one direction
- * the bounded reconcile pass cannot repair. Falls back to requesting the
- * reconcile pass when the journal keeps moving.
+ * the file in place (bounded). When the journal will not settle, take the
+ * entity MUTATION lock — parks/removals (the direction the reconcile pass
+ * cannot repair, because the removed mapping is gone from the table) publish
+ * under it — settle once, then request the marker for additive moves only.
  */
 export async function repairEntityRefAfterJournalMove(options: {
   stateDir: string;
@@ -320,15 +348,20 @@ export async function repairEntityRefAfterJournalMove(options: {
     options.frontmatter.entityRef = desired;
     await options.rewrite();
   }
+  await withEntityCanonicalMutationLock(options.stateDir, async () => {
+    const desired = resolveHistoricalEntityCanonicalId(options.rawRef, options.currentIds());
+    if (desired !== options.frontmatter.entityRef) {
+      options.frontmatter.entityRef = desired;
+      await options.rewrite();
+    }
+  });
   await requestEntityCanonicalIdReconcile(options.stateDir);
 }
 
 /**
  * Content-form counterpart of {@link repairEntityRefAfterJournalMove} for
- * writers that persist raw record bytes (capsule import/merge, space
- * promotion, curation, review actions): when the journal moved across the
- * write, re-canonicalize the ORIGINAL bytes against the fresh table and
- * rewrite (bounded), falling back to the reconcile marker.
+ * async writers that persist raw record bytes (capsule import/merge,
+ * binary-lifecycle redirects): same bounded loop, same locked settle.
  */
 export async function repairContentAfterJournalMove(options: {
   stateDir: string;
@@ -349,9 +382,22 @@ export async function repairContentAfterJournalMove(options: {
     written = desired;
     await options.rewrite(desired);
   }
+  await withEntityCanonicalMutationLock(options.stateDir, async () => {
+    const desired = canonicalizeEntityRefFrontmatter(options.rawContent, options.cache.get(options.stateDir));
+    if (desired !== written) {
+      written = desired;
+      await options.rewrite(desired);
+    }
+  });
   await requestEntityCanonicalIdReconcile(options.stateDir);
 }
 
+/**
+ * Sync variant (space promotion, curation, review actions). Sync callers
+ * cannot take the async mutation lock, so exhaustion surfaces a retryable
+ * error after requesting the marker — a silent return could leave the bytes
+ * on a parked canonical claimant the reconcile pass cannot restore.
+ */
 export function repairContentAfterJournalMoveSync(options: {
   stateDir: string;
   cache: HistoricalEntityCanonicalIdCache;
@@ -372,4 +418,7 @@ export function repairContentAfterJournalMoveSync(options: {
     options.rewrite(desired);
   }
   requestEntityCanonicalIdReconcileSync(options.stateDir);
+  throw new Error(
+    "entity canonical-id journal kept changing during post-write repair; retry the write",
+  );
 }

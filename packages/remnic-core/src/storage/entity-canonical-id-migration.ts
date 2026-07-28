@@ -20,6 +20,7 @@ import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
+import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
 
 import {
   ENTITY_CANONICAL_ID_MIGRATION_FILE,
@@ -33,8 +34,6 @@ const ENTITY_CANONICAL_ID_MIGRATION_LOCK_STALE_MS = 60_000;
 const ENTITY_CANONICAL_ID_MIGRATION_LOCK_MAX_WAIT_MS = 300_000;
 const TOMBSTONE_LOCK_STALE_MS = 30_000;
 const TOMBSTONE_LOCK_MAX_WAIT_MS = 5_000;
-const ENTITY_CANONICAL_ID_MUTATION_LOCK_STALE_MS = 60_000;
-const ENTITY_CANONICAL_ID_MUTATION_LOCK_MAX_WAIT_MS = 300_000;
 const MEMORY_REWRITE_MAX_PASSES = 3;
 const ENTITY_MAPPING_RESCAN_MAX_PASSES = 3;
 
@@ -218,22 +217,6 @@ function lockPath(deps: EntityCanonicalIdMigrationDependencies): string {
   return path.join(deps.stateDir, "entity-canonical-id-migration.lock");
 }
 
-export async function withEntityCanonicalMutationLock<T>(
-  stateDir: string,
-  task: (refreshLock: () => Promise<boolean>) => Promise<T>,
-): Promise<T> {
-  return withHeldFileLock(
-    path.join(stateDir, "entity-canonical-id-mutation.lock"),
-    {
-      staleMs: ENTITY_CANONICAL_ID_MUTATION_LOCK_STALE_MS,
-      maxWaitMs: ENTITY_CANONICAL_ID_MUTATION_LOCK_MAX_WAIT_MS,
-    },
-    async (acquired, lock) => {
-      if (!acquired) throw new Error("Timed out waiting for entity mutation lock.");
-      return task(() => lock.refresh());
-    },
-  );
-}
 
 async function readState(
   deps: EntityCanonicalIdMigrationDependencies

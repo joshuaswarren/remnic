@@ -3072,9 +3072,22 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // citation-stripped contentHashSource. Idempotent on already-stripped
       // text, so callers that pre-strip (e.g. recordSupersession) are unaffected.
       const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate);
+      // Chokepoint id canonicalization (issue #2213): resolve stale emitter
+      // ids through the CURRENT journal so the guard lands in the id space
+      // write-time lookups canonicalize to.
+      const { entityRef, supersessionKey } = entityRefs.canonicalizeTombstoneIdentity(
+        input.entityRef,
+        input.supersessionKey,
+        this.currentHistoricalIds(),
+      );
       // The store records its own mtime after the append (markWritten) so the
       // staleness probe does not treat this write as a peer append (#1579).
-      return await store.appendTombstone({ ...input, rawContent: strippedRawContent });
+      return await store.appendTombstone({
+        ...input,
+        rawContent: strippedRawContent,
+        entityRef,
+        supersessionKey,
+      });
     } catch (err) {
       log.warn(`tombstone append failed (memory=${input.sourceMemoryId}): ${err}`);
       return null;
@@ -3459,7 +3472,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       rawRef,
       frontmatter: fm,
       rewrite: async () => {
-        await this.writeStorageSecureFile(filePath, `${serializeFrontmatter(fm)}\n\n${body}\n`);
+        // Through the blocked-capture surface (Bugbot): a repair rewrite of a
+        // tombstone-blocked record must keep TombstoneBlockedCaptureIndex
+        // consistent; unblocked records degrade to a plain secure write.
+        await this.writeTombstoneBlockedMemory(filePath, `${serializeFrontmatter(fm)}\n\n${body}\n`, fm, body);
         this.invalidateAllMemoriesCache();
       },
     });
@@ -6224,28 +6240,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
   }
 
-  async migrateEntityFilesToCompiledTruthTimeline(): Promise<{
-    total: number;
-    migrated: number;
-  }> {
-    const entityNames = await this.listEntityNames();
-    let migrated = 0;
-    for (const entityName of entityNames) {
-      const raw = await this.readEntity(entityName);
-      if (!raw) continue;
-      const serialized = serializeEntityFile(parseEntityFile(raw, this.entitySchemas), this.entitySchemas);
-      if (raw.trimEnd() === serialized.trimEnd()) continue;
-      await this.writeStorageSecureFile(path.join(this.entitiesDir, `${entityName}.md`), serialized);
-      migrated += 1;
-    }
-    if (migrated > 0) {
-      this.invalidateKnowledgeIndexCache();
-      this.bumpMemoryStatusVersion();
-    }
-    return {
-      total: entityNames.length,
-      migrated,
-    };
+  async migrateEntityFilesToCompiledTruthTimeline(): Promise<{ total: number; migrated: number }> {
+    return this.entityStore.migrateEntityFilesToCompiledTruthTimeline();
   }
 
   // ---------------------------------------------------------------------------
