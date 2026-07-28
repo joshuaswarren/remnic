@@ -1514,6 +1514,49 @@ test("outputSchema: no tool falls through to the generic default (every schema h
 // (wrong field names, wrong types, phantom fields from fake stubs) that the
 // loose typeof check above cannot detect.
 // ---------------------------------------------------------------------------
+test("MCP wearable wrapper schemas require their array result", async () => {
+  const server = new EngramMcpServer(createFakeService());
+  const response = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  const tools = fieldOf(fieldOf(response, "result"), "tools") as Array<Record<string, unknown>>;
+  const expected: Record<string, string> = {
+    "engram.wearables_sync": "summaries",
+    "engram.transcript_day": "transcripts",
+    "engram.transcript_search": "results",
+    "engram.transcript_memories": "memories",
+  };
+
+  for (const tool of tools) {
+    const expectedKey = expected[fieldOf(tool, "name") as string];
+    if (!expectedKey) continue;
+    const schema = fieldOf(tool, "outputSchema");
+    assert.deepEqual(fieldOf(schema, "required"), [expectedKey]);
+  }
+});
+
+test("MCP transcript_day rejects invalid calendar dates before service dispatch", async () => {
+  let called = false;
+  const service = {
+    ...createFakeService(),
+    wearablesTranscriptDay: async () => {
+      called = true;
+      return [];
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name: "engram.transcript_day", arguments: { date: "2026-02-29" } },
+  });
+  const result = fieldOf(response, "result");
+  assert.equal(fieldOf(result, "isError"), true);
+  const content = fieldOf(result, "content") as Array<{ type: string; text: string }>;
+  assert.match(content[0]?.text ?? "", /YYYY-MM-DD/);
+  assert.equal(called, false);
+});
+
 
 test("AJV: structuredContent validates against declared outputSchema for representative tools", async () => {
   const ajv = new Ajv({ strict: false });

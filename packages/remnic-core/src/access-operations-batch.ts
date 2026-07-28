@@ -67,6 +67,12 @@ function optNum(v: unknown): number | undefined { return typeof v === "number" &
 function optBool(v: unknown): boolean | undefined { return typeof v === "boolean" ? v : undefined; }
 function optStrArr(v: unknown): string[] | undefined { return Array.isArray(v) && v.every((x) => typeof x === "string") ? v : undefined; }
 
+function isValidCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
 const S = {
   str: z.string().optional(),
   num: z.number().optional(),
@@ -142,7 +148,25 @@ defineOperation({ name: "namespace_writable", description: "Read-only preflight:
 // === WEARABLES ===
 defineOperation({ name: "wearables_status", description: "Wearables status.", schema: strictSchema({ namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.wearablesStatus({ authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }) }) });
 defineOperation({ name: "wearables_sync", description: "Sync wearables.", schema: strictSchema({ source: S.str, date: S.str, days: S.flexNum, forceMemories: S.bool, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => { const summaries = await ctx.service.wearablesSync({ source: optStr(input.source), date: optStr(input.date), days: typeof input.days === "number" ? input.days : typeof input.days === "string" && Number.isFinite(Number(input.days)) ? Number(input.days) : undefined, forceMemories: optBool(input.forceMemories), authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }); return { result: { summaries } }; } });
-defineOperation({ name: "transcript_day", description: "Transcript for a day.", schema: strictSchema({ date: S.str, source: S.str, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => { const d = defStr(input.date, ""); if (d.trim().length === 0) throw new EngramAccessInputError("transcript_day: date is required (YYYY-MM-DD)"); const transcripts = await ctx.service.wearablesTranscriptDay({ date: d, source: optStr(input.source), authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }); return { result: { transcripts } }; } });
+defineOperation({
+  name: "transcript_day",
+  description: "Transcript for a day.",
+  schema: strictSchema({ date: S.str, source: S.str, namespace: S.str, sessionKey: S.str }),
+  handler: async (input, ctx) => {
+    const date = defStr(input.date, "").trim();
+    if (!isValidCalendarDate(date)) {
+      throw new EngramAccessInputError("transcript_day: date must be a real YYYY-MM-DD calendar date");
+    }
+    const transcripts = await ctx.service.wearablesTranscriptDay({
+      date,
+      source: optStr(input.source),
+      authenticatedPrincipal: ctx.authenticatedPrincipal,
+      namespace: optStr(input.namespace),
+      sessionKey: optStr(input.sessionKey),
+    });
+    return { result: { transcripts } };
+  },
+});
 defineOperation({ name: "transcript_search", description: "Search transcripts.", schema: strictSchema({ query: S.str, source: S.str, from: S.str, to: S.str, limit: S.flexNum, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => { const q = defStr(input.query, ""); if (q.trim().length === 0) throw new EngramAccessInputError("transcript_search: query is required"); const results = await ctx.service.wearablesTranscriptSearch({ query: q, source: optStr(input.source), from: optStr(input.from), to: optStr(input.to), limit: typeof input.limit === "number" ? input.limit : typeof input.limit === "string" && Number.isFinite(Number(input.limit)) ? Number(input.limit) : undefined, authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }); return { result: { results } }; } });
 defineOperation({ name: "transcript_memories", description: "Transcript memories.", schema: strictSchema({ source: S.str, date: S.str, limit: S.flexNum, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => { const memories = await ctx.service.wearablesTranscriptMemories({ source: optStr(input.source), date: optStr(input.date), limit: typeof input.limit === "number" ? input.limit : typeof input.limit === "string" && Number.isFinite(Number(input.limit)) ? Number(input.limit) : undefined, authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }); return { result: { memories } }; } });
 
