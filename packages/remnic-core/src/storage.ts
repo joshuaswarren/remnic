@@ -34,6 +34,7 @@ import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
+import * as entityRefs from "./storage/entity-canonical-id-references.js";
 import {
   runLegacyEntityCanonicalIdMigration,
   type EntityCanonicalIdMigrationHost,
@@ -3521,7 +3522,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * store loaded last rewrite every other store's canonical entity ids.
    */
   private userAliases: Record<string, string> = {};
-  private readonly historicalEntityCanonicalIds = new entityMigration.HistoricalEntityCanonicalIdCache();
+  private readonly historicalEntityCanonicalIds = new entityRefs.HistoricalEntityCanonicalIdCache();
   private currentHistoricalIds(): Readonly<Record<string, string>> {
     return this.historicalEntityCanonicalIds.get(this.stateDir);
   }
@@ -3531,7 +3532,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => String(this.getMemoryStatusVersion())),
   );
   normalizeEntityName(raw: string, type: string): string {
-    return entityMigration.resolveHistoricalEntityCanonicalId(
+    return entityRefs.resolveHistoricalEntityCanonicalId(
       this.entityStore.normalizeEntityName(raw, type),
       this.currentHistoricalIds(),
     );
@@ -3581,7 +3582,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       log.debug("no config/aliases.json found — using built-in aliases only");
     }
   }
-  private async runLegacyEntityCanonicalIdMigration(): Promise<string> {
+  private async runLegacyEntityCanonicalIdMigration(): Promise<string | undefined> {
     const completionFingerprint = await runLegacyEntityCanonicalIdMigration(
       this as unknown as EntityCanonicalIdMigrationHost,
       (content) => parseEntityFile(content, this.entitySchemas),
@@ -3673,7 +3674,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     options: WriteMemoryOptions = {}
   ): Promise<MemoryWriteResult> {
     await this.ensureDirectories();
-    options = entityMigration.canonicalizeEntityRefOption(options, this.currentHistoricalIds());
+    options = entityRefs.canonicalizeEntityRefOption(options, this.currentHistoricalIds());
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const id = `${category}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -5150,7 +5151,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     patch: Partial<MemoryFrontmatter>,
     lifecycle?: MemoryLifecycleEventWriteOptions
   ): Promise<boolean> {
-    patch = entityMigration.canonicalizeEntityRefOption(patch, this.currentHistoricalIds());
+    patch = entityRefs.canonicalizeEntityRefOption(patch, this.currentHistoricalIds());
     const beforeStatus = memory.frontmatter.status ?? "active";
     const updated: MemoryFrontmatter = {
       ...memory.frontmatter,
@@ -6061,26 +6062,41 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   // ---------------------------------------------------------------------------
 
   /**
+   * Read an entity file by id, resolving through the migration journal with a
+   * fallback to the caller's original id: mid-migration, the journal can map
+   * legacy → canonical BEFORE the file physically moves, and resolving only
+   * the canonical path would silently drop the mutation (issue #2213). A
+   * write to the still-existing legacy file is safe — the migration's
+   * content-unchanged guard detects it and the retried rename carries it.
+   */
+  private async readEntityForMutation(
+    name: string,
+    method: string,
+  ): Promise<{ filePath: string; entity: EntityFile } | null> {
+    const canonical = entityRefs.resolveHistoricalEntityCanonicalId(name, this.currentHistoricalIds());
+    for (const candidate of canonical === name ? [name] : [canonical, name]) {
+      const filePath = path.join(this.entitiesDir, `${candidate}.md`);
+      try {
+        return { filePath, entity: parseEntityFile(await this.readStorageSecureFile(filePath), this.entitySchemas) };
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      }
+    }
+    log.debug(`${method}: entity file ${canonical}.md not found`);
+    return null;
+  }
+
+  /**
    * Add a relationship to an entity file.
    * Deduplicates by target+label.
    */
   async addEntityRelationship(name: string, rel: EntityRelationship): Promise<void> {
-    const historicalIds = this.currentHistoricalIds();
-    name = entityMigration.resolveHistoricalEntityCanonicalId(name, historicalIds);
-    const target = entityMigration.resolveHistoricalEntityCanonicalId(rel.target, historicalIds);
-    const filePath = path.join(this.entitiesDir, `${name}.md`);
-    let entity: EntityFile;
-    try {
-      const content = await this.readStorageSecureFile(filePath);
-      entity = parseEntityFile(content, this.entitySchemas);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      log.debug(`addEntityRelationship: entity file ${name}.md not found`);
-      return;
-    }
+    const target = entityRefs.resolveHistoricalEntityCanonicalId(rel.target, this.currentHistoricalIds());
+    const located = await this.readEntityForMutation(name, "addEntityRelationship");
+    if (!located) return;
+    const { filePath, entity } = located;
 
-    // Dedupe by target+label
     const exists = entity.relationships.some((r) => r.target === target && r.label === rel.label);
     if (exists) return;
 
@@ -6095,17 +6111,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Prepends to the beginning, prunes oldest entries beyond maxEntries.
    */
   async addEntityActivity(name: string, entry: EntityActivityEntry, maxEntries: number): Promise<void> {
-    const filePath = path.join(this.entitiesDir, `${name}.md`);
-    let entity: EntityFile;
-    try {
-      const content = await this.readStorageSecureFile(filePath);
-      entity = parseEntityFile(content, this.entitySchemas);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      log.debug(`addEntityActivity: entity file ${name}.md not found`);
-      return;
-    }
+    const located = await this.readEntityForMutation(name, "addEntityActivity");
+    if (!located) return;
+    const { filePath, entity } = located;
 
     entity.activity.unshift(entry);
     if (entity.activity.length > maxEntries) {
@@ -6117,17 +6125,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   async addEntityAlias(name: string, alias: string): Promise<void> {
-    const filePath = path.join(this.entitiesDir, `${name}.md`);
-    let entity: EntityFile;
-    try {
-      const content = await this.readStorageSecureFile(filePath);
-      entity = parseEntityFile(content, this.entitySchemas);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      log.debug(`addEntityAlias: entity file ${name}.md not found`);
-      return;
-    }
+    const located = await this.readEntityForMutation(name, "addEntityAlias");
+    if (!located) return;
+    const { filePath, entity } = located;
 
     if (entity.aliases.includes(alias)) return;
     entity.aliases.push(alias);
@@ -6686,7 +6686,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     } = {}
   ): Promise<string> {
     await this.ensureDirectories();
-    options = entityMigration.canonicalizeEntityRefOption(options, this.currentHistoricalIds());
+    options = entityRefs.canonicalizeEntityRefOption(options, this.currentHistoricalIds());
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
     const id = `${parentId}-chunk-${chunkIndex}`;

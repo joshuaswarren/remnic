@@ -7,7 +7,7 @@ import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { markProjectedMemoryPathInvalid } from "../memory-projection-store.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { requestEntityCanonicalIdReconcile } from "./entity-canonical-id-migration.js";
+import { requestEntityCanonicalIdReconcile } from "./entity-canonical-id-references.js";
 import {
   readMaybeEncryptedFileFromChunks,
   writeMaybeEncryptedFileFromChunks,

@@ -4,9 +4,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
+  HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
-  loadHistoricalEntityCanonicalIds,
-} from "../storage/entity-canonical-id-migration.js";
+} from "../storage/entity-canonical-id-references.js";
 import {
   createVersion,
   type VersioningConfig,
@@ -388,8 +388,11 @@ export async function importCapsule(
   // The target's completed migration journal is a write boundary here too
   // (issue #2213): a capsule can carry pre-migration memories whose entityRef
   // the target already renamed, and no recurring reconciliation pass exists
-  // to absorb a stale ref after the fact. Loaded once per import run.
-  const historicalIds = loadHistoricalEntityCanonicalIds(path.join(rootReal, "state"));
+  // to absorb a stale ref after the fact. Read through the identity-keyed
+  // cache PER RECORD so a peer migration completing mid-import is picked up
+  // for every record written after it (one lstat per record).
+  const journalStateDir = path.join(rootReal, "state");
+  const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
   // Sort by source path so the imported/skipped lists are deterministic
   // regardless of bundle order. (`exportCapsule` already sorts; we re-sort
@@ -437,7 +440,7 @@ export async function importCapsule(
       }
     }
 
-    let contentToWrite = canonicalizeEntityRefFrontmatter(rec.content, historicalIds);
+    let contentToWrite = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
     let rewroteId = false;
     if (mode === "fork") {
       const forked = rewriteFrontmatterIdForFork(contentToWrite, capsule.id, opts.now);

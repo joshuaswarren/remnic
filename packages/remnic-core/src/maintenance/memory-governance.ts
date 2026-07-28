@@ -6,7 +6,7 @@ import type { MemoryFile, MemoryStatus } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
-import { requestEntityCanonicalIdReconcile } from "../storage/entity-canonical-id-migration.js";
+import { requestEntityCanonicalIdReconcile } from "../storage/entity-canonical-id-references.js";
 
 export type MemoryGovernanceMode = "shadow" | "apply";
 export type MemoryGovernanceReasonCode =

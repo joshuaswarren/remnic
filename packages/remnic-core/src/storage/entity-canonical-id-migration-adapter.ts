@@ -37,7 +37,7 @@ export async function runLegacyEntityCanonicalIdMigration(
   parseEntityFile: (content: string) => EntityFile,
   serializeEntityFile: (entity: EntityFile) => string,
   serializeMemoryWithEntityRef: (memory: MemoryFile, entityRef: string) => string,
-): Promise<string> {
+): Promise<string | undefined> {
   const readMigrationFingerprint = () =>
     getFingerprint(host.baseDir, host.entitiesDir, () => String(host.getMemoryStatusVersion()));
   const completionFingerprint = await migrateLegacyEntityCanonicalIds({
@@ -68,5 +68,9 @@ export async function runLegacyEntityCanonicalIdMigration(
     bumpMemoryStatusVersion: host.bumpMemoryStatusVersion.bind(host),
     readMigrationFingerprint,
   } satisfies EntityCanonicalIdMigrationDependencies);
-  return completionFingerprint ?? readMigrationFingerprint();
+  // An undefined completion fingerprint is a deliberate signal (issue #2213):
+  // a reconcile marker landed while the run scanned, and recomputing the
+  // fingerprint here would seal that pending request into the runner's
+  // completed state. Propagate it so the runner retries instead.
+  return completionFingerprint;
 }

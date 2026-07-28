@@ -612,3 +612,66 @@ test("an offline-sync raw write triggers one reconcile pass, then quiesces", asy
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a .consuming marker left by a crashed run still triggers the reconcile pass", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-reconcile-crash-"));
+  try {
+    const { legacy, canonical } = await seedCollidingPair(dir);
+    await new StorageManager(dir).ensureDirectories();
+    await rm(path.join(dir, "entities", `${legacy}.md`));
+    await new StorageManager(dir).ensureDirectories();
+
+    // Simulate a crash mid-reconcile: the marker generation was renamed
+    // aside but never consumed, and the raw-written file was not rewritten.
+    const rawPath = path.join(dir, "facts", "2026-03-01", "fact-crashed.md");
+    await mkdir(path.dirname(rawPath), { recursive: true });
+    await writeFile(
+      rawPath,
+      `---\nid: fact-crashed\ncategory: fact\nconfidence: 0.9\n`
+      + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+      + `entityRef: ${legacy}\nstatus: active\n---\n\nLanded before the crash.\n`,
+      "utf8",
+    );
+    const consuming = path.join(dir, "state", "entity-canonical-id-reconcile.pending.consuming");
+    await writeFile(consuming, "2026-03-01T00:00:00.000Z\n", "utf8");
+
+    await new StorageManager(dir).ensureDirectories();
+    assert.equal(/^entityRef: (.*)$/m.exec(await readFile(rawPath, "utf8"))?.[1], canonical);
+    await assert.rejects(() => readFile(consuming, "utf8"), "a crashed generation must be consumed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("addEntityRelationship falls back to the legacy file while its rename is in flight", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-midflight-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const legacy = normalizeEntityName("Nightly Ingest", "automation");
+    const canonical = normalizeEntityName("Nightly Ingest", "automation-cron-job");
+    // The mid-migration window: the journal already maps legacy → canonical,
+    // but the entity file has not physically moved yet.
+    await writeFile(
+      path.join(dir, "entities", `${legacy}.md`),
+      `---\nid: ${legacy}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# Nightly Ingest\n\n**Type:** automation-cron-job\n\nRuns at 02:00.\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: { [legacy]: canonical } }),
+      "utf8",
+    );
+
+    // Resolving only the canonical path (whose file does not exist yet) would
+    // silently drop the edge; the fallback must land it on the legacy file.
+    await storage.addEntityRelationship(legacy, { target: "automation-cron-job-backup-sync", label: "precedes" });
+    assert.match(
+      await readFile(path.join(dir, "entities", `${legacy}.md`), "utf8"),
+      /\[\[automation-cron-job-backup-sync\]\] — precedes/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

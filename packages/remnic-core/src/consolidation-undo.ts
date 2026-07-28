@@ -26,7 +26,7 @@ import { constants as fsConstants } from "node:fs";
 import type { StorageManager } from "./storage.js";
 import type { VersioningConfig } from "./page-versioning.js";
 import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
-import { requestEntityCanonicalIdReconcile } from "./storage/entity-canonical-id-migration.js";
+import { requestEntityCanonicalIdReconcile } from "./storage/entity-canonical-id-references.js";
 import { getVersion } from "./page-versioning.js";
 
 /**

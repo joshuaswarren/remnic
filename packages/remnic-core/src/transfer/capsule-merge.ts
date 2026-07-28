@@ -3,9 +3,9 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
+  HistoricalEntityCanonicalIdCache,
   canonicalizeEntityRefFrontmatter,
-  loadHistoricalEntityCanonicalIds,
-} from "../storage/entity-canonical-id-migration.js";
+} from "../storage/entity-canonical-id-references.js";
 import {
   createVersion,
   type VersioningConfig,
@@ -354,8 +354,11 @@ export async function mergeCapsule(
   const skipped: MergeCapsuleSkippedRecord[] = [];
   const conflicts: MergeCapsuleConflictRecord[] = [];
   // Same write-boundary rule as capsule-import (issue #2213): records land
-  // with their entityRef resolved through the target's migration journal.
-  const historicalIds = loadHistoricalEntityCanonicalIds(path.join(rootReal, "state"));
+  // with their entityRef resolved through the target's migration journal,
+  // read through the identity-keyed cache PER RECORD so a peer migration
+  // completing mid-merge is picked up for every record written after it.
+  const journalStateDir = path.join(rootReal, "state");
+  const historicalIdCache = new HistoricalEntityCanonicalIdCache();
 
   // Sort by source path for deterministic output (mirrors capsule-import.ts).
   const sortedRecords = [...bundle.records].sort((a, b) =>
@@ -365,7 +368,7 @@ export async function mergeCapsule(
   for (const rec of sortedRecords) {
     const targetAbs = path.join(rootReal, fromPosixRelPath(rec.path));
     const entry = manifestIndex.get(rec.path)!; // validated above
-    const canonicalContent = canonicalizeEntityRefFrontmatter(rec.content, historicalIds);
+    const canonicalContent = canonicalizeEntityRefFrontmatter(rec.content, historicalIdCache.get(journalStateDir));
 
     const localContent = await readLocalFile(targetAbs);
 

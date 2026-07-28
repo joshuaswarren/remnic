@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { canonicalizeEntityRefFrontmatter } from "../packages/remnic-core/src/storage/entity-canonical-id-migration.js";
+import { canonicalizeEntityRefFrontmatter } from "../packages/remnic-core/src/storage/entity-canonical-id-references.js";
 
 const MAPPINGS = { "automation-nightly-ingest": "automation-cron-job-nightly-ingest" } as const;
 
