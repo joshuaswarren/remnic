@@ -133,17 +133,17 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
 
-      // Inject cached context as a user message — byte-identical across turns
-      // so the KV cache prefix is preserved. Using "user" because Pi's
-      // AgentMessage type treats "assistant" as a completed model response
-      // with required api/provider/model/usage fields (codex review).
-      // The remnicInjected marker excludes it from observation and
-      // recall targeting in downstream filters.
+      // Inject cached context as a system message at position 0 — byte-identical
+      // across turns so the KV cache prefix is preserved. This replicates the
+      // Hermes integration pattern: memory context in the system prompt, not as
+      // a user message that the LLM could misinterpret as a current request.
+      // The remnicInjected marker excludes it from observation and recall
+      // targeting in downstream filters.
       if (!state.cachedContext) return;
       return {
         messages: [
           {
-            role: "user",
+            role: "system",
             content: [{ type: "text", text: state.cachedContext }],
             remnicInjected: true,
           },
