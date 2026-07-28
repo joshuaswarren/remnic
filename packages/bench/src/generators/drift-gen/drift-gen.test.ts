@@ -22,7 +22,7 @@ import {
 } from "./index.js";
 import { buildCorpusSchedule } from "./schedule.js";
 import { questionAnswerLeakage, validateDriftCorpus } from "./validate.js";
-import type { GoldFact } from "./types.js";
+import type { GoldFact, GoldProbe } from "./types.js";
 
 const SMALL = { users: 2, epochs: 4, seed: 11, factsPerEpoch: 8 } as const;
 
@@ -36,6 +36,19 @@ async function hashTree(dir: string): Promise<Map<string, string>> {
     hashes.set(rel, createHash("sha256").update(await readFile(abs)).digest("hex"));
   }
   return hashes;
+}
+async function rehashManifestFile(dir: string, relativePath: string): Promise<void> {
+  const manifestPath = path.join(dir, "dataset.manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+    files: Record<string, string>;
+  };
+  manifest.files[relativePath] = createHash("sha256")
+    .update(await readFile(path.join(dir, relativePath)))
+    .digest("hex");
+  await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
+}
+function parseGoldProbe(line: string): GoldProbe {
+  return JSON.parse(line) as GoldProbe;
 }
 
 test("generation is byte-identical across runs with the same seed", async () => {
@@ -122,6 +135,62 @@ test("validator rejects tampered data (hash mismatch) and broken links", async (
     assert.equal(report.ok, false);
     assert.ok(report.errors.some((e) => e.includes("sha256 mismatch")));
     assert.ok(report.errors.some((e) => e.includes("does not exist")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("validator rejects rehashed probes whose answers disagree with referenced facts", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-answer-tamper-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    const relativePath = `${SMALL.seed}/gold/probes.jsonl`;
+    const probesPath = path.join(dir, relativePath);
+    const lines = (await readFile(probesPath, "utf8")).trim().split("\n");
+    const currentIndex = lines.findIndex((line) => parseGoldProbe(line).category === "current");
+    assert.notEqual(currentIndex, -1);
+    const probe = parseGoldProbe(lines[currentIndex]!);
+    probe.expectedAnswer = "tampered answer";
+    lines[currentIndex] = JSON.stringify(probe);
+    await writeFile(probesPath, `${lines.join("\n")}\n`, "utf8");
+    await rehashManifestFile(dir, relativePath);
+
+    const report = await validateDriftCorpus(dir);
+    assert.equal(report.ok, false);
+    assert.ok(report.errors.some((error) => error.includes("expectedAnswer does not match")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("validator rejects rehashed probes that reference another user's facts", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-user-tamper-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    const relativePath = `${SMALL.seed}/gold/probes.jsonl`;
+    const probesPath = path.join(dir, relativePath);
+    const lines = (await readFile(probesPath, "utf8")).trim().split("\n");
+    const facts = (await readFile(path.join(dir, String(SMALL.seed), "gold", "facts.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as GoldFact);
+    const currentIndex = lines.findIndex((line) => parseGoldProbe(line).category === "current");
+    assert.notEqual(currentIndex, -1);
+    const probe = parseGoldProbe(lines[currentIndex]!);
+    const foreignFact = facts.find(
+      (fact) =>
+        fact.userId !== probe.userId &&
+        fact.introducedEpoch <= probe.epoch &&
+        (fact.supersededEpoch === null || fact.supersededEpoch > probe.epoch),
+    );
+    assert.ok(foreignFact);
+    probe.requiredFactIds = [foreignFact.id];
+    lines[currentIndex] = JSON.stringify(probe);
+    await writeFile(probesPath, `${lines.join("\n")}\n`, "utf8");
+    await rehashManifestFile(dir, relativePath);
+
+    const report = await validateDriftCorpus(dir);
+    assert.equal(report.ok, false);
+    assert.ok(report.errors.some((error) => error.includes("belongs to user")));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

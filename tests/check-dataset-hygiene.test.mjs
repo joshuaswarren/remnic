@@ -152,6 +152,25 @@ test("detects URL rule class for hosts outside allowlist in data files", () => {
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+test("rejects credentials in otherwise allowlisted URLs", () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), "hygiene-credential-url-"));
+  try {
+    writeFileSync(
+      path.join(tempDir, "links.json"),
+      JSON.stringify({
+        queryCredential: "https://example.com/docs?token=not-a-real-secret",
+        userInfoCredential: "https://reader:pass@example.com/docs",
+      }),
+    );
+    const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
+    assert.equal(res.status, 1);
+    assert.equal((res.stderr.match(/\[url-allowlist\]/g) || []).length, 2);
+    assert.doesNotMatch(res.stderr, /not-a-real-secret|reader:pass/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 
 test("detects denylist names and ignores comment lines in denylist file", () => {
   const tempDir = mkdtempSync(path.join(tmpdir(), "hygiene-denylist-"));
@@ -171,8 +190,7 @@ test("detects denylist names and ignores comment lines in denylist file", () => 
     });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[denylist\]/);
-    assert.match(res.stderr, /joshua/i);
-    assert.match(res.stderr, /warren/i);
+    assert.doesNotMatch(res.stderr, /joshua|warren/i);
     assert.doesNotMatch(res.stderr, /Maintainer-reserved/);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -294,7 +312,8 @@ test("handles denylist name scanning with allowlisted URLs", () => {
       REMNIC_HYGIENE_DENYLIST: denylistFile,
     });
     assert.equal(resDirty.status, 1);
-    assert.match(resDirty.stderr, /Denylist name matched: "joshuaswarren"/);
+    assert.match(resDirty.stderr, /Denylist name matched \(redacted\)/);
+    assert.doesNotMatch(resDirty.stderr, /joshuaswarren/);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
     rmSync(denylistDir, { recursive: true, force: true });

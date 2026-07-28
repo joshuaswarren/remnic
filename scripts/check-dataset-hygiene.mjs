@@ -61,6 +61,18 @@ const API_KEY_REGEXES = [
   /ghp_[A-Za-z0-9]{36}/,
   /AKIA[A-Z0-9]{16}/,
 ];
+const CREDENTIAL_QUERY_PARAMETERS = new Set([
+  "access_token",
+  "api_key",
+  "apikey",
+  "credential",
+  "credentials",
+  "key",
+  "password",
+  "secret",
+  "token",
+]);
+
 
 function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -112,13 +124,20 @@ export function findDisallowedIPv4s(line) {
   return disallowed;
 }
 
+function urlContainsCredentials(url) {
+  if (url.username || url.password) return true;
+  return [...url.searchParams.keys()].some((name) =>
+    CREDENTIAL_QUERY_PARAMETERS.has(name.toLowerCase()),
+  );
+}
+
 export function checkUrlAllowed(urlStr) {
   try {
     const cleaned = urlStr.replace(/[.,;:>)]+$/, "");
     const parsed = new URL(cleaned);
     const host = parsed.hostname.toLowerCase();
     const pathname = parsed.pathname.toLowerCase();
-
+    if (urlContainsCredentials(parsed)) return false;
     if (
       host === "example.com" ||
       host.endsWith(".example.com") ||
@@ -227,7 +246,7 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
           file: relPath,
           line: lineNum,
           rule: "denylist",
-          message: `Denylist name matched: "${name}"`,
+          message: "Denylist name matched (redacted)",
         });
       }
     }

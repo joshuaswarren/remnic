@@ -306,6 +306,18 @@ function checkFactIntegrity(loaded: LoadedSeed, epochs: number, errors: string[]
   }
 }
 
+function expectedProbeAnswer(probe: GoldProbe, facts: GoldFact[]): string | null {
+  switch (probe.category) {
+    case "current":
+    case "historical":
+      return facts.length === 1 ? facts[0]!.value : null;
+    case "transition":
+      return facts.length === 2 ? `from ${facts[0]!.value} to ${facts[1]!.value}` : null;
+    case "aggregation":
+      return facts.map((fact) => fact.value).join("; ");
+  }
+}
+
 function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[]): void {
   const byId = new Map(loaded.facts.map((f) => [f.id, f]));
   const seenProbeIds = new Set<string>();
@@ -335,6 +347,18 @@ function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[
         fact.supersededEpoch <= probe.epoch
       ) {
         errors.push(`${probe.id}: aggregation probe targets fact ${factId} already superseded at epoch ${fact.supersededEpoch}`);
+      }
+    }
+    const requiredFacts = probe.requiredFactIds.map((factId) => byId.get(factId));
+    if (requiredFacts.every((fact): fact is GoldFact => fact !== undefined)) {
+      for (const fact of requiredFacts) {
+        if (fact.userId !== probe.userId) {
+          errors.push(`${probe.id}: required fact ${fact.id} belongs to user ${fact.userId}, not ${probe.userId}`);
+        }
+      }
+      const expectedAnswer = expectedProbeAnswer(probe, requiredFacts);
+      if (expectedAnswer !== null && probe.expectedAnswer !== expectedAnswer) {
+        errors.push(`${probe.id}: expectedAnswer does not match the referenced facts`);
       }
     }
     if (probe.category === "current") {

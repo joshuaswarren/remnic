@@ -25,7 +25,7 @@ test("remnic CLI source wires the new bench command and keeps benchmark as an al
   assert.match(source, /await cmdBench\(rest\);/);
   assert.match(
     source,
-    /remnic bench <list\|run\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|attribute\|drift-gen>/
+    /remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen>/
   );
   assert.match(source, /benchmark is kept as a compatibility alias/i);
 });
