@@ -27,7 +27,10 @@ import type {
   ScoredEntity,
 } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { resolveHistoricalEntityCanonicalId } from "./entity-canonical-id-references.js";
+import {
+  reconcileIfJournalMovedSync,
+  resolveHistoricalEntityCanonicalId,
+} from "./entity-canonical-id-references.js";
 import {
   buildEntitySchemaCacheKey,
   compareEntityTimestamps,
@@ -85,8 +88,9 @@ export class EntityStore {
   private async readEntityForMutation(
     name: string,
     method: string,
+    historicalIds: Readonly<Record<string, string>>,
   ): Promise<{ filePath: string; entity: EntityFile } | null> {
-    const canonical = resolveHistoricalEntityCanonicalId(name, this.deps.currentHistoricalIds());
+    const canonical = resolveHistoricalEntityCanonicalId(name, historicalIds);
     for (const candidate of canonical === name ? [name] : [canonical, name]) {
       const filePath = path.join(this.deps.entitiesDir, `${candidate}.md`);
       try {
@@ -106,21 +110,27 @@ export class EntityStore {
    * holding the entity-mutation lock keeps `migrateEntityFilePair` (which
    * takes the same lock) from moving the file between the fallback read and
    * this write — an unlocked write could recreate a just-renamed legacy file.
+   * The journal itself is NOT serialized by this lock (`pruneBlocked` can
+   * park a mapping mid-mutation), so the write is followed by a journal
+   * identity check that requests the bounded reconcile pass on movement.
    * `mutate` returns false to skip the write. Resolves true when written.
    */
   private async mutateEntityFile(
     name: string,
     method: string,
-    mutate: (entity: EntityFile) => boolean,
+    mutate: (entity: EntityFile, historicalIds: Readonly<Record<string, string>>) => boolean,
   ): Promise<boolean> {
-    return withEntityCanonicalMutationLock(path.join(this.deps.baseDir, "state"), async () => {
-      const located = await this.readEntityForMutation(name, method);
-      if (!located || !mutate(located.entity)) return false;
+    const stateDir = path.join(this.deps.baseDir, "state");
+    return withEntityCanonicalMutationLock(stateDir, async () => {
+      const idsAtResolve = this.deps.currentHistoricalIds();
+      const located = await this.readEntityForMutation(name, method, idsAtResolve);
+      if (!located || !mutate(located.entity, idsAtResolve)) return false;
       located.entity.updated = new Date().toISOString();
       await this.deps.writeStorageSecureFile(
         located.filePath,
         serializeEntityFile(located.entity, this.deps.entitySchemas),
       );
+      reconcileIfJournalMovedSync(stateDir, idsAtResolve, this.deps.currentHistoricalIds());
       this.deps.invalidateKnowledgeIndexCache();
       return true;
     });
@@ -128,13 +138,17 @@ export class EntityStore {
 
   /** Add a relationship to an entity file. Deduplicates by target+label. */
   async addEntityRelationship(name: string, rel: EntityRelationship): Promise<void> {
-    await this.mutateEntityFile(name, "addEntityRelationship", (entity) => {
-      // Resolve the target INSIDE the locked callback: a migration can
-      // publish legacy → canonical between an outside lookup and lock
-      // acquisition, and its relationship scan may already have passed this
-      // file — the edge must be born canonical (issue #2213).
-      const target = resolveHistoricalEntityCanonicalId(rel.target, this.deps.currentHistoricalIds());
-      if (entity.relationships.some((r) => r.target === target && r.label === rel.label)) return false;
+    await this.mutateEntityFile(name, "addEntityRelationship", (entity, historicalIds) => {
+      // Resolve the target with the SAME snapshot the locked read used, and
+      // dedupe against CANONICALIZED stored targets — an existing edge the
+      // migration has not rewritten yet still names the legacy id, and a
+      // plain equality check would miss it and leave duplicates after the
+      // rewrite (issue #2213).
+      const target = resolveHistoricalEntityCanonicalId(rel.target, historicalIds);
+      const duplicate = entity.relationships.some(
+        (r) => resolveHistoricalEntityCanonicalId(r.target, historicalIds) === target && r.label === rel.label,
+      );
+      if (duplicate) return false;
       entity.relationships.push({ ...rel, target });
       return true;
     });

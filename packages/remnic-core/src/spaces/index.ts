@@ -927,9 +927,13 @@ function copyMemories(
       const targetContent = fs.readFileSync(targetPath, "utf8");
       const targetHash = hashContent(targetContent);
 
-      // A target holding the CANONICALIZED form of this source is the same
-      // memory — re-promoting after a ref rewrite must not report a conflict.
-      if (sourceHash !== targetHash && hashContent(canonicalContent) !== targetHash) {
+      // A target already holding the CANONICALIZED form is the same memory —
+      // done, and re-promoting after a ref rewrite must not report a conflict.
+      if (hashContent(canonicalContent) === targetHash) {
+        skipped++;
+        continue;
+      }
+      if (sourceHash !== targetHash) {
         conflicts.push({
           memoryId: parseSimpleFrontmatter(content)?.id ?? relativePath,
           sourcePath,
@@ -940,10 +944,10 @@ function copyMemories(
         });
         continue;
       }
-
-      // Same content — skip
-      skipped++;
-      continue;
+      // Target matches the RAW source but a mapping applies: fall through and
+      // upgrade it in place — a skip would leave the legacy entityRef on disk
+      // forever, since corpus bumps no longer trigger migration rewrites
+      // (issue #2213).
     }
 
     // Copy file
