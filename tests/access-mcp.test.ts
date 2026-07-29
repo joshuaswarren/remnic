@@ -882,6 +882,30 @@ test("MCP day_summary returns an object sentinel for undefined service results",
   assert.equal(result?.content?.[0]?.text, "{}");
 });
 
+test("MCP preserves nullish results from operations without a no-data sentinel", async () => {
+  const service = {
+    ...createFakeService(),
+    capsuleList: async () => null,
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name: "engram.capsule_list", arguments: {} },
+  });
+
+  const result = response?.result as {
+    isError?: boolean;
+    structuredContent?: unknown;
+    content?: Array<{ type: string; text: string }>;
+  };
+  assert.equal(result?.isError, false);
+  assert.equal("structuredContent" in (result ?? {}), false);
+  assert.equal(result?.content?.[0]?.text, "null");
+});
+
 
 test("engram.dreams_status rejects invalid windowHours without calling service", async () => {
   let capturedWindowHours: number | undefined;
@@ -1514,6 +1538,26 @@ test("outputSchema: no tool falls through to the generic default (every schema h
 // (wrong field names, wrong types, phantom fields from fake stubs) that the
 // loose typeof check above cannot detect.
 // ---------------------------------------------------------------------------
+test("MCP wearable wrapper schemas require their array result", async () => {
+  const server = new EngramMcpServer(createFakeService());
+  const response = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  const tools = fieldOf(fieldOf(response, "result"), "tools") as Array<Record<string, unknown>>;
+  const expected: Record<string, string> = {
+    "engram.wearables_sync": "summaries",
+    "engram.transcript_day": "transcripts",
+    "engram.transcript_search": "results",
+    "engram.transcript_memories": "memories",
+  };
+
+  for (const tool of tools) {
+    const expectedKey = expected[fieldOf(tool, "name") as string];
+    if (!expectedKey) continue;
+    const schema = fieldOf(tool, "outputSchema");
+    assert.deepEqual(fieldOf(schema, "required"), [expectedKey]);
+  }
+});
+
+
 
 test("AJV: structuredContent validates against declared outputSchema for representative tools", async () => {
   const ajv = new Ajv({ strict: false });

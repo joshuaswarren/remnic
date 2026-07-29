@@ -16,8 +16,16 @@ const T_NULLABLE_OBJECT = { type: ["object", "null"] } as const;
 const T_NULLABLE_STRING = { type: ["string", "null"] } as const;
 
 /** Build a JSON Schema object type with the given properties. */
-function objectSchema(properties: Record<string, Readonly<Record<string, unknown>>>): Record<string, unknown> {
-  return { type: "object", properties, additionalProperties: true };
+function objectSchema(
+  properties: Record<string, Readonly<Record<string, unknown>>>,
+  required?: readonly string[],
+): Record<string, unknown> {
+  return {
+    type: "object",
+    properties,
+    ...(required && required.length > 0 ? { required } : {}),
+    additionalProperties: true,
+  };
 }
 
 /**
@@ -53,10 +61,10 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     sources: T_ARRAY,
     connectorsInstalled: T_ARRAY,
   }),
-  wearables_sync: objectSchema({ summaries: T_ARRAY }),
-  transcript_day: objectSchema({ transcripts: T_ARRAY }),
-  transcript_search: objectSchema({ results: T_ARRAY }),
-  transcript_memories: objectSchema({ memories: T_ARRAY }),
+  wearables_sync: objectSchema({ summaries: T_ARRAY }, ["summaries"]),
+  transcript_day: objectSchema({ transcripts: T_ARRAY }, ["transcripts"]),
+  transcript_search: objectSchema({ results: T_ARRAY }, ["results"]),
+  transcript_memories: objectSchema({ memories: T_ARRAY }, ["memories"]),
   meetings_list: objectSchema({ enabled: T_BOOLEAN, days: T_ARRAY }),
   meetings_get: objectSchema({ enabled: T_BOOLEAN, found: T_BOOLEAN, id: T_STRING, record: T_NULLABLE_STRING }),
   meetings_build: objectSchema({
