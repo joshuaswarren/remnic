@@ -198,6 +198,68 @@ test("default Pi extension creates isolated state for each host invocation", asy
   assert.equal(recallBodies.length, 2);
 });
 
+test("default Pi extension preserves a tripped breaker across reloads", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-breaker-reload-"));
+  const configPath = path.join(root, "remnic.config.json");
+  fs.writeFileSync(configPath, JSON.stringify({
+    remnicDaemonUrl: "http://127.0.0.1:4319",
+    authToken: "test-token",
+    observeEnabled: false,
+    compactionEnabled: false,
+    mcpToolsEnabled: false,
+    statusEnabled: true,
+    turnRequestTimeoutMs: 2,
+    recallTimeoutThreshold: 1,
+    recallTimeoutWindow: 1,
+  }));
+
+  const previousConfig = process.env.REMNIC_PI_CONFIG;
+  const originalFetch = globalThis.fetch;
+  process.env.REMNIC_PI_CONFIG = configPath;
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/engram/v1/health")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      return new Response(JSON.stringify({ ok: true, status: "ok", namespace: "default" }), { status: 200 });
+    }
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => {
+    if (previousConfig === undefined) delete process.env.REMNIC_PI_CONFIG;
+    else process.env.REMNIC_PI_CONFIG = previousConfig;
+    globalThis.fetch = originalFetch;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const first = makePiHarness();
+  const firstStatuses: Array<[string, string]> = [];
+  const firstContext = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => firstStatuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "breaker-reload-first" },
+  };
+  await remnicPiExtension(first.pi);
+  await first.emit("session_start", {}, firstContext);
+  await first.emit("before_agent_start", { prompt: "trip", systemPrompt: "" }, firstContext);
+
+  const second = makePiHarness();
+  const secondStatuses: Array<[string, string]> = [];
+  const secondContext = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => secondStatuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "breaker-reload-second" },
+  };
+  await remnicPiExtension(second.pi);
+  await second.emit("session_start", {}, secondContext);
+
+  assert.deepEqual(secondStatuses.at(-1), ["remnic", "Remnic recall disabled until restart (timeouts delayed operations)"]);
+});
+
 test("MCP tool registration uses the startup timeout instead of the general request timeout", async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_input, init) =>

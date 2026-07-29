@@ -36,6 +36,7 @@ const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
 const TRUNCATION_NOTICE = "\n\n[Remnic context truncated]";
 const SESSION_OWNED_FIELDS = new Set(["sessionKey", "namespace", "cwd"]);
+const DEFAULT_PI_RECALL_BREAKERS = new Map<string, RecallTimeoutBreaker>();
 const RECALL_PRODUCING_TOOL_NAMES: Record<string, true> = {
   "remnic.recall": true,
   "remnic.recall_xray": true,
@@ -67,11 +68,14 @@ type PiContextSnapshotOptions = {
   includeSessionHistory?: boolean;
 };
 
-export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) {
+export function createRemnicPiExtension(
+  options: RemnicPiExtensionOptions = {},
+  sharedRecallTimeoutBreaker?: RecallTimeoutBreaker,
+) {
   const config = { ...DEFAULT_CONFIG, ...(options.config ?? loadConfig(options)) };
   const client = new RemnicClient(config);
   const sessionStates = new Map<string, PiSessionState>();
-  const recallTimeoutBreaker = new RecallTimeoutBreaker({
+  const recallTimeoutBreaker = sharedRecallTimeoutBreaker ?? new RecallTimeoutBreaker({
     threshold: config.recallTimeoutThreshold,
     window: config.recallTimeoutWindow,
   });
@@ -232,7 +236,17 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
 }
 
 export default async function remnicPiExtension(pi: PiApi): Promise<void> {
-  await createRemnicPiExtension()(pi);
+  const config = loadConfig();
+  const breakerKey = `${config.remnicDaemonUrl}\u0000${config.namespace ?? ""}`;
+  let recallTimeoutBreaker = DEFAULT_PI_RECALL_BREAKERS.get(breakerKey);
+  if (!recallTimeoutBreaker) {
+    recallTimeoutBreaker = new RecallTimeoutBreaker({
+      threshold: config.recallTimeoutThreshold,
+      window: config.recallTimeoutWindow,
+    });
+    DEFAULT_PI_RECALL_BREAKERS.set(breakerKey, recallTimeoutBreaker);
+  }
+  await createRemnicPiExtension({ config }, recallTimeoutBreaker)(pi);
 }
 
 function registerCommands(
