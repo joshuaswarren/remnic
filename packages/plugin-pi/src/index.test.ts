@@ -11,6 +11,7 @@ import remnicPiExtension, {
   createRemnicPiExtension,
   isDaemonUnreachableError,
   observeMessages,
+  resetProcessRecallBreakerForTest,
   stripSessionOwnedSchemaFields,
   stripSessionOwnedRuntimeFields,
   toPiToolParametersSchema,
@@ -201,7 +202,7 @@ test("default Pi extension creates isolated state for each host invocation", asy
 test("default Pi extension preserves a tripped breaker across reloads", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-breaker-reload-"));
   const configPath = path.join(root, "remnic.config.json");
-  fs.writeFileSync(configPath, JSON.stringify({
+  const reloadConfig = {
     remnicDaemonUrl: "http://127.0.0.1:4319",
     authToken: "test-token",
     observeEnabled: false,
@@ -211,7 +212,8 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
     turnRequestTimeoutMs: 2,
     recallTimeoutThreshold: 1,
     recallTimeoutWindow: 1,
-  }));
+  };
+  fs.writeFileSync(configPath, JSON.stringify(reloadConfig));
 
   const previousConfig = process.env.REMNIC_PI_CONFIG;
   const originalFetch = globalThis.fetch;
@@ -230,6 +232,8 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
     });
   };
   t.after(() => {
+    resetProcessRecallBreakerForTest(reloadConfig);
+    resetProcessRecallBreakerForTest({ ...reloadConfig, recallTimeoutThreshold: 2, recallTimeoutWindow: 2 });
     if (previousConfig === undefined) delete process.env.REMNIC_PI_CONFIG;
     else process.env.REMNIC_PI_CONFIG = previousConfig;
     globalThis.fetch = originalFetch;
@@ -258,6 +262,20 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
   await second.emit("session_start", {}, secondContext);
 
   assert.deepEqual(secondStatuses.at(-1), ["remnic", "Remnic recall disabled until restart (timeouts delayed operations)"]);
+
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ ...reloadConfig, recallTimeoutThreshold: 2, recallTimeoutWindow: 2 }),
+  );
+  const third = makePiHarness();
+  const thirdStatuses: Array<[string, string]> = [];
+  await remnicPiExtension(third.pi);
+  await third.emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => thirdStatuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "breaker-reload-policy-change" },
+  });
+  assert.deepEqual(thirdStatuses.at(-1), ["remnic", "Remnic ready"]);
 });
 
 test("MCP tool registration uses the startup timeout instead of the general request timeout", async (t) => {

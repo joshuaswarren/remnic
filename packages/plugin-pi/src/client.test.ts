@@ -82,6 +82,32 @@ test("RemnicClient forwards caller aborts to MCP tool requests", async (t) => {
   );
 });
 
+test("RemnicClient forwards caller aborts to observe requests", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })));
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const controller = new AbortController();
+  const client = new RemnicClient({ ...baseConfig(), requestTimeoutMs: 100 });
+  const request = client.observe("session", "/cwd", [{ role: "user", content: "observe" }], {
+    signal: controller.signal,
+  });
+  controller.abort();
+
+  await assert.rejects(
+    () => request,
+    (err) => {
+      assert.ok(err instanceof RemnicRequestAbortedError);
+      return true;
+    },
+  );
+});
+
 function baseConfig(): RemnicPiConfig {
   return {
     remnicDaemonUrl: "http://127.0.0.1:4318",

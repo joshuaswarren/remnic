@@ -244,6 +244,7 @@ export class RemnicClient {
     const turnBudgetMs = options.timeoutMs ?? this.config.turnRequestTimeoutMs;
     const retryOptions: RequestOptions = {
       timeoutMs: turnBudgetMs,
+      signal: options.signal,
       maxRetries: options.maxRetries ?? this.config.observeMaxRetries,
     };
     const chunks = chunkObservePayload(this.config, sessionKey, cwd, messages, maxBytes);
