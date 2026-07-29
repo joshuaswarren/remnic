@@ -307,6 +307,23 @@ function checkFactIntegrity(loaded: LoadedSeed, epochs: number, errors: string[]
       }
     }
   }
+  const factsBySlot = new Map<string, GoldFact[]>();
+  for (const fact of loaded.facts) {
+    const slot = `${fact.userId}\u0000${fact.subject}\u0000${fact.attribute}`;
+    const facts = factsBySlot.get(slot) ?? [];
+    facts.push(fact);
+    factsBySlot.set(slot, facts);
+  }
+  for (const facts of factsBySlot.values()) {
+    facts.sort((a, b) => a.introducedEpoch - b.introducedEpoch || a.id.localeCompare(b.id));
+    for (let index = 1; index < facts.length; index++) {
+      const previous = facts[index - 1]!;
+      const current = facts[index]!;
+      if (previous.supersededEpoch === null || previous.supersededEpoch > current.introducedEpoch) {
+        errors.push(`${current.id}: overlaps active lifecycle for ${previous.id}`);
+      }
+    }
+  }
 }
 
 function expectedProbeAnswer(probe: GoldProbe, facts: GoldFact[]): string | null {
