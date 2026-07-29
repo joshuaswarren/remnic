@@ -115,6 +115,22 @@ test("default-sized corpus passes distribution checks without warnings", async (
       DRIFT_GEN_DEFAULTS.users * DRIFT_GEN_DEFAULTS.epochs * DRIFT_GEN_DEFAULTS.factsPerEpoch,
     );
   } finally {
+
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("single-user generated corpus passes stochastic distribution validation", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-single-user-"));
+  try {
+    await generateDriftCorpus({
+      users: 1,
+      epochs: DRIFT_GEN_DEFAULTS.epochs,
+      seed: 1,
+      outDir: dir,
+    });
+    const report = await validateDriftCorpus(dir);
+    assert.deepEqual(report.errors, []);
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

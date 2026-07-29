@@ -472,8 +472,12 @@ function checkDistribution(
     if (eligible.length === 0) continue;
     const measured = count / eligible.length;
     const delta = Math.abs(measured - expected);
-    if (delta <= RATIO_TOLERANCE) continue;
-    const message = `seed ${loaded.seed}: ${label} ratio ${measured.toFixed(3)} deviates from ${expected} by more than ${RATIO_TOLERANCE} (eligible base ${eligible.length})`;
+    const tolerance = Math.max(
+      RATIO_TOLERANCE,
+      3 * Math.sqrt((expected * (1 - expected)) / eligible.length),
+    );
+    if (delta <= tolerance) continue;
+    const message = `seed ${loaded.seed}: ${label} ratio ${measured.toFixed(3)} deviates from ${expected} by more than ${tolerance.toFixed(3)} (eligible base ${eligible.length})`;
     if (eligible.length < MIN_STATISTICAL_BASE) {
       warnings.push(`${message} — base too small, reported as warning`);
     } else {
