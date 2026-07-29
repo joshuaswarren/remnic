@@ -4,7 +4,6 @@ import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./confi
 import { RemnicClient, isTransientNetworkError, type McpTool, type ObserveMessage } from "./client.js";
 import {
   hashObservedMessage,
-  latestUserRecallTarget,
   observedMessageDedupeKey,
   sessionKeyFromContext,
   summarizeMessages,
@@ -84,22 +83,21 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       await runNamespacePreflight(pi, session, client, config);
     });
 
-    pi.on("context", async (event, ctx) => {
+    pi.on("before_agent_start", async (event, ctx) => {
       const session = snapshotPiContext(ctx);
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
-      const messages = Array.isArray(event.messages) ? event.messages : [];
 
-      // On the first context event, populate the cache using the actual user
-      // prompt so semantic recall produces relevant results.  Once populated,
-      // the cached context is reused byte-identically across all subsequent
-      // turns in the same session for KV cache prefix stability (PR #2208).
+      // On the first before_agent_start, populate the cache using the user's
+      // prompt text so semantic recall produces relevant results.  Once
+      // populated, the cached context is appended to the system prompt on
+      // every turn for KV cache prefix stability (PR #2208).
       if (!state.recallCompleted && config.recallEnabled && config.authToken && client.isReachable()) {
-        const recallTarget = latestUserRecallTarget(messages);
-        if (recallTarget) {
+        const promptText = typeof event.prompt === "string" && event.prompt.trim().length > 0 ? event.prompt : "";
+        if (promptText) {
           state.recallCompleted = true;
           try {
-            const recalled = await client.recall(recallTarget.query, session.sessionKey, session.cwd, {
+            const recalled = await client.recall(promptText, session.sessionKey, session.cwd, {
               timeoutMs: config.turnRequestTimeoutMs,
             });
             client.markReachable();
@@ -114,22 +112,15 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         }
       }
 
-      // Inject cached context as a system message at position 0 — byte-identical
-      // across turns so the KV cache prefix is preserved. This replicates the
-      // Hermes integration pattern: memory context in the system prompt, not as
-      // a user message that the LLM could misinterpret as a current request.
-      // The remnicInjected marker excludes it from observation and recall
-      // targeting in downstream filters.
+      // Inject cached context into the system prompt — byte-identical across
+      // turns so the KV cache prefix is preserved.  This avoids the
+      // system-role message issue: Pi's AgentMessage union does not include
+      // "system", so injecting via the context hook produced an invalid
+      // provider payload that Pi drops (codex review).
       if (!state.cachedContext) return;
+      const basePrompt = typeof event.systemPrompt === "string" ? event.systemPrompt : "";
       return {
-        messages: [
-          {
-            role: "system",
-            content: [{ type: "text", text: state.cachedContext }],
-            remnicInjected: true,
-          },
-          ...messages,
-        ],
+        systemPrompt: `${basePrompt}\n\n${state.cachedContext}`,
       };
     });
 

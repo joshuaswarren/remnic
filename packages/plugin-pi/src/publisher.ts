@@ -200,7 +200,7 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
       "",
       "## Installed Capabilities",
       "",
-      "- Recall relevant Remnic context in the `context` hook before agent turns.",
+      "- Recall relevant Remnic context in the `before_agent_start` hook via system prompt injection.",
       '- Observe user, assistant, and tool messages with `sourceFormat: "pi"`.',
       "- Coordinate `session_before_compact` with Remnic LCM flush and checkpoint recording.",
       "- Register Remnic MCP tools as host tools when daemon authentication is configured.",

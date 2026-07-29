@@ -37,7 +37,7 @@ remnic connectors install pi \
 
 ## What The Extension Does
 
-- Uses Pi's `context` hook to recall relevant Remnic context before an agent turn.
+- Uses Pi's `before_agent_start` hook to inject recalled Remnic context into the system prompt.
 - Uses `agent_end`, `turn_end`, and `session_shutdown` hooks to observe Pi messages and tool activity with `sourceFormat: "pi"`.
 - Uses `session_before_compact` to flush Remnic LCM for the active session before Pi compacts context.
 - Records the compaction token delta after Pi produces the compacted checkpoint.
@@ -72,7 +72,7 @@ Supported config keys:
 | `recallMode` | `auto` | Recall mode: `auto`, `minimal`, `full`, `graph_mode`, or `no_recall` |
 | `recallTopK` | `8` | Max recalled results |
 | `recallBudgetChars` | `12000` | Max recalled context injected into Pi |
-| `recallEnabled` | `true` | Enable context-hook recall |
+| `recallEnabled` | `true` | Enable semantic recall before each user turn |
 | `observeEnabled` | `true` | Enable Pi turn observation |
 | `observeSkipExtraction` | `false` | Archive observed messages without extraction |
 | `compactionEnabled` | `true` | Enable LCM flush/checkpoint coordination |

@@ -178,19 +178,19 @@ test("default Pi extension creates isolated state for each host invocation", asy
     sessionManager: { getSessionId: () => "shared-session" },
   };
 
-  // Each extension independently recalls at first context event — state maps are
+  // Each extension independently recalls at first before_agent_start — state maps are
   // isolated so the same session key produces fetch calls on both instances.
-  // Zero recall calls at session_start; recall fires on first context.
+  // Zero recall calls at session_start; recall fires on first before_agent_start.
   await first.emit("session_start", {}, ctx);
   await second.emit("session_start", {}, ctx);
   assert.equal(recallBodies.length, 0, "no recall at session_start");
 
   // Context injection reads from each extension's isolated cachedContext.
-  const firstResult = await first.emit("context", { messages: [{ role: "user", content: "hi" }] }, ctx) as { messages?: Array<Record<string, unknown>> };
-  const secondResult = await second.emit("context", { messages: [{ role: "user", content: "hi" }] }, ctx) as { messages?: Array<Record<string, unknown>> };
-  assert.ok(firstResult.messages?.[0]?.remnicInjected);
-  assert.ok(secondResult.messages?.[0]?.remnicInjected);
-  // One recall call per extension from the first context event.
+  const firstResult = await first.emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx) as { systemPrompt?: string };
+  const secondResult = await second.emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx) as { systemPrompt?: string };
+  assert.ok(firstResult?.systemPrompt?.includes("remembered context"));
+  assert.ok(secondResult?.systemPrompt?.includes("remembered context"));
+  // One recall call per extension from the first before_agent_start event.
   assert.equal(recallBodies.length, 2);
 });
 
@@ -674,7 +674,7 @@ test("session_before_compact surfaces checkpoint write failures without dropping
   );
 });
 
-test("singleton extension refreshes recall context across sessions", async (t) => {
+test("before_agent_start refreshes recall context across sessions", async (t) => {
   const originalFetch = globalThis.fetch;
   const recallBodies: Array<{ sessionKey?: string }> = [];
   let recallCalls = 0;
@@ -712,28 +712,28 @@ test("singleton extension refreshes recall context across sessions", async (t) =
     cwd: "/tmp/remnic-pi",
     sessionManager: { getSessionId: () => "session-2" },
   };
-  const event = { messages: [{ role: "user", content: "same prompt" }] };
+  const event = { prompt: "same prompt", systemPrompt: "" };
 
-  // Session 1: recall fires on first context, not session_start
+  // Session 1: recall fires on first before_agent_start, not session_start
   await emit("session_start", {}, session1Ctx);
   assert.equal(recallCalls, 0);
 
-  const first = await emit("context", event, session1Ctx) as { messages?: Array<Record<string, unknown>> };
+  const first = await emit("before_agent_start", event, session1Ctx) as { systemPrompt?: string };
   assert.equal(recallCalls, 1);
-  assert.ok(first.messages?.[0]?.remnicInjected);
+  assert.ok(first?.systemPrompt?.includes("remembered context"));
 
   await emit("session_shutdown", {}, session1Ctx);
 
-  // Session 2: recall fires again on first context
+  // Session 2: recall fires again on first before_agent_start
   await emit("session_start", {}, session2Ctx);
   assert.equal(recallCalls, 1);
 
-  const second = await emit("context", event, session2Ctx) as { messages?: Array<Record<string, unknown>> };
+  const second = await emit("before_agent_start", event, session2Ctx) as { systemPrompt?: string };
   assert.equal(recallCalls, 2);
-  assert.ok(second.messages?.[0]?.remnicInjected);
+  assert.ok(second?.systemPrompt?.includes("remembered context"));
 });
 
-test("context injects cached recall across successive context events in the same session", async (t) => {
+test("before_agent_start injects cached recall across successive turns in the same session", async (t) => {
   const originalFetch = globalThis.fetch;
   let recallCalls = 0;
   globalThis.fetch = async (input, init) => {
@@ -763,23 +763,23 @@ test("context injects cached recall across successive context events in the same
     cwd: "/tmp/remnic-pi",
     sessionManager: { getSessionId: () => "repeat-context-test" },
   };
-  const event = { messages: [{ role: "user", content: "continue" }] };
+  const event = { prompt: "continue", systemPrompt: "" };
 
   await emit("session_start", {}, ctx);
   assert.equal(recallCalls, 0);
 
-  const first = await emit("context", event, ctx) as { messages?: Array<Record<string, unknown>> };
-  assert.equal(recallCalls, 1, "recall fired on first context event");
-  const second = await emit("context", event, ctx) as { messages?: Array<Record<string, unknown>> };
-  const third = await emit("context", event, ctx) as { messages?: Array<Record<string, unknown>> };
+  const first = await emit("before_agent_start", event, ctx) as { systemPrompt?: string };
+  assert.equal(recallCalls, 1, "recall fired on first before_agent_start");
+  const second = await emit("before_agent_start", event, ctx) as { systemPrompt?: string };
+  const third = await emit("before_agent_start", event, ctx) as { systemPrompt?: string };
 
-  assert.equal(recallCalls, 1, "no additional recall on subsequent context events");
-  assert.ok(first.messages?.[0]?.remnicInjected);
-  assert.ok(second.messages?.[0]?.remnicInjected);
-  assert.ok(third.messages?.[0]?.remnicInjected);
+  assert.equal(recallCalls, 1, "no additional recall on subsequent before_agent_start events");
+  assert.ok(first?.systemPrompt?.includes("remembered context"));
+  assert.ok(second?.systemPrompt?.includes("remembered context"));
+  assert.ok(third?.systemPrompt?.includes("remembered context"));
 });
 
-test("empty recall at first context does not inject context but a later session with content does", async (t) => {
+test("empty recall at first before_agent_start does not inject context but a later session with content does", async (t) => {
   const originalFetch = globalThis.fetch;
   let recallCallIndex = 0;
   globalThis.fetch = async (input) => {
@@ -818,30 +818,21 @@ test("empty recall at first context does not inject context but a later session 
     cwd: "/tmp/remnic-pi",
     sessionManager: { getSessionId: () => "content-recall-session" },
   };
-  const event = { messages: [{ role: "user", content: "same prompt" }] };
+  const event = { prompt: "same prompt", systemPrompt: "" };
 
-  // Session 1: recall returns empty → no cached context → context returns undefined
+  // Session 1: recall returns empty → no cached context → before_agent_start returns undefined
   await emit("session_start", {}, session1Ctx);
-  assert.equal(await emit("context", event, session1Ctx), undefined);
+  assert.equal(await emit("before_agent_start", event, session1Ctx), undefined);
   await emit("session_shutdown", {}, session1Ctx);
 
-  // Session 2: recall returns content → cachedContext populated → context injects
+  // Session 2: recall returns content → cachedContext populated → before_agent_start injects
   await emit("session_start", {}, session2Ctx);
-  const result = await emit("context", event, session2Ctx) as { messages?: Array<{ content?: Array<{ text?: string }> }> };
+  const result = await emit("before_agent_start", event, session2Ctx) as { systemPrompt?: string };
 
-  const injected = result.messages?.[0];
-  assert.ok(injected?.content?.[0]?.text?.includes("remembered context"));
-  assert.equal(
-    (injected as { excludeFromContext?: unknown } | undefined)?.excludeFromContext,
-    undefined,
-  );
-  assert.equal(
-    (injected as { remnicInjected?: unknown } | undefined)?.remnicInjected,
-    true,
-  );
+  assert.ok(result?.systemPrompt?.includes("remembered context"));
 });
 
-test("context recall prepends injected context before conversation history", async (t) => {
+test("before_agent_start appends cached context to the system prompt", async (t) => {
 	const originalFetch = globalThis.fetch;
 	globalThis.fetch = async () =>
 		new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
@@ -867,17 +858,13 @@ test("context recall prepends injected context before conversation history", asy
 
 	await emit("session_start", {}, ctx);
 
-	const firstMessage = { role: "system", content: "stable prefix" };
-	const userMessage = { role: "user", content: "same prompt" };
-	const result = await emit("context", { messages: [firstMessage, userMessage] }, ctx) as { messages?: Array<Record<string, unknown>> };
+	const result = await emit("before_agent_start", { prompt: "same prompt", systemPrompt: "base system prompt" }, ctx) as { systemPrompt?: string };
 
-	// Injected message is now at index 0 (prepended)
-	assert.equal(result.messages?.[0]?.remnicInjected, true);
-	assert.equal(result.messages?.[1], firstMessage);
-	assert.equal(result.messages?.[2], userMessage);
+	assert.ok(result?.systemPrompt?.includes("remembered context"));
+	assert.ok(result?.systemPrompt?.startsWith("base system prompt"));
 });
 
-test("context recall does not load full session history", async (t) => {
+test("before_agent_start does not load full session history", async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
@@ -911,12 +898,12 @@ test("context recall does not load full session history", async (t) => {
   const ctx = { cwd: "/tmp/remnic-pi", sessionManager };
   await emit("session_start", {}, ctx);
 
-  const result = await emit("context", { messages: [{ role: "user", content: "same prompt" }] }, ctx) as { messages?: Array<Record<string, unknown>> };
+  const result = await emit("before_agent_start", { prompt: "same prompt", systemPrompt: "" }, ctx) as { systemPrompt?: string };
 
-  assert.equal(result.messages?.[0]?.remnicInjected, true);
+  assert.ok(result?.systemPrompt?.includes("remembered context"));
 });
 
-test("context recall skips stale Pi ctx before snapshot", async (t) => {
+test("before_agent_start skips stale Pi ctx before snapshot", async (t) => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async () => {
@@ -943,14 +930,14 @@ test("context recall skips stale Pi ctx before snapshot", async (t) => {
   const stale = makeStaleCtx({ sessionId: "stale-before-snapshot" });
   stale.markStale();
 
-  const result = await emit("context", { messages: [{ role: "user", content: "same prompt" }] }, stale.ctx);
+  const result = await emit("before_agent_start", { prompt: "same prompt", systemPrompt: "" }, stale.ctx);
 
   assert.equal(result, undefined);
   assert.equal(calls, 0);
   assert.deepEqual(stale.notifications, []);
 });
 
-test("context recall keeps pi:default fallback when session manager is missing", async (t) => {
+test("before_agent_start keeps pi:default fallback when session manager is missing", async (t) => {
   const originalFetch = globalThis.fetch;
   const recallBodies: Array<Record<string, unknown>> = [];
   globalThis.fetch = async (input, init) => {
@@ -979,15 +966,15 @@ test("context recall keeps pi:default fallback when session manager is missing",
   const noopCtx = { cwd: "/tmp/remnic-pi" };
   await emit("session_start", {}, noopCtx);
 
-  // Recall fires on first context, not session_start
+  // Recall fires on first before_agent_start, not session_start
   assert.equal(recallBodies.length, 0);
 
-  const result = await emit("context", { messages: [{ role: "user", content: "same prompt" }] }, noopCtx) as { messages?: Array<Record<string, unknown>> };
+  const result = await emit("before_agent_start", { prompt: "same prompt", systemPrompt: "" }, noopCtx) as { systemPrompt?: string };
 
   assert.equal(recallBodies.length, 1);
   assert.equal(recallBodies[0]?.sessionKey, "pi:default");
   assert.equal(recallBodies[0]?.cwd, "/tmp/remnic-pi");
-  assert.equal(result.messages?.[0]?.remnicInjected, true);
+  assert.ok(result?.systemPrompt?.includes("remembered context"));
 });
 
 test("recall context truncation stays within the configured budget", async (t) => {
@@ -1018,16 +1005,17 @@ test("recall context truncation stays within the configured budget", async (t) =
   };
   await emit("session_start", {}, ctx);
 
-  const result = await emit("context", { messages: [{ role: "user", content: "same prompt" }] }, ctx) as { messages?: Array<{ content?: Array<{ text?: string }> }> };
+  const result = await emit("before_agent_start", { prompt: "same prompt", systemPrompt: "" }, ctx) as { systemPrompt?: string };
 
-  const text = result.messages?.[0]?.content?.[0]?.text ?? "";
+  const text = result?.systemPrompt ?? "";
   const startMarker = "\n\n[Remnic context truncated]";
   const truncatedAt = text.indexOf(startMarker);
-  assert.notEqual(truncatedAt, -1);
-  assert.equal(truncatedAt + startMarker.length, 40);
+  assert.notEqual(truncatedAt, -1, "truncation marker present");
+  // The cached context meets its budget; the \n\n separator adds 2 chars to systemPrompt.
+  assert.ok(text.length <= 42, `system prompt length ${text.length} ≤ 42`);
 });
 
-test("context recall fires on first context event and caches the result", async (t) => {
+test("before_agent_start fires recall on first event and caches the result", async (t) => {
   const originalFetch = globalThis.fetch;
   let recallCalls = 0;
   globalThis.fetch = async (input) => {
@@ -1057,25 +1045,25 @@ test("context recall fires on first context event and caches the result", async 
     cwd: "/tmp/remnic-pi",
     sessionManager: { getSessionId: () => "first-context-recall" },
   };
-  const event = { messages: [{ role: "user", content: "same prompt" }] };
+  const event = { prompt: "same prompt", systemPrompt: "" };
 
   // No recall at session_start
   await emit("session_start", {}, ctx);
   assert.equal(recallCalls, 0);
 
-  // First context event fires recall and caches the result
-  const result = await emit("context", event, ctx) as { messages?: Array<Record<string, unknown>> };
-  assert.equal(recallCalls, 1, "recall fired on first context event");
-  assert.ok(result.messages?.[0]?.remnicInjected, "context was injected");
+  // First before_agent_start fires recall and caches the result
+  const result = await emit("before_agent_start", event, ctx) as { systemPrompt?: string };
+  assert.equal(recallCalls, 1, "recall fired on first before_agent_start");
+  assert.ok(result?.systemPrompt?.includes("remembered context"), "context was injected");
 });
 
-test("context recall failure notification survives stale Pi ctx after await", async (t) => {
+test("before_agent_start recall failure notification survives stale Pi ctx after await", async (t) => {
   const originalFetch = globalThis.fetch;
   const stale = makeStaleCtx({ sessionId: "stale-context-recall" });
   globalThis.fetch = async (input) => {
     const url = String(input);
     // Let health and namespace probes succeed so snapshotPiContext works
-    // during the context handler.  Only the recall call marks the ctx stale.
+    // during the before_agent_start handler.  Only the recall call marks the ctx stale.
     if (url.endsWith("/engram/v1/health")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -1107,9 +1095,9 @@ test("context recall failure notification survives stale Pi ctx after await", as
     emit("session_start", {}, stale.ctx)
   );
 
-  // Context recall fires and fails; notification survives stale ctx.
+  // before_agent_start recall fires and fails; notification survives stale ctx.
   await assert.doesNotReject(() =>
-    emit("context", { messages: [{ role: "user", content: "hi" }] }, stale.ctx)
+    emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, stale.ctx)
   );
   assert.deepEqual(stale.notifications, [
     { message: "Remnic recall unavailable: offline", level: "warning" },
@@ -1467,15 +1455,15 @@ test("circuit breaker prevents context recall after a startup health probe timeo
     cwd: "/tmp/remnic-pi",
     sessionManager: { getSessionId: () => "cb-session" },
   };
-  const event = { messages: [{ role: "user", content: "any prompt" }] };
+  const event = { prompt: "any prompt", systemPrompt: "" };
 
   // First session_start: health probe times out → daemon enters cooldown.
   await emit("session_start", {}, ctx);
   const healthProbeCalls = fetchCalls;
   assert.ok(healthProbeCalls >= 1, "health probe timed out");
 
-  // Context sees no cached recall (daemon was unreachable at startup).
-  assert.equal(await emit("context", event, ctx), undefined);
+  // before_agent_start sees no cached recall (daemon was unreachable at startup).
+  assert.equal(await emit("before_agent_start", event, ctx), undefined);
 
   // Second session_start while breaker is still in cooldown: health probe runs
   // but recall is skipped because isReachable() is false.
@@ -1483,8 +1471,8 @@ test("circuit breaker prevents context recall after a startup health probe timeo
   const totalCalls = fetchCalls;
   assert.ok(totalCalls > healthProbeCalls, "health probe ran again");
 
-  // Context still sees no cached recall (breaker prevented the one-shot).
-  assert.equal(await emit("context", event, ctx), undefined);
+  // before_agent_start still sees no cached recall (breaker prevented the one-shot).
+  assert.equal(await emit("before_agent_start", event, ctx), undefined);
 });
 
 test("session_shutdown replays the branch even when the daemon breaker is tripped (#1626, review codex)", async (t) => {
@@ -1678,13 +1666,13 @@ test("an offline startup health probe trips the circuit breaker so the first tur
     ui: { setStatus: () => {}, notify: () => {} },
     sessionManager: { getSessionId: () => "status-trip-breaker" },
   };
-  const event = { messages: [{ role: "user", content: "hi" }] };
+  const event = { prompt: "hi", systemPrompt: "" };
 
   // 1) session_start health fails because the daemon is offline -> trips the breaker.
   await emit("session_start", {}, ctx);
-  // 2) context (recall) fast-skips because the breaker is tripped, so the doomed
+  // 2) before_agent_start (recall) fast-skips because the breaker is tripped, so the doomed
   //    recall never costs the full turn budget.
-  await emit("context", event, ctx);
+  await emit("before_agent_start", event, ctx);
   assert.equal(recallCalls, 0, "recall fast-skipped after the offline startup probe tripped the breaker");
 });
 
@@ -1782,10 +1770,10 @@ test("a successful /remnic-recall clears a stale circuit breaker (review cursor)
   // 2) Manual recall succeeds → markReachable() on the shared client.
   await runCommand("remnic-recall", "manual", ctx);
 
-  // 3) Context event: automatic recall fires now that the daemon is reachable.
+  // 3) before_agent_start event: automatic recall fires now that the daemon is reachable.
   //    Count only recall requests so health/preflight noise is excluded.
   const recallCallsBeforeAuto = recallCalls;
-  await emit("context", { messages: [{ role: "user", content: "auto" }] }, ctx);
+  await emit("before_agent_start", { prompt: "auto", systemPrompt: "" }, ctx);
   assert.ok(recallCalls > recallCallsBeforeAuto, "automatic recall ran after manual recall cleared the breaker");
 });
 
@@ -2096,7 +2084,7 @@ test("session_start trips the circuit breaker on an offline daemon even when sta
   // the preflight then fast-skips (indeterminate) instead of fetching.
   await emit("session_start", {}, ctx);
   // The live recall hook fast-skips because the breaker is tripped.
-  await emit("context", { messages: [{ role: "user", content: "hi" }] }, ctx);
+  await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx);
   assert.equal(nonHealthCalls, 0, "an offline probe must trip the breaker even with the status UI disabled");
 });
 

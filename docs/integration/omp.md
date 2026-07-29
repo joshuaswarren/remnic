@@ -261,7 +261,7 @@ Running both means two disjoint memories; pick Remnic (shared) or Mnemopi
 
 ## What The Extension Does
 
-- Uses the `context` hook to recall relevant Remnic context before an agent turn.
+- Uses the `before_agent_start` hook to inject recalled Remnic context into the system prompt.
 - Uses `message_end`, `turn_end`, and `session_shutdown` hooks to observe user, assistant, and tool activity with `sourceFormat: "pi"`.
 - Uses `session_before_compact` to flush Remnic LCM for the active session before omp compacts context, then records the compaction token delta.
 - Registers Remnic MCP tools as omp tools when the Remnic daemon token is configured.
@@ -298,7 +298,7 @@ Supported config keys:
 | `recallMode` | `auto` | Recall mode: `auto`, `minimal`, `full`, `graph_mode`, or `no_recall` |
 | `recallTopK` | `8` | Max recalled results |
 | `recallBudgetChars` | `12000` | Max recalled context injected into omp |
-| `recallEnabled` | `true` | Enable context-hook recall |
+| `recallEnabled` | `true` | Enable semantic recall before each user turn |
 | `observeEnabled` | `true` | Enable turn observation |
 | `observeSkipExtraction` | `false` | Archive observed messages without extraction |
 | `compactionEnabled` | `true` | Enable LCM flush/checkpoint coordination |
