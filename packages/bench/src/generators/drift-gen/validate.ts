@@ -574,6 +574,17 @@ function isManifestShape(value: unknown): value is DriftGenManifest {
 
     typeof m.name === "string" &&
     typeof m.version === "string" &&
+    typeof m.generatorVersion === "string" &&
+    typeof m.createdAt === "string" &&
+    Array.isArray(m.licenses) &&
+    m.licenses.length > 0 &&
+    m.licenses.every(
+      (license) =>
+        typeof license === "object" &&
+        license !== null &&
+        typeof (license as Record<string, unknown>).source === "string" &&
+        typeof (license as Record<string, unknown>).license === "string",
+    ) &&
     Array.isArray(m.seeds) &&
     m.seeds.length > 0 &&
     m.seeds.every((s) => Number.isSafeInteger(s) && s >= 0) &&

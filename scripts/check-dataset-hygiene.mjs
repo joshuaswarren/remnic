@@ -71,6 +71,12 @@ const CREDENTIAL_QUERY_PARAMETERS = new Set([
   "password",
   "secret",
   "token",
+  "authorization",
+  "auth",
+  "client_secret",
+  "private_key",
+  "signature",
+  "sig",
 ]);
 
 

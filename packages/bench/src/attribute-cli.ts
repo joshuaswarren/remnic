@@ -46,7 +46,6 @@ export function parseFrontmatter(fileContent: string): { id?: string; body: stri
 const SKIPPED_SYSTEM_DIRS: Record<string, boolean> = {
   activity: true,
   meetings: true,
-  questions: true,
   state: true,
   wearables: true,
 };
