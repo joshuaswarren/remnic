@@ -1,4 +1,6 @@
 import { Type, type TSchema } from "@sinclair/typebox";
+import { createHash } from "node:crypto";
+
 
 import { DEFAULT_CONFIG, loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./config.js";
 import {
@@ -72,18 +74,19 @@ type PiContextSnapshotOptions = {
 };
 
 function recallTimeoutBreakerCacheKey(
-  config: Pick<RemnicPiConfig, "remnicDaemonUrl" | "namespace" | "recallTimeoutThreshold" | "recallTimeoutWindow">,
+  config: Pick<RemnicPiConfig, "remnicDaemonUrl" | "namespace" | "authToken" | "recallTimeoutThreshold" | "recallTimeoutWindow">,
 ): string {
   return JSON.stringify([
     config.remnicDaemonUrl,
     config.namespace ?? "",
+    createHash("sha256").update(config.authToken ?? "").digest("hex"),
     config.recallTimeoutThreshold,
     config.recallTimeoutWindow,
   ]);
 }
 
 export function resetProcessRecallBreakerForTest(
-  config: Pick<RemnicPiConfig, "remnicDaemonUrl" | "namespace" | "recallTimeoutThreshold" | "recallTimeoutWindow">,
+  config: Pick<RemnicPiConfig, "remnicDaemonUrl" | "namespace" | "authToken" | "recallTimeoutThreshold" | "recallTimeoutWindow">,
 ): void {
   PROCESS_SCOPED_RECALL_BREAKERS.delete(recallTimeoutBreakerCacheKey(config));
 }

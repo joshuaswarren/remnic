@@ -233,6 +233,7 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
   };
   t.after(() => {
     resetProcessRecallBreakerForTest(reloadConfig);
+    resetProcessRecallBreakerForTest({ ...reloadConfig, authToken: "other-token" });
     resetProcessRecallBreakerForTest({ ...reloadConfig, recallTimeoutThreshold: 2, recallTimeoutWindow: 2 });
     if (previousConfig === undefined) delete process.env.REMNIC_PI_CONFIG;
     else process.env.REMNIC_PI_CONFIG = previousConfig;
@@ -263,19 +264,30 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
 
   assert.deepEqual(secondStatuses.at(-1), ["remnic", "Remnic recall disabled until restart (timeouts delayed operations)"]);
 
+  fs.writeFileSync(configPath, JSON.stringify({ ...reloadConfig, authToken: "other-token" }));
+  const differentCredential = makePiHarness();
+  const differentCredentialStatuses: Array<[string, string]> = [];
+  await remnicPiExtension(differentCredential.pi);
+  await differentCredential.emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => differentCredentialStatuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "breaker-reload-different-credential" },
+  });
+  assert.deepEqual(differentCredentialStatuses.at(-1), ["remnic", "Remnic ready"]);
+
   fs.writeFileSync(
     configPath,
     JSON.stringify({ ...reloadConfig, recallTimeoutThreshold: 2, recallTimeoutWindow: 2 }),
   );
-  const third = makePiHarness();
-  const thirdStatuses: Array<[string, string]> = [];
-  await remnicPiExtension(third.pi);
-  await third.emit("session_start", {}, {
+  const changedPolicy = makePiHarness();
+  const changedPolicyStatuses: Array<[string, string]> = [];
+  await remnicPiExtension(changedPolicy.pi);
+  await changedPolicy.emit("session_start", {}, {
     cwd: "/tmp/remnic-pi",
-    ui: { setStatus: (key: string, value: string) => thirdStatuses.push([key, value]), notify: () => {} },
+    ui: { setStatus: (key: string, value: string) => changedPolicyStatuses.push([key, value]), notify: () => {} },
     sessionManager: { getSessionId: () => "breaker-reload-policy-change" },
   });
-  assert.deepEqual(thirdStatuses.at(-1), ["remnic", "Remnic ready"]);
+  assert.deepEqual(changedPolicyStatuses.at(-1), ["remnic", "Remnic ready"]);
 });
 
 test("MCP tool registration uses the startup timeout instead of the general request timeout", async (t) => {
