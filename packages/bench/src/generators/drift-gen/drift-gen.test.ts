@@ -199,6 +199,28 @@ test("validator rejects rehashed probes whose answers disagree with referenced f
   }
 });
 
+test("validator rejects rehashed probes whose questions do not match referenced facts", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-question-tamper-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    const relativePath = `${SMALL.seed}/gold/probes.jsonl`;
+    const probesPath = path.join(dir, relativePath);
+    const lines = (await readFile(probesPath, "utf8")).trim().split("\n");
+    const currentIndex = lines.findIndex((line) => parseGoldProbe(line).category === "current");
+    const probe = parseGoldProbe(lines[currentIndex]!);
+    probe.question = "What is the unrelated weather forecast?";
+    lines[currentIndex] = JSON.stringify(probe);
+    await writeFile(probesPath, `${lines.join("\n")}\n`, "utf8");
+    await rehashManifestFile(dir, relativePath);
+
+    const report = await validateDriftCorpus(dir);
+    assert.equal(report.ok, false);
+    assert.ok(report.errors.some((error) => error.includes("question does not match")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("validator rejects rehashed probes that reference another user's facts", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-user-tamper-"));
   try {
@@ -430,6 +452,19 @@ test("schedule options are validated", () => {
   assert.throws(
     () => buildCorpusSchedule({ ...base, epochs: 20, factsPerEpoch: 8 }),
     /unique subject\/attribute pairs/,
+  );
+});
+
+test("allows high-churn schedules that reuse superseded pairs", () => {
+  assert.doesNotThrow(() =>
+    buildCorpusSchedule({
+      users: 1,
+      epochs: 12,
+      seed: 1,
+      factsPerEpoch: 10,
+      driftingRatio: 0,
+      contradictedRatio: 1,
+    }),
   );
 });
 

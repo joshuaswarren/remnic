@@ -255,13 +255,6 @@ function validateScheduleOptions(options: ScheduleOptions): void {
   if (options.driftingRatio + options.contradictedRatio > 1) {
     throw new Error("drift-gen driftingRatio + contradictedRatio must not exceed 1");
   }
-  const pairCapacity = (CONTACTS_PER_USER + 1) * ATTRIBUTE_SPECS.length;
-  const worstCaseFresh = options.epochs * options.factsPerEpoch;
-  if (worstCaseFresh > pairCapacity) {
-    throw new Error(
-      `drift-gen cannot allocate ${worstCaseFresh} facts per user: only ${pairCapacity} unique subject/attribute pairs exist. Lower epochs or factsPerEpoch.`,
-    );
-  }
 }
 
 function buildContacts(rng: SeededRandom, persona: string): string[] {
