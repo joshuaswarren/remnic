@@ -962,6 +962,7 @@ export class LocalLlmClient {
         temperature: options.temperature ?? 0.7,
         // Use max_tokens consistent with cloud models
         max_tokens: options.maxTokens ?? 4096,
+        stream: false,
       };
 
       // Skip response_format for local LLMs - they don't support json_object type
@@ -1034,9 +1035,11 @@ export class LocalLlmClient {
           ? Math.min(this.config.localLlmTimeoutMs, options.timeoutMs)
           : this.config.localLlmTimeoutMs;
       const maxAttempts = 1 + Math.max(0, this.config.localLlmRetry5xxCount);
-      let response: Response | null = null;
+      let response: Response | null = null, responseBody = "";
       let lastAbortError: Error | null = null;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        response = null;
+        responseBody = "";
         const attemptAbort = new AbortController();
         const onCallerAbort = (): void => {
           attemptAbort.abort(options.signal?.reason);
@@ -1059,18 +1062,28 @@ export class LocalLlmClient {
             signal: attemptAbort.signal,
             budgetMs: this.config.localLlmTimeoutMs,
           });
+          responseBody = await response.text();
         } catch (err) {
-          if (!isAbortError(err)) throw err;
-          lastAbortError = err instanceof Error ? err : new Error(String(err));
-          if (options.signal?.aborted || attempt >= maxAttempts) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          if (options.signal?.aborted) {
+            response = null;
+            lastAbortError = error;
             break;
           }
-          const backoffMs = this.config.localLlmRetryBackoffMs * attempt;
-          log.warn(
-            `local LLM request aborted: op=${operation} attempt=${attempt}/${maxAttempts} timeoutMs=${effectiveTimeoutMs} model=${this.config.localLlmModel}; retrying after ${backoffMs}ms`,
-          );
-          if (!(await waitForRetryBackoff(backoffMs, options.signal))) return null;
-          continue;
+          if (response && !response.ok) {
+            log.debug(`local LLM failed to read ${response.status} response body: ${error.message}`);
+          } else {
+            response = null;
+            if (!isAbortError(err)) throw err;
+            lastAbortError = error;
+            if (attempt >= maxAttempts) break;
+            const backoffMs = this.config.localLlmRetryBackoffMs * attempt;
+            log.warn(
+              `local LLM request aborted: op=${operation} attempt=${attempt}/${maxAttempts} timeoutMs=${effectiveTimeoutMs} model=${this.config.localLlmModel}; retrying after ${backoffMs}ms`,
+            );
+            if (!(await waitForRetryBackoff(backoffMs, options.signal))) return null;
+            continue;
+          }
         } finally {
           clearTimeout(attemptTimeout);
           options.signal?.removeEventListener("abort", onCallerAbort);
@@ -1078,20 +1091,15 @@ export class LocalLlmClient {
 
         if (response.ok) break;
         if (response.status >= 500 && attempt < maxAttempts) {
-          try {
-            const errorText = await response.clone().text();
-            const nonRecoverableReason =
-              extractNonRecoverableBackendReasonFromErrorText(errorText);
-            if (nonRecoverableReason) {
-              this.markBackendUnavailable(
-                nonRecoverableReason,
-                this.config.localLlm400CooldownMs,
-              );
-              this.consecutive400s = 0;
-              return null;
-            }
-          } catch (e) {
-            log.debug(`local LLM failed to inspect retryable error body: ${e}`);
+          const nonRecoverableReason =
+            extractNonRecoverableBackendReasonFromErrorText(responseBody);
+          if (nonRecoverableReason) {
+            this.markBackendUnavailable(
+              nonRecoverableReason,
+              this.config.localLlm400CooldownMs,
+            );
+            this.consecutive400s = 0;
+            return null;
           }
         }
         if (response.status < 500 || attempt >= maxAttempts) break;
@@ -1120,19 +1128,11 @@ export class LocalLlmClient {
 
       if (!response.ok) {
         let reason = "";
-        let errorText = "";
         try {
-          errorText = await response.text();
-          // Try to extract a stable error message without logging content.
-          try {
-            const parsed = JSON.parse(errorText) as { error?: { message?: string } };
-            reason = parsed?.error?.message ? ` — ${parsed.error.message}` : "";
-          } catch {
-            // Keep a short preview in debug only.
-            log.debug(`local LLM error body: ${errorText.slice(0, 500)}`);
-          }
-        } catch (e) {
-          log.debug(`local LLM failed to read error body: ${e}`);
+          const parsed = JSON.parse(responseBody) as { error?: { message?: string } };
+          reason = parsed?.error?.message ? ` — ${parsed.error.message}` : "";
+        } catch {
+          log.debug(`local LLM error body: ${responseBody.slice(0, 500)}`);
         }
         log.warn(
           `local LLM request failed: ${response.status} ${response.statusText}${reason} ` +
@@ -1140,7 +1140,7 @@ export class LocalLlmClient {
         );
         const nonRecoverableReason =
           extractNonRecoverableBackendReason(reason) ??
-          extractNonRecoverableBackendReasonFromErrorText(errorText);
+          extractNonRecoverableBackendReasonFromErrorText(responseBody);
         if (nonRecoverableReason) {
           this.markBackendUnavailable(
             nonRecoverableReason,
@@ -1166,7 +1166,7 @@ export class LocalLlmClient {
       }
       this.consecutive400s = 0;
 
-      const data = (await response.json()) as {
+      const data = JSON.parse(responseBody) as {
         choices?: Array<{
           message?: { content?: string; reasoning_content?: string };
         }>;
