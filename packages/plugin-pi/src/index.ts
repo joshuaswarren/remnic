@@ -87,7 +87,10 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // budget on a doomed call. The status LABEL stays gated on statusEnabled.
       const probe = await probeDaemonHealth(client, config);
       if (config.statusEnabled) {
-        session.setStatus("remnic", remnicStatusLabel(probe, config.namespace));
+        session.setStatus(
+          "remnic",
+          recallTimeoutBreaker.isTripped() ? RECALL_DISABLED_STATUS : remnicStatusLabel(probe, config.namespace),
+        );
       }
       await runNamespacePreflight(pi, session, client, config);
     });

@@ -1733,6 +1733,49 @@ test("an offline startup health probe trips the circuit breaker so the first tur
   await emit("before_agent_start", event, ctx);
   assert.equal(recallCalls, 0, "recall fast-skipped after the offline startup probe tripped the breaker");
 });
+test("session_start preserves the recall-disabled status after a successful health probe", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/engram/v1/health")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+      turnRequestTimeoutMs: 2,
+      recallTimeoutThreshold: 1,
+      recallTimeoutWindow: 1,
+    },
+  });
+  await extension(pi);
+
+  const context = (sessionKey: string) => ({
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => statuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => sessionKey },
+  });
+
+  await emit("session_start", {}, context("breaker-first"));
+  await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, context("breaker-first"));
+  await emit("session_start", {}, context("breaker-second"));
+
+  assert.deepEqual(statuses.at(-1), ["remnic", "Remnic recall disabled until restart (timeouts delayed operations)"]);
+});
 
 test("/remnic-recall bounds retry to the general request budget instead of unbounded retries (review cursor)", async (t) => {
   const originalFetch = globalThis.fetch;
