@@ -20,8 +20,7 @@ export type RecallResult = "success" | "timeout" | "failure";
  * HTTP/auth failures, and lookalike server-controlled messages.
  */
 export function isRecallTimeoutError(err: unknown): boolean {
-  if (err instanceof RemnicRequestTimeoutError) return true;
-  return err instanceof Error && /^Remnic request timed out after \d+ms$/.test(err.message);
+  return err instanceof RemnicRequestTimeoutError;
 }
 
 export interface RecallTimeoutBreakerOptions {

@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RemnicClient, RemnicHttpError, chunkObservePayload, isTransientNetworkError, type ObserveMessage } from "./client.js";
+import {
+  RemnicClient,
+  RemnicHttpError,
+  RemnicRequestAbortedError,
+  chunkObservePayload,
+  isTransientNetworkError,
+  type ObserveMessage,
+} from "./client.js";
 import type { RemnicPiConfig } from "./config.js";
 
 test("RemnicClient reports request timeouts with actionable context", async (t) => {
@@ -40,7 +47,18 @@ test("RemnicClient allows startup callers to use a shorter timeout", async (t) =
   );
 });
 
-test("RemnicClient ignores a non-positive timeout override and uses the general budget", async (t) => {
+test("RemnicClient rejects invalid timeout overrides", async () => {
+  const client = new RemnicClient(baseConfig());
+
+  for (const timeoutMs of [0, -1, Number.NaN, 1.5]) {
+    await assert.rejects(
+      () => client.health({ timeoutMs }),
+      /Request timeoutMs must be a positive integer/,
+    );
+  }
+});
+
+test("RemnicClient forwards caller aborts to MCP tool requests", async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_input, init) =>
     new Promise<Response>((_resolve, reject) => {
@@ -50,13 +68,17 @@ test("RemnicClient ignores a non-positive timeout override and uses the general 
     globalThis.fetch = originalFetch;
   });
 
-  const client = new RemnicClient({ ...baseConfig(), requestTimeoutMs: 7 });
+  const controller = new AbortController();
+  const client = new RemnicClient({ ...baseConfig(), requestTimeoutMs: 100 });
+  const request = client.mcpTool("remnic.recall", {}, { signal: controller.signal });
+  controller.abort();
 
-  // A 0/negative/NaN override would make setTimeout abort immediately; the client
-  // must reject it and fall back to requestTimeoutMs (reported as 7ms here).
   await assert.rejects(
-    () => client.health({ timeoutMs: 0 }),
-    /Remnic request timed out after 7ms/,
+    () => request,
+    (err) => {
+      assert.ok(err instanceof RemnicRequestAbortedError);
+      return true;
+    },
   );
 });
 

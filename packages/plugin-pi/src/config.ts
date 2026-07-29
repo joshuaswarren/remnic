@@ -66,7 +66,7 @@ export interface LoadConfigOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-const DEFAULT_CONFIG: RemnicPiConfig = {
+export const DEFAULT_CONFIG: RemnicPiConfig = {
   remnicDaemonUrl: "http://127.0.0.1:4318",
   recallMode: "auto",
   recallTopK: 8,

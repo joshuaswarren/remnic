@@ -331,6 +331,9 @@ test("loadConfig fails closed on invalid numeric values", () => {
       () => loadConfig({ configPath, env: {} }),
       /threshold \(6\) cannot exceed window \(5\)/,
     );
+
+    fs.writeFileSync(configPath, JSON.stringify({ recallTimeoutThreshold: 5, recallTimeoutWindow: 5 }));
+    assert.equal(loadConfig({ configPath, env: {} }).recallTimeoutThreshold, 5);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

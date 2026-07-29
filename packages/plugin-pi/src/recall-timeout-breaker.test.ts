@@ -1,14 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { RemnicRequestTimeoutError } from "./client.js";
 import { RecallTimeoutBreaker, isRecallTimeoutError } from "./recall-timeout-breaker.js";
 
-test("isRecallTimeoutError recognizes explicit abort-to-timeout messages", () => {
-  assert.ok(isRecallTimeoutError(new Error("Remnic request timed out after 30ms")), "timeout message");
-  assert.ok(isRecallTimeoutError(new Error("Remnic request timed out after 1ms")), "short timeout");
-  assert.ok(!isRecallTimeoutError(new Error("Remnic request exceeded the 30ms budget before retry 1")), "budget exceeded");
-  assert.ok(!isRecallTimeoutError(new Error("The socket connection was closed unexpectedly.")), "network error");
-  assert.ok(!isRecallTimeoutError(new Error("Internal Server Error")), "HTTP error");
+test("isRecallTimeoutError accepts only typed client timeout errors", () => {
+  assert.ok(isRecallTimeoutError(new RemnicRequestTimeoutError(30)));
+  assert.ok(!isRecallTimeoutError(new Error("Remnic request timed out after 30ms")));
+  assert.ok(!isRecallTimeoutError(new Error("Remnic request exceeded the 30ms budget before retry 1")));
+  assert.ok(!isRecallTimeoutError(new Error("The socket connection was closed unexpectedly.")));
+  assert.ok(!isRecallTimeoutError(new Error("Internal Server Error")));
+});
+
+test("rejects invalid threshold and window values", () => {
+  assert.throws(() => new RecallTimeoutBreaker({ threshold: 0, window: 10 }), /positive integers/);
+  assert.throws(() => new RecallTimeoutBreaker({ threshold: 2.5, window: 10 }), /positive integers/);
+  assert.throws(() => new RecallTimeoutBreaker({ threshold: 11, window: 10 }), /threshold <= window/);
 });
 
 test("6 timeouts in a window of 10 do not trip the breaker", () => {

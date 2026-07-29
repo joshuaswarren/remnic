@@ -327,11 +327,15 @@ export class RemnicClient {
     return Array.isArray(tools) ? tools.filter(isMcpTool) : [];
   }
 
-  async mcpTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async mcpTool(
+    name: string,
+    args: Record<string, unknown>,
+    options: RequestOptions = {},
+  ): Promise<Record<string, unknown>> {
     return this.mcpRequest("tools/call", {
       name,
       arguments: args,
-    });
+    }, options);
   }
 
   /**
@@ -353,9 +357,14 @@ export class RemnicClient {
     options.signal?.addEventListener("abort", onExternalAbort, { once: true });
     const override = options.timeoutMs;
     const timeoutMs =
-      typeof override === "number" && Number.isFinite(override) && override > 0
-        ? override
-        : this.config.requestTimeoutMs;
+      override === undefined
+        ? this.config.requestTimeoutMs
+        : (() => {
+            if (!Number.isInteger(override) || override <= 0) {
+              throw new TypeError("Request timeoutMs must be a positive integer");
+            }
+            return override;
+          })();
     const timeout = setTimeout(() => {
       timedOut = true;
       controller.abort();

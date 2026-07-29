@@ -827,6 +827,14 @@ test("before_agent_start injects cached recall across successive turns in the sa
   assert.ok(third?.systemPrompt?.includes("remembered context"));
 });
 
+test("direct legacy config receives recall breaker defaults", () => {
+  const config = { ...baseConfig() } as Record<string, unknown>;
+  delete config.recallTimeoutThreshold;
+  delete config.recallTimeoutWindow;
+  const legacyConfig = config as unknown as RemnicPiConfig;
+
+  assert.doesNotThrow(() => createRemnicPiExtension({ config: legacyConfig }));
+});
 test("empty recall at first before_agent_start does not inject context but a later session with content does", async (t) => {
   const originalFetch = globalThis.fetch;
   let recallCallIndex = 0;
