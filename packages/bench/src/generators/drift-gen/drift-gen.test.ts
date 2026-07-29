@@ -449,10 +449,6 @@ test("schedule options are validated", () => {
     () => buildCorpusSchedule({ ...base, driftingRatio: 0.8, contradictedRatio: 0.4 }),
     /must not exceed 1/,
   );
-  assert.throws(
-    () => buildCorpusSchedule({ ...base, epochs: 20, factsPerEpoch: 8 }),
-    /unique subject\/attribute pairs/,
-  );
 });
 
 test("allows high-churn schedules that reuse superseded pairs", () => {
@@ -464,6 +460,19 @@ test("allows high-churn schedules that reuse superseded pairs", () => {
       factsPerEpoch: 10,
       driftingRatio: 0,
       contradictedRatio: 1,
+    }),
+  );
+});
+
+test("allows near-capacity schedules regardless of random draw order", () => {
+  assert.doesNotThrow(() =>
+    buildCorpusSchedule({
+      users: 1,
+      epochs: 113,
+      seed: 262,
+      factsPerEpoch: 1,
+      driftingRatio: 0,
+      contradictedRatio: 0.01,
     }),
   );
 });

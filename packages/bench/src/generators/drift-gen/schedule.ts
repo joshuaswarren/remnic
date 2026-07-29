@@ -350,6 +350,32 @@ function createFreshFact(
       probes: [],
     };
   }
+  for (const subject of subjects) {
+    for (const spec of ATTRIBUTE_SPECS) {
+      if (activeByPair.has(`${subject}|${spec.attribute}`)) continue;
+      const value = pickOne(rng, spec.values);
+      return {
+        id: `gf-${userId}-${epoch}-${ordinal + 1}`,
+        userId,
+        statement: formatFactStatement(subject, spec.attribute, value),
+        subject,
+        attribute: spec.attribute,
+        value,
+        introducedEpoch: epoch,
+        supersededEpoch: null,
+        supersededBy: null,
+        kind: rollKind(rng, options, epoch),
+        probes: [],
+      };
+    }
+  }
+  const reusable = [...activeByPair.values()].sort((a, b) => a.id.localeCompare(b.id))[0];
+  if (reusable) {
+    const successor = createSuccessorFact(rng, options, reusable, epoch, ordinal);
+    reusable.supersededEpoch = epoch;
+    reusable.supersededBy = successor.id;
+    return successor;
+  }
   throw new Error(
     "drift-gen exhausted unique subject/attribute pairs; lower factsPerEpoch or epochs",
   );
