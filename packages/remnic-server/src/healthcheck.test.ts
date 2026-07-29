@@ -262,3 +262,35 @@ test("healthcheck fails boundedly on timeout and network error", async () => {
     await rm(fixtureDir, { recursive: true, force: true });
   }
 });
+test("cliMain healthcheck rejects --auth-token flag to avoid secret in argv", async () => {
+  await assert.rejects(
+    () => cliMain(["--healthcheck", "--auth-token", "synthetic-token"]),
+    /Option --auth-token cannot be used with --healthcheck/,
+  );
+});
+
+test("cliMain healthcheck throws on unhealthy server so process exits non-zero", async () => {
+  const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "remnic-server-health-"));
+  const closedServer = createServer();
+  await listen(closedServer);
+  const address = closedServer.address();
+  if (!address || typeof address === "string") throw new Error("test server did not bind a TCP port");
+  const closedPort = address.port;
+  await closeServer(closedServer);
+
+  const configPath = await writeConfig(fixtureDir, {
+    authToken: CONFIG_TOKEN,
+    port: closedPort,
+  });
+
+  try {
+    await withHealthEnvironment({ HOME: fixtureDir }, async () => {
+      await assert.rejects(
+        () => cliMain(["--healthcheck", "--config", configPath]),
+        /Server healthcheck failed/,
+      );
+    });
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+});
