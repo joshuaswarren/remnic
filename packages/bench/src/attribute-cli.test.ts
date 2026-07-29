@@ -395,7 +395,7 @@ test("scanMemoryDir skips system directories: state, wearables, activity, meetin
       await writeFile(path.join(dir, "fact.md"), "System fact content", "utf8");
     }
 
-    const normalDir = path.join(tmpDir, "normal");
+    const normalDir = path.join(tmpDir, "facts");
     await mkdir(normalDir, { recursive: true });
     await writeFile(path.join(normalDir, "fact.md"), "Normal memory content", "utf8");
 
@@ -448,21 +448,14 @@ test("scanMemoryDir rejects a symlinked root", async () => {
   }
 });
 
-test("nested dir named meetings under a namespace is scanned while root-level meetings is skipped", async () => {
-  const tmpDir = await mkdtemp(path.join(tmpdir(), "remnic-nested-meetings-"));
+test("scanMemoryDir rejects a namespace root", async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), "remnic-namespace-root-"));
   try {
-    const rootMeetings = path.join(tmpDir, "meetings");
-    await mkdir(rootMeetings, { recursive: true });
-    await writeFile(path.join(rootMeetings, "root.md"), "Root meeting content", "utf8");
-
-    const nestedMeetings = path.join(tmpDir, "namespaces", "meetings");
-    await mkdir(nestedMeetings, { recursive: true });
-    await writeFile(path.join(nestedMeetings, "nested.md"), "--- \nid: mem-nested\n---\nNested meeting memory content", "utf8");
-
-    const memories = await scanMemoryDir(tmpDir);
-    assert.strictEqual(memories.length, 1);
-    assert.strictEqual(memories[0].id, "mem-nested");
-    assert.strictEqual(memories[0].content, "Nested meeting memory content");
+    await mkdir(path.join(tmpDir, "namespaces", "team-a"), { recursive: true });
+    await assert.rejects(
+      () => scanMemoryDir(tmpDir),
+      /must identify one namespace/,
+    );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }

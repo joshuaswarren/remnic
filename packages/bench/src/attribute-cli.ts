@@ -50,6 +50,12 @@ const SKIPPED_SYSTEM_DIRS: Record<string, boolean> = {
   state: true,
   wearables: true,
 };
+const RECALL_ROOT_DIRS: Record<string, boolean> = {
+  corrections: true,
+  entities: true,
+  facts: true,
+  summaries: true,
+};
 
 async function assertReadableMemoryDir(dirPath: string): Promise<void> {
   let rootStats;
@@ -68,6 +74,12 @@ async function assertReadableMemoryDir(dirPath: string): Promise<void> {
 
 export async function scanMemoryDir(dirPath: string): Promise<AttributionMemory[]> {
   await assertReadableMemoryDir(dirPath);
+  const rootEntries = await readdir(dirPath, { withFileTypes: true });
+  for (const entry of rootEntries) {
+    if (entry.isDirectory() && !RECALL_ROOT_DIRS[entry.name] && !SKIPPED_SYSTEM_DIRS[entry.name]) {
+      throw new Error(`memory-dir "${dirPath}" must identify one namespace, not a namespace root`);
+    }
+  }
 
   const memories: AttributionMemory[] = [];
   let unreadableEntries = 0;
