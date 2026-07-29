@@ -1038,7 +1038,7 @@ export class ExtractionRunCoordinator {
           meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_empty_success_liveness_load", false);
           meta.extractionCount += 1;
           meta.lastExtractionAt = new Date().toISOString();
-          await runDeadlineAware(() => storage.saveMeta(meta), "during_empty_success_liveness_save", false);
+          await runDeadlineAware(() => storage.saveMeta(meta!), "during_empty_success_liveness_save", false);
         } catch (err) {
           if (err instanceof ExtractionDeadlineError) throw err;
           if (livenessStampFatal) throw err;
