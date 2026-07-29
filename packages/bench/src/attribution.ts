@@ -164,10 +164,10 @@ export function isTaskFailed(task: { scores?: Record<string, number> }): boolean
   if ("overall" in task.scores && typeof task.scores.overall === "number") {
     return task.scores.overall < 1;
   }
-  const primaryScore = Object.entries(task.scores).find(
-    ([name, score]) => typeof score === "number" && !isDiagnosticScore(name),
-  )?.[1];
-  return primaryScore === undefined || primaryScore < 1;
+  const primaryScores = Object.entries(task.scores)
+    .filter(([name, score]) => typeof score === "number" && !isDiagnosticScore(name))
+    .map(([, score]) => score);
+  return primaryScores.length === 0 || Math.min(...primaryScores) < 1;
 }
 
 export function withMemoizedListMemories(env: AttributionEnvironment): AttributionEnvironment {
@@ -592,7 +592,7 @@ export function renderAttributionReportTable(report: AttributionReport): string 
   const lines: string[] = [];
 
   lines.push(`Attribution Report (Run: ${report.runId})`);
-  lines.push(`Failed-task predicate: primary answer score < 1 (scores.overall or first non-diagnostic score)`);
+  lines.push(`Failed-task predicate: minimum primary answer score < 1 (scores.overall or non-diagnostic scores)`);
   lines.push(`Attributed tasks: ${report.attributedTasks}, Skipped tasks: ${report.skippedTasks.length}`);
   lines.push("");
   lines.push("Totals by Class:");

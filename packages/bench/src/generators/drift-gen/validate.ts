@@ -442,7 +442,12 @@ function checkSessions(
   errors: string[],
 ): void {
   const sessionText = new Map<string, string>();
+  const sessionIds = new Set<string>();
   for (const session of loaded.sessions) {
+    if (sessionIds.has(session.sessionId)) {
+      errors.push(`seed ${loaded.seed}: duplicate sessionId ${session.sessionId}`);
+    }
+    sessionIds.add(session.sessionId);
     if (session.epoch < 1 || session.epoch > epochs) {
       errors.push(`${session.sessionId}: epoch ${session.epoch} out of range`);
     }
