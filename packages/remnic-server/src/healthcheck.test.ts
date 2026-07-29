@@ -294,3 +294,9 @@ test("cliMain healthcheck throws on unhealthy server so process exits non-zero",
     await rm(fixtureDir, { recursive: true, force: true });
   }
 });
+test("cliMain healthcheck rejects --host option", async () => {
+  await assert.rejects(
+    () => cliMain(["--healthcheck", "--host", "127.0.0.1"]),
+    /Option --host cannot be used with --healthcheck/,
+  );
+});

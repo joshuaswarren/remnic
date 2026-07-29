@@ -1158,6 +1158,9 @@ Environment:
     if (args["auth-token"] !== undefined) {
       throw new Error("Option --auth-token cannot be used with --healthcheck; use config or REMNIC_AUTH_TOKEN");
     }
+    if (args.host !== undefined) {
+      throw new Error("Option --host cannot be used with --healthcheck; loopback probing is automatic");
+    }
     const healthy = await runServerHealthcheck({
       configPath: args.config,
       port: args.port === undefined ? undefined : parseServerPort(args.port, "--port"),
