@@ -325,6 +325,10 @@ function specFor(attribute: string): AttributeSpec {
   return spec;
 }
 
+export function formatFactStatement(subject: string, attribute: string, value: string): string {
+  return `${subject} ${specFor(attribute).clause(value)}.`;
+}
+
 function createFreshFact(
   rng: SeededRandom,
   options: ScheduleOptions,
@@ -342,7 +346,7 @@ function createFreshFact(
     return {
       id: `gf-${userId}-${epoch}-${ordinal + 1}`,
       userId,
-      statement: `${subject} ${spec.clause(value)}.`,
+      statement: formatFactStatement(subject, spec.attribute, value),
       subject,
       attribute: spec.attribute,
       value,
@@ -371,7 +375,7 @@ function createSuccessorFact(
   return {
     id: `gf-${oldFact.userId}-${epoch}-${ordinal + 1}`,
     userId: oldFact.userId,
-    statement: `${oldFact.subject} ${spec.clause(value)}.`,
+    statement: formatFactStatement(oldFact.subject, oldFact.attribute, value),
     subject: oldFact.subject,
     attribute: oldFact.attribute,
     value,

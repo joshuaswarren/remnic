@@ -19,7 +19,7 @@ import type {
   GoldFact,
   GoldProbe,
 } from "./types.js";
-import { MIN_DRIFT_GAP } from "./schedule.js";
+import { MIN_DRIFT_GAP, formatFactStatement } from "./schedule.js";
 
 const FACT_COUNT_TOLERANCE = 0.1;
 const RATIO_TOLERANCE = 0.05;
@@ -275,6 +275,13 @@ function checkFactIntegrity(loaded: LoadedSeed, epochs: number, errors: string[]
     errors.push(`seed ${loaded.seed}: duplicate fact ids`);
   }
   for (const fact of loaded.facts) {
+    try {
+      if (fact.statement !== formatFactStatement(fact.subject, fact.attribute, fact.value)) {
+        errors.push(`${fact.id}: statement does not match subject, attribute, and value`);
+      }
+    } catch {
+      errors.push(`${fact.id}: attribute is not recognized`);
+    }
     if (fact.introducedEpoch < 1 || fact.introducedEpoch > epochs) {
       errors.push(`${fact.id}: introducedEpoch ${fact.introducedEpoch} out of range 1..${epochs}`);
     }
