@@ -1421,6 +1421,7 @@ const pluginDefinition = {
       // cfg.bridgeMode is parseConfig's merged file+runtime passthrough, so
       // file-config-only deployments activate delegate too (round-7 High).
       configBridgeMode: cfg.bridgeMode,
+      bridgeHealthTimeoutMs: cfg.bridgeHealthTimeoutMs,
       passive: passiveMode,
       allowPromptInjection:
         coerceRawConfigBoolean(

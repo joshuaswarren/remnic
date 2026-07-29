@@ -6311,6 +6311,13 @@
         ],
         "default": "embedded",
         "description": "Bridge mode: 'embedded' (default) boots the in-process orchestrator; 'delegate' backs memory injection/observe/flush with a running standalone Remnic daemon over HTTP and skips the embedded orchestrator. Explicit-only; REMNIC_BRIDGE_MODE env overrides."
+      },
+      "bridgeHealthTimeoutMs": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120000,
+        "default": 10000,
+        "description": "Total timeout in milliseconds for delegate liveness and older-daemon detailed-health fallback probes."
       }
     }
   },

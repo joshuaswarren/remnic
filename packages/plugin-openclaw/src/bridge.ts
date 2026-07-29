@@ -38,13 +38,15 @@ export interface DaemonAuthToken {
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4318;
+const LIVENESS_PATH = "/engram/v1/live";
 const LEGACY_HEALTH_PATH = "/engram/v1/health";
-const SYNC_HEALTH_TIMEOUT_MS = 2000;
+export const DEFAULT_DAEMON_HEALTH_TIMEOUT_MS = 10_000;
 const HEALTH_WORKER_SOURCE = `
 import { request } from "node:http";
 import { workerData } from "node:worker_threads";
 
 const view = new Int32Array(workerData.state);
+const deadline = workerData.deadline;
 let completed = false;
 
 function finish(ok) {
@@ -54,32 +56,52 @@ function finish(ok) {
   Atomics.notify(view, 0);
 }
 
-try {
-  const headers = {};
-  if (workerData.token) headers.Authorization = "Bearer " + workerData.token;
-  const req = request(
-    {
-      hostname: workerData.host,
-      port: workerData.port,
-      path: workerData.path,
-      method: "GET",
-      timeout: workerData.timeoutMs,
-      headers,
-    },
-    (res) => {
-      finish(res.statusCode === 200);
-      res.resume();
-    },
-  );
-  req.on("error", () => finish(false));
-  req.on("timeout", () => {
-    req.destroy();
+function probe(path, fallbackPath) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
     finish(false);
-  });
-  req.end();
-} catch {
-  finish(false);
+    return;
+  }
+  let responseReceived = false;
+  try {
+    const headers = {};
+    if (workerData.token) headers.Authorization = "Bearer " + workerData.token;
+    const req = request(
+      {
+        hostname: workerData.host,
+        port: workerData.port,
+        path,
+        method: "GET",
+        timeout: remainingMs,
+        headers,
+      },
+      (res) => {
+        responseReceived = true;
+        const statusCode = res.statusCode;
+        res.resume();
+        if (statusCode === 200) {
+          finish(true);
+        } else if (statusCode === 404 && fallbackPath) {
+          probe(fallbackPath, null);
+        } else {
+          finish(false);
+        }
+      },
+    );
+    req.on("error", () => {
+      if (!responseReceived) finish(false);
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      finish(false);
+    });
+    req.end();
+  } catch {
+    finish(false);
+  }
 }
+
+probe(workerData.path, workerData.fallbackPath);
 `;
 const LAUNCHD_SERVICE_PATHS = [
   ["Library", "LaunchAgents", "ai.remnic.daemon.plist"],
@@ -169,8 +191,13 @@ function coerceDaemonPort(value: unknown): number | undefined {
     : undefined;
 }
 
-export function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEALTH_TIMEOUT_MS): boolean {
+export function checkDaemonHealthSync(
+  host: string,
+  port: number,
+  timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
+): boolean {
   if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return false;
+  const deadline = Date.now() + timeoutMs;
 
   let worker: Worker | undefined;
   try {
@@ -182,15 +209,16 @@ export function checkDaemonHealthSync(host: string, port: number, timeoutMs = SY
       workerData: {
         host,
         port,
-        path: LEGACY_HEALTH_PATH,
+        path: LIVENESS_PATH,
+        fallbackPath: LEGACY_HEALTH_PATH,
         token: loadDaemonAuth().token,
-        timeoutMs,
+        deadline,
         state,
       },
     };
     worker = new Worker(workerUrl, workerOptions);
 
-    Atomics.wait(view, 0, 0, timeoutMs + 250);
+    Atomics.wait(view, 0, 0, Math.max(0, deadline - Date.now()));
     const status = Atomics.load(view, 0);
     if (status === 0) void worker.terminate();
     return status === 1;
@@ -412,31 +440,53 @@ export function loadDaemonAuth(): DaemonAuthToken {
 }
 
 /**
- * Check if the daemon is reachable via HTTP health check.
- * Uses the authenticated legacy health endpoint for compatibility.
+ * Check whether the standalone daemon is available for delegated requests.
+ * Falls back to detailed health when the daemon predates the liveness route.
  */
-export async function checkDaemonHealth(host: string, port: number): Promise<boolean> {
+export async function checkDaemonHealth(
+  host: string,
+  port: number,
+  timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
   try {
     const { request } = await import("node:http");
     const token = loadDaemonAuth().token;
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    return new Promise((resolve) => {
-      const req = request(
-        { hostname: host, port, path: LEGACY_HEALTH_PATH, method: "GET", timeout: 2000, headers },
-        (res) => {
-          resolve(res.statusCode === 200);
-          res.resume();
-        },
-      );
-      req.on("error", () => resolve(false));
-      req.on("timeout", () => {
-        req.destroy();
-        resolve(false);
+    const probe = (requestPath: string): Promise<number | undefined> =>
+      new Promise((resolve) => {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          resolve(undefined);
+          return;
+        }
+        let settled = false;
+        const finish = (statusCode: number | undefined): void => {
+          if (settled) return;
+          settled = true;
+          resolve(statusCode);
+        };
+        const req = request(
+          { hostname: host, port, path: requestPath, method: "GET", timeout: remainingMs, headers },
+          (res) => {
+            finish(res.statusCode);
+            res.resume();
+          },
+        );
+        req.on("error", () => finish(undefined));
+        req.on("timeout", () => {
+          req.destroy();
+          finish(undefined);
+        });
+        req.end();
       });
-      req.end();
-    });
+
+    const livenessStatus = await probe(LIVENESS_PATH);
+    if (livenessStatus === 200) return true;
+    if (livenessStatus !== 404) return false;
+    return await probe(LEGACY_HEALTH_PATH) === 200;
   } catch {
     return false;
   }

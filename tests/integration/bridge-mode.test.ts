@@ -27,6 +27,37 @@ server.listen(0, "127.0.0.1", () => {
 
 setInterval(() => {}, 1000);
 `;
+const LIVENESS_SERVER_WORKER_SOURCE = `
+import { createServer } from "node:http";
+import { workerData } from "node:worker_threads";
+
+const view = new Int32Array(workerData.state);
+const server = createServer((req, res) => {
+  Atomics.store(view, 2, req.url === "/engram/v1/live" ? 1 : 2);
+  if (workerData.legacy) {
+    res.writeHead(req.url === "/engram/v1/health" ? 200 : 404);
+    res.end();
+    return;
+  }
+  if (req.url === "/engram/v1/live") {
+    res.writeHead(200);
+    res.end();
+    return;
+  }
+  setTimeout(() => {
+    res.writeHead(200);
+    res.end();
+  }, 3_000);
+});
+
+server.listen(0, "127.0.0.1", () => {
+  Atomics.store(view, 1, server.address().port);
+  Atomics.store(view, 0, 1);
+  Atomics.notify(view, 0);
+});
+
+setInterval(() => {}, 1000);
+`;
 
 // ---------------------------------------------------------------------------
 // Bridge mode detection — packages/plugin-openclaw/src/bridge.ts
@@ -82,6 +113,98 @@ test("checkDaemonHealth returns false when nothing is listening", async () => {
   const { checkDaemonHealth } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
   const healthy = await checkDaemonHealth("127.0.0.1", 49999);
   assert.equal(healthy, false);
+});
+
+test("daemon health timeout default exceeds the server diagnostic deadline", async () => {
+  const { DEFAULT_DAEMON_HEALTH_TIMEOUT_MS } = await import(
+    path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts")
+  );
+  assert.ok(DEFAULT_DAEMON_HEALTH_TIMEOUT_MS > 2_000);
+});
+
+test("checkDaemonHealth uses liveness without waiting for detailed health", async () => {
+  const paths: string[] = [];
+  const server = createServer((req, res) => {
+    paths.push(req.url ?? "");
+    if (req.url === "/engram/v1/live") {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    setTimeout(() => {
+      res.writeHead(200);
+      res.end();
+    }, 500);
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const { checkDaemonHealth } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    assert.equal(await checkDaemonHealth("127.0.0.1", port, 100), true);
+    assert.deepEqual(paths, ["/engram/v1/live"]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("checkDaemonHealthSync uses liveness without waiting for detailed health", async () => {
+  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3);
+  const view = new Int32Array(state);
+  const serverWorker = new Worker(
+    new URL(`data:text/javascript,${encodeURIComponent(LIVENESS_SERVER_WORKER_SOURCE)}`),
+    { workerData: { state } },
+  );
+  Atomics.wait(view, 0, 0, 1_000);
+  const port = Atomics.load(view, 1);
+  assert.ok(port > 0);
+
+  try {
+    const { checkDaemonHealthSync } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    assert.equal(checkDaemonHealthSync("127.0.0.1", port, 2_500), true);
+    assert.equal(Atomics.load(view, 2), 1);
+  } finally {
+    await serverWorker.terminate();
+  }
+});
+
+test("checkDaemonHealthSync falls back to detailed health for older daemons", async () => {
+  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3);
+  const view = new Int32Array(state);
+  const serverWorker = new Worker(
+    new URL(`data:text/javascript,${encodeURIComponent(LIVENESS_SERVER_WORKER_SOURCE)}`),
+    { workerData: { state, legacy: true } },
+  );
+  Atomics.wait(view, 0, 0, 1_000);
+  const port = Atomics.load(view, 1);
+  assert.ok(port > 0);
+
+  try {
+    const { checkDaemonHealthSync } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    assert.equal(checkDaemonHealthSync("127.0.0.1", port, 2_500), true);
+    assert.equal(Atomics.load(view, 2), 2);
+  } finally {
+    await serverWorker.terminate();
+  }
+});
+
+test("checkDaemonHealth falls back to detailed health for older daemons", async () => {
+  const paths: string[] = [];
+  const server = createServer((req, res) => {
+    paths.push(req.url ?? "");
+    res.writeHead(req.url === "/engram/v1/health" ? 200 : 404);
+    res.end();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const { checkDaemonHealth } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    assert.equal(await checkDaemonHealth("127.0.0.1", port, 100), true);
+    assert.deepEqual(paths, ["/engram/v1/live", "/engram/v1/health"]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
 
 test("checkDaemonHealth falls back to legacy token file when remnic tokens are malformed", async () => {

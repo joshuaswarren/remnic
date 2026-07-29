@@ -15,7 +15,13 @@ async function fetchHealth(port: number, authorization?: string): Promise<Respon
   });
 }
 
-test("health stays at 503 until the startup warm-up completes, then resumes auth responses", async () => {
+async function fetchLiveness(port: number, authorization?: string): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}/engram/v1/live`, {
+    headers: authorization ? { authorization } : undefined,
+  });
+}
+
+test("health and liveness stay at 503 until warm-up completes, then resume auth responses", async () => {
   const warmup = Promise.withResolvers<void>();
   const readiness = { ready: false, warmupAttempts: 0 };
   const service = {
@@ -52,6 +58,9 @@ test("health stays at 503 until the startup warm-up completes, then resumes auth
       lastError: null,
       code: "not_ready",
     });
+    const coldLiveness = await fetchLiveness(status.port);
+    assert.equal(coldLiveness.status, 503);
+    assert.equal((await coldLiveness.json() as { code?: string }).code, "not_ready");
 
     warmup.resolve();
     await readinessTask;
@@ -61,6 +70,10 @@ test("health stays at 503 until the startup warm-up completes, then resumes auth
       (await fetchHealth(status.port, "Bearer test-token")).status,
       200,
     );
+    assert.equal((await fetchLiveness(status.port)).status, 401);
+    const liveResponse = await fetchLiveness(status.port, "Bearer test-token");
+    assert.equal(liveResponse.status, 200);
+    assert.deepEqual(await liveResponse.json(), { ok: true, ready: true });
   } finally {
     warmup.resolve();
     shutdown.abort();

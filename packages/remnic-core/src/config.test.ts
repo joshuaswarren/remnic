@@ -2412,3 +2412,12 @@ test("parseConfig forwards bridgeMode as a raw passthrough (validation is in res
   // silently defaulting to embedded.
   assert.equal(parseConfig({ bridgeMode: true }).bridgeMode, "true");
 });
+
+test("parseConfig bounds the delegate health timeout above a safe default", () => {
+  const defaultTimeoutMs = parseConfig({}).bridgeHealthTimeoutMs;
+  assert.equal(defaultTimeoutMs, 10_000);
+  assert.ok(defaultTimeoutMs > 2_000);
+  assert.equal(parseConfig({ bridgeHealthTimeoutMs: "7500" }).bridgeHealthTimeoutMs, 7_500);
+  assert.equal(parseConfig({ bridgeHealthTimeoutMs: 0 }).bridgeHealthTimeoutMs, 1);
+  assert.equal(parseConfig({ bridgeHealthTimeoutMs: 300_000 }).bridgeHealthTimeoutMs, 120_000);
+});

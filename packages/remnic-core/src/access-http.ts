@@ -806,7 +806,10 @@ export class EngramAccessHttpServer {
       return;
     }
 
-    if (req.method === "GET" && pathname === "/engram/v1/health") {
+    if (
+      req.method === "GET" &&
+      (pathname === "/engram/v1/live" || pathname === "/engram/v1/health")
+    ) {
       const { ready, warmupAttempts, lastError } = this.readiness();
       if (!ready) {
         this.respondJson(res, 503, {
@@ -888,6 +891,10 @@ export class EngramAccessHttpServer {
       return;
     }
 
+    if (req.method === "GET" && pathname === "/engram/v1/live") {
+      this.respondJson(res, 200, { ok: true, ready: true });
+      return;
+    }
     if (req.method === "GET" && pathname === "/engram/v1/health") {
       const { degraded, warmupAttempts, lastError } = this.readiness();
       const health = await this.service.health();
