@@ -1018,9 +1018,23 @@ export class ExtractionRunCoordinator {
       if (extractionFingerprint && shouldPersistProcessedFingerprint && !extractionFailure) {
         meta ??= await storage.loadMeta();
         await this.deps.recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta);
-        meta.extractionCount += 1;
-        meta.lastExtractionAt = new Date().toISOString();
-        await storage.saveMeta(meta);
+      }
+      // A successfully parsed extraction advances the liveness watermark even
+      // when it emits no durable objects (#2223). Normal live turns do not set
+      // persistProcessedFingerprint, so the stamp above was skipped and the
+      // watermark stayed stale while the buffer cleared and retry state healed.
+      // Null/unparseable responses return before this branch; a non-empty
+      // extractionFailure must not advance it.
+      if (!extractionFailure) {
+        try {
+          meta ??= await storage.loadMeta();
+          meta.extractionCount += 1;
+          meta.lastExtractionAt = new Date().toISOString();
+          await storage.saveMeta(meta);
+        } catch (err) {
+          if (err instanceof ExtractionDeadlineError) throw err;
+          log.warn("runExtraction: failed to stamp empty-success extraction liveness (non-fatal)", err);
+        }
       }
       // Correction-only turns that meet char/user-turn thresholds but yield
       // zero facts still need passive capture (review: "empty extraction skips

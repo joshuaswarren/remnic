@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Extraction liveness watermark now advances on every successfully parsed
+  extraction, including runs that emit no durable facts/entities/questions
+  (issue #2223). Previously a normal live extraction with an all-empty parsed
+  result cleared its buffer and healed retry state without stamping
+  `MetaState.lastExtractionAt`, so `/health.extraction` could report a stale
+  last success and `degraded: true` while extraction was actually alive.
+  Provider-reported failures and null/unparseable responses never advance the
+  watermark.
+
 ## [v9.38.0] — 2026-07-29
 
 ### Added
