@@ -57,3 +57,24 @@ test("day summary surfaces invalid local LLM output when fallback is disabled", 
     /day summary generation failed: local LLM returned invalid JSON/,
   );
 });
+
+test("day summary reports invalid local LLM payloads distinctly", async () => {
+  const config = parseConfig({
+    memoryDir: ".tmp/memory",
+    workspaceDir: ".tmp/workspace",
+    openaiApiKey: "test-key",
+    localLlmEnabled: true,
+    localLlmFallback: false,
+  });
+  const localLlm = {
+    async chatCompletion() {
+      return { content: "{}" };
+    },
+  };
+  const engine = new ExtractionEngine(config, undefined, localLlm as any);
+
+  await assert.rejects(
+    () => engine.generateDaySummary("A durable memory."),
+    /day summary generation failed: local LLM returned invalid day-summary payload/,
+  );
+});

@@ -1557,6 +1557,28 @@ test("MCP transcript_day rejects invalid calendar dates before service dispatch"
   assert.equal(called, false);
 });
 
+test("MCP transcript_day accepts valid leap days", async () => {
+  let receivedDate: string | undefined;
+  const service = {
+    ...createFakeService(),
+    wearablesTranscriptDay: async (request: Parameters<EngramAccessService["wearablesTranscriptDay"]>[0]) => {
+      receivedDate = request.date;
+      return [];
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name: "engram.transcript_day", arguments: { date: "2024-02-29" } },
+  });
+  const result = fieldOf(response, "result");
+  assert.equal(fieldOf(result, "isError"), false);
+  assert.equal(receivedDate, "2024-02-29");
+});
+
 
 test("AJV: structuredContent validates against declared outputSchema for representative tools", async () => {
   const ajv = new Ajv({ strict: false });
