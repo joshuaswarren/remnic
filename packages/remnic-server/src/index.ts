@@ -1053,6 +1053,10 @@ export async function runServerHealthcheck(options?: {
   port?: number;
   timeoutMs?: number;
 }): Promise<boolean> {
+  const timeoutMs = options?.timeoutMs ?? HEALTHCHECK_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || !Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("Invalid timeoutMs: expected a positive integer");
+  }
   const { parsedServerConfig } = resolveEffectiveServerRuntimeConfig({
     configPath: options?.configPath,
     port: options?.port,
@@ -1060,7 +1064,6 @@ export async function runServerHealthcheck(options?: {
   const token = resolveHealthcheckToken(parsedServerConfig.authToken);
   if (!token) return false;
 
-  const timeoutMs = options?.timeoutMs ?? HEALTHCHECK_TIMEOUT_MS;
   try {
     const response = await fetch(
       `http://127.0.0.1:${parsedServerConfig.port}/engram/v1/health`,

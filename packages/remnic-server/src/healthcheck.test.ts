@@ -199,13 +199,15 @@ test("healthcheck does not reuse a revoked persisted token", async () => {
   const harness = await listenForHealthRequest({ expectedToken: ORDINARY_TOKEN });
   const configPath = await writeConfig(fixtureDir, { port: harness.port });
   await writeTokenStore(fixtureDir, [{ token: ORDINARY_TOKEN, connector: "generic-mcp" }]);
-  await writeTokenStore(fixtureDir, []);
 
   try {
     await withHealthEnvironment({ HOME: fixtureDir }, async () => {
+      assert.equal(await runServerHealthcheck({ configPath }), true);
+      await writeTokenStore(fixtureDir, []);
       assert.equal(await runServerHealthcheck({ configPath }), false);
     });
-    assert.deepEqual(harness.requests, []);
+    assert.equal(harness.requests.length, 1);
+    assert.equal(harness.requests[0]?.authorization, `Bearer ${ORDINARY_TOKEN}`);
   } finally {
     await harness.close();
     await rm(fixtureDir, { recursive: true, force: true });
@@ -259,6 +261,30 @@ test("healthcheck fails boundedly on timeout and network error", async () => {
       assert.equal(await runServerHealthcheck({ configPath: networkConfig, timeoutMs: 100 }), false);
     });
   } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test("healthcheck rejects invalid timeoutMs before making a request", async () => {
+  const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "remnic-server-health-"));
+  const harness = await listenForHealthRequest({ expectedToken: CONFIG_TOKEN });
+  const configPath = await writeConfig(fixtureDir, {
+    authToken: CONFIG_TOKEN,
+    port: harness.port,
+  });
+
+  try {
+    await withHealthEnvironment({ HOME: fixtureDir }, async () => {
+      for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        await assert.rejects(
+          () => runServerHealthcheck({ configPath, timeoutMs }),
+          /Invalid timeoutMs: expected a positive integer/,
+        );
+      }
+    });
+    assert.deepEqual(harness.requests, []);
+  } finally {
+    await harness.close();
     await rm(fixtureDir, { recursive: true, force: true });
   }
 });
