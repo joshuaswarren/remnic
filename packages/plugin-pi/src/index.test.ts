@@ -920,10 +920,7 @@ test("before_agent_start injects cached recall across successive turns in the sa
 });
 
 test("direct legacy config receives recall breaker defaults", () => {
-  const config = { ...baseConfig() } as Record<string, unknown>;
-  delete config.recallTimeoutThreshold;
-  delete config.recallTimeoutWindow;
-  const legacyConfig = config as unknown as RemnicPiConfig;
+  const { recallTimeoutThreshold: _threshold, recallTimeoutWindow: _window, ...legacyConfig } = baseConfig();
 
   assert.doesNotThrow(() => createRemnicPiExtension({ config: legacyConfig }));
 });

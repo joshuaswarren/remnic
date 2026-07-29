@@ -28,8 +28,11 @@ export type PiApi = {
   appendEntry<T = unknown>(customType: string, data?: T): void;
 };
 
+export type RemnicPiConfigInput = Omit<RemnicPiConfig, "recallTimeoutThreshold" | "recallTimeoutWindow"> &
+  Partial<Pick<RemnicPiConfig, "recallTimeoutThreshold" | "recallTimeoutWindow">>;
+
 export interface RemnicPiExtensionOptions extends LoadConfigOptions {
-  config?: RemnicPiConfig;
+  config?: RemnicPiConfigInput;
 }
 
 const STATE_CUSTOM_TYPE = "remnic_state";
@@ -92,7 +95,7 @@ export function resetProcessRecallBreakerForTest(
 }
 
 export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) {
-  const config = { ...DEFAULT_CONFIG, ...(options.config ?? loadConfig(options)) };
+  const config: RemnicPiConfig = { ...DEFAULT_CONFIG, ...(options.config ?? loadConfig(options)) };
   const client = new RemnicClient(config);
   const sessionStates = new Map<string, PiSessionState>();
   const breakerKey = recallTimeoutBreakerCacheKey(config);
