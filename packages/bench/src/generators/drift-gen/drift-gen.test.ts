@@ -155,6 +155,27 @@ test("validator rejects tampered data (hash mismatch) and broken links", async (
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("validator rejects overlapping active fact lifecycles", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-overlap-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    const relativePath = `${SMALL.seed}/gold/facts.jsonl`;
+    const factsPath = path.join(dir, relativePath);
+    const lines = (await readFile(factsPath, "utf8")).trim().split("\n");
+    const first = JSON.parse(lines[0]) as GoldFact;
+    const duplicate = { ...first, id: `${first.id}-overlap`, supersededBy: null, supersededEpoch: null };
+    lines.push(JSON.stringify(duplicate));
+    await writeFile(factsPath, `${lines.join("\n")}\n`, "utf8");
+    await rehashManifestFile(dir, relativePath);
+
+    const report = await validateDriftCorpus(dir);
+    assert.equal(report.ok, false);
+    assert.ok(report.errors.some((error) => error.includes("overlaps active lifecycle")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 test("validator rejects rehashed probes whose answers disagree with referenced facts", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-answer-tamper-"));
   try {
