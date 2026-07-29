@@ -1027,10 +1027,10 @@ export class ExtractionRunCoordinator {
       // extractionFailure must not advance it. A failed meta save propagates so
       // the buffer is retained for retry, mirroring the fingerprint-stamp path.
       if (!extractionFailure) {
-        meta ??= await storage.loadMeta();
+        meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_empty_success_liveness_load", false);
         meta.extractionCount += 1;
         meta.lastExtractionAt = new Date().toISOString();
-        await storage.saveMeta(meta);
+        await runDeadlineAware(() => storage.saveMeta(meta), "during_empty_success_liveness_save", false);
       }
       // Correction-only turns that meet char/user-turn thresholds but yield
       // zero facts still need passive capture (review: "empty extraction skips
