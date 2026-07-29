@@ -1024,17 +1024,13 @@ export class ExtractionRunCoordinator {
       // persistProcessedFingerprint, so the stamp above was skipped and the
       // watermark stayed stale while the buffer cleared and retry state healed.
       // Null/unparseable responses return before this branch; a non-empty
-      // extractionFailure must not advance it.
+      // extractionFailure must not advance it. A failed meta save propagates so
+      // the buffer is retained for retry, mirroring the fingerprint-stamp path.
       if (!extractionFailure) {
-        try {
-          meta ??= await storage.loadMeta();
-          meta.extractionCount += 1;
-          meta.lastExtractionAt = new Date().toISOString();
-          await storage.saveMeta(meta);
-        } catch (err) {
-          if (err instanceof ExtractionDeadlineError) throw err;
-          log.warn("runExtraction: failed to stamp empty-success extraction liveness (non-fatal)", err);
-        }
+        meta ??= await storage.loadMeta();
+        meta.extractionCount += 1;
+        meta.lastExtractionAt = new Date().toISOString();
+        await storage.saveMeta(meta);
       }
       // Correction-only turns that meet char/user-turn thresholds but yield
       // zero facts still need passive capture (review: "empty extraction skips
