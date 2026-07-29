@@ -52,6 +52,6 @@ VOLUME ["/data"]
 EXPOSE 4318
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=5 \
-  CMD node -e "const headers={}; if (process.env.REMNIC_AUTH_TOKEN) headers.authorization='Bearer '+process.env.REMNIC_AUTH_TOKEN; fetch('http://127.0.0.1:4318/engram/v1/health',{headers}).then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD ["node", "packages/remnic-server/bin/remnic-server.js", "--healthcheck", "--port", "4318"]
 
 CMD ["node", "packages/remnic-server/bin/remnic-server.js", "--host", "0.0.0.0", "--port", "4318"]
