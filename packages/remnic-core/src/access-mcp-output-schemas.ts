@@ -53,10 +53,10 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     sources: T_ARRAY,
     connectorsInstalled: T_ARRAY,
   }),
-  wearables_sync: T_ARRAY,
-  transcript_day: T_ARRAY,
-  transcript_search: T_ARRAY,
-  transcript_memories: T_ARRAY,
+  wearables_sync: objectSchema({ summaries: T_ARRAY }),
+  transcript_day: objectSchema({ transcripts: T_ARRAY }),
+  transcript_search: objectSchema({ results: T_ARRAY }),
+  transcript_memories: objectSchema({ memories: T_ARRAY }),
   meetings_list: objectSchema({ enabled: T_BOOLEAN, days: T_ARRAY }),
   meetings_get: objectSchema({ enabled: T_BOOLEAN, found: T_BOOLEAN, id: T_STRING, record: T_NULLABLE_STRING }),
   meetings_build: objectSchema({
@@ -83,11 +83,12 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     scopeMismatchCount: T_NUMBER,
     safeToAct: T_BOOLEAN,
   }),
-  day_summary: {
-    type: ["object", "null"],
-    properties: { summary: T_STRING, bullets: T_ARRAY, next_actions: T_ARRAY, risks_or_open_loops: T_ARRAY },
-    additionalProperties: true,
-  },
+  day_summary: objectSchema({
+    summary: T_STRING,
+    bullets: T_ARRAY,
+    next_actions: T_ARRAY,
+    risks_or_open_loops: T_ARRAY,
+  }),
   capsule_export: objectSchema({
     archivePath: T_STRING,
     manifestPath: T_STRING,
