@@ -19,7 +19,7 @@ import type {
   GoldFact,
   GoldProbe,
 } from "./types.js";
-import { MIN_DRIFT_GAP, formatFactStatement } from "./schedule.js";
+import { ATTRIBUTE_SPECS, MIN_DRIFT_GAP, formatFactStatement } from "./schedule.js";
 import { epochDate } from "./render.js";
 
 const FACT_COUNT_TOLERANCE = 0.1;
@@ -317,6 +317,7 @@ function checkFactIntegrity(loaded: LoadedSeed, epochs: number, errors: string[]
         errors.push(`${fact.id}: successor ${successor.id} belongs to a different user`);
       }
       if (successor.value === fact.value) {
+
         errors.push(`${fact.id}: successor ${successor.id} repeats the same value`);
       }
     }
@@ -349,6 +350,29 @@ function expectedProbeAnswer(probe: GoldProbe, facts: GoldFact[]): string | null
       return facts.length === 2 ? `from ${facts[0]!.value} to ${facts[1]!.value}` : null;
     case "aggregation":
       return facts.map((fact) => fact.value).join("; ");
+  }
+}
+
+function expectedProbeQuestion(probe: GoldProbe, facts: GoldFact[]): string | null {
+  if (probe.category === "aggregation") {
+    const parts = facts.map((fact) => {
+      const spec = ATTRIBUTE_SPECS.find(({ attribute }) => attribute === fact.attribute);
+      return spec ? `what is ${fact.subject}'s ${spec.noun}` : null;
+    });
+    return parts.every((part): part is string => part !== null)
+      ? `Answer in order: ${parts.join("; ")}?`
+      : null;
+  }
+  if (facts.length === 0) return null;
+  const spec = ATTRIBUTE_SPECS.find(({ attribute }) => attribute === facts[0]!.attribute);
+  if (!spec) return null;
+  switch (probe.category) {
+    case "current":
+      return spec.questionCurrent(facts[0]!.subject);
+    case "historical":
+      return spec.questionHistorical(facts[0]!.subject);
+    case "transition":
+      return spec.questionTransition(facts[0]!.subject);
   }
 }
 
@@ -404,6 +428,10 @@ function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[
       const expectedAnswer = expectedProbeAnswer(probe, requiredFacts);
       if (expectedAnswer !== null && probe.expectedAnswer !== expectedAnswer) {
         errors.push(`${probe.id}: expectedAnswer does not match the referenced facts`);
+      }
+      const expectedQuestion = expectedProbeQuestion(probe, requiredFacts);
+      if (expectedQuestion !== null && probe.question !== expectedQuestion) {
+        errors.push(`${probe.id}: question does not match the referenced facts`);
       }
       if (
         probe.category === "transition" &&

@@ -271,13 +271,12 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
           file: relPath,
           line: lineNum,
           rule: "email",
-          message: `Non-synthetic email address found: "${em.slice(0, 2)}…" (${em.length} chars, redacted)`,
+          message: `Non-synthetic email address found (${em.length} chars, redacted)`,
         });
       }
     }
 
-    // API key check. Never echo the matched token: CI logs would duplicate a
-    // real credential. Report a short prefix and length only.
+    // API key check. Never echo the matched token: CI logs must not disclose credentials.
     for (const apiRe of API_KEY_REGEXES) {
       const match = line.match(apiRe);
       if (match) {
@@ -286,7 +285,7 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
           file: relPath,
           line: lineNum,
           rule: "api-key",
-          message: `API key shape detected: "${token.slice(0, 6)}…" (${token.length} chars, redacted)`,
+          message: `API key shape detected (${token.length} chars, redacted)`,
         });
       }
     }
@@ -299,7 +298,7 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
         file: relPath,
         line: lineNum,
         rule: "phone",
-        message: `Phone number detected: "${phoneVal.slice(0, 2)}…" (${phoneVal.length} chars, redacted)`,
+        message: `Phone number detected (${phoneVal.length} chars, redacted)`,
       });
     }
 

@@ -36,8 +36,9 @@ test("detects email address rule class in temp dir", () => {
     const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[email\]/);
-    assert.match(res.stderr, /al\u2026/);
-    assert.ok(!res.stderr.includes("alice@realcompany.com"), "full email must never be echoed");
+    assert.doesNotMatch(res.stderr, /al\u2026/);
+    assert.match(res.stderr, /Non-synthetic email address found \(21 chars, redacted\)/);
+    assert.ok(!res.stderr.includes("alice@realcompany.com"), "email must never be echoed");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -77,12 +78,15 @@ test("detects API key rule class in temp dir", () => {
     const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[api-key\]/);
-    assert.match(res.stderr, new RegExp(`${FAKE_SK.slice(0, 6)}\\u2026`));
-    assert.match(res.stderr, new RegExp(`${FAKE_GHP.slice(0, 6)}\\u2026`));
-    assert.match(res.stderr, new RegExp(`${FAKE_AKIA.slice(0, 6)}\\u2026`));
-    assert.ok(!res.stderr.includes(FAKE_SK), "full token must never be echoed");
-    assert.ok(!res.stderr.includes(FAKE_GHP), "full token must never be echoed");
-    assert.ok(!res.stderr.includes(FAKE_AKIA), "full token must never be echoed");
+    assert.doesNotMatch(res.stderr, new RegExp(`${FAKE_SK.slice(0, 6)}\\u2026`));
+    assert.match(res.stderr, /API key shape detected \(27 chars, redacted\)/);
+    assert.match(res.stderr, /API key shape detected \(40 chars, redacted\)/);
+    assert.match(res.stderr, /API key shape detected \(20 chars, redacted\)/);
+    assert.doesNotMatch(res.stderr, new RegExp(`${FAKE_GHP.slice(0, 6)}\\u2026`));
+    assert.doesNotMatch(res.stderr, new RegExp(`${FAKE_AKIA.slice(0, 6)}\\u2026`));
+    assert.ok(!res.stderr.includes(FAKE_SK), "token must never be echoed");
+    assert.ok(!res.stderr.includes(FAKE_GHP), "token must never be echoed");
+    assert.ok(!res.stderr.includes(FAKE_AKIA), "token must never be echoed");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -98,8 +102,9 @@ test("detects phone number rule class in temp dir", () => {
     const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[phone\]/);
-    assert.match(res.stderr, /55\u2026/);
-    assert.ok(!res.stderr.includes("555-867-5309"), "full phone number must never be echoed");
+    assert.doesNotMatch(res.stderr, /55\u2026/);
+    assert.match(res.stderr, /Phone number detected \(12 chars, redacted\)/);
+    assert.ok(!res.stderr.includes("555-867-5309"), "phone number must never be echoed");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

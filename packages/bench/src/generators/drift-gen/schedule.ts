@@ -256,10 +256,12 @@ function validateScheduleOptions(options: ScheduleOptions): void {
     throw new Error("drift-gen driftingRatio + contradictedRatio must not exceed 1");
   }
   const pairCapacity = (CONTACTS_PER_USER + 1) * ATTRIBUTE_SPECS.length;
-  const worstCaseFresh = options.epochs * options.factsPerEpoch;
-  if (worstCaseFresh > pairCapacity) {
+  const maxActivePairs = options.contradictedRatio === 1
+    ? options.factsPerEpoch
+    : options.epochs * options.factsPerEpoch;
+  if (maxActivePairs > pairCapacity) {
     throw new Error(
-      `drift-gen cannot allocate ${worstCaseFresh} facts per user: only ${pairCapacity} unique subject/attribute pairs exist. Lower epochs or factsPerEpoch.`,
+      `drift-gen cannot allocate ${maxActivePairs} active facts per user: only ${pairCapacity} unique subject/attribute pairs exist.`,
     );
   }
 }
@@ -356,6 +358,25 @@ function createFreshFact(
       kind: rollKind(rng, options, epoch),
       probes: [],
     };
+  }
+  for (const subject of subjects) {
+    for (const spec of ATTRIBUTE_SPECS) {
+      if (activeByPair.has(`${subject}|${spec.attribute}`)) continue;
+      const value = pickOne(rng, spec.values);
+      return {
+        id: `gf-${userId}-${epoch}-${ordinal + 1}`,
+        userId,
+        statement: formatFactStatement(subject, spec.attribute, value),
+        subject,
+        attribute: spec.attribute,
+        value,
+        introducedEpoch: epoch,
+        supersededEpoch: null,
+        supersededBy: null,
+        kind: rollKind(rng, options, epoch),
+        probes: [],
+      };
+    }
   }
   throw new Error(
     "drift-gen exhausted unique subject/attribute pairs; lower factsPerEpoch or epochs",
