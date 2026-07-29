@@ -1027,10 +1027,23 @@ export class ExtractionRunCoordinator {
       // extractionFailure must not advance it. A failed meta save propagates so
       // the buffer is retained for retry, mirroring the fingerprint-stamp path.
       if (!extractionFailure) {
-        meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_empty_success_liveness_load", false);
-        meta.extractionCount += 1;
-        meta.lastExtractionAt = new Date().toISOString();
-        await runDeadlineAware(() => storage.saveMeta(meta), "during_empty_success_liveness_save", false);
+        // Fingerprinted/import runs need the meta save to succeed (dedupe
+        // state), so a failure propagates and retains the buffer
+        // (orchestrator-flush contract). Normal live turns treat the stamp as
+        // diagnostic liveness only and fail open, so an ordinary empty session
+        // does not accumulate solely because the watermark could not be
+        // written. Deadline errors always propagate.
+        const livenessStampFatal = shouldPersistProcessedFingerprint;
+        try {
+          meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_empty_success_liveness_load", false);
+          meta.extractionCount += 1;
+          meta.lastExtractionAt = new Date().toISOString();
+          await runDeadlineAware(() => storage.saveMeta(meta), "during_empty_success_liveness_save", false);
+        } catch (err) {
+          if (err instanceof ExtractionDeadlineError) throw err;
+          if (livenessStampFatal) throw err;
+          log.warn("runExtraction: failed to stamp empty-success liveness watermark (non-fatal)", err);
+        }
       }
       // Correction-only turns that meet char/user-turn thresholds but yield
       // zero facts still need passive capture (review: "empty extraction skips
