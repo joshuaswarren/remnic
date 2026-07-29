@@ -339,10 +339,6 @@ function registerCommands(
   pi.registerCommand("remnic-why", {
     description: "Explain the last Remnic recall",
     handler: commandHandler(async (_args, _ctx, session) => {
-      if (recallTimeoutBreaker.isTripped()) {
-        notifyRecallDisabled(session);
-        return;
-      }
       const result = await client.recallExplain(session.sessionKey);
       session.notify(JSON.stringify(result, null, 2), "info");
     }),

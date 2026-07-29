@@ -1474,7 +1474,15 @@ test("MCP recall diagnostics remain available after the recall timeout breaker t
     }
     return new Response(JSON.stringify({ result: { summary: "last recall" } }), { status: 200 });
   };
-  t.after(() => { globalThis.fetch = originalFetch; });
+  t.after(() => {
+    resetProcessRecallBreakerForTest({
+      ...baseConfig(),
+      authToken: "test-token",
+      recallTimeoutThreshold: 1,
+      recallTimeoutWindow: 1,
+    });
+    globalThis.fetch = originalFetch;
+  });
 
   const registeredTools: Record<string, unknown>[] = [];
   const extension = createRemnicPiExtension({
@@ -1516,6 +1524,50 @@ test("MCP recall diagnostics remain available after the recall timeout breaker t
   );
   const diagnosticResult = await explainExecute("call-2", {}, undefined, undefined, context);
   assert.match(JSON.stringify(diagnosticResult), /last recall/);
+});
+
+test("remnic-why remains available after the recall timeout breaker trips", async (t) => {
+  const config = {
+    ...baseConfig(),
+    authToken: "why-test-token",
+    recallEnabled: false,
+    observeEnabled: false,
+    compactionEnabled: false,
+    mcpToolsEnabled: false,
+    statusEnabled: false,
+    requestTimeoutMs: 2,
+    recallTimeoutThreshold: 1,
+    recallTimeoutWindow: 1,
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/engram/v1/recall")) {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+        );
+      });
+    }
+    return new Response(JSON.stringify({ summary: "last recall" }), { status: 200 });
+  };
+  t.after(() => {
+    resetProcessRecallBreakerForTest(config);
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, runCommand } = makePiHarness();
+  await createRemnicPiExtension({ config })(pi);
+  const notifications: Array<{ message: string; level: string }> = [];
+  const context = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: (message: string, level: string) => notifications.push({ message, level }) },
+    sessionManager: { getSessionId: () => "why-diagnostic" },
+  };
+
+  await runCommand("remnic-recall", "trip", context);
+  await runCommand("remnic-why", "", context);
+
+  assert.deepEqual(notifications.at(-1), { message: JSON.stringify({ summary: "last recall" }, null, 2), level: "info" });
 });
 
 function baseConfig(): RemnicPiConfig {
