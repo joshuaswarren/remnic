@@ -56,13 +56,6 @@ type ExtractedFactResult = ExtractionResult["facts"][number];
 type ExtractedEntityResult = ExtractionResult["entities"][number];
 type ExtractedRelationshipResult = NonNullable<ExtractionResult["relationships"]>[number];
 
-class DaySummaryGenerationError extends Error {
-  constructor(reason: string) {
-    super(`day summary generation failed: ${reason}`);
-    this.name = "DaySummaryGenerationError";
-  }
-}
-
 const PROACTIVE_MIN_CONFIDENCE = 0.8;
 const EXTRACTION_RESPONSE_SHAPE = `{
   "facts": [{
@@ -2727,27 +2720,22 @@ Return valid JSON only.` },
             priority: "background",
           },
         );
-        const parsed = this.parseJsonObject(localResponse?.content);
-        const normalized = this.normalizeDaySummaryResult(parsed);
+        const normalized = this.normalizeDaySummaryResult(this.parseJsonObject(localResponse?.content));
         if (normalized) {
           this.emit({ kind: "llm_end", traceId, model: this.config.localLlmModel, operation: "day_summary", durationMs: Date.now() - startedAt, output: JSON.stringify(normalized).slice(0, 2000) });
           log.debug(`generated day summary via local LLM (${normalized.bullets.length} bullets)`);
           return normalized;
         }
         if (!this.config.localLlmFallback) {
-          const failureReason = parsed === null
-            ? "local LLM returned invalid JSON"
-            : "local LLM returned invalid day-summary payload";
-          this.emit({ kind: "llm_error", traceId, model: this.config.localLlmModel, operation: "day_summary", durationMs: Date.now() - startedAt, error: `${failureReason} and fallback disabled` });
-          log.warn(`day summary failed — ${failureReason} and fallback disabled`);
-          throw new DaySummaryGenerationError(failureReason);
+          this.emit({ kind: "llm_error", traceId, model: this.config.localLlmModel, operation: "day_summary", durationMs: Date.now() - startedAt, error: "local LLM returned invalid JSON and fallback disabled" });
+          log.warn("day summary skipped — local LLM returned invalid JSON and fallback disabled");
+          return null;
         }
       } catch (err) {
-        if (err instanceof DaySummaryGenerationError) throw err;
         if (!this.config.localLlmFallback) {
           this.emit({ kind: "llm_error", traceId, model: this.config.localLlmModel, operation: "day_summary", durationMs: Date.now() - startedAt, error: String(err) });
-          log.warn(`day summary failed — local LLM failed and fallback disabled: ${err}`);
-          throw new DaySummaryGenerationError("local LLM request failed");
+          log.warn(`day summary skipped — local LLM failed and fallback disabled: ${err}`);
+          return null;
         }
       }
     }
@@ -2796,8 +2784,8 @@ Return valid JSON only.` },
     }
 
     this.emit({ kind: "llm_error", traceId, model: this.config.model, operation: "day_summary", durationMs: Date.now() - startedAt, error: "all generation paths exhausted (local LLM + gateway + Responses API)" });
-    log.warn("day summary failed — all generation paths exhausted");
-    throw new DaySummaryGenerationError("all generation paths exhausted");
+    log.warn("day summary skipped — all generation paths exhausted");
+    return null;
   }
 
 

@@ -2445,13 +2445,13 @@ export class EngramMcpServer {
         if (isReadOnlyToolName(name)) {
           throwMcpAbort(options?.abortSignal, "MCP request aborted before response");
         }
-        const structuredContent = result ?? {};
+        const structuredContent = result;
         return {
           jsonrpc: "2.0",
           id,
           result: {
-            content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }],
-            structuredContent,
+            content: [{ type: "text", text: JSON.stringify(result ?? null, null, 2) }],
+            ...(structuredContent == null ? {} : { structuredContent }),
             isError: false,
           },
         };

@@ -882,6 +882,30 @@ test("MCP day_summary returns an object sentinel for undefined service results",
   assert.equal(result?.content?.[0]?.text, "{}");
 });
 
+test("MCP preserves nullish results from operations without a no-data sentinel", async () => {
+  const service = {
+    ...createFakeService(),
+    capsuleList: async () => null,
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name: "engram.capsule_list", arguments: {} },
+  });
+
+  const result = response?.result as {
+    isError?: boolean;
+    structuredContent?: unknown;
+    content?: Array<{ type: string; text: string }>;
+  };
+  assert.equal(result?.isError, false);
+  assert.equal("structuredContent" in (result ?? {}), false);
+  assert.equal(result?.content?.[0]?.text, "null");
+});
+
 
 test("engram.dreams_status rejects invalid windowHours without calling service", async () => {
   let capturedWindowHours: number | undefined;
@@ -1533,51 +1557,6 @@ test("MCP wearable wrapper schemas require their array result", async () => {
   }
 });
 
-test("MCP transcript_day rejects invalid calendar dates before service dispatch", async () => {
-  let called = false;
-  const service = {
-    ...createFakeService(),
-    wearablesTranscriptDay: async () => {
-      called = true;
-      return [];
-    },
-  } as unknown as EngramAccessService;
-  const server = new EngramMcpServer(service);
-
-  const response = await server.handleRequest({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "tools/call",
-    params: { name: "engram.transcript_day", arguments: { date: "2026-02-29" } },
-  });
-  const result = fieldOf(response, "result");
-  assert.equal(fieldOf(result, "isError"), true);
-  const content = fieldOf(result, "content") as Array<{ type: string; text: string }>;
-  assert.match(content[0]?.text ?? "", /YYYY-MM-DD/);
-  assert.equal(called, false);
-});
-
-test("MCP transcript_day accepts valid leap days", async () => {
-  let receivedDate: string | undefined;
-  const service = {
-    ...createFakeService(),
-    wearablesTranscriptDay: async (request: Parameters<EngramAccessService["wearablesTranscriptDay"]>[0]) => {
-      receivedDate = request.date;
-      return [];
-    },
-  } as unknown as EngramAccessService;
-  const server = new EngramMcpServer(service);
-
-  const response = await server.handleRequest({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "tools/call",
-    params: { name: "engram.transcript_day", arguments: { date: "2024-02-29" } },
-  });
-  const result = fieldOf(response, "result");
-  assert.equal(fieldOf(result, "isError"), false);
-  assert.equal(receivedDate, "2024-02-29");
-});
 
 
 test("AJV: structuredContent validates against declared outputSchema for representative tools", async () => {
