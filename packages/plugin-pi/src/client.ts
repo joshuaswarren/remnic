@@ -31,6 +31,8 @@ export interface McpTool {
 
 export interface RequestOptions {
   timeoutMs?: number;
+  /** Optional caller abort signal (e.g. shared breaker trip). */
+  signal?: AbortSignal;
   /** Transient-retry budget for connection-level failures (socket close, ECONNRESET). */
   maxRetries?: number;
 }
@@ -61,6 +63,23 @@ export class RemnicHttpError extends Error {
     readonly code?: string,
   ) {
     super(message);
+  }
+}
+
+export class RemnicRequestTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`Remnic request timed out after ${timeoutMs}ms`);
+    this.name = "RemnicRequestTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+export class RemnicRequestAbortedError extends Error {
+  constructor() {
+    super("Remnic request aborted");
+    this.name = "RemnicRequestAbortedError";
   }
 }
 
@@ -225,6 +244,7 @@ export class RemnicClient {
     const turnBudgetMs = options.timeoutMs ?? this.config.turnRequestTimeoutMs;
     const retryOptions: RequestOptions = {
       timeoutMs: turnBudgetMs,
+      signal: options.signal,
       maxRetries: options.maxRetries ?? this.config.observeMaxRetries,
     };
     const chunks = chunkObservePayload(this.config, sessionKey, cwd, messages, maxBytes);
@@ -308,11 +328,15 @@ export class RemnicClient {
     return Array.isArray(tools) ? tools.filter(isMcpTool) : [];
   }
 
-  async mcpTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async mcpTool(
+    name: string,
+    args: Record<string, unknown>,
+    options: RequestOptions = {},
+  ): Promise<Record<string, unknown>> {
     return this.mcpRequest("tools/call", {
       name,
       arguments: args,
-    });
+    }, options);
   }
 
   /**
@@ -326,18 +350,26 @@ export class RemnicClient {
     options: RequestOptions = {},
   ): Promise<T> {
     const controller = new AbortController();
-    // A per-request override is honored only when it is a finite positive number;
-    // 0, negative, NaN, or non-finite values would make setTimeout abort
-    // immediately (or behave erratically), so fall back to the general budget.
-    // In practice the override is always sourced from the validated
-    // `startupRequestTimeoutMs` / `turnRequestTimeoutMs` config, but this keeps
-    // the client robust to any future caller (Copilot review).
+    let timedOut = false;
+    const onExternalAbort = () => controller.abort();
+    if (options.signal?.aborted) {
+      throw new RemnicRequestAbortedError();
+    }
+    options.signal?.addEventListener("abort", onExternalAbort, { once: true });
     const override = options.timeoutMs;
     const timeoutMs =
-      typeof override === "number" && Number.isFinite(override) && override > 0
-        ? override
-        : this.config.requestTimeoutMs;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      override === undefined
+        ? this.config.requestTimeoutMs
+        : (() => {
+            if (!Number.isInteger(override) || override <= 0) {
+              throw new TypeError("Request timeoutMs must be a positive integer");
+            }
+            return override;
+          })();
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     try {
       const response = await fetch(`${this.config.remnicDaemonUrl}${pathname}`, {
         method,
@@ -363,7 +395,6 @@ export class RemnicClient {
         const message = responseErrorMessage(response, text, payload, parseError);
         const code = responseErrorCode(payload, parseError);
         if (response.status === 413) {
-          // Surface the body size so operators can tune the cap (#1600).
           const bodyBytes = body === undefined ? 0 : jsonBytes(body);
           throw new RemnicHttpError(response.status, `${message} (observed body ${bodyBytes} bytes; cap via observeMaxBytes)`, code);
         }
@@ -375,12 +406,12 @@ export class RemnicClient {
       }
       return payload as T;
     } catch (err) {
-      if (isAbortError(err)) {
-        throw new Error(`Remnic request timed out after ${timeoutMs}ms`);
-      }
+      if (timedOut) throw new RemnicRequestTimeoutError(timeoutMs);
+      if (options.signal?.aborted) throw new RemnicRequestAbortedError();
       throw err;
     } finally {
       clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", onExternalAbort);
     }
   }
 
@@ -418,7 +449,6 @@ export class RemnicClient {
         if (attempt >= maxRetries || !isTransientNetworkError(err)) throw err;
         const delayMs = RETRY_BASE_DELAY_MS * 2 ** attempt;
         if (hasDeadline) {
-          // The backoff sleep counts against the shared deadline; bail BEFORE
           // sleeping if the sleep alone would overshoot the remaining budget,
           // so a sub-backoff timeoutMs never blocks for the full backoff only
           // to then throw (cursor review).
@@ -429,7 +459,7 @@ export class RemnicClient {
             );
           }
         }
-        await sleep(delayMs);
+        await sleep(delayMs, options.signal);
         attempt += 1;
         if (hasDeadline) {
           const remaining = deadline - Date.now();
@@ -481,17 +511,12 @@ export function isTransientNetworkError(err: unknown): boolean {
   if (isAbortError(err)) return false;
   if (err instanceof RemnicHttpError) return false;
   const lower = (err.message ?? "").toLowerCase();
-  // Bun fetch: "The socket connection was closed unexpectedly."
   if (lower.includes("socket connection was closed")) return true;
   if (lower.includes("socket closed")) return true;
-  // Node undici / OS codes surfaced in the message.
   if (lower.includes("econnreset")) return true;
   if (lower.includes("epipe")) return true;
   if (lower.includes("und_err_socket")) return true;
-  // Node wraps the real cause in err.cause (TypeError: fetch failed).
   if (lower.includes("fetch failed")) return true;
-  // Inspect the cause chain without an unchecked cast. Error.cause is
-  // `unknown` in the ES2022 lib; narrow it before reading `.code`.
   const cause = err.cause;
   if (cause && typeof cause === "object" && "code" in cause) {
     const code = cause.code;
@@ -502,10 +527,19 @@ export function isTransientNetworkError(err: unknown): boolean {
   return false;
 }
 
-function sleep(ms: number): Promise<void> {
-  // Plain Promise constructor: avoids Promise.withResolvers (ES2024 / Node 22+),
-  // so retry backoff works on Node 20 and other runtimes that load plugin-pi.
-  return new Promise<void>(resolve => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new RemnicRequestAbortedError());
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new RemnicRequestAbortedError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function jsonBytes(value: unknown): number {

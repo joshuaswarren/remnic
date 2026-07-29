@@ -87,6 +87,8 @@ Supported config keys:
 | `statusEnabled` | `true` | Set Pi UI status from daemon health |
 | `requestTimeoutMs` | `60000` | HTTP/MCP request timeout for recall/observe/compaction/commands |
 | `startupRequestTimeoutMs` | `1000` | Shorter timeout for startup-sensitive probes (MCP `tools/list` registration and the `session_start` health/status check) so a slow or offline daemon can't stall Pi boot |
+| `recallTimeoutThreshold` | `7` | Permanently disable recall after this many explicit recall timeouts within the rolling window; must be a positive integer no greater than `recallTimeoutWindow` |
+| `recallTimeoutWindow` | `10` | Number of most recent recall calls included in the rolling timeout window; must be a positive integer at least `recallTimeoutThreshold`. Invalid settings fail config loading. |
 
 Boolean-like strings such as `"false"`, `"0"`, `"no"`, and `"off"` are treated as false.
 
@@ -107,7 +109,9 @@ Example:
   "mcpToolsEnabled": true,
   "statusEnabled": true,
   "requestTimeoutMs": 60000,
-  "startupRequestTimeoutMs": 1000
+  "startupRequestTimeoutMs": 1000,
+  "recallTimeoutThreshold": 7,
+  "recallTimeoutWindow": 10
 }
 ```
 

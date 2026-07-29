@@ -49,6 +49,16 @@ export interface RemnicPiConfig {
    * for an exponentially growing window starting at this value (issue #1626).
    */
   daemonCooldownMs: number;
+  /**
+   * Number of explicit recall timeout errors in the last {@link recallTimeoutWindow}
+   * recall calls that permanently disables automatic recall for the process lifetime.
+   */
+  recallTimeoutThreshold: number;
+  /**
+   * Size of the rolling window of recent recall calls used by the recall-timeout
+   * circuit breaker.
+   */
+  recallTimeoutWindow: number;
 }
 
 export interface LoadConfigOptions {
@@ -56,7 +66,7 @@ export interface LoadConfigOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-const DEFAULT_CONFIG: RemnicPiConfig = {
+export const DEFAULT_CONFIG: RemnicPiConfig = {
   remnicDaemonUrl: "http://127.0.0.1:4318",
   recallMode: "auto",
   recallTopK: 8,
@@ -76,6 +86,9 @@ const DEFAULT_CONFIG: RemnicPiConfig = {
   observeMaxRetries: 2,
   // Base cooldown for the circuit breaker; doubles on consecutive failures (#1626).
   daemonCooldownMs: 5000,
+  // Recall-timeout circuit breaker: 7 timeouts in the last 10 recall calls trip permanently.
+  recallTimeoutThreshold: 7,
+  recallTimeoutWindow: 10,
 };
 
 function defaultConfigPath(env: NodeJS.ProcessEnv): string {
@@ -246,6 +259,23 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     25_000,
     "turnRequestTimeoutMs",
   );
+  const recallTimeoutThreshold = coercePositiveInt(
+    fileConfig.recallTimeoutThreshold,
+    DEFAULT_CONFIG.recallTimeoutThreshold,
+    1000,
+    "recallTimeoutThreshold",
+  );
+  const recallTimeoutWindow = coercePositiveInt(
+    fileConfig.recallTimeoutWindow,
+    DEFAULT_CONFIG.recallTimeoutWindow,
+    1000,
+    "recallTimeoutWindow",
+  );
+  if (recallTimeoutThreshold > recallTimeoutWindow) {
+    throw new Error(
+      `Invalid recall timeout circuit breaker config: threshold (${recallTimeoutThreshold}) cannot exceed window (${recallTimeoutWindow})`,
+    );
+  }
 
   return {
     remnicDaemonUrl: daemonUrl,
@@ -276,5 +306,7 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     ),
     observeMaxRetries: coerceNonNegativeInt(fileConfig.observeMaxRetries, DEFAULT_CONFIG.observeMaxRetries, 5, "observeMaxRetries"),
     daemonCooldownMs: coercePositiveInt(fileConfig.daemonCooldownMs, DEFAULT_CONFIG.daemonCooldownMs, 60_000, "daemonCooldownMs"),
+    recallTimeoutThreshold,
+    recallTimeoutWindow,
   };
 }

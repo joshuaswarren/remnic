@@ -22,6 +22,7 @@ import {
   resolvePiAgentHome,
   resolvePiExtensionRoot,
 } from "./paths.js";
+import { DEFAULT_CONFIG } from "./config.js";
 
 const DEFAULT_DAEMON_PORT = 4318;
 const BASE_OWNED_FILES = ["remnic.config.json", "index.ts", "README.md"] as const;
@@ -261,6 +262,8 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
         statusEnabled: true,
         requestTimeoutMs: 60000,
         startupRequestTimeoutMs: 1000,
+        recallTimeoutThreshold: DEFAULT_CONFIG.recallTimeoutThreshold,
+        recallTimeoutWindow: DEFAULT_CONFIG.recallTimeoutWindow,
         ...priorConfig,
         remnicDaemonUrl: resolveDaemonUrl(ctx),
       };
