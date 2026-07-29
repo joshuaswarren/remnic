@@ -36,7 +36,10 @@ const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
 const TRUNCATION_NOTICE = "\n\n[Remnic context truncated]";
 const SESSION_OWNED_FIELDS = new Set(["sessionKey", "namespace", "cwd"]);
-const PROCESS_SCOPED_RECALL_BREAKERS = new Map<string, RecallTimeoutBreaker>();
+const RECALL_BREAKER_REGISTRY_KEY = Symbol.for("remnic.plugin-pi.recall-timeout-breakers");
+const recallBreakerRegistry = globalThis as { [key: symbol]: Map<string, RecallTimeoutBreaker> | undefined };
+const PROCESS_SCOPED_RECALL_BREAKERS =
+  recallBreakerRegistry[RECALL_BREAKER_REGISTRY_KEY] ??= new Map<string, RecallTimeoutBreaker>();
 const RECALL_PRODUCING_TOOL_NAMES: Record<string, true> = {
   "remnic.recall": true,
   "remnic.recall_xray": true,
