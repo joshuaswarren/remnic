@@ -33,12 +33,16 @@ npx --package @remnic/server remnic-server --port 4318
 Run the container image:
 
 ```bash
+export REMNIC_AUTH_TOKEN="$(openssl rand -hex 32)"
+
 docker run --rm \
   -p 4318:4318 \
   -v remnic-data:/data \
-  -e REMNIC_AUTH_TOKEN=change-me \
+  -e REMNIC_AUTH_TOKEN \
   ghcr.io/joshuaswarren/remnic:latest
 ```
+
+Use the exported token to sign in to the admin console at `/engram/ui/` and to connect API and MCP clients. Print it with `echo "$REMNIC_AUTH_TOKEN"`.
 
 The image stores memory and runtime configuration under `/data`. The container
 enables the admin console explicitly and serves it at `/engram/ui/`. Package
