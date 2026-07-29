@@ -1956,7 +1956,15 @@ test("session_start preserves the recall-disabled status after a successful heal
       );
     });
   };
-  t.after(() => { globalThis.fetch = originalFetch; });
+  t.after(() => {
+    resetProcessRecallBreakerForTest({
+      ...baseConfig(),
+      authToken: "test-token",
+      recallTimeoutThreshold: 1,
+      recallTimeoutWindow: 1,
+    });
+    globalThis.fetch = originalFetch;
+  });
 
   const { pi, emit } = makePiHarness();
   const statuses: Array<[string, string]> = [];
