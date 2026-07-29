@@ -419,6 +419,22 @@ function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[
   }
 }
 
+function checkEmbeddedFactProbes(loaded: LoadedSeed, errors: string[]): void {
+  const canonicalById = new Map(loaded.probes.map((probe) => [probe.id, probe]));
+  for (const fact of loaded.facts) {
+    for (const probe of fact.probes) {
+      if (!isGoldProbeShape(probe)) {
+        errors.push(`${fact.id}: embedded probe does not match the expected record shape`);
+        continue;
+      }
+      const canonical = canonicalById.get(probe.id);
+      if (!canonical || JSON.stringify(canonical) !== JSON.stringify(probe)) {
+        errors.push(`${fact.id}: embedded probe ${probe.id} does not match gold/probes.jsonl`);
+      }
+    }
+  }
+}
+
 function checkSessions(
   loaded: LoadedSeed,
   users: number,
@@ -530,7 +546,8 @@ function isManifestShape(value: unknown): value is DriftGenManifest {
     typeof m.version === "string" &&
     Array.isArray(m.seeds) &&
     m.seeds.length > 0 &&
-    m.seeds.every((s) => Number.isSafeInteger(s)) &&
+    m.seeds.every((s) => Number.isSafeInteger(s) && s >= 0) &&
+    new Set(m.seeds).size === m.seeds.length &&
     typeof counts === "object" &&
     counts !== null &&
     !Array.isArray(counts) &&
@@ -670,6 +687,7 @@ export async function validateDriftCorpus(corpusDir: string): Promise<DriftValid
   for (const seed of manifest.seeds) {
     const loaded = await loadSeedDir(corpusDir, seed, errors);
     checkConsumedFilesAreHashed(loaded, manifest, errors);
+    checkEmbeddedFactProbes(loaded, errors);
     checkFactIntegrity(loaded, manifest.counts.epochs, errors);
     checkProbeIntegrity(loaded, manifest.counts.epochs, errors);
     checkSessions(loaded, manifest.counts.users, manifest.counts.epochs, errors);

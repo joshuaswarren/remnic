@@ -150,10 +150,19 @@ export async function generateDriftCorpus(
   const quarantinedStaleDirs: typeof staleSeedDirs = [];
   const manifestPath = path.join(options.outDir, "dataset.manifest.json");
   const manifestStaging = path.join(options.outDir, ".staging-manifest.json");
+  const manifestBackup = path.join(options.outDir, `.backup-manifest-${process.pid}.json`);
   let hadPrevious = false;
   let replacementInstalled = false;
+  let hadPreviousManifest = false;
 
   try {
+    try {
+      await rename(manifestPath, manifestBackup);
+      hadPreviousManifest = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+
     for (const stale of staleSeedDirs) {
       await rename(stale.source, stale.backup);
       quarantinedStaleDirs.push(stale);
@@ -173,6 +182,10 @@ export async function generateDriftCorpus(
   } catch (error) {
     await rm(manifestStaging, { force: true });
     await rm(stagingDir, { recursive: true, force: true });
+    if (hadPreviousManifest) {
+      await rm(manifestPath, { force: true });
+      await rename(manifestBackup, manifestPath);
+    }
     if (replacementInstalled) {
       await rm(finalSeedDir, { recursive: true, force: true });
     }
@@ -201,6 +214,7 @@ export async function generateDriftCorpus(
   await Promise.all([
     ...(hadPrevious ? [rm(backupDir, { recursive: true, force: true })] : []),
     ...quarantinedStaleDirs.map((stale) => rm(stale.backup, { recursive: true, force: true })),
+    ...(hadPreviousManifest ? [rm(manifestBackup, { force: true })] : []),
   ]);
 
   return { manifest, files: [...written.keys()].sort() };

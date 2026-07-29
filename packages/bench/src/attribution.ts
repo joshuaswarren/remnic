@@ -452,7 +452,7 @@ export async function attributeGoldMemory(
     stages.extraction.status === "unavailable"
       ? `extraction check unavailable (${stages.extraction.detail})`
       : stages.index.status === "unavailable" && stages.retrieval.status === "unavailable"
-        ? "index/retrieval checks unavailable without live store"
+        ? "index/retrieval checks unavailable in this attribution environment"
         : stages.index.status === "unavailable"
           ? "index check unavailable; a retrieval miss cannot be isolated from an index miss"
           : "retrieval check unavailable";
@@ -592,7 +592,7 @@ export function renderAttributionReportTable(report: AttributionReport): string 
   const lines: string[] = [];
 
   lines.push(`Attribution Report (Run: ${report.runId})`);
-  lines.push(`Failed-task predicate: primary score < 1 (scores.overall or min score)`);
+  lines.push(`Failed-task predicate: primary answer score < 1 (scores.overall or first non-diagnostic score)`);
   lines.push(`Attributed tasks: ${report.attributedTasks}, Skipped tasks: ${report.skippedTasks.length}`);
   lines.push("");
   lines.push("Totals by Class:");
