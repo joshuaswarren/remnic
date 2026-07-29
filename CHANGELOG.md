@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.38.0] — 2026-07-29
+
 ### Added
 
 - Recall-timeout circuit breaker for the Pi plugin's automatic between-tool
