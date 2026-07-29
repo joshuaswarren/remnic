@@ -153,6 +153,10 @@ function computeOverallLabel(golds: GoldMemoryAttribution[]): AttributionLabel {
   return { ...bestGold.label };
 }
 
+function isDiagnosticScore(name: string): boolean {
+  return name.endsWith("_agreement") || name.includes("_id_leak") || name === "search_hits";
+}
+
 export function isTaskFailed(task: { scores?: Record<string, number> }): boolean {
   if (!task.scores || Object.keys(task.scores).length === 0) {
     return true;
@@ -160,8 +164,10 @@ export function isTaskFailed(task: { scores?: Record<string, number> }): boolean
   if ("overall" in task.scores && typeof task.scores.overall === "number") {
     return task.scores.overall < 1;
   }
-  const minScore = Math.min(...Object.values(task.scores));
-  return minScore < 1;
+  const primaryScore = Object.entries(task.scores).find(
+    ([name, score]) => typeof score === "number" && !isDiagnosticScore(name),
+  )?.[1];
+  return primaryScore === undefined || primaryScore < 1;
 }
 
 export function withMemoizedListMemories(env: AttributionEnvironment): AttributionEnvironment {
@@ -217,9 +223,9 @@ export async function attributeGoldMemory(
     try {
       memories = await env.listMemories();
       extractionRan = true;
-    } catch (err: unknown) {
+    } catch {
       extractionRan = false;
-      extractionErrorDetail = err instanceof Error ? err.message : "listMemories threw error";
+      extractionErrorDetail = "listMemories failed";
     }
   }
 

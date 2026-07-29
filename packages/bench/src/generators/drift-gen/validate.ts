@@ -299,6 +299,9 @@ function checkFactIntegrity(loaded: LoadedSeed, epochs: number, errors: string[]
       if (successor.subject !== fact.subject || successor.attribute !== fact.attribute) {
         errors.push(`${fact.id}: successor ${successor.id} targets a different subject/attribute`);
       }
+      if (successor.userId !== fact.userId) {
+        errors.push(`${fact.id}: successor ${successor.id} belongs to a different user`);
+      }
       if (successor.value === fact.value) {
         errors.push(`${fact.id}: successor ${successor.id} repeats the same value`);
       }
@@ -378,6 +381,14 @@ function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[
       ) {
         errors.push(`${probe.id}: transition probe facts are not linked by supersession`);
       }
+      if (
+        probe.category === "transition" &&
+        requiredFacts.length === 2 &&
+        requiredFacts[1]!.supersededEpoch !== null &&
+        requiredFacts[1]!.supersededEpoch <= probe.epoch
+      ) {
+        errors.push(`${probe.id}: transition probe targets successor ${requiredFacts[1]!.id} already superseded at epoch ${requiredFacts[1]!.supersededEpoch}`);
+      }
 
     }
     if (probe.category === "current") {
@@ -390,6 +401,10 @@ function checkProbeIntegrity(loaded: LoadedSeed, epochs: number, errors: string[
       const fact = byId.get(probe.requiredFactIds[0]);
       if (fact && (fact.supersededEpoch === null || fact.supersededEpoch > probe.epoch)) {
         errors.push(`${probe.id}: historical probe targets fact ${fact.id} not superseded by epoch ${probe.epoch}`);
+      }
+      const successor = fact?.supersededBy ? byId.get(fact.supersededBy) : undefined;
+      if (successor?.supersededEpoch !== null && successor?.supersededEpoch !== undefined && successor.supersededEpoch <= probe.epoch) {
+        errors.push(`${probe.id}: historical probe targets stale successor ${successor.id} superseded at epoch ${successor.supersededEpoch}`);
       }
     }
     if (probe.category === "aggregation") {
@@ -611,11 +626,14 @@ export async function validateDriftCorpus(corpusDir: string): Promise<DriftValid
     return { ok: false, errors: [`corpus directory not found: ${corpusDir}`], warnings, stats: emptyStats };
   }
 
+  const manifestPath = path.join(corpusDir, "dataset.manifest.json");
+  if (!(await hasNoSymlinkComponents(corpusDir, manifestPath, errors, "dataset manifest"))) {
+    return { ok: false, errors, warnings, stats: emptyStats };
+  }
+
   let manifestRaw: unknown;
   try {
-    manifestRaw = JSON.parse(
-      await readFile(path.join(corpusDir, "dataset.manifest.json"), "utf8"),
-    );
+    manifestRaw = JSON.parse(await readFile(manifestPath, "utf8"));
   } catch {
     return {
       ok: false,

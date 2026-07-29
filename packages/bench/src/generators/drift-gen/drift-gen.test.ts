@@ -231,6 +231,23 @@ test("validator rejects symlinked intermediate corpus directories", async () => 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("validator rejects a symlinked manifest", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-manifest-symlink-"));
+  try {
+    await generateDriftCorpus({ ...SMALL, outDir: dir });
+    const manifestPath = path.join(dir, "dataset.manifest.json");
+    const movedManifestPath = path.join(dir, "manifest-real.json");
+    await rename(manifestPath, movedManifestPath);
+    await symlink(movedManifestPath, manifestPath, "file");
+
+    const report = await validateDriftCorpus(dir);
+    assert.equal(report.ok, false);
+    assert.ok(report.errors.some((error) => error.includes("dataset manifest contains a symlinked path component")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 test("validator rejects rehashed single-fact probes with extra references", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-cardinality-tamper-"));
   try {

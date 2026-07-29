@@ -74,6 +74,12 @@ export function parseBenchResearchArgs(
     throw new Error("ERROR: --epochs must be at least 2 (supersession needs two epochs).");
   }
 
+  const driftingRatio = readUnitRatio(args, "--drifting-ratio");
+  const contradictedRatio = readUnitRatio(args, "--contradicted-ratio");
+  if ((driftingRatio ?? 0) + (contradictedRatio ?? 0) > 1) {
+    throw new Error("ERROR: --drifting-ratio and --contradicted-ratio must sum to at most 1.");
+  }
+
   return {
     runRef,
     memoryDir: memoryDirRaw ? path.resolve(expandTilde(memoryDirRaw)) : undefined,
@@ -82,7 +88,7 @@ export function parseBenchResearchArgs(
     seed,
     out,
     factsPerEpoch: readPositiveInteger(args, "--facts-per-epoch"),
-    driftingRatio: readUnitRatio(args, "--drifting-ratio"),
-    contradictedRatio: readUnitRatio(args, "--contradicted-ratio"),
+    driftingRatio,
+    contradictedRatio,
   };
 }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   attributeRun,
+  attributeGoldMemory,
   attributeTask,
   lexicalSimilarity,
   renderAttributionReportTable,
@@ -626,4 +627,38 @@ test("attributeRun skips benchmarkFailure tasks with trial execution failure rea
     report.skippedTasks[0].reason,
     "trial execution failure (not an answer failure)"
   );
+});
+
+test("attributeRun ignores diagnostic failures when the primary answer score passes", async () => {
+  const env: AttributionEnvironment = {
+    listMemories: async () => [{ id: "mem-1", content: "Avery's favorite color is teal blue" }],
+    recallLimit: 5,
+  };
+  const report = await attributeRun(
+    {
+      results: {
+        tasks: [{
+          taskId: "answer-passed",
+          question: "What is Avery's favorite color?",
+          scores: { f1: 1, locomo_hidden_evidence_id_leak: 0 },
+          goldMemories: ["Avery's favorite color is teal blue"],
+        }],
+      },
+    },
+    env,
+  );
+  assert.equal(report.attributedTasks, 0);
+  assert.equal(report.skippedTasks[0]?.reason, "Task passed (score >= 1)");
+});
+
+test("attribution redacts store errors from reports", async () => {
+  const result = await attributeGoldMemory(
+    "Avery's favorite color is teal blue",
+    "What is Avery's favorite color?",
+    {
+      listMemories: async () => { throw new Error("private path and token"); },
+      recallLimit: 5,
+    },
+  );
+  assert.equal(result.stages.extraction.detail, "listMemories failed");
 });

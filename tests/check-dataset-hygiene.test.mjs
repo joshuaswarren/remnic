@@ -320,3 +320,17 @@ test("handles denylist name scanning with allowlisted URLs", () => {
     rmSync(denylistDir, { recursive: true, force: true });
   }
 });
+
+test("reports a file-root finding without an absolute path", () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), "hygiene-file-root-"));
+  try {
+    const filePath = path.join(tempDir, "data.json");
+    writeFileSync(filePath, JSON.stringify({ contact: "alice@realcompany.com" }));
+    const res = runScript({ REMNIC_HYGIENE_ROOTS: filePath });
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /^data\.json:1:/m);
+    assert.ok(!res.stderr.includes(tempDir));
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

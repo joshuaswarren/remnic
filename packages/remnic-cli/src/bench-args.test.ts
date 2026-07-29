@@ -157,6 +157,13 @@ test("parseBenchArgs validates ratio flags for drift-gen and attribute threshold
   assert.throws(() => parseBenchArgs(["attribute", "--run", "run-1", "--threshold", "2.0"]), /--threshold must be a number between 0 and 1/);
 });
 
+test("parseBenchArgs rejects impossible drift ratio combinations", () => {
+  assert.throws(
+    () => parseBenchArgs(["drift-gen", "--drifting-ratio", "0.8", "--contradicted-ratio", "0.3"]),
+    /must sum to at most 1/,
+  );
+});
+
 test("parseBenchArgs throws when value flags are missing values", () => {
   assert.throws(() => parseBenchArgs(["attribute", "--run"]), /--run requires a value/);
   assert.throws(() => parseBenchArgs(["drift-gen", "--users"]), /--users requires a value/);

@@ -232,7 +232,7 @@ export function collectFiles(targetPath, fileList = [], rootPath = targetPath) {
 }
 
 export function scanFile(filePath, denylist, rootDir = ROOT) {
-  const relPath = path.relative(rootDir, filePath) || filePath;
+  const relPath = path.relative(rootDir, filePath) || path.basename(filePath);
   const content = readFileSync(filePath, "utf8");
   const lines = content.split("\n");
   const ext = path.extname(filePath).toLowerCase();
@@ -344,16 +344,16 @@ export function main() {
         path.join(ROOT, "docs/research/data"),
       ];
 
-  const filesToScan = [];
+  const filesToScan = new Map();
   for (const rootPath of roots) {
-    collectFiles(rootPath, filesToScan);
+    for (const filePath of collectFiles(rootPath)) {
+      if (!filesToScan.has(filePath)) filesToScan.set(filePath, rootPath);
+    }
   }
 
-  const uniqueFiles = Array.from(new Set(filesToScan));
-
   const allFindings = [];
-  for (const filePath of uniqueFiles) {
-    const fileFindings = scanFile(filePath, denylist, ROOT);
+  for (const [filePath, rootPath] of filesToScan) {
+    const fileFindings = scanFile(filePath, denylist, rootPath);
     allFindings.push(...fileFindings);
   }
 
@@ -371,7 +371,7 @@ export function main() {
     process.exit(1);
   } else {
     console.log(
-      `Dataset hygiene check passed: ${uniqueFiles.length} files scanned across ${roots.length} target root(s), 0 findings.`
+      `Dataset hygiene check passed: ${filesToScan.size} files scanned across ${roots.length} target root(s), 0 findings.`
     );
     process.exit(0);
   }
