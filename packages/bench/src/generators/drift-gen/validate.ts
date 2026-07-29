@@ -257,7 +257,13 @@ async function loadSeedDir(
     const userDir = path.join(usersDir, userId);
     const sessionsPath = path.join(userDir, "sessions.jsonl");
     consumedFiles.push(corpusRelativePath(corpusDir, sessionsPath));
-    sessions.push(...(await readJsonl<DriftSession>(sessionsPath, errors, isDriftSessionShape)));
+    for (const session of await readJsonl<DriftSession>(sessionsPath, errors, isDriftSessionShape)) {
+      if (session.userId !== userId) {
+        errors.push(`${session.sessionId}: userId ${session.userId} does not match directory ${userId}`);
+        continue;
+      }
+      sessions.push(session);
+    }
   }
 
   return { seed, facts, probes, sessions, consumedFiles };
@@ -447,6 +453,8 @@ function checkEmbeddedFactProbes(loaded: LoadedSeed, errors: string[]): void {
       const canonical = canonicalById.get(probe.id);
       if (!canonical || JSON.stringify(canonical) !== JSON.stringify(probe)) {
         errors.push(`${fact.id}: embedded probe ${probe.id} does not match gold/probes.jsonl`);
+      } else if (!canonical.requiredFactIds.includes(fact.id)) {
+        errors.push(`${fact.id}: embedded probe ${probe.id} does not reference its owning fact`);
       }
     }
   }
