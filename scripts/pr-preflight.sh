@@ -73,6 +73,7 @@ run npm run plugin:inspect
 run bash scripts/check-review-patterns.sh
 run node scripts/check-ratchets.mjs
 run node scripts/check-docs-parity.mjs
+run node scripts/check-dataset-hygiene.mjs
 run pnpm exec turbo --version
 run_quiet pnpm exec turbo run check-types --dry=json
 

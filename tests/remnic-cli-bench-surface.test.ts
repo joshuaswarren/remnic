@@ -25,7 +25,7 @@ test("remnic CLI source wires the new bench command and keeps benchmark as an al
   assert.match(source, /await cmdBench\(rest\);/);
   assert.match(
     source,
-    /remnic bench <list\|run\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers>/
+    /remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen>/
   );
   assert.match(source, /benchmark is kept as a compatibility alias/i);
 });
@@ -160,26 +160,28 @@ test("--all selection resolves to runnable package benchmarks when package metad
 
 test("bench CLI validates and resolves explicit dataset overrides for full package runs", async () => {
   const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
+  const usageSource = await readFile("packages/remnic-cli/src/bench-usage.ts", "utf8");
   const parserSource = await readFile("packages/remnic-cli/src/bench-args.ts", "utf8");
+  const flagsSource = await readFile("packages/remnic-cli/src/bench-flags.ts", "utf8");
 
-  assert.match(source, /--dataset-dir <path>\s+Override the benchmark dataset directory for full runs/);
-  assert.match(source, /--custom <path>\s+Run a YAML-defined custom benchmark file/);
+  assert.match(usageSource, /--dataset-dir <path>\s+Override the benchmark dataset directory for full runs/);
+  assert.match(usageSource, /--custom <path>\s+Run a YAML-defined custom benchmark file/);
   assert.match(source, /from "\.\/bench-args\.js";/);
   assert.match(source, /async function runCustomBenchViaPackage\(parsed: ParsedBenchArgs\): Promise<boolean>/);
-  assert.match(parserSource, /function readBenchOptionValue\(argv: string\[\], flag: string\)/);
-  assert.match(parserSource, /function collectBenchmarks\(argv: string\[\]\): string\[\]/);
+  assert.match(flagsSource, /function readBenchOptionValue\(argv: string\[\], flag: string\)/);
+  assert.match(flagsSource, /function collectBenchmarks\(argv: string\[\]\): string\[\]/);
   assert.match(
     parserSource,
     /const benchmarkArgs =[\s\S]*action === "baseline"[\s\S]*action === "datasets"[\s\S]*action === "providers"[\s\S]*action === "runs"[\s\S]*args\.slice\(1\)[\s\S]*:\s*args;/
   );
   assert.match(parserSource, /const benchmarks = collectBenchmarks\(benchmarkArgs\);/);
-  assert.match(parserSource, /requires a value\./);
+  assert.match(flagsSource, /requires a value\./);
   assert.match(
-    parserSource,
+    flagsSource,
     /const BENCH_VALUE_FLAGS = Object\.freeze\(\[[\s\S]*"--dataset-dir"[\s\S]*"--results-dir"[\s\S]*"--baselines-dir"[\s\S]*"--threshold"[\s\S]*"--custom"[\s\S]*"--format"[\s\S]*"--output"/
   );
   assert.match(
-    parserSource,
+    flagsSource,
     /function isBenchValueFlag\(arg: string\): arg is BenchValueFlag \{\s*return BENCH_VALUE_FLAG_SET\.has\(arg\);\s*\}/
   );
   assert.match(parserSource, /datasetDir: datasetDir \? path\.resolve\(expandTilde\(datasetDir\)\) : undefined/);
@@ -216,26 +218,27 @@ test("parseBenchArgs supports custom benchmark files without counting them as be
 
 test("bench CLI exposes runtime profile and provider-backed run surfaces", async () => {
   const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
+  const usageSource = await readFile("packages/remnic-cli/src/bench-usage.ts", "utf8");
   const parserSource = await readFile("packages/remnic-cli/src/bench-args.ts", "utf8");
   const readme = await readFile("packages/remnic-cli/README.md", "utf8");
 
-  assert.match(source, /--runtime-profile <baseline\|real\|openclaw-chain\|local-lab>/);
-  assert.match(source, /--matrix <profiles>/);
-  assert.match(source, /--remnic-config <path>/);
-  assert.match(source, /--openclaw-config <path>/);
-  assert.match(source, /--model-source <plugin\|gateway>/);
-  assert.match(source, /--gateway-agent-id <id>/);
-  assert.match(source, /--fast-gateway-agent-id <id>/);
-  assert.match(source, /--system-provider <openai\|anthropic\|ollama\|litellm\|local-llm\|codex-cli\|claude-cli>/);
-  assert.match(source, /--system-model <model>/);
-  assert.match(source, /--judge-provider <openai\|anthropic\|ollama\|litellm\|local-llm\|codex-cli\|claude-cli>/);
-  assert.match(source, /--judge-model <model>/);
-  assert.match(source, /remnic bench run --quick longmemeval --runtime-profile baseline/);
-  assert.match(source, /remnic bench run longmemeval --runtime-profile real --remnic-config/);
-  assert.match(source, /remnic bench run longmemeval --runtime-profile openclaw-chain --openclaw-config/);
-  assert.match(source, /remnic bench run longmemeval --runtime-profile real --system-provider openai --system-model/);
-  assert.match(source, /remnic bench run longmemeval --matrix baseline,real,openclaw-chain/);
-  assert.match(source, /--local-lab-manifest <path>/);
+  assert.match(usageSource, /--runtime-profile <baseline\|real\|openclaw-chain\|local-lab>/);
+  assert.match(usageSource, /--matrix <profiles>/);
+  assert.match(usageSource, /--remnic-config <path>/);
+  assert.match(usageSource, /--openclaw-config <path>/);
+  assert.match(usageSource, /--model-source <plugin\|gateway>/);
+  assert.match(usageSource, /--gateway-agent-id <id>/);
+  assert.match(usageSource, /--fast-gateway-agent-id <id>/);
+  assert.match(usageSource, /--system-provider <openai\|anthropic\|ollama\|litellm\|local-llm\|codex-cli\|claude-cli>/);
+  assert.match(usageSource, /--system-model <model>/);
+  assert.match(usageSource, /--judge-provider <openai\|anthropic\|ollama\|litellm\|local-llm\|codex-cli\|claude-cli>/);
+  assert.match(usageSource, /--judge-model <model>/);
+  assert.match(usageSource, /remnic bench run --quick longmemeval --runtime-profile baseline/);
+  assert.match(usageSource, /remnic bench run longmemeval --runtime-profile real --remnic-config/);
+  assert.match(usageSource, /remnic bench run longmemeval --runtime-profile openclaw-chain --openclaw-config/);
+  assert.match(usageSource, /remnic bench run longmemeval --runtime-profile real --system-provider openai --system-model/);
+  assert.match(usageSource, /remnic bench run longmemeval --matrix baseline,real,openclaw-chain/);
+  assert.match(usageSource, /--local-lab-manifest <path>/);
 
   assert.match(
     parserSource,
@@ -319,7 +322,7 @@ test("bench compare routes through stored package results with threshold and res
   assert.match(source, /benchmark mismatch: \$\{baseline\.meta\.benchmark\} vs \$\{candidate\.meta\.benchmark\}/);
   assert.match(
     parserSource,
-    /export type BenchAction =[\s\S]*"datasets"[\s\S]*"runs"[\s\S]*"results"[\s\S]*"baseline"[\s\S]*"export"[\s\S]*"publish"[\s\S]*"check"[\s\S]*"report";/
+    /export type BenchAction =[\s\S]*"datasets"[\s\S]*"runs"[\s\S]*"results"[\s\S]*"baseline"[\s\S]*"export"[\s\S]*"publish"[\s\S]*"check"[\s\S]*"report"[\s\S]*"attribute"[\s\S]*"drift-gen";/
   );
   assert.match(parserSource, /const resultsDir = readBenchOptionValue\(args, "--results-dir"\);/);
   assert.match(parserSource, /const thresholdRaw = readBenchOptionValue\(args, "--threshold"\);/);
@@ -367,19 +370,20 @@ test("bench results, baseline, and export route through the stored package resul
 
 test("bench providers discovery is exposed as a package-backed CLI surface", async () => {
   const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
+  const usageSource = await readFile("packages/remnic-cli/src/bench-usage.ts", "utf8");
   const parserSource = await readFile("packages/remnic-cli/src/bench-args.ts", "utf8");
   const readme = await readFile("packages/remnic-cli/README.md", "utf8");
 
   assert.match(source, /\bdiscoverAllProviders\b/);
   assert.match(
-    source,
-    /Usage: remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate>/
+    usageSource,
+    /Usage: remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen>/
   );
-  assert.match(source, /remnic bench providers discover/);
+  assert.match(usageSource, /remnic bench providers discover/);
   assert.match(source, /async function discoverBenchProviders\(parsed: ParsedBenchArgs\): Promise<void>/);
   assert.match(source, /providers discover does not accept positional arguments/);
   assert.match(source, /if \(parsed\.action === "providers"\) \{\s*await discoverBenchProviders\(parsed\);/s);
-  assert.match(parserSource, /export type BenchAction =[\s\S]*"providers"[\s\S]*"check"[\s\S]*"report";/);
+  assert.match(parserSource, /export type BenchAction =[\s\S]*"providers"[\s\S]*"check"[\s\S]*"report"[\s\S]*"drift-gen";/);
   assert.match(parserSource, /export type BenchProviderAction = "discover";/);
   assert.match(parserSource, /providerAction\?: BenchProviderAction;/);
   assert.match(parserSource, /first === "providers"/);
@@ -985,6 +989,7 @@ test("bench surface retains local UI compatibility alongside providers discovery
 
 test("bench datasets and runs surfaces are exposed through parser, help text, and README", async () => {
   const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
+  const usageSource = await readFile("packages/remnic-cli/src/bench-usage.ts", "utf8");
   const parserSource = await readFile("packages/remnic-cli/src/bench-args.ts", "utf8");
   const readme = await readFile("packages/remnic-cli/README.md", "utf8");
 
@@ -996,11 +1001,11 @@ test("bench datasets and runs surfaces are exposed through parser, help text, an
   assert.match(parserSource, /runAction\?: BenchRunAction;/);
   assert.match(parserSource, /first === "datasets"/);
   assert.match(parserSource, /first === "runs"/);
-  assert.match(source, /datasets download \[benchmark\.\.\.\]/);
-  assert.match(source, /datasets status/);
-  assert.match(source, /runs list/);
-  assert.match(source, /runs show <run>/);
-  assert.match(source, /runs delete <run\.\.\.>/);
+  assert.match(usageSource, /datasets download \[benchmark\.\.\.\]/);
+  assert.match(usageSource, /datasets status/);
+  assert.match(usageSource, /runs list/);
+  assert.match(usageSource, /runs show <run>/);
+  assert.match(usageSource, /runs delete <run\.\.\.>/);
   assert.match(source, /async function manageBenchDatasets\(parsed: ParsedBenchArgs\): Promise<void>/);
   assert.match(source, /async function manageBenchRuns\(parsed: ParsedBenchArgs\): Promise<void>/);
   assert.match(source, /if \(parsed\.action === "datasets"\) \{\s*await manageBenchDatasets\(parsed\);/s);
@@ -1584,6 +1589,7 @@ test("parseBenchArgs supports results, baseline, and export surfaces", async () 
 test("bench publish routes through the stored package feed helpers", async () => {
   const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
   const parserSource = await readFile("packages/remnic-cli/src/bench-args.ts", "utf8");
+  const flagsSource = await readFile("packages/remnic-cli/src/bench-flags.ts", "utf8");
 
   assert.match(source, /buildBenchmarkPublishFeed,/);
   assert.match(source, /defaultBenchmarkPublishPath,/);
@@ -1599,7 +1605,7 @@ test("bench publish routes through the stored package feed helpers", async () =>
   );
   assert.match(source, /if \(parsed\.action === "publish"\) \{\s*await publishBenchPackageResults\(parsed\);/s);
   assert.match(parserSource, /export type BenchPublishTarget = "remnic-ai";/);
-  assert.match(parserSource, /const BENCH_VALUE_FLAGS = Object\.freeze\(\[[\s\S]*"--target"/);
+  assert.match(flagsSource, /const BENCH_VALUE_FLAGS = Object\.freeze\(\[[\s\S]*"--target"/);
   assert.match(parserSource, /const targetRaw = readBenchOptionValue\(args, "--target"\);/);
   assert.match(parserSource, /ERROR: --target must be "remnic-ai"\./);
   assert.match(parserSource, /target,/);

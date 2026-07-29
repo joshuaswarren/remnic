@@ -259,6 +259,14 @@ function isTaskResultLike(value: unknown): boolean {
     return false;
   }
   const tokens = value.tokens;
+  const goldMemories = value.goldMemories;
+  if (
+    goldMemories !== undefined &&
+    (!Array.isArray(goldMemories) ||
+      !goldMemories.every((item) => typeof item === "string"))
+  ) {
+    return false;
+  }
   return (
     typeof value.taskId === "string" &&
     typeof value.question === "string" &&

@@ -811,3 +811,57 @@ export {
   DEFAULT_TOLERANCE_PERCENT as CODING_GRAPH_DEFAULT_TOLERANCE,
   CODING_GRAPH_BENCH_SCHEMA_VERSION,
 } from "./coding-graph/index.js";
+export type {
+  AttributionClass,
+  RetrievalMissStage,
+  StageStatus,
+  StageObservation,
+  AttributionLabel,
+  GoldMemoryAttribution,
+  TaskAttribution,
+  AttributionReport,
+  AttributionMemory,
+  AttributionEnvironment,
+  AttributeOptions,
+} from "./attribution.js";
+export {
+  extractContentWords,
+  lexicalSimilarity,
+  isTaskFailed,
+  attributeGoldMemory,
+  attributeTask,
+  attributeRun,
+  renderAttributionReportTable,
+  serializeAttributionReport,
+} from "./attribution.js";
+export { runAttributeCliCommand } from "./attribute-cli.js";
+export {
+  DRIFT_GEN_DEFAULTS,
+  DRIFT_GEN_VERSION,
+  buildDriftCorpus,
+  generateDriftCorpus,
+  runDriftGenCliCommand,
+  validateDriftCorpus,
+} from "./generators/drift-gen/index.js";
+export type {
+  DriftGenCorpus,
+  DriftGenManifest,
+  DriftGenOptions,
+  DriftGenResult,
+  DriftGenAuditRecord,
+  DriftSession,
+  DriftSessionTurn,
+  DriftValidationReport,
+  DriftValidationStats,
+  GoldFact,
+  GoldFactKind,
+  GoldProbe,
+  GoldProbeCategory,
+} from "./generators/drift-gen/index.js";
+export {
+  createSeededRandom,
+  pickOne,
+  randomInt,
+  shuffled,
+} from "./seeded-random.js";
+export type { SeededRandom } from "./seeded-random.js";

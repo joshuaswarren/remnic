@@ -1,0 +1,38 @@
+{
+  "name": "drift-gen-core",
+  "version": "1.0.0",
+  "generatorVersion": "1.0.0",
+  "seeds": [
+    11
+  ],
+  "counts": {
+    "users": 2,
+    "epochs": 4,
+    "facts": 64,
+    "probes": 64
+  },
+  "generator": {
+    "factsPerEpoch": 8,
+    "driftingRatio": 0.2,
+    "contradictedRatio": 0.1
+  },
+  "files": {
+    "11/gold/facts.jsonl": "776640218b1918c59dbf45d15746451d917d2c116a27b66983af6fdc6f406826",
+    "11/gold/probes.jsonl": "1b5217ca487cd7633c6d85c02328a5004ef68fc6856e3592860d00346608aa2d",
+    "11/users/u1/sessions.jsonl": "5f1aca7e98bc01f10f82402eff7dbe85d20f422737db819ebc37094f42203eed",
+    "11/users/u2/sessions.jsonl": "3dc63699788feef80dbdd22abf350e6a3e2643ed094b61c9409002c717838a91"
+  },
+  "createdAt": "1970-01-01T00:00:00.000Z",
+  "licenses": [
+    {
+      "source": "synthetic",
+      "license": "MIT (repo)"
+    }
+  ],
+  "audit": {
+    "sampled": 30,
+    "passed": 30,
+    "auditor": "Fable-class agent review (issue #1954)",
+    "date": "2026-07-28"
+  }
+}

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { Message } from "../../../adapters/types.js";
-import { locomoDefinition, runLoCoMoBenchmark } from "./runner.ts";
+import { buildLoCoMoPlan, locomoDefinition, runLoCoMoBenchmark } from "./runner.ts";
+import { deriveLoCoMoGoldMemories } from "./gold-memories.ts";
 import { selectLoCoMoTasks } from "./task-selection.js";
 
 test("LoCoMo normalizes numeric answers and adversarial-answer fallbacks from the official dataset", async () => {
@@ -1248,4 +1249,143 @@ test("LoCoMo task selection fails before adapter side effects on invalid or inco
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+test("deriveLoCoMoGoldMemories derives correct statements in evidence order, deduped, and omits when none match", () => {
+  const observation = {
+    session_1_observation: {
+      Alice: [
+        ["Alice moved to Seattle in 2022.", "D1:1"],
+        ["Alice prefers jasmine tea on rainy mornings.", ["D1:2", "D1:3"]],
+        ["Alice loves rainy mornings.", "D1:3"],
+      ],
+    },
+    session_2_observation: {
+      Bob: [
+        ["Bob is a librarian.", "D2:1"],
+      ],
+    },
+  };
+
+  // Evidence order: D1:2 then D1:1
+  const derivedOrder = deriveLoCoMoGoldMemories(observation, ["D1:2", "D1:1"]);
+  assert.deepEqual(derivedOrder, [
+    "Alice prefers jasmine tea on rainy mornings.",
+    "Alice moved to Seattle in 2022.",
+  ]);
+
+  // Deduplication: D1:2 and D1:3 both map to "Alice prefers jasmine tea..."
+  const derivedDedupe = deriveLoCoMoGoldMemories(observation, ["D1:2", "D1:3"]);
+  assert.deepEqual(derivedDedupe, [
+    "Alice prefers jasmine tea on rainy mornings.",
+    "Alice loves rainy mornings.",
+  ]);
+
+  // Omit when no evidence matches
+  const derivedNone = deriveLoCoMoGoldMemories(observation, ["D9:99"]);
+  assert.equal(derivedNone, undefined);
+
+  // Empty evidence
+  const derivedEmptyEv = deriveLoCoMoGoldMemories(observation, []);
+  assert.equal(derivedEmptyEv, undefined);
+});
+
+test("deriveLoCoMoGoldMemories handles malformed annotation shapes defensively without throwing", () => {
+  const malformedObservations = [
+    null,
+    undefined,
+    123,
+    "not an object",
+    [],
+    { session_1_observation: null },
+    { session_1_observation: 123 },
+    { session_1_observation: "string" },
+    { session_1_observation: [] },
+    { session_1_observation: { Alice: "not an array" } },
+    { session_1_observation: { Alice: [null, 123, "not a tuple", [], [123, "D1:1"], ["stmt", 456]] } },
+  ];
+
+  for (const obs of malformedObservations) {
+    assert.doesNotThrow(() => {
+      const res = deriveLoCoMoGoldMemories(obs, ["D1:1"]);
+      assert.equal(res, undefined);
+    });
+  }
+
+  // Well-formed item alongside malformed items in same observation
+  const mixedObs = {
+    bad_session: "invalid",
+    session_1_observation: {
+      bad_speaker: null,
+      Alice: [
+        "bad item",
+        [123, "D1:1"],
+        ["Valid observation statement.", "D1:1"],
+      ],
+    },
+  };
+  assert.deepEqual(deriveLoCoMoGoldMemories(mixedObs, ["D1:1"]), ["Valid observation statement."]);
+});
+
+test("buildLoCoMoPlan attaches goldMemories to trial from synthetic conversation", () => {
+  const conversation = {
+    sample_id: "synthetic-locomo-gold",
+    conversation: {
+      speaker_a: "Alice",
+      speaker_b: "Bob",
+      session_1: [
+        { speaker: "Alice", dia_id: "D1:1", text: "I like hiking." },
+      ],
+    },
+    observation: {
+      session_1_observation: {
+        Alice: [
+          ["Alice enjoys hiking in mountains.", "D1:1"],
+        ],
+      },
+    },
+    qa: [
+      {
+        question: "What does Alice enjoy?",
+        answer: "hiking",
+        evidence: ["D1:1"],
+        category: 1,
+      },
+      {
+        question: "Where is Bob from?",
+        answer: "unknown",
+        evidence: ["D9:9"],
+        category: 1,
+      },
+    ],
+  };
+
+  const plan = buildLoCoMoPlan(conversation, false);
+  assert.equal(plan.trials.length, 2);
+  assert.deepEqual(plan.trials[0]?.goldMemories, ["Alice enjoys hiking in mountains."]);
+  assert.equal(plan.trials[1]?.goldMemories, undefined);
+});
+
+test("deriveLoCoMoGoldMemories skips blank or whitespace-only statements", () => {
+  const observation = {
+    session_1_observation: {
+      Avery: [
+        ["", "D1:1"],
+        ["   ", "D1:1"],
+        ["A substantive statement.", "D1:1"],
+      ],
+    },
+  };
+  assert.deepEqual(deriveLoCoMoGoldMemories(observation, ["D1:1"]), [
+    "A substantive statement.",
+  ]);
+
+  const allBlank = {
+    session_1_observation: {
+      Avery: [
+        ["", "D1:1"],
+        ["   ", "D1:1"],
+      ],
+    },
+  };
+  assert.equal(deriveLoCoMoGoldMemories(allBlank, ["D1:1"]), undefined);
 });
