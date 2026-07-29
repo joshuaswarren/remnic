@@ -76,7 +76,7 @@ export function parseBenchResearchArgs(
 
   const driftingRatio = readUnitRatio(args, "--drifting-ratio");
   const contradictedRatio = readUnitRatio(args, "--contradicted-ratio");
-  if ((driftingRatio ?? 0) + (contradictedRatio ?? 0) > 1) {
+  if ((driftingRatio ?? 0.2) + (contradictedRatio ?? 0.1) > 1) {
     throw new Error("ERROR: --drifting-ratio and --contradicted-ratio must sum to at most 1.");
   }
 

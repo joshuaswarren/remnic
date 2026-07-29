@@ -119,7 +119,7 @@ test("detects IPv4 rule class outside loopback and TEST-NET-1", () => {
     const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[ipv4\]/);
-    assert.match(res.stderr, /203\.0…/);
+    assert.doesNotMatch(res.stderr, /203\.0/);
     assert.doesNotMatch(res.stderr, /203\.0\.113\.195/);
     assert.doesNotMatch(res.stderr, /127\.0\.0\.1/);
     assert.doesNotMatch(res.stderr, /192\.0\.2\.45/);

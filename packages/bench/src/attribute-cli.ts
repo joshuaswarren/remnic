@@ -6,6 +6,7 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   attributeRun,
+  lexicalSimilarity,
   renderAttributionReportTable,
   serializeAttributionReport,
   type AttributionEnvironment,
@@ -46,6 +47,7 @@ export function parseFrontmatter(fileContent: string): { id?: string; body: stri
 const SKIPPED_SYSTEM_DIRS: Record<string, boolean> = {
   activity: true,
   meetings: true,
+  questions: true,
   state: true,
   wearables: true,
 };
@@ -141,7 +143,13 @@ export async function runAttributeCliCommand(options: {
     };
   }
 
-  let listMemoriesFn: () => Promise<AttributionMemory[]>;
+  let memorySnapshot: AttributionMemory[] | undefined;
+  const listMemoriesFn = async (): Promise<AttributionMemory[]> => {
+    if (memorySnapshot) return memorySnapshot;
+    if (!options.memoryDir) throw new Error("memoryDir not provided");
+    memorySnapshot = await scanMemoryDir(options.memoryDir);
+    return memorySnapshot;
+  };
 
   if (options.memoryDir) {
     try {
@@ -152,18 +160,22 @@ export async function runAttributeCliCommand(options: {
         output: `Error: ${error instanceof Error ? error.message : `memory-dir "${options.memoryDir}" is not a readable directory`}\n`,
       };
     }
-    listMemoriesFn = () => scanMemoryDir(options.memoryDir!);
-  } else {
-    listMemoriesFn = async () => {
-      throw new Error("memoryDir not provided");
-    };
   }
 
   const recallLimitRaw = result.config?.remnicConfig?.recallLimit;
   const recallLimit = typeof recallLimitRaw === "number" && recallLimitRaw > 0 ? recallLimitRaw : 10;
+  const rankMemories = async (query: string, limit: number): Promise<AttributionMemory[]> =>
+    (await listMemoriesFn())
+      .map((memory) => ({ memory, score: lexicalSimilarity(query, memory.content) }))
+      .filter(({ score }) => score > 0)
+      .sort((a, b) => b.score - a.score || a.memory.id.localeCompare(b.memory.id))
+      .slice(0, limit)
+      .map(({ memory }) => memory);
 
   const env: AttributionEnvironment = {
     listMemories: listMemoriesFn,
+    oracleSearch: async (query, limit) => (await rankMemories(query, limit)).map(({ id }) => ({ id })),
+    recall: rankMemories,
     recallLimit,
   };
 

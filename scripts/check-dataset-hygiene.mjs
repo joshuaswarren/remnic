@@ -305,12 +305,12 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
 
     // IPv4 check
     const disallowedIPs = findDisallowedIPv4s(line);
-    for (const ip of disallowedIPs) {
+    for (const _ip of disallowedIPs) {
       findings.push({
         file: relPath,
         line: lineNum,
         rule: "ipv4",
-        message: `Non-permitted IPv4 address detected: "${ip.split(".").slice(0, 2).join(".")}…" (redacted)`,
+        message: "Non-permitted IPv4 address detected (redacted)",
       });
     }
 

@@ -20,6 +20,7 @@ import type {
   GoldProbe,
 } from "./types.js";
 import { MIN_DRIFT_GAP, formatFactStatement } from "./schedule.js";
+import { epochDate } from "./render.js";
 
 const FACT_COUNT_TOLERANCE = 0.1;
 const RATIO_TOLERANCE = 0.05;
@@ -482,6 +483,17 @@ function checkSessions(
     sessionIds.add(session.sessionId);
     if (session.epoch < 1 || session.epoch > epochs) {
       errors.push(`${session.sessionId}: epoch ${session.epoch} out of range`);
+    } else {
+      const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(session.date);
+      const day = dateMatch ? Number(dateMatch[3]) : 0;
+      if (
+        !dateMatch ||
+        day < 1 ||
+        day > 28 ||
+        session.date !== epochDate(session.epoch, day)
+      ) {
+        errors.push(`${session.sessionId}: date must be a valid canonical date in epoch ${session.epoch}`);
+      }
     }
     const key = `${session.userId}|${session.epoch}`;
     if (sessionText.has(key)) {
@@ -520,10 +532,17 @@ function checkDistribution(
     const key = `${fact.userId}|${fact.introducedEpoch}`;
     perUserEpoch.set(key, (perUserEpoch.get(key) ?? 0) + 1);
   }
-  for (const [key, count] of [...perUserEpoch.entries()].sort()) {
-    if (Math.abs(count - target) > target * FACT_COUNT_TOLERANCE) {
-      const [userId, epoch] = key.split("|");
-      errors.push(`seed ${loaded.seed}: ${userId} epoch ${epoch} introduces ${count} facts, outside ±10% of target ${target}`);
+  const userIds = new Set(loaded.sessions.map((session) => session.userId));
+  if (userIds.size !== manifest.counts.users) {
+    errors.push(`seed ${loaded.seed}: expected ${manifest.counts.users} users, found ${userIds.size}`);
+  }
+  for (const userId of [...userIds].sort()) {
+    for (let epoch = 1; epoch <= epochs; epoch++) {
+      const key = `${userId}|${epoch}`;
+      const count = perUserEpoch.get(key) ?? 0;
+      if (Math.abs(count - target) > target * FACT_COUNT_TOLERANCE) {
+        errors.push(`seed ${loaded.seed}: ${userId} epoch ${epoch} introduces ${count} facts, outside ±10% of target ${target}`);
+      }
     }
   }
 
