@@ -464,19 +464,20 @@ test("allows high-churn schedules that reuse superseded pairs", () => {
   );
 });
 
-test("allows near-capacity schedules regardless of random draw order", () => {
-  assert.doesNotThrow(() =>
-    buildCorpusSchedule({
-      users: 1,
-      epochs: 113,
-      seed: 262,
-      factsPerEpoch: 1,
-      driftingRatio: 0,
-      contradictedRatio: 0.01,
-    }),
+test("rejects near-capacity schedules without guaranteed slot reuse", () => {
+  assert.throws(
+    () =>
+      buildCorpusSchedule({
+        users: 1,
+        epochs: 113,
+        seed: 262,
+        factsPerEpoch: 1,
+        driftingRatio: 0,
+        contradictedRatio: 0.01,
+      }),
+    /active facts/,
   );
 });
-
 test("cli command generates and validates a corpus", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "drift-gen-cli-"));
   try {

@@ -255,6 +255,15 @@ function validateScheduleOptions(options: ScheduleOptions): void {
   if (options.driftingRatio + options.contradictedRatio > 1) {
     throw new Error("drift-gen driftingRatio + contradictedRatio must not exceed 1");
   }
+  const pairCapacity = (CONTACTS_PER_USER + 1) * ATTRIBUTE_SPECS.length;
+  const maxActivePairs = options.contradictedRatio === 1
+    ? options.factsPerEpoch
+    : options.epochs * options.factsPerEpoch;
+  if (maxActivePairs > pairCapacity) {
+    throw new Error(
+      `drift-gen cannot allocate ${maxActivePairs} active facts per user: only ${pairCapacity} unique subject/attribute pairs exist.`,
+    );
+  }
 }
 
 function buildContacts(rng: SeededRandom, persona: string): string[] {
@@ -368,13 +377,6 @@ function createFreshFact(
         probes: [],
       };
     }
-  }
-  const reusable = [...activeByPair.values()].sort((a, b) => a.id.localeCompare(b.id))[0];
-  if (reusable) {
-    const successor = createSuccessorFact(rng, options, reusable, epoch, ordinal);
-    reusable.supersededEpoch = epoch;
-    reusable.supersededBy = successor.id;
-    return successor;
   }
   throw new Error(
     "drift-gen exhausted unique subject/attribute pairs; lower factsPerEpoch or epochs",
