@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import { computeExtractionLivenessStatus, ExtractionLivenessWarnThrottle } from "./extraction-liveness.js";
+import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   recordCitationUsage as recordCitationUsageForAccess,
@@ -2369,7 +2370,17 @@ export class EngramAccessService {
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const searchBackend = this.orchestrator.config.searchBackend ?? "qmd";
     const qmdEnabled = resolveQmdCapabilities(this.orchestrator.config).qmd === true;
-    const extraction = await computeExtractionLivenessStatus(this.orchestrator, this.extractionLivenessWarn);
+    const extractionWatermark = await readAggregateExtractionWatermark({
+      config: this.orchestrator.config,
+      rootStorage: this.orchestrator.storage,
+      storageForNamespace: (candidate) => this.orchestrator.getStorage(candidate),
+      rootsCache: this.corpusWatermarkCache,
+    });
+    const extraction = await computeExtractionLivenessStatus(
+      this.orchestrator,
+      extractionWatermark,
+      this.extractionLivenessWarn,
+    );
     // ONE call: the corpus array and the flag describing it must not come from
     // two independently-cached scans (round 8, codex P1).
     const caps = tokenCapabilityStore.getStore();

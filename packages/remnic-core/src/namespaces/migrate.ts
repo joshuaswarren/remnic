@@ -65,6 +65,7 @@ async function hasAnyLegacyData(rootDir: string): Promise<boolean> {
 
 async function discoverConfiguredNamespaces(
   config: PluginConfig,
+  propagateDiscoveryErrors: boolean,
 ): Promise<string[]> {
   const discovered = new Set<string>([
     config.defaultNamespace,
@@ -85,7 +86,10 @@ async function discoverConfiguredNamespaces(
         discovered.add(namespace);
       }
     }
-  } catch {
+  } catch (error) {
+    if (propagateDiscoveryErrors && (error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
     // No namespace directory yet.
   }
 
@@ -95,9 +99,13 @@ async function discoverConfiguredNamespaces(
 export async function listNamespaces(options: {
   config: PluginConfig;
   storageRouter?: NamespaceStorageRouter;
+  propagateDiscoveryErrors?: boolean;
 }): Promise<NamespaceInventoryEntry[]> {
   const storageRouter = options.storageRouter ?? new NamespaceStorageRouter(options.config);
-  const namespaces = await discoverConfiguredNamespaces(options.config);
+  const namespaces = await discoverConfiguredNamespaces(
+    options.config,
+    options.propagateDiscoveryErrors ?? false,
+  );
   const items = await Promise.all(
     namespaces.map(async (namespace) => {
       const storage = await storageRouter.storageFor(namespace);

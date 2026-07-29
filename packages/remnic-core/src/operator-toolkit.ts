@@ -4,6 +4,7 @@ import { access, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:
 import { lintWorkspaceFiles } from "./hygiene.js";
 import { parseConfig } from "./config.js";
 import { summarizeExtractionLiveness, type ExtractionBufferSource } from "./extraction-liveness.js";
+import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
 import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import { resolvePluginEntry } from "./plugin-entry-resolver.js";
@@ -1500,7 +1501,12 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   // Informational only — never errors, never blocks doctor from returning ok.
   checks.push(await summarizeTierDistribution(options.orchestrator.storage));
   checks.push(await summarizeDreamsPhases(config, storage));
-  checks.push(await summarizeExtractionLiveness(config, storage, options.orchestrator.buffer));
+  const extractionWatermark = await readAggregateExtractionWatermark({
+    config,
+    rootStorage: storage,
+    storageForNamespace: (_namespace, rootDir) => new StorageManager(rootDir),
+  });
+  checks.push(await summarizeExtractionLiveness(config, extractionWatermark, options.orchestrator.buffer));
   checks.push(...(await summarizeCorpusAndReplica(config, (d) => new StorageManager(d), options.resolveSecretRef)));
   // Security mitigation status (issue #565).
   // Reports whether the cross-namespace budget and anomaly detection

@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Extraction liveness now uses the newest successful extraction across the root
+  and all distinct namespace stores. Partial namespace metadata failures surface
+  as an unreadable watermark instead of publishing a surviving timestamp as
+  fresh.
+
 ## [v9.38.0] — 2026-07-29
 
 ### Added

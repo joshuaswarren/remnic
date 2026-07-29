@@ -85,7 +85,7 @@ const serviceStub = {
       oldestBufferedTurnAgeMs: null,
       degraded: false,
       degradedReason: null,
-      watermarkScope: "root-store",
+      watermarkScope: "aggregate",
     },
     corpus: [],
       corpusComplete: true,

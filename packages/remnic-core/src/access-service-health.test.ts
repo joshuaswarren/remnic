@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -553,11 +553,16 @@ test("health reports extraction liveness ok when the buffer is empty (nothing to
   }
 });
 
-test("health returns the same daemon-global extraction verdict for every namespace (issue #2151)", async () => {
+test("health returns one daemon-global aggregate extraction verdict for every namespace", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-liveness-ns-"));
   try {
-    const rootTs = new Date().toISOString(); // fresh daemon-global watermark
-    const staleTs = new Date(Date.now() - 7_200_000).toISOString(); // 2h old
+    const namespaceDirs: Record<string, string> = {
+      fresh: path.join(memoryDir, "namespaces", "fresh"),
+      stale: path.join(memoryDir, "namespaces", "stale"),
+    };
+    await Promise.all(Object.values(namespaceDirs).map((dir) => mkdir(dir, { recursive: true })));
+    const freshTs = new Date().toISOString();
+    const staleTs = new Date(Date.now() - 7_200_000).toISOString();
     const config = parseConfig({
       memoryDir,
       qmdEnabled: false,
@@ -565,20 +570,25 @@ test("health returns the same daemon-global extraction verdict for every namespa
       defaultNamespace: "default",
       extractionLiveness: { staleWindowMs: 3_600_000 },
     });
-    // Per-namespace stores return DIVERGING watermarks (fresh vs 2h stale vs
-    // never), but the global buffer is shared and the watermark must be sourced
-    // from the root store. Pre-fix, the extraction verdict tracked the
-    // namespace argument; post-fix it is identical for every namespace.
-    const perNamespaceMeta: Record<string, string | null> = { fresh: rootTs, stale: staleTs };
+    const perNamespaceMeta: Record<string, string | null> = {
+      default: staleTs,
+      fresh: freshTs,
+      stale: staleTs,
+    };
     const service = new EngramAccessService({
       config,
       qmd: makeQmd({}),
       buffer: {
-        getBufferSnapshot: async () => ({ bufferedSessionCount: 3, pendingTurnCount: 12, oldestTurnTimestamp: staleTs }),
+        getBufferSnapshot: async () => ({
+          bufferedSessionCount: 3,
+          pendingTurnCount: 12,
+          oldestTurnTimestamp: staleTs,
+        }),
       },
       storage: {
+        dir: memoryDir,
         loadMeta: async () => ({
-          lastExtractionAt: rootTs,
+          lastExtractionAt: staleTs,
           extractionCount: 4,
           lastConsolidationAt: null,
           totalMemories: 0,
@@ -586,10 +596,11 @@ test("health returns the same daemon-global extraction verdict for every namespa
         }),
       },
       async getStorage(namespace?: string) {
+        const resolved = namespace ?? "default";
         return {
-          dir: memoryDir,
+          dir: namespaceDirs[resolved] ?? memoryDir,
           loadMeta: async () => ({
-            lastExtractionAt: namespace ? perNamespaceMeta[namespace] ?? null : staleTs,
+            lastExtractionAt: perNamespaceMeta[resolved] ?? null,
             extractionCount: 4,
             lastConsolidationAt: null,
             totalMemories: 0,
@@ -599,19 +610,23 @@ test("health returns the same daemon-global extraction verdict for every namespa
       },
     } as unknown as Orchestrator);
 
+    await service.health();
+    const serviceWithCache = service as unknown as {
+      corpusWatermarkCache: { whenIdle(): Promise<void> };
+    };
+    await serviceWithCache.corpusWatermarkCache.whenIdle();
+
     const fresh = (await service.health("fresh")).extraction;
     const stale = (await service.health("stale")).extraction;
     const def = (await service.health()).extraction;
-    // The namespace-governed fields must not vary with the namespace argument
-    // (oldestBufferedTurnAgeMs is time-derived and intentionally excluded).
     assert.equal(stale.degraded, fresh.degraded, "degraded must not vary by namespace");
     assert.equal(def.degraded, fresh.degraded, "default health matches namespaced health");
     assert.equal(stale.lastExtractionAt, fresh.lastExtractionAt, "watermark must not vary by namespace");
     assert.equal(def.lastExtractionAt, fresh.lastExtractionAt);
     assert.equal(stale.degradedReason, fresh.degradedReason);
-    // Sourced from the fresh root watermark → healthy despite stale per-namespace stores.
     assert.equal(fresh.degraded, false);
-    assert.equal(fresh.lastExtractionAt, rootTs);
+    assert.equal(fresh.lastExtractionAt, freshTs);
+    assert.equal(fresh.watermarkScope, "aggregate");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
