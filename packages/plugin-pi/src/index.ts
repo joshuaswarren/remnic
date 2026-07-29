@@ -36,6 +36,10 @@ const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
 const TRUNCATION_NOTICE = "\n\n[Remnic context truncated]";
 const SESSION_OWNED_FIELDS = new Set(["sessionKey", "namespace", "cwd"]);
+const RECALL_PRODUCING_TOOL_NAMES: Record<string, true> = {
+  "remnic.recall": true,
+  "remnic.recall_xray": true,
+};
 
 type PiSessionState = {
   observedHashes: Set<string>;
@@ -366,7 +370,7 @@ async function registerMcpTools(
             details: { skipped: true, reason: "stale_context" },
           };
         }
-        if (recallTimeoutBreaker.isTripped() && isRecallToolName(tool.name)) {
+        if (recallTimeoutBreaker.isTripped() && RECALL_PRODUCING_TOOL_NAMES[tool.name] === true) {
           const message = notifyRecallDisabled(session);
           return {
             content: [{ type: "text", text: message }],
@@ -380,7 +384,7 @@ async function registerMcpTools(
           namespace: config.namespace,
           cwd: session.cwd,
         };
-        const result = isRecallToolName(tool.name)
+        const result = RECALL_PRODUCING_TOOL_NAMES[tool.name] === true
           ? await executeRecallWithBreaker(
               (breakerSignal) =>
                 client.mcpTool(tool.name, toolArguments, {
@@ -923,9 +927,6 @@ function notifyRecallDisabled(session: PiContextSnapshot): string {
   return message;
 }
 
-function isRecallToolName(name: string): boolean {
-  return name === "remnic.recall" || name.startsWith("remnic.recall_") || name.startsWith("remnic.recall.");
-}
 const RECALL_DISABLED_STATUS = "Remnic recall disabled until restart (timeouts delayed operations)";
 
 function emitRecallTimeoutTrip(pi: PiApi, session: PiContextSnapshot, config: RemnicPiConfig, err: unknown): void {

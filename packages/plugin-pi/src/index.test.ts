@@ -1359,6 +1359,73 @@ test("registered MCP tools strip nested session-owned params before forwarding",
   ]);
 });
 
+test("MCP recall diagnostics remain available after the recall timeout breaker trips", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (body.method === "tools/list") {
+      return new Response(JSON.stringify({
+        result: {
+          tools: [
+            { name: "remnic.recall", inputSchema: { type: "object" } },
+            { name: "remnic.recall_explain", inputSchema: { type: "object" } },
+          ],
+        },
+      }), { status: 200 });
+    }
+    if (body.params?.name === "remnic.recall") {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+        );
+      });
+    }
+    return new Response(JSON.stringify({ result: { summary: "last recall" } }), { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const registeredTools: Record<string, unknown>[] = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      statusEnabled: false,
+      mcpToolsEnabled: true,
+      requestTimeoutMs: 2,
+      recallTimeoutThreshold: 1,
+      recallTimeoutWindow: 1,
+    },
+  });
+  const pi: PiApi = {
+    on: () => undefined,
+    registerCommand: () => undefined,
+    registerTool: (tool) => registeredTools.push(tool),
+    appendEntry: () => undefined,
+  };
+  await extension(pi);
+
+  const recallTool = registeredTools.find((tool) => tool.name === "remnic_recall");
+  const explainTool = registeredTools.find((tool) => tool.name === "remnic_recall_explain");
+  assert.ok(recallTool);
+  assert.ok(explainTool);
+  const recallExecute = recallTool.execute;
+  const explainExecute = explainTool.execute;
+  if (typeof recallExecute !== "function" || typeof explainExecute !== "function") {
+    throw new Error("expected registered MCP tools to provide execute handlers");
+  }
+
+  const context = { cwd: "/tmp/remnic-pi", sessionManager: { getSessionId: () => "mcp-diagnostics" } };
+  await assert.rejects(
+    () => recallExecute("call-1", { query: "trip" }, undefined, undefined, context),
+    /timed out/,
+  );
+  const diagnosticResult = await explainExecute("call-2", {}, undefined, undefined, context);
+  assert.match(JSON.stringify(diagnosticResult), /last recall/);
+});
+
 function baseConfig(): RemnicPiConfig {
   return {
     remnicDaemonUrl: "http://127.0.0.1:4318",

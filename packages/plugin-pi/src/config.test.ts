@@ -334,6 +334,11 @@ test("loadConfig fails closed on invalid numeric values", () => {
 
     fs.writeFileSync(configPath, JSON.stringify({ recallTimeoutThreshold: 5, recallTimeoutWindow: 5 }));
     assert.equal(loadConfig({ configPath, env: {} }).recallTimeoutThreshold, 5);
+
+    fs.writeFileSync(configPath, JSON.stringify({ recallTimeoutThreshold: 1, recallTimeoutWindow: 1 }));
+    const minimumBreakerConfig = loadConfig({ configPath, env: {} });
+    assert.equal(minimumBreakerConfig.recallTimeoutThreshold, 1);
+    assert.equal(minimumBreakerConfig.recallTimeoutWindow, 1);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
