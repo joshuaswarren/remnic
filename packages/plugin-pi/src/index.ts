@@ -4,7 +4,6 @@ import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./confi
 import { RemnicClient, RemnicHttpError, isTransientNetworkError, type McpTool, type ObserveMessage } from "./client.js";
 import {
   hashObservedMessage,
-  latestUserRecallTarget,
   observedMessageDedupeKey,
   sessionKeyFromContext,
   summarizeMessages,
@@ -33,7 +32,11 @@ const SESSION_OWNED_FIELDS = new Set(["sessionKey", "namespace", "cwd"]);
 type PiSessionState = {
   observedHashes: Set<string>;
   liveObservedReplayKeys: Map<string, number>;
-  lastInjectedRecallKey: string;
+  /** Cached recall context — populated from the first context event's user prompt,
+   *  reused byte-identically across subsequent turns for KV cache prefix stability. */
+  cachedContext: string | null;
+  /** True once recall has been attempted (success or failure) for this session. */
+  recallCompleted: boolean;
 };
 
 type NotifyLevel = "info" | "success" | "warning" | "error";
@@ -63,6 +66,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
       restoreObservedState(session, state.observedHashes);
+      state.cachedContext = null;
+      state.recallCompleted = false;
+
       // Probe health + update the circuit breaker UNCONDITIONALLY so an offline
       // daemon is marked unreachable even when the status UI is off; otherwise
       // the namespace preflight and every later hook each burn a full request
@@ -74,45 +80,45 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       await runNamespacePreflight(pi, session, client, config);
     });
 
-    pi.on("context", async (event, ctx) => {
+    pi.on("before_agent_start", async (event, ctx) => {
       const session = snapshotPiContext(ctx);
       if (!session) return;
-      if (!config.recallEnabled || !config.authToken) return;
-      // Circuit breaker: skip recall fast while the daemon is known-down so a
-      // dead host doesn't block every turn on a doomed request (#1626).
-      if (!client.isReachable()) return;
-      const recallTarget = latestUserRecallTarget(Array.isArray(event.messages) ? event.messages : []);
-      if (!recallTarget) return;
-      const { query } = recallTarget;
       const { state } = getSessionState(session.sessionKey, sessionStates);
-      if (recallTarget.dedupeKey === state.lastInjectedRecallKey) return;
 
-      try {
-        const recalled = await client.recall(query, session.sessionKey, session.cwd, {
-          timeoutMs: config.turnRequestTimeoutMs,
-        });
-        client.markReachable();
-        const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
-        if (!context) return;
-        state.lastInjectedRecallKey = recallTarget.dedupeKey;
-        return {
-          messages: [
-            ...event.messages,
-            {
-              role: "user",
-              content: [{ type: "text", text: `Remnic recalled context for this turn:\n\n${context}` }],
-              remnicInjected: true,
-              timestamp: Date.now(),
-            },
-          ],
-        };
-      } catch (err) {
-        // Only trip the breaker when the daemon is genuinely unreachable
-        // (timeout or connection-level failure) — not on a transient HTTP
-        // error, so a one-off failure still retries on the next turn (#1626).
-        if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
-        session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
+      // On the first before_agent_start, populate the cache using the user's
+      // prompt text so semantic recall produces relevant results.  Once
+      // populated, the cached context is appended to the system prompt on
+      // every turn for KV cache prefix stability (PR #2208).
+      if (!state.recallCompleted && config.recallEnabled && config.authToken && client.isReachable()) {
+        const promptText = typeof event.prompt === "string" && event.prompt.trim().length > 0 ? event.prompt : "";
+        if (promptText) {
+          state.recallCompleted = true;
+          try {
+            const recalled = await client.recall(promptText, session.sessionKey, session.cwd, {
+              timeoutMs: config.turnRequestTimeoutMs,
+            });
+            client.markReachable();
+            const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
+            if (context) {
+              state.cachedContext = context;
+            }
+          } catch (err) {
+            if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
+            session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
+          }
+        }
       }
+
+      // Inject cached context into the system prompt — byte-identical across
+      // turns so the KV cache prefix is preserved.  This avoids the
+      // system-role message issue: Pi's AgentMessage union does not include
+      // "system", so injecting via the context hook produced an invalid
+      // provider payload that Pi drops (codex review).
+      if (!state.cachedContext) return;
+      const basePrompt = typeof event.systemPrompt === "string" ? event.systemPrompt : "";
+      return {
+        systemPrompt: `${basePrompt}\n\n${state.cachedContext}`,
+      };
     });
 
     pi.on("message_end", async (event, ctx) => {
@@ -405,7 +411,8 @@ function getSessionState(sessionKey: string, states: Map<string, PiSessionState>
     state = {
       observedHashes: new Set<string>(),
       liveObservedReplayKeys: new Map<string, number>(),
-      lastInjectedRecallKey: "",
+      cachedContext: null,
+      recallCompleted: false,
     };
     states.set(sessionKey, state);
     pruneSessionStates(states);
