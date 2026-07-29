@@ -36,3 +36,24 @@ test("local LLM extraction salvages complete facts from truncated JSON", async (
   assert.equal(result.facts[0]?.content, "User prefers dark mode");
   assert.equal(result.facts[0]?.confidence, 0.9);
 });
+
+test("day summary surfaces invalid local LLM output when fallback is disabled", async () => {
+  const config = parseConfig({
+    memoryDir: ".tmp/memory",
+    workspaceDir: ".tmp/workspace",
+    openaiApiKey: "test-key",
+    localLlmEnabled: true,
+    localLlmFallback: false,
+  });
+  const localLlm = {
+    async chatCompletion() {
+      return { content: "not JSON" };
+    },
+  };
+  const engine = new ExtractionEngine(config, undefined, localLlm as any);
+
+  await assert.rejects(
+    () => engine.generateDaySummary("A durable memory."),
+    /day summary generation failed: local LLM returned invalid JSON/,
+  );
+});
