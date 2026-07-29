@@ -11,6 +11,16 @@
       "remnic-source": "./src/index.ts",
       "import": "./dist/index.js"
     },
+    "./maintenance/atomic-file": {
+      "types": "./dist/maintenance/atomic-file.d.ts",
+      "remnic-source": "./src/maintenance/atomic-file.ts",
+      "import": "./dist/maintenance/atomic-file.js"
+    },
+    "./maintenance/atomic-file.js": {
+      "types": "./dist/maintenance/atomic-file.d.ts",
+      "remnic-source": "./src/maintenance/atomic-file.ts",
+      "import": "./dist/maintenance/atomic-file.js"
+    },
     "./abort-error": {
       "types": "./dist/abort-error.d.ts",
       "remnic-source": "./src/abort-error.ts",
@@ -494,6 +504,16 @@
       "types": "./dist/coding/coding-graph-types.d.ts",
       "remnic-source": "./src/coding/coding-graph-types.ts",
       "import": "./dist/coding/coding-graph-types.js"
+    },
+    "./coding/pre-action-gate": {
+      "types": "./dist/coding/pre-action-gate.d.ts",
+      "remnic-source": "./src/coding/pre-action-gate.ts",
+      "import": "./dist/coding/pre-action-gate.js"
+    },
+    "./coding/pre-action-gate.js": {
+      "types": "./dist/coding/pre-action-gate.d.ts",
+      "remnic-source": "./src/coding/pre-action-gate.ts",
+      "import": "./dist/coding/pre-action-gate.js"
     },
     "./commitment-ledger": {
       "types": "./dist/commitment-ledger.d.ts",

@@ -51,6 +51,7 @@ deep-equal characterization test so the schema and the docs cannot drift.
 | `codingKnowledge.decisionRecords` | `true` | Advertises the `engram.coding_decision` MCP tool + HTTP route (under the master gate). |
 | `codingKnowledge.architectureCard` | `true` | Advertises the `engram.coding_architecture` MCP tool + HTTP route. |
 | `codingKnowledge.sessionDelta` | `true` | Advertises the `engram.coding_delta` MCP tool + HTTP route. |
+| `codingKnowledge.preActionGate` | `false` | Pre-action failure gate check (under the master gate). |
 | `codingKnowledge.architectureCardLlmSummary` | `false` | Opt-in LLM summary pass on the architecture card (costs tokens). |
 | `codingKnowledge.structuralProvider` | `"none"` | `"none" \| "subprocess" \| "native"`. See [Structural provider (reserved)](#structural-provider-reserved). |
 | `codingKnowledge.structuralProviderCommand` | `""` | Absolute path to the subprocess provider binary (used only when `structuralProvider = "subprocess"`). |

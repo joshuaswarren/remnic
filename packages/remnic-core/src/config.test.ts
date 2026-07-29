@@ -1422,6 +1422,7 @@ test("parseConfig codingKnowledge: defaults match the documented contract (issue
     decisionRecords: true,
     architectureCard: true,
     sessionDelta: true,
+    preActionGate: false,
     architectureCardLlmSummary: false,
     structuralProvider: "none",
     structuralProviderCommand: "",
@@ -1442,12 +1443,26 @@ test("parseConfig codingKnowledge: accepts CLI-style boolean strings (CLAUDE.md 
     codingKnowledge: {
       enabled: "true",
       decisionRecords: "false",
+      preActionGate: "true",
       architectureCardLlmSummary: "true",
     },
   });
   assert.equal(result.codingKnowledge.enabled, true);
   assert.equal(result.codingKnowledge.decisionRecords, false);
+  assert.equal(result.codingKnowledge.preActionGate, true);
   assert.equal(result.codingKnowledge.architectureCardLlmSummary, true);
+});
+
+test("parseConfig codingKnowledge: preActionGate accepts string false and rejects invalid values", () => {
+  assert.equal(
+    parseConfig({ openaiApiKey: "sk-test", codingKnowledge: { preActionGate: "false" } })
+      .codingKnowledge.preActionGate,
+    false,
+  );
+  assert.throws(
+    () => parseConfig({ openaiApiKey: "sk-test", codingKnowledge: { preActionGate: "invalid" } }),
+    /codingKnowledge\.preActionGate must be a boolean/,
+  );
 });
 
 test("parseConfig codingKnowledge: rejects unknown structuralProvider value (rule 51)", () => {

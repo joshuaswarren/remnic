@@ -511,6 +511,32 @@ export {
   type RemnicChatGptMemoryInspectorResult,
 } from "./mcp-memory-inspector-app.js";
 
+export {
+  PreActionFailureGate,
+  normalizeActionIntent,
+  sanitizePayloadString,
+  PRE_ACTION_FINGERPRINT_VERSION,
+  PRE_ACTION_WARNING_VERSION,
+  PRE_ACTION_GATE_DEFAULT_TIMEOUT_MS,
+  type PreActionGateRequest,
+  type PreActionGateResult,
+  type PreActionGateStatus,
+  type NormalizedActionIntent,
+  type PreActionGateDependencies,
+} from "./coding/pre-action-gate.js";
+export {
+  readCausalTrajectoryRecordsStrict,
+  readCausalTrajectoryRevisionToken,
+  advanceCausalTrajectoryRevisionToken,
+  type ActionIntent,
+  type CommandIntent,
+  type EditIntent,
+  type ActionIdentity,
+  type ActionStrategyId,
+  type EditKind,
+  type CausalTrajectoryCodingContext,
+  type CausalTrajectoryStrictReadResult,
+} from "./causal-trajectory.js";
 // Coding-agent subsystem (issue #569)
 export {
   resolveGitContext,
@@ -1460,3 +1486,8 @@ export type {
   SymbolIR,
 } from "./coding/coding-graph-types.js";
 export type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
+export {
+  commitPreparedFileAtomically,
+  copyExistingFileToBackup,
+  writeFileAtomically,
+} from "./maintenance/atomic-file.js";

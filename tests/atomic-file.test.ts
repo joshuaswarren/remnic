@@ -5,6 +5,8 @@ import test from "node:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 
 import { writeFileAtomically } from "../packages/remnic-core/src/maintenance/atomic-file.ts";
+import { writeFileAtomically as writeFileAtomicallyFromCore } from "@remnic/core/maintenance/atomic-file";
+import { writeFileAtomically as writeFileAtomicallyFromCoreJs } from "@remnic/core/maintenance/atomic-file.js";
 
 test("writeFileAtomically copies backups without removing the live file first", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-atomic-file-"));
@@ -35,6 +37,19 @@ test("writeFileAtomically leaves the live file intact when backup creation fails
 
     await assert.rejects(() => writeFileAtomically(outputPath, "new\n", backupPath));
     assert.equal(await readFile(outputPath, "utf-8"), "old\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("@remnic/core/maintenance/atomic-file exposes the canonical writer", async () => {
+  assert.equal(typeof writeFileAtomicallyFromCore, "function");
+  assert.equal(writeFileAtomicallyFromCoreJs, writeFileAtomicallyFromCore);
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-atomic-file-subpath-"));
+  try {
+    const outputPath = path.join(dir, "test.txt");
+    await writeFileAtomicallyFromCore(outputPath, "subpath export works\n");
+    assert.equal(await readFile(outputPath, "utf-8"), "subpath export works\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

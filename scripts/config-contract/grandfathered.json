@@ -386,41 +386,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "codingKnowledge",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "codingKnowledge.architectureCard",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "codingKnowledge.architectureCardLlmSummary",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "codingKnowledge.codegraphDbDir",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "codingKnowledge.codegraphTools",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "codingKnowledge.decisionRecords",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "codingKnowledge.enabled",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "codingKnowledge.lsp",
     "issue": "#1990"
   },
@@ -442,21 +407,6 @@
   {
     "kind": "undocumented-key",
     "key": "codingKnowledge.lsp.timeoutMs",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "codingKnowledge.sessionDelta",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "codingKnowledge.structuralProvider",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "codingKnowledge.structuralProviderCommand",
     "issue": "#1990"
   },
   {
