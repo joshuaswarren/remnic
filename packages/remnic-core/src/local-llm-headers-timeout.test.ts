@@ -68,6 +68,11 @@ function primeClient(client: LocalLlmClient): void {
   internals.detectedType = "generic";
 }
 
+function clientIsAvailable(client: LocalLlmClient): boolean {
+  const internals = client as unknown as { isAvailable: boolean };
+  return internals.isAvailable;
+}
+
 /** Test seam: the pool is private, but its budget is what we assert on. */
 function dispatcherOf(client: LocalLlmClient): Agent {
   const seam = client as unknown as {
@@ -116,6 +121,63 @@ async function startSlowHeaderServer(delayMs: number): Promise<{
     url: `http://127.0.0.1:${port}/v1`,
     close: async () => {
       for (const timer of pending) clearTimeout(timer);
+      pending.clear();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+async function startTricklingBodyServer(chunkIntervalMs: number, status = 200): Promise<{
+  url: string;
+  requestBodies: string[];
+  close: () => Promise<void>;
+}> {
+  const pending = new Set<NodeJS.Timeout>();
+  const requestBodies: string[] = [];
+  const payload = JSON.stringify({
+    choices: [{ message: { content: "late completion" } }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  });
+  const chunkSize = Math.ceil(payload.length / 16);
+  const chunks = Array.from(
+    { length: 16 },
+    (_, index) => payload.slice(index * chunkSize, (index + 1) * chunkSize),
+  ).filter((chunk) => chunk.length > 0);
+  const server = http.createServer((req, res) => {
+    let requestBody = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => {
+      requestBody += chunk;
+    });
+    req.on("end", () => {
+      requestBodies.push(requestBody);
+      res.writeHead(status, { "content-type": "application/json" });
+      res.flushHeaders();
+      let index = 0;
+      const interval = setInterval(() => {
+        const chunk = chunks[index];
+        index += 1;
+        if (chunk !== undefined) res.write(chunk);
+        if (index >= chunks.length) {
+          clearInterval(interval);
+          pending.delete(interval);
+          res.end();
+        }
+      }, chunkIntervalMs);
+      pending.add(interval);
+      res.once("close", () => {
+        clearInterval(interval);
+        pending.delete(interval);
+      });
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}/v1`,
+    requestBodies,
+    close: async () => {
+      for (const interval of pending) clearInterval(interval);
       pending.clear();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
@@ -241,6 +303,138 @@ test("a completion whose headers lag the request still succeeds", async () => {
   } finally {
     await dispatcherOf(client).close();
     await server.close();
+  }
+});
+
+test("the request budget covers a trickling response body", async () => {
+  const timeoutMs = 250;
+  const server = await startTricklingBodyServer(75);
+  const client = new LocalLlmClient(
+    createConfig({ localLlmUrl: server.url, localLlmTimeoutMs: timeoutMs }),
+  );
+  try {
+    primeClient(client);
+    const startedAt = Date.now();
+    const result = await client.chatCompletion([
+      { role: "user", content: "extract facts" },
+    ]);
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(result, null);
+    assert.ok(
+      elapsedMs < 800,
+      `response body must abort near the ${timeoutMs}ms request budget; elapsed ${elapsedMs}ms`,
+    );
+    const requestBody: unknown = JSON.parse(server.requestBodies[0] ?? "{}");
+    assert.ok(requestBody && typeof requestBody === "object" && "stream" in requestBody);
+    assert.equal(requestBody.stream, false);
+  } finally {
+    await dispatcherOf(client).close();
+    await server.close();
+  }
+});
+
+test("caller abort during body consumption remains cancellation for an arbitrary reason", async () => {
+  const original = globalThis.fetch;
+  const caller = new AbortController();
+  let calls = 0;
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    calls += 1;
+    const signal = init?.signal;
+    assert.ok(signal);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        signal.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+      },
+    });
+    queueMicrotask(() => caller.abort(new Error("caller cancelled")));
+    return new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const client = new LocalLlmClient(createConfig({ localLlmRetry5xxCount: 2 }));
+  try {
+    primeClient(client);
+    const result = await client.chatCompletion(
+      [{ role: "user", content: "extract facts" }],
+      { signal: caller.signal },
+    );
+    assert.equal(result, null);
+    assert.equal(calls, 1);
+    assert.equal(clientIsAvailable(client), true);
+  } finally {
+    globalThis.fetch = original;
+    await dispatcherOf(client).close();
+  }
+});
+
+test("a timed-out 400 body is accounted once and enters cooldown", async () => {
+  const server = await startTricklingBodyServer(75, 400);
+  const client = new LocalLlmClient(
+    createConfig({
+      localLlmUrl: server.url,
+      localLlmTimeoutMs: 250,
+      localLlmRetry5xxCount: 2,
+      localLlm400TripThreshold: 1,
+    }),
+  );
+  try {
+    primeClient(client);
+    assert.equal(
+      await client.chatCompletion([{ role: "user", content: "extract facts" }]),
+      null,
+    );
+    assert.equal(server.requestBodies.length, 1);
+    assert.equal(
+      await client.chatCompletion([{ role: "user", content: "extract facts again" }]),
+      null,
+    );
+    assert.equal(server.requestBodies.length, 1, "cooldown must stop a second request");
+  } finally {
+    await dispatcherOf(client).close();
+    await server.close();
+  }
+});
+
+test("a truncated 503 body retains the configured retry", async () => {
+  const original = globalThis.fetch;
+  const encoder = new TextEncoder();
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('{"error":'));
+          controller.error(new TypeError("terminated"));
+        },
+      });
+      return new Response(body, {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "retry succeeded" } }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const client = new LocalLlmClient(
+    createConfig({ localLlmRetry5xxCount: 1, localLlmRetryBackoffMs: 1 }),
+  );
+  try {
+    primeClient(client);
+    const result = await client.chatCompletion([
+      { role: "user", content: "extract facts" },
+    ]);
+    assert.equal(result?.content, "retry succeeded");
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = original;
+    await dispatcherOf(client).close();
   }
 });
 
