@@ -818,6 +818,12 @@ export interface EngramAccessOfflineSyncApplyRequest {
   returnCurrentFiles?: boolean;
 }
 
+export interface EngramAccessOfflineSyncFinalizeConvergenceRequest {
+  namespaces?: string[];
+  principal?: string;
+  sourceId: string;
+}
+
 export interface EngramAccessOfflineSyncSnapshotResponse extends OfflineSyncSnapshot {
   namespace: string;
 }
@@ -841,6 +847,11 @@ export interface EngramAccessOfflineSyncApplyFileContentResponse extends Offline
 
 export interface EngramAccessOfflineSyncApplyResponse extends OfflineSyncApplyChangesetResult {
   namespace: string;
+}
+
+export interface EngramAccessOfflineSyncFinalizeConvergenceResponse {
+  namespaces: string[];
+  refreshed: true;
 }
 
 export type EngramAccessActionConfidenceRequest = ActionConfidenceInput;
@@ -5619,6 +5630,29 @@ export class EngramAccessService {
       }
       throw error;
     }
+  }
+
+  async offlineSyncFinalizeConvergence(
+    options: EngramAccessOfflineSyncFinalizeConvergenceRequest,
+  ): Promise<EngramAccessOfflineSyncFinalizeConvergenceResponse> {
+    if (options.sourceId !== "remnic-converge") {
+      throw new EngramAccessInputError("sourceId must be remnic-converge");
+    }
+    const requestedNamespaces = options.namespaces?.length
+      ? options.namespaces
+      : [undefined];
+    const resolvedNamespaces = Array.from(new Set(
+      requestedNamespaces.map((namespace) => this.writableNamespaceFor(
+        namespace,
+        undefined,
+        options.principal,
+      )),
+    ));
+    await this.orchestrator.refreshNamespacesAfterConvergence(resolvedNamespaces);
+    return {
+      namespaces: resolvedNamespaces,
+      refreshed: true,
+    };
   }
 
   async offlineSyncApply(

@@ -183,6 +183,11 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "POST", pathname: "/engram/v1/offline-sync/files", operation: "offline_sync_files" },
   { method: "POST", pathname: "/engram/v1/offline-sync/file-content", operation: "offline_sync_file_content" },
   { method: "POST", pathname: "/engram/v1/offline-sync/apply-file-content", operation: "offline_sync_apply_file_content" },
+  {
+    method: "POST",
+    pathname: "/engram/v1/offline-sync/convergence-complete",
+    operation: "offline_sync_apply_file_content",
+  },
   { method: "POST", pathname: "/engram/v1/offline-sync/apply", operation: "offline_sync_apply" },
   { method: "POST", pathname: "/engram/v1/recall/explain", operation: "recall_explain" },
   { method: "POST", pathname: "/engram/v1/action-confidence", operation: "action_confidence" },
