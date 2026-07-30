@@ -127,6 +127,7 @@ import { raceRecallAbort, throwIfRecallAborted } from "./orchestrator-helpers.js
 import {
   capExtractionRetryStateEntries,
   combineExtractionAbortSignals,
+  commitEmptySuccessExtraction,
   computeExtractionRetryNextEligibleMs,
   deriveSourceConnector,
   deriveTopicsFromExtraction,
@@ -1015,13 +1016,16 @@ export class ExtractionRunCoordinator {
           { extractionFailure }
         );
       }
-      if (extractionFingerprint && shouldPersistProcessedFingerprint && !extractionFailure) {
-        meta ??= await storage.loadMeta();
-        await this.deps.recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta);
-        meta.extractionCount += 1;
-        meta.lastExtractionAt = new Date().toISOString();
-        await storage.saveMeta(meta);
-      }
+      await commitEmptySuccessExtraction({
+        storage,
+        meta,
+        extractionFingerprint,
+        shouldPersistProcessedFingerprint,
+        hasExtractionFailure: Boolean(extractionFailure),
+        recordProcessedExtractionFingerprint: this.deps.recordProcessedExtractionFingerprint,
+        runDeadlineAware,
+        isDeadlineError: (error) => error instanceof ExtractionDeadlineError,
+      });
       // Correction-only turns that meet char/user-turn thresholds but yield
       // zero facts still need passive capture (review: "empty extraction skips
       // capture"). selfNamespace/principal already resolved above.
