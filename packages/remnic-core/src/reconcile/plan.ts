@@ -2,7 +2,10 @@ import { normalizeNamespaceIdentity } from "../namespaces/identity.js";
 import { OFFLINE_SYNC_MAX_MTIME_MS } from "../offline-sync.js";
 import { validateArchiveRelativePath } from "../transfer/fs-utils.js";
 import type { OfflineSyncFileState } from "../offline-sync.js";
-import { CONVERGE_CONFLICT_POLICIES } from "../converge-config.js";
+import {
+  CONVERGE_CONFLICT_POLICIES,
+  DEFAULT_CONVERGE_CONFLICT_POLICY,
+} from "../converge-config.js";
 import type { ConvergeConflictPolicy } from "../types.js";
 
 /**
@@ -466,7 +469,7 @@ function indexDigestsByPath(
 }
 
 function assertConflictPolicy(value: ConvergeConflictPolicy | undefined): ConvergeConflictPolicy {
-  if (value === undefined) return "manual";
+  if (value === undefined) return DEFAULT_CONVERGE_CONFLICT_POLICY;
   if (!CONVERGE_CONFLICT_POLICIES.includes(value)) {
     throw new ReconcilePlanInputError(
       `reconcile: unknown conflictPolicy ${JSON.stringify(value)}; expected one of ${CONVERGE_CONFLICT_POLICIES.join(", ")}`,

@@ -60,7 +60,7 @@ test("a bootstrap merge moves unique data both ways and deletes nothing", () => 
   );
 });
 
-test("manual is the default policy: a both-modified path is reported, never auto-picked", () => {
+test("newest-wins is the default policy", () => {
   const entries = planNamespaceReconciliation({
     namespace: "default",
     local: [file("facts/a.md", "local", 2000)],
@@ -69,7 +69,7 @@ test("manual is the default policy: a both-modified path is reported, never auto
   const conflict = entryFor(entries, "facts/a.md");
   assert.equal(conflict.action, "conflict");
   assert.equal(conflict.reason, "both_modified");
-  assert.equal(conflict.resolution, "unresolved", "equally authoritative sides must not be settled by default");
+  assert.equal(conflict.resolution, "local-wins");
 });
 
 test("newest-wins picks the later side by mtime", () => {
