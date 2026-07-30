@@ -1,5 +1,6 @@
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
-import { readRawFrontmatter } from "./memory-frontmatter-metadata.js";
+import { readRawMemoryDocument } from "./memory-frontmatter-metadata.js";
+import { canonicalizeEntityRefFrontmatter } from "./entity-canonical-id-references.js";
 
 export type MemoryEntityRefSerializer = (memory: MemoryFile, entityRef: string) => string;
 
@@ -8,20 +9,14 @@ export function serializeMemoryWithEntityRef(
   entityRef: string,
   fallback: MemoryEntityRefSerializer,
 ): string {
-  const rawFrontmatter = readRawFrontmatter(memory);
-  if (rawFrontmatter === undefined) return fallback(memory, entityRef);
-  const lines = rawFrontmatter.split("\n");
-  let entityRefLine = -1;
-  for (let index = 0; index < lines.length; index += 1) {
-    if (/^\s*entityRef\s*:/.test(lines[index] ?? "")) entityRefLine = index;
-  }
-  if (entityRefLine >= 0) {
-    const indent = lines[entityRefLine]!.match(/^\s*/)?.[0] ?? "";
-    lines[entityRefLine] = `${indent}entityRef: ${entityRef}`;
-  } else {
-    lines.push(`entityRef: ${entityRef}`);
-  }
-  return `---\n${lines.join("\n")}\n---\n\n${memory.content}\n`;
+  const rawDocument = readRawMemoryDocument(memory);
+  if (rawDocument === undefined) return fallback(memory, entityRef);
+  const currentEntityRef = memory.frontmatter.entityRef;
+  if (currentEntityRef === undefined) return fallback(memory, entityRef);
+  if (currentEntityRef === entityRef) return rawDocument;
+  const rewritten = canonicalizeEntityRefFrontmatter(rawDocument, { [currentEntityRef]: entityRef });
+  if (rewritten !== rawDocument) return rewritten;
+  return fallback(memory, entityRef);
 }
 
 export function createMemoryEntityRefSerializer(

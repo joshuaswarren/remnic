@@ -21,6 +21,7 @@ import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
+import { assertSafeEntityId } from "./entity-id-safety.js";
 
 import {
   ENTITY_CANONICAL_ID_MIGRATION_FILE,
@@ -238,6 +239,12 @@ async function readState(
   }
   const result = EntityCanonicalIdMigrationStateSchema.safeParse(parsed);
   if (!result.success) throw new Error("Invalid entity canonical-id migration state.");
+  for (const mappings of [result.data.mappings, result.data.blocked ?? {}]) {
+    for (const [legacyId, canonicalId] of Object.entries(mappings)) {
+      assertSafeEntityId(legacyId);
+      assertSafeEntityId(canonicalId);
+    }
+  }
   return result.data;
 }
 
@@ -289,12 +296,6 @@ async function sameFileIdentity(leftPath: string, rightPath: string): Promise<bo
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) return false;
     throw error;
-  }
-}
-
-function assertSafeEntityId(entityId: string): void {
-  if (/[\/\\\0]/.test(entityId)) {
-    throw new Error(`Refusing entity canonical-id migration through unsafe entity id: ${entityId}.`);
   }
 }
 
