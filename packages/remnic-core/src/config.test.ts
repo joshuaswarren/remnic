@@ -2412,3 +2412,7 @@ test("parseConfig forwards bridgeMode as a raw passthrough (validation is in res
   // silently defaulting to embedded.
   assert.equal(parseConfig({ bridgeMode: true }).bridgeMode, "true");
 });
+
+test("parseConfig leaves the OpenClaw delegate timeout to the plugin parser", () => {
+  assert.equal("bridgeHealthTimeoutMs" in parseConfig({ bridgeHealthTimeoutMs: 7_500 }), false);
+});

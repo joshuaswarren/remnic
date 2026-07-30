@@ -2318,11 +2318,7 @@ export function parseConfig(
         ? "resolved-only"
         : "default-remote",
     activeRecallPersistTranscripts: cfg.activeRecallPersistTranscripts === true,
-    activeRecallTranscriptDir:
-      typeof cfg.activeRecallTranscriptDir === "string" &&
-      cfg.activeRecallTranscriptDir.trim().length > 0
-        ? cfg.activeRecallTranscriptDir.trim()
-        : "active-recall",
+    activeRecallTranscriptDir: parseOptionalNonEmptyString(cfg.activeRecallTranscriptDir) ?? "active-recall",
     activeRecallEntityGraphDepth:
       typeof cfg.activeRecallEntityGraphDepth === "number"
         ? Math.min(3, Math.max(0, Math.floor(cfg.activeRecallEntityGraphDepth)))

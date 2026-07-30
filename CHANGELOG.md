@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenClaw delegate preflight now uses an authenticated liveness endpoint that
+  skips detailed QMD and corpus diagnostics. Older daemons fall back to the
+  detailed health endpoint, and `bridgeHealthTimeoutMs` provides a shared probe
+  deadline with a 10-second default.
+
 ## [v9.38.3] — 2026-07-30
 
 ### Fixed

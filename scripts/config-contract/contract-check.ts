@@ -30,7 +30,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { collectModuleParserFiles, extractParsedKeyPaths } from "./extract-parsed-keys.js";
+import {
+  collectModuleParserFiles,
+  extractParsedKeyPaths,
+  extractRealConfigKeys,
+} from "./extract-parsed-keys.js";
 
 export interface ContractViolation {
   kind:
@@ -330,12 +334,18 @@ export function runContractCheck(options: {
   const grandfatherPath =
     options.grandfatherPath ?? path.join(repoRoot, "scripts", "config-contract", "grandfathered.json");
 
-  const extraction = extractParsedKeyPaths({
-    repoRoot,
-    entryFile: options.entryFile ?? path.join(repoRoot, "packages", "remnic-core", "src", "config.ts"),
-    entryFunction: options.entryFunction ?? "parseConfig",
-    includeFiles: options.includeFiles ?? collectModuleParserFiles(repoRoot),
-  });
+  const hasParserOverride =
+    options.entryFile !== undefined ||
+    options.entryFunction !== undefined ||
+    options.includeFiles !== undefined;
+  const extraction = hasParserOverride
+    ? extractParsedKeyPaths({
+        repoRoot,
+        entryFile: options.entryFile ?? path.join(repoRoot, "packages", "remnic-core", "src", "config.ts"),
+        entryFunction: options.entryFunction ?? "parseConfig",
+        includeFiles: options.includeFiles ?? collectModuleParserFiles(repoRoot),
+      })
+    : extractRealConfigKeys(repoRoot);
   const parsedKeys = new Set(extraction.keys);
 
   const schemas = manifestPaths.map((manifestPath) => {
