@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { ContentHashIndex } from "../storage/content-hash-index.js";
+import { parseFrontmatter } from "../storage.js";
 import { type ReconcileManifest, buildReconcileManifest, collapseActiveFactDuplicates } from "./manifest.js";
 import { planReconciliation } from "./plan.js";
 
@@ -34,6 +35,7 @@ test("reconcile manifest keeps file identity separate from canonical semantic id
 
   const manifest = await buildReconcileManifest({
     files: [{ path: "facts/fact-a.md", sha256: serializedHash, bytes: Buffer.byteLength(serialized) }],
+    parseMemory: parseFrontmatter,
     readFile: async () => Buffer.from(serialized),
   });
 
@@ -59,6 +61,7 @@ test("reconcile manifest hashes parsed legacy content and uses effective lifecyc
 
   const manifest = await buildReconcileManifest({
     files: [...rawByPath].map(([path, raw]) => ({ path, sha256: fileHash(raw.toString()) })),
+    parseMemory: parseFrontmatter,
     readFile: async (file) => rawByPath.get(file.path) ?? null,
   });
 
@@ -79,6 +82,7 @@ test("reconcile manifest keeps file identity when memory bytes cannot be trusted
 
   const manifest = await buildReconcileManifest({
     files,
+    parseMemory: parseFrontmatter,
     readFile: async (file) => {
       if (file.path === "facts/locked.md") throw new Error("locked");
       return file.path === "facts/changed.md" ? changed : readable;

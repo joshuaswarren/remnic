@@ -220,6 +220,101 @@ test("remnic converge plan: validates a namespace present only in provided base 
   );
 });
 
+test("remnic converge plan: enumerates durable cursor-only namespaces before peer census", async () => {
+  const cursorDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-cursor-only-"));
+  const peerUrl = "https://peer.example.com/Memory";
+  try {
+    await writeConvergeCursor(defaultConvergeCursorPath(cursorDir, peerUrl, "archived"), {
+      version: 1,
+      peerUrl,
+      namespace: "archived",
+      baseFiles: [],
+    });
+    const requestedNamespaces: string[] = [];
+    await computeConvergePlan({
+      cursorDir,
+      peerUrl,
+      localFilesByNamespace: new Map([["default", []]]),
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/offline-sync/capabilities")) {
+          return new Response(null, { status: 404 });
+        }
+        requestedNamespaces.push(url.searchParams.get("namespace") ?? "");
+        return Response.json({ files: [], tombstones: [] });
+      },
+    });
+    assert.deepEqual(requestedNamespaces.sort(), ["archived", "default"]);
+  } finally {
+    await fs.rm(cursorDir, { recursive: true, force: true });
+  }
+});
+
+test("remnic converge plan: fails closed on malformed durable cursor state", async () => {
+  const cursorDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-bad-cursor-"));
+  try {
+    const directory = path.join(cursorDir, ".remnic", "state", "converge-cursors");
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, "broken.json"), "{not-json");
+    await assert.rejects(
+      computeConvergePlan({
+        cursorDir,
+        peerUrl: "http://peer",
+        localFilesByNamespace: new Map([["default", []]]),
+        fetchImpl: async () => Response.json({ files: [], tombstones: [] }),
+      }),
+      /invalid converge cursor/,
+    );
+  } finally {
+    await fs.rm(cursorDir, { recursive: true, force: true });
+  }
+});
+
+test("remnic converge plan: maps peer tombstone content hashes through the manifest file identity", async () => {
+  const contentHash = "c".repeat(64);
+  const memoryContent = Buffer.from(
+    `---\nid: mem-1\ncategory: fact\ncontentHash: ${contentHash}\nstatus: active\n---\nRetired fact\n`,
+  );
+  const memorySha = createHash("sha256").update(memoryContent).digest("hex");
+  const tombstoneContent = Buffer.from(`${JSON.stringify({ contentHash })}\n`);
+  const tombstoneSha = createHash("sha256").update(tombstoneContent).digest("hex");
+  const files = [
+    { path: "facts/retracted.md", sha256: memorySha, bytes: memoryContent.length, mtimeMs: 1 },
+    { path: "state/tombstones.jsonl", sha256: tombstoneSha, bytes: tombstoneContent.length, mtimeMs: 1 },
+  ];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/offline-sync/capabilities")) {
+      return new Response(null, { status: 404 });
+    }
+    if (url.pathname.endsWith("/offline-sync/snapshot")) {
+      return Response.json({ files, tombstones: [] });
+    }
+    const request = JSON.parse(String(init?.body)) as { path: string; offset: number };
+    const content = request.path === "state/tombstones.jsonl" ? tombstoneContent : memoryContent;
+    const sha256 = request.path === "state/tombstones.jsonl" ? tombstoneSha : memorySha;
+    return new Response(content.subarray(request.offset), {
+      headers: {
+        "x-remnic-chunk-offset": String(request.offset),
+        "x-remnic-chunk-bytes": String(content.length - request.offset),
+        "x-remnic-file-bytes": String(content.length),
+        "x-remnic-file-mtime-ms": "1",
+        "x-remnic-file-path": encodeURIComponent(request.path),
+        "x-remnic-file-sha256": sha256,
+      },
+    });
+  };
+
+  const plan = await computeConvergePlan({
+    peerUrl: "http://peer",
+    localFilesByNamespace: new Map([["default", [files[0]!]]]),
+    fetchImpl,
+  });
+  const suppression = plan.entries.find((entry) => entry.path === "facts/retracted.md");
+  assert.equal(suppression?.action, "suppress");
+  assert.equal(suppression?.suppressSide, "both");
+});
+
 test("remnic converge apply: converged state returns immediate no-op and updates cursor", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-apply-test-"));
   try {
@@ -268,11 +363,33 @@ test("remnic converge apply: converged dry-run does not write cursor", async () 
     });
 
     assert.equal(result.status, "dry_run");
+    assert.equal(result.converged, true);
     assert.equal(result.cursorUpdated, false);
     assert.equal(await readConvergeCursor(cursorPath), null);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("remnic converge apply: tombstone suppression deletes the retracted revision on both sides", async () => {
+  const filePath = "facts/retracted.md";
+  const content = Buffer.from("retracted");
+  const sha256 = createHash("sha256").update(content).digest("hex");
+  const localBuffers = new Map([["default", new Map([[filePath, content]])]]);
+  const peerBuffers = new Map([["default", new Map([[filePath, content]])]]);
+
+  const result = await executeConvergeApply({
+    localFilesByNamespace: new Map([["default", [{ path: filePath, sha256 }]]]),
+    peerFilesByNamespace: new Map([["default", [{ path: filePath, sha256 }]]]),
+    localTombstonesByNamespace: new Map([["default", [sha256]]]),
+    localFileBuffers: localBuffers,
+    peerFileBuffers: peerBuffers,
+  });
+
+  assert.equal(result.transfers.suppressed, 1);
+  assert.equal(result.transfers.failed, 0);
+  assert.equal(localBuffers.get("default")?.has(filePath), false);
+  assert.equal(peerBuffers.get("default")?.has(filePath), false);
 });
 
 test("remnic converge apply: manual conflict policy stops mutation on unresolved conflicts", async () => {
@@ -574,7 +691,10 @@ test("remnic converge apply: a newer local deletion uses the guarded remote dele
 });
 
 test("remnic converge plan: fails closed when the peer census cannot be fetched", async () => {
-  const fetchImpl: typeof fetch = async () => new Response(null, { status: 503 });
+  const fetchImpl: typeof fetch = async (input) =>
+    String(input).includes("/offline-sync/capabilities")
+      ? new Response(null, { status: 404 })
+      : new Response(null, { status: 503 });
 
   await assert.rejects(
     computeConvergePlan({
@@ -587,8 +707,10 @@ test("remnic converge plan: fails closed when the peer census cannot be fetched"
 });
 
 test("remnic converge plan: rejects malformed peer census records", async () => {
-  const fetchImpl: typeof fetch = async () =>
-    Response.json({ files: [{ path: "facts/incomplete.md" }], tombstones: [] });
+  const fetchImpl: typeof fetch = async (input) =>
+    String(input).includes("/offline-sync/capabilities")
+      ? new Response(null, { status: 404 })
+      : Response.json({ files: [{ path: "facts/incomplete.md" }], tombstones: [] });
 
   await assert.rejects(
     computeConvergePlan({
@@ -936,6 +1058,177 @@ test("remnic converge retains per-side semantic state across a later metadata ed
     await fs.rm(cursorDir, { recursive: true, force: true });
   }
 });
+test("remnic converge consumes peer manifests without per-fact content requests", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-stream-manifest-"));
+  try {
+    const body = "same streamed fact";
+    const semanticHash = ContentHashIndex.computeHash(body);
+    const memory = (id: string): string => [
+      "---",
+      `id: ${id}`,
+      "category: fact",
+      `contentHash: ${semanticHash}`,
+      "status: active",
+      "---",
+      body,
+    ].join("\n");
+    const localContent = memory("local-id");
+    const peerContent = memory("peer-id");
+    const peerSha = createHash("sha256").update(peerContent).digest("hex");
+    await fs.mkdir(path.join(rootDir, "facts"), { recursive: true });
+    await fs.writeFile(path.join(rootDir, "facts/local-id.md"), localContent);
+    let peerContentRequests = 0;
+    let manifestRequests = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/offline-sync/capabilities")) {
+        return Response.json({ version: 1, convergenceFinalization: true, manifestStream: true });
+      }
+      if (url.pathname.endsWith("/offline-sync/snapshot")) {
+        const files = url.searchParams.get("namespace") === "default"
+          ? [{ path: "facts/peer-id.md", sha256: peerSha, bytes: peerContent.length, mtimeMs: 2000 }]
+          : [];
+        return Response.json({ files, tombstones: [] });
+      }
+      if (url.pathname.endsWith("/offline-sync/manifest-stream")) {
+        manifestRequests += 1;
+        const namespace = url.searchParams.get("namespace");
+        const rows = [JSON.stringify({
+          type: "manifest",
+          namespace,
+          format: "remnic-reconcile-manifest",
+          schemaVersion: 1,
+        })];
+        if (namespace === "default") {
+          rows.push(JSON.stringify({
+            type: "file",
+            file: {
+              path: "facts/peer-id.md",
+              sha256: peerSha,
+              bytes: peerContent.length,
+              mtimeMs: 2000,
+              memory: {
+                id: "peer-id",
+                category: "fact",
+                contentHash: semanticHash,
+                status: "active",
+              },
+            },
+          }));
+        }
+        return new Response([...rows, ""].join("\n"));
+      }
+      if (url.pathname.endsWith("/offline-sync/file-content")) peerContentRequests += 1;
+      return new Response(null, { status: 404 });
+    };
+
+    const plan = await computeConvergePlan({
+      config: parseConfig({ memoryDir: rootDir }),
+      peerUrl: "https://peer.example.test",
+      fetchImpl,
+    });
+
+    assert.equal(manifestRequests, 2);
+    assert.equal(peerContentRequests, 0);
+    assert.equal(plan.converged, true, JSON.stringify(plan));
+    assert.equal(plan.entries[0]?.reason, "semantic_duplicate");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("remnic converge falls back to per-fact content only for an older peer", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-legacy-manifest-"));
+  try {
+    const body = "same legacy peer fact";
+    const semanticHash = ContentHashIndex.computeHash(body);
+    const memory = (id: string): string => [
+      "---",
+      `id: ${id}`,
+      "category: fact",
+      `contentHash: ${semanticHash}`,
+      "status: active",
+      "---",
+      body,
+    ].join("\n");
+    const localContent = memory("local-id");
+    const peerContent = memory("peer-id");
+    const peerSha = createHash("sha256").update(peerContent).digest("hex");
+    await fs.mkdir(path.join(rootDir, "facts"), { recursive: true });
+    await fs.writeFile(path.join(rootDir, "facts/local-id.md"), localContent);
+    let peerContentRequests = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/offline-sync/capabilities")) {
+        return new Response(null, { status: 404 });
+      }
+      if (url.pathname.endsWith("/offline-sync/snapshot")) {
+        const files = url.searchParams.get("namespace") === "default"
+          ? [{ path: "facts/peer-id.md", sha256: peerSha, bytes: peerContent.length, mtimeMs: 2000 }]
+          : [];
+        return Response.json({ files, tombstones: [] });
+      }
+      if (url.pathname.endsWith("/offline-sync/file-content")) {
+        peerContentRequests += 1;
+        return new Response(peerContent, {
+          headers: {
+            "x-remnic-file-path": encodeURIComponent("facts/peer-id.md"),
+            "x-remnic-file-sha256": peerSha,
+            "x-remnic-file-bytes": String(peerContent.length),
+            "x-remnic-file-mtime-ms": "2000",
+            "x-remnic-chunk-offset": "0",
+            "x-remnic-chunk-bytes": String(peerContent.length),
+          },
+        });
+      }
+      return new Response(null, { status: 404 });
+    };
+
+    const plan = await computeConvergePlan({
+      config: parseConfig({ memoryDir: rootDir }),
+      peerUrl: "https://older-peer.example.test",
+      fetchImpl,
+    });
+
+    assert.equal(peerContentRequests, 1);
+    assert.equal(plan.converged, true, JSON.stringify(plan));
+    assert.equal(plan.entries[0]?.reason, "semantic_duplicate");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("remnic converge does not hide legacy manifest content failures", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-legacy-failure-"));
+  try {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/offline-sync/capabilities")) {
+        return new Response(null, { status: 404 });
+      }
+      if (url.pathname.endsWith("/offline-sync/snapshot")) {
+        return Response.json({
+          files: [{ path: "facts/peer-id.md", sha256: "a".repeat(64), bytes: 10, mtimeMs: 2000 }],
+          tombstones: [],
+        });
+      }
+      if (url.pathname.endsWith("/offline-sync/file-content")) throw new Error("request timed out");
+      return new Response(null, { status: 404 });
+    };
+
+    await assert.rejects(
+      computeConvergePlan({
+        config: parseConfig({ memoryDir: rootDir }),
+        peerUrl: "https://older-peer.example.test",
+        fetchImpl,
+      }),
+      /failed to read peer reconciliation manifest file: facts\/peer-id\.md/,
+    );
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 
 test("remnic converge plan reuses unchanged shared peer semantics to collapse cross-path duplicates", async () => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-shared-manifest-"));
@@ -1531,6 +1824,53 @@ test("remnic converge apply: failed local refresh stays pending and dry-run neve
     const dryRun = await executeConvergeApply({ ...options, dryRun: true });
     assert.equal(dryRun.status, "dry_run");
     assert.equal(refreshCalls, 0);
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("remnic converge apply: durable cursor state is excluded and a clean second run performs no file transport", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-clean-rerun-"));
+  const peerUrl = "http://peer";
+  const filePath = "assets/a.bin";
+  const content = Buffer.from("stable");
+  const sha256 = createHash("sha256").update(content).digest("hex");
+  try {
+    await fs.mkdir(path.join(memoryDir, "assets"), { recursive: true });
+    await fs.writeFile(path.join(memoryDir, filePath), content);
+    await executeConvergeApply({
+      cursorDir: memoryDir,
+      peerUrl,
+      localFilesByNamespace: new Map([["default", [{ path: filePath, sha256 }]]]),
+      peerFilesByNamespace: new Map([["default", [{ path: filePath, sha256 }]]]),
+    });
+
+    let fileTransportCalls = 0;
+    const result = await executeConvergeApply({
+      config: parseConfig({ memoryDir }),
+      peerUrl,
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/offline-sync/capabilities")) {
+          return new Response(null, { status: 404 });
+        }
+        if (url.pathname.endsWith("/offline-sync/snapshot")) {
+          const files = url.searchParams.get("namespace") === "default"
+            ? [
+                { path: filePath, sha256, bytes: content.length, mtimeMs: 1 },
+                { path: ".remnic/state/converge-cursors/host.json", sha256: shaA, bytes: 1, mtimeMs: 1 },
+              ]
+            : [];
+          return Response.json({ files, tombstones: [] });
+        }
+        fileTransportCalls += 1;
+        throw new Error(`unexpected file transport: ${url.pathname}`);
+      },
+    });
+
+    assert.equal(result.converged, true);
+    assert.equal(fileTransportCalls, 0);
+    assert.equal(result.plan.entries.some((entry) => entry.path.startsWith(".remnic/")), false);
   } finally {
     await fs.rm(memoryDir, { recursive: true, force: true });
   }

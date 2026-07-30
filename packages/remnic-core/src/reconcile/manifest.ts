@@ -34,9 +34,14 @@ export interface ReconcileManifest {
   files: ReconcileManifestFile[];
 }
 
+export type ReconcileMemoryParser = (
+  raw: string,
+) => { frontmatter: MemoryFrontmatter; content: string } | null;
+
 export interface BuildReconcileManifestOptions {
   files: Iterable<ReconcileFileState>;
   readFile: (file: ReconcileFileState) => Promise<Buffer | string | null>;
+  parseMemory: ReconcileMemoryParser;
   cachedFiles?: Iterable<ReconcileManifestFile>;
 }
 
@@ -51,49 +56,46 @@ function isMemoryPath(filePath: string): boolean {
   return MEMORY_DIRS.has(segments[index] ?? "");
 }
 
-function parseScalar(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return undefined;
-  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      return typeof parsed === "string" ? parsed : trimmed;
-    } catch {
-      return trimmed.slice(1, -1).replace(/\\"/g, '"');
-    }
-  }
-  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
-    return trimmed.slice(1, -1).replace(/''/g, "'");
-  }
-  return trimmed;
-}
 
-function parsedMemoryIdentity(filePath: string, raw: Buffer | string): ReconcileMemoryIdentity | undefined {
+function parsedMemoryIdentity(
+  filePath: string,
+  raw: Buffer | string,
+  parseMemory: ReconcileMemoryParser,
+): ReconcileMemoryIdentity | undefined {
   if (!isMemoryPath(filePath)) return undefined;
-  const match = (Buffer.isBuffer(raw) ? raw.toString("utf8") : raw).match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!match) return undefined;
-  const fields = new Map<string, string>();
-  for (const line of match[1].split("\n")) {
-    const separator = line.indexOf(":");
-    if (separator > 0) fields.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
-  }
-  const id = parseScalar(fields.get("id"));
-  if (!id) return undefined;
-  const category = parseScalar(fields.get("category")) ?? "fact";
-  const storedHash = parseScalar(fields.get("contentHash"));
+  const parsed = parseMemory(Buffer.isBuffer(raw) ? raw.toString("utf8") : raw);
+  if (!parsed?.frontmatter.id) return undefined;
+  const storedHash = parsed.frontmatter.contentHash;
   const contentHash =
     storedHash && SHA256_PATTERN.test(storedHash)
       ? storedHash.toLowerCase()
-      : ContentHashIndex.computeHash(match[2].trim());
-  const status = inferMemoryStatus(
-    {
-      status: parseScalar(fields.get("status")) as MemoryStatus | undefined,
-      archivedAt: parseScalar(fields.get("archivedAt")),
-    } as MemoryFrontmatter,
-    filePath
-  );
-  return { id, category, contentHash, status };
+      : ContentHashIndex.computeHash(parsed.content);
+  return {
+    id: parsed.frontmatter.id,
+    category: parsed.frontmatter.category,
+    contentHash,
+    status: inferMemoryStatus(parsed.frontmatter, filePath),
+  };
+}
+
+export async function buildReconcileManifestFile(
+  file: ReconcileFileState,
+  readFile: (file: ReconcileFileState) => Promise<Buffer | string | null>,
+  parseMemory: ReconcileMemoryParser,
+): Promise<ReconcileManifestFile> {
+  let raw: Buffer | string | null = null;
+  if (isMemoryPath(file.path)) {
+    try {
+      raw = await readFile(file);
+    } catch {
+      raw = null;
+    }
+  }
+  if (raw !== null && createHash("sha256").update(raw).digest("hex") !== file.sha256.toLowerCase()) {
+    raw = null;
+  }
+  const memory = raw === null ? undefined : parsedMemoryIdentity(file.path, raw, parseMemory);
+  return { ...file, ...(memory ? { memory } : {}) };
 }
 
 export async function buildReconcileManifest(options: BuildReconcileManifestOptions): Promise<ReconcileManifest> {
@@ -110,19 +112,7 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
       continue;
     }
 
-    let raw: Buffer | string | null = null;
-    if (isMemoryPath(file.path)) {
-      try {
-        raw = await options.readFile(file);
-      } catch {
-        raw = null;
-      }
-    }
-    if (raw !== null && createHash("sha256").update(raw).digest("hex") !== file.sha256.toLowerCase()) {
-      raw = null;
-    }
-    const memory = raw === null ? undefined : parsedMemoryIdentity(file.path, raw);
-    files.push({ ...file, ...(memory ? { memory } : {}) });
+    files.push(await buildReconcileManifestFile(file, options.readFile, options.parseMemory));
   }
   files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   return {

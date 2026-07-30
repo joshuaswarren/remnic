@@ -179,6 +179,7 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "POST", pathname: "/engram/v1/capsules/export", operation: "capsule_export" },
   { method: "POST", pathname: "/engram/v1/capsules/import", operation: "capsule_import" },
   { method: "GET", pathname: "/engram/v1/offline-sync/snapshot", operation: "offline_sync_snapshot" },
+  { method: "GET", pathname: "/engram/v1/offline-sync/capabilities", operation: "offline_sync_snapshot" },
     { method: "POST", pathname: "/engram/v1/offline-sync/snapshot", operation: "offline_sync_snapshot" },
   { method: "POST", pathname: "/engram/v1/offline-sync/files", operation: "offline_sync_files" },
   { method: "POST", pathname: "/engram/v1/offline-sync/file-content", operation: "offline_sync_file_content" },
@@ -252,6 +253,7 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   // The operation registration makes them visible to the boundary; the
   // streaming lifecycle is owned by the HTTP transport (handleGraphEventsSSE).
   { method: "GET", pathname: "/engram/v1/offline-sync/snapshot-stream", operation: "offline_sync_snapshot_stream" },
+  { method: "GET", pathname: "/engram/v1/offline-sync/manifest-stream", operation: "offline_sync_snapshot_stream" },
   { method: "GET", pathname: "/engram/v1/graph/events", operation: "graph_events" },
   { method: "POST", pathname: "/engram/v1/chat/message", operation: "chat_message" },
   { method: "GET", pathname: "/engram/v1/chat/events/:id", operation: "chat_events" },
