@@ -22,14 +22,15 @@ import {
   type ConvergeCursorState,
 } from "@remnic/core/reconcile/cursor.js";
 import { resolveAgentAccessAuthToken } from "@remnic/core/resolve-auth-token.js";
-
 export interface ConvergePlanOptions {
   config?: PluginConfig;
   peerUrl?: string;
   peerToken?: string;
+  cursorDir?: string;
   conflictPolicy?: ReconcileConflictPolicy;
   fetchImpl?: typeof fetch;
   resolveSecretRef?: ResolveSecretRefFn;
+  baseFilesByNamespace?: Map<string, ReconcileFileState[]>;
   localFilesByNamespace?: Map<string, ReconcileFileState[]>;
   localTombstonesByNamespace?: Map<string, Iterable<string>>;
   peerFilesByNamespace?: Map<string, ReconcileFileState[]>;
@@ -200,12 +201,18 @@ async function postPeerFileContent(
 }
 
 export async function computeConvergePlan(options: ConvergePlanOptions = {}): Promise<ReconcilePlan> {
+  const baseMap = new Map<string, ReconcileFileState[]>();
   const namespacesToPlan = new Set<string>();
   const localMap = new Map<string, ReconcileFileState[]>();
   const localTombstones = new Map<string, Set<string>>();
   const peerMap = new Map<string, ReconcileFileState[]>();
   const peerTombstones = new Map<string, Set<string>>();
 
+  if (options.baseFilesByNamespace) {
+    for (const [ns, files] of options.baseFilesByNamespace) {
+      baseMap.set(ns, files);
+    }
+  }
   if (options.localFilesByNamespace) {
     for (const [ns, files] of options.localFilesByNamespace) {
       namespacesToPlan.add(ns);
@@ -286,12 +293,24 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     }
   }
 
+  const memoryDir = options.cursorDir ?? config?.memoryDir;
+  if (!options.baseFilesByNamespace && memoryDir && options.peerUrl) {
+    for (const ns of namespacesToPlan) {
+      const cursorPath = defaultConvergeCursorPath(memoryDir, options.peerUrl, ns);
+      const cursor = await readConvergeCursor(cursorPath);
+      if (cursor?.baseFiles && cursor.baseFiles.length > 0) {
+        baseMap.set(ns, cursor.baseFiles);
+      }
+    }
+  }
+
   const inputs: ReconcileNamespaceInput[] = [];
   for (const ns of [...namespacesToPlan].sort()) {
     inputs.push({
       namespace: ns,
       local: localMap.get(ns) ?? [],
       peer: peerMap.get(ns) ?? [],
+      base: baseMap.get(ns),
       tombstonedFileSha256: localTombstones.get(ns) ?? [],
       peerTombstonedFileSha256: peerTombstones.get(ns) ?? [],
     });

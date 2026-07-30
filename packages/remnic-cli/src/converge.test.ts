@@ -7,6 +7,7 @@ import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
 import {
   defaultConvergeCursorPath,
   readConvergeCursor,
+  writeConvergeCursor,
 } from "@remnic/core/reconcile/cursor.js";
 import {
   cmdConverge,
@@ -119,6 +120,37 @@ test("remnic converge plan: read-only operation does not modify inputs or perfor
 
   assert.ok(plan);
   assert.deepEqual(localMap, localMapClone);
+});
+
+test("remnic converge plan: hydrates durable cursor base files when present", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-cursor-test-"));
+  try {
+    const peerUrl = "http://localhost:4318";
+    const cursorPath = defaultConvergeCursorPath(tmpDir, peerUrl, "default");
+    await writeConvergeCursor(cursorPath, {
+      version: 1,
+      peerUrl,
+      namespace: "default",
+      baseFiles: [{ path: "facts/base.md", sha256: shaA }],
+    });
+
+    const localMap = new Map<string, ReconcileFileState[]>([["default", []]]);
+    const peerMap = new Map<string, ReconcileFileState[]>([["default", [{ path: "facts/base.md", sha256: shaA }]]]);
+
+    const plan = await computeConvergePlan({
+      localFilesByNamespace: localMap,
+      peerFilesByNamespace: peerMap,
+      cursorDir: tmpDir,
+      peerUrl,
+    });
+
+    assert.ok(plan);
+    const entry = plan.entries.find((e) => e.path === "facts/base.md");
+    assert.ok(entry);
+    assert.equal(entry.baseSha256, shaA);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("remnic converge apply: converged state returns immediate no-op and updates cursor", async () => {
