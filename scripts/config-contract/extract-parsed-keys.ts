@@ -961,6 +961,27 @@ function rootedArgumentSegments(arg: ts.Expression, rootNames: Set<string>): str
   return null;
 }
 
+export function extractRealConfigKeys(repoRoot: string): ExtractedConfigKeys {
+  const core = extractParsedKeyPaths({
+    repoRoot,
+    entryFile: path.join(repoRoot, "packages", "remnic-core", "src", "config.ts"),
+    entryFunction: "parseConfig",
+    includeFiles: collectModuleParserFiles(repoRoot),
+  });
+  const openClaw = extractParsedKeyPaths({
+    repoRoot,
+    entryFile: path.join(repoRoot, "packages", "plugin-openclaw", "src", "bridge.ts"),
+    entryFunction: "parseOpenClawBridgeConfig",
+  });
+  return {
+    keys: [...new Set([...core.keys, ...openClaw.keys])].sort(),
+    unparseable: [...core.unparseable, ...openClaw.unparseable],
+    ambiguousValueMembers: [
+      ...new Set([...core.ambiguousValueMembers, ...openClaw.ambiguousValueMembers]),
+    ].sort(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // CLI entry: print the extraction for the REAL config surface as sorted JSON.
 // ---------------------------------------------------------------------------
@@ -972,12 +993,7 @@ const invokedDirectly =
 
 if (invokedDirectly) {
   const repoRoot = process.cwd();
-  const result = extractParsedKeyPaths({
-    repoRoot,
-    entryFile: path.join(repoRoot, "packages", "remnic-core", "src", "config.ts"),
-    entryFunction: "parseConfig",
-    includeFiles: collectModuleParserFiles(repoRoot),
-  });
+  const result = extractRealConfigKeys(repoRoot);
   // Omit the volatile `line` from the committed snapshot: the stable `id`
   // identifies each construct, so an unrelated edit that merely shifts lines no
   // longer forces snapshot churn / a preflight failure (issue #1990 review).

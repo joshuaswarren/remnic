@@ -122,6 +122,76 @@ test("daemon health timeout default exceeds the server diagnostic deadline", asy
   assert.ok(DEFAULT_DAEMON_HEALTH_TIMEOUT_MS > 2_000);
 });
 
+test("plugin parser owns the delegate health timeout contract", async () => {
+  const bridge = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+  assert.equal(typeof bridge.parseOpenClawBridgeConfig, "function");
+  assert.equal(bridge.parseOpenClawBridgeConfig({}).healthTimeoutMs, 10_000);
+  assert.equal(
+    bridge.parseOpenClawBridgeConfig({ bridgeHealthTimeoutMs: "7500" }).healthTimeoutMs,
+    7_500,
+  );
+  assert.throws(
+    () => bridge.parseOpenClawBridgeConfig({ bridgeHealthTimeoutMs: 0 }),
+    /bridgeHealthTimeoutMs must be an integer in \[1, 120000\]/,
+  );
+  assert.throws(
+    () => bridge.parseOpenClawBridgeConfig({ bridgeHealthTimeoutMs: 300_000 }),
+    /bridgeHealthTimeoutMs must be an integer in \[1, 120000\]/,
+  );
+  assert.throws(
+    () => bridge.parseOpenClawBridgeConfig({ bridgeHealthTimeoutMs: 3.7 }),
+    /bridgeHealthTimeoutMs must be an integer in \[1, 120000\]/,
+  );
+});
+
+test("sync probe ignores request timeout after a response starts the legacy fallback", async () => {
+  const bridge = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const requests: Array<{
+    respond(statusCode: number): void;
+    emit(event: "error" | "timeout"): void;
+  }> = [];
+  const request = (
+    _options: unknown,
+    onResponse: (response: { statusCode?: number; resume(): void }) => void,
+  ) => {
+    const handlers = new Map<"error" | "timeout", () => void>();
+    const handle = {
+      on(event: "error" | "timeout", handler: () => void) {
+        handlers.set(event, handler);
+        return handle;
+      },
+      destroy() {},
+      end() {},
+    };
+    requests.push({
+      respond(statusCode) {
+        onResponse({ statusCode, resume() {} });
+      },
+      emit(event) {
+        handlers.get(event)?.();
+      },
+    });
+    return handle;
+  };
+
+  bridge.runHealthWorker(request, {
+    state,
+    deadline: Date.now() + 1_000,
+    host: "127.0.0.1",
+    port: 4318,
+    path: "/engram/v1/live",
+    fallbackPath: "/engram/v1/health",
+    token: "",
+  });
+  assert.equal(requests.length, 1);
+  requests[0]?.respond(404);
+  assert.equal(requests.length, 2);
+  requests[0]?.emit("timeout");
+  requests[1]?.respond(200);
+  assert.equal(Atomics.load(new Int32Array(state), 0), 1);
+});
+
 test("checkDaemonHealth uses liveness without waiting for detailed health", async () => {
   const paths: string[] = [];
   const server = createServer((req, res) => {

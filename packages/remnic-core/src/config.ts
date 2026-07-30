@@ -2343,7 +2343,6 @@ export function parseConfig(
     heartbeat,
     slotBehavior,
     bridgeMode: cfg.bridgeMode === undefined ? "embedded" : String(cfg.bridgeMode),
-    bridgeHealthTimeoutMs: parseIntegerInClosedRange(cfg.bridgeHealthTimeoutMs, 1, 120_000, 10_000, "bridgeHealthTimeoutMs"),
     codexCompat,
     codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
     chat: parseChatConfig(cfg.chat),

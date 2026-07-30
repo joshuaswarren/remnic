@@ -75,6 +75,7 @@ import {
   maybeRegisterDelegateRuntime,
   type DelegateHookApi,
 } from "../packages/plugin-openclaw/src/delegate-runtime.js";
+import { parseOpenClawBridgeConfig } from "../packages/plugin-openclaw/src/bridge.js";
 import {
   extractLastTurn,
   extractTextContent,
@@ -1356,10 +1357,13 @@ const pluginDefinition = {
     // comparison (round-4 contract). We keep the third arg in the
     // `parseConfig` signature for API stability but it carries no signal.
     const runtimeSet = new Set<string>();
+    const rawPluginConfig = {
+      ...fileConfig,
+      ...api.pluginConfig,
+    };
     const cfg = parseConfig(
       {
-        ...fileConfig, // File-backed fallback for runtimes that omit pluginConfig
-        ...api.pluginConfig, // Runtime/plugin-supplied config must win
+        ...rawPluginConfig,
         gatewayConfig: api.config, // Pass gateway config for fallback AI
       },
       // `rawOperatorConfig` distinguishes "operator wrote this key in
@@ -1418,10 +1422,8 @@ const pluginDefinition = {
     const delegateApi = api as unknown as DelegateHookApi;
     const delegateHandled = maybeRegisterDelegateRuntime(delegateApi, {
       serviceId,
-      // cfg.bridgeMode is parseConfig's merged file+runtime passthrough, so
-      // file-config-only deployments activate delegate too (round-7 High).
       configBridgeMode: cfg.bridgeMode,
-      bridgeHealthTimeoutMs: cfg.bridgeHealthTimeoutMs,
+      bridgeHealthTimeoutMs: parseOpenClawBridgeConfig(rawPluginConfig).healthTimeoutMs,
       passive: passiveMode,
       allowPromptInjection:
         coerceRawConfigBoolean(

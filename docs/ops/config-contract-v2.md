@@ -9,16 +9,13 @@ from every manifest — three review threads across two bots).
 
 ## How v2 works
 
-1. `scripts/config-contract/extract-parsed-keys.ts` walks `parseConfig` and
-   every module parser it delegates to with the TypeScript compiler API,
-   tracking the raw-input parameter and its aliases (`requireObject(...)`,
-   conditional casts, `?? {}` fallbacks, spread-carrying preset merges,
-   `let` reassignment, destructuring). Nested blocks flatten to dotted
-   paths (`wearables.fusion.enabled`). Zod parsers walk `z.object({...})`
-   literals statically. The committed snapshot
-   (`scripts/config-contract/parsed-keys.snapshot.json`) is asserted by
-   `tests/config-contract-extractor.test.ts` — regenerating it is how a
-   config-surface change becomes visible in review:
+1. The script reads core `parseConfig` and each parser it calls. It also reads
+   host parsers. OpenClaw's `parseOpenClawBridgeConfig` is one of them. It
+   tracks raw input names and aliases. Nested blocks become dotted paths such
+   as `wearables.fusion.enabled`. It reads static Zod object definitions. The
+   snapshot in `scripts/config-contract/parsed-keys.snapshot.json` records the
+   full config surface. `tests/config-contract-extractor.test.ts` checks it.
+   Regenerate the snapshot to make a config change visible in review:
 
    ```sh
    npx tsx scripts/config-contract/extract-parsed-keys.ts > scripts/config-contract/parsed-keys.snapshot.json

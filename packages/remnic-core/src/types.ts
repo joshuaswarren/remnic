@@ -1248,8 +1248,6 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   slotBehavior: SlotBehaviorConfig;
   /** OpenClaw bridge mode (#2120): `"embedded"` (default) or `"delegate"`. */
   bridgeMode: string;
-  /** Total timeout for delegate liveness and legacy-health fallback probes. */
-  bridgeHealthTimeoutMs: number;
   codexCompat: CodexCompatConfig;
   /** When true (default), LLM classifies facts as `"project"` or `"global"` scope for promotion across projects. */
   extractionScopeClassificationEnabled: boolean;

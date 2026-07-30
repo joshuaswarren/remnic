@@ -277,6 +277,8 @@ function main() {
   ]);
   const expectedSchemaExtra = new Set([
     "dreams",
+    // OpenClaw delegate preflight lifecycle config is parsed by the plugin.
+    "bridgeHealthTimeoutMs",
     // Adapter-owned OpenClaw runtime gate. It is exposed in the plugin manifest
     // UI but intentionally parsed in src/index.ts instead of core PluginConfig.
     "openclawFlushPlanProcessingEnabled",

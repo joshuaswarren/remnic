@@ -41,67 +41,129 @@ const DEFAULT_PORT = 4318;
 const LIVENESS_PATH = "/engram/v1/live";
 const LEGACY_HEALTH_PATH = "/engram/v1/health";
 export const DEFAULT_DAEMON_HEALTH_TIMEOUT_MS = 10_000;
+
+function parseBridgeHealthTimeoutMs(value: unknown): number {
+  if (value === undefined) return DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
+  const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  if (
+    typeof parsed !== "number" ||
+    !Number.isFinite(parsed) ||
+    !Number.isInteger(parsed) ||
+    parsed < 1 ||
+    parsed > 120_000
+  ) {
+    throw new Error(
+      `bridgeHealthTimeoutMs must be an integer in [1, 120000]; got ${String(value)}`,
+    );
+  }
+  return parsed;
+}
+
+export function parseOpenClawBridgeConfig(
+  config: Record<string, unknown>,
+): { healthTimeoutMs: number } {
+  return {
+    healthTimeoutMs: parseBridgeHealthTimeoutMs(config.bridgeHealthTimeoutMs),
+  };
+}
+
+interface HealthWorkerData {
+  state: SharedArrayBuffer;
+  deadline: number;
+  host: string;
+  port: number;
+  path: string;
+  fallbackPath: string | null;
+  token: string;
+}
+
+interface HealthWorkerResponse {
+  statusCode?: number;
+  resume(): void;
+}
+
+interface HealthWorkerRequest {
+  on(event: "error" | "timeout", handler: () => void): HealthWorkerRequest;
+  destroy(): void;
+  end(): void;
+}
+
+type HealthRequest = (
+  options: {
+    hostname: string;
+    port: number;
+    path: string;
+    method: "GET";
+    timeout: number;
+    headers: Record<string, string>;
+  },
+  onResponse: (response: HealthWorkerResponse) => void,
+) => HealthWorkerRequest;
+
+export function runHealthWorker(request: HealthRequest, data: HealthWorkerData): void {
+  const view = new Int32Array(data.state);
+  let completed = false;
+
+  function finish(ok: boolean): void {
+    if (completed) return;
+    completed = true;
+    Atomics.store(view, 0, ok ? 1 : 2);
+    Atomics.notify(view, 0);
+  }
+
+  function probe(pathname: string, fallbackPath: string | null): void {
+    const remainingMs = data.deadline - Date.now();
+    if (remainingMs <= 0) {
+      finish(false);
+      return;
+    }
+    let responseReceived = false;
+    try {
+      const headers: Record<string, string> = {};
+      if (data.token) headers.Authorization = `Bearer ${data.token}`;
+      const req = request(
+        {
+          hostname: data.host,
+          port: data.port,
+          path: pathname,
+          method: "GET",
+          timeout: remainingMs,
+          headers,
+        },
+        (res) => {
+          responseReceived = true;
+          const statusCode = res.statusCode;
+          res.resume();
+          if (statusCode === 200) {
+            finish(true);
+          } else if (statusCode === 404 && fallbackPath) {
+            probe(fallbackPath, null);
+          } else {
+            finish(false);
+          }
+        },
+      );
+      req.on("error", () => {
+        if (!responseReceived) finish(false);
+      });
+      req.on("timeout", () => {
+        req.destroy();
+        if (!responseReceived) finish(false);
+      });
+      req.end();
+    } catch {
+      finish(false);
+    }
+  }
+
+  probe(data.path, data.fallbackPath);
+}
+
 const HEALTH_WORKER_SOURCE = `
 import { request } from "node:http";
 import { workerData } from "node:worker_threads";
-
-const view = new Int32Array(workerData.state);
-const deadline = workerData.deadline;
-let completed = false;
-
-function finish(ok) {
-  if (completed) return;
-  completed = true;
-  Atomics.store(view, 0, ok ? 1 : 2);
-  Atomics.notify(view, 0);
-}
-
-function probe(path, fallbackPath) {
-  const remainingMs = deadline - Date.now();
-  if (remainingMs <= 0) {
-    finish(false);
-    return;
-  }
-  let responseReceived = false;
-  try {
-    const headers = {};
-    if (workerData.token) headers.Authorization = "Bearer " + workerData.token;
-    const req = request(
-      {
-        hostname: workerData.host,
-        port: workerData.port,
-        path,
-        method: "GET",
-        timeout: remainingMs,
-        headers,
-      },
-      (res) => {
-        responseReceived = true;
-        const statusCode = res.statusCode;
-        res.resume();
-        if (statusCode === 200) {
-          finish(true);
-        } else if (statusCode === 404 && fallbackPath) {
-          probe(fallbackPath, null);
-        } else {
-          finish(false);
-        }
-      },
-    );
-    req.on("error", () => {
-      if (!responseReceived) finish(false);
-    });
-    req.on("timeout", () => {
-      req.destroy();
-      finish(false);
-    });
-    req.end();
-  } catch {
-    finish(false);
-  }
-}
-
-probe(workerData.path, workerData.fallbackPath);
+const __name = (target) => target;
+(${runHealthWorker.toString()})(request, workerData);
 `;
 const LAUNCHD_SERVICE_PATHS = [
   ["Library", "LaunchAgents", "ai.remnic.daemon.plist"],

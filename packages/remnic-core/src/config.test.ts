@@ -2413,21 +2413,6 @@ test("parseConfig forwards bridgeMode as a raw passthrough (validation is in res
   assert.equal(parseConfig({ bridgeMode: true }).bridgeMode, "true");
 });
 
-test("parseConfig bounds the delegate health timeout above a safe default", () => {
-  const defaultTimeoutMs = parseConfig({}).bridgeHealthTimeoutMs;
-  assert.equal(defaultTimeoutMs, 10_000);
-  assert.ok(defaultTimeoutMs > 2_000);
-  assert.equal(parseConfig({ bridgeHealthTimeoutMs: "7500" }).bridgeHealthTimeoutMs, 7_500);
-  assert.throws(
-    () => parseConfig({ bridgeHealthTimeoutMs: 0 }),
-    /bridgeHealthTimeoutMs must be an integer in \[1, 120000\]/,
-  );
-  assert.throws(
-    () => parseConfig({ bridgeHealthTimeoutMs: 300_000 }),
-    /bridgeHealthTimeoutMs must be an integer in \[1, 120000\]/,
-  );
-  assert.throws(
-    () => parseConfig({ bridgeHealthTimeoutMs: 3.7 }),
-    /bridgeHealthTimeoutMs must be an integer in \[1, 120000\]/,
-  );
+test("parseConfig leaves the OpenClaw delegate timeout to the plugin parser", () => {
+  assert.equal("bridgeHealthTimeoutMs" in parseConfig({ bridgeHealthTimeoutMs: 7_500 }), false);
 });
