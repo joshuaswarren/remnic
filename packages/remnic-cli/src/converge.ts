@@ -21,9 +21,11 @@ import {
   type ReconcileFileState,
   type ReconcileNamespaceInput,
   type ReconcilePlan,
+  type ReconcileSemanticAgreement,
 } from "@remnic/core/reconcile/plan.js";
 import {
   defaultConvergeCursorPath,
+  deriveConvergeCursorBase,
   readConvergeCursor,
   writeConvergeCursor,
   type ConvergeCursorState,
@@ -44,6 +46,7 @@ export interface ConvergePlanOptions {
   fetchImpl?: typeof fetch;
   resolveSecretRef?: ResolveSecretRefFn;
   baseFilesByNamespace?: Map<string, ReconcileFileState[]>;
+  semanticAgreementsByNamespace?: Map<string, ReconcileSemanticAgreement[]>;
   localFilesByNamespace?: Map<string, ReconcileFileState[]>;
   localTombstonesByNamespace?: Map<string, Iterable<string>>;
   localDeletionMtimeMsByNamespace?: Map<string, ReadonlyMap<string, number>>;
@@ -460,6 +463,7 @@ async function postPeerFileDeletion(
 
 export async function computeConvergePlan(options: ConvergePlanOptions = {}): Promise<ReconcilePlan> {
   const baseMap = new Map<string, ReconcileFileState[]>();
+  const semanticAgreementMap = new Map<string, ReconcileSemanticAgreement[]>();
   const namespacesToPlan = new Set<string>();
   const localMap = new Map<string, ReconcileFileState[]>();
   const localTombstones = new Map<string, Set<string>>();
@@ -474,6 +478,12 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     for (const [ns, files] of options.baseFilesByNamespace) {
       namespacesToPlan.add(ns);
       baseMap.set(ns, files);
+    }
+  }
+  if (options.semanticAgreementsByNamespace) {
+    for (const [ns, agreements] of options.semanticAgreementsByNamespace) {
+      namespacesToPlan.add(ns);
+      semanticAgreementMap.set(ns, agreements);
     }
   }
   if (options.localFilesByNamespace) {
@@ -604,12 +614,23 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   }
 
   const memoryDir = options.cursorDir ?? config?.memoryDir;
-  if (!options.baseFilesByNamespace && memoryDir && options.peerUrl) {
+  if (
+    memoryDir
+    && options.peerUrl
+    && (!options.baseFilesByNamespace || !options.semanticAgreementsByNamespace)
+  ) {
     for (const ns of namespacesToPlan) {
       const cursorPath = defaultConvergeCursorPath(memoryDir, options.peerUrl, ns);
       const cursor = await readConvergeCursor(cursorPath);
-      if (cursor?.baseFiles && cursor.baseFiles.length > 0) {
+      if (!options.baseFilesByNamespace && cursor?.baseFiles && cursor.baseFiles.length > 0) {
         baseMap.set(ns, cursor.baseFiles);
+      }
+      if (
+        !options.semanticAgreementsByNamespace
+        && cursor?.semanticAgreements
+        && cursor.semanticAgreements.length > 0
+      ) {
+        semanticAgreementMap.set(ns, cursor.semanticAgreements);
       }
     }
   }
@@ -637,7 +658,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     ?? config?.converge.conflictPolicy
     ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
   const plan = planReconciliation(inputs, { conflictPolicy });
-  return collapseActiveFactDuplicates(plan, localManifests, peerManifests);
+  return collapseActiveFactDuplicates(plan, localManifests, peerManifests, semanticAgreementMap);
 }
 
 export async function executeConvergeApply(
@@ -1015,17 +1036,14 @@ async function updateCursorsForPlan(
   const namespaces = new Set(plan.byNamespace.map((n) => n.namespace));
   for (const ns of namespaces) {
     const cursorPath = defaultConvergeCursorPath(memoryDir, peerUrl, ns);
-    const baseFiles = plan.entries
-      .filter((entry) => (
-        entry.namespace === ns
-        && entry.reason !== "semantic_duplicate"
-        && !(entry.reason === "local_modified_peer_deleted" && entry.resolution === "peer-wins")
-        && !(entry.reason === "local_deleted_peer_modified" && entry.resolution === "local-wins")
-      ))
-      .map((entry) => ({
-        path: entry.path,
-        sha256: entry.localSha256 ?? entry.peerSha256 ?? "unknown",
-      }));
+    const priorSemanticAgreements = options.semanticAgreementsByNamespace?.get(ns)
+      ?? (await readConvergeCursor(cursorPath))?.semanticAgreements
+      ?? [];
+    const { baseFiles, semanticAgreements } = deriveConvergeCursorBase(
+      plan.entries,
+      ns,
+      priorSemanticAgreements,
+    );
 
     const cursorState: ConvergeCursorState = {
       version: 1,
@@ -1033,6 +1051,7 @@ async function updateCursorsForPlan(
       namespace: ns,
       lastConvergedAt: new Date().toISOString(),
       baseFiles,
+      semanticAgreements,
     };
     try {
       await writeConvergeCursor(cursorPath, cursorState);

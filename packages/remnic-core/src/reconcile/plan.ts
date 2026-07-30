@@ -7,6 +7,7 @@ import {
   DEFAULT_CONVERGE_CONFLICT_POLICY,
 } from "../converge-config.js";
 import type { ConvergeConflictPolicy } from "../types.js";
+export type ReconcileConflictPolicy = ConvergeConflictPolicy;
 
 /**
  * Bootstrap reconciliation planner for two peer daemons whose corpora have
@@ -37,6 +38,18 @@ export type ReconcileAction = "pull" | "push" | "identical" | "conflict" | "supp
  */
 export type ReconcileResolution = "local-wins" | "peer-wins" | "supersede-link" | "unresolved";
 
+export interface ReconcileSemanticFileState {
+  path: string;
+  sha256: string;
+}
+
+export interface ReconcileSemanticAgreement {
+  local: ReconcileSemanticFileState;
+  peer: ReconcileSemanticFileState;
+}
+
+export type ReconcileSemanticChange = "unchanged" | "local_changed" | "peer_changed" | "both_modified";
+
 export interface ReconcilePlanEntry {
   path: string;
   namespace: string;
@@ -56,6 +69,13 @@ export interface ReconcilePlanEntry {
    * delete the live copy instead of the retracted one.
    */
   suppressSide?: "local" | "peer" | "both";
+  /**
+   * Real per-side identities for a cross-path semantic agreement. Synthetic
+   * rows omit the top-level side digests because `path` cannot name both files.
+   */
+  semanticAgreement?: ReconcileSemanticAgreement;
+  /** Each side's current digest compared with its own prior semantic digest. */
+  semanticChange?: ReconcileSemanticChange;
 }
 
 export type ReconcileReason =

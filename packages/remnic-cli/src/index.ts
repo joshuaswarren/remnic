@@ -173,6 +173,7 @@ import {
   OPERATION_NAMES,
   validateCapabilitiesForMint,
 } from "@remnic/core";
+import { resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
 import { runMeetingsBinaryCommand } from "./commands/meetings.js";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
@@ -4043,6 +4044,35 @@ async function writeBenchReproManifestForPackageRun(args: {
 }
 
 // ── Config helpers ───────────────────────────────────────────────────────────
+
+function loadStandaloneConvergeCommandConfig(): PluginConfig {
+  const configPath = resolveConfigPath();
+  const raw = fs.existsSync(configPath)
+    ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+    : {};
+  return parseConfig(resolveRemnicConfigRecord(raw));
+}
+
+function parseConvergePluginConfig(value: unknown): PluginConfig | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (Object.keys(value as Record<string, unknown>).length === 0) return undefined;
+  // Present and non-empty config is authoritative. Parse strictly — any invalid value
+  // (unknown key, bad policy, malformed/nested structure) MUST surface as an error,
+  // never silently default to newest-wins, which could auto-resolve conflicts.
+  return parseConfig(resolveRemnicConfigRecord(value));
+}
+
+export function loadConvergeCommandConfig(): PluginConfig {
+  if (readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH")) {
+    return loadStandaloneConvergeCommandConfig();
+  }
+
+  const openclawConfig = readOpenclawConfig(resolveOpenclawConfigPath());
+  const pluginEntry = resolveRemnicPluginEntry(openclawConfig);
+  const pluginConfig = parseConvergePluginConfig(pluginEntry?.["config"]);
+  if (pluginConfig) return pluginConfig;
+  return loadStandaloneConvergeCommandConfig();
+}
 
 export function resolveConfigPath(cliPath?: string): string {
   if (cliPath) return path.resolve(expandTilde(cliPath));
@@ -12985,11 +13015,7 @@ Options:
         await cmdConverge(action, args, json);
         break;
       }
-      const configPath = resolveConfigPath();
-      const raw = fs.existsSync(configPath)
-        ? JSON.parse(fs.readFileSync(configPath, "utf8"))
-        : {};
-      const config = parseConfig(resolveRemnicConfigRecord(raw));
+      const config = loadConvergeCommandConfig();
       await cmdConverge(action, args, json, config);
       break;
     }
