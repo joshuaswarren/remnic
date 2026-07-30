@@ -117,6 +117,14 @@ export interface ReconcileNamespaceInput {
    */
   base?: Iterable<ReconcileFileState>;
   /**
+   * Revision timestamps for paths deleted locally since the base cursor.
+   * A deletion is a revision and must carry a comparable time for
+   * `newest-wins`; absence alone has no timestamp.
+   */
+  localDeletionMtimeMs?: ReadonlyMap<string, number>;
+  /** Revision timestamps for paths deleted by the peer since the base cursor. */
+  peerDeletionMtimeMs?: ReadonlyMap<string, number>;
+  /**
    * Digests of FILES this side has retracted, in the same form as
    * `ReconcileFileState.sha256` — a hash of the serialized file.
    *
@@ -483,20 +491,39 @@ function compareEntries(a: ReconcilePlanEntry, b: ReconcilePlanEntry): number {
 
 function resolveConflict(
   policy: ConvergeConflictPolicy,
-  local: ReconcileFileState | undefined,
-  peer: ReconcileFileState | undefined,
+  localMtimeMs: number | undefined,
+  peerMtimeMs: number | undefined,
+  missingTimestampResolution: ReconcileResolution,
 ): ReconcileResolution {
   if (policy !== "newest-wins") return "unresolved";
-  const localMs = typeof local?.mtimeMs === "number" && Number.isFinite(local.mtimeMs)
-    ? local.mtimeMs
-    : null;
-  const peerMs = typeof peer?.mtimeMs === "number" && Number.isFinite(peer.mtimeMs)
-    ? peer.mtimeMs
-    : null;
-  if (local === undefined) return peerMs === null ? "unresolved" : "peer-wins";
-  if (peer === undefined) return localMs === null ? "unresolved" : "local-wins";
-  if (localMs === null || peerMs === null || localMs === peerMs) return "supersede-link";
-  return localMs > peerMs ? "local-wins" : "peer-wins";
+  if (localMtimeMs === undefined || peerMtimeMs === undefined || localMtimeMs === peerMtimeMs) {
+    return missingTimestampResolution;
+  }
+  return localMtimeMs > peerMtimeMs ? "local-wins" : "peer-wins";
+}
+
+function parseDeletionMtimes(
+  value: ReadonlyMap<string, number> | undefined,
+  side: string,
+  namespace: string,
+): ReadonlyMap<string, number> {
+  if (value === undefined) return new Map();
+  if (!(value instanceof Map)) {
+    throw new ReconcilePlanInputError(
+      `reconcile: ${side} deletion mtimes for namespace ${namespace} must be a Map`,
+    );
+  }
+  const parsed = new Map<string, number>();
+  for (const [path, mtimeMs] of value) {
+    try {
+      validateArchiveRelativePath(path, `reconcile: ${side} deletion mtimes for namespace ${namespace}`);
+    } catch (err) {
+      throw new ReconcilePlanInputError(err instanceof Error ? err.message : String(err));
+    }
+    assertPortablePathSegments(path, side, namespace);
+    parsed.set(path, assertMtimeMs(mtimeMs, `${side} deletion for namespace ${namespace} entry ${path}`));
+  }
+  return parsed;
 }
 
 /**
@@ -542,6 +569,8 @@ export function planNamespaceReconciliation(
     namespace,
     "peerTombstonedFileSha256",
   );
+  const localDeletionMtimeMs = parseDeletionMtimes(input.localDeletionMtimeMs, "local", namespace);
+  const peerDeletionMtimeMs = parseDeletionMtimes(input.peerDeletionMtimeMs, "peer", namespace);
   const entries: ReconcilePlanEntry[] = [];
 
   // Path -> digest only, never the file objects: enough to make the stream
@@ -611,7 +640,12 @@ export function planNamespaceReconciliation(
           baseSha256,
           resolution: baseSha256 === localFile.sha256
             ? "unresolved"
-            : resolveConflict(policy, localFile, undefined),
+            : resolveConflict(
+                policy,
+                localFile.mtimeMs,
+                peerDeletionMtimeMs.get(path),
+                "unresolved",
+              ),
         });
         continue;
       }
@@ -662,7 +696,12 @@ export function planNamespaceReconciliation(
       });
       continue;
     }
-    const resolution = resolveConflict(policy, localFile, peerFile);
+    const resolution = resolveConflict(
+      policy,
+      localFile.mtimeMs,
+      peerFile.mtimeMs,
+      "supersede-link",
+    );
     entries.push({
       path,
       namespace,
@@ -705,7 +744,12 @@ export function planNamespaceReconciliation(
         baseSha256,
         resolution: baseSha256 === peerFile.sha256
           ? "unresolved"
-          : resolveConflict(policy, undefined, peerFile),
+          : resolveConflict(
+              policy,
+              localDeletionMtimeMs.get(path),
+              peerFile.mtimeMs,
+              "unresolved",
+            ),
       });
       continue;
     }

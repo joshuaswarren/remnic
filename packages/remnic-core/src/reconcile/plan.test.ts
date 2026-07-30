@@ -189,6 +189,41 @@ test("delete-versus-modify stays a conflict in both directions", () => {
   assert.equal(peerEdited.resolution, "unresolved");
 });
 
+test("newest-wins compares delete revision times with surviving modifications", () => {
+  const entries = planNamespaceReconciliation(
+    {
+      namespace: "default",
+      local: [
+        file("facts/local-modification-wins.md", "local-v2", 4000),
+        file("facts/peer-deletion-wins.md", "local-v2", 2000),
+      ],
+      peer: [
+        file("facts/peer-modification-wins.md", "peer-v2", 4000),
+        file("facts/local-deletion-wins.md", "peer-v2", 2000),
+      ],
+      base: [
+        file("facts/local-modification-wins.md", "v1"),
+        file("facts/peer-deletion-wins.md", "v1"),
+        file("facts/peer-modification-wins.md", "v1"),
+        file("facts/local-deletion-wins.md", "v1"),
+      ],
+      localDeletionMtimeMs: new Map([
+        ["facts/peer-modification-wins.md", 3000],
+        ["facts/local-deletion-wins.md", 3000],
+      ]),
+      peerDeletionMtimeMs: new Map([
+        ["facts/local-modification-wins.md", 3000],
+        ["facts/peer-deletion-wins.md", 3000],
+      ]),
+    },
+    { conflictPolicy: "newest-wins" },
+  );
+  assert.equal(entryFor(entries, "facts/local-modification-wins.md").resolution, "local-wins");
+  assert.equal(entryFor(entries, "facts/peer-deletion-wins.md").resolution, "peer-wins");
+  assert.equal(entryFor(entries, "facts/peer-modification-wins.md").resolution, "peer-wins");
+  assert.equal(entryFor(entries, "facts/local-deletion-wins.md").resolution, "local-wins");
+});
+
 test("namespaces are planned independently and reported separately", () => {
   const plan = planReconciliation([
     { namespace: "alpha", local: [file("facts/a.md", "x")], peer: [] },

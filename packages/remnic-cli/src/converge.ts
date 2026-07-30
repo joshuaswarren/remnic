@@ -9,6 +9,7 @@ import {
   type ResolveSecretRefFn,
   buildOfflineSyncSnapshotFromBase,
   OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
+  OFFLINE_SYNC_CHANGESET_FORMAT,
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   applyOfflineSyncFileContentChunk,
 } from "@remnic/core";
@@ -40,8 +41,10 @@ export interface ConvergePlanOptions {
   baseFilesByNamespace?: Map<string, ReconcileFileState[]>;
   localFilesByNamespace?: Map<string, ReconcileFileState[]>;
   localTombstonesByNamespace?: Map<string, Iterable<string>>;
+  localDeletionMtimeMsByNamespace?: Map<string, ReadonlyMap<string, number>>;
   peerFilesByNamespace?: Map<string, ReconcileFileState[]>;
   peerTombstonesByNamespace?: Map<string, Iterable<string>>;
+  peerDeletionMtimeMsByNamespace?: Map<string, ReadonlyMap<string, number>>;
 }
 
 export interface ConvergeApplyOptions extends ConvergePlanOptions {
@@ -101,7 +104,7 @@ async function fetchPeerSnapshot(
   namespace: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<{ files: ReconcileFileState[]; tombstones: Set<string> }> {
+): Promise<{ files: ReconcileFileState[]; tombstones: Set<string>; capturedAtMs?: number }> {
   let base = peerUrl;
   while (base.endsWith("/")) {
     base = base.slice(0, -1);
@@ -166,7 +169,14 @@ async function fetchPeerSnapshot(
       }
       tombstones.add(tombstone.toLowerCase());
     }
-    return { files, tombstones };
+    let capturedAtMs: number | undefined;
+    if ("createdAt" in data) {
+      if (typeof data.createdAt !== "string" || !Number.isFinite(Date.parse(data.createdAt))) {
+        throw new Error(`invalid peer snapshot for namespace ${namespace}: createdAt must be an ISO timestamp`);
+      }
+      capturedAtMs = Date.parse(data.createdAt);
+    }
+    return { files, tombstones, capturedAtMs };
   }
 
   throw new Error(`failed to fetch peer snapshot for namespace ${namespace}: ${lastFailure}`);
@@ -344,6 +354,59 @@ async function postPeerFileContent(
   return false;
 }
 
+async function postPeerFileDeletion(
+  peerUrl: string,
+  namespace: string,
+  filePath: string,
+  baseSha256: string,
+  token?: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<boolean> {
+  const base = peerUrl.replace(/\/+$/, "");
+  const routes = ["/remnic/v1/offline-sync/apply", "/engram/v1/offline-sync/apply"];
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+  for (const route of routes) {
+    try {
+      const response = await fetchImpl(`${base}${route}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          namespace,
+          changeset: {
+            format: OFFLINE_SYNC_CHANGESET_FORMAT,
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            sourceId: "remnic-converge",
+            includeTranscripts: false,
+            changes: [{ type: "delete", path: filePath, baseSha256 }],
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(`offline apply request failed: ${response.status}`);
+      const result: unknown = await response.json().catch(() => null);
+      if (
+        !result
+        || typeof result !== "object"
+        || !("appliedDeletes" in result)
+        || typeof result.appliedDeletes !== "number"
+        || !("skipped" in result)
+        || typeof result.skipped !== "number"
+        || !("conflicts" in result)
+        || !Array.isArray(result.conflicts)
+      ) {
+        return false;
+      }
+      return result.conflicts.length === 0 && (result.appliedDeletes === 1 || result.skipped === 1);
+    } catch {
+      // try next route
+    }
+  }
+  return false;
+}
+
 export async function computeConvergePlan(options: ConvergePlanOptions = {}): Promise<ReconcilePlan> {
   const baseMap = new Map<string, ReconcileFileState[]>();
   const namespacesToPlan = new Set<string>();
@@ -351,6 +414,10 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   const localTombstones = new Map<string, Set<string>>();
   const peerMap = new Map<string, ReconcileFileState[]>();
   const peerTombstones = new Map<string, Set<string>>();
+  const localDeletionMtimeMs = new Map<string, ReadonlyMap<string, number>>();
+  const peerDeletionMtimeMs = new Map<string, ReadonlyMap<string, number>>();
+  const localSnapshotMtimeMs = new Map<string, number>();
+  const peerSnapshotMtimeMs = new Map<string, number>();
 
   if (options.baseFilesByNamespace) {
     for (const [ns, files] of options.baseFilesByNamespace) {
@@ -369,6 +436,12 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       localTombstones.set(ns, new Set(tombstones));
     }
   }
+  if (options.localDeletionMtimeMsByNamespace) {
+    for (const [ns, mtimes] of options.localDeletionMtimeMsByNamespace) {
+      namespacesToPlan.add(ns);
+      localDeletionMtimeMs.set(ns, mtimes);
+    }
+  }
   if (options.peerFilesByNamespace) {
     for (const [ns, files] of options.peerFilesByNamespace) {
       namespacesToPlan.add(ns);
@@ -378,6 +451,12 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   if (options.peerTombstonesByNamespace) {
     for (const [ns, tombstones] of options.peerTombstonesByNamespace) {
       peerTombstones.set(ns, new Set(tombstones));
+    }
+  }
+  if (options.peerDeletionMtimeMsByNamespace) {
+    for (const [ns, mtimes] of options.peerDeletionMtimeMsByNamespace) {
+      namespacesToPlan.add(ns);
+      peerDeletionMtimeMs.set(ns, mtimes);
     }
   }
   let config = options.config;
@@ -411,6 +490,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
           bytes: record.bytes,
         }));
         localMap.set(ns, files);
+        localSnapshotMtimeMs.set(ns, Date.parse(snapshot.createdAt));
         const tombstones = await readLocalTombstones(rootInfo.rootDir);
         localTombstones.set(ns, tombstones);
       } catch {
@@ -435,6 +515,9 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       const peerData = await fetchPeerSnapshot(options.peerUrl, ns, resolvedToken, fetchFn);
       peerMap.set(ns, peerData.files);
       peerTombstones.set(ns, peerData.tombstones);
+      if (peerData.capturedAtMs !== undefined) {
+        peerSnapshotMtimeMs.set(ns, peerData.capturedAtMs);
+      }
     }
   }
 
@@ -451,11 +534,32 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
 
   const inputs: ReconcileNamespaceInput[] = [];
   for (const ns of [...namespacesToPlan].sort()) {
+    const baseFiles = baseMap.get(ns);
+    const localFiles = localMap.get(ns) ?? [];
+    const peerFiles = peerMap.get(ns) ?? [];
+    const localDeletions = new Map(localDeletionMtimeMs.get(ns) ?? []);
+    const peerDeletions = new Map(peerDeletionMtimeMs.get(ns) ?? []);
+    if (baseFiles) {
+      const localPaths = new Set(localFiles.map((file) => file.path));
+      const peerPaths = new Set(peerFiles.map((file) => file.path));
+      for (const baseFile of baseFiles) {
+        const localCapturedAtMs = localSnapshotMtimeMs.get(ns);
+        if (!localPaths.has(baseFile.path) && !localDeletions.has(baseFile.path) && localCapturedAtMs !== undefined) {
+          localDeletions.set(baseFile.path, localCapturedAtMs);
+        }
+        const peerCapturedAtMs = peerSnapshotMtimeMs.get(ns);
+        if (!peerPaths.has(baseFile.path) && !peerDeletions.has(baseFile.path) && peerCapturedAtMs !== undefined) {
+          peerDeletions.set(baseFile.path, peerCapturedAtMs);
+        }
+      }
+    }
     inputs.push({
       namespace: ns,
-      local: localMap.get(ns) ?? [],
-      peer: peerMap.get(ns) ?? [],
-      base: baseMap.get(ns),
+      local: localFiles,
+      peer: peerFiles,
+      base: baseFiles,
+      localDeletionMtimeMs: localDeletions,
+      peerDeletionMtimeMs: peerDeletions,
       tombstonedFileSha256: localTombstones.get(ns) ?? [],
       peerTombstonedFileSha256: peerTombstones.get(ns) ?? [],
     });
@@ -567,7 +671,7 @@ export async function executeConvergeApply(
   for (const entry of plan.entries) {
     if (entry.action === "identical") continue;
 
-    let transferType: "pull" | "push" | "suppress" | "none" = "none";
+    let transferType: "pull" | "push" | "delete-local" | "delete-peer" | "suppress" | "none" = "none";
     if (entry.action === "pull") {
       transferType = "pull";
     } else if (entry.action === "push") {
@@ -576,9 +680,9 @@ export async function executeConvergeApply(
       transferType = "suppress";
     } else if (entry.action === "conflict") {
       if (entry.resolution === "peer-wins") {
-        transferType = "pull";
+        transferType = entry.peerSha256 ? "pull" : "delete-local";
       } else if (entry.resolution === "local-wins") {
-        transferType = "push";
+        transferType = entry.localSha256 ? "push" : "delete-peer";
       }
     }
 
@@ -734,6 +838,62 @@ export async function executeConvergeApply(
       } else {
         actualTransfers.failed += 1;
       }
+    } else if (transferType === "delete-local") {
+      let deleted = false;
+      const bufferedFiles = options.localFileBuffers?.get(entry.namespace);
+      if (options.localFileBuffers) {
+        const current = bufferedFiles?.get(entry.path);
+        if (
+          current
+          && entry.localSha256
+          && createHash("sha256").update(current).digest("hex") === entry.localSha256
+        ) {
+          bufferedFiles!.delete(entry.path);
+          deleted = true;
+        }
+      } else {
+        const rootDir = rootMap.get(entry.namespace);
+        if (rootDir && entry.localSha256) {
+          try {
+            const io = await createOfflineStorageIo(rootDir);
+            const filePath = path.join(rootDir, entry.path);
+            const current = await io.readFileDigest({ root: rootDir, path: entry.path, filePath });
+            if (current.sha256 === entry.localSha256) {
+              await io.deleteFile({ root: rootDir, path: entry.path, filePath });
+              deleted = true;
+            }
+          } catch {
+            deleted = false;
+          }
+        }
+      }
+      if (deleted) actualTransfers.conflictsResolved += 1;
+      else actualTransfers.failed += 1;
+    } else if (transferType === "delete-peer") {
+      let deleted = false;
+      const bufferedFiles = options.peerFileBuffers?.get(entry.namespace);
+      if (options.peerFileBuffers) {
+        const current = bufferedFiles?.get(entry.path);
+        if (
+          current
+          && entry.peerSha256
+          && createHash("sha256").update(current).digest("hex") === entry.peerSha256
+        ) {
+          bufferedFiles!.delete(entry.path);
+          deleted = true;
+        }
+      } else if (options.peerUrl && entry.peerSha256) {
+        deleted = await postPeerFileDeletion(
+          options.peerUrl,
+          entry.namespace,
+          entry.path,
+          entry.peerSha256,
+          resolvedToken,
+          fetchFn,
+        );
+      }
+      if (deleted) actualTransfers.conflictsResolved += 1;
+      else actualTransfers.failed += 1;
     } else if (transferType === "suppress") {
       actualTransfers.suppressed += 1;
     }
@@ -771,10 +931,15 @@ async function updateCursorsForPlan(
   for (const ns of namespaces) {
     const cursorPath = defaultConvergeCursorPath(memoryDir, peerUrl, ns);
     const nsEntries = plan.entries.filter((e) => e.namespace === ns);
-    const baseFiles = nsEntries.map((e) => ({
-      path: e.path,
-      sha256: e.localSha256 ?? e.peerSha256 ?? "unknown",
-    }));
+    const baseFiles = nsEntries
+      .filter((entry) => !(
+        (entry.reason === "local_modified_peer_deleted" && entry.resolution === "peer-wins")
+        || (entry.reason === "local_deleted_peer_modified" && entry.resolution === "local-wins")
+      ))
+      .map((entry) => ({
+        path: entry.path,
+        sha256: entry.localSha256 ?? entry.peerSha256 ?? "unknown",
+      }));
 
     const cursorState: ConvergeCursorState = {
       version: 1,
