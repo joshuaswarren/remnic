@@ -152,22 +152,6 @@ async function readLocalTombstones(rootDir: string): Promise<Set<string>> {
   return shaSet;
 }
 
-async function fetchPeerSnapshot(
-  peerUrl: string,
-  namespace: string,
-  token?: string,
-  fetchImpl: typeof fetch = globalThis.fetch
-): Promise<{ files: ReconcileFileState[]; tombstones: Set<string> }> {
-  let base = peerUrl;
-  while (base.endsWith("/")) {
-    base = base.slice(0, -1);
-  }
-  const routes = [
-    `/remnic/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&content=false`,
-    `/engram/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&content=false`,
-  ];
-  const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
-  let lastFailure = "no snapshot route responded";
 interface TombstoneEvidence {
   contentHashes: Set<string>;
   fileSha256: Set<string>;
