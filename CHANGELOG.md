@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.40.0] — 2026-07-30
+
 ### Fixed
 
 - OpenClaw delegate preflight now uses an authenticated liveness endpoint that
