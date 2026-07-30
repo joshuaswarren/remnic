@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.38.3] — 2026-07-30
+
 ### Fixed
 
 - Extraction liveness watermark now advances on every successfully parsed
