@@ -206,6 +206,18 @@ test("evaluate: a warming aggregate watermark remains pending without degrading"
   assert.equal(status.watermarkPending, true);
 });
 
+test("evaluate: warming watermark does not suppress an independent buffer read failure", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: null,
+    snapshot: snapshot({ readFailed: true, readError: "buffer unavailable" }),
+    nowMs: NOW,
+    watermarkPending: true,
+  });
+  assert.equal(status.degraded, true);
+  assert.match(status.degradedReason ?? "", /buffer unavailable/);
+});
+
 test("evaluate: an unreadable watermark degrades with a distinct reason, even with an empty buffer (§22)", () => {
   const status = evaluateExtractionLiveness({
     config: ENABLED,

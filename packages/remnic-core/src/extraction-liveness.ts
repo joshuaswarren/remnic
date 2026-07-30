@@ -230,7 +230,8 @@ export function evaluateExtractionLiveness(input: {
   const metaReadFailed = input.metaReadFailed === true;
   const watermarkPending = input.watermarkPending === true;
   const readFailed = snapshot.readFailed === true;
-  const degraded = config.enabled && !watermarkPending && (metaReadFailed || readFailed || (hasBacklog && stale));
+  const degraded =
+    config.enabled && (metaReadFailed || readFailed || (!watermarkPending && hasBacklog && stale));
 
   let degradedReason: string | null = null;
   if (degraded) {

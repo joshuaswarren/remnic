@@ -156,12 +156,12 @@ interface ConversationIndexLike {
     }>;
   };
 }
-
 export interface OperatorToolkitOrchestrator extends ConversationIndexLike {
   config: PluginConfig;
   storage: StorageManager;
   qmd: QmdRuntimeLike;
   buffer?: ExtractionBufferSource;
+  getStorage?(namespace: string): Promise<StorageManager>;
 }
 
 export interface OperatorConfigLoadResult {
@@ -1499,7 +1499,7 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   // Tier distribution (issue #686 retention-completion).
   checks.push(await summarizeTierDistribution(options.orchestrator.storage));
   checks.push(await summarizeDreamsPhases(config, storage));
-  const extractionWatermark = await readAggregateExtractionWatermark({ config, rootStorage: storage, storageForNamespace: (_ns, rootDir) => new StorageManager(rootDir) });
+  const extractionWatermark = await readAggregateExtractionWatermark({ config, rootStorage: storage, storageForNamespace: (ns, rootDir) => options.orchestrator.getStorage?.(ns) ?? new StorageManager(rootDir) });
   checks.push(await summarizeExtractionLiveness(config, extractionWatermark, options.orchestrator.buffer));
   checks.push(...(await summarizeCorpusAndReplica(config, (d) => new StorageManager(d), options.resolveSecretRef)));
   // Security mitigation status (issue #565).

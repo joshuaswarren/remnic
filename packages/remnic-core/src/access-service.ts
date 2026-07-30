@@ -8,7 +8,7 @@ import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import { computeExtractionLivenessStatus, ExtractionLivenessWarnThrottle } from "./extraction-liveness.js";
 import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
-import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
+import { enforceNamespaceAllowList, isCapabilityRestricted, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   recordCitationUsage as recordCitationUsageForAccess,
   type CitationUsageRequest,
@@ -2381,7 +2381,7 @@ export class EngramAccessService {
     const extraction = await computeExtractionLivenessStatus(
       this.orchestrator,
       extractionWatermark,
-      this.extractionLivenessWarn,
+      isCapabilityRestricted(caps) ? undefined : this.extractionLivenessWarn,
     );
     // ONE call: the corpus array and the flag describing it must not come from
     // two independently-cached scans (round 8, codex P1).
