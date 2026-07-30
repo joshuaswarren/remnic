@@ -56,18 +56,31 @@ function validatedTimestampMs(value: string): number | null {
   const parsed = Date.parse(value);
   if (!match || !Number.isFinite(parsed)) return null;
   const [, yearText, monthText, dayText, hourText, minuteText, secondText, fraction, zone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]!) return null;
+  if (hour === 24) {
+    const isEndOfDay = minute === 0 && second === 0 && /^0*$/.test(fraction ?? "");
+    return isEndOfDay ? parsed : null;
+  }
   const zoneSign = zone === "Z" || zone[0] === "+" ? 1 : -1;
   const offsetMinutes =
     zone === "Z" ? 0 : zoneSign * (Number(zone.slice(1, 3)) * 60 + Number(zone.slice(4, 6)));
   const representedCalendar = new Date(parsed + offsetMinutes * 60_000);
   const millisecond = Number((fraction ?? "").padEnd(3, "0").slice(0, 3));
   const expected = [
-    Number(yearText),
-    Number(monthText),
-    Number(dayText),
-    Number(hourText),
-    Number(minuteText),
-    Number(secondText),
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
     millisecond,
   ];
   const actual = [

@@ -259,7 +259,7 @@ test("valid ISO timestamp variants remain eligible for aggregate watermark selec
   try {
     const result = await readAggregateExtractionWatermark({
       config: fixture.config,
-      rootStorage: storage(fixture.memoryDir, async () => "2026-07-20T12:00:00Z"),
+      rootStorage: storage(fixture.memoryDir, async () => "2026-07-19T24:00:00Z"),
       storageForNamespace: async (namespace) =>
         storage(
           fixture.namespaceDirs[namespace],
