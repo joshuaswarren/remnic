@@ -701,6 +701,32 @@ test("circuit breaker: a forced flush still calls extract() while the breaker is
   }
 });
 
+test("circuit breaker: a forced local prefilter skip does not heal an open breaker", async () => {
+  const h = await makeHarness({
+    extractionRetryScheduleMs: [3_600_000],
+    extractionBreakerFailureThreshold: 1,
+    extractionBreakerCooldownMs: 3_600_000,
+  });
+  try {
+    const coord = h.newCoordinator();
+    h.setRespond(() => failureResult("provider_retryable"));
+    await h.run(coord, "fp-1");
+    assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open");
+
+    h.setRespond(() => ({
+      ...emptySuccessResult(),
+      extractionSkippedReason: "mechanical_telemetry",
+    }));
+    const result = await h.run(coord, "fp-2", { force: true });
+
+    assert.equal(result.reason, "empty_extraction_result");
+    assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open");
+    assert.equal(coord.getExtractionResilienceStatus().breaker.consecutiveFailures, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("circuit breaker: auth_config failure opens the breaker immediately (no hot loop)", async () => {
   const h = await makeHarness({
     extractionRetryScheduleMs: [3_600_000],

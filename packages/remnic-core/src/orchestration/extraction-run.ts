@@ -979,7 +979,7 @@ export class ExtractionRunCoordinator {
           // pre-#1908 clear-buffer behavior applies below.
           log.warn("runExtraction: failed to load meta for retry bookkeeping (non-fatal)", err);
         }
-      } else {
+      } else if (result.extractionSkippedReason === undefined) {
         // Provider responded without failure → breaker heals; clear any
         // parked backoff for this fingerprint so it proceeds normally.
         this.resetProviderBreakerOnSuccess();
