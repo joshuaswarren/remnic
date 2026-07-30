@@ -8,7 +8,6 @@ import type { MemoryLifecycleEvent } from "../types.js";
 import {
   compareMemoryLifecycleEvents,
   sortMemoryLifecycleEvents,
-  memoryLifecycleEventProjectionIdentity,
   memoryLifecycleLedgerLockPath,
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
   MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS,
@@ -22,8 +21,8 @@ import {
 } from "./secure-line-reader.js";
 import { getMemoryProjectionPath } from "../memory-projection-store.js";
 import {
-  readProjectionLifecycleLedgerHighWater,
-  type ProjectionLifecycleLedgerHighWater,
+  openProjectionLifecycleLedgerLagTracker,
+  type ProjectionLifecycleLedgerLagTracker,
 } from "../maintenance/projection-support.js";
 import {
   type ProjectionLedgerLagTelemetry,
@@ -211,9 +210,9 @@ export async function readBoundedLifecycleEventsWithProjectionLag(
   readSecureFile: LedgerSecureReader,
   limit: number,
   memoryId: string,
-  projectedEventIdentities: ReadonlySet<string>,
+  tracker: ProjectionLifecycleLedgerLagTracker,
 ): Promise<LifecycleLedgerProjectionLagRead> {
-  const currentEventIdentities = new Set<string>();
+  let currentEventCount = 0;
   let deltaEvents = 0;
   try {
     const events = await readMemoryLifecycleEventsFromLines(
@@ -226,17 +225,13 @@ export async function readBoundedLifecycleEventsWithProjectionLag(
       memoryId,
       compareMemoryLifecycleEvents,
       (event) => {
-        const identity = memoryLifecycleEventProjectionIdentity(event);
-        if (currentEventIdentities.has(identity)) return;
-        currentEventIdentities.add(identity);
-        if (!projectedEventIdentities.has(identity)) deltaEvents += 1;
+        const tracked = tracker.record(event);
+        if (!tracked.unique) return;
+        currentEventCount += 1;
+        if (!tracked.projected) deltaEvents += 1;
       },
     );
-    return {
-      events,
-      currentEventCount: currentEventIdentities.size,
-      deltaEvents,
-    };
+    return { events, currentEventCount, deltaEvents };
   } catch (err) {
     if (err instanceof SecureStoreLockedError) throw err;
     if (!isErrnoCode(err, "ENOENT")) throw err;
@@ -281,10 +276,6 @@ export interface ProjectionLedgerLagScan {
 }
 
 export class ProjectionLedgerLagManager {
-  private highWaterCache: {
-    projectionIdentity: string;
-    highWater: ProjectionLifecycleLedgerHighWater;
-  } | null = null;
   private lagCache: {
     generation: string;
     telemetry: ProjectionLedgerLagTelemetry;
@@ -333,33 +324,32 @@ export class ProjectionLedgerLagManager {
       return readBoundedLifecycleEventsFromLedger(ledgerPath, readSecureFile, cappedLimit, memoryId);
     }
 
-    let highWater = this.highWaterCache?.projectionIdentity === projectionIdentity
-      ? this.highWaterCache.highWater
-      : null;
-    if (!highWater) {
-      highWater = readProjectionLifecycleLedgerHighWater(baseDir);
-      if (highWater) {
-        this.highWaterCache = { projectionIdentity, highWater };
-      }
-    }
-
-    if (highWater) {
-      const scan = readBoundedLifecycleEventsWithProjectionLag(
-        ledgerPath,
-        readSecureFile,
-        cappedLimit,
-        memoryId,
-        highWater.projectedEventIdentities,
-      ).then((fallback): ProjectionLedgerLagScan => ({
-        telemetry: {
-          projectedEvents: highWater.eventCount,
-          currentLedgerEvents: fallback.currentEventCount,
-          deltaEvents: fallback.deltaEvents,
-        },
-        events: fallback.events,
-        memoryId,
-        limit: cappedLimit,
-      }));
+    const tracker = openProjectionLifecycleLedgerLagTracker(baseDir);
+    if (tracker) {
+      const highWater = tracker.highWater;
+      const scan = (async (): Promise<ProjectionLedgerLagScan> => {
+        try {
+          const fallback = await readBoundedLifecycleEventsWithProjectionLag(
+            ledgerPath,
+            readSecureFile,
+            cappedLimit,
+            memoryId,
+            tracker,
+          );
+          return {
+            telemetry: {
+              projectedEvents: highWater.eventCount,
+              currentLedgerEvents: fallback.currentEventCount,
+              deltaEvents: fallback.deltaEvents,
+            },
+            events: fallback.events,
+            memoryId,
+            limit: cappedLimit,
+          };
+        } finally {
+          tracker.close();
+        }
+      })();
       this.lagInFlight = { generation, scan };
       try {
         const result = await scan;

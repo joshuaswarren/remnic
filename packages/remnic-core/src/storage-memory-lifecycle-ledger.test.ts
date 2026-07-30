@@ -1368,6 +1368,27 @@ test("getMemoryTimeline fallback emits below-threshold ledger lag telemetry with
   }
 });
 
+test("projection lag excludes blank memory ids and deduplicates identities on disk (#2119 review)", async () => {
+  const debug: string[] = [];
+  initLogger({ info() {}, warn() {}, error() {}, debug: (message) => debug.push(message) }, true);
+  __resetProjectionFallbackWarnSuppressionForTest();
+  try {
+    const projected = lifecycleEvent("projected-1", "memory-existing", "2026-01-01T00:01:00.000Z");
+    const appended = lifecycleEvent("current-1", "memory-target", "2026-01-01T00:02:00.000Z");
+    const blank = { ...lifecycleEvent("blank-1", "unused", "2026-01-01T00:03:00.000Z"), memoryId: "   " };
+    await withStaleLifecycleProjection([projected], [blank, appended, appended], async (storage) => {
+      await storage.getMemoryTimeline("memory-target", 5);
+      const telemetry = debug.find((message) => message.includes("storage.getMemoryTimeline"));
+      assert.ok(telemetry);
+      assert.match(telemetry, /current_ledger_events=2/);
+      assert.match(telemetry, /delta_events=1/);
+    });
+  } finally {
+    resetLogger();
+    __resetProjectionFallbackWarnSuppressionForTest();
+  }
+});
+
 test("getMemoryTimeline fallback WARNS above the ledger lag threshold and rate-limits repeats (#2119)", async () => {
   const warns: string[] = [];
   initLogger({ info() {}, warn: (message) => warns.push(message), error() {}, debug() {} }, false);

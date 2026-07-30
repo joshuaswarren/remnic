@@ -16,8 +16,12 @@ import {
   type ProjectedEntityMentionRow,
   type ProjectedNativeKnowledgeChunkRow,
 } from "../memory-projection-store.js";
-import { memoryLifecycleEventProjectionIdentity } from "../memory-lifecycle-ledger-utils.js";
+import {
+  isFrontmatterDerivedLifecycleEventType,
+  memoryLifecycleEventProjectionIdentity,
+} from "../memory-lifecycle-ledger-utils.js";
 import type { MemoryLifecycleEvent } from "../types.js";
+import type { BetterSqlite3Database } from "../runtime/better-sqlite.js";
 
 /** Read the projection meta rebuiltAt timestamp; null when absent/unopenable. */
 export function readProjectionRebuiltAt(memoryDir: string): string | null {
@@ -48,7 +52,27 @@ export function formatProjectionAge(rebuiltAt: string | null): string {
 export interface ProjectionLifecycleLedgerHighWater {
   eventCount: number;
   sourceEventCount: number;
-  projectedEventIdentities: ReadonlySet<string>;
+}
+
+function readProjectionHighWaterFromDb(
+  db: BetterSqlite3Database,
+): ProjectionLifecycleLedgerHighWater | null {
+  const sourceRow = db.prepare(
+    "SELECT value FROM meta WHERE key = 'sourceLifecycleLedgerEventCount'",
+  ).get() as { value?: unknown } | undefined;
+  const projectedRow = db.prepare(
+    "SELECT value FROM meta WHERE key = 'projectedLifecycleLedgerEventCount'",
+  ).get() as { value?: unknown } | undefined;
+  if (
+    typeof sourceRow?.value !== "string"
+    || !/^\d+$/.test(sourceRow.value)
+    || typeof projectedRow?.value !== "string"
+    || !/^\d+$/.test(projectedRow.value)
+  ) return null;
+  const sourceEventCount = Number(sourceRow.value);
+  const eventCount = Number(projectedRow.value);
+  if (!Number.isSafeInteger(sourceEventCount) || !Number.isSafeInteger(eventCount)) return null;
+  return { eventCount, sourceEventCount };
 }
 
 export function readProjectionLifecycleLedgerHighWater(
@@ -57,45 +81,67 @@ export function readProjectionLifecycleLedgerHighWater(
   const db = openProjectionReadonly(memoryDir);
   if (!db) return null;
   try {
-    const sourceRow = db.prepare(
-      "SELECT value FROM meta WHERE key = 'sourceLifecycleLedgerEventCount'",
-    ).get() as { value?: unknown } | undefined;
-    const projectedRow = db.prepare(
-      "SELECT value FROM meta WHERE key = 'projectedLifecycleLedgerEventCount'",
-    ).get() as { value?: unknown } | undefined;
-    if (
-      typeof sourceRow?.value !== "string"
-      || !/^\d+$/.test(sourceRow.value)
-      || typeof projectedRow?.value !== "string"
-      || !/^\d+$/.test(projectedRow.value)
-    ) return null;
-    const sourceEventCount = Number(sourceRow.value);
-    const eventCount = Number(projectedRow.value);
-    if (!Number.isSafeInteger(sourceEventCount) || !Number.isSafeInteger(eventCount)) return null;
-    const eventRows = db.prepare(`
-      SELECT
-        event_id AS eventId,
-        memory_id AS memoryId,
-        event_type AS eventType,
-        timestamp
-      FROM memory_timeline
-    `).all() as Array<{
-      eventId: string;
-      memoryId: string;
-      eventType: string;
-      timestamp: string;
-    }>;
-    return {
-      eventCount,
-      sourceEventCount,
-      projectedEventIdentities: new Set(
-        eventRows.map(memoryLifecycleEventProjectionIdentity),
-      ),
-    };
+    return readProjectionHighWaterFromDb(db);
   } catch {
     return null;
   } finally {
     db.close();
+  }
+}
+
+export interface ProjectionLifecycleLedgerLagTracker {
+  highWater: ProjectionLifecycleLedgerHighWater;
+  record(event: MemoryLifecycleEvent): { unique: boolean; projected: boolean };
+  close(): void;
+}
+
+export function openProjectionLifecycleLedgerLagTracker(
+  memoryDir: string,
+): ProjectionLifecycleLedgerLagTracker | null {
+  const db = openProjectionReadonly(memoryDir);
+  if (!db) return null;
+  try {
+    const highWater = readProjectionHighWaterFromDb(db);
+    if (!highWater) {
+      db.close();
+      return null;
+    }
+    db.pragma("temp_store = FILE");
+    db.exec(`
+      CREATE TEMP TABLE projection_lag_current_identity (
+        identity TEXT PRIMARY KEY
+      ) WITHOUT ROWID;
+    `);
+    db.pragma("temp.cache_size = -1024");
+    const insertCurrent = db.prepare(
+      "INSERT OR IGNORE INTO projection_lag_current_identity(identity) VALUES (?)",
+    );
+    const findProjectedEvent = db.prepare(
+      "SELECT 1 FROM memory_timeline WHERE event_id = ? LIMIT 1",
+    );
+    const findProjectedFrontmatterEvent = db.prepare(`
+      SELECT 1
+      FROM memory_timeline
+      WHERE memory_id = ? AND event_type = ? AND timestamp = ?
+      LIMIT 1
+    `);
+    return {
+      highWater,
+      record(event) {
+        if (!event.memoryId.trim()) return { unique: false, projected: false };
+        const identity = memoryLifecycleEventProjectionIdentity(event);
+        const inserted = insertCurrent.run(identity);
+        if (inserted.changes === 0) return { unique: false, projected: false };
+        const projected = isFrontmatterDerivedLifecycleEventType(event.eventType)
+          ? findProjectedFrontmatterEvent.get(event.memoryId, event.eventType, event.timestamp)
+          : findProjectedEvent.get(event.eventId);
+        return { unique: true, projected: projected !== undefined };
+      },
+      close: () => db.close(),
+    };
+  } catch {
+    db.close();
+    return null;
   }
 }
 /** Write the high-water ledger marker counts to projection meta store. */
