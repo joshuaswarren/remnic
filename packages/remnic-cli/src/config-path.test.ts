@@ -4,13 +4,20 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { resolveConfigPath, resolveMemoryDir, resolveSyncSourceDir } from "./index.js";
+import {
+  loadConvergeConfig,
+  resolveConfigPath,
+  resolveMemoryDir,
+  resolveSyncSourceDir,
+} from "./index.js";
 
 const ORIGINAL_ENV = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
   REMNIC_CONFIG_PATH: process.env.REMNIC_CONFIG_PATH,
   ENGRAM_CONFIG_PATH: process.env.ENGRAM_CONFIG_PATH,
+  OPENCLAW_CONFIG_PATH: process.env.OPENCLAW_CONFIG_PATH,
+  OPENCLAW_ENGRAM_CONFIG_PATH: process.env.OPENCLAW_ENGRAM_CONFIG_PATH,
   REMNIC_MEMORY_DIR: process.env.REMNIC_MEMORY_DIR,
   ENGRAM_MEMORY_DIR: process.env.ENGRAM_MEMORY_DIR,
 };
@@ -93,6 +100,47 @@ test("resolveMemoryDir preserves flat fallback keys under a partial remnic block
     );
 
     assert.equal(resolveMemoryDir(), path.join(home, "configured-memory"));
+  } finally {
+    restoreEnv();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("loadConvergeConfig prefers plugin-scoped OpenClaw config and retains standalone fallback", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-converge-config-"));
+  const openClawConfigPath = path.join(home, "openclaw.json");
+  const standaloneConfigPath = path.join(home, "remnic.json");
+  try {
+    process.env.HOME = home;
+    process.env.OPENCLAW_CONFIG_PATH = openClawConfigPath;
+    delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+    process.env.REMNIC_CONFIG_PATH = standaloneConfigPath;
+    delete process.env.ENGRAM_CONFIG_PATH;
+    await writeFile(
+      standaloneConfigPath,
+      JSON.stringify({ converge: { conflictPolicy: "newest-wins" } }),
+    );
+    await writeFile(
+      openClawConfigPath,
+      JSON.stringify({
+        plugins: {
+          slots: { memory: "openclaw-remnic" },
+          entries: {
+            "openclaw-remnic": {
+              config: { converge: { conflictPolicy: "manual" } },
+            },
+          },
+        },
+      }),
+    );
+
+    assert.equal(loadConvergeConfig().converge.conflictPolicy, "manual");
+
+    await writeFile(
+      openClawConfigPath,
+      JSON.stringify({ plugins: { entries: { "another-plugin": { config: {} } } } }),
+    );
+    assert.equal(loadConvergeConfig().converge.conflictPolicy, "newest-wins");
   } finally {
     restoreEnv();
     await rm(home, { recursive: true, force: true });
