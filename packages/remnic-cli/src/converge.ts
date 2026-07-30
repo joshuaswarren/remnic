@@ -65,7 +65,10 @@ async function fetchPeerSnapshot(
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<{ files: ReconcileFileState[]; tombstones: Set<string> }> {
-  const base = peerUrl.replace(/\/+$/, "");
+  let base = peerUrl;
+  while (base.endsWith("/")) {
+    base = base.slice(0, -1);
+  }
   const routes = [
     `/remnic/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&content=false`,
     `/engram/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&content=false`,
