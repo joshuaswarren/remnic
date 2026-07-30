@@ -460,3 +460,71 @@ test("remnic converge apply: does not count a local apply conflict as a pull", a
     await fs.rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("remnic converge apply: peer-wins guards against the planned local revision", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-peer-wins-test-"));
+  try {
+    const baseSha256 = createHash("sha256").update("base content").digest("hex");
+    const localContent = Buffer.from("local content");
+    const peerContent = Buffer.from("peer content");
+    const localSha256 = createHash("sha256").update(localContent).digest("hex");
+    const peerSha256 = createHash("sha256").update(peerContent).digest("hex");
+    await fs.mkdir(path.join(rootDir, "facts"), { recursive: true });
+    await fs.writeFile(path.join(rootDir, "facts/shared.md"), localContent);
+
+    const result = await executeConvergeApply({
+      config: parseConfig({ memoryDir: rootDir }),
+      peerUrl: "https://peer.example.test",
+      conflictPolicy: "newest-wins",
+      baseFilesByNamespace: new Map([
+        ["default", [{ path: "facts/shared.md", sha256: baseSha256 }]],
+      ]),
+      localFilesByNamespace: new Map([
+        ["default", [{ path: "facts/shared.md", sha256: localSha256, mtimeMs: 1000 }]],
+      ]),
+      peerFilesByNamespace: new Map([
+        ["default", [{ path: "facts/shared.md", sha256: peerSha256, bytes: peerContent.length, mtimeMs: 2000 }]],
+      ]),
+      peerFileBuffers: new Map([["default", new Map([["facts/shared.md", peerContent]])]]),
+    });
+
+    assert.equal(result.transfers.conflictsResolved, 1);
+    assert.equal(result.transfers.failed, 0);
+    assert.equal(await fs.readFile(path.join(rootDir, "facts/shared.md"), "utf8"), "peer content");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("remnic converge apply: local-wins guards against the planned peer revision", async () => {
+  const baseSha256 = createHash("sha256").update("base content").digest("hex");
+  const localContent = Buffer.from("local content");
+  const peerContent = Buffer.from("peer content");
+  const localSha256 = createHash("sha256").update(localContent).digest("hex");
+  const peerSha256 = createHash("sha256").update(peerContent).digest("hex");
+  let baseHeader: string | null = null;
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    baseHeader = new Headers(init?.headers).get("x-remnic-base-sha256");
+    return Response.json({ done: true, applied: true, skipped: false });
+  };
+
+  const result = await executeConvergeApply({
+    peerUrl: "https://peer.example.test",
+    fetchImpl,
+    conflictPolicy: "newest-wins",
+    baseFilesByNamespace: new Map([
+      ["default", [{ path: "facts/shared.md", sha256: baseSha256 }]],
+    ]),
+    localFilesByNamespace: new Map([
+      ["default", [{ path: "facts/shared.md", sha256: localSha256, bytes: localContent.length, mtimeMs: 2000 }]],
+    ]),
+    peerFilesByNamespace: new Map([
+      ["default", [{ path: "facts/shared.md", sha256: peerSha256, bytes: peerContent.length, mtimeMs: 1000 }]],
+    ]),
+    localFileBuffers: new Map([["default", new Map([["facts/shared.md", localContent]])]]),
+  });
+
+  assert.equal(result.transfers.conflictsResolved, 1);
+  assert.equal(result.transfers.failed, 0);
+  assert.equal(baseHeader, peerSha256);
+});

@@ -615,6 +615,9 @@ export async function executeConvergeApply(
           const rootDir = rootMap.get(entry.namespace);
           if (rootDir) {
             const io = await createOfflineStorageIo(rootDir);
+            const expectedLocalSha256 = entry.action === "conflict"
+              ? entry.localSha256
+              : entry.baseSha256;
             let offset = 0;
             let transferComplete = false;
             do {
@@ -634,7 +637,7 @@ export async function executeConvergeApply(
                 mtimeMs: remoteFile.mtimeMs,
                 offset,
                 content: chunk,
-                ...(entry.baseSha256 ? { baseSha256: entry.baseSha256 } : {}),
+                ...(expectedLocalSha256 ? { baseSha256: expectedLocalSha256 } : {}),
                 readFile: io.readFile,
                 readFileDigest: io.readFileDigest,
                 writeFile: io.writeFile,
@@ -699,6 +702,9 @@ export async function executeConvergeApply(
           if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
           else actualTransfers.pushed += 1;
         } else if (options.peerUrl && entry.localSha256) {
+          const expectedPeerSha256 = entry.action === "conflict"
+            ? entry.peerSha256
+            : entry.baseSha256;
           const ok = await postPeerFileContent(
             options.peerUrl,
             entry.namespace,
@@ -707,7 +713,7 @@ export async function executeConvergeApply(
             {
               sha256: entry.localSha256,
               mtimeMs: mtimeMs ?? 0,
-              ...(entry.baseSha256 ? { baseSha256: entry.baseSha256 } : {}),
+              ...(expectedPeerSha256 ? { baseSha256: expectedPeerSha256 } : {}),
             },
             resolvedToken,
             fetchFn,
