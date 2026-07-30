@@ -1394,7 +1394,11 @@ export type {
   CalendarSource,
   RecallDisclosure,
 } from "./types.js";
-export { CONVERGE_CONFLICT_POLICIES, DEFAULT_CONVERGE_CONFLICT_POLICY } from "./converge-config.js";
+export {
+  CONVERGE_CONFLICT_POLICIES,
+  DEFAULT_CONVERGE_CONFLICT_POLICY,
+  resolveConvergePluginConfigRecord,
+} from "./converge-config.js";
 export {
   DEFAULT_RECALL_DISCLOSURE,
   RECALL_DISCLOSURE_LEVELS,

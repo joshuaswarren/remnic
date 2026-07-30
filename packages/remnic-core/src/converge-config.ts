@@ -1,3 +1,4 @@
+import { resolvePluginEntry } from "./plugin-entry-resolver.js";
 import type { ConvergeConfig, ConvergeConflictPolicy } from "./types.js";
 
 export const CONVERGE_CONFLICT_POLICIES = [
@@ -6,6 +7,36 @@ export const CONVERGE_CONFLICT_POLICIES = [
 ] as const satisfies readonly ConvergeConflictPolicy[];
 
 export const DEFAULT_CONVERGE_CONFLICT_POLICY: ConvergeConflictPolicy = "newest-wins";
+const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
+
+function asPlainRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+export function resolveConvergePluginConfigRecord(
+  raw: unknown,
+): Record<string, unknown> | undefined {
+  const entry = resolvePluginEntry(raw, {
+    candidateIds: OPENCLAW_REMNIC_PLUGIN_IDS,
+    getEntries: (root) => asPlainRecord(asPlainRecord(root.plugins)?.entries),
+    getSlotId: (root) => {
+      const memorySlot = asPlainRecord(asPlainRecord(root.plugins)?.slots)?.memory;
+      return typeof memorySlot === "string" ? memorySlot : undefined;
+    },
+  });
+  if (entry === undefined || entry.config === undefined) {
+    return entry === undefined ? undefined : {};
+  }
+  const config = asPlainRecord(entry.config);
+  if (config === undefined) {
+    throw new Error("OpenClaw Remnic plugin config must be a plain object");
+  }
+  return config;
+}
 
 export function parseConvergeConfig(block: unknown): ConvergeConfig {
   if (block === undefined) {

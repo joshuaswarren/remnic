@@ -50,6 +50,7 @@ import {
   isOpenaiApiKeyDisabled,
   resolveEnvVars,
   resolveRemnicConfigRecord,
+  resolveConvergePluginConfigRecord,
   Orchestrator,
   EngramAccessService,
   initLogger,
@@ -4059,6 +4060,23 @@ export function resolveConfigPath(cliPath?: string): string {
     if (fs.existsSync(candidate)) return candidate;
   }
   return path.join(resolveHomeDir(), ".config", "remnic", "config.json");
+}
+export function loadConvergeConfig(): PluginConfig {
+  const openClawConfigPath = resolveOpenclawConfigPath();
+  if (fs.existsSync(openClawConfigPath)) {
+    const pluginConfig = resolveConvergePluginConfigRecord(
+      readOpenclawConfig(openClawConfigPath),
+    );
+    if (pluginConfig !== undefined) {
+      return parseConfig(pluginConfig);
+    }
+  }
+
+  const standaloneConfigPath = resolveConfigPath();
+  const standaloneConfig = fs.existsSync(standaloneConfigPath)
+    ? JSON.parse(fs.readFileSync(standaloneConfigPath, "utf8"))
+    : {};
+  return parseConfig(resolveRemnicConfigRecord(standaloneConfig));
 }
 
 function resolveExistingBenchRemnicConfigPath(cliPath?: string): string | undefined {
@@ -12985,11 +13003,7 @@ Options:
         await cmdConverge(action, args, json);
         break;
       }
-      const configPath = resolveConfigPath();
-      const raw = fs.existsSync(configPath)
-        ? JSON.parse(fs.readFileSync(configPath, "utf8"))
-        : {};
-      const config = parseConfig(resolveRemnicConfigRecord(raw));
+      const config = loadConvergeConfig();
       await cmdConverge(action, args, json, config);
       break;
     }

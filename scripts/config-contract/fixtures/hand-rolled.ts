@@ -20,14 +20,25 @@ export interface FixtureHandRolledConfig {
 
 export function parseFixtureHandRolledConfig(value: unknown): FixtureHandRolledConfig {
   const raw = requireObject(value, "fixture");
-  const enabled = coerceBool(raw.enabled) ?? false;
-  const intervalMinutes = typeof raw.intervalMinutes === "number" ? raw.intervalMinutes : 15;
-  const fusionRaw = raw.fusion && typeof raw.fusion === "object" ? (raw.fusion as Rec) : {};
+  const {
+    enabled: rawEnabled,
+    intervalMinutes: rawIntervalMinutes,
+    fusion: rawFusion,
+    label,
+    ...unknown
+  } = raw as {
+    enabled?: unknown;
+    intervalMinutes?: unknown;
+    fusion?: unknown;
+    label?: unknown;
+  };
+  const enabled = coerceBool(rawEnabled) ?? false;
+  const intervalMinutes = typeof rawIntervalMinutes === "number" ? rawIntervalMinutes : 15;
+  const fusionRaw = rawFusion && typeof rawFusion === "object" ? (rawFusion as Rec) : {};
   const fusion = {
     enabled: coerceBool(fusionRaw.enabled) ?? false,
     gapMs: typeof fusionRaw.gapMs === "number" ? fusionRaw.gapMs : 1000,
   };
-  const { label, ...unknown } = raw as { label?: string };
   if (Object.keys(unknown).length > 0) throw new Error("unknown");
   return { enabled, intervalMinutes, fusion, label: typeof label === "string" ? label.trim() : undefined };
 }

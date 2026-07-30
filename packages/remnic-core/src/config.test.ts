@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
+import { resolveConvergePluginConfigRecord } from "./converge-config.js";
 
 /**
  * Run `body` with XDG_CONFIG_HOME pointing at a throwaway dir so the
@@ -2439,4 +2440,19 @@ test("parseConfig validates converge conflict policy and defaults to newest-wins
     () => parseConfig({ converge: { conflictPolciy: "manual" } }),
     /converge contains unknown key "conflictPolciy"/,
   );
+});
+
+test("resolveConvergePluginConfigRecord selects the active OpenClaw plugin config", () => {
+  const pluginConfig = resolveConvergePluginConfigRecord({
+    plugins: {
+      slots: { memory: "openclaw-remnic" },
+      entries: {
+        "openclaw-remnic": {
+          config: { converge: { conflictPolicy: "manual" } },
+        },
+      },
+    },
+  });
+
+  assert.equal(parseConfig(pluginConfig).converge.conflictPolicy, "manual");
 });
