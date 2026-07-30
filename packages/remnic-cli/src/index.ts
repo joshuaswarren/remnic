@@ -4055,6 +4055,7 @@ function loadStandaloneConvergeCommandConfig(): PluginConfig {
 
 function parseConvergePluginConfig(value: unknown): PluginConfig | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (Object.keys(value as Record<string, unknown>).length === 0) return undefined;
   try {
     return parseConfig(resolveRemnicConfigRecord(value));
   } catch {
