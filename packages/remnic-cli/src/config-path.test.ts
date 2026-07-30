@@ -292,3 +292,29 @@ test("converge rejects malformed OpenClaw JSON", async () => {
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test("converge surfaces an invalid plugin conflictPolicy instead of silently defaulting", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-converge-invalid-policy-"));
+  const openclawConfigPath = path.join(home, "openclaw.json");
+  try {
+    process.env.HOME = home;
+    delete process.env.REMNIC_CONFIG_PATH;
+    delete process.env.ENGRAM_CONFIG_PATH;
+    process.env.OPENCLAW_CONFIG_PATH = openclawConfigPath;
+    delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+    await writeFile(
+      openclawConfigPath,
+      JSON.stringify({
+        plugins: {
+          entries: {
+            "openclaw-remnic": { config: { converge: { conflictPolicy: "manul" } }, enabled: true },
+          },
+        },
+      }),
+    );
+    assert.throws(() => loadConvergeCommandConfig());
+  } finally {
+    restoreEnv();
+    await rm(home, { recursive: true, force: true });
+  }
+});
