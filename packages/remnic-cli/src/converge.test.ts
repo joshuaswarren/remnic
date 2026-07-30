@@ -1,8 +1,10 @@
 import * as assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import { OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES } from "@remnic/core";
 import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
 import {
   defaultConvergeCursorPath,
@@ -153,7 +155,7 @@ test("remnic converge plan: hydrates durable cursor base files when present", as
   }
 });
 
-test("remnic converge plan: validates a namespace present only in durable cursor state", async () => {
+test("remnic converge plan: validates a namespace present only in provided base state", async () => {
   const baseMap = new Map<string, ReconcileFileState[]>([
     [
       "cursor-only",
@@ -188,12 +190,38 @@ test("remnic converge apply: converged state returns immediate no-op and updates
     assert.equal(result.status, "converged");
     assert.equal(result.transfers.pulled, 0);
     assert.equal(result.transfers.pushed, 0);
+    assert.equal(result.cursorUpdated, true);
 
     const cursorPath = defaultConvergeCursorPath(tmpDir, "http://localhost:4318", "default");
     const cursor = await readConvergeCursor(cursorPath);
     assert.ok(cursor);
     assert.equal(cursor.namespace, "default");
     assert.equal(cursor.baseFiles.length, 1);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("remnic converge apply: converged dry-run does not write cursor", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-apply-test-"));
+  try {
+    const file: ReconcileFileState = { path: "facts/a.md", sha256: shaA };
+    const localMap = new Map<string, ReconcileFileState[]>([["default", [file]]]);
+    const peerMap = new Map<string, ReconcileFileState[]>([["default", [file]]]);
+    const peerUrl = "http://localhost:4318";
+    const cursorPath = defaultConvergeCursorPath(tmpDir, peerUrl, "default");
+
+    const result = await executeConvergeApply({
+      localFilesByNamespace: localMap,
+      peerFilesByNamespace: peerMap,
+      cursorDir: tmpDir,
+      peerUrl,
+      dryRun: true,
+    });
+
+    assert.equal(result.status, "dry_run");
+    assert.equal(result.cursorUpdated, false);
+    assert.equal(await readConvergeCursor(cursorPath), null);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
@@ -277,4 +305,68 @@ test("remnic converge apply: successful pull & push execution via buffer maps", 
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("remnic converge apply: uses chunked offline-sync HTTP contracts for pull and push", async () => {
+  const peerContent = Buffer.from("peer content");
+  const localContent = Buffer.from("local content");
+  const peerSha = createHash("sha256").update(peerContent).digest("hex");
+  const localSha = createHash("sha256").update(localContent).digest("hex");
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url.endsWith("/remnic/v1/offline-sync/file-content")) {
+      return new Response(peerContent, {
+        status: 200,
+        headers: {
+          "content-type": "application/octet-stream",
+          "x-remnic-file-path": encodeURIComponent("facts/peer.md"),
+          "x-remnic-file-sha256": peerSha,
+          "x-remnic-file-bytes": String(peerContent.length),
+          "x-remnic-file-mtime-ms": "2000",
+          "x-remnic-chunk-offset": "0",
+          "x-remnic-chunk-bytes": String(peerContent.length),
+        },
+      });
+    }
+    if (url.includes("/remnic/v1/offline-sync/apply-file-content?namespace=default")) {
+      return Response.json({ done: true, applied: true, skipped: false });
+    }
+    return new Response(null, { status: 404 });
+  };
+  const localBuffers = new Map<string, Map<string, Buffer>>([
+    ["default", new Map([["facts/local.md", localContent]])],
+  ]);
+
+  const result = await executeConvergeApply({
+    peerUrl: "https://peer.example.test",
+    fetchImpl,
+    localFilesByNamespace: new Map([
+      ["default", [{ path: "facts/local.md", sha256: localSha, bytes: localContent.length, mtimeMs: 1000 }]],
+    ]),
+    peerFilesByNamespace: new Map([
+      ["default", [{ path: "facts/peer.md", sha256: peerSha, bytes: peerContent.length, mtimeMs: 2000 }]],
+    ]),
+    localFileBuffers: localBuffers,
+  });
+
+  assert.equal(result.transfers.pulled, 1);
+  assert.equal(result.transfers.pushed, 1);
+  assert.equal(localBuffers.get("default")?.get("facts/peer.md")?.toString(), "peer content");
+  const pullRequest = requests.find((request) => request.url.endsWith("/remnic/v1/offline-sync/file-content"));
+  const pushRequest = requests.find((request) => request.url.includes("/offline-sync/apply-file-content?"));
+  assert.ok(pullRequest);
+  assert.ok(pushRequest);
+  assert.equal(pullRequest.init?.method, "POST");
+  assert.deepEqual(JSON.parse(String(pullRequest.init?.body)), {
+    namespace: "default",
+    includeTranscripts: false,
+    path: "facts/peer.md",
+    offset: 0,
+    length: OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
+  });
+  assert.match(pushRequest.url, /offline-sync\/apply-file-content\?namespace=default$/);
+  assert.equal(new Headers(pushRequest.init?.headers).get("x-remnic-file-sha256"), localSha);
+  assert.equal(new Headers(pushRequest.init?.headers).get("x-remnic-file-bytes"), String(localContent.length));
 });

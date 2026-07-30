@@ -19,7 +19,19 @@ export interface ConvergeCursorState {
 }
 
 export function hashPeerNamespace(peerUrl: string, namespace: string): string {
-  const normalizedUrl = peerUrl.replace(/\/+$/, "").toLowerCase();
+  let normalizedUrl: string;
+  try {
+    const url = new URL(peerUrl);
+    const credentials =
+      url.username || url.password
+        ? `${url.username}${url.password ? `:${url.password}` : ""}@`
+        : "";
+    normalizedUrl =
+      `${url.protocol.toLowerCase()}//${credentials}${url.hostname.toLowerCase()}` +
+      `${url.port ? `:${url.port}` : ""}${url.pathname.replace(/\/+$/, "")}${url.search}${url.hash}`;
+  } catch {
+    normalizedUrl = peerUrl.trim().replace(/\/+$/, "").toLowerCase();
+  }
   const normalizedNs = namespace.trim().toLowerCase();
   return createHash("sha256")
     .update(`${normalizedUrl}\0${normalizedNs}`)

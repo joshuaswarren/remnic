@@ -1,10 +1,14 @@
 import * as fs from "node:fs";
+import { createHash } from "node:crypto";
 import * as path from "node:path";
 import {
   type PluginConfig,
   parseConfig,
   type ResolveSecretRefFn,
   buildOfflineSyncSnapshotFromBase,
+  OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
+  OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
+  applyOfflineSyncFileContentChunk,
 } from "@remnic/core";
 import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
 import { listNamespaces } from "@remnic/core/namespaces/migrate.js";
@@ -21,6 +25,7 @@ import {
   writeConvergeCursor,
   type ConvergeCursorState,
 } from "@remnic/core/reconcile/cursor.js";
+import { createOfflineStorageIo } from "./offline-storage-io.js";
 import { resolveAgentAccessAuthToken } from "@remnic/core/resolve-auth-token.js";
 export interface ConvergePlanOptions {
   config?: PluginConfig;
@@ -142,25 +147,101 @@ async function fetchPeerSnapshot(
   return { files: [], tombstones: new Set() };
 }
 
+interface PeerFileContent {
+  content: Buffer;
+  sha256: string;
+  bytes: number;
+  mtimeMs: number;
+}
+
+function requiredResponseNumber(response: Response, name: string): number {
+  const raw = response.headers.get(name);
+  const value = raw === null ? Number.NaN : Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`offline file content response had invalid ${name}`);
+  }
+  return value;
+}
+
 async function fetchPeerFileContent(
   peerUrl: string,
   namespace: string,
   filePath: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<Buffer | null> {
+): Promise<PeerFileContent | null> {
   const base = peerUrl.replace(/\/+$/, "");
   const routes = [
-    `/remnic/v1/offline-sync/file-content?namespace=${encodeURIComponent(namespace)}&path=${encodeURIComponent(filePath)}`,
-    `/engram/v1/offline-sync/file-content?namespace=${encodeURIComponent(namespace)}&path=${encodeURIComponent(filePath)}`,
+    "/remnic/v1/offline-sync/file-content",
+    "/engram/v1/offline-sync/file-content",
   ];
-  const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
   for (const route of routes) {
     try {
-      const res = await fetchImpl(`${base}${route}`, { headers });
-      if (!res.ok) continue;
-      const buf = await res.arrayBuffer();
-      return Buffer.from(buf);
+      const chunks: Buffer[] = [];
+      const hash = createHash("sha256");
+      let offset = 0;
+      let expectedBytes: number | undefined;
+      let expectedSha256: string | undefined;
+      let mtimeMs: number | undefined;
+      do {
+        const response = await fetchImpl(`${base}${route}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            namespace,
+            includeTranscripts: false,
+            path: filePath,
+            offset,
+            length: OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
+          }),
+        });
+        if (!response.ok) throw new Error(`offline file content request failed: ${response.status}`);
+        const content = Buffer.from(await response.arrayBuffer());
+        const chunkOffset = requiredResponseNumber(response, "x-remnic-chunk-offset");
+        const chunkBytes = requiredResponseNumber(response, "x-remnic-chunk-bytes");
+        const totalBytes = requiredResponseNumber(response, "x-remnic-file-bytes");
+        const responseMtimeMs = requiredResponseNumber(response, "x-remnic-file-mtime-ms");
+        const sha256 = response.headers.get("x-remnic-file-sha256");
+        const encodedPath = response.headers.get("x-remnic-file-path");
+        if (
+          !sha256
+          || chunkOffset !== offset
+          || chunkBytes !== content.length
+          || (encodedPath !== null && decodeURIComponent(encodedPath) !== filePath)
+          || (expectedBytes !== undefined && expectedBytes !== totalBytes)
+          || (expectedSha256 !== undefined && expectedSha256 !== sha256)
+        ) {
+          throw new Error(`offline file content response changed during transfer: ${filePath}`);
+        }
+        if (content.length === 0 && offset < totalBytes) {
+          throw new Error(`offline file content chunk was empty before EOF: ${filePath}`);
+        }
+        expectedBytes = totalBytes;
+        expectedSha256 = sha256;
+        mtimeMs = responseMtimeMs;
+        chunks.push(content);
+        hash.update(content);
+        offset += content.length;
+      } while (expectedBytes === undefined || offset < expectedBytes);
+      if (
+        expectedBytes === undefined
+        || expectedSha256 === undefined
+        || mtimeMs === undefined
+        || offset !== expectedBytes
+        || hash.digest("hex") !== expectedSha256
+      ) {
+        throw new Error(`offline file content checksum mismatch: ${filePath}`);
+      }
+      return {
+        content: Buffer.concat(chunks, expectedBytes),
+        sha256: expectedSha256,
+        bytes: expectedBytes,
+        mtimeMs,
+      };
     } catch {
       // try next route
     }
@@ -173,26 +254,44 @@ async function postPeerFileContent(
   namespace: string,
   filePath: string,
   content: Buffer,
+  metadata: { sha256: string; mtimeMs: number; baseSha256?: string },
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<boolean> {
   const base = peerUrl.replace(/\/+$/, "");
   const routes = [
-    `/remnic/v1/offline-sync/file-content?namespace=${encodeURIComponent(namespace)}&path=${encodeURIComponent(filePath)}`,
-    `/engram/v1/offline-sync/file-content?namespace=${encodeURIComponent(namespace)}&path=${encodeURIComponent(filePath)}`,
+    `/remnic/v1/offline-sync/apply-file-content?namespace=${encodeURIComponent(namespace)}`,
+    `/engram/v1/offline-sync/apply-file-content?namespace=${encodeURIComponent(namespace)}`,
   ];
-  const headers: Record<string, string> = {
-    "content-type": "application/octet-stream",
-    ...(token ? { authorization: `Bearer ${token}` } : {}),
-  };
   for (const route of routes) {
     try {
-      const res = await fetchImpl(`${base}${route}`, {
-        method: "POST",
-        headers,
-        body: new Uint8Array(content),
-      });
-      if (res.ok) return true;
+      let offset = 0;
+      do {
+        const chunk = content.subarray(
+          offset,
+          Math.min(content.length, offset + OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES),
+        );
+        const headers: Record<string, string> = {
+          "content-type": "application/octet-stream",
+          "x-remnic-include-transcripts": "false",
+          "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+          "x-remnic-file-path": encodeURIComponent(filePath),
+          "x-remnic-file-sha256": metadata.sha256,
+          "x-remnic-file-bytes": String(content.length),
+          "x-remnic-file-mtime-ms": String(metadata.mtimeMs),
+          "x-remnic-chunk-offset": String(offset),
+          ...(metadata.baseSha256 ? { "x-remnic-base-sha256": metadata.baseSha256 } : {}),
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        };
+        const response = await fetchImpl(`${base}${route}`, {
+          method: "POST",
+          headers,
+          body: new Uint8Array(chunk),
+        });
+        if (!response.ok) throw new Error(`offline apply-file-content request failed: ${response.status}`);
+        offset += chunk.length;
+      } while (offset < content.length);
+      return true;
     } catch {
       // try next route
     }
@@ -326,7 +425,7 @@ export async function executeConvergeApply(
   const conflictPolicy = options.conflictPolicy ?? "manual";
   const plan = await computeConvergePlan({ ...options, conflictPolicy });
 
-  if (plan.converged) {
+  if (plan.converged && !options.dryRun) {
     await updateCursorsForPlan(plan, options);
     return {
       converged: true,
@@ -437,11 +536,20 @@ export async function executeConvergeApply(
     }
 
     if (transferType === "pull") {
-      let content: Buffer | null = null;
-      if (options.peerFileBuffers?.get(entry.namespace)?.has(entry.path)) {
-        content = options.peerFileBuffers.get(entry.namespace)!.get(entry.path)!;
+      let remoteFile: PeerFileContent | null = null;
+      const buffered = options.peerFileBuffers?.get(entry.namespace)?.get(entry.path);
+      if (buffered) {
+        const state = options.peerFilesByNamespace
+          ?.get(entry.namespace)
+          ?.find((file) => file.path === entry.path);
+        remoteFile = {
+          content: buffered,
+          sha256: state?.sha256 ?? entry.peerSha256 ?? createHash("sha256").update(buffered).digest("hex"),
+          bytes: buffered.length,
+          mtimeMs: state?.mtimeMs ?? 0,
+        };
       } else if (options.peerUrl) {
-        content = await fetchPeerFileContent(
+        remoteFile = await fetchPeerFileContent(
           options.peerUrl,
           entry.namespace,
           entry.path,
@@ -450,22 +558,47 @@ export async function executeConvergeApply(
         );
       }
 
-      if (content !== null) {
+      if (remoteFile !== null && (!entry.peerSha256 || remoteFile.sha256 === entry.peerSha256)) {
         if (options.localFileBuffers) {
           let nsMap = options.localFileBuffers.get(entry.namespace);
           if (!nsMap) {
             nsMap = new Map();
             options.localFileBuffers.set(entry.namespace, nsMap);
           }
-          nsMap.set(entry.path, content);
+          nsMap.set(entry.path, remoteFile.content);
           if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
           else actualTransfers.pulled += 1;
         } else {
           const rootDir = rootMap.get(entry.namespace);
           if (rootDir) {
-            const absPath = path.join(rootDir, entry.path);
-            await fs.promises.mkdir(path.dirname(absPath), { recursive: true });
-            await fs.promises.writeFile(absPath, content);
+            const io = await createOfflineStorageIo(rootDir);
+            let offset = 0;
+            do {
+              const chunk = remoteFile.content.subarray(
+                offset,
+                Math.min(
+                  remoteFile.content.length,
+                  offset + OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
+                ),
+              );
+              await applyOfflineSyncFileContentChunk({
+                root: rootDir,
+                sourceId: "remnic-converge",
+                path: entry.path,
+                sha256: remoteFile.sha256,
+                bytes: remoteFile.bytes,
+                mtimeMs: remoteFile.mtimeMs,
+                offset,
+                content: chunk,
+                ...(entry.baseSha256 ? { baseSha256: entry.baseSha256 } : {}),
+                readFile: io.readFile,
+                readFileDigest: io.readFileDigest,
+                writeFile: io.writeFile,
+                writeStagingFile: io.writeStagingFile,
+                writeFileChunks: io.writeFileChunks,
+              });
+              offset += chunk.length;
+            } while (offset < remoteFile.content.length);
             if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
             else actualTransfers.pulled += 1;
           } else {
@@ -477,13 +610,20 @@ export async function executeConvergeApply(
       }
     } else if (transferType === "push") {
       let content: Buffer | null = null;
+      let mtimeMs = options.localFilesByNamespace
+        ?.get(entry.namespace)
+        ?.find((file) => file.path === entry.path)
+        ?.mtimeMs;
       if (options.localFileBuffers?.get(entry.namespace)?.has(entry.path)) {
         content = options.localFileBuffers.get(entry.namespace)!.get(entry.path)!;
       } else {
         const rootDir = rootMap.get(entry.namespace);
         if (rootDir) {
+          const filePath = path.join(rootDir, entry.path);
           try {
-            content = await fs.promises.readFile(path.join(rootDir, entry.path));
+            const io = await createOfflineStorageIo(rootDir);
+            content = await io.readFile!({ root: rootDir, path: entry.path, filePath });
+            mtimeMs ??= (await fs.promises.stat(filePath)).mtimeMs;
           } catch {
             content = null;
           }
@@ -500,12 +640,17 @@ export async function executeConvergeApply(
           nsMap.set(entry.path, content);
           if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
           else actualTransfers.pushed += 1;
-        } else if (options.peerUrl) {
+        } else if (options.peerUrl && entry.localSha256) {
           const ok = await postPeerFileContent(
             options.peerUrl,
             entry.namespace,
             entry.path,
             content,
+            {
+              sha256: entry.localSha256,
+              mtimeMs: mtimeMs ?? 0,
+              ...(entry.baseSha256 ? { baseSha256: entry.baseSha256 } : {}),
+            },
             resolvedToken,
             fetchFn,
           );

@@ -21,6 +21,25 @@ test("hashPeerNamespace: deterministic key normalization", () => {
   assert.equal(k1.length, 16);
 });
 
+test("hashPeerNamespace: accepts non-URL local peer identifiers", () => {
+  assert.equal(hashPeerNamespace("local", "default").length, 16);
+});
+
+test("hashPeerNamespace: preserves path case while normalizing URL authority and trailing slash", () => {
+  const uppercasePath = hashPeerNamespace("HTTP://PEER.EXAMPLE.COM/Memory/", "default");
+  const lowercasePath = hashPeerNamespace("http://peer.example.com/memory", "default");
+
+  assert.notEqual(uppercasePath, lowercasePath);
+  assert.equal(
+    uppercasePath,
+    hashPeerNamespace("http://peer.example.com/Memory", "DEFAULT "),
+  );
+  assert.equal(
+    lowercasePath,
+    hashPeerNamespace("HTTP://PEER.EXAMPLE.COM/memory/", "default"),
+  );
+});
+
 test("defaultConvergeCursorPath: constructs path under memoryDir state", () => {
   const p = defaultConvergeCursorPath("/tmp/mem", "http://localhost:4318", "general");
   assert.ok(p.includes(path.join(".remnic", "state", "converge-cursors")));
