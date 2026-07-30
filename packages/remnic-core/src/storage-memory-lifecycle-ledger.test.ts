@@ -21,6 +21,7 @@ import {
   pendingLifecycleLedgerDir,
   ProjectionLedgerLagManager,
   readAllLifecycleEventsFromLedgerBuffer,
+  readBoundedLifecycleEventsWithProjectionLag,
   type LifecyclePendingIo,
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { withHeldFileLock } from "./utils/serialize-mutations.js";
@@ -1562,6 +1563,32 @@ test("timeline lag resolver keeps ledger fallback when projection identity probi
       projectionAge: () => "projection unavailable",
     });
     assert.deepEqual(timeline, [event]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("lag tracker failures do not drop valid fallback timeline rows (#2119 review)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-tracker-failure-"));
+  const ledgerPath = path.join(memoryDir, "memory-lifecycle-ledger.jsonl");
+  const event = lifecycleEvent("current-1", "memory-target", "2026-01-02T00:00:00.000Z");
+  await writeFile(ledgerPath, `${JSON.stringify(event)}\n`, "utf8");
+  try {
+    const result = await readBoundedLifecycleEventsWithProjectionLag(
+      ledgerPath,
+      (filePath) => readFile(filePath, "utf8"),
+      5,
+      "memory-target",
+      {
+        highWater: { eventCount: 0, sourceEventCount: 0 },
+        record() {
+          throw new Error("projection tracker unavailable");
+        },
+        close() {},
+      },
+    );
+    assert.deepEqual(result.events, [event]);
+    assert.equal(result.telemetryAvailable, false);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

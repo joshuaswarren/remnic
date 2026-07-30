@@ -203,6 +203,7 @@ export interface LifecycleLedgerProjectionLagRead {
   events: MemoryLifecycleEvent[];
   currentEventCount: number;
   deltaEvents: number;
+  telemetryAvailable: boolean;
 }
 
 export async function readBoundedLifecycleEventsWithProjectionLag(
@@ -214,6 +215,7 @@ export async function readBoundedLifecycleEventsWithProjectionLag(
 ): Promise<LifecycleLedgerProjectionLagRead> {
   let currentEventCount = 0;
   let deltaEvents = 0;
+  let telemetryAvailable = true;
   try {
     const events = await readMemoryLifecycleEventsFromLines(
       readMaybeEncryptedLines(
@@ -225,17 +227,24 @@ export async function readBoundedLifecycleEventsWithProjectionLag(
       memoryId,
       compareMemoryLifecycleEvents,
       (event) => {
-        const tracked = tracker.record(event);
-        if (!tracked.unique) return;
-        currentEventCount += 1;
-        if (!tracked.projected) deltaEvents += 1;
+        if (!telemetryAvailable) return;
+        try {
+          const tracked = tracker.record(event);
+          if (!tracked.unique) return;
+          currentEventCount += 1;
+          if (!tracked.projected) deltaEvents += 1;
+        } catch {
+          telemetryAvailable = false;
+          currentEventCount = 0;
+          deltaEvents = 0;
+        }
       },
     );
-    return { events, currentEventCount, deltaEvents };
+    return { events, currentEventCount, deltaEvents, telemetryAvailable };
   } catch (err) {
     if (err instanceof SecureStoreLockedError) throw err;
     if (!isErrnoCode(err, "ENOENT")) throw err;
-    return { events: [], currentEventCount: 0, deltaEvents: 0 };
+    return { events: [], currentEventCount: 0, deltaEvents: 0, telemetryAvailable: false };
   }
 }
 /**
@@ -269,7 +278,7 @@ export async function probeProjectionLedgerIdentities(
 }
 
 export interface ProjectionLedgerLagScan {
-  telemetry: ProjectionLedgerLagTelemetry;
+  telemetry: ProjectionLedgerLagTelemetry | null;
   events: MemoryLifecycleEvent[];
   memoryId: string;
   limit: number;
@@ -318,8 +327,10 @@ export class ProjectionLedgerLagManager {
       : null;
     if (inFlight) {
       const result = await inFlight;
-      this.lagCache = { generation, telemetry: result.telemetry };
-      warnProjectionFallback(baseDir, "getMemoryTimeline", projectionAge, result.telemetry);
+      if (result.telemetry) {
+        this.lagCache = { generation, telemetry: result.telemetry };
+      }
+      warnProjectionFallback(baseDir, "getMemoryTimeline", projectionAge, result.telemetry ?? undefined);
       if (result.memoryId === memoryId && result.limit === cappedLimit) return result.events;
       return readBoundedLifecycleEventsFromLedger(ledgerPath, readSecureFile, cappedLimit, memoryId);
     }
@@ -337,24 +348,32 @@ export class ProjectionLedgerLagManager {
             tracker,
           );
           return {
-            telemetry: {
-              projectedEvents: highWater.eventCount,
-              currentLedgerEvents: fallback.currentEventCount,
-              deltaEvents: fallback.deltaEvents,
-            },
+            telemetry: fallback.telemetryAvailable
+              ? {
+                  projectedEvents: highWater.eventCount,
+                  currentLedgerEvents: fallback.currentEventCount,
+                  deltaEvents: fallback.deltaEvents,
+                }
+              : null,
             events: fallback.events,
             memoryId,
             limit: cappedLimit,
           };
         } finally {
-          tracker.close();
+          try {
+            tracker.close();
+          } catch {
+            // Lag telemetry cleanup must not replace a successful ledger fallback.
+          }
         }
       })();
       this.lagInFlight = { generation, scan };
       try {
         const result = await scan;
-        this.lagCache = { generation, telemetry: result.telemetry };
-        warnProjectionFallback(baseDir, "getMemoryTimeline", projectionAge, result.telemetry);
+        if (result.telemetry) {
+          this.lagCache = { generation, telemetry: result.telemetry };
+        }
+        warnProjectionFallback(baseDir, "getMemoryTimeline", projectionAge, result.telemetry ?? undefined);
         return result.events;
       } finally {
         if (this.lagInFlight?.scan === scan) {
