@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.41.0] — 2026-07-30
+
 ### Fixed
 
 - Extraction liveness now uses the newest successful extraction across the root
