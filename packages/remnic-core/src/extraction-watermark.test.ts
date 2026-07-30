@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { TOKEN_CAPABILITIES_VERSION } from "./access-token-capabilities.js";
 import { parseConfig } from "./config.js";
 import { CorpusWatermarkCache } from "./corpus-watermark.js";
 import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
@@ -115,7 +116,7 @@ test("scoped capabilities filter candidate namespaces during aggregate read", as
         if (namespace === "team-b") scannedTeamB = true;
         return storage(fixture.namespaceDirs[namespace], async () => "2026-07-25T12:00:00.000Z");
       },
-      caps: { namespaces: ["team-a"] },
+      caps: { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["team-a"] },
     });
 
     assert.equal(scannedTeamB, false, "team-b should be skipped when token is restricted to team-a");
