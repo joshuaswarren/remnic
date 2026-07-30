@@ -515,6 +515,20 @@ test("health surfaces extraction liveness as degraded when the buffer is non-emp
       health.extraction.degradedReason !== null && health.extraction.degradedReason.length > 0,
       "degraded reason is populated",
     );
+    const scopedHealth = await tokenCapabilityStore.run(
+      { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
+      () => service.health(),
+    );
+    assert.equal(scopedHealth.extraction.lastExtractionAt, null);
+    assert.equal(scopedHealth.extraction.degraded, true);
+    assert.equal(scopedHealth.extraction.bufferedSessionCount, 3);
+    assert.equal(scopedHealth.extraction.pendingTurnCount, 12);
+    assert.ok(
+      scopedHealth.extraction.oldestBufferedTurnAgeMs !== null &&
+        Math.abs(scopedHealth.extraction.oldestBufferedTurnAgeMs - oldestAge) < 100,
+    );
+    assert.match(scopedHealth.extraction.degradedReason ?? "", /3 buffered session/);
+    assert.doesNotMatch(scopedHealth.extraction.degradedReason ?? "", /last succeeded|unreadable/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

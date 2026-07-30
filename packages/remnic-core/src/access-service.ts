@@ -2398,10 +2398,9 @@ export class EngramAccessService {
         ? {
             ...extraction,
             lastExtractionAt: null,
-            bufferedSessionCount: 0,
-            pendingTurnCount: 0,
-            oldestBufferedTurnAgeMs: null,
-            degradedReason: extraction.degraded ? "daemon extraction pipeline degraded" : null,
+            degradedReason: extraction.degraded
+              ? `daemon extraction pipeline degraded; ${extraction.bufferedSessionCount} buffered session(s), ${extraction.pendingTurnCount} turn(s) pending extraction`
+              : null,
           }
         : extraction;
     // ONE call: the corpus array and the flag describing it must not come from

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Extraction health no longer counts local filter skips as successful runs. Live empty runs now record health only after later steps finish.
+- Stats now add extraction counts from active namespaces. Scoped health keeps the backlog counts behind its status. Invalid calendar dates now fail metadata checks.
+
 ## [v9.45.1] — 2026-07-30
 
 ### Added

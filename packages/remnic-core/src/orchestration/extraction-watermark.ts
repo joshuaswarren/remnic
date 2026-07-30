@@ -36,12 +36,11 @@ export interface AggregateExtractionWatermarkOptions {
   caps?: TokenCapabilities;
 }
 
-function readFailure(reason: string, rootStats?: ExtractionRootStats): ExtractionWatermarkRead {
+function readFailure(reason: string): ExtractionWatermarkRead {
   return {
     lastExtractionAt: null,
     readFailed: true,
     readError: reason,
-    ...(rootStats ? { rootStats } : {}),
   };
 }
 
@@ -49,10 +48,43 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function canonicalTimestampMs(value: string): number | null {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  return new Date(parsed).toISOString() === value ? parsed : null;
+}
+
+function mergeRootStats(
+  current: ExtractionRootStats | undefined,
+  candidate: ExtractionRootStats | undefined,
+): ExtractionRootStats | undefined {
+  if (!current && !candidate) return undefined;
+  const currentCount = current?.extractionCount;
+  const candidateCount = candidate?.extractionCount;
+  const extractionCount =
+    currentCount === undefined && candidateCount === undefined
+      ? undefined
+      : (currentCount ?? 0) + (candidateCount ?? 0);
+  const currentConsolidation = current?.lastConsolidationAt;
+  const candidateConsolidation = candidate?.lastConsolidationAt;
+  const hasConsolidation =
+    currentConsolidation !== undefined || candidateConsolidation !== undefined;
+  return {
+    ...(extractionCount === undefined ? {} : { extractionCount }),
+    ...(hasConsolidation
+      ? {
+          lastConsolidationAt: newerWatermark(
+            currentConsolidation ?? null,
+            candidateConsolidation ?? null,
+          ),
+        }
+      : {}),
+  };
+}
+
 function watermarkFromMeta(meta: ExtractionWatermarkMeta, name: string): ExtractionWatermarkRead {
   if (meta.lastExtractionAt !== null && meta.lastExtractionAt !== undefined) {
-    const parsed = Date.parse(meta.lastExtractionAt);
-    if (!Number.isFinite(parsed)) {
+    if (canonicalTimestampMs(meta.lastExtractionAt) === null) {
       return readFailure(`${name} watermark timestamp invalid`);
     }
   }
@@ -107,11 +139,11 @@ function isReadFailure(value: CorpusNamespaceRoot[] | ExtractionWatermarkRead): 
 
 function newerWatermark(current: string | null, candidate: string | null): string | null {
   if (candidate === null) return current;
-  const candidateMs = Date.parse(candidate);
-  if (!Number.isFinite(candidateMs)) return current;
+  const candidateMs = canonicalTimestampMs(candidate);
+  if (candidateMs === null) return current;
   if (current === null) return candidate;
-  const currentMs = Date.parse(current);
-  return !Number.isFinite(currentMs) || candidateMs > currentMs ? candidate : current;
+  const currentMs = canonicalTimestampMs(current);
+  return currentMs === null || candidateMs > currentMs ? candidate : current;
 }
 
 export async function readAggregateExtractionWatermark(
@@ -155,10 +187,13 @@ export async function readAggregateExtractionWatermark(
     (!options.caps || capabilityAllowsNamespace(options.caps, defaultNamespace));
   let rootRead: ExtractionWatermarkRead = { lastExtractionAt: null, readFailed: false };
   if (canAccessRoot) {
-    rootRead = await readWatermark(options.rootStorage, "root store");
+    rootRead = options.rootMeta
+      ? watermarkFromMeta(options.rootMeta, "root store")
+      : await readWatermark(options.rootStorage, "root store");
     if (rootRead.readFailed) return rootRead;
   }
   let lastExtractionAt = rootRead.lastExtractionAt;
+  let rootStats = rootRead.rootStats;
 
   const reads = await Promise.all(
     targets.map(async (target) => {
@@ -173,16 +208,14 @@ export async function readAggregateExtractionWatermark(
 
   for (const read of reads) {
     if (read.readFailed) {
-      return readFailure(
-        read.readError ?? "namespace watermark unreadable",
-        rootRead.rootStats
-      );
+      return readFailure(read.readError ?? "namespace watermark unreadable");
     }
     lastExtractionAt = newerWatermark(lastExtractionAt, read.lastExtractionAt);
+    rootStats = mergeRootStats(rootStats, read.rootStats);
   }
   return {
     lastExtractionAt,
     readFailed: false,
-    ...(rootRead.rootStats ? { rootStats: rootRead.rootStats } : {}),
+    ...(rootStats ? { rootStats } : {}),
   };
 }

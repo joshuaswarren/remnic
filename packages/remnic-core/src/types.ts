@@ -3329,6 +3329,8 @@ export interface ExtractionResult {
   extractionFailure?: string;
   /** Coarse class used by the retry/backoff + circuit-breaker layer (extraction hot loop). */
   extractionFailureClass?: ExtractionFailureClass;
+  /** Local prefilter reason; no provider extraction was attempted. */
+  extractionSkippedReason?: "conversation_only_non_memory" | "mechanical_telemetry";
   /** Trusted source connector resolved over boundedTurns; persisted verbatim by the orchestrator so it is not recomputed (#2183). */
   sourceConnector?: string;
 }
