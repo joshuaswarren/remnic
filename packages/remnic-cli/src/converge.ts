@@ -277,6 +277,12 @@ async function fetchPeerFileContent(
   return null;
 }
 
+function withoutTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return value.slice(0, end);
+}
+
 async function postPeerFileContent(
   peerUrl: string,
   namespace: string,
@@ -285,12 +291,13 @@ async function postPeerFileContent(
   metadata: { sha256: string; mtimeMs: number; baseSha256?: string },
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<boolean> {
-  const base = peerUrl.replace(/\/+$/, "");
+): Promise<"applied" | "skipped" | false> {
+  const base = withoutTrailingSlashes(peerUrl);
   const routes = [
     `/remnic/v1/offline-sync/apply-file-content?namespace=${encodeURIComponent(namespace)}`,
     `/engram/v1/offline-sync/apply-file-content?namespace=${encodeURIComponent(namespace)}`,
   ];
+  let previousAttemptFailed = false;
   for (const route of routes) {
     try {
       let offset = 0;
@@ -332,7 +339,9 @@ async function postPeerFileContent(
           return false;
         }
         if (result.done) {
-          return result.skipped || (result.applied && offset + chunk.length === content.length);
+          if (result.skipped) return previousAttemptFailed ? "applied" : "skipped";
+          if (result.applied && offset + chunk.length === content.length) return "applied";
+          return false;
         }
         if (result.applied || result.skipped || chunk.length === 0) {
           return false;
@@ -341,7 +350,47 @@ async function postPeerFileContent(
       } while (offset < content.length);
       return false;
     } catch {
-      // try next route
+      previousAttemptFailed = true;
+    }
+  }
+  return false;
+}
+
+async function postPeerConvergenceComplete(
+  peerUrl: string,
+  namespaces: readonly string[],
+  token?: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<boolean> {
+  const base = withoutTrailingSlashes(peerUrl);
+  const query = namespaces
+    .map((namespace) => `namespace=${encodeURIComponent(namespace)}`)
+    .join("&");
+  const routes = [
+    "/remnic/v1/offline-sync/convergence-complete",
+    "/engram/v1/offline-sync/convergence-complete",
+  ];
+  for (const route of routes) {
+    const response = await fetchImpl(`${base}${route}?${query}`, {
+      method: "POST",
+      headers: {
+        "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+    }).catch(() => null);
+    if (!response?.ok) continue;
+    const result: unknown = await response.json().catch(() => null);
+    if (
+      result
+      && typeof result === "object"
+      && "namespaces" in result
+      && Array.isArray(result.namespaces)
+      && result.namespaces.length === namespaces.length
+      && result.namespaces.every((namespace, index) => namespace === namespaces[index])
+      && "refreshed" in result
+      && result.refreshed === true
+    ) {
+      return true;
     }
   }
   return false;
@@ -566,6 +615,7 @@ export async function executeConvergeApply(
     suppressed: 0,
     failed: 0,
   };
+  const peerMutatedNamespaces = new Set<string>();
 
   let resolvedToken: string | undefined;
   if (options.peerToken) {
@@ -748,7 +798,7 @@ export async function executeConvergeApply(
           const expectedPeerSha256 = entry.action === "conflict"
             ? entry.peerSha256
             : entry.baseSha256;
-          const ok = await postPeerFileContent(
+          const applied = await postPeerFileContent(
             options.peerUrl,
             entry.namespace,
             entry.path,
@@ -761,7 +811,8 @@ export async function executeConvergeApply(
             resolvedToken,
             fetchFn,
           );
-          if (ok) {
+          if (applied) {
+            if (applied === "applied") peerMutatedNamespaces.add(entry.namespace);
             if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
             else actualTransfers.pushed += 1;
           } else {
@@ -775,6 +826,18 @@ export async function executeConvergeApply(
       }
     } else if (transferType === "suppress") {
       actualTransfers.suppressed += 1;
+    }
+  }
+
+  if (options.peerUrl && peerMutatedNamespaces.size > 0) {
+    const namespaces = [...peerMutatedNamespaces].sort();
+    if (!await postPeerConvergenceComplete(
+      options.peerUrl,
+      namespaces,
+      resolvedToken,
+      fetchFn,
+    )) {
+      actualTransfers.failed += 1;
     }
   }
 

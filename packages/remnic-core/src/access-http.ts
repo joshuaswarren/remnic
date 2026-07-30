@@ -18,6 +18,7 @@ import {
   type EngramAccessWriteResponse,
 } from "./access-service.js";
 import { maybeHandleLifecycleFlush, type LifecycleFlushHttpDeps } from "./access-http-lifecycle-flush.js";
+import { nonEmptyQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
@@ -1318,6 +1319,31 @@ export class EngramAccessHttpServer {
         baseSha256: this.readOptionalHeader(req, "x-remnic-base-sha256"),
         content,
       });
+      this.respondJson(res, 200, result);
+      return;
+    }
+
+    if (
+      req.method === "POST" &&
+      (
+        pathname === "/engram/v1/offline-sync/convergence-complete" ||
+        pathname === "/remnic/v1/offline-sync/convergence-complete"
+      )
+    ) {
+      this.enforceTokenOp("offline_sync_apply_file_content");
+      const namespaceParams = parsed.searchParams.getAll("namespace").filter(Boolean);
+      const requestedNamespaces: Array<string | undefined> =
+        namespaceParams.length > 0 ? namespaceParams : [undefined];
+      const namespaces = requestedNamespaces
+        .map((namespace) => this.resolveNamespace(req, namespace))
+        .filter((namespace): namespace is string => namespace !== undefined);
+      this.ensureWriteRateLimitAvailable(req);
+      const result = await this.service.offlineSyncFinalizeConvergence({
+        ...(namespaces.length > 0 ? { namespaces } : {}),
+        principal: this.resolveRequestPrincipal(req),
+        sourceId: this.readRequiredDecodedHeader(req, "x-remnic-source-id"),
+      });
+      this.recordWriteRateLimitHit(req);
       this.respondJson(res, 200, result);
       return;
     }
@@ -3924,30 +3950,4 @@ export class EngramAccessHttpServer {
     }
     return false;
   }
-}
-
-/** Optional string field from a JSON body: absent/null/"" → undefined. */
-function optionalQueryString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (typeof value !== "string") {
-    throw new EngramAccessInputError(
-      `${label} must be a string (got ${JSON.stringify(value)})`,
-    );
-  }
-  return value;
-}
-
-/** Optional non-empty query param: null/"" → undefined. */
-function nonEmptyQueryParam(value: string | null): string | undefined {
-  return value !== null && value.length > 0 ? value : undefined;
-}
-
-/** Optional positive-integer query param; rejects invalid values. */
-function positiveIntQueryParam(value: string | null, label: string): number | undefined {
-  if (value === null || value.length === 0) return undefined;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
-    throw new EngramAccessInputError(`${label} expects a positive integer`);
-  }
-  return parsed;
 }
