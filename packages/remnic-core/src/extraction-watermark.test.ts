@@ -266,11 +266,11 @@ test("valid ISO timestamp variants remain eligible for aggregate watermark selec
           async () =>
             namespace === "team-a"
               ? "2026-07-20t12:00:00z"
-              : "2026-07-20T08:00:00-05:00",
+              : "2026-07-20T08:00:00-0500",
         ),
     });
 
-    assert.equal(result.lastExtractionAt, "2026-07-20T08:00:00-05:00");
+    assert.equal(result.lastExtractionAt, "2026-07-20T08:00:00-0500");
     assert.equal(result.readFailed, false);
   } finally {
     await rm(fixture.memoryDir, { recursive: true, force: true });

@@ -49,7 +49,7 @@ function errorMessage(error: unknown): string {
 }
 
 const ISO_TIMESTAMP_PATTERN =
-  /^([+-]?\d{4,6})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/i;
+  /^([+-]?\d{4,6})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})$/i;
 
 function validatedTimestampMs(value: string): number | null {
   const match = ISO_TIMESTAMP_PATTERN.exec(value);
@@ -57,6 +57,9 @@ function validatedTimestampMs(value: string): number | null {
   if (!match || !Number.isFinite(parsed)) return null;
   const [, yearText, monthText, dayText, hourText, minuteText, secondText, fraction, zone] = match;
   const normalizedZone = zone.toUpperCase();
+  const offsetMinuteText = normalizedZone.includes(":")
+    ? normalizedZone.slice(4, 6)
+    : normalizedZone.slice(3, 5);
   const year = Number(yearText);
   const month = Number(monthText);
   const day = Number(dayText);
@@ -74,7 +77,7 @@ function validatedTimestampMs(value: string): number | null {
   const offsetMinutes =
     normalizedZone === "Z"
       ? 0
-      : zoneSign * (Number(normalizedZone.slice(1, 3)) * 60 + Number(normalizedZone.slice(4, 6)));
+      : zoneSign * (Number(normalizedZone.slice(1, 3)) * 60 + Number(offsetMinuteText));
   const representedCalendar = new Date(parsed + offsetMinutes * 60_000);
   const millisecond = Number((fraction ?? "").padEnd(3, "0").slice(0, 3));
   const expected = [
