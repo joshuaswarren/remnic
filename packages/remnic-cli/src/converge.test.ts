@@ -691,6 +691,77 @@ test("remnic converge apply: does not finalize a peer namespace when every write
   assert.equal(finalizeCalls, 0);
 });
 
+test("remnic converge apply: finalization falls back to the engram route", async () => {
+  const content = Buffer.from("local");
+  const finalizePaths: string[] = [];
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/offline-sync/apply-file-content")) {
+      return Response.json({ done: true, applied: true, skipped: false });
+    }
+    if (url.pathname.endsWith("/offline-sync/convergence-complete")) {
+      finalizePaths.push(url.pathname);
+      if (url.pathname.startsWith("/remnic/")) return new Response(null, { status: 404 });
+      return Response.json({ namespaces: ["team"], refreshed: true });
+    }
+    return new Response(null, { status: 404 });
+  };
+
+  const result = await executeConvergeApply({
+    peerUrl: "https://peer.example.test/",
+    fetchImpl,
+    localFilesByNamespace: new Map([
+      ["team", [{
+        path: "facts/a.md",
+        sha256: createHash("sha256").update(content).digest("hex"),
+      }]],
+    ]),
+    peerFilesByNamespace: new Map([["team", []]]),
+    localFileBuffers: new Map([["team", new Map([["facts/a.md", content]])]]),
+  });
+
+  assert.equal(result.transfers.failed, 0);
+  assert.deepEqual(finalizePaths, [
+    "/remnic/v1/offline-sync/convergence-complete",
+    "/engram/v1/offline-sync/convergence-complete",
+  ]);
+});
+
+test("remnic converge apply: finalizes after an ambiguous alias retry", async () => {
+  const content = Buffer.from("local");
+  let finalizeCalls = 0;
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/remnic/v1/offline-sync/apply-file-content") {
+      throw new Error("response lost");
+    }
+    if (url.pathname === "/engram/v1/offline-sync/apply-file-content") {
+      return Response.json({ done: true, applied: false, skipped: true });
+    }
+    if (url.pathname.endsWith("/offline-sync/convergence-complete")) {
+      finalizeCalls += 1;
+      return Response.json({ namespaces: ["team"], refreshed: true });
+    }
+    return new Response(null, { status: 404 });
+  };
+
+  const result = await executeConvergeApply({
+    peerUrl: "https://peer.example.test",
+    fetchImpl,
+    localFilesByNamespace: new Map([
+      ["team", [{
+        path: "facts/a.md",
+        sha256: createHash("sha256").update(content).digest("hex"),
+      }]],
+    ]),
+    peerFilesByNamespace: new Map([["team", []]]),
+    localFileBuffers: new Map([["team", new Map([["facts/a.md", content]])]]),
+  });
+
+  assert.equal(result.transfers.failed, 0);
+  assert.equal(finalizeCalls, 1);
+});
+
 test("remnic converge apply: a failed peer refresh prevents convergence and cursor advancement", async () => {
   const content = Buffer.from("local");
   let finalizeCalls = 0;
@@ -718,5 +789,5 @@ test("remnic converge apply: a failed peer refresh prevents convergence and curs
   assert.equal(result.transfers.failed, 1);
   assert.equal(result.converged, false);
   assert.equal(result.cursorUpdated, false);
-  assert.equal(finalizeCalls, 1);
+  assert.equal(finalizeCalls, 2);
 });

@@ -76,35 +76,39 @@ test("refreshNamespacesAfterConvergence runs one strict QMD batch and rebuilds e
   }
 });
 
-test("refreshNamespacesAfterConvergence fails before projection when QMD cannot index every namespace", async () => {
-  let storageRequested = false;
-  const orchestrator = Object.create(Orchestrator.prototype) as Orchestrator;
-  const internals = orchestrator as unknown as {
-    namespaceSearchRouter: {
-      updateNamespacesDetailed(
-        namespaces: string[],
-        execution?: unknown,
-        options?: { strict?: boolean }
-      ): Promise<{ backendCount: number; eligibleNamespaces: string[] }>;
+test("refreshNamespacesAfterConvergence rebuilds projection when search is disabled", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-convergence-no-search-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    const memory = await storage.writeMemory("fact", "A received fact without search enabled.", {
+      source: "test",
+    });
+    const orchestrator = Object.create(Orchestrator.prototype) as Orchestrator;
+    const internals = orchestrator as unknown as {
+      namespaceSearchRouter: {
+        updateNamespacesDetailed(
+          namespaces: string[],
+          execution?: unknown,
+          options?: { strict?: boolean }
+        ): Promise<{ backendCount: number; eligibleNamespaces: string[] }>;
+      };
+      getStorage(namespace: string): Promise<StorageManager>;
     };
-    getStorage(namespace: string): Promise<StorageManager>;
-  };
-  internals.namespaceSearchRouter = {
-    async updateNamespacesDetailed() {
-      return { backendCount: 1, eligibleNamespaces: ["team"] };
-    },
-  };
-  internals.getStorage = async () => {
-    storageRequested = true;
-    throw new Error("projection should not run");
-  };
-  const refreshSurface = orchestrator as unknown as {
-    refreshNamespacesAfterConvergence(namespaces: readonly string[]): Promise<void>;
-  };
+    internals.namespaceSearchRouter = {
+      async updateNamespacesDetailed() {
+        return { backendCount: 0, eligibleNamespaces: [] };
+      },
+    };
+    internals.getStorage = async () => storage;
+    const refreshSurface = orchestrator as unknown as {
+      refreshNamespacesAfterConvergence(namespaces: readonly string[]): Promise<void>;
+    };
 
-  await assert.rejects(
-    () => refreshSurface.refreshNamespacesAfterConvergence(["team", "shared"]),
-    /QMD backend ineligible for convergence namespaces \(1\)/
-  );
-  assert.equal(storageRequested, false);
+    await refreshSurface.refreshNamespacesAfterConvergence(["default"]);
+
+    const projection = readProjectedMemoryBrowse(memoryDir, { limit: 10, offset: 0 });
+    assert.equal(projection?.memories[0]?.id, memory.id);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });

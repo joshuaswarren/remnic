@@ -218,7 +218,7 @@ import {
   runPatternReinforcement,
   type PatternReinforcementResult,
 } from "./maintenance/pattern-reinforcement.js";
-import { refreshConvergedNamespaces } from "./orchestration/convergence-refresh.js";
+import { refreshConvergedNamespaces } from "./convergence-refresh.js";
 import { ModelRegistry } from "./model-registry.js";
 import { applyRuntimeRetrievalPolicy, expandQuery } from "./retrieval.js";
 import {

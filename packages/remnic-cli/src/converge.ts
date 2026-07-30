@@ -272,6 +272,12 @@ async function fetchPeerFileContent(
   return null;
 }
 
+function withoutTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return value.slice(0, end);
+}
+
 async function postPeerFileContent(
   peerUrl: string,
   namespace: string,
@@ -281,11 +287,12 @@ async function postPeerFileContent(
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<"applied" | "skipped" | false> {
-  const base = peerUrl.replace(/\/+$/, "");
+  const base = withoutTrailingSlashes(peerUrl);
   const routes = [
     `/remnic/v1/offline-sync/apply-file-content?namespace=${encodeURIComponent(namespace)}`,
     `/engram/v1/offline-sync/apply-file-content?namespace=${encodeURIComponent(namespace)}`,
   ];
+  let previousAttemptFailed = false;
   for (const route of routes) {
     try {
       let offset = 0;
@@ -327,7 +334,7 @@ async function postPeerFileContent(
           return false;
         }
         if (result.done) {
-          if (result.skipped) return "skipped";
+          if (result.skipped) return previousAttemptFailed ? "applied" : "skipped";
           if (result.applied && offset + chunk.length === content.length) return "applied";
           return false;
         }
@@ -338,7 +345,7 @@ async function postPeerFileContent(
       } while (offset < content.length);
       return false;
     } catch {
-      // try next route
+      previousAttemptFailed = true;
     }
   }
   return false;
@@ -350,23 +357,25 @@ async function postPeerConvergenceComplete(
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<boolean> {
+  const base = withoutTrailingSlashes(peerUrl);
   const query = namespaces
     .map((namespace) => `namespace=${encodeURIComponent(namespace)}`)
     .join("&");
-  try {
-    const response = await fetchImpl(
-      `${peerUrl.replace(/\/+$/, "")}/remnic/v1/offline-sync/convergence-complete?${query}`,
-      {
-        method: "POST",
-        headers: {
-          "x-remnic-source-id": encodeURIComponent("remnic-converge"),
-          ...(token ? { authorization: `Bearer ${token}` } : {}),
-        },
+  const routes = [
+    "/remnic/v1/offline-sync/convergence-complete",
+    "/engram/v1/offline-sync/convergence-complete",
+  ];
+  for (const route of routes) {
+    const response = await fetchImpl(`${base}${route}?${query}`, {
+      method: "POST",
+      headers: {
+        "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
-    );
-    if (!response.ok) return false;
+    }).catch(() => null);
+    if (!response?.ok) continue;
     const result: unknown = await response.json().catch(() => null);
-    return Boolean(
+    if (
       result
       && typeof result === "object"
       && "namespaces" in result
@@ -375,10 +384,11 @@ async function postPeerConvergenceComplete(
       && result.namespaces.every((namespace, index) => namespace === namespaces[index])
       && "refreshed" in result
       && result.refreshed === true
-    );
-  } catch {
-    return false;
+    ) {
+      return true;
+    }
   }
+  return false;
 }
 
 export async function computeConvergePlan(options: ConvergePlanOptions = {}): Promise<ReconcilePlan> {
