@@ -75,7 +75,6 @@ import {
   maybeRegisterDelegateRuntime,
   type DelegateHookApi,
 } from "../packages/plugin-openclaw/src/delegate-runtime.js";
-import { parseOpenClawBridgeConfig } from "../packages/plugin-openclaw/src/bridge.js";
 import {
   extractLastTurn,
   extractTextContent,
@@ -1423,7 +1422,7 @@ const pluginDefinition = {
     const delegateHandled = maybeRegisterDelegateRuntime(delegateApi, {
       serviceId,
       configBridgeMode: cfg.bridgeMode,
-      bridgeHealthTimeoutMs: parseOpenClawBridgeConfig(rawPluginConfig).healthTimeoutMs,
+      bridgeHealthTimeoutMs: rawPluginConfig.bridgeHealthTimeoutMs,
       passive: passiveMode,
       allowPromptInjection:
         coerceRawConfigBoolean(

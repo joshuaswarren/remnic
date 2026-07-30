@@ -36,9 +36,9 @@ import {
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
   type DaemonAuthToken,
-  DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
   checkDaemonHealthSync,
   loadDaemonAuth,
+  parseOpenClawBridgeConfig,
   resolveBridgeMode,
 } from "./bridge.js";
 import {
@@ -772,8 +772,8 @@ export interface MaybeRegisterDelegateOptions {
   serviceId: string;
   /** The parsed plugin config's `bridgeMode` value. */
   configBridgeMode: string;
-  /** Total timeout for liveness and older-daemon health fallback. */
-  bridgeHealthTimeoutMs?: number;
+  /** Raw total timeout for liveness and older-daemon health fallback. */
+  bridgeHealthTimeoutMs?: unknown;
   passive: boolean;
   allowPromptInjection: boolean;
   /** Embedded parity: `heartbeat.enabled && heartbeat.gateExtractionDuringHeartbeat`. */
@@ -1023,13 +1023,23 @@ export function maybeRegisterDelegateRuntime(
     );
     return true;
   }
+  let bridgeHealthTimeoutMs: number;
+  try {
+    bridgeHealthTimeoutMs = parseOpenClawBridgeConfig({
+      bridgeHealthTimeoutMs: options.bridgeHealthTimeoutMs,
+    }).healthTimeoutMs;
+  } catch (err) {
+    log.error(`${String(err)} — falling back to the embedded runtime`);
+    delegateEmbeddedFallbackApis.add(api);
+    return false;
+  }
   // register() is synchronous, so the preflight uses the bridge's
   // worker-backed sync health check (the same probe detectBridgeMode uses).
   if (
     !deps.checkHealth(
       bridge.daemonHost,
       bridge.daemonPort,
-      options.bridgeHealthTimeoutMs ?? DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
+      bridgeHealthTimeoutMs,
     )
   ) {
     // Record the fallback so a later register() on the same api does not switch
