@@ -83,6 +83,8 @@ openclaw engram migrate normalize-frontmatter  # Canonical frontmatter rewrite (
 openclaw engram migrate rescore-importance     # Recompute local importance scores
 openclaw engram migrate rechunk                # Rebuild chunk files from current chunking heuristics
 openclaw engram migrate reextract --model gpt-5-mini  # Queue bounded re-extraction requests
+remnic converge plan --peer https://peer.example.com    # Build a non-mutating convergence plan
+remnic converge apply --peer https://peer.example.com   # Apply a convergence plan
 ```
 
 Compatibility diagnostics:
@@ -270,10 +272,42 @@ per resolver for the process lifetime, so a rotated peer secret is picked up on 
 they are never logged or included in any payload, and a peer is
 identified only by its redacted `host:port`.
 
-**Detection is deliberately separate from reconciliation.** This surface only reports drift;
-making a diverged pair converge is tracked in issue #2150. Polling is stale-while-revalidate:
-a probe reads the last completed poll with its timestamp and never blocks on peer I/O, so a
-health check stays cheap.
+Detection and reconciliation remain separate. Detection reports drift without mutating either
+replica. The convergence commands fetch peer revisions, build a deterministic plan, and apply
+that plan only when requested.
+
+### Replica reconciliation (issue #2150)
+
+Command syntax (replace the bracketed placeholders before running):
+
+```text
+remnic converge plan --peer <url> [--token <token>] [--conflict-policy <policy>] [--json]
+remnic converge apply --peer <url> [--token <token>] [--conflict-policy <policy>] [--dry-run] [--json]
+```
+
+`plan` never mutates either replica. `apply` executes the planned actions; pass `--dry-run` to
+exercise the apply path without mutation. The `transport` and `sync` subcommands are aliases for
+`apply`.
+
+Conflict policy precedence is:
+
+1. `--conflict-policy <policy>` for the current command.
+2. `converge.conflictPolicy` from the loaded config.
+3. `newest-wins`, the current default.
+
+Choose a policy based on how much operator review the corpus needs:
+
+- `newest-wins` selects the newer revision when both sides carry comparable timestamps.
+  Delete-versus-modify conflicts require a durable per-path deletion timestamp; without one,
+  apply stops before mutation. Tied or missing timestamps also stop because transport cannot yet
+  preserve both revisions at distinct durable identities.
+- `manual` leaves conflicts unresolved. A plan can report them, but apply stops before any
+  mutation while conflicts remain. Use it when an operator must review every conflict.
+
+For the safest workflow, run `plan`, inspect its conflicts and actions, then run `apply --dry-run`
+with the same peer, token, and policy. Run `apply` without `--dry-run` only after that output is
+acceptable. `manual` adds a fail-closed guard: unresolved conflicts prevent all mutation even
+without `--dry-run`.
 
 ## Compression Guideline Optimizer Tool
 

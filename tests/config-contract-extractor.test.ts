@@ -38,6 +38,12 @@ test("hand-rolled fixture: aliases, coercion helpers, nested blocks, and destruc
   assert.ok(keys.includes("handRolled.fusion.enabled"), "nested block via second alias");
   assert.ok(keys.includes("handRolled.fusion.gapMs"));
   assert.ok(keys.includes("handRolled.label"), "destructured key");
+  assert.equal(keys.includes("handRolled.unknown"), false, "rest binding is not a config key");
+  assert.equal(
+    extractFixture().unparseable.some((entry) => entry.file.endsWith("fixtures/hand-rolled.ts")),
+    false,
+    "iterating a rest binding is not dynamic parser-input iteration",
+  );
   assert.ok(keys.includes("topLevelFlag"), "entry parser direct read");
   // Value properties never leak as config keys.
   assert.equal(keys.some((k) => k.endsWith(".trim") || k.endsWith(".length")), false);

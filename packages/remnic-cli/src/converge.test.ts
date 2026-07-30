@@ -247,6 +247,103 @@ test("remnic converge apply: manual conflict policy stops mutation on unresolved
   assert.equal(result.transfers.conflictsResolved, 0);
 });
 
+test("remnic converge apply: newest-wins stops when timestamps cannot resolve a conflict", async () => {
+  const localMap = new Map<string, ReconcileFileState[]>([
+    ["default", [{ path: "facts/shared.md", sha256: shaA, mtimeMs: 1000 }]],
+  ]);
+  const peerMap = new Map<string, ReconcileFileState[]>([
+    ["default", [{ path: "facts/shared.md", sha256: shaB, mtimeMs: 1000 }]],
+  ]);
+
+  const result = await executeConvergeApply({
+    localFilesByNamespace: localMap,
+    peerFilesByNamespace: peerMap,
+    conflictPolicy: "newest-wins",
+  });
+
+  assert.equal(result.converged, false);
+  assert.equal(result.status, "stopped_unresolved_conflicts");
+  assert.equal(result.cursorUpdated, false);
+});
+
+test("remnic converge apply: configured newest-wins compares deletion and modification times", async () => {
+  const localModificationWins = "facts/local-modification-wins.md";
+  const peerDeletionWins = "facts/peer-deletion-wins.md";
+  const peerModificationWins = "facts/peer-modification-wins.md";
+  const localDeletionWins = "facts/local-deletion-wins.md";
+  const localModified = Buffer.from("local v2");
+  const peerModified = Buffer.from("peer v2");
+  const localSha = createHash("sha256").update(localModified).digest("hex");
+  const peerSha = createHash("sha256").update(peerModified).digest("hex");
+  const baseSha = "c".repeat(64);
+  const localMap = new Map<string, ReconcileFileState[]>([
+    ["default", [
+      { path: localModificationWins, sha256: localSha, mtimeMs: 4000 },
+      { path: peerDeletionWins, sha256: localSha, mtimeMs: 2000 },
+    ]],
+  ]);
+  const peerMap = new Map<string, ReconcileFileState[]>([
+    ["default", [
+      { path: peerModificationWins, sha256: peerSha, mtimeMs: 4000 },
+      { path: localDeletionWins, sha256: peerSha, mtimeMs: 2000 },
+    ]],
+  ]);
+  const baseMap = new Map<string, ReconcileFileState[]>([
+    ["default", [
+      { path: localModificationWins, sha256: baseSha, mtimeMs: 1000 },
+      { path: peerDeletionWins, sha256: baseSha, mtimeMs: 1000 },
+      { path: peerModificationWins, sha256: baseSha, mtimeMs: 1000 },
+      { path: localDeletionWins, sha256: baseSha, mtimeMs: 1000 },
+    ]],
+  ]);
+  const localBuffers = new Map<string, Map<string, Buffer>>([
+    ["default", new Map([
+      [localModificationWins, localModified],
+      [peerDeletionWins, localModified],
+    ])],
+  ]);
+  const peerBuffers = new Map<string, Map<string, Buffer>>([
+    ["default", new Map([
+      [peerModificationWins, peerModified],
+      [localDeletionWins, peerModified],
+    ])],
+  ]);
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-delete-"));
+
+  const result = await executeConvergeApply({
+    config: parseConfig({ converge: { conflictPolicy: "newest-wins" } }),
+    baseFilesByNamespace: baseMap,
+    localFilesByNamespace: localMap,
+    peerFilesByNamespace: peerMap,
+    localDeletionMtimeMsByNamespace: new Map([["default", new Map([
+      [peerModificationWins, 3000],
+      [localDeletionWins, 3000],
+    ])]]),
+    peerDeletionMtimeMsByNamespace: new Map([["default", new Map([
+      [localModificationWins, 3000],
+      [peerDeletionWins, 3000],
+    ])]]),
+    localFileBuffers: localBuffers,
+    peerFileBuffers: peerBuffers,
+    cursorDir: tmpDir,
+    peerUrl: "buffer://peer",
+  });
+
+  assert.equal(result.status, "applied");
+  assert.equal(result.transfers.conflictsResolved, 4);
+  assert.equal(result.transfers.failed, 0);
+  assert.equal(peerBuffers.get("default")?.get(localModificationWins), localModified);
+  assert.equal(localBuffers.get("default")?.has(peerDeletionWins), false);
+  assert.equal(localBuffers.get("default")?.get(peerModificationWins), peerModified);
+  assert.equal(peerBuffers.get("default")?.has(localDeletionWins), false);
+  const cursor = await readConvergeCursor(defaultConvergeCursorPath(tmpDir, "buffer://peer", "default"));
+  assert.deepEqual(
+    cursor?.baseFiles.map((file) => file.path).sort(),
+    [localModificationWins, peerModificationWins].sort(),
+  );
+  await fs.rm(tmpDir, { recursive: true, force: true });
+});
+
 test("remnic converge apply: dry-run mode simulates transfers without disk writes", async () => {
   const peerFile: ReconcileFileState = { path: "facts/remote.md", sha256: shaA };
   const localMap = new Map<string, ReconcileFileState[]>([["default", []]]);
@@ -372,6 +469,60 @@ test("remnic converge apply: uses chunked offline-sync HTTP contracts for pull a
   assert.match(pushRequest.url, /offline-sync\/apply-file-content\?namespace=default$/);
   assert.equal(new Headers(pushRequest.init?.headers).get("x-remnic-file-sha256"), localSha);
   assert.equal(new Headers(pushRequest.init?.headers).get("x-remnic-file-bytes"), String(localContent.length));
+});
+
+test("remnic converge apply: a newer local deletion uses the guarded remote delete contract", async () => {
+  const filePath = "facts/deleted-locally.md";
+  const peerContent = Buffer.from("peer v2");
+  const peerSha = createHash("sha256").update(peerContent).digest("hex");
+  const baseSha = "d".repeat(64);
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url.includes("/offline-sync/convergence-complete")) {
+      return Response.json({ namespaces: ["default"], refreshed: true });
+    }
+    return Response.json({
+      appliedUpserts: 0,
+      appliedDeletes: 1,
+      skipped: 0,
+      conflicts: [],
+      currentFiles: [],
+    });
+  };
+
+  const result = await executeConvergeApply({
+    config: parseConfig({ converge: { conflictPolicy: "newest-wins" } }),
+    peerUrl: "https://peer.example.test",
+    fetchImpl,
+    baseFilesByNamespace: new Map([["default", [{ path: filePath, sha256: baseSha }]]]),
+    localFilesByNamespace: new Map([["default", []]]),
+    peerFilesByNamespace: new Map([
+      ["default", [{ path: filePath, sha256: peerSha, bytes: peerContent.length, mtimeMs: 2000 }]],
+    ]),
+    localDeletionMtimeMsByNamespace: new Map([
+      ["default", new Map([[filePath, 3000]])],
+    ]),
+  });
+
+  assert.equal(result.transfers.conflictsResolved, 1);
+  assert.equal(result.transfers.failed, 0);
+  const request = requests.find(({ url }) => url.endsWith("/remnic/v1/offline-sync/apply"));
+  assert.ok(request);
+  const body = JSON.parse(String(request.init?.body)) as {
+    namespace: string;
+    changeset: {
+      format: string;
+      changes: Array<{ type: string; path: string; baseSha256: string }>;
+    };
+  };
+  assert.equal(body.namespace, "default");
+  assert.equal(body.changeset.format, "remnic.offline-sync.changeset.v1");
+  assert.deepEqual(body.changeset.changes, [
+    { type: "delete", path: filePath, baseSha256: peerSha },
+  ]);
+  assert.ok(requests.some(({ url }) => url.includes("/offline-sync/convergence-complete?namespace=default")));
 });
 
 test("remnic converge plan: fails closed when the peer census cannot be fetched", async () => {
@@ -533,6 +684,46 @@ test("remnic converge apply: local-wins guards against the planned peer revision
   assert.equal(result.transfers.conflictsResolved, 1);
   assert.equal(result.transfers.failed, 0);
   assert.equal(baseHeader, peerSha256);
+});
+
+test("remnic converge plan: config selects the policy and a CLI option overrides it", async () => {
+  const localFilesByNamespace = new Map<string, ReconcileFileState[]>([
+    ["default", [{ path: "facts/shared.md", sha256: shaA, mtimeMs: 1000 }]],
+  ]);
+  const peerFilesByNamespace = new Map<string, ReconcileFileState[]>([
+    ["default", [{ path: "facts/shared.md", sha256: shaB, mtimeMs: 2000 }]],
+  ]);
+  const config = parseConfig({ converge: { conflictPolicy: "manual" } });
+
+  const configured = await computeConvergePlan({
+    config,
+    localFilesByNamespace,
+    peerFilesByNamespace,
+  });
+  assert.equal(configured.entries[0]?.resolution, "unresolved");
+
+  const overridden = await computeConvergePlan({
+    config,
+    conflictPolicy: "newest-wins",
+    localFilesByNamespace,
+    peerFilesByNamespace,
+  });
+  assert.equal(overridden.entries[0]?.resolution, "peer-wins");
+});
+
+test("remnic converge CLI rejects removed and unknown conflict-policy overrides", async () => {
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    for (const conflictPolicy of ["keep-both", "invalid"]) {
+      await assert.rejects(
+        () => cmdConverge("plan", ["--conflict-policy", conflictPolicy], true, parseConfig({})),
+        /--conflict-policy must be one of newest-wins, manual/,
+      );
+    }
+  } finally {
+    console.log = originalLog;
+  }
 });
 
 test("remnic converge plan builds semantic manifests from local and peer memory bytes", async () => {

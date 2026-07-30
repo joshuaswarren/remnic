@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `converge.conflictPolicy` configures `newest-wins` or `manual` conflict handling. This release changes the default to `newest-wins`; conflicts without comparable timestamps still stop before mutation. `--conflict-policy` overrides the config for one command (#2150 increment 5).
+
 ## [v9.44.0] — 2026-07-30
 
 ### Added

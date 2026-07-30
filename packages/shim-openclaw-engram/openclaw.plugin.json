@@ -1389,6 +1389,24 @@
         "default": 0.7,
         "description": "QMD similarity threshold to trigger contradiction check"
       },
+      "converge": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {
+          "conflictPolicy": "newest-wins"
+        },
+        "properties": {
+          "conflictPolicy": {
+            "type": "string",
+            "enum": [
+              "newest-wins",
+              "manual"
+            ],
+            "default": "newest-wins",
+            "description": "Default conflict policy for convergence. newest-wins selects the newer revision when both sides carry comparable timestamps; manual stops before mutation when conflicts remain."
+          }
+        }
+      },
       "conversationIndexBackend": {
         "type": "string",
         "enum": [
@@ -6730,6 +6748,11 @@
     "contradictionScan": {
       "label": "Contradiction Scan",
       "help": "Nightly cron that pairs similar memories and flags contradictions for review (issue #520)"
+    },
+    "converge.conflictPolicy": {
+      "label": "Converge Conflict Policy",
+      "advanced": true,
+      "help": "newest-wins selects the newer revision when both sides carry comparable timestamps; manual stops before mutation when conflicts remain. Default: newest-wins. The --conflict-policy CLI flag overrides this setting."
     },
     "temporalSupersessionEnabled": {
       "label": "Temporal Supersession",

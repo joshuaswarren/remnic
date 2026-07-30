@@ -3,18 +3,21 @@ import { createHash } from "node:crypto";
 import * as path from "node:path";
 import {
   type PluginConfig,
+  CONVERGE_CONFLICT_POLICIES,
+  DEFAULT_CONVERGE_CONFLICT_POLICY,
   parseConfig,
   type ResolveSecretRefFn,
   buildOfflineSyncSnapshotFromBase,
   OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
+  OFFLINE_SYNC_CHANGESET_FORMAT,
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   applyOfflineSyncFileContentChunk,
 } from "@remnic/core";
+import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
 import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
 import { listNamespaces } from "@remnic/core/namespaces/migrate.js";
 import {
   planReconciliation,
-  type ReconcileConflictPolicy,
   type ReconcileFileState,
   type ReconcileNamespaceInput,
   type ReconcilePlan,
@@ -37,14 +40,16 @@ export interface ConvergePlanOptions {
   peerUrl?: string;
   peerToken?: string;
   cursorDir?: string;
-  conflictPolicy?: ReconcileConflictPolicy;
+  conflictPolicy?: ConvergeConflictPolicy;
   fetchImpl?: typeof fetch;
   resolveSecretRef?: ResolveSecretRefFn;
   baseFilesByNamespace?: Map<string, ReconcileFileState[]>;
   localFilesByNamespace?: Map<string, ReconcileFileState[]>;
   localTombstonesByNamespace?: Map<string, Iterable<string>>;
+  localDeletionMtimeMsByNamespace?: Map<string, ReadonlyMap<string, number>>;
   peerFilesByNamespace?: Map<string, ReconcileFileState[]>;
   peerTombstonesByNamespace?: Map<string, Iterable<string>>;
+  peerDeletionMtimeMsByNamespace?: Map<string, ReadonlyMap<string, number>>;
 }
 
 export interface ConvergeApplyOptions extends ConvergePlanOptions {
@@ -396,6 +401,63 @@ async function postPeerConvergenceComplete(
   return false;
 }
 
+async function postPeerFileDeletion(
+  peerUrl: string,
+  namespace: string,
+  filePath: string,
+  baseSha256: string,
+  token?: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<"applied" | "skipped" | false> {
+  const base = withoutTrailingSlashes(peerUrl);
+  const routes = ["/remnic/v1/offline-sync/apply", "/engram/v1/offline-sync/apply"];
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+  let previousAttemptFailed = false;
+  for (const route of routes) {
+    try {
+      const response = await fetchImpl(`${base}${route}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          namespace,
+          changeset: {
+            format: OFFLINE_SYNC_CHANGESET_FORMAT,
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            sourceId: "remnic-converge",
+            includeTranscripts: false,
+            changes: [{ type: "delete", path: filePath, baseSha256 }],
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(`offline apply request failed: ${response.status}`);
+      const result: unknown = await response.json().catch(() => null);
+      if (
+        !result
+        || typeof result !== "object"
+        || !("appliedDeletes" in result)
+        || typeof result.appliedDeletes !== "number"
+        || !("skipped" in result)
+        || typeof result.skipped !== "number"
+        || !("conflicts" in result)
+        || !Array.isArray(result.conflicts)
+        || result.conflicts.length > 0
+      ) {
+        return false;
+      }
+      if (result.appliedDeletes === 1) return "applied";
+      if (result.skipped === 1) return previousAttemptFailed ? "applied" : "skipped";
+      return false;
+    } catch {
+      previousAttemptFailed = true;
+    }
+  }
+  return false;
+}
+
 export async function computeConvergePlan(options: ConvergePlanOptions = {}): Promise<ReconcilePlan> {
   const baseMap = new Map<string, ReconcileFileState[]>();
   const namespacesToPlan = new Set<string>();
@@ -403,6 +465,8 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   const localTombstones = new Map<string, Set<string>>();
   const peerMap = new Map<string, ReconcileFileState[]>();
   const peerTombstones = new Map<string, Set<string>>();
+  const localDeletionMtimeMs = new Map<string, ReadonlyMap<string, number>>();
+  const peerDeletionMtimeMs = new Map<string, ReadonlyMap<string, number>>();
   const localManifests = new Map<string, ReconcileManifest>();
   const peerManifests = new Map<string, ReconcileManifest>();
 
@@ -423,6 +487,12 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       localTombstones.set(ns, new Set(tombstones));
     }
   }
+  if (options.localDeletionMtimeMsByNamespace) {
+    for (const [ns, mtimes] of options.localDeletionMtimeMsByNamespace) {
+      namespacesToPlan.add(ns);
+      localDeletionMtimeMs.set(ns, mtimes);
+    }
+  }
   if (options.peerFilesByNamespace) {
     for (const [ns, files] of options.peerFilesByNamespace) {
       namespacesToPlan.add(ns);
@@ -432,6 +502,12 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   if (options.peerTombstonesByNamespace) {
     for (const [ns, tombstones] of options.peerTombstonesByNamespace) {
       peerTombstones.set(ns, new Set(tombstones));
+    }
+  }
+  if (options.peerDeletionMtimeMsByNamespace) {
+    for (const [ns, mtimes] of options.peerDeletionMtimeMsByNamespace) {
+      namespacesToPlan.add(ns);
+      peerDeletionMtimeMs.set(ns, mtimes);
     }
   }
   let config = options.config;
@@ -540,24 +616,36 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
 
   const inputs: ReconcileNamespaceInput[] = [];
   for (const ns of [...namespacesToPlan].sort()) {
+    const baseFiles = baseMap.get(ns);
+    const localFiles = localMap.get(ns) ?? [];
+    const peerFiles = peerMap.get(ns) ?? [];
+    const localDeletions = new Map(localDeletionMtimeMs.get(ns) ?? []);
+    const peerDeletions = new Map(peerDeletionMtimeMs.get(ns) ?? []);
     inputs.push({
       namespace: ns,
-      local: localMap.get(ns) ?? [],
-      peer: peerMap.get(ns) ?? [],
-      base: baseMap.get(ns),
+      local: localFiles,
+      peer: peerFiles,
+      base: baseFiles,
+      localDeletionMtimeMs: localDeletions,
+      peerDeletionMtimeMs: peerDeletions,
       tombstonedFileSha256: localTombstones.get(ns) ?? [],
       peerTombstonedFileSha256: peerTombstones.get(ns) ?? [],
     });
   }
 
-  const plan = planReconciliation(inputs, { conflictPolicy: options.conflictPolicy });
+  const conflictPolicy = options.conflictPolicy
+    ?? config?.converge.conflictPolicy
+    ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
+  const plan = planReconciliation(inputs, { conflictPolicy });
   return collapseActiveFactDuplicates(plan, localManifests, peerManifests);
 }
 
 export async function executeConvergeApply(
   options: ConvergeApplyOptions = {},
 ): Promise<ConvergeApplyResult> {
-  const conflictPolicy = options.conflictPolicy ?? "manual";
+  const conflictPolicy = options.conflictPolicy
+    ?? options.config?.converge.conflictPolicy
+    ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
   const plan = await computeConvergePlan({ ...options, conflictPolicy });
 
   if (plan.converged && !options.dryRun) {
@@ -572,8 +660,8 @@ export async function executeConvergeApply(
   }
 
   const unresolvedCount = plan.byNamespace.reduce((acc, report) => acc + report.unresolved, 0);
-  if (unresolvedCount > 0 && conflictPolicy === "manual") {
-    // DEFAULT: unresolved conflicts STOP mutation (never auto-resolve a conflict).
+  if (unresolvedCount > 0) {
+    // Every policy stops when its conflict rule cannot choose a safe resolution.
     return {
       converged: false,
       status: "stopped_unresolved_conflicts",
@@ -653,7 +741,7 @@ export async function executeConvergeApply(
   for (const entry of plan.entries) {
     if (entry.action === "identical") continue;
 
-    let transferType: "pull" | "push" | "suppress" | "none" = "none";
+    let transferType: "pull" | "push" | "delete-local" | "delete-peer" | "suppress" | "none" = "none";
     if (entry.action === "pull") {
       transferType = "pull";
     } else if (entry.action === "push") {
@@ -662,12 +750,9 @@ export async function executeConvergeApply(
       transferType = "suppress";
     } else if (entry.action === "conflict") {
       if (entry.resolution === "peer-wins") {
-        transferType = "pull";
+        transferType = entry.peerSha256 ? "pull" : "delete-local";
       } else if (entry.resolution === "local-wins") {
-        transferType = "push";
-      } else if (entry.resolution === "supersede-link") {
-        if (entry.newerSide === "peer") transferType = "pull";
-        else if (entry.newerSide === "local") transferType = "push";
+        transferType = entry.localSha256 ? "push" : "delete-peer";
       }
     }
 
@@ -824,6 +909,64 @@ export async function executeConvergeApply(
       } else {
         actualTransfers.failed += 1;
       }
+    } else if (transferType === "delete-local") {
+      let deleted = false;
+      const bufferedFiles = options.localFileBuffers?.get(entry.namespace);
+      if (options.localFileBuffers) {
+        const current = bufferedFiles?.get(entry.path);
+        if (
+          current
+          && entry.localSha256
+          && createHash("sha256").update(current).digest("hex") === entry.localSha256
+        ) {
+          bufferedFiles!.delete(entry.path);
+          deleted = true;
+        }
+      } else {
+        const rootDir = rootMap.get(entry.namespace);
+        if (rootDir && entry.localSha256) {
+          try {
+            const io = await createOfflineStorageIo(rootDir);
+            const filePath = path.join(rootDir, entry.path);
+            const current = await io.readFileDigest({ root: rootDir, path: entry.path, filePath });
+            if (current.sha256 === entry.localSha256) {
+              await io.deleteFile!({ root: rootDir, path: entry.path, filePath });
+              deleted = true;
+            }
+          } catch {
+            deleted = false;
+          }
+        }
+      }
+      if (deleted) actualTransfers.conflictsResolved += 1;
+      else actualTransfers.failed += 1;
+    } else if (transferType === "delete-peer") {
+      let deleted = false;
+      const bufferedFiles = options.peerFileBuffers?.get(entry.namespace);
+      if (options.peerFileBuffers) {
+        const current = bufferedFiles?.get(entry.path);
+        if (
+          current
+          && entry.peerSha256
+          && createHash("sha256").update(current).digest("hex") === entry.peerSha256
+        ) {
+          bufferedFiles!.delete(entry.path);
+          deleted = true;
+        }
+      } else if (options.peerUrl && entry.peerSha256) {
+        const deletionResult = await postPeerFileDeletion(
+          options.peerUrl,
+          entry.namespace,
+          entry.path,
+          entry.peerSha256,
+          resolvedToken,
+          fetchFn,
+        );
+        deleted = Boolean(deletionResult);
+        if (deletionResult === "applied") peerMutatedNamespaces.add(entry.namespace);
+      }
+      if (deleted) actualTransfers.conflictsResolved += 1;
+      else actualTransfers.failed += 1;
     } else if (transferType === "suppress") {
       actualTransfers.suppressed += 1;
     }
@@ -873,7 +1016,12 @@ async function updateCursorsForPlan(
   for (const ns of namespaces) {
     const cursorPath = defaultConvergeCursorPath(memoryDir, peerUrl, ns);
     const baseFiles = plan.entries
-      .filter((entry) => entry.namespace === ns && entry.reason !== "semantic_duplicate")
+      .filter((entry) => (
+        entry.namespace === ns
+        && entry.reason !== "semantic_duplicate"
+        && !(entry.reason === "local_modified_peer_deleted" && entry.resolution === "peer-wins")
+        && !(entry.reason === "local_deleted_peer_modified" && entry.resolution === "local-wins")
+      ))
       .map((entry) => ({
         path: entry.path,
         sha256: entry.localSha256 ?? entry.peerSha256 ?? "unknown",
@@ -931,7 +1079,12 @@ export function formatConvergeApplyReport(result: ConvergeApplyResult): string {
   return lines.join("\n");
 }
 
-export async function cmdConverge(action: string, rest: string[], json: boolean): Promise<void> {
+export async function cmdConverge(
+  action: string,
+  rest: string[],
+  json: boolean,
+  config: PluginConfig = parseConfig({}),
+): Promise<void> {
   if (action === "help" || action === "--help" || action === "-h" || rest.includes("--help") || rest.includes("-h")) {
     console.log(`Usage: remnic converge <plan|apply> [options]
 
@@ -943,7 +1096,8 @@ Options:
   --peer <url>      Peer server URL (or --remote-url / --remote)
   --token <token>   Bearer token or SecretRef for peer authentication
   --conflict-policy <policy>
-                    Conflict resolution policy (manual|newest-wins|keep-both)
+                    Policy override (newest-wins|manual)
+                    Default: converge.conflictPolicy (newest-wins)
   --dry-run         Simulate transfers without mutating disk or remote peer
   --json            Output detailed JSON plan report
 `);
@@ -959,7 +1113,7 @@ Options:
   let peerUrl: string | undefined;
   let peerToken: string | undefined;
   let dryRun = false;
-  let conflictPolicy: ReconcileConflictPolicy | undefined;
+  let conflictPolicy: ConvergeConflictPolicy | undefined;
 
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
@@ -971,17 +1125,23 @@ Options:
       i += 1;
     } else if (arg === "--dry-run") {
       dryRun = true;
-    } else if (arg === "--conflict-policy" && rest[i + 1]) {
-      const pol = rest[i + 1];
-      if (pol === "manual" || pol === "newest-wins" || pol === "keep-both") {
-        conflictPolicy = pol;
+    } else if (arg === "--conflict-policy") {
+      const policy = rest[i + 1];
+      if (
+        typeof policy !== "string"
+        || !CONVERGE_CONFLICT_POLICIES.includes(policy as ConvergeConflictPolicy)
+      ) {
+        throw new Error(
+          `converge: --conflict-policy must be one of ${CONVERGE_CONFLICT_POLICIES.join(", ")}`,
+        );
       }
+      conflictPolicy = policy as ConvergeConflictPolicy;
       i += 1;
     }
   }
 
   if (action === "plan") {
-    const plan = await computeConvergePlan({ peerUrl, peerToken, conflictPolicy });
+    const plan = await computeConvergePlan({ config, peerUrl, peerToken, conflictPolicy });
     if (json) {
       console.log(JSON.stringify(plan, null, 2));
     } else {
@@ -995,6 +1155,7 @@ Options:
     peerToken,
     dryRun,
     conflictPolicy,
+    config,
   });
 
   if (json) {

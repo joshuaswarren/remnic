@@ -1180,6 +1180,20 @@ A daemon configured with peer URLs polls each peer's authenticated `/health` cor
 
 Polling never runs inline on the health request path: a probe reads the last completed poll (with its timestamp) and a stale entry triggers a bounded background refresh (the corpus-watermark stale-while-revalidate idiom). The `replica` block on `/health` is filtered to the presenting token's namespace capabilities, so a namespace-restricted token never learns about namespaces it cannot see.
 
+## Replica convergence conflict policy (issue #2150)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `converge.conflictPolicy` | `newest-wins` | Selects how `remnic converge` resolves revisions that conflict. |
+
+Policy values:
+
+- `newest-wins` selects the newer revision when both sides carry comparable timestamps. Delete-versus-modify conflicts require a durable per-path deletion timestamp; without one, apply stops before mutation. If two revisions tie or either timestamp is unavailable, apply also stops because Remnic cannot yet preserve both revisions at distinct durable identities.
+- `manual` reports unresolved conflicts and stops before mutation.
+
+The CLI `--conflict-policy <policy>` flag overrides `converge.conflictPolicy` for that invocation.
+If neither is set, Remnic uses `newest-wins`.
+
 ## Pattern reinforcement (issue #687)
 
 Cross-session pattern detection: clusters memories by normalized content, reinforces recurring primitives with `reinforcement_count` + `last_reinforced_at`, and optionally boosts their recall score. Narrative overview: [pattern-reinforcement.md](pattern-reinforcement.md).
@@ -1236,6 +1250,7 @@ in recall responses. See [Threat model](security/memory-extraction-threat-model.
 | `recallAuditAnomalyRapidFireLimit` | `30` | Max queries in window before rapid-fire flag |
 | `memoryExtensionsRoot` | `""` | Override memory extensions root directory |
 | `offlineSyncExcludes` | `[]` | Extra offline-sync push-side exclude globs, additive to the built-in node-local state excludes (issue #1786) |
+| `converge.conflictPolicy` | `newest-wins` | Default conflict policy for `remnic converge`; `--conflict-policy` overrides it per command |
 
 
 ## Schema-Complete Default and Recommended Settings
@@ -1788,6 +1803,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `memoryExtensionsEnabled` | `true` | `true` |
 | `memoryExtensionsRoot` | `""` | `""` |
 | `offlineSyncExcludes` | `[]` | `[]` |
+| `converge.conflictPolicy` | `"newest-wins"` | `"newest-wins"` |
 | `activity.enabled` | `false` | `false` until a trusted local activity source is configured |
 | `activity.extractionMode` | `"off"` | `"off"`; set `"smart"` only to create trust-gated first-person memory candidates |
 | `activity.timezone` | `"UTC"` | Machine-local IANA timezone |
