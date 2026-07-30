@@ -2,6 +2,8 @@ import { normalizeNamespaceIdentity } from "../namespaces/identity.js";
 import { OFFLINE_SYNC_MAX_MTIME_MS } from "../offline-sync.js";
 import { validateArchiveRelativePath } from "../transfer/fs-utils.js";
 import type { OfflineSyncFileState } from "../offline-sync.js";
+import { CONVERGE_CONFLICT_POLICIES } from "../converge-config.js";
+import type { ConvergeConflictPolicy } from "../types.js";
 
 /**
  * Bootstrap reconciliation planner for two peer daemons whose corpora have
@@ -23,15 +25,6 @@ import type { OfflineSyncFileState } from "../offline-sync.js";
 
 /** Which way a path must move for the two corpora to agree. */
 export type ReconcileAction = "pull" | "push" | "identical" | "conflict" | "suppress";
-
-/**
- * How a path present on BOTH sides with different content is settled.
- *
- * `manual` is the safe default: on a bootstrap merge the two sides are equally
- * authoritative, so silently picking one is data loss with extra steps. An
- * operator opts into an automatic rule once they know the shape of their split.
- */
-export type ReconcileConflictPolicy = "manual" | "newest-wins" | "keep-both";
 
 /**
  * What the planner decided for a conflicting path.
@@ -162,7 +155,7 @@ export interface ReconcileNamespaceInput {
 }
 
 export interface ReconcileOptions {
-  conflictPolicy?: ReconcileConflictPolicy;
+  conflictPolicy?: ConvergeConflictPolicy;
 }
 
 /**
@@ -472,13 +465,11 @@ function indexDigestsByPath(
   return index;
 }
 
-const RECONCILE_CONFLICT_POLICIES: readonly ReconcileConflictPolicy[] = ["manual", "newest-wins", "keep-both"];
-
-function assertConflictPolicy(value: ReconcileConflictPolicy | undefined): ReconcileConflictPolicy {
+function assertConflictPolicy(value: ConvergeConflictPolicy | undefined): ConvergeConflictPolicy {
   if (value === undefined) return "manual";
-  if (!RECONCILE_CONFLICT_POLICIES.includes(value)) {
+  if (!CONVERGE_CONFLICT_POLICIES.includes(value)) {
     throw new ReconcilePlanInputError(
-      `reconcile: unknown conflictPolicy ${JSON.stringify(value)}; expected one of ${RECONCILE_CONFLICT_POLICIES.join(", ")}`,
+      `reconcile: unknown conflictPolicy ${JSON.stringify(value)}; expected one of ${CONVERGE_CONFLICT_POLICIES.join(", ")}`,
     );
   }
   return value;
@@ -512,7 +503,7 @@ function newerSideOf(
 }
 
 function resolveConflict(
-  policy: ReconcileConflictPolicy,
+  policy: ConvergeConflictPolicy,
   local: ReconcileFileState,
   peer: ReconcileFileState,
 ): ReconcileResolution {

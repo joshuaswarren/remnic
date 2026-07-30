@@ -2416,3 +2416,22 @@ test("parseConfig forwards bridgeMode as a raw passthrough (validation is in res
 test("parseConfig leaves the OpenClaw delegate timeout to the plugin parser", () => {
   assert.equal("bridgeHealthTimeoutMs" in parseConfig({ bridgeHealthTimeoutMs: 7_500 }), false);
 });
+
+test("parseConfig validates converge conflict policy and defaults to newest-wins", () => {
+  assert.deepEqual(parseConfig({}).converge, { conflictPolicy: "newest-wins" });
+
+  for (const conflictPolicy of ["newest-wins", "manual", "keep-both"] as const) {
+    assert.equal(parseConfig({ converge: { conflictPolicy } }).converge.conflictPolicy, conflictPolicy);
+  }
+
+  for (const conflictPolicy of ["", "unknown", 0, false, null]) {
+    assert.throws(
+      () => parseConfig({ converge: { conflictPolicy } }),
+      /converge\.conflictPolicy.*newest-wins.*manual.*keep-both/,
+    );
+  }
+
+  for (const converge of [0, null]) {
+    assert.throws(() => parseConfig({ converge }), /converge must be a plain object/);
+  }
+});

@@ -528,3 +528,41 @@ test("remnic converge apply: local-wins guards against the planned peer revision
   assert.equal(result.transfers.failed, 0);
   assert.equal(baseHeader, peerSha256);
 });
+
+test("remnic converge plan: config selects the policy and a CLI option overrides it", async () => {
+  const localFilesByNamespace = new Map<string, ReconcileFileState[]>([
+    ["default", [{ path: "facts/shared.md", sha256: shaA, mtimeMs: 1000 }]],
+  ]);
+  const peerFilesByNamespace = new Map<string, ReconcileFileState[]>([
+    ["default", [{ path: "facts/shared.md", sha256: shaB, mtimeMs: 2000 }]],
+  ]);
+  const config = parseConfig({ converge: { conflictPolicy: "keep-both" } });
+
+  const configured = await computeConvergePlan({
+    config,
+    localFilesByNamespace,
+    peerFilesByNamespace,
+  });
+  assert.equal(configured.entries[0]?.resolution, "supersede-link");
+
+  const overridden = await computeConvergePlan({
+    config,
+    conflictPolicy: "manual",
+    localFilesByNamespace,
+    peerFilesByNamespace,
+  });
+  assert.equal(overridden.entries[0]?.resolution, "unresolved");
+});
+
+test("remnic converge CLI rejects an invalid conflict-policy override", async () => {
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    await assert.rejects(
+      () => cmdConverge("plan", ["--conflict-policy", "invalid"], true, parseConfig({})),
+      /--conflict-policy must be one of newest-wins, manual, keep-both/,
+    );
+  } finally {
+    console.log = originalLog;
+  }
+});

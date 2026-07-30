@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import * as path from "node:path";
 import {
   type PluginConfig,
+  CONVERGE_CONFLICT_POLICIES,
+  DEFAULT_CONVERGE_CONFLICT_POLICY,
   parseConfig,
   type ResolveSecretRefFn,
   buildOfflineSyncSnapshotFromBase,
@@ -10,11 +12,11 @@ import {
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   applyOfflineSyncFileContentChunk,
 } from "@remnic/core";
+import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
 import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
 import { listNamespaces } from "@remnic/core/namespaces/migrate.js";
 import {
   planReconciliation,
-  type ReconcileConflictPolicy,
   type ReconcileFileState,
   type ReconcileNamespaceInput,
   type ReconcilePlan,
@@ -32,7 +34,7 @@ export interface ConvergePlanOptions {
   peerUrl?: string;
   peerToken?: string;
   cursorDir?: string;
-  conflictPolicy?: ReconcileConflictPolicy;
+  conflictPolicy?: ConvergeConflictPolicy;
   fetchImpl?: typeof fetch;
   resolveSecretRef?: ResolveSecretRefFn;
   baseFilesByNamespace?: Map<string, ReconcileFileState[]>;
@@ -459,13 +461,18 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     });
   }
 
-  return planReconciliation(inputs, { conflictPolicy: options.conflictPolicy });
+  const conflictPolicy = options.conflictPolicy
+    ?? config?.converge.conflictPolicy
+    ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
+  return planReconciliation(inputs, { conflictPolicy });
 }
 
 export async function executeConvergeApply(
   options: ConvergeApplyOptions = {},
 ): Promise<ConvergeApplyResult> {
-  const conflictPolicy = options.conflictPolicy ?? "manual";
+  const conflictPolicy = options.conflictPolicy
+    ?? options.config?.converge.conflictPolicy
+    ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
   const plan = await computeConvergePlan({ ...options, conflictPolicy });
 
   if (plan.converged && !options.dryRun) {
@@ -481,7 +488,7 @@ export async function executeConvergeApply(
 
   const unresolvedCount = plan.byNamespace.reduce((acc, report) => acc + report.unresolved, 0);
   if (unresolvedCount > 0 && conflictPolicy === "manual") {
-    // DEFAULT: unresolved conflicts STOP mutation (never auto-resolve a conflict).
+    // Manual policy stops before any unresolved conflict can mutate a peer.
     return {
       converged: false,
       status: "stopped_unresolved_conflicts",
@@ -824,7 +831,12 @@ export function formatConvergeApplyReport(result: ConvergeApplyResult): string {
   return lines.join("\n");
 }
 
-export async function cmdConverge(action: string, rest: string[], json: boolean): Promise<void> {
+export async function cmdConverge(
+  action: string,
+  rest: string[],
+  json: boolean,
+  config: PluginConfig = parseConfig({}),
+): Promise<void> {
   if (action === "help" || action === "--help" || action === "-h" || rest.includes("--help") || rest.includes("-h")) {
     console.log(`Usage: remnic converge <plan|apply> [options]
 
@@ -836,7 +848,8 @@ Options:
   --peer <url>      Peer server URL (or --remote-url / --remote)
   --token <token>   Bearer token or SecretRef for peer authentication
   --conflict-policy <policy>
-                    Conflict resolution policy (manual|newest-wins|keep-both)
+                    Policy override (newest-wins|manual|keep-both)
+                    Default: converge.conflictPolicy (newest-wins)
   --dry-run         Simulate transfers without mutating disk or remote peer
   --json            Output detailed JSON plan report
 `);
@@ -852,7 +865,7 @@ Options:
   let peerUrl: string | undefined;
   let peerToken: string | undefined;
   let dryRun = false;
-  let conflictPolicy: ReconcileConflictPolicy | undefined;
+  let conflictPolicy: ConvergeConflictPolicy | undefined;
 
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
@@ -864,17 +877,23 @@ Options:
       i += 1;
     } else if (arg === "--dry-run") {
       dryRun = true;
-    } else if (arg === "--conflict-policy" && rest[i + 1]) {
-      const pol = rest[i + 1];
-      if (pol === "manual" || pol === "newest-wins" || pol === "keep-both") {
-        conflictPolicy = pol;
+    } else if (arg === "--conflict-policy") {
+      const policy = rest[i + 1];
+      if (
+        typeof policy !== "string"
+        || !CONVERGE_CONFLICT_POLICIES.includes(policy as ConvergeConflictPolicy)
+      ) {
+        throw new Error(
+          `converge: --conflict-policy must be one of ${CONVERGE_CONFLICT_POLICIES.join(", ")}`,
+        );
       }
+      conflictPolicy = policy as ConvergeConflictPolicy;
       i += 1;
     }
   }
 
   if (action === "plan") {
-    const plan = await computeConvergePlan({ peerUrl, peerToken, conflictPolicy });
+    const plan = await computeConvergePlan({ config, peerUrl, peerToken, conflictPolicy });
     if (json) {
       console.log(JSON.stringify(plan, null, 2));
     } else {
@@ -888,6 +907,7 @@ Options:
     peerToken,
     dryRun,
     conflictPolicy,
+    config,
   });
 
   if (json) {

@@ -26,6 +26,7 @@ import type {
   TriggerMode,
   TrustWeights,
 } from "./types.js";
+import { parseConvergeConfig } from "./converge-config.js";
 import { log } from "./logger.js";
 import { cloneDefaultSessionObserverBands } from "./session-observer-bands.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
@@ -80,6 +81,7 @@ const DEFAULT_WORKSPACE_DIR = path.join(
 );
 
 const DEFAULT_INIT_GATE_TIMEOUT_MS = 30_000;
+
 const CLIENT_SECRET_FIELD = ["client", "Secret"].join("") as "clientSecret";
 const REFRESH_TOKEN_FIELD = ["refresh", "Token"].join("") as "refreshToken";
 const LEGACY_ACTIVE_RECALL_CUSTOM_FIELD = [
@@ -2332,6 +2334,7 @@ export function parseConfig(
     procedural,
     extractionLiveness: parseExtractionLivenessConfig(cfg),
     replicaPeers: parseReplicaPeersConfig(cfg),
+    converge: parseConvergeConfig(cfg.converge),
     wearables,
     meetings,
     activity,

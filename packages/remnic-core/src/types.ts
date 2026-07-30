@@ -8,6 +8,10 @@ import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { BufferTurnOwner } from "./buffer-turn-helpers.js";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 export type TriggerMode = "smart" | "every_n" | "time_based";
+export type ConvergeConflictPolicy = "newest-wins" | "manual" | "keep-both";
+export interface ConvergeConfig {
+  conflictPolicy: ConvergeConflictPolicy;
+}
 export type SignalLevel = "none" | "low" | "medium" | "high";
 export type MemoryCategory = "fact" | "preference" | "correction" | "entity" | "decision" | "relationship" | "principle" | "commitment" | "moment" | "skill" | "rule" | "procedure" | "reasoning_trace";
 export type ConsolidationAction = "ADD" | "MERGE" | "UPDATE" | "INVALIDATE" | "SKIP";
@@ -1208,6 +1212,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   procedural: ProceduralConfig;
   extractionLiveness: ExtractionLivenessConfig;
   replicaPeers: ReplicaPeersConfig;
+  converge: ConvergeConfig;
   /** Claim-level provenance spans (#1575); see `ProvenanceConfig` for defaults. */
   provenance: ProvenanceConfig;
   /**
