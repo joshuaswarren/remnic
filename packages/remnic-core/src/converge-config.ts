@@ -3,7 +3,6 @@ import type { ConvergeConfig, ConvergeConflictPolicy } from "./types.js";
 export const CONVERGE_CONFLICT_POLICIES = [
   "newest-wins",
   "manual",
-  "keep-both",
 ] as const satisfies readonly ConvergeConflictPolicy[];
 
 export const DEFAULT_CONVERGE_CONFLICT_POLICY: ConvergeConflictPolicy = "newest-wins";

@@ -579,9 +579,6 @@ export async function executeConvergeApply(
         transferType = "pull";
       } else if (entry.resolution === "local-wins") {
         transferType = "push";
-      } else if (entry.resolution === "supersede-link") {
-        if (entry.newerSide === "peer") transferType = "pull";
-        else if (entry.newerSide === "local") transferType = "push";
       }
     }
 
@@ -848,7 +845,7 @@ Options:
   --peer <url>      Peer server URL (or --remote-url / --remote)
   --token <token>   Bearer token or SecretRef for peer authentication
   --conflict-policy <policy>
-                    Policy override (newest-wins|manual|keep-both)
+                    Policy override (newest-wins|manual)
                     Default: converge.conflictPolicy (newest-wins)
   --dry-run         Simulate transfers without mutating disk or remote peer
   --json            Output detailed JSON plan report

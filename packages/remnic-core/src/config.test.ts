@@ -2420,14 +2420,14 @@ test("parseConfig leaves the OpenClaw delegate timeout to the plugin parser", ()
 test("parseConfig validates converge conflict policy and defaults to newest-wins", () => {
   assert.deepEqual(parseConfig({}).converge, { conflictPolicy: "newest-wins" });
 
-  for (const conflictPolicy of ["newest-wins", "manual", "keep-both"] as const) {
+  for (const conflictPolicy of ["newest-wins", "manual"] as const) {
     assert.equal(parseConfig({ converge: { conflictPolicy } }).converge.conflictPolicy, conflictPolicy);
   }
 
-  for (const conflictPolicy of ["", "unknown", 0, false, null]) {
+  for (const conflictPolicy of ["keep-both", "", "unknown", 0, false, null]) {
     assert.throws(
       () => parseConfig({ converge: { conflictPolicy } }),
-      /converge\.conflictPolicy.*newest-wins.*manual.*keep-both/,
+      /converge\.conflictPolicy.*newest-wins.*manual/,
     );
   }
 

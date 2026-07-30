@@ -1188,9 +1188,8 @@ Polling never runs inline on the health request path: a probe reads the last com
 
 Policy values:
 
-- `newest-wins` selects the revision with the newest timestamp. If either timestamp is unavailable or they tie, it preserves both with a supersede link. This is the backward-compatible default.
+- `newest-wins` selects the revision with the newest timestamp. For a delete-versus-modify conflict, the timestamped surviving revision wins. If two revisions tie or either timestamp is unavailable, apply stops because Remnic cannot yet preserve both revisions at distinct durable identities. This is the backward-compatible default.
 - `manual` reports unresolved conflicts and stops before mutation.
-- `keep-both` preserves both revisions and uses the planner's supersede links to retain their relationship.
 
 The CLI `--conflict-policy <policy>` flag overrides `converge.conflictPolicy` for that invocation.
 If neither is set, Remnic uses `newest-wins`.

@@ -295,15 +295,15 @@ Conflict policy precedence is:
 2. `converge.conflictPolicy` from the loaded config.
 3. `newest-wins`, the backward-compatible default.
 
-Choose a policy based on how much operator review and history retention the corpus needs:
+Choose a policy based on how much operator review the corpus needs:
 
-- `newest-wins` selects the revision with the newest timestamp. If timestamps tie or either is
-  missing, it uses the `keep-both` behavior. Use it for automatic reconciliation and behavior
-  compatible with releases that predate configurable policies.
+- `newest-wins` selects the revision with the newest timestamp. For delete-versus-modify
+  conflicts, the timestamped surviving revision wins. If two revisions tie or either timestamp is
+  missing, apply stops because transport cannot yet preserve both at distinct durable identities.
+  Use it for automatic reconciliation and behavior compatible with releases that predate
+  configurable policies.
 - `manual` leaves conflicts unresolved. A plan can report them, but apply stops before any
   mutation while conflicts remain. Use it when an operator must review every conflict.
-- `keep-both` preserves both revisions and uses the planner's supersede links to retain their
-  relationship. Use it when preserving competing history matters more than selecting one winner.
 
 For the safest workflow, run `plan`, inspect its conflicts and actions, then run `apply --dry-run`
 with the same peer, token, and policy. Run `apply` without `--dry-run` only after that output is

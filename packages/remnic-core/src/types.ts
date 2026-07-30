@@ -8,7 +8,7 @@ import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { BufferTurnOwner } from "./buffer-turn-helpers.js";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 export type TriggerMode = "smart" | "every_n" | "time_based";
-export type ConvergeConflictPolicy = "newest-wins" | "manual" | "keep-both";
+export type ConvergeConflictPolicy = "newest-wins" | "manual";
 export interface ConvergeConfig {
   conflictPolicy: ConvergeConflictPolicy;
 }

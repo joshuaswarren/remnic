@@ -31,10 +31,9 @@ export type ReconcileAction = "pull" | "push" | "identical" | "conflict" | "supp
 
 /**
  * What the planner decided for a conflicting path.
- *
- * `keep-both` never overwrites: the older side is retained and linked as
- * superseded by the newer one, which is the only resolution that cannot lose a
- * fact neither corpus has seen.
+ * `supersede-link` records that both revisions need durable preservation when
+ * timestamps cannot safely select a winner. Apply must stop until transport
+ * can assign distinct durable identities to both revisions.
  */
 export type ReconcileResolution = "local-wins" | "peer-wins" | "supersede-link" | "unresolved";
 
@@ -57,15 +56,6 @@ export interface ReconcilePlanEntry {
    * delete the live copy instead of the retracted one.
    */
   suppressSide?: "local" | "peer" | "both";
-  /**
-   * Which revision is newer, set only for a `supersede-link` resolution.
-   *
-   * The contract is that the older revision is linked as superseded by the
-   * newer one, so transport needs the direction. Absent when the timestamps
-   * cannot order the two - which is exactly when `newest-wins` degrades to
-   * `supersede-link` - and the link direction is then an operator decision.
-   */
-  newerSide?: "local" | "peer";
 }
 
 export type ReconcileReason =
@@ -490,35 +480,22 @@ function compareEntries(a: ReconcilePlanEntry, b: ReconcilePlanEntry): number {
   return 0;
 }
 
-/**
- * Direction for a supersede link, when the timestamps can order the pair.
- * Omitted otherwise so an unordered link is visibly unordered rather than
- * silently defaulted to one side.
- */
-function newerSideOf(
-  local: ReconcileFileState,
-  peer: ReconcileFileState,
-): { newerSide?: "local" | "peer" } {
-  const localMs = local.mtimeMs;
-  const peerMs = peer.mtimeMs;
-  if (typeof localMs !== "number" || typeof peerMs !== "number" || localMs === peerMs) return {};
-  return { newerSide: localMs > peerMs ? "local" : "peer" };
-}
 
 function resolveConflict(
   policy: ConvergeConflictPolicy,
-  local: ReconcileFileState,
-  peer: ReconcileFileState,
+  local: ReconcileFileState | undefined,
+  peer: ReconcileFileState | undefined,
 ): ReconcileResolution {
-  if (policy === "keep-both") return "supersede-link";
   if (policy !== "newest-wins") return "unresolved";
-  const localMs = typeof local.mtimeMs === "number" && Number.isFinite(local.mtimeMs) ? local.mtimeMs : null;
-  const peerMs = typeof peer.mtimeMs === "number" && Number.isFinite(peer.mtimeMs) ? peer.mtimeMs : null;
-  // Without a usable timestamp on both sides "newest" is not decidable, and a
-  // coin flip here silently discards one side's history. Fall back to keeping
-  // both rather than inventing an order.
-  if (localMs === null || peerMs === null) return "supersede-link";
-  if (localMs === peerMs) return "supersede-link";
+  const localMs = typeof local?.mtimeMs === "number" && Number.isFinite(local.mtimeMs)
+    ? local.mtimeMs
+    : null;
+  const peerMs = typeof peer?.mtimeMs === "number" && Number.isFinite(peer.mtimeMs)
+    ? peer.mtimeMs
+    : null;
+  if (local === undefined) return peerMs === null ? "unresolved" : "peer-wins";
+  if (peer === undefined) return localMs === null ? "unresolved" : "local-wins";
+  if (localMs === null || peerMs === null || localMs === peerMs) return "supersede-link";
   return localMs > peerMs ? "local-wins" : "peer-wins";
 }
 
@@ -632,7 +609,9 @@ export function planNamespaceReconciliation(
           reason: baseSha256 === localFile.sha256 ? "peer_deleted" : "local_modified_peer_deleted",
           localSha256: localFile.sha256,
           baseSha256,
-          resolution: "unresolved",
+          resolution: baseSha256 === localFile.sha256
+            ? "unresolved"
+            : resolveConflict(policy, localFile, undefined),
         });
         continue;
       }
@@ -693,7 +672,6 @@ export function planNamespaceReconciliation(
       peerSha256: peerFile.sha256,
       ...(baseSha256 === undefined ? {} : { baseSha256 }),
       resolution,
-      ...(resolution === "supersede-link" ? newerSideOf(localFile, peerFile) : {}),
     });
   }
 
@@ -725,7 +703,9 @@ export function planNamespaceReconciliation(
         reason: baseSha256 === peerFile.sha256 ? "local_deleted" : "local_deleted_peer_modified",
         peerSha256: peerFile.sha256,
         baseSha256,
-        resolution: "unresolved",
+        resolution: baseSha256 === peerFile.sha256
+          ? "unresolved"
+          : resolveConflict(policy, undefined, peerFile),
       });
       continue;
     }
@@ -751,12 +731,9 @@ export function summarizeReconcilePlan(entries: readonly ReconcilePlanEntry[]): 
       byNamespace.set(entry.namespace, report);
     }
     report[entry.action] += 1;
-    // A supersede link with no `newerSide` could not be ordered, and the link
-    // direction is then an operator decision - so it counts as unresolved even
-    // though the policy nominally settled it.
     const needsOperator =
       entry.resolution === "unresolved"
-      || (entry.resolution === "supersede-link" && entry.newerSide === undefined);
+      || entry.resolution === "supersede-link";
     if (entry.action === "conflict" && needsOperator) report.unresolved += 1;
   }
   return [...byNamespace.values()].sort((a, b) => (a.namespace === b.namespace ? 0 : a.namespace < b.namespace ? -1 : 1));

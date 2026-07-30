@@ -101,17 +101,6 @@ test("newest-wins degrades to keeping both when the order is not decidable", () 
   assert.equal(entryFor(entries, "facts/tied.md").resolution, "supersede-link");
 });
 
-test("keep-both never designates a loser", () => {
-  const entries = planNamespaceReconciliation(
-    {
-      namespace: "default",
-      local: [file("facts/a.md", "local", 2000)],
-      peer: [file("facts/a.md", "peer", 1000)],
-    },
-    { conflictPolicy: "keep-both" },
-  );
-  assert.equal(entryFor(entries, "facts/a.md").resolution, "supersede-link");
-});
 
 test("a base turns a one-sided change back into an ordinary transfer", () => {
   const base = [file("facts/a.md", "v1"), file("facts/b.md", "v1")];
@@ -774,29 +763,6 @@ test("Win32-aliasing path segments are rejected", () => {
   }
 });
 
-test("a supersede link names the newer revision", () => {
-  // Without a direction transport must re-derive it or guess which side is
-  // linked as superseding the other.
-  const newerPeer = planNamespaceReconciliation(
-    {
-      namespace: "default",
-      local: [file("facts/a.md", "local", 1000)],
-      peer: [file("facts/a.md", "peer", 2000)],
-    },
-    { conflictPolicy: "keep-both" },
-  );
-  assert.equal(entryFor(newerPeer, "facts/a.md").newerSide, "peer");
-
-  const newerLocal = planNamespaceReconciliation(
-    {
-      namespace: "default",
-      local: [file("facts/a.md", "local", 2000)],
-      peer: [file("facts/a.md", "peer", 1000)],
-    },
-    { conflictPolicy: "keep-both" },
-  );
-  assert.equal(entryFor(newerLocal, "facts/a.md").newerSide, "local");
-});
 
 test("an unorderable supersede link says so instead of picking a side", () => {
   for (const pair of [
@@ -805,11 +771,10 @@ test("an unorderable supersede link says so instead of picking a side", () => {
   ] as const) {
     const entries = planNamespaceReconciliation(
       { namespace: "default", local: [pair[0]], peer: [pair[1]] },
-      { conflictPolicy: "keep-both" },
+      { conflictPolicy: "newest-wins" },
     );
     const entry = entryFor(entries, "facts/a.md");
     assert.equal(entry.resolution, "supersede-link");
-    assert.equal(entry.newerSide, undefined, "an unordered link must be visibly unordered");
   }
 });
 
@@ -845,25 +810,13 @@ test("a directionless supersede link is reported as unresolved", () => {
       local: [file("facts/a.md", "local", 5000)],
       peer: [file("facts/a.md", "peer", 5000)],
     },
-    { conflictPolicy: "keep-both" },
+    { conflictPolicy: "newest-wins" },
   );
-  assert.equal(entryFor(entries, "facts/a.md").newerSide, undefined);
   assert.deepEqual(summarizeReconcilePlan(entries), [
     { namespace: "default", pull: 0, push: 0, identical: 0, conflict: 1, suppress: 0, unresolved: 1 },
   ]);
 });
 
-test("an ordered supersede link is not counted as unresolved", () => {
-  const entries = planNamespaceReconciliation(
-    {
-      namespace: "default",
-      local: [file("facts/a.md", "local", 1000)],
-      peer: [file("facts/a.md", "peer", 2000)],
-    },
-    { conflictPolicy: "keep-both" },
-  );
-  assert.equal(summarizeReconcilePlan(entries)[0]?.unresolved, 0);
-});
 
 test("superscript COM and LPT device aliases are rejected", () => {
   for (const bad of ["facts/COM\u00b9.txt", "facts/LPT\u00b2", "facts/com\u00b3.md"]) {
@@ -926,7 +879,7 @@ test("an empty namespace list still validates its options", () => {
       `options ${Object.prototype.toString.call(bad)}`,
     );
   }
-  assert.equal(planReconciliation([], { conflictPolicy: "keep-both" }).converged, true);
+  assert.equal(planReconciliation([], { conflictPolicy: "manual" }).converged, true);
 });
 
 test("sharp-S aliases fold together", () => {

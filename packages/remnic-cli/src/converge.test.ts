@@ -266,6 +266,49 @@ test("remnic converge apply: newest-wins stops when timestamps cannot resolve a 
   assert.equal(result.cursorUpdated, false);
 });
 
+test("remnic converge apply: configured newest-wins resolves delete-versus-modify in both directions", async () => {
+  const localModifiedPath = "facts/local-modified.md";
+  const peerModifiedPath = "facts/peer-modified.md";
+  const localModified = Buffer.from("local v2");
+  const peerModified = Buffer.from("peer v2");
+  const localSha = createHash("sha256").update(localModified).digest("hex");
+  const peerSha = createHash("sha256").update(peerModified).digest("hex");
+  const baseSha = "c".repeat(64);
+  const localMap = new Map<string, ReconcileFileState[]>([
+    ["default", [{ path: localModifiedPath, sha256: localSha, mtimeMs: 2000 }]],
+  ]);
+  const peerMap = new Map<string, ReconcileFileState[]>([
+    ["default", [{ path: peerModifiedPath, sha256: peerSha, mtimeMs: 3000 }]],
+  ]);
+  const baseMap = new Map<string, ReconcileFileState[]>([
+    ["default", [
+      { path: localModifiedPath, sha256: baseSha, mtimeMs: 1000 },
+      { path: peerModifiedPath, sha256: baseSha, mtimeMs: 1000 },
+    ]],
+  ]);
+  const localBuffers = new Map<string, Map<string, Buffer>>([
+    ["default", new Map([[localModifiedPath, localModified]])],
+  ]);
+  const peerBuffers = new Map<string, Map<string, Buffer>>([
+    ["default", new Map([[peerModifiedPath, peerModified]])],
+  ]);
+
+  const result = await executeConvergeApply({
+    config: parseConfig({ converge: { conflictPolicy: "newest-wins" } }),
+    baseFilesByNamespace: baseMap,
+    localFilesByNamespace: localMap,
+    peerFilesByNamespace: peerMap,
+    localFileBuffers: localBuffers,
+    peerFileBuffers: peerBuffers,
+  });
+
+  assert.equal(result.status, "applied");
+  assert.equal(result.transfers.conflictsResolved, 2);
+  assert.equal(result.transfers.failed, 0);
+  assert.equal(peerBuffers.get("default")?.get(localModifiedPath), localModified);
+  assert.equal(localBuffers.get("default")?.get(peerModifiedPath), peerModified);
+});
+
 test("remnic converge apply: dry-run mode simulates transfers without disk writes", async () => {
   const peerFile: ReconcileFileState = { path: "facts/remote.md", sha256: shaA };
   const localMap = new Map<string, ReconcileFileState[]>([["default", []]]);
@@ -555,32 +598,34 @@ test("remnic converge plan: config selects the policy and a CLI option overrides
   const peerFilesByNamespace = new Map<string, ReconcileFileState[]>([
     ["default", [{ path: "facts/shared.md", sha256: shaB, mtimeMs: 2000 }]],
   ]);
-  const config = parseConfig({ converge: { conflictPolicy: "keep-both" } });
+  const config = parseConfig({ converge: { conflictPolicy: "manual" } });
 
   const configured = await computeConvergePlan({
     config,
     localFilesByNamespace,
     peerFilesByNamespace,
   });
-  assert.equal(configured.entries[0]?.resolution, "supersede-link");
+  assert.equal(configured.entries[0]?.resolution, "unresolved");
 
   const overridden = await computeConvergePlan({
     config,
-    conflictPolicy: "manual",
+    conflictPolicy: "newest-wins",
     localFilesByNamespace,
     peerFilesByNamespace,
   });
-  assert.equal(overridden.entries[0]?.resolution, "unresolved");
+  assert.equal(overridden.entries[0]?.resolution, "peer-wins");
 });
 
-test("remnic converge CLI rejects an invalid conflict-policy override", async () => {
+test("remnic converge CLI rejects removed and unknown conflict-policy overrides", async () => {
   const originalLog = console.log;
   console.log = () => {};
   try {
-    await assert.rejects(
-      () => cmdConverge("plan", ["--conflict-policy", "invalid"], true, parseConfig({})),
-      /--conflict-policy must be one of newest-wins, manual, keep-both/,
-    );
+    for (const conflictPolicy of ["keep-both", "invalid"]) {
+      await assert.rejects(
+        () => cmdConverge("plan", ["--conflict-policy", conflictPolicy], true, parseConfig({})),
+        /--conflict-policy must be one of newest-wins, manual/,
+      );
+    }
   } finally {
     console.log = originalLog;
   }
