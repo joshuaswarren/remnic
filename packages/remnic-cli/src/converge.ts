@@ -210,6 +210,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
 
   if (options.baseFilesByNamespace) {
     for (const [ns, files] of options.baseFilesByNamespace) {
+      namespacesToPlan.add(ns);
       baseMap.set(ns, files);
     }
   }

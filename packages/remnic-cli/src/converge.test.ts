@@ -153,6 +153,23 @@ test("remnic converge plan: hydrates durable cursor base files when present", as
   }
 });
 
+test("remnic converge plan: validates a namespace present only in durable cursor state", async () => {
+  const baseMap = new Map<string, ReconcileFileState[]>([
+    [
+      "cursor-only",
+      [
+        { path: "Facts/a.md", sha256: shaA },
+        { path: "facts/A.md", sha256: shaB },
+      ],
+    ],
+  ]);
+
+  await assert.rejects(
+    computeConvergePlan({ baseFilesByNamespace: baseMap }),
+    /aliasing paths/,
+  );
+});
+
 test("remnic converge apply: converged state returns immediate no-op and updates cursor", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-apply-test-"));
   try {
