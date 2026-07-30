@@ -64,6 +64,49 @@ test("aggregate watermark selects the most recent extraction across distinct nam
   }
 });
 
+test("aggregate stats sum extraction counts and select the newest consolidation", async () => {
+  const fixture = await namespacedFixture();
+  try {
+    const result = await readAggregateExtractionWatermark({
+      config: fixture.config,
+      rootStorage: {
+        dir: fixture.memoryDir,
+        loadMeta: async () => ({
+          lastExtractionAt: "2026-07-20T12:00:00.000Z",
+          extractionCount: 2,
+          lastConsolidationAt: "2026-07-20T13:00:00.000Z",
+        }),
+      },
+      storageForNamespace: async (namespace, rootDir) => ({
+        dir: rootDir,
+        loadMeta: async () => ({
+          lastExtractionAt:
+            namespace === "team-a"
+              ? "2026-07-21T12:00:00.000Z"
+              : "2026-07-22T12:00:00.000Z",
+          extractionCount:
+            namespace === "team-a"
+              ? 3
+              : namespace === fixture.config.sharedNamespace
+                ? 7
+                : 5,
+          lastConsolidationAt:
+            namespace === "team-a"
+              ? "2026-07-23T13:00:00.000Z"
+              : "2026-07-21T13:00:00.000Z",
+        }),
+      }),
+    });
+
+    assert.deepEqual(result.rootStats, {
+      extractionCount: 17,
+      lastConsolidationAt: "2026-07-23T13:00:00.000Z",
+    });
+  } finally {
+    await rm(fixture.memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("a namespace-isolated extraction advances the daemon aggregate watermark", async () => {
   const fixture = await namespacedFixture();
   try {
@@ -89,7 +132,14 @@ test("a partial namespace read returns readFailed instead of a survivor's fresh 
   try {
     const result = await readAggregateExtractionWatermark({
       config: fixture.config,
-      rootStorage: storage(fixture.memoryDir, async () => "2026-07-23T12:00:00.000Z"),
+      rootStorage: {
+        dir: fixture.memoryDir,
+        loadMeta: async () => ({
+          lastExtractionAt: "2026-07-23T12:00:00.000Z",
+          extractionCount: 2,
+          lastConsolidationAt: null,
+        }),
+      },
       storageForNamespace: async (namespace) =>
         storage(fixture.namespaceDirs[namespace], async () => {
           if (namespace === "team-b") throw new Error("meta store unavailable");
@@ -101,6 +151,7 @@ test("a partial namespace read returns readFailed instead of a survivor's fresh 
     assert.equal(result.readFailed, true);
     assert.match(result.readError ?? "", /namespace watermark unreadable/);
     assert.match(result.readError ?? "", /meta store unavailable/);
+    assert.equal(result.rootStats, undefined, "partial aggregate counters must not be reported");
   } finally {
     await rm(fixture.memoryDir, { recursive: true, force: true });
   }
@@ -136,17 +187,27 @@ test("default root capability check uses normalized aliases for migrated storage
       rootStorage: storage(fixture.memoryDir, async () => {
         throw new Error("inactive legacy root is unreadable");
       }),
-      storageForNamespace: async (_namespace, rootDir) =>
-        storage(rootDir, async () =>
-          path.resolve(rootDir) === path.resolve(migratedDefaultDir)
-            ? "2026-07-26T12:00:00.000Z"
-            : "2026-07-24T12:00:00.000Z",
-        ),
+      storageForNamespace: async (_namespace, rootDir) => ({
+        dir: rootDir,
+        loadMeta: async () => ({
+          lastExtractionAt:
+            path.resolve(rootDir) === path.resolve(migratedDefaultDir)
+              ? "2026-07-26T12:00:00.000Z"
+              : "2026-07-24T12:00:00.000Z",
+          extractionCount:
+            path.resolve(rootDir) === path.resolve(migratedDefaultDir) ? 7 : 11,
+          lastConsolidationAt: null,
+        }),
+      }),
       caps: { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
     });
 
     assert.equal(result.lastExtractionAt, "2026-07-26T12:00:00.000Z");
     assert.equal(result.readFailed, false);
+    assert.deepEqual(result.rootStats, {
+      extractionCount: 7,
+      lastConsolidationAt: null,
+    });
   } finally {
     await rm(fixture.memoryDir, { recursive: true, force: true });
   }
@@ -164,6 +225,88 @@ test("unparsable non-null timestamp in namespace store fails the aggregate read"
     assert.equal(result.lastExtractionAt, null);
     assert.equal(result.readFailed, true);
     assert.match(result.readError ?? "", /watermark timestamp invalid/);
+  } finally {
+    await rm(fixture.memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("overflowed calendar timestamp in namespace store fails the aggregate read", async () => {
+  const fixture = await namespacedFixture();
+  try {
+    const result = await readAggregateExtractionWatermark({
+      config: fixture.config,
+      rootStorage: storage(fixture.memoryDir, async () => "2026-07-20T12:00:00.000Z"),
+      storageForNamespace: async (namespace) =>
+        storage(
+          fixture.namespaceDirs[namespace],
+          async () =>
+            namespace === "team-a"
+              ? "2026-02-30T12:00:00.000Z"
+              : "2026-07-25T12:00:00.000Z",
+        ),
+    });
+
+    assert.equal(result.lastExtractionAt, null);
+    assert.equal(result.readFailed, true);
+    assert.match(result.readError ?? "", /watermark timestamp invalid/);
+  } finally {
+    await rm(fixture.memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("valid ISO timestamp variants remain eligible for aggregate watermark selection", async () => {
+  const fixture = await namespacedFixture();
+  try {
+    const result = await readAggregateExtractionWatermark({
+      config: fixture.config,
+      rootStorage: storage(fixture.memoryDir, async () => "2026-07-19t24:00:00z"),
+      storageForNamespace: async (namespace) =>
+        storage(
+          fixture.namespaceDirs[namespace],
+          async () =>
+            namespace === "team-a"
+              ? "2026-07-20t12:00:00z"
+              : "2026-07-20T08:00:00-0500",
+        ),
+    });
+
+    assert.equal(result.lastExtractionAt, "2026-07-20T08:00:00-0500");
+    assert.equal(result.readFailed, false);
+  } finally {
+    await rm(fixture.memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("overflowed consolidation timestamp in namespace store fails the aggregate read", async () => {
+  const fixture = await namespacedFixture();
+  try {
+    const result = await readAggregateExtractionWatermark({
+      config: fixture.config,
+      rootStorage: {
+        dir: fixture.memoryDir,
+        loadMeta: async () => ({
+          lastExtractionAt: "2026-07-20T12:00:00.000Z",
+          extractionCount: 2,
+          lastConsolidationAt: "2026-07-20T13:00:00.000Z",
+        }),
+      },
+      storageForNamespace: async (namespace) => ({
+        dir: fixture.namespaceDirs[namespace],
+        loadMeta: async () => ({
+          lastExtractionAt: "2026-07-21T12:00:00.000Z",
+          extractionCount: 3,
+          lastConsolidationAt:
+            namespace === "team-a"
+              ? "2026-02-30T13:00:00.000Z"
+              : "2026-07-21T13:00:00.000Z",
+        }),
+      }),
+    });
+
+    assert.equal(result.lastExtractionAt, null);
+    assert.equal(result.readFailed, true);
+    assert.equal(result.rootStats, undefined);
+    assert.match(result.readError ?? "", /consolidation timestamp invalid/);
   } finally {
     await rm(fixture.memoryDir, { recursive: true, force: true });
   }

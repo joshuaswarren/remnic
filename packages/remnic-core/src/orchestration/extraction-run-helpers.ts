@@ -309,11 +309,11 @@ export async function runExtractionPostPersist(
 }
 
 /**
- * Advance the extraction liveness watermark for a successfully parsed empty
- * extraction (#2223) and record its processed fingerprint when applicable.
- * Fingerprinted/import runs treat the metadata save as load-bearing (dedupe
- * state) and propagate failures; normal live runs treat the stamp as
- * diagnostic liveness and fail open. Deadline errors always propagate.
+ * Record a processed fingerprint when applicable and advance the extraction
+ * liveness watermark only for a provider-backed empty success. Fingerprinted
+ * imports treat the metadata save as load-bearing dedupe state; normal live
+ * runs treat the stamp as diagnostic and fail open. Deadline errors always
+ * propagate.
  */
 export async function commitEmptySuccessExtraction(args: {
   storage: StorageManager;
@@ -321,6 +321,7 @@ export async function commitEmptySuccessExtraction(args: {
   extractionFingerprint: string | null;
   shouldPersistProcessedFingerprint: boolean;
   hasExtractionFailure: boolean;
+  extractionSkippedReason: ExtractionResult["extractionSkippedReason"];
   recordProcessedExtractionFingerprint: (storage: StorageManager, fingerprint: string, meta: MetaState) => Promise<unknown>;
   runDeadlineAware: <T>(operation: () => Promise<T>, phase: string, clearTimerOnError?: boolean) => Promise<T>;
   isDeadlineError: (error: unknown) => boolean;
@@ -331,26 +332,43 @@ export async function commitEmptySuccessExtraction(args: {
     extractionFingerprint,
     shouldPersistProcessedFingerprint,
     hasExtractionFailure,
+    extractionSkippedReason,
     recordProcessedExtractionFingerprint,
     runDeadlineAware,
     isDeadlineError,
   } = args;
-  let meta = existingMeta;
-  if (extractionFingerprint && shouldPersistProcessedFingerprint && !hasExtractionFailure) {
-    meta ??= await storage.loadMeta();
-    await recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta);
-  }
-  if (!hasExtractionFailure) {
-    const livenessStampFatal = shouldPersistProcessedFingerprint;
-    try {
-      meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_empty_success_liveness_load", false);
+  const shouldRecordFingerprint =
+    extractionFingerprint !== null &&
+    shouldPersistProcessedFingerprint &&
+    !hasExtractionFailure;
+  const shouldStampLiveness =
+    !hasExtractionFailure && extractionSkippedReason === undefined;
+  if (!shouldRecordFingerprint && !shouldStampLiveness) return;
+
+  const metadataFailureIsFatal = shouldRecordFingerprint;
+  try {
+    const meta =
+      existingMeta ??
+      await runDeadlineAware(
+        () => storage.loadMeta(),
+        "during_empty_success_liveness_load",
+        false,
+      );
+    if (shouldRecordFingerprint) {
+      await recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta);
+    }
+    if (shouldStampLiveness) {
       meta.extractionCount += 1;
       meta.lastExtractionAt = new Date().toISOString();
-      await runDeadlineAware(() => storage.saveMeta(meta!), "during_empty_success_liveness_save", false);
-    } catch (err) {
-      if (isDeadlineError(err)) throw err;
-      if (livenessStampFatal) throw err;
-      log.warn("runExtraction: failed to stamp empty-success liveness watermark (non-fatal)", err);
     }
+    await runDeadlineAware(
+      () => storage.saveMeta(meta),
+      "during_empty_success_liveness_save",
+      false,
+    );
+  } catch (err) {
+    if (isDeadlineError(err)) throw err;
+    if (metadataFailureIsFatal) throw err;
+    log.warn("runExtraction: failed to stamp empty-success liveness watermark (non-fatal)", err);
   }
 }

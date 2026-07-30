@@ -93,7 +93,11 @@ interface Harness {
   setRespond: (fn: (turns: BufferTurn[]) => ExtractionResult | Promise<ExtractionResult>) => void;
   setPassiveCapture: (fn: () => void | Promise<void>) => void;
   setMemoryBox: (fn: () => void | Promise<void>) => void;
+  setBufferClear: (fn: () => void | Promise<void>) => void;
   setPersist: (fn: () => void | Promise<void>) => void;
+  setFingerprintRecorder: (
+    fn: ExtractionRunCoordinatorDeps["recordProcessedExtractionFingerprint"],
+  ) => void;
   recordedProcessedCount: () => number;
   run: (
     coord: ExtractionRunCoordinator,
@@ -140,6 +144,9 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
   let persistHandler: () => void | Promise<void> = async () => {};
   let memoryBoxHandler: () => void | Promise<void> = async () => {};
   let recordedProcessedCount = 0;
+  let fingerprintRecorder:
+    ExtractionRunCoordinatorDeps["recordProcessedExtractionFingerprint"] =
+      async () => {};
 
   let threadingBlocked = false;
   let persistCalls = 0;
@@ -184,8 +191,9 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     requestQmdMaintenance: () => {},
     runTierMigrationCycle: async () => migrationSummary,
     getLastPersistExtractionDeferredCount: () => 0,
-    recordProcessedExtractionFingerprint: async () => {
+    recordProcessedExtractionFingerprint: async (storage, fingerprint, meta) => {
       recordedProcessedCount += 1;
+      await fingerprintRecorder(storage, fingerprint, meta);
     },
   });
 
@@ -209,6 +217,14 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     },
     setMemoryBox: (fn) => {
       memoryBoxHandler = fn;
+    },
+    setBufferClear: (fn) => {
+      buffer.clearAfterExtraction = async () => {
+        await fn();
+      };
+    },
+    setFingerprintRecorder: (fn) => {
+      fingerprintRecorder = fn;
     },
     setPersist: (fn) => {
       persistHandler = fn;
@@ -685,6 +701,32 @@ test("circuit breaker: a forced flush still calls extract() while the breaker is
   }
 });
 
+test("circuit breaker: a forced local prefilter skip does not heal an open breaker", async () => {
+  const h = await makeHarness({
+    extractionRetryScheduleMs: [3_600_000],
+    extractionBreakerFailureThreshold: 1,
+    extractionBreakerCooldownMs: 3_600_000,
+  });
+  try {
+    const coord = h.newCoordinator();
+    h.setRespond(() => failureResult("provider_retryable"));
+    await h.run(coord, "fp-1");
+    assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open");
+
+    h.setRespond(() => ({
+      ...emptySuccessResult(),
+      extractionSkippedReason: "mechanical_telemetry",
+    }));
+    const result = await h.run(coord, "fp-2", { force: true });
+
+    assert.equal(result.reason, "empty_extraction_result");
+    assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open");
+    assert.equal(coord.getExtractionResilienceStatus().breaker.consecutiveFailures, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("circuit breaker: auth_config failure opens the breaker immediately (no hot loop)", async () => {
   const h = await makeHarness({
     extractionRetryScheduleMs: [3_600_000],
@@ -1013,7 +1055,7 @@ test("extraction liveness (#2223): a normal live empty success advances lastExtr
     const result = await coord.runExtraction(liveTurns("nothing-durable-here"), {
       skipCharThreshold: true,
       skipUserTurnThreshold: true,
-      clearBufferAfterExtraction: false,
+      clearBufferAfterExtraction: true,
       bufferKey: "nothing-durable-here",
     });
 
@@ -1025,6 +1067,133 @@ test("extraction liveness (#2223): a normal live empty success advances lastExtr
     assert.equal(after.extractionCount, baselineCount + 1, "empty success increments extractionCount");
     assert.ok(after.lastExtractionAt, "empty success stamps lastExtractionAt");
     assert.equal(h.recordedProcessedCount(), 0, "normal live turns never record a processed fingerprint");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("extraction liveness (#2227): prefilter skips do not advance the watermark", async () => {
+  for (const extractionSkippedReason of [
+    "conversation_only_non_memory",
+    "mechanical_telemetry",
+  ] as const) {
+    const h = await makeHarness();
+    try {
+      h.setRespond(() => ({ ...emptySuccessResult(), extractionSkippedReason }));
+      const storage = await h.storageForNs("default");
+      const before = await storage.loadMeta();
+
+      const result = await h.newCoordinator().runExtraction(liveTurns(extractionSkippedReason), {
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+        clearBufferAfterExtraction: true,
+        bufferKey: extractionSkippedReason,
+      });
+
+      assert.equal(result.reason, "empty_extraction_result");
+      const after = await storage.loadMeta();
+      assert.equal(after.extractionCount, before.extractionCount);
+      assert.equal(after.lastExtractionAt, before.lastExtractionAt);
+    } finally {
+      await h.cleanup();
+    }
+  }
+});
+
+test("extraction liveness (#2227): passive-correction failure prevents a live empty-success stamp", async () => {
+  const h = await makeHarness();
+  try {
+    h.setRespond(() => emptySuccessResult());
+    h.setPassiveCapture(() => {
+      throw new Error("passive capture failed");
+    });
+    const storage = await h.storageForNs("default");
+    const before = await storage.loadMeta();
+
+    await assert.rejects(
+      h.newCoordinator().runExtraction(liveTurns("passive-capture-failure"), {
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+        clearBufferAfterExtraction: true,
+        bufferKey: "passive-capture-failure",
+      }),
+      /passive capture failed/,
+    );
+
+    const after = await storage.loadMeta();
+    assert.equal(after.extractionCount, before.extractionCount);
+    assert.equal(after.lastExtractionAt, before.lastExtractionAt);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("extraction liveness (#2227): buffer-clear failure prevents a live empty-success stamp", async () => {
+  const h = await makeHarness();
+  try {
+    h.setRespond(() => emptySuccessResult());
+    h.setBufferClear(() => {
+      throw new Error("buffer clear failed");
+    });
+    const storage = await h.storageForNs("default");
+    const before = await storage.loadMeta();
+
+    await assert.rejects(
+      h.newCoordinator().runExtraction(liveTurns("buffer-clear-failure"), {
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+        clearBufferAfterExtraction: true,
+        bufferKey: "buffer-clear-failure",
+      }),
+      /buffer clear failed/,
+    );
+
+    const after = await storage.loadMeta();
+    assert.equal(after.extractionCount, before.extractionCount);
+    assert.equal(after.lastExtractionAt, before.lastExtractionAt);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("extraction liveness (#2227): a fingerprinted prefilter skip persists dedupe state without stamping liveness", async () => {
+  const h = await makeHarness();
+  try {
+    h.setRespond(() => ({
+      ...emptySuccessResult(),
+      extractionSkippedReason: "mechanical_telemetry",
+    }));
+    h.setFingerprintRecorder(async (_storage, fingerprint, meta) => {
+      assert.ok(meta, "empty-success commit supplies preloaded metadata");
+      meta.processedExtractionFingerprints = [
+        ...(meta.processedExtractionFingerprints ?? []),
+        { fingerprint, observedAt: new Date().toISOString() },
+      ];
+    });
+    const storage = await h.storageForNs("default");
+    const before = await storage.loadMeta();
+    const baselineFingerprintCount =
+      before.processedExtractionFingerprints?.length ?? 0;
+
+    const result = await h.newCoordinator().runExtraction(
+      makeTurns("fingerprinted-prefilter"),
+      {
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+        clearBufferAfterExtraction: true,
+        bufferKey: "fingerprinted-prefilter",
+      },
+    );
+
+    assert.equal(result.reason, "empty_extraction_result");
+    const after = await storage.loadMeta();
+    assert.equal(after.extractionCount, before.extractionCount);
+    assert.equal(after.lastExtractionAt, before.lastExtractionAt);
+    assert.equal(
+      after.processedExtractionFingerprints?.length,
+      baselineFingerprintCount + 1,
+    );
+    assert.equal(h.recordedProcessedCount(), 1);
   } finally {
     await h.cleanup();
   }
