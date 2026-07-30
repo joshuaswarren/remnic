@@ -27,7 +27,7 @@ test("refreshNamespacesAfterConvergence runs one strict QMD batch and rebuilds e
     const storageCalls: string[] = [];
     const orchestrator = Object.create(Orchestrator.prototype) as Orchestrator;
     const internals = orchestrator as unknown as {
-      config: { defaultNamespace: string };
+      config: { defaultNamespace: string; qmdEnabled: boolean; searchBackend: "qmd" };
       namespaceSearchRouter: {
         updateNamespacesDetailed(
           namespaces: string[],
@@ -37,7 +37,7 @@ test("refreshNamespacesAfterConvergence runs one strict QMD batch and rebuilds e
       };
       getStorage(namespace: string): Promise<StorageManager>;
     };
-    internals.config = { defaultNamespace: "default" };
+    internals.config = { defaultNamespace: "default", qmdEnabled: true, searchBackend: "qmd" };
     internals.namespaceSearchRouter = {
       async updateNamespacesDetailed(namespaces, _execution, options) {
         qmdCalls.push({ namespaces, options });
@@ -85,6 +85,7 @@ test("refreshNamespacesAfterConvergence rebuilds projection when search is disab
     });
     const orchestrator = Object.create(Orchestrator.prototype) as Orchestrator;
     const internals = orchestrator as unknown as {
+      config: { qmdEnabled: boolean; searchBackend: "qmd" };
       namespaceSearchRouter: {
         updateNamespacesDetailed(
           namespaces: string[],
@@ -94,6 +95,7 @@ test("refreshNamespacesAfterConvergence rebuilds projection when search is disab
       };
       getStorage(namespace: string): Promise<StorageManager>;
     };
+    internals.config = { qmdEnabled: false, searchBackend: "qmd" };
     internals.namespaceSearchRouter = {
       async updateNamespacesDetailed() {
         return { backendCount: 0, eligibleNamespaces: [] };
@@ -111,4 +113,39 @@ test("refreshNamespacesAfterConvergence rebuilds projection when search is disab
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("refreshNamespacesAfterConvergence fails when enabled search skips a target namespace", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as Orchestrator;
+  const storageCalls: string[] = [];
+  const internals = orchestrator as unknown as {
+    config: { qmdEnabled: boolean; searchBackend: "qmd" };
+    namespaceSearchRouter: {
+      updateNamespacesDetailed(
+        namespaces: string[],
+        execution?: unknown,
+        options?: { strict?: boolean }
+      ): Promise<{ backendCount: number; eligibleNamespaces: string[] }>;
+    };
+    getStorage(namespace: string): Promise<StorageManager>;
+  };
+  internals.config = { qmdEnabled: true, searchBackend: "qmd" };
+  internals.namespaceSearchRouter = {
+    async updateNamespacesDetailed() {
+      return { backendCount: 1, eligibleNamespaces: ["team"] };
+    },
+  };
+  internals.getStorage = async (namespace) => {
+    storageCalls.push(namespace);
+    throw new Error("projection rebuild must not start after incomplete search refresh");
+  };
+  const refreshSurface = orchestrator as unknown as {
+    refreshNamespacesAfterConvergence(namespaces: readonly string[]): Promise<void>;
+  };
+
+  await assert.rejects(
+    () => refreshSurface.refreshNamespacesAfterConvergence(["team", "shared"]),
+    /search refresh skipped namespaces: shared/,
+  );
+  assert.deepEqual(storageCalls, []);
 });

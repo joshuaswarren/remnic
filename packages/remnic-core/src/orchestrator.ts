@@ -1280,7 +1280,15 @@ export class Orchestrator {
   }
 
   async refreshNamespacesAfterConvergence(namespaces: readonly string[]): Promise<void> {
-    return refreshConvergedNamespaces(namespaces, this.namespaceSearchRouter, this.getStorage.bind(this));
+    const searchBackend = this.config.searchBackend ?? "qmd";
+    const searchEnabled = searchBackend !== "noop"
+      && (searchBackend !== "qmd" || this.config.qmdEnabled);
+    return refreshConvergedNamespaces(
+      namespaces,
+      this.namespaceSearchRouter,
+      this.getStorage.bind(this),
+      searchEnabled,
+    );
   }
 
 
