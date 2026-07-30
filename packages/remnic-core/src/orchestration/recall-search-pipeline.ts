@@ -90,6 +90,7 @@ export interface RecallSearchPipelineDeps {
        * string at the input boundary (CLI / HTTP / MCP).
        */
       asOfMs?: number;
+      requestingConnector?: string;
     },
   ): Promise<QmdSearchResult[]>;
   buildConfiguredQmdSearchOptions(
@@ -152,6 +153,7 @@ export interface RecallSearchPipelineDeps {
       allowDedicatedSurface?: boolean;
       asOfMs?: number;
       blockedPaths?: Set<string>;
+      requestingConnector?: string;
     },
   ): QmdSearchResult[];
   filterSearchResultsForRecall(
@@ -165,6 +167,7 @@ export interface RecallSearchPipelineDeps {
       abortSignal?: AbortSignal;
       dropUnresolved?: boolean;
       recallNamespaces?: readonly string[];
+      requestingConnector?: string;
     },
   ): Promise<{ results: QmdSearchResult[]; memoryByPath: Map<string, MemoryFile> }>;
   loadSearchResultMemoryMap(
@@ -719,6 +722,7 @@ export class RecallSearchPipelineCoordinator {
     onDegradation?: (degradation: SearchDegradation) => void;
     /** Issue #680 — historical recall point in ms-since-epoch. */
     asOfMs?: number;
+    requestingConnector?: string;
     /**
      * Optional out-parameter that receives the pre-MMR / pre-truncation
      * pool size captured inside the pipeline (issue #570 PR 1).  The
@@ -983,6 +987,7 @@ export class RecallSearchPipelineCoordinator {
         abortSignal: options.abortSignal,
         dropUnresolved: true,
         recallNamespaces: options.recallNamespaces,
+        requestingConnector: options.requestingConnector,
       },
     );
     results = boostInput.results;
@@ -1000,7 +1005,11 @@ export class RecallSearchPipelineCoordinator {
                 options.recallNamespaces,
                 options.prompt,
                 boostInput.memoryByPath,
-                { allowLifecycleFiltered: true, asOfMs: options.asOfMs },
+                {
+                  allowLifecycleFiltered: true,
+                  asOfMs: options.asOfMs,
+                  requestingConnector: options.requestingConnector,
+                },
               ),
               new Promise<{ status: "timed_out" }>((resolve) => {
                 timeoutHandle = setTimeout(
@@ -1014,7 +1023,11 @@ export class RecallSearchPipelineCoordinator {
               options.recallNamespaces,
               options.prompt,
               boostInput.memoryByPath,
-              { allowLifecycleFiltered: true, asOfMs: options.asOfMs },
+              {
+                allowLifecycleFiltered: true,
+                asOfMs: options.asOfMs,
+                requestingConnector: options.requestingConnector,
+              },
             ));
         if (
           typeof boosted === "object" &&
@@ -1225,6 +1238,7 @@ export class RecallSearchPipelineCoordinator {
       allowDedicatedSurface?: boolean;
       asOfMs?: number;
       blockedPaths?: Set<string>;
+      requestingConnector?: string;
     },
   ): QmdSearchResult[] {
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.deps.config);
@@ -1234,6 +1248,7 @@ export class RecallSearchPipelineCoordinator {
     let dedicatedSurfaceFilteredCount = 0;
     let forgottenFilteredCount = 0;
     let blockedPathFilteredCount = 0;
+    let connectorPartitionFilteredCount = 0;
     const filtered: QmdSearchResult[] = [];
     for (const r of results) {
       if (options?.blockedPaths && resultHasKey(options.blockedPaths, r)) {
@@ -1242,6 +1257,18 @@ export class RecallSearchPipelineCoordinator {
       }
       const memory = memoryForResult(memoryByPath, r);
       if (memory) {
+        const memoryConnector = memory.frontmatter.sourceConnector?.trim();
+        const requestingConnector = options?.requestingConnector?.trim();
+        if (
+          lifecycleCaps.extractionScopeClassification &&
+          memory.frontmatter.toolScoped === true &&
+          memoryConnector &&
+          requestingConnector &&
+          memoryConnector !== requestingConnector
+        ) {
+          connectorPartitionFilteredCount += 1;
+          continue;
+        }
         // Review-lifecycle statuses never enter active recall injection
         // (forgotten, pending_review, rejected, quarantined). Superseded and
         // archived have dedicated filters below. #1576: the faithfulness gate
@@ -1349,6 +1376,11 @@ export class RecallSearchPipelineCoordinator {
         sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
       });
     }
+    if (connectorPartitionFilteredCount > 0) {
+      log.debug(
+        `connector partition filter removed ${connectorPartitionFilteredCount} tool-scoped candidates from recall`,
+      );
+    }
     if (lifecycleFilteredCount > 0) {
       log.debug(
         `lifecycle retrieval filter removed ${lifecycleFilteredCount} stale/archived candidates`,
@@ -1393,6 +1425,7 @@ export class RecallSearchPipelineCoordinator {
       abortSignal?: AbortSignal;
       dropUnresolved?: boolean;
       recallNamespaces?: readonly string[];
+      requestingConnector?: string;
     },
   ): Promise<{ results: QmdSearchResult[]; memoryByPath: Map<string, MemoryFile> }> {
     if (results.length === 0) {
@@ -1455,6 +1488,7 @@ export class RecallSearchPipelineCoordinator {
        * string at the input boundary (CLI / HTTP / MCP).
        */
       asOfMs?: number;
+      requestingConnector?: string;
     },
   ): Promise<QmdSearchResult[]> {
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.deps.config);

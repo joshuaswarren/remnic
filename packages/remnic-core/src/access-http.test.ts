@@ -6,7 +6,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 
 import { EngramAccessHttpServer, type RemnicAdminControls, type RemnicAdminDashboardStatus } from "./access-http.js";
-import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { EngramAccessInputError, type EngramAccessRecallRequest, type EngramAccessService } from "./access-service.js";
 import { tokenCapabilityStore, type TokenCapabilities } from "./access-token-capabilities.js";
 import { parseConfig } from "./config.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
@@ -3080,6 +3080,42 @@ test("HTTP chat/message gates the NEW session's namespace — scoped token canno
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP recall forwards the connector from the authorized token entry", async () => {
+  let captured: EngramAccessRecallRequest | undefined;
+  const service = {
+    recall: (request: EngramAccessRecallRequest) => {
+      captured = request;
+      return Promise.resolve({ context: "", count: 0, memoryIds: [], results: [] });
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "connector-token", connector: "chatgpt" },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/recall`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer connector-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ query: "shared namespace query" }),
+      },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(captured?.sourceConnector, "chatgpt");
+  } finally {
+    await server.stop();
   }
 });
 

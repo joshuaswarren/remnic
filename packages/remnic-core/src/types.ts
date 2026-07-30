@@ -2788,6 +2788,8 @@ export interface ImportanceScore {
 }
 
 export interface MemoryFrontmatter extends SourceConnectorProvenance {
+  /** True when write-time classification ties this memory to its source connector's tools or commands. */
+  toolScoped?: true;
   id: string;
   category: MemoryCategory;
   created: string;

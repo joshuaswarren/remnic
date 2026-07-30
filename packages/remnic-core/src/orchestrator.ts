@@ -3640,6 +3640,7 @@ export class Orchestrator {
     onDegradation?: (degradation: SearchDegradation) => void;
     /** Issue #680 — historical recall point in ms-since-epoch. */
     asOfMs?: number;
+    requestingConnector?: string;
     /**
      * Optional out-parameter that receives the pre-MMR / pre-truncation
      * pool size captured inside the pipeline (issue #570 PR 1).  The
@@ -3719,6 +3720,7 @@ export class Orchestrator {
       allowDedicatedSurface?: boolean;
       asOfMs?: number;
       blockedPaths?: Set<string>;
+      requestingConnector?: string;
     },
   ): QmdSearchResult[] {
     return this.recallSearchPipelineCoordinator.filterSearchResultsByRecallSafety(
@@ -3739,6 +3741,7 @@ export class Orchestrator {
       abortSignal?: AbortSignal;
       dropUnresolved?: boolean;
       recallNamespaces?: readonly string[];
+      requestingConnector?: string;
     },
   ): Promise<{ results: QmdSearchResult[]; memoryByPath: Map<string, MemoryFile> }> {
     return this.recallSearchPipelineCoordinator.filterSearchResultsForRecall(
@@ -3764,6 +3767,7 @@ export class Orchestrator {
        * string at the input boundary (CLI / HTTP / MCP).
        */
       asOfMs?: number;
+      requestingConnector?: string;
     },
   ): Promise<QmdSearchResult[]> {
     return this.recallSearchPipelineCoordinator.boostSearchResults(

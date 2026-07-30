@@ -419,6 +419,7 @@ export class ExtractionPersistCoordinator {
       source: string;
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
+      toolScoped?: true;
     }): Promise<void> => {
       if (
         !scopeProfileWritePlan ||
@@ -536,6 +537,7 @@ export class ExtractionPersistCoordinator {
             contentHashSource: options.category === "fact" ? dedupContent : rawContent,
             ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
             ...(options.provenance ? { provenance: options.provenance } : {}),
+            ...(options.toolScoped ? { toolScoped: true as const } : {}),
           });
           const promotedId = targetPromotion.id;
           // #1645: if the TARGET namespace's own tombstone blocked this promotion,
@@ -615,8 +617,12 @@ export class ExtractionPersistCoordinator {
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
     }): Promise<void> => {
-      await promoteMemoryToProfileTargets(options);
-      if (lifecycleCaps.extractionScopeClassification && withholdToolScopedFromSharedNamespace(options)) return;
+      const toolScoped = withholdToolScopedFromSharedNamespace(options);
+      await promoteMemoryToProfileTargets({
+        ...options,
+        ...(toolScoped ? { toolScoped: true as const } : {}),
+      });
+      if (lifecycleCaps.extractionScopeClassification && toolScoped) return;
       if (
         !shouldPromoteToShared(
           this.deps.config,
@@ -939,6 +945,7 @@ export class ExtractionPersistCoordinator {
           // Claim-level provenance spans (issue #1575 PR 2).
           ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
           ...(options.provenance ? { provenance: options.provenance } : {}),
+          ...(toolScoped ? { toolScoped: true as const } : {}),
         });
         const promotedId = sharedPromotion.id;
         // #1645: if the shared namespace's own tombstone blocked this promotion,
@@ -2019,6 +2026,11 @@ export class ExtractionPersistCoordinator {
           ? "extraction-proactive"
           : "extraction";
       const extractionSourceConnector = sourceContext?.sourceConnector;
+      const factToolScoped = withholdToolScopedFromSharedNamespace({
+        content: fact.content,
+        sourceConnector: extractionSourceConnector,
+        procedureSteps: fact.procedureSteps,
+      });
 
       // Check for contradictions before writing (Phase 2B).
       // NOTE: This block was moved above the chunking branch so that the
@@ -2227,6 +2239,7 @@ export class ExtractionPersistCoordinator {
             // PR #2016: never defer here — fallible chunk/artifact writes follow this
             // durable parent .md; flush the hash now so a throw can't strand it (dup).
             deferHashIndexSave: false,
+            ...(factToolScoped ? { toolScoped: true as const } : {}),
           });
           const parentId = parentWrite.id;
           // #1645: surface the tombstone block and gate active post-write paths
@@ -2310,6 +2323,7 @@ export class ExtractionPersistCoordinator {
                   ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
                   ...(fact.provenance ? { provenance: fact.provenance } : {}),
                   ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+                  ...(factToolScoped ? { toolScoped: true as const } : {}),
                 },
               );
             }
@@ -2598,6 +2612,7 @@ export class ExtractionPersistCoordinator {
         // #1909: defer the per-fact index flush to the batch save only when
         // fact dedup is on (the batch saver is a no-op otherwise).
         deferHashIndexSave: factDedupEnabled,
+        ...(factToolScoped ? { toolScoped: true as const } : {}),
       });
       const memoryId = factWrite.id;
       // #1645: surface the tombstone block; gate active post-write paths like #1576

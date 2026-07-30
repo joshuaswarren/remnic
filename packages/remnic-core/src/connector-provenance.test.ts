@@ -16,9 +16,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngramMcpServer } from "./access-mcp.js";
+import { getOperation } from "./access-boundary.js";
 import { memoryStoreOperation } from "./access-operations.js";
 import type {
   EngramAccessMemoryStoreRequest,
+  EngramAccessRecallRequest,
   EngramAccessService,
   EngramAccessWriteResponse,
 } from "./access-service.js";
@@ -117,6 +119,26 @@ test("memory_store via MCP with no sourceConnector (operator) → service receiv
   );
 });
 
+test("recall operation forwards only the server-resolved connector", async () => {
+  const captured: EngramAccessRecallRequest[] = [];
+  const service = {
+    recall: (request: EngramAccessRecallRequest) => {
+      captured.push(request);
+      return Promise.resolve({});
+    },
+  } as unknown as EngramAccessService;
+  const recallOperation = getOperation("recall");
+  assert.ok(recallOperation);
+
+  await recallOperation.run(
+    { query: "shared namespace query", sourceConnector: "spoofed-client" },
+    { service, sourceConnector: "chatgpt" },
+  );
+
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0]?.sourceConnector, "chatgpt");
+});
+
 // ---------------------------------------------------------------------------
 // Test 4: client-supplied sourceConnector in args is IGNORED
 // ---------------------------------------------------------------------------
@@ -212,6 +234,65 @@ test("StorageManager.writeMemory without sourceConnector → frontmatter omits i
       undefined,
       "frontmatter should omit sourceConnector when not provided",
     );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("StorageManager classifies connector-attributed tool memories at write time", async () => {
+  StorageManager.clearAllStaticCaches();
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-tool-scope-"));
+  try {
+    const storage = new StorageManager(baseDir);
+    await storage.ensureDirectories();
+
+    const { id } = await storage.writeMemory(
+      "fact",
+      "Use the search tool with a path argument.",
+      { sourceConnector: "chatgpt" },
+    );
+
+    assert.equal((await storage.getMemoryById(id))?.frontmatter.toolScoped, true);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("StorageManager leaves unattributed tool-like memories unpartitioned", async () => {
+  StorageManager.clearAllStaticCaches();
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-tool-scope-"));
+  try {
+    const storage = new StorageManager(baseDir);
+    await storage.ensureDirectories();
+
+    const { id } = await storage.writeMemory(
+      "fact",
+      "Use the search tool with a path argument.",
+    );
+
+    assert.equal((await storage.getMemoryById(id))?.frontmatter.toolScoped, undefined);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("StorageManager preserves an explicit structured tool classification", async () => {
+  StorageManager.clearAllStaticCaches();
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-tool-scope-"));
+  try {
+    const storage = new StorageManager(baseDir);
+    await storage.ensureDirectories();
+
+    const { id } = await storage.writeMemory(
+      "procedure",
+      "Workflow for locating an implementation",
+      { sourceConnector: "chatgpt", toolScoped: true },
+    );
+
+    assert.equal((await storage.getMemoryById(id))?.frontmatter.toolScoped, true);
   } finally {
     StorageManager.clearAllStaticCaches();
     await rm(baseDir, { recursive: true, force: true });
