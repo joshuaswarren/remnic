@@ -3,9 +3,22 @@ type PendingObservePreparation = {
   scopeHint?: string;
   principal?: string;
   namespace?: string;
+  scopeResolved: boolean;
   released: Promise<void>;
   release: () => void;
 };
+
+function preparationMatchesScope(
+  reservation: PendingObservePreparation,
+  principal: string | undefined,
+  namespace: string | undefined,
+  scopeHint: string | undefined,
+): boolean {
+  if (reservation.scopeResolved) {
+    return reservation.principal === principal && reservation.namespace === namespace;
+  }
+  return reservation.scopeHint === undefined || scopeHint === undefined || reservation.scopeHint === scopeHint;
+}
 
 export type PendingObservePreparationHandle = {
   isCancelled(): boolean;
@@ -40,6 +53,7 @@ export class PendingObserveExtractionTracker {
     let resolveReleased: () => void = () => {};
     const reservation: PendingObservePreparation = {
       cancelled: false,
+      scopeResolved: false,
       scopeHint,
       released: new Promise<void>((resolve) => {
         resolveReleased = resolve;
@@ -61,15 +75,22 @@ export class PendingObserveExtractionTracker {
       setScope: (principal, namespace) => {
         reservation.principal = principal;
         reservation.namespace = namespace;
+        reservation.scopeResolved = true;
       },
       release: reservation.release,
     };
   }
 
-  private async waitForPreparations(sessionKey: string): Promise<void> {
+  private async waitForPreparations(
+    sessionKey: string,
+    principal: string | undefined,
+    namespace: string | undefined,
+    scopeHint: string | undefined,
+  ): Promise<void> {
     while (true) {
       const pending = [...(this.preparations.get(sessionKey) ?? [])].filter(
-        (reservation) => !reservation.cancelled,
+        (reservation) =>
+          !reservation.cancelled && preparationMatchesScope(reservation, principal, namespace, scopeHint),
       );
       if (pending.length === 0) return;
       await Promise.all(pending.map((reservation) => reservation.released));
@@ -110,24 +131,7 @@ export class PendingObserveExtractionTracker {
     scopeHint?: string,
   ): void {
     for (const reservation of this.preparations.get(sessionKey) ?? []) {
-      const principalMatches =
-        principal === undefined ||
-        reservation.principal === undefined ||
-        reservation.principal === principal;
-      const namespaceMatches =
-        namespace === undefined ||
-        reservation.namespace === undefined ||
-        reservation.namespace === namespace;
-      const resolvedScopeMatches =
-        namespace !== undefined &&
-        reservation.namespace === namespace &&
-        principalMatches;
-      const scopeHintMismatch =
-        (reservation.scopeHint !== undefined && reservation.scopeHint !== scopeHint) ||
-        (reservation.scopeHint === undefined && scopeHint !== undefined);
-      if ((!resolvedScopeMatches && scopeHintMismatch) || !principalMatches || !namespaceMatches) {
-        continue;
-      }
+      if (!preparationMatchesScope(reservation, principal, namespace, scopeHint)) continue;
       reservation.cancelled = true;
     }
 
@@ -158,7 +162,7 @@ export class PendingObserveExtractionTracker {
     registerCancellation?.(abortTracked);
     abortSignal?.addEventListener("abort", abortTracked, { once: true });
     try {
-      await this.waitForPreparations(sessionKey);
+      await this.waitForPreparations(sessionKey, principal, namespace, scopeHint);
       while (true) {
         const entry = this.entries.get(key);
         if (!entry) return;

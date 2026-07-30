@@ -17,6 +17,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { withTempDir as managedWithTempDir } from "../testing/tmp-dir.js";
+import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import {
   CorrectionContractError,
   MEMORY_CATEGORIES,
@@ -298,6 +299,41 @@ test("plan persists atomically to state/corrections/pending/<planId>.json and ro
     const pending = await planner.listPending("default");
     assert.equal(pending.length, 1);
     assert.equal(pending[0].planId, plan.planId);
+  });
+});
+
+test("#2206 cancellation after atomic plan commit returns the persisted plan without temp files", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([["mem-x", makeCandidate({ memoryId: "mem-x", content: "old fact" })]]),
+      llmResult: {
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "edit", memoryId: "mem-x", patch: "new fact" }],
+        relevance: [{ memoryId: "mem-x", why: "outdated" }],
+        warnings: [],
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const abortController = new AbortController();
+    const deps = makeDeps(dir, state);
+    deps.writePlanFile = async (outputPath, content) => {
+      await writeFileAtomically(outputPath, content);
+      abortController.abort(new Error("correction deadline exceeded"));
+    };
+    const planner = new CorrectionPlanner(deps);
+
+    const plan = await planner.plan(
+      { text: "old fact", targetIds: ["mem-x"] },
+      ["default"],
+      { abortSignal: abortController.signal },
+    );
+    const pendingDir = path.join(dir, "state", "corrections", "pending");
+    assert.equal(abortController.signal.aborted, true);
+    assert.equal((await planner.loadPlan("default", plan.planId))?.planId, plan.planId);
+    assert.equal((await readdir(pendingDir)).some((name) => name.endsWith(".tmp")), false);
   });
 });
 

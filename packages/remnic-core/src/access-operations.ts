@@ -401,13 +401,16 @@ export const memoryCorrectPlanOperation = defineOperation<
   schema: memoryCorrectPlanSchema as z.ZodType<MemoryCorrectPlanInput>,
   handler: async (input, ctx) => {
     try {
-      const result = await ctx.service.correctionPlan({
-        text: input.text,
-        ...(input.targetIds ? { targetIds: input.targetIds } : {}),
-        ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
-        ...(input.namespace ? { namespace: input.namespace } : {}),
-        ...(ctx.authenticatedPrincipal ? { principal: ctx.authenticatedPrincipal } : {}),
-      });
+      const result = await ctx.service.correctionPlan(
+        {
+          text: input.text,
+          ...(input.targetIds ? { targetIds: input.targetIds } : {}),
+          ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
+          ...(input.namespace ? { namespace: input.namespace } : {}),
+          ...(ctx.authenticatedPrincipal ? { principal: ctx.authenticatedPrincipal } : {}),
+        },
+        ctx.abortSignal ? { abortSignal: ctx.abortSignal } : undefined,
+      );
       return { result };
     } catch (err) {
       if (err instanceof CorrectionContractError) throw new EngramAccessInputError(err.message);
@@ -461,6 +464,7 @@ export const memoryCorrectApplyOperation = defineOperation<
         ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
         ...(input.namespace ? { namespace: input.namespace } : {}),
         ...(ctx.authenticatedPrincipal ? { principal: ctx.authenticatedPrincipal } : {}),
+        ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
       });
       return { result };
     } catch (err) {

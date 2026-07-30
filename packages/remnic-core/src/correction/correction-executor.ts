@@ -24,7 +24,7 @@
  * (`markConsumed`) under `serializeMutations` keyed by plan id (rule 40).
  */
 
-import { throwIfAborted } from "../abort-error.js";
+import { raceAbort, throwIfAborted } from "../abort-error.js";
 import { log } from "../logger.js";
 import { serializeMutations } from "../utils/serialize-mutations.js";
 import {
@@ -201,7 +201,7 @@ export class CorrectionExecutor {
        * thread: authorize-rescope-destination). Defaults to allow when the
        * source namespace already resolves to a writable scope (single-tenant).
        */
-      canWriteDestination?: (namespace: string) => Promise<boolean>;
+      canWriteDestination?: (namespace: string, abortSignal?: AbortSignal) => Promise<boolean>;
     }
   ): Promise<CorrectionOutcome> {
     throwIfAborted(opts.abortSignal, "correction apply aborted");
@@ -220,7 +220,7 @@ export class CorrectionExecutor {
   private async applyInternal(
     namespace: string,
     planId: string,
-    canWriteDestination?: (namespace: string) => Promise<boolean>,
+    canWriteDestination?: (namespace: string, abortSignal?: AbortSignal) => Promise<boolean>,
     abortSignal?: AbortSignal
   ): Promise<CorrectionOutcome> {
     throwIfAborted(abortSignal, "correction apply aborted");
@@ -307,10 +307,9 @@ export class CorrectionExecutor {
       }
     };
     let mutationCommitted = false;
-    let cancellationSafeAfterCommit = false;
     let cancellationRequestedAfterCommit = false;
     const throwIfAbortedBeforeCommit = (): void => {
-      if (!mutationCommitted || !cancellationSafeAfterCommit) {
+      if (!mutationCommitted) {
         throwIfAborted(abortSignal, "correction apply aborted");
       }
     };
@@ -409,7 +408,6 @@ export class CorrectionExecutor {
             retirementResult.status === "applied"
           ) {
             retiredReplacementActions.add(action);
-            cancellationSafeAfterCommit = true;
           }
         } catch (err) {
           if (abortSignal?.aborted) {
@@ -435,7 +433,6 @@ export class CorrectionExecutor {
             abortSignal
           );
           mutationCommitted = true;
-          cancellationSafeAfterCommit = true;
           results.push({ action, status: "applied", memoryId: editedId });
           appliedTouched.push(editedId);
         } catch (err) {
@@ -457,7 +454,6 @@ export class CorrectionExecutor {
             abortSignal
           );
           mutationCommitted = true;
-          cancellationSafeAfterCommit = true;
           results.push({ action, status: "applied" });
         } catch (err) {
           if (abortSignal?.aborted) {
@@ -501,7 +497,6 @@ export class CorrectionExecutor {
         );
         if (results.at(-1)?.status === "applied") {
           mutationCommitted = true;
-          cancellationSafeAfterCommit = true;
         }
         if (results.at(-1)?.action === action && results.at(-1)?.status === "applied") {
           removeFailedResultsFor(action);
@@ -518,7 +513,6 @@ export class CorrectionExecutor {
         );
         if (results.at(-1)?.status === "applied") {
           mutationCommitted = true;
-          cancellationSafeAfterCommit = true;
         }
         if (results.at(-1)?.action === action && results.at(-1)?.status === "applied") {
           removeFailedResultsFor(action);
@@ -530,7 +524,13 @@ export class CorrectionExecutor {
           // the write ACL (review thread: authorize-rescope-destination).
           // canWriteDestination defaults to allow when absent (single-tenant,
           // where the source namespace already resolved to a writable scope).
-          const allowed = canWriteDestination ? await canWriteDestination(action.toNamespace) : true;
+          const allowed = canWriteDestination
+            ? await raceAbort(
+                canWriteDestination(action.toNamespace, abortSignal),
+                abortSignal,
+                "correction apply aborted",
+              )
+            : true;
           if (!allowed) {
             results.push({
               action,
@@ -546,7 +546,6 @@ export class CorrectionExecutor {
             abortSignal
           );
           mutationCommitted = true;
-          cancellationSafeAfterCommit = true;
           // #1678 (thread OiiV6): report the DESTINATION memory id, not the
           // source. The source is archived by the move; callers that re-fetch
           // the reported id need the live (destination) memory, otherwise they
@@ -589,14 +588,25 @@ export class CorrectionExecutor {
     const propagationWarnings: string[] = [];
     if (appliedTouched.length > 0) {
       try {
-        await this.deps.propagate(namespace, appliedTouched, cancellationSafeAfterCommit ? undefined : abortSignal);
+        await this.deps.propagate(namespace, appliedTouched, mutationCommitted ? undefined : abortSignal);
       } catch (err) {
-        if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
+        if (!mutationCommitted && abortSignal?.aborted) throw err;
         propagationWarnings.push(`propagation failed (non-fatal): ${errMsg(err)}`);
       }
     }
 
     await throwIfAbortedBeforeCommitAndReset();
+    if (cancellationRequestedAfterCommit) {
+      const recordedActions = new Set(results.map((result) => result.action));
+      for (const action of plan.actions) {
+        if (recordedActions.has(action)) continue;
+        results.push({
+          action,
+          status: "skipped",
+          error: "correction apply cancelled before action started",
+        });
+      }
+    }
     // ── Phase 4: audit record ─────────────────────────────────────────────
     const anyFailed = results.some((r) => r.status === "failed");
     const status: CorrectionOutcome["status"] =
@@ -621,20 +631,19 @@ export class CorrectionExecutor {
           outcome,
           requestText: plan.request.text,
         },
-        cancellationSafeAfterCommit ? undefined : abortSignal
+        mutationCommitted ? undefined : abortSignal
       );
       outcome.auditMemoryId = auditId;
     } catch (err) {
-      if ((!mutationCommitted || !cancellationSafeAfterCommit) && abortSignal?.aborted) throw err;
-      // The audit record is part of the contract but a failure to write it
-      // must NOT propagate — applied corrections are already durable. Record
-      // as a warning instead.
+      if (!mutationCommitted && abortSignal?.aborted) {
+        await resetApplying();
+        throw err;
+      }
       (outcome as CorrectionOutcome & { warnings?: string[] }).warnings = [
         ...propagationWarnings,
         `audit record write failed (non-fatal): ${errMsg(err)}`,
       ];
     }
-    await throwIfAbortedBeforeCommitAndReset();
 
     // ── Phase 5: mark plan consumed ───────────────────────────────────────
     // Corrections are already applied (phases 1-4 succeeded). A markConsumed

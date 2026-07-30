@@ -331,6 +331,53 @@ test("resolveGitContext: custom invoker throwing on a later call → returns nul
   assert.equal(ctx, null);
 });
 
+test("#2206 resolveGitContext forwards caller cancellation to an active git probe", async () => {
+  const abortController = new AbortController();
+  let forwardedSignal: AbortSignal | undefined;
+  const pendingProbe = Promise.withResolvers<{ stdout: string; exitCode: number }>();
+  const invoker: GitInvoker = (_cwd, _args, options) => {
+    forwardedSignal = options?.abortSignal;
+    options?.abortSignal?.addEventListener(
+      "abort",
+      () => pendingProbe.reject(options.abortSignal?.reason),
+      { once: true },
+    );
+    return pendingProbe.promise;
+  };
+
+  const resolving = resolveGitContext("/work/repo", {
+    invoker,
+    abortSignal: abortController.signal,
+  });
+  await Promise.resolve();
+  abortController.abort(new Error("caller cancelled"));
+
+  await assert.rejects(resolving, /caller cancelled/);
+  assert.equal(forwardedSignal, abortController.signal);
+});
+
+test("#2206 resolveGitContext gives each probe only the remaining deadline budget", async () => {
+  const timeouts: number[] = [];
+  let now = 1_000;
+  const invoker: GitInvoker = (cwd, args, options) => {
+    timeouts.push(options?.timeoutMs ?? -1);
+    now += 100;
+    const command = args.join(" ");
+    if (command === "rev-parse --show-toplevel") return { stdout: cwd, exitCode: 0 };
+    if (command === "rev-parse --abbrev-ref HEAD") return { stdout: "main", exitCode: 0 };
+    return { stdout: "", exitCode: 1 };
+  };
+
+  const context = await resolveGitContext("/work/repo", {
+    invoker,
+    deadlineMs: 1_400,
+    now: () => now,
+  });
+
+  assert.ok(context);
+  assert.deepEqual(timeouts, [400, 300, 200, 100]);
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // resolveGitContext — happy path (origin, branch, default branch)
 // ──────────────────────────────────────────────────────────────────────────

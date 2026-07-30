@@ -58,9 +58,28 @@ export async function extractionForceFlush(
   };
   let abortHandler: (() => void) | undefined;
 
+  const reservationScopeHint = pendingObserveScopeHint(request);
+  const cancelBeforeScopeResolution = (): void => {
+    if (namespacesEnabled && !request.namespace?.trim()) return;
+    deps.cancelPendingObserveExtractions?.(
+      request.sessionKey,
+      authenticatedPrincipal ?? sessionPrincipal,
+      request.namespace,
+      reservationScopeHint,
+    );
+  };
+
   try {
-    const scope = await deps.resolveMemoryScopePlan(request);
-    const reservationScopeHint = pendingObserveScopeHint(request);
+    const scope = await awaitSessionFlushPhase(
+      () => deps.resolveMemoryScopePlan(request),
+      {
+        abortSignal: request.abortSignal,
+        extractionDeadlineMs: request.deadlineMs,
+        reason: "access_force_flush",
+        deadlineStage: "scope_resolution",
+        onDeadline: cancelBeforeScopeResolution,
+      },
+    );
     const cancelScopedPendingObserveExtractions = (): void => {
       deps.cancelPendingObserveExtractions?.(
         request.sessionKey,

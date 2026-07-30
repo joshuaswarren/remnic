@@ -23,8 +23,9 @@
  */
 import path from "node:path";
 
+import { abortError } from "../abort-error.js";
+import { launchProcess, launchProcessSync } from "../runtime/child-process.js";
 import { expandTildePath } from "../utils/path.js";
-import { launchProcessSync } from "../runtime/child-process.js";
 
 // Re-export so existing callers / tests that imported `expandTildePath` from
 // this module keep working. CLAUDE.md #17 requires consistent `~` expansion
@@ -64,19 +65,30 @@ export interface GitContext {
   defaultBranch: string | null;
 }
 
+export interface GitInvokeOptions {
+  abortSignal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export interface GitInvokeResult {
+  stdout: string;
+  exitCode: number;
+}
+
 /**
- * Injectable git-invocation surface. Only the commands `resolveGitContext`
- * actually needs are exposed. Tests inject a mock implementation to avoid
- * spawning a real git process.
+ * Run `git <args>` with `cwd` as the working directory. Implementations
+ * should return non-zero exit codes rather than throwing for command failure.
  */
 export interface GitInvoker {
-  /**
-   * Run `git <args>` with `cwd` as the working directory. Must return
-   * `{ stdout, exitCode }` with `stdout` trimmed by the caller as needed.
-   * Implementations should NOT throw for non-zero exit codes — they should
-   * return the exit code so the resolver can decide how to recover.
-   */
-  (cwd: string, args: string[]): { stdout: string; exitCode: number };
+  (
+    cwd: string,
+    args: string[],
+    options?: GitInvokeOptions,
+  ): GitInvokeResult | Promise<GitInvokeResult>;
+}
+
+export interface SyncGitInvoker {
+  (cwd: string, args: string[]): GitInvokeResult;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -85,7 +97,7 @@ export interface GitInvoker {
 
 const DEFAULT_GIT_TIMEOUT_MS = 2_000;
 
-export function defaultGitInvoker(): GitInvoker {
+export function defaultGitInvokerSync(): SyncGitInvoker {
   return (cwd: string, args: string[]) => {
     const result = launchProcessSync("git", args, {
       cwd,
@@ -93,14 +105,78 @@ export function defaultGitInvoker(): GitInvoker {
       timeout: DEFAULT_GIT_TIMEOUT_MS,
       shell: false,
     });
-    if (result.error) {
-      // Spawn failure (git not on PATH, timeout, etc.). Surface as non-zero.
-      return { stdout: "", exitCode: 127 };
-    }
+    if (result.error) return { stdout: "", exitCode: 127 };
     return {
       stdout: typeof result.stdout === "string" ? result.stdout : "",
       exitCode: typeof result.status === "number" ? result.status : 1,
     };
+  };
+}
+
+export function defaultGitInvoker(): GitInvoker {
+  return (cwd, args, options = {}) => {
+    if (options.abortSignal?.aborted) {
+      throw options.abortSignal.reason instanceof Error
+        ? options.abortSignal.reason
+        : abortError("git context resolution aborted");
+    }
+
+    const child = launchProcess("git", args, {
+      cwd,
+      encoding: "utf-8",
+      shell: false,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const { promise, resolve, reject } = Promise.withResolvers<GitInvokeResult>();
+    let stdout = "";
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      options.abortSignal?.removeEventListener("abort", onAbort);
+    };
+    const finish = (result: GitInvokeResult): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = (): void => {
+      child.kill("SIGTERM");
+      fail(
+        options.abortSignal?.reason instanceof Error
+          ? options.abortSignal.reason
+          : abortError("git context resolution aborted"),
+      );
+    };
+
+    child.stdout?.setEncoding("utf-8");
+    child.stdout?.on("data", (chunk: string | Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.once("error", () => finish({ stdout: "", exitCode: 127 }));
+    child.once("close", (exitCode: number | null) => {
+      finish({ stdout, exitCode: typeof exitCode === "number" ? exitCode : 1 });
+    });
+    options.abortSignal?.addEventListener("abort", onAbort, { once: true });
+
+    const timeoutMs = Math.max(
+      1,
+      Math.min(DEFAULT_GIT_TIMEOUT_MS, options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS),
+    );
+    timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish({ stdout: "", exitCode: 124 });
+    }, timeoutMs);
+    if (options.abortSignal?.aborted) onAbort();
+    return promise;
   };
 }
 
@@ -239,17 +315,21 @@ export function normalizeOriginUrl(rawUrl: string): string {
 export interface ResolveGitContextOptions {
   /** Inject a git invoker (tests). Defaults to spawning real `git`. */
   invoker?: GitInvoker;
+  abortSignal?: AbortSignal;
+  /** Absolute epoch deadline shared with the extraction lifecycle. */
+  deadlineMs?: number;
+  /** Injectable clock for deadline tests. */
+  now?: () => number;
 }
 
 /**
  * Detect the git project + branch for `cwd`.
  *
- * Returns `null` when:
- *   - `cwd` is not an absolute path (invalid input, CLAUDE.md #51)
- *   - `cwd` is not inside a git worktree
- *   - `git` is not available on PATH
+ * Returns `null` when `cwd` is invalid, outside a worktree, or git is
+ * unavailable. Unexpected command failures also resolve to `null`.
  *
- * Never throws.
+ * Caller cancellation and an exhausted deadline reject so lifecycle callers
+ * can stop promptly instead of treating an interrupted probe as "not a repo".
  */
 export async function resolveGitContext(
   cwd: string,
@@ -272,9 +352,24 @@ export async function resolveGitContext(
     if (!path.isAbsolute(expanded)) return null;
 
     const invoker = options.invoker ?? defaultGitInvoker();
+    const now = options.now ?? Date.now;
+    const invoke = async (probeCwd: string, args: string[]): Promise<GitInvokeResult> => {
+      if (options.abortSignal?.aborted) {
+        throw options.abortSignal.reason instanceof Error
+          ? options.abortSignal.reason
+          : abortError("git context resolution aborted");
+      }
+      const remainingMs =
+        options.deadlineMs === undefined ? DEFAULT_GIT_TIMEOUT_MS : options.deadlineMs - now();
+      if (remainingMs <= 0) throw abortError("git context resolution deadline exceeded");
+      return invoker(probeCwd, args, {
+        abortSignal: options.abortSignal,
+        timeoutMs: Math.min(DEFAULT_GIT_TIMEOUT_MS, remainingMs),
+      });
+    };
 
     // 1. Locate the repo root.
-    const topLevel = invoker(expanded, ["rev-parse", "--show-toplevel"]);
+    const topLevel = await invoke(expanded, ["rev-parse", "--show-toplevel"]);
     if (topLevel.exitCode !== 0) return null;
     const rootPath = topLevel.stdout.trim();
     if (!rootPath) return null;
@@ -284,13 +379,13 @@ export async function resolveGitContext(
     //    HEAD ref is unborn and `--abbrev-ref HEAD` fails, but
     //    `symbolic-ref HEAD` still returns the target branch. Fall back
     //    so newly-initialized repos get a sensible branch name.
-    const branchResult = invoker(rootPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    const branchResult = await invoke(rootPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
     let branch: string | null = null;
     if (branchResult.exitCode === 0) {
       const raw = branchResult.stdout.trim();
       branch = raw && raw !== "HEAD" ? raw : null;
     } else {
-      const unbornRef = invoker(rootPath, ["symbolic-ref", "--quiet", "HEAD"]);
+      const unbornRef = await invoke(rootPath, ["symbolic-ref", "--quiet", "HEAD"]);
       if (unbornRef.exitCode === 0) {
         const raw = unbornRef.stdout.trim();
         const prefix = "refs/heads/";
@@ -302,7 +397,7 @@ export async function resolveGitContext(
     }
 
     // 3. Origin URL — optional. Used to derive a stable `projectId`.
-    const originResult = invoker(rootPath, ["remote", "get-url", "origin"]);
+    const originResult = await invoke(rootPath, ["remote", "get-url", "origin"]);
     let projectId: string;
     if (originResult.exitCode === 0) {
       const normalized = normalizeOriginUrl(originResult.stdout);
@@ -312,7 +407,7 @@ export async function resolveGitContext(
     }
 
     // 4. Default branch — best effort.
-    const headRef = invoker(rootPath, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
+    const headRef = await invoke(rootPath, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
     let defaultBranch: string | null = null;
     if (headRef.exitCode === 0) {
       const raw = headRef.stdout.trim();
@@ -330,7 +425,14 @@ export async function resolveGitContext(
       defaultBranch,
     };
   } catch {
-    // Never throws — any unexpected error falls back to "not in a repo".
+    if (options.abortSignal?.aborted) {
+      throw options.abortSignal.reason instanceof Error
+        ? options.abortSignal.reason
+        : abortError("git context resolution aborted");
+    }
+    if (options.deadlineMs !== undefined && (options.now ?? Date.now)() >= options.deadlineMs) {
+      throw abortError("git context resolution deadline exceeded");
+    }
     return null;
   }
 }

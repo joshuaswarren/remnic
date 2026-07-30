@@ -44,3 +44,20 @@ export function throwIfAborted(
     throw abortError(message);
   }
 }
+
+export function raceAbort<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+  message = "operation aborted",
+): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortError(message));
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(abortError(message));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  return Promise.race([promise, aborted]).finally(() => {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  });
+}

@@ -25,7 +25,8 @@ import { throwIfAborted } from "../abort-error.js";
 import { composeMemoryEnvelope, isMemoryCategory } from "../write-envelope.js";
 import { log } from "../logger.js";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { REDACTION_RULES_SUBDIR } from "../extraction-redaction-rules.js";
+import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { MemoryFile, MemoryStatus, PluginConfig } from "../types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
@@ -703,14 +704,14 @@ async function registerRedactionRuleFn(
   namespace: string,
   pattern: string,
   abortSignal?: AbortSignal,
+  writeRule: (outputPath: string, content: string) => Promise<unknown> = writeFileAtomically,
 ): Promise<void> {
   // Persist the redaction rule under state/ so extraction consults it the
   // same way tombstones are consulted (route through the same chokepoint).
   throwIfAborted(abortSignal, "correction apply aborted");
   const storage = await wiring.orchestrator.getStorage(namespace);
   throwIfAborted(abortSignal, "correction apply aborted");
-  const dir = path.join(storage.dir, "state", "corrections", "redaction-rules");
-  await mkdir(dir, { recursive: true });
+  const dir = path.join(storage.dir, REDACTION_RULES_SUBDIR);
   throwIfAborted(abortSignal, "correction apply aborted");
   // Idempotent: filename is a slug + short hash of the full pattern so
   // re-registering the same pattern overwrites rather than duplicates, while
@@ -721,12 +722,10 @@ async function registerRedactionRuleFn(
   const patternHash = createHash("sha256").update(pattern).digest("hex").slice(0, 16);
   const slug = `${slugBase}-${patternHash}`;
   throwIfAborted(abortSignal, "correction apply aborted");
-  await writeFile(
+  await writeRule(
     path.join(dir, `${slug}.json`),
     `${JSON.stringify({ pattern, namespace, createdAt: new Date().toISOString() })}\n`,
-    "utf-8",
   );
-  throwIfAborted(abortSignal, "correction apply aborted");
 }
 
 async function appendAuditRecordFn(
@@ -761,7 +760,6 @@ async function appendAuditRecordFn(
     ),
     {},
   );
-  throwIfAborted(abortSignal, "correction apply aborted");
   return id;
 }
 
@@ -1081,6 +1079,8 @@ export {
   isEligibleCorrectionCandidate,
   applyEditMemory,
   appendTombstoneFn,
+  appendAuditRecordFn,
+  registerRedactionRuleFn,
   retireMemoryFn,
   rescopeMemoryFn,
   writeReplacementMemory,

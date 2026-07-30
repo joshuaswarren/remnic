@@ -957,6 +957,28 @@ test("#2128: post-flush retained cleanup stops on abort or deadline", async () =
     /replay extraction deadline exceeded \(retained_turn_cleanup\)/,
   );
 });
+test("#2206: an expired force-flush deadline stops before scope resolution", async () => {
+  const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+  let scopeResolutionStarted = false;
+  const internals = service as unknown as {
+    resolveMemoryScopePlan: (request: unknown) => Promise<never>;
+  };
+  internals.resolveMemoryScopePlan = async () => {
+    scopeResolutionStarted = true;
+    throw new Error("scope resolution must not start");
+  };
+
+  await assert.rejects(
+    service.extractionForceFlush({
+      sessionKey: "expired-scope-resolution",
+      deadlineMs: 1,
+    }),
+    /scope_resolution/,
+  );
+  assert.equal(scopeResolutionStarted, false);
+});
+
 test("#2128: aborted or expired extraction force-flush never touches a buffer", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);
@@ -981,7 +1003,7 @@ test("#2128: aborted or expired extraction force-flush never touches a buffer", 
       }),
     (error: unknown) =>
       error instanceof EngramAccessInputError &&
-      error.message === "extraction force-flush deadline exceeded before buffer drain",
+      error.message === "replay extraction deadline exceeded (scope_resolution)",
   );
   assert.equal(probe.extractionForceFlushCalls.length, 0);
 });
@@ -1017,7 +1039,7 @@ test("#2128: self-deps wires force-flush cancellation into the observe tracker",
       }),
     (error: unknown) =>
       error instanceof EngramAccessInputError &&
-      error.message === "extraction force-flush deadline exceeded before buffer drain",
+      error.message === "replay extraction deadline exceeded (scope_resolution)",
   );
   assert.deepEqual(cancellations, [{
     sessionKey: "pi-geek:cancel-hook",

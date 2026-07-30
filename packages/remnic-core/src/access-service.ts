@@ -72,7 +72,7 @@ import {
   type DeltaSurfaceResponse,
   type DeltaSurfaceStorage,
 } from "./coding/session-delta-surfaces.js";
-import { defaultGitInvoker } from "./coding/git-context.js";
+import { defaultGitInvokerSync } from "./coding/git-context.js";
 import {
   createCorrectionService,
   isCorrectionFeatureEnabled,
@@ -935,6 +935,12 @@ export interface CodingScopedWriteInput {
   cwd?: string;
   projectTag?: string;
 }
+
+type InterruptibleCodingScopedWriteInput = CodingScopedWriteInput & {
+  abortSignal?: AbortSignal;
+  /** Absolute epoch deadline shared by the extraction lifecycle. */
+  deadlineMs?: number;
+};
 export type { EngramAccessNamespaceWritableRequest } from "./access-namespace-preflight.js";
 /**
  * Internal, single-resolution plan describing the effective memory scope for a
@@ -1481,7 +1487,7 @@ export class EngramAccessService {
    * priority over `cwd` (matching `maybeAttachCodingContext`).
    */
   private async resolveCodingContextFromOptions(
-    options: CodingScopedWriteInput,
+    options: InterruptibleCodingScopedWriteInput,
   ): Promise<CodingContext | null> {
     if (!this.orchestrator.config.codingMode?.projectScope) return null;
     if (typeof options.projectTag === "string" && options.projectTag.trim().length > 0) {
@@ -1490,7 +1496,10 @@ export class EngramAccessService {
     }
     if (typeof options.cwd === "string" && options.cwd.trim().length > 0) {
       try {
-        const gitCtx = await resolveGitContext(options.cwd);
+        const gitCtx = await resolveGitContext(options.cwd, {
+          abortSignal: options.abortSignal,
+          deadlineMs: options.deadlineMs,
+        });
         if (gitCtx) {
           return {
             projectId: gitCtx.projectId,
@@ -1499,9 +1508,13 @@ export class EngramAccessService {
             defaultBranch: gitCtx.defaultBranch,
           };
         }
-      } catch {
-        // resolveGitContext never throws, but stay defensive — not being in a
-        // repo is normal and must not break the write.
+      } catch (error) {
+        if (
+          options.abortSignal?.aborted ||
+          (options.deadlineMs !== undefined && Date.now() >= options.deadlineMs)
+        ) {
+          throw error;
+        }
       }
     }
     return null;
@@ -1514,7 +1527,7 @@ export class EngramAccessService {
    *  of truth for the namespacesEnabled/projectScope gates (rule 22; keeps the
    *  scattered-config-read ratchet flat). READ-ONLY: never mutates session. */
   private async resolveCodingScopeInputs(
-    request: CodingScopedWriteInput & {
+    request: InterruptibleCodingScopedWriteInput & {
       namespace?: string;
       sessionKey?: string;
       authenticatedPrincipal?: string;
@@ -1713,7 +1726,7 @@ export class EngramAccessService {
    * precedence), falling back to the per-call `cwd`/`projectTag`.
    */
   private async resolveMemoryScopePlan(
-    request: CodingScopedWriteInput & {
+    request: InterruptibleCodingScopedWriteInput & {
       namespace?: string;
       sessionKey?: string;
       authenticatedPrincipal?: string;
@@ -3250,12 +3263,9 @@ export class EngramAccessService {
         } satisfies DeltaSurfaceStorage;
       },
       gitInvoker: (cwd, args) => {
-        // Reuse the existing defaultGitInvoker (2s timeout, never throws —
-        // the discipline git-context.ts already established). It returns
-        // { stdout, exitCode } so the handler can recover from non-zero
-        // exits without a try/catch.
-        const invoker = defaultGitInvoker();
-        return invoker(cwd, args);
+        // Session-delta remains a synchronous pure calculation; use the
+        // bounded synchronous invoker rather than the abortable scope resolver.
+        return defaultGitInvokerSync()(cwd, args);
       },
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
     });
@@ -3339,23 +3349,28 @@ export class EngramAccessService {
     }
   }
 
-  async correctionPlan(request: CorrectionRequest): Promise<CorrectionPlan> {
-    // Issue #1582 — resolve any `[m:xxxx]` handle in targetIds to its memory
-    // id against the caller's session BEFORE planning, so the planner only ever
-    // sees concrete ids. One shared resolve path (rule 22); a handle that
-    // misses or collides is an explicit input error, never silent (rule 34/51).
+  async correctionPlan(
+    request: CorrectionRequest,
+    opts?: { abortSignal?: AbortSignal },
+  ): Promise<CorrectionPlan> {
     if (request.targetIds?.some((id) => isHandleToken(id))) {
       const targetIds = request.targetIds.map((id) =>
         this.resolveMemoryIdOrHandleInput(id, request.sessionKey),
       );
-      return this.correctionService().plan({ ...request, targetIds });
+      return this.correctionService().plan({ ...request, targetIds }, opts);
     }
-    return this.correctionService().plan(request);
+    return this.correctionService().plan(request, opts);
   }
 
   async correctionApply(
     planId: string,
-    opts: { confirm?: boolean; namespace?: string; sessionKey?: string; principal?: string },
+    opts: {
+      confirm?: boolean;
+      namespace?: string;
+      sessionKey?: string;
+      principal?: string;
+      abortSignal?: AbortSignal;
+    },
   ): Promise<CorrectionOutcome> {
     return this.correctionService().apply(planId, opts);
   }

@@ -20,9 +20,10 @@
  * only thing it persists is the plan document itself.
  */
 
-import { throwIfAborted } from "../abort-error.js";
-import { mkdir, readFile, rename, unlink, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
+import { throwIfAborted } from "../abort-error.js";
+import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import { serializeMutations } from "../utils/serialize-mutations.js";
 import {
   CORRECTION_TEXT_MAX,
@@ -109,6 +110,8 @@ export interface PlannerDeps {
   }): Promise<string>;
   /** Per-namespace storage dir root (so the plan lands in the right state/). */
   storageDir(namespace: string): Promise<string>;
+  /** Atomic persistence seam used by focused lifecycle tests. */
+  writePlanFile?: (outputPath: string, content: string) => Promise<unknown>;
   /** Max affected memories per plan (issue config: default 10). */
   readonly maxAffected: number;
   /** Plan TTL in hours (issue config: default 24). */
@@ -431,13 +434,8 @@ export class CorrectionPlanner {
       : plan;
     await serializeMutations(`correction-plan:${target}`, async () => {
       throwIfAborted(abortSignal, "correction planning aborted");
-      await mkdir(dir, { recursive: true });
-      const tmp = `${target}.${process.pid}.${Date.now().toString(36)}.tmp`;
-      throwIfAborted(abortSignal, "correction planning aborted");
-      await writeFile(tmp, `${JSON.stringify(persistedPlan)}\n`, "utf-8");
-      throwIfAborted(abortSignal, "correction planning aborted");
-      // rename() is atomic on POSIX for same-filesystem renames (rule 54).
-      await rename(tmp, target);
+      const writePlanFile = this.deps.writePlanFile ?? writeFileAtomically;
+      await writePlanFile(target, `${JSON.stringify(persistedPlan)}\n`);
     });
     return plan;
   }
@@ -520,9 +518,7 @@ export class CorrectionPlanner {
             : a,
         );
       }
-      const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
-      await writeFile(tmp, `${JSON.stringify(plan)}\n`, "utf-8");
-      await rename(tmp, file);
+      await writeFileAtomically(file, `${JSON.stringify(plan)}\n`);
     });
   }
   /**
@@ -545,9 +541,7 @@ export class CorrectionPlanner {
       if (!plan || plan.status !== "applying") return;
       plan.status = "pending";
       delete plan.applyingAt;
-      const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
-      await writeFile(tmp, `${JSON.stringify(plan)}\n`, "utf-8");
-      await rename(tmp, file);
+      await writeFileAtomically(file, `${JSON.stringify(plan)}\n`);
     });
   }
 

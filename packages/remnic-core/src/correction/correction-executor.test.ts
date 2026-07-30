@@ -516,6 +516,59 @@ test("supersede retries loser retirement after a transient failure", async () =>
   });
 });
 
+test("#2206 cancellation terminalizes a plan after a replacement commits but retirement fails", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-old", { memoryId: "mem-old", path: "facts/mem-old.md", content: "old", excerpt: "old", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([["mem-old", fakeMemory({ memoryId: "mem-old", content: "old" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [
+          { kind: "supersede", loserId: "mem-old", replacement: { content: "new" } },
+          { kind: "redaction_rule", pattern: "later-action" },
+        ],
+        relevance: [{ memoryId: "mem-old", why: "x" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "old", targetIds: ["mem-old"] }, ["default"]);
+    const abortController = new AbortController();
+    const deps = makeExecutorDeps(state);
+    deps.retireMemory = async () => {
+      abortController.abort(new Error("correction deadline exceeded"));
+      throw new Error("injected retirement failure");
+    };
+
+    const outcome = await new CorrectionExecutor(deps, planner).apply("default", plan.planId, {
+      confirm: true,
+      abortSignal: abortController.signal,
+    });
+
+    assert.equal(outcome.status, "partial");
+    assert.equal((await planner.loadPlan("default", plan.planId))?.status, "partial");
+    assert.equal(state.writtenReplacements.length, 1);
+    assert.equal(state.memories.get("mem-old")?.status, "active");
+    assert.deepEqual(state.redactionRules, []);
+    assert.equal(
+      outcome.results.some((result) => result.action.kind === "redaction_rule" && result.status === "skipped"),
+      true,
+    );
+    assert.equal(state.auditRecords.length, 1);
+  });
+});
+
 test("tombstone emitted per retract; validUntil absent when bi-temporal OFF", async () => {
   await withTempDir(async (dir) => {
     const candidates = new Map<string, PlannerCandidate>([
@@ -934,7 +987,7 @@ test("#2128 cancellation after tombstone commit terminalizes the correction plan
   });
 });
 
-test("#2128 late cancellation before any mutation restores an applying plan to pending", async () => {
+test("#2206 cancellation after audit commit terminalizes an empty correction plan", async () => {
   await withTempDir(async (dir) => {
     const state: FakeState = {
       memories: new Map(),
@@ -950,8 +1003,40 @@ test("#2128 late cancellation before any mutation restores an applying plan to p
     const deps = makeExecutorDeps(state);
     const appendAuditRecord = deps.appendAuditRecord;
     deps.appendAuditRecord = async (namespace, record, signal) => {
+      const auditId = await appendAuditRecord(namespace, record, signal);
       abortController.abort(new Error("caller disconnected"));
-      return appendAuditRecord(namespace, record, signal);
+      return auditId;
+    };
+    const executor = new CorrectionExecutor(deps, planner);
+
+    const outcome = await executor.apply("default", plan.planId, {
+      confirm: true,
+      abortSignal: abortController.signal,
+    });
+    assert.equal(outcome.status, "applied");
+    assert.equal(state.auditRecords.length, 1);
+    assert.equal((await planner.loadPlan("default", plan.planId))?.status, "applied");
+  });
+});
+
+test("#2206 cancellation before audit commit restores an empty correction plan to pending", async () => {
+  await withTempDir(async (dir) => {
+    const state: FakeState = {
+      memories: new Map(),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const planner = new CorrectionPlanner(makePlannerDeps(dir, new Map()));
+    const plan = await planner.plan({ text: "nothing matches" }, ["default"]);
+    const abortController = new AbortController();
+    const deps = makeExecutorDeps(state);
+    deps.appendAuditRecord = async () => {
+      const reason = new Error("caller disconnected");
+      abortController.abort(reason);
+      throw reason;
     };
     const executor = new CorrectionExecutor(deps, planner);
 
@@ -959,6 +1044,7 @@ test("#2128 late cancellation before any mutation restores an applying plan to p
       () => executor.apply("default", plan.planId, { confirm: true, abortSignal: abortController.signal }),
       /caller disconnected/,
     );
+    assert.equal(state.auditRecords.length, 0);
     assert.equal((await planner.loadPlan("default", plan.planId))?.status, "pending");
   });
 });
@@ -1140,7 +1226,115 @@ test("#2128 cancellation skips unstarted actions after a committed edit", async 
     assert.equal(state.memories.get("mem-edit")?.content, "edited");
     assert.deepEqual(state.redactionRules, [], "the cancelled plan must not start its second action");
     assert.equal(state.auditRecords.length, 1);
+    const skipped = outcome.results.filter((result) => result.status === "skipped");
+    assert.deepEqual(skipped.map((result) => result.action), [
+      { kind: "redaction_rule", pattern: "secret-token-\\d+" },
+    ]);
+    assert.deepEqual(state.auditRecords[0]?.outcome.results, outcome.results);
   });
+});
+
+test("#2206 cancellation interrupts rescope authorization before any destination write", async () => {
+  for (const priorEditCommitted of [false, true]) {
+    await withTempDir(async (dir) => {
+      const candidates = new Map<string, PlannerCandidate>([
+        ["mem-rescope", {
+          memoryId: "mem-rescope",
+          path: "facts/mem-rescope.md",
+          content: "move me",
+          excerpt: "move me",
+          score: 1,
+        }],
+      ]);
+      if (priorEditCommitted) {
+        candidates.set("mem-edit", {
+          memoryId: "mem-edit",
+          path: "facts/mem-edit.md",
+          content: "edit me",
+          excerpt: "edit me",
+          score: 1,
+        });
+      }
+      const state: FakeState = {
+        memories: new Map([
+          ["mem-rescope", fakeMemory({ memoryId: "mem-rescope", content: "move me" })],
+          ...(priorEditCommitted
+            ? [["mem-edit", fakeMemory({ memoryId: "mem-edit", content: "edit me" })] as const]
+            : []),
+        ]),
+        tombstones: [],
+        redactionRules: [],
+        auditRecords: [],
+        propagateCalls: 0,
+        writtenReplacements: [],
+      };
+      const actions: CorrectionAction[] = [
+        ...(priorEditCommitted
+          ? [{ kind: "edit", memoryId: "mem-edit", patch: "edited" } as const]
+          : []),
+        { kind: "rescope", memoryId: "mem-rescope", toNamespace: "destination" },
+      ];
+      const plannerDeps: PlannerDeps = {
+        ...makePlannerDeps(dir, candidates),
+        classifyAndDraft: async () => ({
+          classification: "outdated",
+          confidence: 0.9,
+          actions,
+          relevance: [...candidates.values()].map((candidate) => ({
+            memoryId: candidate.memoryId,
+            why: "test",
+          })),
+          warnings: [],
+        }),
+      };
+      const planner = new CorrectionPlanner(plannerDeps);
+      const plan = await planner.plan(
+        { text: "move memory", targetIds: [...candidates.keys()] },
+        ["default"],
+      );
+      const abortController = new AbortController();
+      const started = Promise.withResolvers<void>();
+      const authorization = Promise.withResolvers<boolean>();
+      let forwardedSignal: AbortSignal | undefined;
+      const applyResult = new CorrectionExecutor(makeExecutorDeps(state), planner)
+        .apply("default", plan.planId, {
+          confirm: true,
+          abortSignal: abortController.signal,
+          canWriteDestination: async (_namespace, abortSignal) => {
+            forwardedSignal = abortSignal;
+            started.resolve();
+            return authorization.promise;
+          },
+        })
+        .then(
+          (outcome) => ({ ok: true as const, outcome }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+
+      await started.promise;
+      abortController.abort(new Error("correction deadline exceeded"));
+      assert.equal(forwardedSignal, abortController.signal);
+      assert.equal(forwardedSignal?.aborted, true);
+      authorization.resolve(true);
+      const result = await applyResult;
+      assert.equal(state.memories.get("mem-rescope")?.status, "active");
+      if (priorEditCommitted) {
+        assert.equal(result.ok, true);
+        assert.equal(result.outcome?.status, "partial");
+        assert.equal(
+          result.outcome?.results.some(
+            (entry) => entry.action.kind === "rescope" && entry.status === "skipped",
+          ),
+          true,
+        );
+        assert.equal((await planner.loadPlan("default", plan.planId))?.status, "partial");
+      } else {
+        assert.equal(result.ok, false);
+        assert.match(String(result.error), /correction deadline exceeded|correction apply aborted/);
+        assert.equal((await planner.loadPlan("default", plan.planId))?.status, "pending");
+      }
+    });
+  }
 });
 
 test("Of0pz: supersede with a missing loser writes NO replacement (preflight before write)", async () => {
