@@ -84,6 +84,11 @@ type DiskFingerprint = {
   ctimeMs: number;
   birthtimeMs: number;
 };
+export interface ContentHashPathEntry {
+  readonly path: string;
+  readonly contentHash: string;
+}
+
 /**
  * Content-hash dedup index for facts.
  * Normalizes content (lowercase, strip punctuation, collapse whitespace),
@@ -667,6 +672,27 @@ export class ContentHashIndex {
     this.hashes.add(hash);
     this.added.add(hash);
     this.dirty = true;
+  }
+
+  /**
+   * Resolve a pre-computed semantic hash to one deterministic corpus path.
+   *
+   * This lookup is separate from durable hash membership: `this.hashes` stays
+   * one hash per line and `has(content)` keeps its existing raw-content contract.
+   * Reconciliation supplies short-lived manifest rows where hash and path coexist.
+   */
+  static resolvePathByHash(
+    hash: string,
+    entries: Iterable<ContentHashPathEntry>,
+  ): string | undefined {
+    const canonicalHash = hash.toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(canonicalHash)) return undefined;
+    let canonicalPath: string | undefined;
+    for (const entry of entries) {
+      if (entry.contentHash.toLowerCase() !== canonicalHash || entry.path.length === 0) continue;
+      if (canonicalPath === undefined || entry.path < canonicalPath) canonicalPath = entry.path;
+    }
+    return canonicalPath;
   }
 
   /** Normalize content (delegates to content-hash.ts for a single source of truth). */

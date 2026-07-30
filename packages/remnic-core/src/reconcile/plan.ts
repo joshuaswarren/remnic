@@ -65,6 +65,7 @@ export type ReconcileReason =
   | "peer_changed"
   | "local_changed"
   | "same_content"
+  | "semantic_duplicate"
   | "both_modified"
   | "peer_deleted"
   | "local_deleted"
