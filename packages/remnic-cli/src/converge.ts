@@ -416,22 +416,26 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
           bytes: record.bytes,
         }));
         localMap.set(ns, files);
-        const io = await createOfflineStorageIo(rootInfo.rootDir);
-        localManifests.set(
-          ns,
-          await buildReconcileManifest({
-            files,
-            readFile: async (file) => {
-              const readFile = io.readFile;
-              if (!readFile) throw new Error("offline storage cannot read reconciliation manifest files");
-              return await readFile({
-                root: rootInfo.rootDir,
-                path: file.path,
-                filePath: path.join(rootInfo.rootDir, file.path),
-              });
-            },
-          }),
-        );
+        try {
+          const io = await createOfflineStorageIo(rootInfo.rootDir);
+          localManifests.set(
+            ns,
+            await buildReconcileManifest({
+              files,
+              readFile: async (file) => {
+                const readFile = io.readFile;
+                if (!readFile) throw new Error("offline storage cannot read reconciliation manifest files");
+                return await readFile({
+                  root: rootInfo.rootDir,
+                  path: file.path,
+                  filePath: path.join(rootInfo.rootDir, file.path),
+                });
+              },
+            }),
+          );
+        } catch {
+          localManifests.delete(ns);
+        }
         const tombstones = await readLocalTombstones(rootInfo.rootDir);
         localTombstones.set(ns, tombstones);
       } catch {
@@ -457,10 +461,11 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       const peerData = await fetchPeerSnapshot(peerUrl, ns, resolvedToken, fetchFn);
       peerMap.set(ns, peerData.files);
       peerTombstones.set(ns, peerData.tombstones);
+      const localPaths = new Set((localMap.get(ns) ?? []).map((file) => file.path));
       peerManifests.set(
         ns,
         await buildReconcileManifest({
-          files: peerData.files,
+          files: peerData.files.filter((file) => !localPaths.has(file.path)),
           readFile: async (file) => {
             const remote = await fetchPeerFileContent(peerUrl, ns, file.path, resolvedToken, fetchFn);
             if (!remote || remote.sha256 !== file.sha256) {

@@ -194,7 +194,7 @@ export function collapseActiveFactDuplicates(
       const localPath = ContentHashIndex.resolvePathByHash(hash, contentHashRows(localCandidates));
       const peerPath = ContentHashIndex.resolvePathByHash(hash, contentHashRows(peerCandidates));
 
-      if (localPath && peerPath) {
+      if (localPath && peerPath && localPath !== peerPath) {
         const localFile = localByPath.get(localPath);
         const peerFile = peerByPath.get(peerPath);
         if (!localFile || !peerFile) continue;

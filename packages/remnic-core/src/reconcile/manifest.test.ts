@@ -191,3 +191,26 @@ test("semantic collapse leaves tombstone suppression authoritative", () => {
     true
   );
 });
+
+test("semantic collapse preserves same-path metadata updates", () => {
+  const path = "facts/shared.md";
+  const localFile = { path, sha256: "a".repeat(64) };
+  const peerFile = { path, sha256: "b".repeat(64) };
+  const baseFile = { path, sha256: peerFile.sha256 };
+  const semanticHash = ContentHashIndex.computeHash("same raw fact");
+  const plan = planReconciliation([{ namespace: "default", local: [localFile], peer: [peerFile], base: [baseFile] }]);
+  const manifest = (file: typeof localFile, id: string): ReconcileManifest => ({
+    format: "remnic-reconcile-manifest",
+    schemaVersion: 1,
+    files: [{ ...file, memory: { id, category: "fact", contentHash: semanticHash, status: "active" } }],
+  });
+
+  const collapsed = collapseActiveFactDuplicates(
+    plan,
+    new Map([["default", manifest(localFile, "local")]]),
+    new Map([["default", manifest(peerFile, "peer")]])
+  );
+
+  assert.deepEqual(collapsed, plan);
+  assert.equal(collapsed.entries[0]?.action, "push");
+});
