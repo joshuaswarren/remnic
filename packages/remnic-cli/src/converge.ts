@@ -930,7 +930,7 @@ export async function executeConvergeApply(
             const filePath = path.join(rootDir, entry.path);
             const current = await io.readFileDigest({ root: rootDir, path: entry.path, filePath });
             if (current.sha256 === entry.localSha256) {
-              await io.deleteFile({ root: rootDir, path: entry.path, filePath });
+              await io.deleteFile!({ root: rootDir, path: entry.path, filePath });
               deleted = true;
             }
           } catch {
