@@ -54,6 +54,7 @@ import type {
   DreamsPhasesConfig,
   FileHygieneConfig,
   MemoryFile,
+  MetaState,
   PluginConfig,
 } from "./types.js";
 import { reportBufferSurpriseDistribution } from "./buffer-surprise-report.js";
@@ -1498,8 +1499,8 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
 
   // Tier distribution (issue #686 retention-completion).
   checks.push(await summarizeTierDistribution(options.orchestrator.storage));
-  checks.push(await summarizeDreamsPhases(config, storage));
-  const extractionWatermark = await readAggregateExtractionWatermark({ config, rootStorage: storage, storageForNamespace: (ns, rootDir) => options.orchestrator.getStorage?.(ns) ?? new StorageManager(rootDir) });
+  checks.push(await summarizeDreamsPhases(config, storage, meta));
+  const extractionWatermark = await readAggregateExtractionWatermark({ config, rootStorage: storage, rootMeta: meta, storageForNamespace: (ns, rootDir) => options.orchestrator.getStorage?.(ns) ?? new StorageManager(rootDir) });
   checks.push(await summarizeExtractionLiveness(config, extractionWatermark, options.orchestrator.buffer));
   checks.push(...(await summarizeCorpusAndReplica(config, (d) => new StorageManager(d), options.resolveSecretRef)));
   // Security mitigation status (issue #565).
@@ -1898,11 +1899,10 @@ export async function summarizeTierDistribution(
 export async function summarizeDreamsPhases(
   config: Pick<PluginConfig, "memoryDir" | "dreamsPhases">,
   storage: StorageManager = new StorageManager(config.memoryDir),
+  loadedMeta?: MetaState,
 ): Promise<OperatorDoctorCheck> {
   const phases: DreamsPhasesConfig = config.dreamsPhases;
-
-  // Load meta.json for best-available last-run timestamps.
-  const meta = await storage.loadMeta();
+  const meta = loadedMeta ?? (await storage.loadMeta());
 
   let deepSleepLastRun: string | null = null;
   let deepSleepLastRunWarning: string | null = null;

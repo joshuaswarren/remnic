@@ -27,6 +27,7 @@ export interface ExtractionNamespaceRootCache {
 export interface AggregateExtractionWatermarkOptions {
   config: PluginConfig;
   rootStorage: ExtractionWatermarkStorage;
+  rootMeta?: ExtractionWatermarkMeta;
   storageForNamespace(
     namespace: string,
     rootDir: string
@@ -48,28 +49,31 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function watermarkFromMeta(meta: ExtractionWatermarkMeta, name: string): ExtractionWatermarkRead {
+  if (meta.lastExtractionAt !== null && meta.lastExtractionAt !== undefined) {
+    const parsed = Date.parse(meta.lastExtractionAt);
+    if (!Number.isFinite(parsed)) {
+      return readFailure(`${name} watermark timestamp invalid`);
+    }
+  }
+  const hasRootStats = meta.extractionCount !== undefined || meta.lastConsolidationAt !== undefined;
+  return {
+    lastExtractionAt: meta.lastExtractionAt ?? null,
+    readFailed: false,
+    ...(hasRootStats
+      ? {
+          rootStats: {
+            extractionCount: meta.extractionCount,
+            lastConsolidationAt: meta.lastConsolidationAt,
+          },
+        }
+      : {}),
+  };
+}
+
 async function readWatermark(storage: ExtractionWatermarkStorage, name: string): Promise<ExtractionWatermarkRead> {
   try {
-    const meta = await storage.loadMeta();
-    if (meta.lastExtractionAt !== null && meta.lastExtractionAt !== undefined) {
-      const parsed = Date.parse(meta.lastExtractionAt);
-      if (!Number.isFinite(parsed)) {
-        return readFailure(`${name} watermark timestamp invalid`);
-      }
-    }
-    const hasRootStats = meta.extractionCount !== undefined || meta.lastConsolidationAt !== undefined;
-    return {
-      lastExtractionAt: meta.lastExtractionAt ?? null,
-      readFailed: false,
-      ...(hasRootStats
-        ? {
-            rootStats: {
-              extractionCount: meta.extractionCount,
-              lastConsolidationAt: meta.lastConsolidationAt,
-            },
-          }
-        : {}),
-    };
+    return watermarkFromMeta(await storage.loadMeta(), name);
   } catch (error) {
     return readFailure(`${name} watermark unreadable: ${errorMessage(error)}`);
   }
@@ -114,7 +118,9 @@ export async function readAggregateExtractionWatermark(
   options: AggregateExtractionWatermarkOptions
 ): Promise<ExtractionWatermarkRead> {
   if (!resolveNamespaceCapabilities(options.config).namespaces) {
-    return readWatermark(options.rootStorage, "root store");
+    return options.rootMeta
+      ? watermarkFromMeta(options.rootMeta, "root store")
+      : readWatermark(options.rootStorage, "root store");
   }
 
   const resolved = await resolveRoots(options);
@@ -139,7 +145,14 @@ export async function readAggregateExtractionWatermark(
   }
 
   const defaultNamespace = normalizeNamespaceIdentity(options.config.defaultNamespace);
-  const canAccessRoot = !options.caps || capabilityAllowsNamespace(options.caps, defaultNamespace);
+  const hasMigratedDefault = resolved.some(
+    (root) =>
+      path.resolve(root.rootDir) !== rootDir &&
+      root.namespaces.some((namespace) => normalizeNamespaceIdentity(namespace) === defaultNamespace),
+  );
+  const canAccessRoot =
+    !hasMigratedDefault &&
+    (!options.caps || capabilityAllowsNamespace(options.caps, defaultNamespace));
   let rootRead: ExtractionWatermarkRead = { lastExtractionAt: null, readFailed: false };
   if (canAccessRoot) {
     rootRead = await readWatermark(options.rootStorage, "root store");

@@ -133,7 +133,9 @@ test("default root capability check uses normalized aliases for migrated storage
     await mkdir(migratedDefaultDir, { recursive: true });
     const result = await readAggregateExtractionWatermark({
       config: { ...fixture.config, defaultNamespace: " default " },
-      rootStorage: storage(fixture.memoryDir, async () => "2026-07-25T12:00:00.000Z"),
+      rootStorage: storage(fixture.memoryDir, async () => {
+        throw new Error("inactive legacy root is unreadable");
+      }),
       storageForNamespace: async (_namespace, rootDir) =>
         storage(rootDir, async () =>
           path.resolve(rootDir) === path.resolve(migratedDefaultDir)

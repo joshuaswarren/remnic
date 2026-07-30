@@ -2380,10 +2380,19 @@ export class EngramAccessService {
     const extraction = await computeExtractionLivenessStatus(
       this.orchestrator,
       extractionWatermark,
-      this.extractionLivenessWarn,
+      caps?.namespaces !== undefined ? undefined : this.extractionLivenessWarn,
     );
     const visibleExtraction =
-      caps?.namespaces !== undefined ? { ...extraction, lastExtractionAt: null } : extraction;
+      caps?.namespaces !== undefined
+        ? {
+            ...extraction,
+            lastExtractionAt: null,
+            bufferedSessionCount: 0,
+            pendingTurnCount: 0,
+            oldestBufferedTurnAgeMs: null,
+            degradedReason: extraction.degraded ? "daemon extraction pipeline degraded" : null,
+          }
+        : extraction;
     // ONE call: the corpus array and the flag describing it must not come from
     // two independently-cached scans (round 8, codex P1).
     const corpusCensus = await computeServiceCorpusCensus(this.orchestrator, {
