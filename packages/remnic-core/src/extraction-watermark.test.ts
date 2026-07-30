@@ -126,14 +126,20 @@ test("scoped capabilities filter candidate namespaces during aggregate read", as
   }
 });
 
-test("default root capability check uses the normalized namespace identity", async () => {
+test("default root capability check uses normalized aliases for migrated storage", async () => {
   const fixture = await namespacedFixture();
   try {
+    const migratedDefaultDir = path.join(fixture.memoryDir, "namespaces", "default");
+    await mkdir(migratedDefaultDir, { recursive: true });
     const result = await readAggregateExtractionWatermark({
       config: { ...fixture.config, defaultNamespace: " default " },
-      rootStorage: storage(fixture.memoryDir, async () => "2026-07-26T12:00:00.000Z"),
-      storageForNamespace: async (namespace) =>
-        storage(fixture.namespaceDirs[namespace], async () => "2026-07-25T12:00:00.000Z"),
+      rootStorage: storage(fixture.memoryDir, async () => "2026-07-25T12:00:00.000Z"),
+      storageForNamespace: async (_namespace, rootDir) =>
+        storage(rootDir, async () =>
+          path.resolve(rootDir) === path.resolve(migratedDefaultDir)
+            ? "2026-07-26T12:00:00.000Z"
+            : "2026-07-24T12:00:00.000Z",
+        ),
       caps: { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
     });
 

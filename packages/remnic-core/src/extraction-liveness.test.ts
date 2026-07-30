@@ -418,6 +418,15 @@ test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded ve
     lines.some((l) => l.startsWith("Extraction liveness: DEGRADED")),
     "reports a degraded verdict when the watermark is stale",
   );
+  const warmingLines = await renderExtractionLivenessStats(
+    orchestrator,
+    { lastExtractionAt: null, readFailed: false, pending: true },
+    NOW,
+  );
+  assert.ok(
+    warmingLines.some((line) => line === "Extraction liveness: ok"),
+    "cache warming is pending rather than degraded",
+  );
 });
 
 test("renderExtractionLivenessStats: reports DEGRADED when the buffer read fails (§22)", async () => {

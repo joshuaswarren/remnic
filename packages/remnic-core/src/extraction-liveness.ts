@@ -438,6 +438,7 @@ export async function renderExtractionLivenessStats(
     nowMs,
     metaReadFailed: watermark.readFailed,
     metaReadError: watermark.readError,
+    watermarkPending: watermark.pending,
   });
   const oldestAge =
     status.oldestBufferedTurnAgeMs !== null ? formatAgeMs(status.oldestBufferedTurnAgeMs) : "n/a";

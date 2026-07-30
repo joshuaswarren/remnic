@@ -124,7 +124,14 @@ export async function readAggregateExtractionWatermark(
   const seenDirs = new Set<string>([rootDir]);
   const targets: CorpusNamespaceRoot[] = [];
   for (const root of resolved) {
-    if (options.caps && !root.namespaces.some((ns) => capabilityAllowsNamespace(options.caps, ns))) continue;
+    if (
+      options.caps &&
+      !root.namespaces.some((ns) =>
+        capabilityAllowsNamespace(options.caps, normalizeNamespaceIdentity(ns)),
+      )
+    ) {
+      continue;
+    }
     const resolvedDir = path.resolve(root.rootDir);
     if (seenDirs.has(resolvedDir)) continue;
     seenDirs.add(resolvedDir);
