@@ -20,9 +20,42 @@ export interface FixtureHandRolledConfig {
 
 export function parseFixtureHandRolledConfig(value: unknown): FixtureHandRolledConfig {
   const raw = requireObject(value, "fixture");
+  if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") {
+    throw new Error("enabled must be a boolean");
+  }
+  if (
+    raw.intervalMinutes !== undefined &&
+    (typeof raw.intervalMinutes !== "number" ||
+      !Number.isFinite(raw.intervalMinutes) ||
+      raw.intervalMinutes <= 0)
+  ) {
+    throw new Error("intervalMinutes must be a positive number");
+  }
+  if (
+    raw.fusion !== undefined &&
+    (!raw.fusion || typeof raw.fusion !== "object" || Array.isArray(raw.fusion))
+  ) {
+    throw new Error("fusion must be an object");
+  }
+  if (raw.label !== undefined && typeof raw.label !== "string") {
+    throw new Error("label must be a string");
+  }
+
+  const fusionRaw = (raw.fusion as Rec | undefined) ?? {};
+  if (fusionRaw.enabled !== undefined && typeof fusionRaw.enabled !== "boolean") {
+    throw new Error("fusion.enabled must be a boolean");
+  }
+  if (
+    fusionRaw.gapMs !== undefined &&
+    (typeof fusionRaw.gapMs !== "number" ||
+      !Number.isFinite(fusionRaw.gapMs) ||
+      fusionRaw.gapMs < 0)
+  ) {
+    throw new Error("fusion.gapMs must be a non-negative number");
+  }
+
   const enabled = coerceBool(raw.enabled) ?? false;
   const intervalMinutes = typeof raw.intervalMinutes === "number" ? raw.intervalMinutes : 15;
-  const fusionRaw = raw.fusion && typeof raw.fusion === "object" ? (raw.fusion as Rec) : {};
   const fusion = {
     enabled: coerceBool(fusionRaw.enabled) ?? false,
     gapMs: typeof fusionRaw.gapMs === "number" ? fusionRaw.gapMs : 1000,

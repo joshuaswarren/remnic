@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -138,20 +138,15 @@ test("resolveConfigPath expands home-relative env config paths", async () => {
   }
 });
 
-test("converge prefers a plugin-scoped manual policy over standalone config", async () => {
+test("converge loads a plugin-scoped manual conflict policy", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "remnic-converge-openclaw-"));
   const openclawConfigPath = path.join(home, "openclaw.json");
-  const standaloneConfigPath = path.join(home, "remnic.json");
   try {
     process.env.HOME = home;
-    process.env.REMNIC_CONFIG_PATH = standaloneConfigPath;
+    delete process.env.REMNIC_CONFIG_PATH;
     delete process.env.ENGRAM_CONFIG_PATH;
     process.env.OPENCLAW_CONFIG_PATH = openclawConfigPath;
     delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
-    await writeFile(
-      standaloneConfigPath,
-      JSON.stringify({ converge: { conflictPolicy: "newest-wins" } }),
-    );
     await writeFile(
       openclawConfigPath,
       JSON.stringify({
@@ -176,8 +171,8 @@ test("converge prefers a plugin-scoped manual policy over standalone config", as
   }
 });
 
-test("converge falls back to standalone config when a plugin entry has no config", async () => {
-  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-converge-openclaw-default-"));
+test("converge honors an explicit standalone config path", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-converge-standalone-"));
   const openclawConfigPath = path.join(home, "openclaw.json");
   const standaloneConfigPath = path.join(home, "remnic.json");
   try {
@@ -186,6 +181,44 @@ test("converge falls back to standalone config when a plugin entry has no config
     delete process.env.ENGRAM_CONFIG_PATH;
     process.env.OPENCLAW_CONFIG_PATH = openclawConfigPath;
     delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+    await writeFile(
+      standaloneConfigPath,
+      JSON.stringify({ converge: { conflictPolicy: "newest-wins" } }),
+    );
+    await writeFile(
+      openclawConfigPath,
+      JSON.stringify({
+        plugins: {
+          entries: {
+            "openclaw-remnic": {
+              config: { converge: { conflictPolicy: "manual" } },
+            },
+          },
+        },
+      }),
+    );
+
+    assert.equal(
+      loadConvergeCommandConfig().converge.conflictPolicy,
+      "newest-wins",
+    );
+  } finally {
+    restoreEnv();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("converge falls back to standalone config when a plugin entry has no config", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-converge-openclaw-default-"));
+  const openclawConfigPath = path.join(home, "openclaw.json");
+  const standaloneConfigPath = path.join(home, ".config", "remnic", "config.json");
+  try {
+    process.env.HOME = home;
+    delete process.env.REMNIC_CONFIG_PATH;
+    delete process.env.ENGRAM_CONFIG_PATH;
+    process.env.OPENCLAW_CONFIG_PATH = openclawConfigPath;
+    delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+    await mkdir(path.dirname(standaloneConfigPath), { recursive: true });
     await writeFile(
       standaloneConfigPath,
       JSON.stringify({ converge: { conflictPolicy: "manual" } }),
@@ -219,31 +252,40 @@ test("converge falls back to standalone config when a plugin entry has no config
       loadConvergeCommandConfig().converge.conflictPolicy,
       "manual",
     );
+    await writeFile(
+      openclawConfigPath,
+      JSON.stringify({
+        plugins: {
+          entries: {
+            "openclaw-remnic": { config: { remnic: false }, enabled: true },
+          },
+        },
+      }),
+    );
+    assert.equal(
+      loadConvergeCommandConfig().converge.conflictPolicy,
+      "manual",
+    );
   } finally {
     restoreEnv();
     await rm(home, { recursive: true, force: true });
   }
 });
 
-test("converge falls back to standalone config when OpenClaw JSON is malformed", async () => {
+test("converge rejects malformed OpenClaw JSON", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "remnic-converge-openclaw-malformed-"));
   const openclawConfigPath = path.join(home, "openclaw.json");
-  const standaloneConfigPath = path.join(home, "remnic.json");
   try {
     process.env.HOME = home;
-    process.env.REMNIC_CONFIG_PATH = standaloneConfigPath;
+    delete process.env.REMNIC_CONFIG_PATH;
     delete process.env.ENGRAM_CONFIG_PATH;
     process.env.OPENCLAW_CONFIG_PATH = openclawConfigPath;
     delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
     await writeFile(openclawConfigPath, "{");
-    await writeFile(
-      standaloneConfigPath,
-      JSON.stringify({ converge: { conflictPolicy: "manual" } }),
-    );
 
-    assert.equal(
-      loadConvergeCommandConfig().converge.conflictPolicy,
-      "manual",
+    assert.throws(
+      () => loadConvergeCommandConfig(),
+      /contains invalid JSON/,
     );
   } finally {
     restoreEnv();

@@ -67,6 +67,20 @@ test("hand-rolled fixture accepts every recognized runtime field", () => {
   );
 });
 
+test("hand-rolled fixture rejects invalid recognized fields", () => {
+  assert.throws(() => parseFixtureHandRolledConfig({ enabled: "true" }), /enabled/);
+  assert.throws(() => parseFixtureHandRolledConfig({ intervalMinutes: 0 }), /intervalMinutes/);
+  assert.throws(() => parseFixtureHandRolledConfig({ fusion: [] }), /fusion/);
+  assert.throws(
+    () => parseFixtureHandRolledConfig({ fusion: { enabled: "true" } }),
+    /fusion.enabled/,
+  );
+  assert.throws(
+    () => parseFixtureHandRolledConfig({ fusion: { gapMs: -1 } }),
+    /fusion.gapMs/,
+  );
+});
+
 test("zod fixture: static z.object walk collects nested schema keys", () => {
   const { keys } = extractFixture();
   assert.ok(keys.includes("zodBlock.endpoint"), keys.filter((k) => k.startsWith("zodBlock")).join(","));

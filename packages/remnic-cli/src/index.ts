@@ -4045,29 +4045,33 @@ async function writeBenchReproManifestForPackageRun(args: {
 
 // ── Config helpers ───────────────────────────────────────────────────────────
 
-export function loadConvergeCommandConfig(): PluginConfig {
-  const openclawConfigPath = resolveOpenclawConfigPath();
-  let openclawConfig: unknown;
-  if (fs.existsSync(openclawConfigPath)) {
-    try {
-      openclawConfig = JSON.parse(fs.readFileSync(openclawConfigPath, "utf8"));
-    } catch {
-      openclawConfig = undefined;
-    }
-  }
-  const pluginEntry = resolveRemnicPluginEntry(openclawConfig);
-  if (pluginEntry !== undefined) {
-    const pluginConfig = pluginEntry["config"];
-    if (pluginConfig !== null && typeof pluginConfig === "object" && !Array.isArray(pluginConfig)) {
-      return parseConfig(resolveRemnicConfigRecord(pluginConfig));
-    }
-  }
-
+function loadStandaloneConvergeCommandConfig(): PluginConfig {
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
   return parseConfig(resolveRemnicConfigRecord(raw));
+}
+
+function parseConvergePluginConfig(value: unknown): PluginConfig | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  try {
+    return parseConfig(resolveRemnicConfigRecord(value));
+  } catch {
+    return undefined;
+  }
+}
+
+export function loadConvergeCommandConfig(): PluginConfig {
+  if (readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH")) {
+    return loadStandaloneConvergeCommandConfig();
+  }
+
+  const openclawConfig = readOpenclawConfig(resolveOpenclawConfigPath());
+  const pluginEntry = resolveRemnicPluginEntry(openclawConfig);
+  const pluginConfig = parseConvergePluginConfig(pluginEntry?.["config"]);
+  if (pluginConfig) return pluginConfig;
+  return loadStandaloneConvergeCommandConfig();
 }
 
 export function resolveConfigPath(cliPath?: string): string {
