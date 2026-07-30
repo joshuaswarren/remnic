@@ -1,0 +1,11 @@
+{
+  "id": "candidate-beta",
+  "description": "Update fields on the existing state object.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "export function updateState_rate_limiter_filter(state, delta) {\n  const next = { ...state };\n  next.quota.remaining = state.quota.remaining - delta;\n  return next;\n}\n"
+    }
+  ],
+  "isGood": false
+}

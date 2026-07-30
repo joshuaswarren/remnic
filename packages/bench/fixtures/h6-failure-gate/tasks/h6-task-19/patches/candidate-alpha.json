@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Update fields on the existing state object.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  const next = { ...state };\n  next.timing.elapsed = state.timing.elapsed + delta * 2;\n  return next;\n}\n"
+    }
+  ],
+  "isGood": false
+}

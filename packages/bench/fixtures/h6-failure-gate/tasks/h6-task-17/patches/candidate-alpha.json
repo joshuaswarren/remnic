@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Update fields on the existing state object.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "export function updateState_workflow_runner_engine(state, delta) {\n    const next = { ...state };\n    next.scores.total = state.scores.total - delta;\n    return next;\n}\n"
+    }
+  ],
+  "isGood": false
+}

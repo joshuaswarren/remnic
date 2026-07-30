@@ -1,0 +1,15 @@
+{
+  "id": "candidate-alpha",
+  "description": "Apply the value constraint in the shared domain schema.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "import { validateUserSchema_identity_provider_node } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_identity_provider_node() {\n  records.length = 0;\n}\n\nexport function saveUser_identity_provider_node(input) {\n  if (!validateUserSchema_identity_provider_node(input)) return false;\n  records.push({ slug: input.slug.trim(), caption: input.caption.trim() });\n  return true;\n}\n\nexport function listUsers_identity_provider_node() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_identity_provider_node(user) {\n  return user.caption.toUpperCase();\n}\n"
+    },
+    {
+      "path": "src/user-schema.mjs",
+      "content": "export function validateUserSchema_identity_provider_node(user) {\n  return Boolean(\n    user &&\n    typeof user.slug === \"string\" &&\n    user.slug.trim().length > 0 &&\n    typeof user.caption === \"string\" &&\n    user.caption.trim().length > 0\n  );\n}\n"
+    }
+  ],
+  "isGood": true
+}

@@ -1,0 +1,11 @@
+{
+  "id": "candidate-beta",
+  "description": "Normalize the value in the request handler before passing it to the domain module.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+    }
+  ],
+  "isGood": false
+}

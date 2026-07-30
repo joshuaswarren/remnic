@@ -137,3 +137,15 @@ test("writeLeaderboardArtifactsForResult skips unsupported benchmark results", a
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("serializeJsonl remains byte-compatible for AMA rows and accepts generic rows", () => {
+  assert.equal(
+    serializeJsonl([{ episode_id: 7, answer_list: ["one", "two"] }]),
+    "{\"episode_id\":7,\"answer_list\":[\"one\",\"two\"]}\n"
+  );
+  assert.equal(
+    serializeJsonl([{ rowKey: "opaque", valid: true }]),
+    "{\"rowKey\":\"opaque\",\"valid\":true}\n"
+  );
+  assert.equal(serializeJsonl([]), "\n");
+});

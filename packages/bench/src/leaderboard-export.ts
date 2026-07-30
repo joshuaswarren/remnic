@@ -181,7 +181,7 @@ function numberOrZero(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-export function serializeJsonl(rows: readonly AmaBenchLeaderboardRow[]): string {
+export function serializeJsonl<T>(rows: readonly T[]): string {
   return `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
 }
 

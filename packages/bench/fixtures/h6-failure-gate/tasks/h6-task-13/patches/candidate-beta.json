@@ -1,0 +1,15 @@
+{
+  "id": "candidate-beta",
+  "description": "Apply the value constraint in the shared domain schema.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.toUpperCase();\n}\n"
+    },
+    {
+      "path": "src/user-schema.mjs",
+      "content": "export function validateUserSchema_media_transcoder_service(user) {\n  return Boolean(\n    user &&\n    typeof user.code === \"string\" &&\n    user.code.trim().length > 0 &&\n    typeof user.label === \"string\" &&\n    user.label.trim().length > 0\n  );\n}\n"
+    }
+  ],
+  "isGood": true
+}

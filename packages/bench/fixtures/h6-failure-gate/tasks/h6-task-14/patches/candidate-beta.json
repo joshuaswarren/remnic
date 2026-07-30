@@ -1,0 +1,11 @@
+{
+  "id": "candidate-beta",
+  "description": "Normalize the value in the request handler before passing it to the domain module.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const records = [];\n\nexport function resetUsers_identity_provider_node() {\n  records.length = 0;\n}\n\nexport function saveUser_identity_provider_node(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_identity_provider_node() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_identity_provider_node(user) {\n  return user.caption?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+    }
+  ],
+  "isGood": false
+}

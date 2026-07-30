@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Change the configured input path used by the service reader.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "function validateRecord(record) {\n  if (typeof record.release?.channel !== \"string\") {\n    throw Object.assign(new Error(\"channel is required\"), {\n      code: \"SCHEMA_CHANNEL_MISSING\",\n      path: \"release.channel\",\n    });\n  }\n  if (!Number.isInteger(record.release?.revision) || record.release.revision < 1) {\n    throw Object.assign(new Error(\"revision is below its minimum\"), {\n      code: \"SCHEMA_REVISION_RANGE\",\n      path: \"release.revision\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_pulse_notification_bus(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(`Invalid schema field: ${error.path}`, { cause: error });\n  }\n}\n"
+    }
+  ],
+  "isGood": false
+}

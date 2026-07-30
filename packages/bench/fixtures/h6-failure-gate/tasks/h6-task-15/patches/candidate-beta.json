@@ -1,0 +1,15 @@
+{
+  "id": "candidate-beta",
+  "description": "Apply the value constraint in the shared domain schema.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\n"
+    },
+    {
+      "path": "src/user-schema.mjs",
+      "content": "export function validateUserSchema_config_server_cluster(user) {\n  return Boolean(\n    user &&\n    typeof user.ref === \"string\" &&\n    user.ref.trim().length > 0 &&\n    typeof user.alias === \"string\" &&\n    user.alias.trim().length > 0\n  );\n}\n"
+    }
+  ],
+  "isGood": true
+}

@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Add the calculation parameters to the cache-key fields.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = `weight:${value}`;\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+    }
+  ],
+  "isGood": true
+}

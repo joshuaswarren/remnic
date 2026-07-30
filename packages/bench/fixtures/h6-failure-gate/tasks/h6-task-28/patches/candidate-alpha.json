@@ -1,0 +1,15 @@
+{
+  "id": "candidate-alpha",
+  "description": "Route configuration reads through the canonical active source and update that source.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "import fs from \"node:fs\";\n\nexport function readConfig_policy_enforcer_engine() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+    },
+    {
+      "path": "config/default.json",
+      "content": "{\n  \"leaseSeconds\": 45,\n  \"renewals\": 2\n}\n"
+    }
+  ],
+  "isGood": true
+}

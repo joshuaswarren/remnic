@@ -1,0 +1,15 @@
+{
+  "id": "candidate-beta",
+  "description": "Route configuration reads through the canonical active source and update that source.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "import fs from \"node:fs\";\n\nexport function readConfig_metrics_collector_agent() {\n    return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+    },
+    {
+      "path": "config/default.json",
+      "content": "{\n  \"batchSize\": 40,\n  \"workers\": 4\n}\n"
+    }
+  ],
+  "isGood": true
+}

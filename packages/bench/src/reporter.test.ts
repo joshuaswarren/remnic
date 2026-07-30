@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -364,6 +364,17 @@ test("writeLeaderboardArtifactsForResult confines timestamp-derived filenames to
     assert.equal(relativePath === "..", false);
     assert.equal(relativePath.startsWith(`..${path.sep}`), false);
     assert.equal(path.basename(artifacts[0].path), "ama-bench---_2026_04_25T02-52-05-982Z-answers.jsonl");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeBenchmarkResult publishes atomically without temporary residue", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-result-atomic-"));
+  try {
+    const filePath = await writeBenchmarkResult(buildResult(), dir);
+    assert.equal(JSON.parse(await readFile(filePath, "utf8")).meta.id, "result-1");
+    assert.deepEqual((await readdir(dir)).filter((name) => name.endsWith(".tmp")), []);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

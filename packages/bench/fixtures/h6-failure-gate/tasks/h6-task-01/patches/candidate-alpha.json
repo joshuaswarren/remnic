@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Repeat the completion assertion up to three times before returning its status.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "export class EventQueue_quillboard_inventory_sync {\n  #items = [];\n\n  async push(item) {\n    Promise.resolve().then(() =>\n      Promise.resolve().then(() => this.#items.push(item.trim().toLowerCase()))\n    );\n  }\n\n  async getItemCount() {\n    for (let attempt = 0; attempt < 3; attempt += 1) {\n      await Promise.resolve();\n      if (this.#items.length > 0) return this.#items.length;\n    }\n    return this.#items.length;\n  }\n\n  snapshot() {\n    return [...this.#items];\n  }\n}\n"
+    }
+  ],
+  "isGood": false
+}

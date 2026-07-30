@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Normalize the value in the request handler before passing it to the domain module.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+    }
+  ],
+  "isGood": false
+}

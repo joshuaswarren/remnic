@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Create a new state object with the updated fields.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "export function updateState_rate_limiter_filter(state, delta) {\n  return {\n    ...state,\n    quota: {\n      ...state.quota,\n      remaining: state.quota.remaining - delta,\n    },\n  };\n}\n"
+    }
+  ],
+  "isGood": true
+}

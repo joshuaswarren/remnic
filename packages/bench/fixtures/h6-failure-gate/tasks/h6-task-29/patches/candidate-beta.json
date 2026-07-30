@@ -1,0 +1,15 @@
+{
+  "id": "candidate-beta",
+  "description": "Route configuration reads through the canonical active source and update that source.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "import fs from \"node:fs\";\n\nexport function readConfig_schema_registry_store() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+    },
+    {
+      "path": "config/default.json",
+      "content": "{\n  \"pageLimit\": 60,\n  \"prefetch\": 2\n}\n"
+    }
+  ],
+  "isGood": true
+}

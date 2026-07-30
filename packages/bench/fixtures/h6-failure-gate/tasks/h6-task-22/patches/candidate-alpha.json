@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Add the calculation parameters to the cache-key fields.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = `projection:${value}`;\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+    }
+  ],
+  "isGood": true
+}

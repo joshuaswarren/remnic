@@ -4,8 +4,8 @@
  */
 
 export function getBenchUsageText(): string {
-  return `Usage: remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|attribute|drift-gen> [options] [benchmark...]
-       remnic benchmark <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|check|report|attribute|drift-gen> [options] [benchmark...]
+  return `Usage: remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|attribute|drift-gen|coding> [options] [benchmark...]
+       remnic benchmark <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|check|report|attribute|drift-gen|coding> [options] [benchmark...]
 
 Commands:
   list                     List published benchmark packs
@@ -40,6 +40,9 @@ Commands:
                            local + frontier judges over a benchmark's cached
                            answers, reports Cohen's kappa, and persists it so
                            subsequent local artifacts carry the kappa + warning.
+  coding                   H6 synthetic coding benchmark commands
+                           Run \`remnic bench coding --help\` for repo generation,
+                           repeated-failure runs, resume, and offline stats replay
   check                    Legacy latency regression gate (compatibility)
   attribute --run <id> [--results-dir <path>] [--memory-dir <path>] [--threshold <value>]
                            Attribute operation-level benchmark failures to memory operations
@@ -186,5 +189,9 @@ Examples:
   remnic bench attribute --run run-12345 --memory-dir ./memories
   remnic bench drift-gen generate --users 20 --epochs 10 --out ./corpus
   remnic bench drift-gen validate ./corpus
+  remnic bench coding repo-gen --count 30 --seed 81 --out ./h6-fixtures
+  remnic bench coding repo-gen verify-all ./h6-fixtures
+  remnic bench coding repeated-failure --seeds 5 --profile ./profiles/model-a.json
+  remnic bench coding repeated-failure stats --run ./h6-repeated-failure
   remnic benchmark run --quick longmemeval`;
 }

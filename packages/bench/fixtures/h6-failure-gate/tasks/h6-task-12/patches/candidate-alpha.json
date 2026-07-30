@@ -1,0 +1,15 @@
+{
+  "id": "candidate-alpha",
+  "description": "Apply the value constraint in the shared domain schema.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n    records.push({ key: input.key.trim(), title: input.title.trim() });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.toUpperCase();\n}\n"
+    },
+    {
+      "path": "src/user-schema.mjs",
+      "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+    }
+  ],
+  "isGood": true
+}

@@ -1,0 +1,11 @@
+{
+  "id": "candidate-beta",
+  "description": "Change the configured input path used by the service reader.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "function validateRecord(record) {\n  if (typeof record.asset?.label !== \"string\") {\n    throw Object.assign(new Error(\"label is required\"), {\n      code: \"SCHEMA_LABEL_MISSING\",\n      path: \"asset.label\",\n    });\n  }\n  if (!Number.isInteger(record.asset?.weight) || record.asset.weight < 0) {\n    throw Object.assign(new Error(\"weight is below its minimum\"), {\n      code: \"SCHEMA_WEIGHT_RANGE\",\n      path: \"asset.weight\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_vector_session_store(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(`Invalid schema field: ${error.path}`, { cause: error });\n  }\n}\n"
+    }
+  ],
+  "isGood": false
+}

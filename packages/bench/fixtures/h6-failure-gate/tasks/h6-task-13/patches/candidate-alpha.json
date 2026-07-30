@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Normalize the value in the request handler before passing it to the domain module.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+    }
+  ],
+  "isGood": false
+}

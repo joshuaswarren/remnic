@@ -1,0 +1,133 @@
+{
+  "version": 2,
+  "name": "H6 Failure Gate Decision Rule",
+  "analysisPopulation": {
+    "datasetVersion": 1,
+    "split": "main",
+    "taskCount": 18,
+    "variantsPerTask": 3,
+    "seedsPerModelProfile": 5,
+    "modelProfileCount": 2,
+    "unit": "task",
+    "pairingKey": [
+      "taskId",
+      "variantId",
+      "seed",
+      "modelProfileId",
+      "modelProfileHash"
+    ],
+    "maximumPrimaryTaskCuts": 0
+  },
+  "analysis": {
+    "bootstrap": {
+      "draws": 10000,
+      "group": "task",
+      "confidenceLevel": 0.95,
+      "method": "percentile"
+    },
+    "shuffle": {
+      "draws": 10000,
+      "group": "task",
+      "alternative": "candidate_benefit",
+      "plusOneCorrection": true
+    },
+    "alpha": 0.05,
+    "multiplicity": {
+      "method": "HOLM",
+      "family": [
+        "H6_TIMING_REPEATED_FAILURE",
+        "H6_CONTENT_COMPOUND"
+      ],
+      "contentCompoundP": "max(repeatedFailureP,taskPassP)"
+    }
+  },
+  "factMatching": {
+    "timing": {
+      "factCount": 1,
+      "requireSameFactIds": true,
+      "requireSameCitationHashes": true,
+      "requireSameRenderedTokenCount": true
+    },
+    "content": {
+      "factCount": 1,
+      "requireSamePathShape": true,
+      "requireSameActionShape": true,
+      "textSimilarity": {
+        "metric": "normalized_token_set_jaccard",
+        "minimumInclusive": 0.8,
+        "maximumInclusive": 1
+      },
+      "tokenCountGap": {
+        "maximumAbsolute": 8,
+        "maximumRelative": 0.05,
+        "requireBoth": true
+      }
+    }
+  },
+  "hypotheses": {
+    "H6-timing": {
+      "baselineArm": "TURN_START_FAILURE",
+      "candidateArm": "PRE_ACTION_FAILURE",
+      "metric": "repeatedFailure",
+      "minimumRelativeRiskReduction": 0.3,
+      "requireRepeatedFailureBenefitIntervalLowerStrictlyAbove": 0,
+      "requireHolmAdjustedPStrictlyBelow": 0.05,
+      "zeroBaselineDecision": "NOT_ESTIMABLE"
+    },
+    "H6-content": {
+      "baselineArm": "TURN_START_SUCCESS",
+      "candidateArm": "TURN_START_FAILURE",
+      "metrics": [
+        "repeatedFailure",
+        "taskPassed"
+      ],
+      "requireRepeatedFailureBenefitIntervalLowerStrictlyAbove": 0,
+      "requireTaskPassBenefitIntervalLowerStrictlyAbove": 0,
+      "requireHolmAdjustedCompoundPStrictlyBelow": 0.05,
+      "unmatchedPairDecision": "NOT_ESTIMABLE"
+    }
+  },
+  "power": {
+    "simulationDraws": 10000,
+    "minimumTimingPower": 0.8,
+    "minimumContentPower": 0.8,
+    "sourceSplit": "pilot",
+    "increaseIndependentTasksIfBelowThreshold": true
+  },
+  "timidity": {
+    "baselineArm": "NO_MEMORY",
+    "candidateArm": "PRE_ACTION_FAILURE",
+    "population": "main_no_trap_revisions",
+    "confidenceLevel": 0.9,
+    "passRateMargin": 0.02,
+    "stepsMargin": 2,
+    "requireIntervalsStrictlyInsideMargins": true,
+    "minimumSimulatedPower": 0.8
+  },
+  "completeness": {
+    "expectedRowsFormula": "taskCount*variantsPerTask*seedsPerModelProfile*modelProfileCount*armCount",
+    "primaryArmCount": 5,
+    "hostFaultRetriesAfterFirstTry": 2,
+    "rerunTaskResults": false,
+    "invalidReasons": [
+      "START_DRIFT",
+      "TRACE_GAP",
+      "VAGUE_CHECK",
+      "MIXED_ARM_STATE",
+      "UNMATCHED_FACTS",
+      "WAIT_RULE_FAULT",
+      "HOST_RETRIES_EXHAUSTED"
+    ]
+  },
+  "outcomes": {
+    "PASS": "timing=SUPPORTED and content=SUPPORTED",
+    "PARTIAL": "exactly one primary is SUPPORTED and the other is REJECTED",
+    "REJECT": "timing=REJECTED and content=REJECTED",
+    "NOT_ESTIMABLE": "either primary is NOT_ESTIMABLE"
+  },
+  "gateStatuses": [
+    "NO_MATCH",
+    "MATCH_WARN",
+    "ERROR_FAIL_OPEN"
+  ]
+}

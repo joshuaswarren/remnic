@@ -1,0 +1,11 @@
+{
+  "id": "candidate-beta",
+  "description": "Create a new state object with the updated fields.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  return {\n    ...state,\n    timing: {\n      ...state.timing,\n      elapsed: state.timing.elapsed + delta * 2,\n    },\n  };\n}\n"
+    }
+  ],
+  "isGood": true
+}

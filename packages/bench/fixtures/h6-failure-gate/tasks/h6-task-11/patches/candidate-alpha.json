@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Normalize the value in the request handler before passing it to the domain module.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+    }
+  ],
+  "isGood": false
+}

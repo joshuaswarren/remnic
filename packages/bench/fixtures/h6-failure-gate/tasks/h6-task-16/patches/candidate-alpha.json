@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Create a new state object with the updated fields.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "export function updateState_search_index_cluster(state, delta) {\n  return {\n    ...state,\n    metrics: {\n      ...state.metrics,\n      count: state.metrics.count + delta,\n    },\n  };\n}\n"
+    }
+  ],
+  "isGood": true
+}

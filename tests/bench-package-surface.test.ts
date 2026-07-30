@@ -21,9 +21,8 @@ test("@remnic/bench publishes compiled entrypoints instead of raw source paths",
     | undefined;
   assert.equal(dotExport?.import, "./dist/index.js");
   assert.equal(dotExport?.types, "./dist/index.d.ts");
-  // `baselines/` ships with the package so consumers can compare their
-  // ablation runs against the committed reference artifacts (issue #567 PR 2).
-  assert.deepEqual(pkg.files, ["dist", "baselines", "profiles"]);
+  // Baselines and frozen synthetic H6 fixtures are runtime package assets.
+  assert.deepEqual(pkg.files, ["dist", "baselines", "profiles", "fixtures/h6-failure-gate"]);
   // The baseline JSON is importable via subpath so consumers can read it
   // without reaching into `node_modules` by relative path (issue #567 PR 2,
   // Codex #606). We expose both a generic glob and a `.json`-qualified

@@ -1,0 +1,11 @@
+{
+  "id": "candidate-beta",
+  "description": "Preserve the parse exception and classify its source at the reader boundary.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "function validateRecord(record) {\n    if (typeof record.job?.queue !== \"string\") {\n        throw Object.assign(new Error(\"queue is required\"), {\n            code: \"SCHEMA_QUEUE_MISSING\",\n            path: \"job.queue\",\n        });\n    }\n    if (!Number.isInteger(record.job?.priority) || record.job.priority < 1) {\n        throw Object.assign(new Error(\"priority is below its minimum\"), {\n            code: \"SCHEMA_PRIORITY_RANGE\",\n            path: \"job.priority\",\n        });\n    }\n    return record;\n}\n\nexport function loadRecord_apex_payment_gateway(record) {\n    return validateRecord(record);\n}\n"
+    }
+  ],
+  "isGood": true
+}

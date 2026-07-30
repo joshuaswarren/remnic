@@ -7,11 +7,11 @@
  * - API-key shapes (sk-*, ghp_*, AKIA*)
  * - Phone numbers (conservative 3-3-4 grouping)
  * - IPv4 addresses (outside loopback 127.0.0.0/8 and TEST-NET-1 192.0.2.0/24)
- * - URLs outside allowlist (example.com, arxiv.org, github.com/joshuaswarren/remnic paths)
+ * - URLs outside allowlist (example.com, json-schema.org, arxiv.org, github.com/joshuaswarren/remnic paths)
  * - Names listed in scripts/dataset-name-denylist.txt (case-insensitive whole-word match)
  *
  * Test seam / configuration:
- * - REMNIC_HYGIENE_ROOTS: colon-separated list of directories/files to scan (default: packages/bench/src/fixtures, docs/research/data)
+ * - REMNIC_HYGIENE_ROOTS: colon-separated list of directories/files to scan (default: packages/bench/src/fixtures, packages/bench/fixtures, docs/research/data)
  * - REMNIC_HYGIENE_DENYLIST: path to denylist file (default: scripts/dataset-name-denylist.txt)
  */
 
@@ -78,7 +78,6 @@ const CREDENTIAL_QUERY_PARAMETERS = new Set([
   "signature",
   "sig",
 ]);
-
 
 function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -157,6 +156,10 @@ export function checkUrlAllowed(urlStr) {
       host === "example" ||
       host.endsWith(".example")
     ) {
+      return true;
+    }
+
+    if (host === "json-schema.org") {
       return true;
     }
 
@@ -250,7 +253,6 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
     const lineNum = idx + 1;
     const line = lines[idx];
 
-    // Denylist check (strip allowlisted URLs first)
     const lineForDenylist = stripAllowlistedUrls(line);
     for (const name of denylist) {
       const re = new RegExp(`\\b${escapeRegExp(name)}\\b`, "gi");
@@ -263,7 +265,7 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
         });
       }
     }
-    // Email check
+
     const emailMatches = line.match(EMAIL_REGEX) || [];
     for (const em of emailMatches) {
       if (!isSyntheticEmail(em)) {
@@ -276,7 +278,6 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
       }
     }
 
-    // API key check. Never echo the matched token: CI logs must not disclose credentials.
     for (const apiRe of API_KEY_REGEXES) {
       const match = line.match(apiRe);
       if (match) {
@@ -290,7 +291,6 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
       }
     }
 
-    // Phone number check
     const phoneMatch = line.match(PHONE_REGEX);
     if (phoneMatch) {
       const phoneVal = phoneMatch[0];
@@ -302,7 +302,6 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
       });
     }
 
-    // IPv4 check
     const disallowedIPs = findDisallowedIPv4s(line);
     for (const _ip of disallowedIPs) {
       findings.push({
@@ -313,7 +312,6 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
       });
     }
 
-    // URL check (data files only)
     if (isDataFile) {
       const urlMatches = line.match(URL_REGEX) || [];
       for (const rawUrl of urlMatches) {
@@ -346,13 +344,16 @@ export function main() {
         .map((r) => path.resolve(ROOT, r))
     : [
         path.join(ROOT, "packages/bench/src/fixtures"),
+        path.join(ROOT, "packages/bench/fixtures"),
         path.join(ROOT, "docs/research/data"),
       ];
 
   const filesToScan = new Map();
   for (const rootPath of roots) {
-    for (const filePath of collectFiles(rootPath)) {
-      if (!filesToScan.has(filePath)) filesToScan.set(filePath, rootPath);
+    if (existsSync(rootPath)) {
+      for (const filePath of collectFiles(rootPath)) {
+        if (!filesToScan.has(filePath)) filesToScan.set(filePath, rootPath);
+      }
     }
   }
 

@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/crypto-wallet-core",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for crypto-wallet-core",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

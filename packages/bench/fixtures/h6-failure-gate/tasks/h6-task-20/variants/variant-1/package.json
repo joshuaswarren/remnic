@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/rate-limiter-filter",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for rate-limiter-filter",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

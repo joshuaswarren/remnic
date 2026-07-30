@@ -143,6 +143,7 @@ test("detects URL rule class for hosts outside allowlist in data files", () => {
         good2: "https://sub.example.com/path",
         good3: "https://arxiv.org/abs/2301.00001",
         good4: "https://github.com/joshuaswarren/remnic/issues/1954",
+        good5: "https://json-schema.org/draft/2020-12/schema",
         bad1: "https://unauthorized-domain.com/data",
         bad2: "https://github.com/otheruser/otherrepo",
       })
@@ -151,6 +152,7 @@ test("detects URL rule class for hosts outside allowlist in data files", () => {
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[url-allowlist\]/);
     assert.match(res.stderr, /URL host outside allowlist \(redacted\)/);
+    assert.equal((res.stderr.match(/\[url-allowlist\]/g) || []).length, 2);
     assert.doesNotMatch(res.stderr, /unauthorized-domain\.com/);
     assert.doesNotMatch(res.stderr, /otheruser\/otherrepo/);
   } finally {

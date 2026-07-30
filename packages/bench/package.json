@@ -15,6 +15,7 @@
     "./baselines/*.json": "./baselines/*.json",
     "./profiles/*": "./profiles/*",
     "./profiles/*.json": "./profiles/*.json",
+    "./fixtures/h6-failure-gate/*": "./fixtures/h6-failure-gate/*",
     "./package.json": "./package.json",
     "./mcp-demo-server": "./dist/demo/mcp-memory-server.js"
   },
@@ -57,6 +58,7 @@
   "files": [
     "dist",
     "baselines",
-    "profiles"
+    "profiles",
+    "fixtures/h6-failure-gate"
   ]
 }

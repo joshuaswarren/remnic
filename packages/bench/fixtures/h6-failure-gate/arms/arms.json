@@ -1,0 +1,27 @@
+[
+  {
+    "id": "NO_MEMORY",
+    "name": "No Memory Baseline",
+    "description": "Floor baseline with no memory recall or gate warning active."
+  },
+  {
+    "id": "TURN_START_FAILURE",
+    "name": "Turn-Start Failure Memory Recall",
+    "description": "Failure trajectory recalled at turn start."
+  },
+  {
+    "id": "TURN_START_SUCCESS",
+    "name": "Turn-Start Success Memory Recall",
+    "description": "Matched success memories recalled at turn start."
+  },
+  {
+    "id": "PRE_ACTION_FAILURE",
+    "name": "Pre-Action Failure Gate",
+    "description": "Pre-action gate injects advisory warning prior to matched action execution."
+  },
+  {
+    "id": "BOTH",
+    "name": "Pre-Action Gate + Turn-Start Recall",
+    "description": "Both pre-action gate advisory and turn-start recall active."
+  }
+]

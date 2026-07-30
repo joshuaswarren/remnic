@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Change the calculation formula while retaining the current cache-key fields.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+    }
+  ],
+  "isGood": false
+}

@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Preserve the parse exception and classify its source at the reader boundary.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  return validateRecord(record);\n}\n"
+    }
+  ],
+  "isGood": true
+}

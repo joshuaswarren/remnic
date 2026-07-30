@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Create a new state object with the updated fields.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "export function updateState_storage_bucket_manager(state, delta) {\n  return {\n    ...state,\n    inventory: {\n      ...state.inventory,\n      units: state.inventory.units * delta,\n    },\n  };\n}\n"
+    }
+  ],
+  "isGood": true
+}

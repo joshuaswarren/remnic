@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/apex-payment-gateway",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for apex-payment-gateway",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

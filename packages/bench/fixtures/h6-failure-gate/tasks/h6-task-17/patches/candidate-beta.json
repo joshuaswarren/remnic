@@ -1,0 +1,11 @@
+{
+  "id": "candidate-beta",
+  "description": "Create a new state object with the updated fields.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "export function updateState_workflow_runner_engine(state, delta) {\n    return {\n        ...state,\n        scores: {\n            ...state.scores,\n            total: state.scores.total - delta,\n        },\n    };\n}\n"
+    }
+  ],
+  "isGood": true
+}

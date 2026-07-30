@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, readFile, readdir, readlink, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, readlink, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { z } from "zod";
 import {
   type CodexCreditReceipt,
   buildCodexCreditReceipt,
@@ -15,7 +17,13 @@ import { redactUrlSecrets as redactUrlSecretMaterial } from "./security/url-secr
 import type { BenchmarkMode, BenchmarkResult } from "./types.js";
 
 export const BENCHMARK_REPRO_MANIFEST_FILENAME = "MANIFEST.json";
-export const BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION = 1;
+export const BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION = 2;
+
+export interface BenchmarkReproManifestSupplementalArtifact {
+  path: string;
+  sha256: string;
+  sizeBytes: number;
+}
 
 export interface BenchmarkReproManifestFile {
   path: string;
@@ -85,7 +93,7 @@ export interface BenchmarkReproManifest {
     platform: NodeJS.Platform;
     arch: string;
     nodeVersion: string;
-    hostname: string;
+    hostname?: string;
     packageManager?: string;
   };
   qmd?: {
@@ -103,8 +111,110 @@ export interface BenchmarkReproManifest {
   }>;
   datasets: BenchmarkReproManifestDataset[];
   results: BenchmarkReproManifestResult[];
+  supplementalArtifacts?: BenchmarkReproManifestSupplementalArtifact[];
   codexCredit?: CodexCreditReceipt;
   artifactHash: string;
+}
+
+const ManifestStringSchema = z.string().min(1).max(16_384);
+const ManifestShaSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const ManifestStringListSchema = z.array(ManifestStringSchema).max(100_000);
+const ManifestFileSchema = z.object({
+  path: ManifestStringSchema,
+  kind: z.enum(["file", "symlink"]),
+  sizeBytes: z.number().int().nonnegative(),
+  sha256: ManifestShaSchema,
+  target: ManifestStringSchema.optional(),
+}).strict();
+const ManifestDatasetSchema = z.object({
+  benchmark: ManifestStringSchema,
+  status: z.enum(["not-provided", "missing", "hashed"]),
+  path: ManifestStringSchema.optional(),
+  realpath: ManifestStringSchema.optional(),
+  fileCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  sha256: ManifestShaSchema.optional(),
+  files: z.array(ManifestFileSchema).max(100_000),
+}).strict();
+const ManifestResultSchema = z.object({
+  path: ManifestStringSchema,
+  sha256: ManifestShaSchema,
+  sizeBytes: z.number().int().nonnegative(),
+  resultId: ManifestStringSchema,
+  benchmark: ManifestStringSchema,
+  mode: z.enum(["full", "quick"]),
+  gitSha: ManifestStringSchema,
+  runCount: z.number().int().nonnegative(),
+  seeds: z.array(z.number().int()).max(100_000),
+  taskCount: z.number().int().nonnegative(),
+  configHash: ManifestStringSchema,
+  judge: z.object({
+    provider: ManifestStringSchema,
+    model: ManifestStringSchema,
+    rubricVersion: ManifestStringSchema.nullable(),
+  }).strict().nullable(),
+}).strict();
+const ManifestSupplementalArtifactSchema = z.object({
+  path: ManifestStringSchema,
+  sha256: ManifestShaSchema,
+  sizeBytes: z.number().int().nonnegative(),
+}).strict();
+
+export const BenchmarkReproManifestSchema = z.object({
+  schemaVersion: z.literal(BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION),
+  generatedAt: ManifestStringSchema,
+  run: z.object({
+    id: ManifestStringSchema,
+    mode: z.enum(["full", "quick"]).optional(),
+    selectedBenchmarks: ManifestStringListSchema,
+    runtimeProfiles: ManifestStringListSchema,
+    selectedWorkItems: z.array(z.object({
+      benchmark: ManifestStringSchema,
+      runtimeProfile: ManifestStringSchema,
+    }).strict()).max(100_000),
+    limit: z.number().int().nonnegative().optional(),
+    seed: z.number().int().optional(),
+  }).strict(),
+  git: z.object({
+    commit: ManifestStringSchema,
+    shortCommit: ManifestStringSchema,
+    dirty: z.boolean(),
+    dirtyEntryCount: z.number().int().nonnegative(),
+  }).strict(),
+  command: z.object({
+    cwd: z.string().max(16_384),
+    argv: ManifestStringListSchema,
+    envKeys: ManifestStringListSchema,
+  }).strict(),
+  environment: z.object({
+    platform: ManifestStringSchema,
+    arch: ManifestStringSchema,
+    nodeVersion: ManifestStringSchema,
+    hostname: ManifestStringSchema.optional(),
+    packageManager: ManifestStringSchema.optional(),
+  }).strict(),
+  qmd: z.object({
+    configDir: ManifestStringSchema.optional(),
+    cacheDir: ManifestStringSchema.optional(),
+    collections: ManifestStringListSchema,
+  }).strict().optional(),
+  configFiles: z.array(z.object({
+    label: ManifestStringSchema,
+    path: ManifestStringSchema,
+    sha256: ManifestShaSchema.optional(),
+    sizeBytes: z.number().int().nonnegative().optional(),
+    missing: z.boolean().optional(),
+    redacted: z.boolean().optional(),
+  }).strict()).max(100_000),
+  datasets: z.array(ManifestDatasetSchema).max(100_000),
+  results: z.array(ManifestResultSchema).max(100_000),
+  supplementalArtifacts: z.array(ManifestSupplementalArtifactSchema).max(100_000).optional(),
+  codexCredit: z.object({}).passthrough().optional(),
+  artifactHash: ManifestShaSchema,
+}).strict();
+
+export function parseBenchmarkReproManifest(input: unknown): BenchmarkReproManifest {
+  return BenchmarkReproManifestSchema.parse(input) as BenchmarkReproManifest;
 }
 
 export interface BuildBenchmarkReproManifestOptions {
@@ -132,6 +242,9 @@ export interface BuildBenchmarkReproManifestOptions {
     cacheDir?: string;
     collections?: string[];
   };
+  supplementalArtifactPaths?: string[];
+  publicSafe?: boolean;
+  generatedAt?: string;
 }
 
 const SECRET_ARG_FLAGS = new Set([
@@ -929,6 +1042,7 @@ function buildArtifactHashIdentity(manifest: Omit<BenchmarkReproManifest, "artif
     configFiles: manifest.configFiles,
     datasets: manifest.datasets,
     results: manifest.results,
+    ...(manifest.supplementalArtifacts !== undefined ? { supplementalArtifacts: manifest.supplementalArtifacts } : {}),
     ...(manifest.codexCredit ? { codexCredit: manifest.codexCredit } : {}),
   };
 }
@@ -1127,6 +1241,40 @@ async function resolveResultPaths(resultsDir: string, explicitPaths: string[] | 
   return summaries.map((summary) => path.resolve(summary.path));
 }
 
+async function resolveSupplementalArtifactPaths(
+  resultsDir: string,
+  explicitPaths: string[] | undefined,
+  resultEntries: BenchmarkReproManifestResult[]
+): Promise<BenchmarkReproManifestSupplementalArtifact[]> {
+  if (!explicitPaths || explicitPaths.length === 0) return [];
+  const resolvedResultsDir = path.resolve(resultsDir);
+  const resultPathSet = new Set(resultEntries.map((entry) => entry.path));
+  const entriesByRelPath = new Map<string, BenchmarkReproManifestSupplementalArtifact>();
+  for (const rawPath of explicitPaths) {
+    const absolutePath = path.resolve(resolvedResultsDir, rawPath);
+    assertPathInsideRoot(resolvedResultsDir, absolutePath, "supplemental artifact");
+    await assertRegularFileWithoutSymlinkComponents(absolutePath, "supplemental artifact");
+    const relPath = path.relative(resolvedResultsDir, absolutePath).split(path.sep).join("/");
+    if (relPath === BENCHMARK_REPRO_MANIFEST_FILENAME) {
+      throw new Error(`Supplemental artifact path cannot be ${BENCHMARK_REPRO_MANIFEST_FILENAME}`);
+    }
+    if (resultPathSet.has(relPath)) {
+      throw new Error(`Supplemental artifact path already listed under results: ${relPath}`);
+    }
+    if (!entriesByRelPath.has(relPath)) {
+      const fileStats = await stat(absolutePath);
+      entriesByRelPath.set(relPath, {
+        path: relPath,
+        sha256: await sha256File(absolutePath),
+        sizeBytes: fileStats.size,
+      });
+    }
+  }
+  return Array.from(entriesByRelPath.values()).sort((left, right) =>
+    left.path.localeCompare(right.path)
+  );
+}
+
 function assertPathInsideRoot(root: string, targetPath: string, label: string): void {
   const resolvedRoot = path.resolve(root);
   const resolvedTargetPath = path.resolve(targetPath);
@@ -1287,6 +1435,11 @@ export async function buildBenchmarkReproManifest(
   const resultEntries = await Promise.all(
     resultPaths.map((resultPath, index) => buildResultManifest(resolvedResultsDir, resultPath, loadedResults[index]!))
   );
+  const supplementalArtifacts = await resolveSupplementalArtifactPaths(
+    resolvedResultsDir,
+    options.supplementalArtifactPaths,
+    resultEntries
+  );
   const selectedBenchmarks =
     options.selectedBenchmarks ?? [...new Set(loadedResults.map((result) => result.meta.benchmark))].sort();
   const selectedWorkItems =
@@ -1315,7 +1468,7 @@ export async function buildBenchmarkReproManifest(
   }
   const manifestWithoutHash = {
     schemaVersion: BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION,
-    generatedAt: new Date().toISOString(),
+    generatedAt: options.generatedAt ?? new Date().toISOString(),
     run: {
       id: runId,
       ...(options.mode ? { mode: options.mode } : {}),
@@ -1327,7 +1480,7 @@ export async function buildBenchmarkReproManifest(
     },
     git: buildGitInfo(cwd),
     command: {
-      cwd,
+      cwd: options.publicSafe ? "." : cwd,
       argv: sanitizeArgv(options.command?.argv ?? process.argv.slice(2)),
       envKeys: sanitizeEnvKeys(commandEnv, options.command?.envKeys),
     },
@@ -1335,7 +1488,7 @@ export async function buildBenchmarkReproManifest(
       platform: process.platform,
       arch: process.arch,
       nodeVersion: process.version,
-      hostname: os.hostname(),
+      ...(!options.publicSafe ? { hostname: os.hostname() } : {}),
       ...(pnpmVersion ? { packageManager: `pnpm@${pnpmVersion}` } : {}),
     },
     ...(options.qmd || qmdCollections.length > 0
@@ -1350,6 +1503,7 @@ export async function buildBenchmarkReproManifest(
     configFiles: await buildConfigFileEntries(options.configFiles),
     datasets,
     results: resultEntries.sort((left, right) => left.path.localeCompare(right.path)),
+    supplementalArtifacts,
     ...(codexCredit ? { codexCredit } : {}),
   };
 
@@ -1366,6 +1520,6 @@ export async function writeBenchmarkReproManifest(
   await mkdir(resultsDir, { recursive: true });
   const manifest = await buildBenchmarkReproManifest(resultsDir, options);
   const manifestPath = path.join(resultsDir, BENCHMARK_REPRO_MANIFEST_FILENAME);
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFileAtomically(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   return manifestPath;
 }

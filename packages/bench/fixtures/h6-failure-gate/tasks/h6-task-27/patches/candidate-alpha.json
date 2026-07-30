@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Write the requested value to the default configuration file.",
+  "files": [
+    {
+      "path": "config/default.json",
+      "content": "{\n  \"batchSize\": 40,\n  \"workers\": 4\n}\n"
+    }
+  ],
+  "isGood": false
+}

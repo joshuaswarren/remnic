@@ -1,0 +1,11 @@
+{
+  "id": "candidate-alpha",
+  "description": "Change the calculation formula while retaining the current cache-key fields.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+    }
+  ],
+  "isGood": false
+}

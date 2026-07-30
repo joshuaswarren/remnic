@@ -201,6 +201,8 @@ export {
   BENCHMARK_REPRO_MANIFEST_FILENAME,
   BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION,
   buildBenchmarkReproManifest,
+  computeBenchmarkReproDatasetInventoryHash,
+  computeBenchmarkReproManifestArtifactHash,
   writeBenchmarkReproManifest,
 } from "./repro-manifest.js";
 export type {
@@ -209,6 +211,7 @@ export type {
   BenchmarkReproManifestDataset,
   BenchmarkReproManifestFile,
   BenchmarkReproManifestResult,
+  BenchmarkReproManifestSupplementalArtifact,
 } from "./repro-manifest.js";
 export {
   BENCHMARK_ARTIFACT_SCHEMA_VERSION,
@@ -253,7 +256,15 @@ export type {
   CodexCreditReceiptScope,
   CodexCreditReconciliationReceipt,
 } from "./providers/codex-credit-budget.js";
-export { getGitSha, getRemnicVersion } from "./reporter.js";
+export {
+  captureBenchmarkExecutionProvenance,
+  getGitSha,
+  getRemnicVersion,
+  sanitizeBenchmarkResultForJson,
+  writeBenchmarkResult,
+  type BenchmarkExecutionProvenance,
+} from "./reporter.js";
+export { resolveBenchmarkRunId } from "./run-identity.js";
 export {
   createProvider,
   discoverAllProviders,
@@ -395,7 +406,6 @@ export {
   listBenchmarks,
   getBenchmark,
   redactBenchmarkResultSecrets,
-  writeBenchmarkResult,
   loadBaseline,
   saveBaseline,
   runExplain,
@@ -786,6 +796,11 @@ export {
   checkCodingGraphRegression,
   extractMetrics as extractCodingGraphMetrics,
   buildBaselineFromReport,
+  ControlledResponsesDriver,
+  createControlledResponsesAgentDriver,
+  runRepeatedFailureSuite,
+  runRepeatedFailureCliCommand,
+  replayRepeatedFailureStatistics,
 } from "./coding-graph/index.js";
 export type {
   RegressionMetricKey as CodingGraphRegressionKey,
@@ -803,6 +818,39 @@ export type {
   RegressionMetricDetail as CodingGraphRegressionDetail,
   RegressionGateResult as CodingGraphRegressionResult,
   CodingGraphBenchConfig,
+  ResponsesApiOutputItem,
+  ResponsesApiUsage,
+  ResponsesApiResponse,
+  ResponsesApiRequest,
+  ControlledResponsesTransport,
+  RepeatedFailureToolExecutionResult,
+  RepeatedFailureFinalRepoEvidence,
+  ControlledResponsesToolDefinition,
+  RepeatedFailureLocalToolHost,
+  ControlledGateDecision,
+  RepeatedFailureActionEvaluator,
+  ControlledResponsesDriverConfig,
+  ControlledResponsesAgentDriverConfig,
+  ControlledResponsesCaps,
+  ControlledResponsesEpisodeInput,
+  ControlledResponsesResponseEvent,
+  ControlledResponsesToolEvent,
+  ControlledResponsesFault,
+  ControlledResponsesDisposition,
+  ControlledResponsesEpisodeResult,
+  RepeatedFailureEpisodeDriver,
+  RepeatedFailureEpisodeInput,
+  RepeatedFailureArm,
+  RepeatedFailureEpisode,
+  RepeatedFailureEpisodeEvidence,
+  RepeatedFailureEpisodeRow,
+  RepeatedFailureExpectedDesign,
+  RepeatedFailureRowIdentity,
+  RunRepeatedFailureSuiteOptions,
+  RunRepeatedFailureSuiteResult,
+  RunRepeatedFailureCliCommandInput,
+  RepeatedFailureCliCommandResult,
+  ReplayRepeatedFailureStatisticsOptions,
 } from "./coding-graph/index.js";
 export {
   DEFAULT_SMOKE_FIXTURE as CODING_GRAPH_SMOKE_FIXTURE,
@@ -865,3 +913,9 @@ export {
   shuffled,
 } from "./seeded-random.js";
 export type { SeededRandom } from "./seeded-random.js";
+export * from "./coding-graph/repo-gen/index.js";
+export * from "./coding-graph/repeated-failure-types.js";
+export * from "./coding-graph/repeated-failure-store.js";
+export * from "./coding-graph/repeated-failure-stats.js";
+export * from "./coding-graph/repeated-failure-ollama-chat-driver.js";
+export * from "./coding-graph/repeated-failure-trap-audit.js";
