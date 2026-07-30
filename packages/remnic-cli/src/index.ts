@@ -4058,10 +4058,7 @@ export function loadConvergeCommandConfig(): PluginConfig {
   const pluginEntry = resolveRemnicPluginEntry(openclawConfig);
   if (pluginEntry !== undefined) {
     const pluginConfig = pluginEntry["config"];
-    if (pluginConfig === undefined || pluginConfig === null) {
-      return parseConfig({});
-    }
-    if (typeof pluginConfig === "object" && !Array.isArray(pluginConfig)) {
+    if (pluginConfig !== null && typeof pluginConfig === "object" && !Array.isArray(pluginConfig)) {
       return parseConfig(resolveRemnicConfigRecord(pluginConfig));
     }
   }
