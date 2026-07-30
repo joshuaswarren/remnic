@@ -343,6 +343,20 @@ test("throttle: warns once per staleness window and again after it elapses; rese
   assert.equal(t.maybeWarn(degraded, WINDOW, NOW + WINDOW + 2), true, "recovery reset lets a fresh episode warn at once");
 });
 
+test("summarizeExtractionLiveness: adapts legacy storage object argument", async () => {
+  const storage = {
+    readMetadata: async () => ({ lastExtractionAt: "2026-07-29T10:00:00.000Z" }),
+  };
+  const doctorCheck = await summarizeExtractionLiveness(
+    { extractionLiveness: { enabled: true, staleWindowMs: WINDOW } },
+    storage,
+    undefined,
+    NOW,
+  );
+  assert.equal(doctorCheck.status, "ok");
+  assert.ok(doctorCheck.summary.includes("last extraction 2026-07-29T10:00:00.000Z"));
+});
+
 // ── renderExtractionLivenessStats ────────────────────────────────────────────
 
 test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded verdict", async () => {

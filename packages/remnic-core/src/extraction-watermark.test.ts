@@ -98,8 +98,28 @@ test("a partial namespace read returns readFailed instead of a survivor's fresh 
 
     assert.equal(result.lastExtractionAt, null, "a surviving timestamp must not be reported as complete");
     assert.equal(result.readFailed, true);
-    assert.match(result.readError ?? "", /namespace "team-b"/);
+    assert.match(result.readError ?? "", /namespace watermark unreadable/);
     assert.match(result.readError ?? "", /meta store unavailable/);
+  } finally {
+    await rm(fixture.memoryDir, { recursive: true, force: true });
+  }
+});
+test("scoped capabilities filter candidate namespaces during aggregate read", async () => {
+  const fixture = await namespacedFixture();
+  try {
+    let scannedTeamB = false;
+    const result = await readAggregateExtractionWatermark({
+      config: fixture.config,
+      rootStorage: storage(fixture.memoryDir, async () => "2026-07-20T12:00:00.000Z"),
+      storageForNamespace: async (namespace) => {
+        if (namespace === "team-b") scannedTeamB = true;
+        return storage(fixture.namespaceDirs[namespace], async () => "2026-07-25T12:00:00.000Z");
+      },
+      caps: { namespaces: ["team-a"] },
+    });
+
+    assert.equal(scannedTeamB, false, "team-b should be skipped when token is restricted to team-a");
+    assert.equal(result.readFailed, false);
   } finally {
     await rm(fixture.memoryDir, { recursive: true, force: true });
   }

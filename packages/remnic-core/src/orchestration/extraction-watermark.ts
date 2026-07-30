@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import { capabilityAllowsNamespace, type TokenCapabilities } from "../access-token-capabilities.js";
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import { resolveCorpusNamespaceRoots, type CorpusNamespaceRoot } from "../corpus-watermark.js";
 import type { ExtractionRootStats, ExtractionWatermarkRead } from "../extraction-liveness.js";
@@ -30,6 +31,7 @@ export interface AggregateExtractionWatermarkOptions {
     rootDir: string
   ): ExtractionWatermarkStorage | Promise<ExtractionWatermarkStorage>;
   rootsCache?: ExtractionNamespaceRootCache;
+  caps?: TokenCapabilities;
 }
 
 function readFailure(reason: string, rootStats?: ExtractionRootStats): ExtractionWatermarkRead {
@@ -115,6 +117,7 @@ export async function readAggregateExtractionWatermark(
   const seenDirs = new Set<string>([rootDir]);
   const targets: CorpusNamespaceRoot[] = [];
   for (const root of resolved) {
+    if (options.caps && !root.namespaces.some((ns) => capabilityAllowsNamespace(options.caps, ns))) continue;
     const resolvedDir = path.resolve(root.rootDir);
     if (seenDirs.has(resolvedDir)) continue;
     seenDirs.add(resolvedDir);
@@ -131,14 +134,14 @@ export async function readAggregateExtractionWatermark(
       storage = await options.storageForNamespace(target.namespace, target.rootDir);
     } catch (error) {
       return readFailure(
-        `namespace "${target.namespace}" watermark storage unavailable: ${errorMessage(error)}`,
+        `namespace watermark storage unavailable: ${errorMessage(error)}`,
         rootRead.rootStats
       );
     }
-    const namespaceRead = await readWatermark(storage, `namespace "${target.namespace}"`);
+    const namespaceRead = await readWatermark(storage, "namespace");
     if (namespaceRead.readFailed) {
       return readFailure(
-        namespaceRead.readError ?? `namespace "${target.namespace}" watermark unreadable`,
+        namespaceRead.readError ?? "namespace watermark unreadable",
         rootRead.rootStats
       );
     }

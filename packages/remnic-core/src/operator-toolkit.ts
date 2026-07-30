@@ -1497,15 +1497,9 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   checks.push(await summarizeGraphEdgeDecayStatus(config));
 
   // Tier distribution (issue #686 retention-completion).
-  // Shows hot/cold counts, per-status breakdown, and forgotten-memory count.
-  // Informational only — never errors, never blocks doctor from returning ok.
   checks.push(await summarizeTierDistribution(options.orchestrator.storage));
   checks.push(await summarizeDreamsPhases(config, storage));
-  const extractionWatermark = await readAggregateExtractionWatermark({
-    config,
-    rootStorage: storage,
-    storageForNamespace: (_namespace, rootDir) => new StorageManager(rootDir),
-  });
+  const extractionWatermark = await readAggregateExtractionWatermark({ config, rootStorage: storage, storageForNamespace: (_ns, rootDir) => new StorageManager(rootDir) });
   checks.push(await summarizeExtractionLiveness(config, extractionWatermark, options.orchestrator.buffer));
   checks.push(...(await summarizeCorpusAndReplica(config, (d) => new StorageManager(d), options.resolveSecretRef)));
   // Security mitigation status (issue #565).

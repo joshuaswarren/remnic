@@ -534,9 +534,11 @@ export async function computeServiceCorpusCensus(
 ): Promise<{ watermarks: CorpusWatermark[]; complete: boolean }> {
   let roots: CorpusNamespaceRoot[] | undefined;
   if (options.cache) {
-    roots = options.cache.getResolvedRoots(() =>
+    const { roots: cachedRoots, refreshError } = options.cache.getResolvedRootsStatus(() =>
       resolveCorpusNamespaceRoots({ config: host.config, propagateDiscoveryErrors: true }),
     );
+    if (refreshError !== undefined) return { watermarks: [], complete: false };
+    roots = cachedRoots;
   } else {
     try {
       roots = await resolveCorpusNamespaceRoots({

@@ -780,6 +780,22 @@ test("finding round-7: namespace enumeration is cached (resolved once per TTL, s
   assert.equal(resolveCalls, 2, "re-enumerated once the TTL elapsed");
 });
 
+test("computeServiceCorpusCensus returns incomplete when roots refresh error is set in cache", async () => {
+  const cache = new CorpusWatermarkCache();
+  const host = {
+    config: parseConfig({ namespacesEnabled: true }),
+    getStorage: async () => ({ readAllMemories: async () => [] } as unknown as StorageManager),
+  };
+  const failingResolve = async (): Promise<CorpusNamespaceRoot[]> => {
+    throw new Error("disk unreadable");
+  };
+  cache.getResolvedRootsStatus(failingResolve);
+  await cache.whenIdle();
+  const census = await computeServiceCorpusCensus(host, { cache });
+  assert.equal(census.complete, false);
+  assert.deepEqual(census.watermarks, []);
+});
+
 test("finding round-9: background refresh scans are bounded to maxConcurrentRefreshes", async () => {
   const cache = new CorpusWatermarkCache({ maxConcurrentRefreshes: 2 });
   let active = 0;

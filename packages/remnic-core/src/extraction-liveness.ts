@@ -72,6 +72,36 @@ export interface ExtractionWatermarkRead {
   rootStats?: ExtractionRootStats;
 }
 
+export type ExtractionWatermarkOrStorage =
+  | ExtractionWatermarkRead
+  | { readMetadata(): Promise<{ lastExtractionAt?: string | null } | null> }
+  | { loadMeta(): Promise<{ lastExtractionAt?: string | null }> };
+
+export async function coerceExtractionWatermark(
+  watermark: ExtractionWatermarkOrStorage,
+): Promise<ExtractionWatermarkRead> {
+  if (watermark && "readFailed" in watermark && typeof watermark.readFailed === "boolean") {
+    return watermark as ExtractionWatermarkRead;
+  }
+  try {
+    let lastExtractionAt: string | null = null;
+    if ("loadMeta" in watermark && typeof watermark.loadMeta === "function") {
+      const meta = await watermark.loadMeta();
+      lastExtractionAt = meta?.lastExtractionAt ?? null;
+    } else if ("readMetadata" in watermark && typeof watermark.readMetadata === "function") {
+      const meta = await watermark.readMetadata();
+      lastExtractionAt = meta?.lastExtractionAt ?? null;
+    }
+    return { lastExtractionAt, readFailed: false };
+  } catch (error) {
+    return {
+      lastExtractionAt: null,
+      readFailed: true,
+      readError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 /**
  * The daemon-scoped liveness payload surfaced on `/health.extraction` and in
  * doctor/stats details. Its watermark is the maximum successful extraction
@@ -255,19 +285,20 @@ async function readBufferSnapshot(
  */
 export async function gatherExtractionLivenessStatus(input: {
   config: ExtractionLivenessConfig;
-  watermark: ExtractionWatermarkRead;
+  watermark: ExtractionWatermarkOrStorage;
   buffer: ExtractionBufferSource | undefined;
   nowMs: number;
 }): Promise<ExtractionLivenessStatus> {
-  const { config, watermark, buffer, nowMs } = input;
+  const { config, buffer, nowMs } = input;
+  const watermarkRead = await coerceExtractionWatermark(input.watermark);
   const snapshot = await readBufferSnapshot(buffer);
   return evaluateExtractionLiveness({
     config,
-    lastExtractionAt: watermark.lastExtractionAt,
+    lastExtractionAt: watermarkRead.lastExtractionAt,
     snapshot,
     nowMs,
-    metaReadFailed: watermark.readFailed,
-    metaReadError: watermark.readError,
+    metaReadFailed: watermarkRead.readFailed,
+    metaReadError: watermarkRead.readError,
   });
 }
 
@@ -326,7 +357,7 @@ export function resolveExtractionLivenessConfig(
  */
 export async function computeExtractionLivenessStatus(
   orchestrator: ExtractionLivenessOrchestratorLike,
-  watermark: ExtractionWatermarkRead,
+  watermark: ExtractionWatermarkOrStorage,
   throttle?: ExtractionLivenessWarnThrottle,
   nowMs: number = Date.now(),
 ): Promise<ExtractionLivenessStatus> {
@@ -347,7 +378,7 @@ export async function computeExtractionLivenessStatus(
  */
 export async function summarizeExtractionLiveness(
   config: Pick<PluginConfig, "extractionLiveness">,
-  watermark: ExtractionWatermarkRead,
+  watermark: ExtractionWatermarkOrStorage,
   buffer?: ExtractionBufferSource,
   nowMs: number = Date.now(),
 ): Promise<OperatorDoctorCheck> {

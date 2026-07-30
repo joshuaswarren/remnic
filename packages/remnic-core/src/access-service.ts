@@ -2370,11 +2370,13 @@ export class EngramAccessService {
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const searchBackend = this.orchestrator.config.searchBackend ?? "qmd";
     const qmdEnabled = resolveQmdCapabilities(this.orchestrator.config).qmd === true;
+    const caps = tokenCapabilityStore.getStore();
     const extractionWatermark = await readAggregateExtractionWatermark({
       config: this.orchestrator.config,
       rootStorage: this.orchestrator.storage,
       storageForNamespace: (candidate) => this.orchestrator.getStorage(candidate),
       rootsCache: this.corpusWatermarkCache,
+      caps,
     });
     const extraction = await computeExtractionLivenessStatus(
       this.orchestrator,
@@ -2383,7 +2385,6 @@ export class EngramAccessService {
     );
     // ONE call: the corpus array and the flag describing it must not come from
     // two independently-cached scans (round 8, codex P1).
-    const caps = tokenCapabilityStore.getStore();
     const corpusCensus = await computeServiceCorpusCensus(this.orchestrator, {
       cache: this.corpusWatermarkCache, caps });
     let projectionAvailable = false;
