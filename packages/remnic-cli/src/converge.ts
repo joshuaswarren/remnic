@@ -25,6 +25,11 @@ import {
   writeConvergeCursor,
   type ConvergeCursorState,
 } from "@remnic/core/reconcile/cursor.js";
+import {
+  buildReconcileManifest,
+  collapseActiveFactDuplicates,
+  type ReconcileManifest,
+} from "@remnic/core/reconcile/manifest.js";
 import { createOfflineStorageIo } from "./offline-storage-io.js";
 import { resolveAgentAccessAuthToken } from "@remnic/core/resolve-auth-token.js";
 export interface ConvergePlanOptions {
@@ -398,6 +403,8 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   const localTombstones = new Map<string, Set<string>>();
   const peerMap = new Map<string, ReconcileFileState[]>();
   const peerTombstones = new Map<string, Set<string>>();
+  const localManifests = new Map<string, ReconcileManifest>();
+  const peerManifests = new Map<string, ReconcileManifest>();
 
   if (options.baseFilesByNamespace) {
     for (const [ns, files] of options.baseFilesByNamespace) {
@@ -458,6 +465,26 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
           bytes: record.bytes,
         }));
         localMap.set(ns, files);
+        try {
+          const io = await createOfflineStorageIo(rootInfo.rootDir);
+          localManifests.set(
+            ns,
+            await buildReconcileManifest({
+              files,
+              readFile: async (file) => {
+                const readFile = io.readFile;
+                if (!readFile) throw new Error("offline storage cannot read reconciliation manifest files");
+                return await readFile({
+                  root: rootInfo.rootDir,
+                  path: file.path,
+                  filePath: path.join(rootInfo.rootDir, file.path),
+                });
+              },
+            }),
+          );
+        } catch {
+          localManifests.delete(ns);
+        }
         const tombstones = await readLocalTombstones(rootInfo.rootDir);
         localTombstones.set(ns, tombstones);
       } catch {
@@ -466,7 +493,8 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     }
   }
 
-  if (!options.peerFilesByNamespace && options.peerUrl) {
+  const peerUrl = options.peerUrl;
+  if (!options.peerFilesByNamespace && peerUrl) {
     let resolvedToken: string | undefined;
     if (options.peerToken) {
       try {
@@ -479,9 +507,23 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     }
     const fetchFn = options.fetchImpl ?? globalThis.fetch;
     for (const ns of namespacesToPlan) {
-      const peerData = await fetchPeerSnapshot(options.peerUrl, ns, resolvedToken, fetchFn);
+      const peerData = await fetchPeerSnapshot(peerUrl, ns, resolvedToken, fetchFn);
       peerMap.set(ns, peerData.files);
       peerTombstones.set(ns, peerData.tombstones);
+      peerManifests.set(
+        ns,
+        await buildReconcileManifest({
+          files: peerData.files,
+          cachedFiles: localManifests.get(ns)?.files,
+          readFile: async (file) => {
+            const remote = await fetchPeerFileContent(peerUrl, ns, file.path, resolvedToken, fetchFn);
+            if (!remote || remote.sha256 !== file.sha256) {
+              throw new Error(`failed to read peer reconciliation manifest file: ${file.path}`);
+            }
+            return remote.content;
+          },
+        }),
+      );
     }
   }
 
@@ -508,7 +550,8 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     });
   }
 
-  return planReconciliation(inputs, { conflictPolicy: options.conflictPolicy });
+  const plan = planReconciliation(inputs, { conflictPolicy: options.conflictPolicy });
+  return collapseActiveFactDuplicates(plan, localManifests, peerManifests);
 }
 
 export async function executeConvergeApply(
@@ -829,11 +872,12 @@ async function updateCursorsForPlan(
   const namespaces = new Set(plan.byNamespace.map((n) => n.namespace));
   for (const ns of namespaces) {
     const cursorPath = defaultConvergeCursorPath(memoryDir, peerUrl, ns);
-    const nsEntries = plan.entries.filter((e) => e.namespace === ns);
-    const baseFiles = nsEntries.map((e) => ({
-      path: e.path,
-      sha256: e.localSha256 ?? e.peerSha256 ?? "unknown",
-    }));
+    const baseFiles = plan.entries
+      .filter((entry) => entry.namespace === ns && entry.reason !== "semantic_duplicate")
+      .map((entry) => ({
+        path: entry.path,
+        sha256: entry.localSha256 ?? entry.peerSha256 ?? "unknown",
+      }));
 
     const cursorState: ConvergeCursorState = {
       version: 1,
