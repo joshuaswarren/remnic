@@ -8,6 +8,7 @@ import type { MemoryLifecycleEvent } from "../types.js";
 import {
   compareMemoryLifecycleEvents,
   sortMemoryLifecycleEvents,
+  memoryLifecycleEventProjectionIdentity,
   memoryLifecycleLedgerLockPath,
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
   MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS,
@@ -187,6 +188,50 @@ export async function readBoundedLifecycleEventsFromLedger(
     if (err instanceof SecureStoreLockedError) throw err;
     if (!isErrnoCode(err, "ENOENT")) throw err;
     return [];
+  }
+}
+
+export interface LifecycleLedgerProjectionLagRead {
+  events: MemoryLifecycleEvent[];
+  currentEventCount: number;
+  deltaEvents: number;
+}
+
+export async function readBoundedLifecycleEventsWithProjectionLag(
+  ledgerPath: string,
+  readSecureFile: LedgerSecureReader,
+  limit: number,
+  memoryId: string,
+  projectedEventIdentities: ReadonlySet<string>,
+): Promise<LifecycleLedgerProjectionLagRead> {
+  const currentEventIdentities = new Set<string>();
+  let deltaEvents = 0;
+  try {
+    const events = await readMemoryLifecycleEventsFromLines(
+      readMaybeEncryptedLines(
+        ledgerPath,
+        () => readSecureFile(ledgerPath),
+        STATE_FILE_MAX_DECRYPT_BYTES,
+      ),
+      Math.max(0, Math.floor(limit)),
+      memoryId,
+      compareMemoryLifecycleEvents,
+      (event) => {
+        const identity = memoryLifecycleEventProjectionIdentity(event);
+        if (currentEventIdentities.has(identity)) return;
+        currentEventIdentities.add(identity);
+        if (!projectedEventIdentities.has(identity)) deltaEvents += 1;
+      },
+    );
+    return {
+      events,
+      currentEventCount: currentEventIdentities.size,
+      deltaEvents,
+    };
+  } catch (err) {
+    if (err instanceof SecureStoreLockedError) throw err;
+    if (!isErrnoCode(err, "ENOENT")) throw err;
+    return { events: [], currentEventCount: 0, deltaEvents: 0 };
   }
 }
 

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Memory timeline fallback telemetry now measures projection lag against unique
+  lifecycle-ledger events, survives ledger compaction, and warns only when the
+  lag exceeds its event threshold while retaining projection-age context.
+
 ## [v9.38.0] — 2026-07-29
 
 ### Added

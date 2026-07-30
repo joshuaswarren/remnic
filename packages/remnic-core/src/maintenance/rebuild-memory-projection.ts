@@ -18,6 +18,7 @@ import {
   buildLifecycleEventsForMemory,
   inferMemoryStatus,
   MEMORY_LIFECYCLE_EVENT_SORT_ORDER,
+  memoryLifecycleEventProjectionIdentity,
   sortMemoryLifecycleEvents,
   toMemoryPathRel,
 } from "../memory-lifecycle-ledger-utils.js";
@@ -569,6 +570,7 @@ async function loadAuthoritativeProjectionSnapshot(options: {
     }
     | null;
   usedLifecycleLedger: boolean;
+  sourceLifecycleLedgerEventCount: number;
   scope: {
     updatedAfter: string | null;
     updatedBefore: string | null;
@@ -607,6 +609,9 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   );
   const events = deduplicatedTimeline.events;
   const usedLifecycleLedger = timeline.usedLifecycleLedger;
+  const sourceLifecycleLedgerEventCount = new Set(
+    lifecycleEvents.map(memoryLifecycleEventProjectionIdentity),
+  ).size;
   const currentRows = projectionMemories.map((memory) => toCurrentStateRow(options.memoryDir, memory));
   const scope = normalizeProjectionScope(options);
   const scopedMemories = filterMemoriesForProjectionScope(projectionMemories, scope);
@@ -645,6 +650,7 @@ async function loadAuthoritativeProjectionSnapshot(options: {
     nativeKnowledgeRows,
     governance,
     usedLifecycleLedger,
+    sourceLifecycleLedgerEventCount,
     scope,
     skippedDuplicateMemories: selected.skippedDuplicateMemories,
     skippedBlankIdMemories: selected.skippedBlankIdMemories,
@@ -790,6 +796,7 @@ function writeProjectionDb(
   nativeKnowledgeRows: ProjectedNativeKnowledgeChunkRow[],
   governance: Awaited<ReturnType<typeof loadLatestGovernanceProjection>>,
   usedLifecycleLedger: boolean,
+  sourceLifecycleLedgerEventCount: number,
 ): void {
   const db = openBetterSqlite3(dbPath);
   const memoryDir = path.dirname(path.dirname(dbPath));
@@ -800,6 +807,11 @@ function writeProjectionDb(
     insertMeta.run("schemaVersion", String(MEMORY_PROJECTION_SCHEMA_VERSION));
     insertMeta.run("rebuiltAt", nowIso);
     insertMeta.run("usedLifecycleLedger", usedLifecycleLedger ? "true" : "false");
+    insertMeta.run("sourceLifecycleLedgerEventCount", String(sourceLifecycleLedgerEventCount));
+    insertMeta.run(
+      "projectedLifecycleLedgerEventCount",
+      String(new Set(timelineRows.map(memoryLifecycleEventProjectionIdentity)).size),
+    );
     insertMeta.run("latestGovernanceRunId", governance?.runId ?? "");
 
     const insertCurrent = db.prepare(`
@@ -1161,6 +1173,7 @@ export async function rebuildMemoryProjection(
       nextNativeKnowledgeRows,
       nextGovernance,
       snapshot.usedLifecycleLedger,
+      snapshot.sourceLifecycleLedgerEventCount,
     );
     backupPath = await backupExistingProjection(options.memoryDir, outputPath, now);
     backupPath = await commitPreparedFileAtomically(tempPath, outputPath, backupPath);

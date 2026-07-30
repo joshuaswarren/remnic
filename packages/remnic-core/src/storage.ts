@@ -1,4 +1,8 @@
-import { readProjectionRebuiltAt } from "./maintenance/projection-support.js";
+import {
+  readProjectionLifecycleLedgerHighWater,
+  readProjectionRebuiltAt,
+  type ProjectionLifecycleLedgerHighWater,
+} from "./maintenance/projection-support.js";
 import {
   lstat,
   readdir,
@@ -16,7 +20,11 @@ import { createHash } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
 import path from "node:path";
 import { log } from "./logger.js";
-import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
+import {
+  assertMemoryFrontmatterId,
+  type ProjectionLedgerLagTelemetry,
+  warnProjectionFallback,
+} from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
 import { renderProfileWithLastUpdated } from "./storage/profile-header.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
@@ -28,6 +36,7 @@ import {
   readAllLifecycleEventsFromLedger,
   readAllLifecycleEventsFromLedgerBuffer,
   readBoundedLifecycleEventsFromLedger,
+  readBoundedLifecycleEventsWithProjectionLag,
   serializeLifecycleAppendPayload,
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
@@ -203,6 +212,7 @@ import {
   type ProjectedMemoryBrowseOptions,
   type ProjectedMemoryBrowsePage,
   markProjectedMemoryPathInvalid,
+  getMemoryProjectionPath,
   readProjectedMemoryState,
   readProjectedMemoryBrowse,
   readProjectedGovernanceRecord,
@@ -1729,9 +1739,28 @@ export type SealedWriteExtras = Omit<
   "confidence" | "tags" | "entityRef" | "source" | "expiresAt" | "validAt" | "structuredAttributes" | "sourceConnector"
 >;
 
+interface ProjectionLedgerLagScan {
+  telemetry: ProjectionLedgerLagTelemetry;
+  events: MemoryLifecycleEvent[];
+  memoryId: string;
+  limit: number;
+}
+
 export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
   private artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null = null;
+  private projectionLedgerHighWaterCache: {
+    projectionIdentity: string;
+    highWater: ProjectionLifecycleLedgerHighWater;
+  } | null = null;
+  private projectionLedgerLagCache: {
+    generation: string;
+    telemetry: ProjectionLedgerLagTelemetry;
+  } | null = null;
+  private projectionLedgerLagInFlight: {
+    generation: string;
+    scan: Promise<ProjectionLedgerLagScan>;
+  } | null = null;
   /** Read by storage/entity-store.ts (decomposition), hence not `private`. */
   static readonly KNOWLEDGE_INDEX_CACHE_TTL_MS = 600_000; // 10 minutes (entity mutations invalidate)
   /** Read by storage/memory-read-store.ts (decomposition). */
@@ -6543,25 +6572,100 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const projected = readProjectedMemoryTimeline(this.baseDir, memoryId, cappedLimit);
     if (projected && projected.length > 0) return projected;
-    // Loud, rate-limited staleness telemetry (#2119): a fallback here means the
-    // projection is missing/empty/stale, so surface HOW stale it is. The lag is
-    // computed lazily — only when warnProjectionFallback actually logs (once per
-    // interval) — so a hot fallback path pays for a projection meta read at most
-    // once per suppression window, not per call.
-    warnProjectionFallback(this.baseDir, "getMemoryTimeline", () => {
-      const rebuiltAt = readProjectionRebuiltAt(this.baseDir);
+    const rebuiltAt = readProjectionRebuiltAt(this.baseDir);
+    const projectionAge = (): string => {
       if (!rebuiltAt) return "projection never rebuilt";
       const ageMs = Date.now() - Date.parse(rebuiltAt);
       if (!Number.isFinite(ageMs)) return `projection rebuiltAt=${rebuiltAt}`;
       const ageMin = Math.max(0, Math.round(ageMs / 60_000));
       const age = ageMin >= 120 ? `${Math.round(ageMin / 60)}h` : `${ageMin}m`;
       return `projection ${age} stale, last rebuilt ${rebuiltAt}`;
-    });
+    };
+    const [projectionIdentity, ledgerIdentity] = await Promise.all(
+      [getMemoryProjectionPath(this.baseDir), this.memoryLifecycleLedgerPath].map(async (filePath) => {
+        try {
+          const file = await lstat(filePath);
+          return `${file.dev}:${file.ino}:${file.size}:${file.mtimeMs}:${file.ctimeMs}`;
+        } catch (err) {
+          if (isErrnoCode(err, "ENOENT")) return "absent";
+          throw err;
+        }
+      }),
+    );
+    const generation = `${projectionIdentity}\0${ledgerIdentity}`;
+    const cachedLag = this.projectionLedgerLagCache?.generation === generation
+      ? this.projectionLedgerLagCache.telemetry
+      : null;
+    if (cachedLag) {
+      warnProjectionFallback(this.baseDir, "getMemoryTimeline", projectionAge, cachedLag);
+      return readBoundedLifecycleEventsFromLedger(
+        this.memoryLifecycleLedgerPath,
+        (p) => this.readStorageSecureFile(p),
+        cappedLimit,
+        memoryId,
+      );
+    }
+    const inFlight = this.projectionLedgerLagInFlight?.generation === generation
+      ? this.projectionLedgerLagInFlight.scan
+      : null;
+    if (inFlight) {
+      const result = await inFlight;
+      this.projectionLedgerLagCache = { generation, telemetry: result.telemetry };
+      warnProjectionFallback(this.baseDir, "getMemoryTimeline", projectionAge, result.telemetry);
+      if (result.memoryId === memoryId && result.limit === cappedLimit) return result.events;
+      return readBoundedLifecycleEventsFromLedger(
+        this.memoryLifecycleLedgerPath,
+        (p) => this.readStorageSecureFile(p),
+        cappedLimit,
+        memoryId,
+      );
+    }
+
+
+    let highWater = this.projectionLedgerHighWaterCache?.projectionIdentity === projectionIdentity
+      ? this.projectionLedgerHighWaterCache.highWater
+      : null;
+    if (!highWater) {
+      highWater = readProjectionLifecycleLedgerHighWater(this.baseDir);
+      if (highWater) {
+        this.projectionLedgerHighWaterCache = { projectionIdentity, highWater };
+      }
+    }
+    if (highWater) {
+      const scan = readBoundedLifecycleEventsWithProjectionLag(
+        this.memoryLifecycleLedgerPath,
+        (p) => this.readStorageSecureFile(p),
+        cappedLimit,
+        memoryId,
+        highWater.projectedEventIdentities,
+      ).then((fallback): ProjectionLedgerLagScan => ({
+        telemetry: {
+          projectedEvents: highWater.eventCount,
+          currentLedgerEvents: fallback.currentEventCount,
+          deltaEvents: fallback.deltaEvents,
+        },
+        events: fallback.events,
+        memoryId,
+        limit: cappedLimit,
+      }));
+      this.projectionLedgerLagInFlight = { generation, scan };
+      try {
+        const result = await scan;
+        this.projectionLedgerLagCache = { generation, telemetry: result.telemetry };
+        warnProjectionFallback(this.baseDir, "getMemoryTimeline", projectionAge, result.telemetry);
+        return result.events;
+      } finally {
+        if (this.projectionLedgerLagInFlight?.scan === scan) {
+          this.projectionLedgerLagInFlight = null;
+        }
+      }
+    }
+    warnProjectionFallback(this.baseDir, "getMemoryTimeline", projectionAge);
     return readBoundedLifecycleEventsFromLedger(
       this.memoryLifecycleLedgerPath,
       (p) => this.readStorageSecureFile(p),
       cappedLimit,
-      memoryId
+      memoryId,
     );
   }
 

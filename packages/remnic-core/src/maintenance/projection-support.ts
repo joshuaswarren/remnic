@@ -7,6 +7,7 @@
 
 import path from "node:path";
 import { openProjectionReadonly } from "../memory-projection-store.js";
+import { memoryLifecycleEventProjectionIdentity } from "../memory-lifecycle-ledger-utils.js";
 
 /** Read the projection meta rebuiltAt timestamp; null when absent/unopenable. */
 export function readProjectionRebuiltAt(memoryDir: string): string | null {
@@ -17,6 +18,60 @@ export function readProjectionRebuiltAt(memoryDir: string): string | null {
       | { value?: unknown }
       | undefined;
     return typeof row?.value === "string" && row.value.length > 0 ? row.value : null;
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+export interface ProjectionLifecycleLedgerHighWater {
+  eventCount: number;
+  sourceEventCount: number;
+  projectedEventIdentities: ReadonlySet<string>;
+}
+
+export function readProjectionLifecycleLedgerHighWater(
+  memoryDir: string,
+): ProjectionLifecycleLedgerHighWater | null {
+  const db = openProjectionReadonly(memoryDir);
+  if (!db) return null;
+  try {
+    const sourceRow = db.prepare(
+      "SELECT value FROM meta WHERE key = 'sourceLifecycleLedgerEventCount'",
+    ).get() as { value?: unknown } | undefined;
+    const projectedRow = db.prepare(
+      "SELECT value FROM meta WHERE key = 'projectedLifecycleLedgerEventCount'",
+    ).get() as { value?: unknown } | undefined;
+    if (
+      typeof sourceRow?.value !== "string"
+      || !/^\d+$/.test(sourceRow.value)
+      || typeof projectedRow?.value !== "string"
+      || !/^\d+$/.test(projectedRow.value)
+    ) return null;
+    const sourceEventCount = Number(sourceRow.value);
+    const eventCount = Number(projectedRow.value);
+    if (!Number.isSafeInteger(sourceEventCount) || !Number.isSafeInteger(eventCount)) return null;
+    const eventRows = db.prepare(`
+      SELECT
+        event_id AS eventId,
+        memory_id AS memoryId,
+        event_type AS eventType,
+        timestamp
+      FROM memory_timeline
+    `).all() as Array<{
+      eventId: string;
+      memoryId: string;
+      eventType: string;
+      timestamp: string;
+    }>;
+    return {
+      eventCount,
+      sourceEventCount,
+      projectedEventIdentities: new Set(
+        eventRows.map(memoryLifecycleEventProjectionIdentity),
+      ),
+    };
   } catch {
     return null;
   } finally {
