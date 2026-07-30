@@ -2471,6 +2471,7 @@ export class ExtractionPersistCoordinator {
                 intentActionType: inferredIntent?.actionType,
                 intentEntityTypes: inferredIntent?.entityTypes,
                 ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+                ...(factToolScoped ? { toolScoped: true as const } : {}),
               });
             }
             // v8.2: graph edge building for chunked memories. #1576: skip pending_review.
@@ -2777,6 +2778,7 @@ export class ExtractionPersistCoordinator {
             intentActionType: inferredIntent?.actionType,
             intentEntityTypes: inferredIntent?.entityTypes,
             ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+            ...(factToolScoped ? { toolScoped: true as const } : {}),
           });
         }
         // Register in the target storage content-hash index after successful

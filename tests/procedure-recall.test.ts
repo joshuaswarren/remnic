@@ -44,6 +44,42 @@ test("buildProcedureRecallSection returns ranked procedures on task-initiation p
   }
 });
 
+test("buildProcedureRecallSection partitions tool-scoped procedures by connector", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-procedure-connector-partition-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const body = buildProcedureMarkdownBody([{ order: 1, intent: "Run deploy checks for production gateway" }]);
+    const matching = await storage.writeMemory("procedure", `When you deploy the gateway with connector A\n\n${body}`, {
+      source: "test",
+      sourceConnector: "connector-a",
+      toolScoped: true,
+    });
+    const foreign = await storage.writeMemory("procedure", `When you deploy the gateway with connector B\n\n${body}`, {
+      source: "test",
+      sourceConnector: "connector-b",
+      toolScoped: true,
+    });
+    const portable = await storage.writeMemory("procedure", `When you deploy the gateway\n\n${body}`, { source: "test" });
+    const config = parseConfig({
+      memoryDir: dir,
+      workspaceDir: path.join(dir, "ws"),
+      openaiApiKey: "test-key",
+      procedural: { enabled: true, recallMaxProcedures: 5 },
+    });
+    const section = await buildProcedureRecallSection(storage, "Let's deploy the gateway to production today", config, {
+      partitionToolScoped: true,
+      requestingConnector: "connector-a",
+    });
+    assert.ok(section);
+    assert.match(section, new RegExp(matching.id));
+    assert.match(section, new RegExp(portable.id));
+    assert.doesNotMatch(section, new RegExp(foreign.id));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("buildProcedureRecallSection returns null when procedural.enabled is false", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-procedure-recall-off-"));
   try {

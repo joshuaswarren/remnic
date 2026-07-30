@@ -4349,6 +4349,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       intentActionType?: string;
       intentEntityTypes?: string[];
       sourceConnector?: string;
+      toolScoped?: true;
     } = {}
   ): Promise<string> {
     await this.ensureDirectories();
@@ -4374,6 +4375,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       intentActionType: options.intentActionType,
       intentEntityTypes: options.intentEntityTypes,
       ...(options.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
+      ...(options.toolScoped ? { toolScoped: true as const } : {}),
     };
 
     const sanitized = sanitizeMemoryContent(quote);

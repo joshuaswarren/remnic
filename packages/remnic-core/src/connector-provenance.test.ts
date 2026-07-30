@@ -298,3 +298,23 @@ test("StorageManager preserves an explicit structured tool classification", asyn
     await rm(baseDir, { recursive: true, force: true });
   }
 });
+test("StorageManager preserves connector partition metadata on artifacts", async () => {
+  StorageManager.clearAllStaticCaches();
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-artifact-tool-scope-"));
+  try {
+    const storage = new StorageManager(baseDir);
+    await storage.ensureDirectories();
+    const id = await storage.writeArtifact("Use the search tool with a path argument.", {
+      sourceConnector: "chatgpt",
+      toolScoped: true,
+    });
+    const artifact = (await storage.searchArtifacts("search tool", 10)).find(
+      (candidate) => candidate.frontmatter.id === id,
+    );
+    assert.equal(artifact?.frontmatter.sourceConnector, "chatgpt");
+    assert.equal(artifact?.frontmatter.toolScoped, true);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});

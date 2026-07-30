@@ -39,6 +39,7 @@ import { collectNativeKnowledgeChunks, formatNativeKnowledgeSection, searchNativ
 import { objectiveStateStoreOverrideForNamespace, searchObjectiveStateSnapshots } from "../objective-state.js";
 import { type GraphRecallRankedResult, type GraphRecallShadowComparison, mergeGraphExpandedResults } from "./graph-recall-coordinator.js";
 import { buildProcedureRecallSection } from "../procedural/procedure-recall.js";
+import { canRecallToolScopedMemory } from "../tool-scoped-memory.js";
 import { buildQmdRecallCacheKey, getCachedQmdRecall, setCachedQmdRecall } from "../qmd-recall-cache.js";
 import { MEMORY_ID_PATTERN } from "../recall-handles.js";
 import {
@@ -1296,7 +1297,11 @@ export class RecallInternalCoordinator {
         source: "fresh",
         success: true,
       });
-      return results;
+      return caps.extractionScopeClassification
+        ? results.filter((artifact) =>
+            canRecallToolScopedMemory(artifact.frontmatter, options.sourceConnector),
+          )
+        : results;
     })();
 
     const objectiveStatePromise = (async (): Promise<string | null> => {
@@ -2794,6 +2799,10 @@ export class RecallInternalCoordinator {
           profileStorage,
           retrievalQuery,
           this.deps.config,
+          {
+            partitionToolScoped: caps.extractionScopeClassification,
+            requestingConnector: options.sourceConnector,
+          },
         );
       } catch (err) {
         log.debug(

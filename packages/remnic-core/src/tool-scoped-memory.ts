@@ -173,6 +173,16 @@ export function withholdToolScopedFromSharedNamespace({
   return false;
 }
 
+export function canRecallToolScopedMemory(
+  frontmatter: { sourceConnector?: string; toolScoped?: true },
+  requestingConnector?: string,
+): boolean {
+  if (frontmatter.toolScoped !== true) return true;
+  const sourceConnector = frontmatter.sourceConnector?.trim();
+  const requester = requestingConnector?.trim();
+  return !sourceConnector || !requester || sourceConnector === requester;
+}
+
 export interface GlobalFactPromotionInputs {
   scope: string | null | undefined;
   content: string;
