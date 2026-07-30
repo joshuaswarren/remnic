@@ -149,7 +149,13 @@ test("extraction skips work-only conversation before calling fallback parser", a
     },
   ]);
 
-  assert.deepEqual(result, { facts: [], profileUpdates: [], entities: [], questions: [] });
+  assert.deepEqual(result, {
+    facts: [],
+    profileUpdates: [],
+    entities: [],
+    questions: [],
+    extractionSkippedReason: "conversation_only_non_memory",
+  });
   assert.equal(tracker.called, false);
 });
 

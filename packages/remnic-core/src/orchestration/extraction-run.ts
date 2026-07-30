@@ -979,7 +979,7 @@ export class ExtractionRunCoordinator {
           // pre-#1908 clear-buffer behavior applies below.
           log.warn("runExtraction: failed to load meta for retry bookkeeping (non-fatal)", err);
         }
-      } else {
+      } else if (result.extractionSkippedReason === undefined) {
         // Provider responded without failure → breaker heals; clear any
         // parked backoff for this fingerprint so it proceeds normally.
         this.resetProviderBreakerOnSuccess();
@@ -1016,19 +1016,20 @@ export class ExtractionRunCoordinator {
           { extractionFailure }
         );
       }
-      await commitEmptySuccessExtraction({
+      const emptySuccessCommit = {
         storage,
         meta,
         extractionFingerprint,
         shouldPersistProcessedFingerprint,
         hasExtractionFailure: Boolean(extractionFailure),
+        extractionSkippedReason: result.extractionSkippedReason,
         recordProcessedExtractionFingerprint: this.deps.recordProcessedExtractionFingerprint,
         runDeadlineAware,
-        isDeadlineError: (error) => error instanceof ExtractionDeadlineError,
-      });
-      // Correction-only turns that meet char/user-turn thresholds but yield
-      // zero facts still need passive capture (review: "empty extraction skips
-      // capture"). selfNamespace/principal already resolved above.
+        isDeadlineError: (error: unknown) => error instanceof ExtractionDeadlineError,
+      };
+      if (shouldPersistProcessedFingerprint) {
+        await commitEmptySuccessExtraction(emptySuccessCommit);
+      }
       await runPassiveCapture(normalizedTurns as BufferTurn[], {
         sessionKey,
         principal,
@@ -1037,15 +1038,12 @@ export class ExtractionRunCoordinator {
         isLiveSession: clearBufferAfterExtraction,
       });
       if (recordedRetryFailure) {
-        // Retain the failed turns so the backoff gate can re-attempt them after
-        // nextEligibleAt. Clearing here would lose the data the retry state
-        // points at (cursor high + codex P1). Trigger/forced paths already
-        // retain via clearBufferAfterExtraction=false; this covers the normal
-        // live-session path. Overflow is bounded by MAX_BUFFER_ENTRY_COUNT
-        // with a loud eviction log.
         log.debug("runExtraction: retaining buffer for backoff retry after failure");
       } else {
         await clearBuffer();
+      }
+      if (!shouldPersistProcessedFingerprint) {
+        await commitEmptySuccessExtraction(emptySuccessCommit);
       }
       return { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
     }

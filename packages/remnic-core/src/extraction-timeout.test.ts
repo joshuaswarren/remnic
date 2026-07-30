@@ -205,6 +205,7 @@ test("extraction skips mechanical action telemetry without durable memory cues",
     profileUpdates: [],
     entities: [],
     questions: [],
+    extractionSkippedReason: "mechanical_telemetry",
   });
 });
 

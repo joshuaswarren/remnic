@@ -1161,7 +1161,13 @@ export class ExtractionEngine {
     };
     if (renderedConversation.trim().length === 0) {
       log.debug("extraction skipped — conversation only contained non-memory work-layer context");
-      return { facts: [], profileUpdates: [], entities: [], questions: [] };
+      return {
+        facts: [],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+        extractionSkippedReason: "conversation_only_non_memory",
+      };
     }
     if (
       lifecycleCaps.extractionTelemetryPrefilter &&
@@ -1173,6 +1179,7 @@ export class ExtractionEngine {
         profileUpdates: [],
         entities: [],
         questions: [],
+        extractionSkippedReason: "mechanical_telemetry",
       };
     }
 

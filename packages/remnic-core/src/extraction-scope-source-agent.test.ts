@@ -311,6 +311,27 @@ test("telemetry prefilter runs on turn content, not the Source agent header", as
   assert.equal(withoutConnector.result.facts.length, 0, "untagged transcript filtered identically");
 });
 
+test("prefilter results identify why provider extraction was skipped", async () => {
+  const workLayerOnly = await extractViaGateway([
+    {
+      role: "assistant",
+      content: "[WORK_LAYER_CONTEXT link_to_memory=false]\ninternal scratch\n[/WORK_LAYER_CONTEXT]",
+      timestamp: TS,
+    },
+  ]);
+  assert.equal(workLayerOnly.result.extractionSkippedReason, "conversation_only_non_memory");
+
+  const mechanicalTurns: BufferTurn[] = [];
+  for (let i = 1; i <= 9; i += 1) {
+    mechanicalTurns.push({ role: "user", content: `[action ${i}]: moved left`, timestamp: TS });
+  }
+  for (let i = 0; i < 11; i += 1) {
+    mechanicalTurns.push({ role: "assistant", content: "ok", timestamp: TS });
+  }
+  const mechanical = await extractViaGateway(mechanicalTurns);
+  assert.equal(mechanical.result.extractionSkippedReason, "mechanical_telemetry");
+});
+
 // FIX 3: connector is validated before interpolation; injection yields no header.
 test("resolveSourceConnector reuses the registry validator (accepts . and _) and blocks injection", () => {
   const t = (connector: string): BufferTurn => ({ role: "user", content: "Use the search tool.", timestamp: TS, sourceConnector: connector });

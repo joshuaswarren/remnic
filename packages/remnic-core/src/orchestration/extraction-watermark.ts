@@ -36,12 +36,11 @@ export interface AggregateExtractionWatermarkOptions {
   caps?: TokenCapabilities;
 }
 
-function readFailure(reason: string, rootStats?: ExtractionRootStats): ExtractionWatermarkRead {
+function readFailure(reason: string): ExtractionWatermarkRead {
   return {
     lastExtractionAt: null,
     readFailed: true,
     readError: reason,
-    ...(rootStats ? { rootStats } : {}),
   };
 }
 
@@ -49,12 +48,101 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const ISO_TIMESTAMP_PATTERN =
+  /^([+-]?\d{4,6})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})$/i;
+
+function validatedTimestampMs(value: string): number | null {
+  const match = ISO_TIMESTAMP_PATTERN.exec(value);
+  const parsed = Date.parse(value);
+  if (!match || !Number.isFinite(parsed)) return null;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fraction, zone] = match;
+  const normalizedZone = zone.toUpperCase();
+  const offsetMinuteText = normalizedZone.includes(":")
+    ? normalizedZone.slice(4, 6)
+    : normalizedZone.slice(3, 5);
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = secondText !== undefined ? Number(secondText) : 0;
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]!) return null;
+  if (hour === 24) {
+    const isEndOfDay = minute === 0 && second === 0 && /^0*$/.test(fraction ?? "");
+    return isEndOfDay ? parsed : null;
+  }
+  const zoneSign = normalizedZone === "Z" || normalizedZone[0] === "+" ? 1 : -1;
+  const offsetMinutes =
+    normalizedZone === "Z"
+      ? 0
+      : zoneSign * (Number(normalizedZone.slice(1, 3)) * 60 + Number(offsetMinuteText));
+  const representedCalendar = new Date(parsed + offsetMinutes * 60_000);
+  const millisecond = Number((fraction ?? "").padEnd(3, "0").slice(0, 3));
+  const expected = [
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    millisecond,
+  ];
+  const actual = [
+    representedCalendar.getUTCFullYear(),
+    representedCalendar.getUTCMonth() + 1,
+    representedCalendar.getUTCDate(),
+    representedCalendar.getUTCHours(),
+    representedCalendar.getUTCMinutes(),
+    representedCalendar.getUTCSeconds(),
+    representedCalendar.getUTCMilliseconds(),
+  ];
+  return actual.every((part, index) => part === expected[index]) ? parsed : null;
+}
+
+function mergeRootStats(
+  current: ExtractionRootStats | undefined,
+  candidate: ExtractionRootStats | undefined,
+): ExtractionRootStats | undefined {
+  if (!current && !candidate) return undefined;
+  const currentCount = current?.extractionCount;
+  const candidateCount = candidate?.extractionCount;
+  const extractionCount =
+    currentCount === undefined && candidateCount === undefined
+      ? undefined
+      : (currentCount ?? 0) + (candidateCount ?? 0);
+  const currentConsolidation = current?.lastConsolidationAt;
+  const candidateConsolidation = candidate?.lastConsolidationAt;
+  const hasConsolidation =
+    currentConsolidation !== undefined || candidateConsolidation !== undefined;
+  return {
+    ...(extractionCount === undefined ? {} : { extractionCount }),
+    ...(hasConsolidation
+      ? {
+          lastConsolidationAt: newerWatermark(
+            currentConsolidation ?? null,
+            candidateConsolidation ?? null,
+          ),
+        }
+      : {}),
+  };
+}
+
 function watermarkFromMeta(meta: ExtractionWatermarkMeta, name: string): ExtractionWatermarkRead {
-  if (meta.lastExtractionAt !== null && meta.lastExtractionAt !== undefined) {
-    const parsed = Date.parse(meta.lastExtractionAt);
-    if (!Number.isFinite(parsed)) {
-      return readFailure(`${name} watermark timestamp invalid`);
-    }
+  if (
+    meta.lastExtractionAt !== null &&
+    meta.lastExtractionAt !== undefined &&
+    validatedTimestampMs(meta.lastExtractionAt) === null
+  ) {
+    return readFailure(`${name} watermark timestamp invalid`);
+  }
+  if (
+    meta.lastConsolidationAt !== null &&
+    meta.lastConsolidationAt !== undefined &&
+    validatedTimestampMs(meta.lastConsolidationAt) === null
+  ) {
+    return readFailure(`${name} consolidation timestamp invalid`);
   }
   const hasRootStats = meta.extractionCount !== undefined || meta.lastConsolidationAt !== undefined;
   return {
@@ -107,11 +195,11 @@ function isReadFailure(value: CorpusNamespaceRoot[] | ExtractionWatermarkRead): 
 
 function newerWatermark(current: string | null, candidate: string | null): string | null {
   if (candidate === null) return current;
-  const candidateMs = Date.parse(candidate);
-  if (!Number.isFinite(candidateMs)) return current;
+  const candidateMs = validatedTimestampMs(candidate);
+  if (candidateMs === null) return current;
   if (current === null) return candidate;
-  const currentMs = Date.parse(current);
-  return !Number.isFinite(currentMs) || candidateMs > currentMs ? candidate : current;
+  const currentMs = validatedTimestampMs(current);
+  return currentMs === null || candidateMs > currentMs ? candidate : current;
 }
 
 export async function readAggregateExtractionWatermark(
@@ -155,10 +243,13 @@ export async function readAggregateExtractionWatermark(
     (!options.caps || capabilityAllowsNamespace(options.caps, defaultNamespace));
   let rootRead: ExtractionWatermarkRead = { lastExtractionAt: null, readFailed: false };
   if (canAccessRoot) {
-    rootRead = await readWatermark(options.rootStorage, "root store");
+    rootRead = options.rootMeta
+      ? watermarkFromMeta(options.rootMeta, "root store")
+      : await readWatermark(options.rootStorage, "root store");
     if (rootRead.readFailed) return rootRead;
   }
   let lastExtractionAt = rootRead.lastExtractionAt;
+  let rootStats = rootRead.rootStats;
 
   const reads = await Promise.all(
     targets.map(async (target) => {
@@ -173,16 +264,14 @@ export async function readAggregateExtractionWatermark(
 
   for (const read of reads) {
     if (read.readFailed) {
-      return readFailure(
-        read.readError ?? "namespace watermark unreadable",
-        rootRead.rootStats
-      );
+      return readFailure(read.readError ?? "namespace watermark unreadable");
     }
     lastExtractionAt = newerWatermark(lastExtractionAt, read.lastExtractionAt);
+    rootStats = mergeRootStats(rootStats, read.rootStats);
   }
   return {
     lastExtractionAt,
     readFailed: false,
-    ...(rootRead.rootStats ? { rootStats: rootRead.rootStats } : {}),
+    ...(rootStats ? { rootStats } : {}),
   };
 }
