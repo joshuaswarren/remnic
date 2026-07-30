@@ -173,6 +173,7 @@ import {
   OPERATION_NAMES,
   validateCapabilitiesForMint,
 } from "@remnic/core";
+import { resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
 import { runMeetingsBinaryCommand } from "./commands/meetings.js";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
@@ -4043,6 +4044,34 @@ async function writeBenchReproManifestForPackageRun(args: {
 }
 
 // ── Config helpers ───────────────────────────────────────────────────────────
+
+export function loadConvergeCommandConfig(): PluginConfig {
+  const openclawConfigPath = resolveOpenclawConfigPath();
+  let openclawConfig: unknown;
+  if (fs.existsSync(openclawConfigPath)) {
+    try {
+      openclawConfig = JSON.parse(fs.readFileSync(openclawConfigPath, "utf8"));
+    } catch {
+      openclawConfig = undefined;
+    }
+  }
+  const pluginEntry = resolveRemnicPluginEntry(openclawConfig);
+  if (pluginEntry !== undefined) {
+    const pluginConfig = pluginEntry["config"];
+    if (pluginConfig === undefined || pluginConfig === null) {
+      return parseConfig({});
+    }
+    if (typeof pluginConfig === "object" && !Array.isArray(pluginConfig)) {
+      return parseConfig(resolveRemnicConfigRecord(pluginConfig));
+    }
+  }
+
+  const configPath = resolveConfigPath();
+  const raw = fs.existsSync(configPath)
+    ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+    : {};
+  return parseConfig(resolveRemnicConfigRecord(raw));
+}
 
 export function resolveConfigPath(cliPath?: string): string {
   if (cliPath) return path.resolve(expandTilde(cliPath));
@@ -12985,11 +13014,7 @@ Options:
         await cmdConverge(action, args, json);
         break;
       }
-      const configPath = resolveConfigPath();
-      const raw = fs.existsSync(configPath)
-        ? JSON.parse(fs.readFileSync(configPath, "utf8"))
-        : {};
-      const config = parseConfig(resolveRemnicConfigRecord(raw));
+      const config = loadConvergeCommandConfig();
       await cmdConverge(action, args, json, config);
       break;
     }

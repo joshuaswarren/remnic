@@ -4,13 +4,20 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { resolveConfigPath, resolveMemoryDir, resolveSyncSourceDir } from "./index.js";
+import {
+  loadConvergeCommandConfig,
+  resolveConfigPath,
+  resolveMemoryDir,
+  resolveSyncSourceDir,
+} from "./index.js";
 
 const ORIGINAL_ENV = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
   REMNIC_CONFIG_PATH: process.env.REMNIC_CONFIG_PATH,
   ENGRAM_CONFIG_PATH: process.env.ENGRAM_CONFIG_PATH,
+  OPENCLAW_CONFIG_PATH: process.env.OPENCLAW_CONFIG_PATH,
+  OPENCLAW_ENGRAM_CONFIG_PATH: process.env.OPENCLAW_ENGRAM_CONFIG_PATH,
   REMNIC_MEMORY_DIR: process.env.REMNIC_MEMORY_DIR,
   ENGRAM_MEMORY_DIR: process.env.ENGRAM_MEMORY_DIR,
 };
@@ -125,6 +132,100 @@ test("resolveConfigPath expands home-relative env config paths", async () => {
     process.env.ENGRAM_CONFIG_PATH = "${HOME}/engram.json";
 
     assert.equal(resolveConfigPath(), path.join(home, "engram.json"));
+  } finally {
+    restoreEnv();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("converge prefers a plugin-scoped manual policy over standalone config", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-converge-openclaw-"));
+  const openclawConfigPath = path.join(home, "openclaw.json");
+  const standaloneConfigPath = path.join(home, "remnic.json");
+  try {
+    process.env.HOME = home;
+    process.env.REMNIC_CONFIG_PATH = standaloneConfigPath;
+    delete process.env.ENGRAM_CONFIG_PATH;
+    process.env.OPENCLAW_CONFIG_PATH = openclawConfigPath;
+    delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+    await writeFile(
+      standaloneConfigPath,
+      JSON.stringify({ converge: { conflictPolicy: "newest-wins" } }),
+    );
+    await writeFile(
+      openclawConfigPath,
+      JSON.stringify({
+        plugins: {
+          slots: { memory: "openclaw-remnic" },
+          entries: {
+            "openclaw-remnic": {
+              config: { converge: { conflictPolicy: "manual" } },
+            },
+          },
+        },
+      }),
+    );
+
+    assert.equal(
+      loadConvergeCommandConfig().converge.conflictPolicy,
+      "manual",
+    );
+  } finally {
+    restoreEnv();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("converge defaults a plugin entry with no config block", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-converge-openclaw-default-"));
+  const openclawConfigPath = path.join(home, "openclaw.json");
+  try {
+    process.env.HOME = home;
+    delete process.env.REMNIC_CONFIG_PATH;
+    delete process.env.ENGRAM_CONFIG_PATH;
+    process.env.OPENCLAW_CONFIG_PATH = openclawConfigPath;
+    delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+    await writeFile(
+      openclawConfigPath,
+      JSON.stringify({
+        plugins: {
+          entries: {
+            "openclaw-remnic": { enabled: true },
+          },
+        },
+      }),
+    );
+
+    assert.equal(
+      loadConvergeCommandConfig().converge.conflictPolicy,
+      "newest-wins",
+    );
+  } finally {
+    restoreEnv();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("converge falls back to standalone config when OpenClaw JSON is malformed", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-converge-openclaw-malformed-"));
+  const openclawConfigPath = path.join(home, "openclaw.json");
+  const standaloneConfigPath = path.join(home, "remnic.json");
+  try {
+    process.env.HOME = home;
+    process.env.REMNIC_CONFIG_PATH = standaloneConfigPath;
+    delete process.env.ENGRAM_CONFIG_PATH;
+    process.env.OPENCLAW_CONFIG_PATH = openclawConfigPath;
+    delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+    await writeFile(openclawConfigPath, "{");
+    await writeFile(
+      standaloneConfigPath,
+      JSON.stringify({ converge: { conflictPolicy: "manual" } }),
+    );
+
+    assert.equal(
+      loadConvergeCommandConfig().converge.conflictPolicy,
+      "manual",
+    );
   } finally {
     restoreEnv();
     await rm(home, { recursive: true, force: true });

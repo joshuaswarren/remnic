@@ -6,6 +6,7 @@ import {
   extractParsedKeyPaths,
   extractRealConfigKeys,
 } from "../scripts/config-contract/extract-parsed-keys.ts";
+import { parseFixtureHandRolledConfig } from "../scripts/config-contract/fixtures/hand-rolled.ts";
 
 /**
  * check-config-contract v2 extractor (issue #1990 PR1).
@@ -47,6 +48,23 @@ test("hand-rolled fixture: aliases, coercion helpers, nested blocks, and destruc
   assert.ok(keys.includes("topLevelFlag"), "entry parser direct read");
   // Value properties never leak as config keys.
   assert.equal(keys.some((k) => k.endsWith(".trim") || k.endsWith(".length")), false);
+});
+
+test("hand-rolled fixture accepts every recognized runtime field", () => {
+  assert.deepEqual(
+    parseFixtureHandRolledConfig({
+      enabled: true,
+      intervalMinutes: 5,
+      fusion: { enabled: true, gapMs: 250 },
+      label: " fixture ",
+    }),
+    {
+      enabled: true,
+      intervalMinutes: 5,
+      fusion: { enabled: true, gapMs: 250 },
+      label: "fixture",
+    },
+  );
 });
 
 test("zod fixture: static z.object walk collects nested schema keys", () => {
