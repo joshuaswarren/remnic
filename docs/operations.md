@@ -293,15 +293,14 @@ Conflict policy precedence is:
 
 1. `--conflict-policy <policy>` for the current command.
 2. `converge.conflictPolicy` from the loaded config.
-3. `newest-wins`, the backward-compatible default.
+3. `newest-wins`, the current default.
 
 Choose a policy based on how much operator review the corpus needs:
 
-- `newest-wins` selects the revision with the newest timestamp. For delete-versus-modify
-  conflicts, the timestamped surviving revision wins. If two revisions tie or either timestamp is
-  missing, apply stops because transport cannot yet preserve both at distinct durable identities.
-  Use it for automatic reconciliation and behavior compatible with releases that predate
-  configurable policies.
+- `newest-wins` selects the newer revision when both sides carry comparable timestamps.
+  Delete-versus-modify conflicts require a durable per-path deletion timestamp; without one,
+  apply stops before mutation. Tied or missing timestamps also stop because transport cannot yet
+  preserve both revisions at distinct durable identities.
 - `manual` leaves conflicts unresolved. A plan can report them, but apply stops before any
   mutation while conflicts remain. Use it when an operator must review every conflict.
 

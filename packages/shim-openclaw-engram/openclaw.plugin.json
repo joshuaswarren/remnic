@@ -1403,7 +1403,7 @@
               "manual"
             ],
             "default": "newest-wins",
-            "description": "Default conflict policy for convergence. newest-wins selects the newer timestamped revision, including delete-versus-modify conflicts, and manual stops before mutation when conflicts remain."
+            "description": "Default conflict policy for convergence. newest-wins selects the newer revision when both sides carry comparable timestamps; manual stops before mutation when conflicts remain."
           }
         }
       },
@@ -6752,7 +6752,7 @@
     "converge.conflictPolicy": {
       "label": "Converge Conflict Policy",
       "advanced": true,
-      "help": "newest-wins selects the newer timestamped revision, including delete-versus-modify conflicts; manual stops before mutation when conflicts remain. Default: newest-wins. The --conflict-policy CLI flag overrides this setting."
+      "help": "newest-wins selects the newer revision when both sides carry comparable timestamps; manual stops before mutation when conflicts remain. Default: newest-wins. The --conflict-policy CLI flag overrides this setting."
     },
     "temporalSupersessionEnabled": {
       "label": "Temporal Supersession",
