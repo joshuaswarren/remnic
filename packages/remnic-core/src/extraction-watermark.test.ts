@@ -176,7 +176,9 @@ test("a failed stale-cache refresh makes later reads incomplete", async () => {
       rootsCache: cache,
     };
 
-    assert.equal((await readAggregateExtractionWatermark(options)).readFailed, true);
+    const coldRead = await readAggregateExtractionWatermark(options);
+    assert.equal(coldRead.readFailed, false);
+    assert.equal(coldRead.pending, true);
     await cache.whenIdle();
     assert.equal((await readAggregateExtractionWatermark(options)).readFailed, false);
 
