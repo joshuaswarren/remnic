@@ -109,42 +109,65 @@ async function fetchPeerSnapshot(
     `/engram/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&content=false`,
   ];
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
+  let lastFailure = "no snapshot route responded";
 
   for (const route of routes) {
+    let response: Response;
     try {
-      const res = await fetchImpl(`${base}${route}`, { headers });
-      if (!res.ok) continue;
-      const data = (await res.json()) as {
-        files?: Array<{ path?: string; sha256?: string; mtimeMs?: number; bytes?: number }>;
-        tombstones?: string[];
-      };
-      const files: ReconcileFileState[] = [];
-      if (Array.isArray(data.files)) {
-        for (const item of data.files) {
-          if (item && typeof item === "object" && typeof item.path === "string" && typeof item.sha256 === "string") {
-            files.push({
-              path: item.path,
-              sha256: item.sha256,
-              mtimeMs: typeof item.mtimeMs === "number" ? item.mtimeMs : undefined,
-              bytes: typeof item.bytes === "number" ? item.bytes : undefined,
-            });
-          }
-        }
-      }
-      const tombstones = new Set<string>();
-      if (Array.isArray(data.tombstones)) {
-        for (const tomb of data.tombstones) {
-          if (typeof tomb === "string" && /^[0-9a-f]{64}$/i.test(tomb)) {
-            tombstones.add(tomb.toLowerCase());
-          }
-        }
-      }
-      return { files, tombstones };
-    } catch {
-      // try next route on network failure or 404
+      response = await fetchImpl(`${base}${route}`, { headers });
+    } catch (error) {
+      lastFailure = error instanceof Error ? error.message : String(error);
+      continue;
     }
+    if (!response.ok) {
+      lastFailure = `HTTP ${response.status}`;
+      continue;
+    }
+
+    let data: unknown;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error(`invalid peer snapshot for namespace ${namespace}: response was not JSON`);
+    }
+    if (!data || typeof data !== "object" || !("files" in data) || !Array.isArray(data.files)) {
+      throw new Error(`invalid peer snapshot for namespace ${namespace}: files must be an array`);
+    }
+
+    const files: ReconcileFileState[] = data.files.map((item, index) => {
+      if (
+        !item
+        || typeof item !== "object"
+        || !("path" in item)
+        || typeof item.path !== "string"
+        || !("sha256" in item)
+        || typeof item.sha256 !== "string"
+      ) {
+        throw new Error(`invalid peer snapshot for namespace ${namespace}: malformed file at index ${index}`);
+      }
+      return {
+        path: item.path,
+        sha256: item.sha256,
+        mtimeMs: "mtimeMs" in item && typeof item.mtimeMs === "number" ? item.mtimeMs : undefined,
+        bytes: "bytes" in item && typeof item.bytes === "number" ? item.bytes : undefined,
+      };
+    });
+
+    const rawTombstones = "tombstones" in data ? data.tombstones : undefined;
+    if (rawTombstones !== undefined && !Array.isArray(rawTombstones)) {
+      throw new Error(`invalid peer snapshot for namespace ${namespace}: tombstones must be an array`);
+    }
+    const tombstones = new Set<string>();
+    for (const tombstone of rawTombstones ?? []) {
+      if (typeof tombstone !== "string" || !/^[0-9a-f]{64}$/i.test(tombstone)) {
+        throw new Error(`invalid peer snapshot for namespace ${namespace}: malformed tombstone`);
+      }
+      tombstones.add(tombstone.toLowerCase());
+    }
+    return { files, tombstones };
   }
-  return { files: [], tombstones: new Set() };
+
+  throw new Error(`failed to fetch peer snapshot for namespace ${namespace}: ${lastFailure}`);
 }
 
 interface PeerFileContent {
@@ -289,9 +312,29 @@ async function postPeerFileContent(
           body: new Uint8Array(chunk),
         });
         if (!response.ok) throw new Error(`offline apply-file-content request failed: ${response.status}`);
+        const result: unknown = await response.json().catch(() => null);
+        if (
+          !result
+          || typeof result !== "object"
+          || !("done" in result)
+          || typeof result.done !== "boolean"
+          || !("applied" in result)
+          || typeof result.applied !== "boolean"
+          || !("skipped" in result)
+          || typeof result.skipped !== "boolean"
+          || ("conflict" in result && result.conflict)
+        ) {
+          return false;
+        }
+        if (result.done) {
+          return result.skipped || (result.applied && offset + chunk.length === content.length);
+        }
+        if (result.applied || result.skipped || chunk.length === 0) {
+          return false;
+        }
         offset += chunk.length;
       } while (offset < content.length);
-      return true;
+      return false;
     } catch {
       // try next route
     }
@@ -573,6 +616,7 @@ export async function executeConvergeApply(
           if (rootDir) {
             const io = await createOfflineStorageIo(rootDir);
             let offset = 0;
+            let transferComplete = false;
             do {
               const chunk = remoteFile.content.subarray(
                 offset,
@@ -581,7 +625,7 @@ export async function executeConvergeApply(
                   offset + OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
                 ),
               );
-              await applyOfflineSyncFileContentChunk({
+              const chunkResult = await applyOfflineSyncFileContentChunk({
                 root: rootDir,
                 sourceId: "remnic-converge",
                 path: entry.path,
@@ -597,10 +641,24 @@ export async function executeConvergeApply(
                 writeStagingFile: io.writeStagingFile,
                 writeFileChunks: io.writeFileChunks,
               });
+              if (chunkResult.conflict) {
+                break;
+              }
+              if (chunkResult.done) {
+                transferComplete = chunkResult.applied || chunkResult.skipped;
+                break;
+              }
+              if (chunkResult.applied || chunkResult.skipped || chunk.length === 0) {
+                break;
+              }
               offset += chunk.length;
             } while (offset < remoteFile.content.length);
-            if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
-            else actualTransfers.pulled += 1;
+            if (transferComplete) {
+              if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
+              else actualTransfers.pulled += 1;
+            } else {
+              actualTransfers.failed += 1;
+            }
           } else {
             actualTransfers.failed += 1;
           }
@@ -671,14 +729,18 @@ export async function executeConvergeApply(
     }
   }
 
-  await updateCursorsForPlan(plan, options);
+  let cursorUpdated = false;
+  if (actualTransfers.failed === 0) {
+    await updateCursorsForPlan(plan, options);
+    cursorUpdated = true;
+  }
 
   return {
     converged: actualTransfers.failed === 0,
     status: "applied",
     plan,
     transfers: actualTransfers,
-    cursorUpdated: true,
+    cursorUpdated,
   };
 }
 

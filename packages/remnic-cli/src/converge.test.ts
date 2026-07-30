@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES } from "@remnic/core";
+import { OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES, parseConfig } from "@remnic/core";
 import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
 import {
   defaultConvergeCursorPath,
@@ -369,4 +369,94 @@ test("remnic converge apply: uses chunked offline-sync HTTP contracts for pull a
   assert.match(pushRequest.url, /offline-sync\/apply-file-content\?namespace=default$/);
   assert.equal(new Headers(pushRequest.init?.headers).get("x-remnic-file-sha256"), localSha);
   assert.equal(new Headers(pushRequest.init?.headers).get("x-remnic-file-bytes"), String(localContent.length));
+});
+
+test("remnic converge plan: fails closed when the peer census cannot be fetched", async () => {
+  const fetchImpl: typeof fetch = async () => new Response(null, { status: 503 });
+
+  await assert.rejects(
+    computeConvergePlan({
+      peerUrl: "https://peer.example.test",
+      fetchImpl,
+      localFilesByNamespace: new Map([["default", []]]),
+    }),
+    /failed to fetch peer snapshot/i,
+  );
+});
+
+test("remnic converge plan: rejects malformed peer census records", async () => {
+  const fetchImpl: typeof fetch = async () =>
+    Response.json({ files: [{ path: "facts/incomplete.md" }], tombstones: [] });
+
+  await assert.rejects(
+    computeConvergePlan({
+      peerUrl: "https://peer.example.test",
+      fetchImpl,
+      localFilesByNamespace: new Map([["default", []]]),
+    }),
+    /invalid peer snapshot/i,
+  );
+});
+
+test("remnic converge apply: does not count a remote apply conflict as a push", async () => {
+  const content = Buffer.from("local content");
+  const sha256 = createHash("sha256").update(content).digest("hex");
+  const fetchImpl: typeof fetch = async () =>
+    Response.json({
+      done: true,
+      applied: false,
+      skipped: false,
+      conflict: { reason: "remote_changed_for_local_update" },
+    });
+
+  const result = await executeConvergeApply({
+    peerUrl: "https://peer.example.test",
+    fetchImpl,
+    localFilesByNamespace: new Map([
+      ["default", [{ path: "facts/local.md", sha256, bytes: content.length, mtimeMs: 1000 }]],
+    ]),
+    peerFilesByNamespace: new Map([["default", []]]),
+    localFileBuffers: new Map([["default", new Map([["facts/local.md", content]])]]),
+  });
+
+  assert.equal(result.transfers.pushed, 0);
+  assert.equal(result.transfers.failed, 1);
+  assert.equal(result.converged, false);
+  assert.equal(result.cursorUpdated, false);
+});
+
+test("remnic converge apply: does not count a local apply conflict as a pull", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-conflict-test-"));
+  try {
+    const baseContent = Buffer.from("base content");
+    const peerContent = Buffer.from("peer content");
+    const changedContent = Buffer.from("changed content");
+    const baseSha256 = createHash("sha256").update(baseContent).digest("hex");
+    const peerSha256 = createHash("sha256").update(peerContent).digest("hex");
+    await fs.mkdir(path.join(rootDir, "facts"), { recursive: true });
+    await fs.writeFile(path.join(rootDir, "facts/shared.md"), changedContent);
+
+    const result = await executeConvergeApply({
+      config: parseConfig({ memoryDir: rootDir }),
+      peerUrl: "https://peer.example.test",
+      baseFilesByNamespace: new Map([
+        ["default", [{ path: "facts/shared.md", sha256: baseSha256 }]],
+      ]),
+      localFilesByNamespace: new Map([
+        ["default", [{ path: "facts/shared.md", sha256: baseSha256 }]],
+      ]),
+      peerFilesByNamespace: new Map([
+        ["default", [{ path: "facts/shared.md", sha256: peerSha256, bytes: peerContent.length, mtimeMs: 2000 }]],
+      ]),
+      peerFileBuffers: new Map([["default", new Map([["facts/shared.md", peerContent]])]]),
+    });
+
+    assert.equal(result.transfers.pulled, 0);
+    assert.equal(result.transfers.failed, 1);
+    assert.equal(result.converged, false);
+    assert.equal(result.cursorUpdated, false);
+    assert.equal(await fs.readFile(path.join(rootDir, "facts/shared.md"), "utf8"), "changed content");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
 });
