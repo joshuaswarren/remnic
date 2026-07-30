@@ -445,7 +445,9 @@ export async function renderExtractionLivenessStats(
   const rootStats = watermark.rootStats;
   const watermarkDisplay = watermark.readFailed
     ? "unavailable"
-    : status.lastExtractionAt ?? "never";
+    : watermark.pending
+      ? "pending"
+      : status.lastExtractionAt ?? "never";
   return [
     `Extractions: ${rootStats?.extractionCount ?? "unavailable"}`,
     `Last extraction: ${watermarkDisplay}`,

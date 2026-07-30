@@ -2376,6 +2376,7 @@ export class EngramAccessService {
       rootStorage: this.orchestrator.storage,
       storageForNamespace: (candidate) => this.orchestrator.getStorage(candidate),
       rootsCache: this.corpusWatermarkCache,
+      caps,
     });
     const extraction = await computeExtractionLivenessStatus(
       this.orchestrator,
