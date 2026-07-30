@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.44.0] — 2026-07-30
+
 ### Added
 
 - After a converge batch writes files, the receiver updates search and rebuilds the memory view. It runs once for each changed namespace (#2150 increment 4).
