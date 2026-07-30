@@ -49,7 +49,7 @@ function errorMessage(error: unknown): string {
 }
 
 const ISO_TIMESTAMP_PATTERN =
-  /^([+-]?\d{4,6})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})$/i;
+  /^([+-]?\d{4,6})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})$/i;
 
 function validatedTimestampMs(value: string): number | null {
   const match = ISO_TIMESTAMP_PATTERN.exec(value);
@@ -65,7 +65,7 @@ function validatedTimestampMs(value: string): number | null {
   const day = Number(dayText);
   const hour = Number(hourText);
   const minute = Number(minuteText);
-  const second = Number(secondText);
+  const second = secondText !== undefined ? Number(secondText) : 0;
   const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
   const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]!) return null;
