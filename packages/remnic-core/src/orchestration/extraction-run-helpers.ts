@@ -307,3 +307,50 @@ export async function runExtractionPostPersist(
   if (deadlineError) throw deadlineError;
   return { meta, metadataFailed };
 }
+
+/**
+ * Advance the extraction liveness watermark for a successfully parsed empty
+ * extraction (#2223) and record its processed fingerprint when applicable.
+ * Fingerprinted/import runs treat the metadata save as load-bearing (dedupe
+ * state) and propagate failures; normal live runs treat the stamp as
+ * diagnostic liveness and fail open. Deadline errors always propagate.
+ */
+export async function commitEmptySuccessExtraction(args: {
+  storage: StorageManager;
+  meta: MetaState | null;
+  extractionFingerprint: string | null;
+  shouldPersistProcessedFingerprint: boolean;
+  hasExtractionFailure: boolean;
+  recordProcessedExtractionFingerprint: (storage: StorageManager, fingerprint: string, meta: MetaState) => Promise<unknown>;
+  runDeadlineAware: <T>(operation: () => Promise<T>, phase: string, clearTimerOnError?: boolean) => Promise<T>;
+  isDeadlineError: (error: unknown) => boolean;
+}): Promise<void> {
+  const {
+    storage,
+    meta: existingMeta,
+    extractionFingerprint,
+    shouldPersistProcessedFingerprint,
+    hasExtractionFailure,
+    recordProcessedExtractionFingerprint,
+    runDeadlineAware,
+    isDeadlineError,
+  } = args;
+  let meta = existingMeta;
+  if (extractionFingerprint && shouldPersistProcessedFingerprint && !hasExtractionFailure) {
+    meta ??= await storage.loadMeta();
+    await recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta);
+  }
+  if (!hasExtractionFailure) {
+    const livenessStampFatal = shouldPersistProcessedFingerprint;
+    try {
+      meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_empty_success_liveness_load", false);
+      meta.extractionCount += 1;
+      meta.lastExtractionAt = new Date().toISOString();
+      await runDeadlineAware(() => storage.saveMeta(meta!), "during_empty_success_liveness_save", false);
+    } catch (err) {
+      if (isDeadlineError(err)) throw err;
+      if (livenessStampFatal) throw err;
+      log.warn("runExtraction: failed to stamp empty-success liveness watermark (non-fatal)", err);
+    }
+  }
+}

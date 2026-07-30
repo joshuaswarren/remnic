@@ -127,6 +127,7 @@ import { raceRecallAbort, throwIfRecallAborted } from "./orchestrator-helpers.js
 import {
   capExtractionRetryStateEntries,
   combineExtractionAbortSignals,
+  commitEmptySuccessExtraction,
   computeExtractionRetryNextEligibleMs,
   deriveSourceConnector,
   deriveTopicsFromExtraction,
@@ -1015,36 +1016,16 @@ export class ExtractionRunCoordinator {
           { extractionFailure }
         );
       }
-      if (extractionFingerprint && shouldPersistProcessedFingerprint && !extractionFailure) {
-        meta ??= await storage.loadMeta();
-        await this.deps.recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta);
-      }
-      // A successfully parsed extraction advances the liveness watermark even
-      // when it emits no durable objects (#2223). Normal live turns do not set
-      // persistProcessedFingerprint, so the stamp above was skipped and the
-      // watermark stayed stale while the buffer cleared and retry state healed.
-      // Null/unparseable responses return before this branch; a non-empty
-      // extractionFailure must not advance it. A failed meta save propagates so
-      // the buffer is retained for retry, mirroring the fingerprint-stamp path.
-      if (!extractionFailure) {
-        // Fingerprinted/import runs need the meta save to succeed (dedupe
-        // state), so a failure propagates and retains the buffer
-        // (orchestrator-flush contract). Normal live turns treat the stamp as
-        // diagnostic liveness only and fail open, so an ordinary empty session
-        // does not accumulate solely because the watermark could not be
-        // written. Deadline errors always propagate.
-        const livenessStampFatal = shouldPersistProcessedFingerprint;
-        try {
-          meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_empty_success_liveness_load", false);
-          meta.extractionCount += 1;
-          meta.lastExtractionAt = new Date().toISOString();
-          await runDeadlineAware(() => storage.saveMeta(meta!), "during_empty_success_liveness_save", false);
-        } catch (err) {
-          if (err instanceof ExtractionDeadlineError) throw err;
-          if (livenessStampFatal) throw err;
-          log.warn("runExtraction: failed to stamp empty-success liveness watermark (non-fatal)", err);
-        }
-      }
+      await commitEmptySuccessExtraction({
+        storage,
+        meta,
+        extractionFingerprint,
+        shouldPersistProcessedFingerprint,
+        hasExtractionFailure: Boolean(extractionFailure),
+        recordProcessedExtractionFingerprint: this.deps.recordProcessedExtractionFingerprint,
+        runDeadlineAware,
+        isDeadlineError: (error) => error instanceof ExtractionDeadlineError,
+      });
       // Correction-only turns that meet char/user-turn thresholds but yield
       // zero facts still need passive capture (review: "empty extraction skips
       // capture"). selfNamespace/principal already resolved above.
