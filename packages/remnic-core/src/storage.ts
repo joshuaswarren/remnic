@@ -16,11 +16,7 @@ import { createHash } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
 import path from "node:path";
 import { log } from "./logger.js";
-import {
-  assertMemoryFrontmatterId,
-  type ProjectionLedgerLagTelemetry,
-  warnProjectionFallback,
-} from "./storage-guards.js";
+import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
 import { renderProfileWithLastUpdated } from "./storage/profile-header.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
@@ -34,7 +30,6 @@ import {
   readAllLifecycleEventsFromLedger,
   readAllLifecycleEventsFromLedgerBuffer,
   readBoundedLifecycleEventsFromLedger,
-  readBoundedLifecycleEventsWithProjectionLag,
   serializeLifecycleAppendPayload,
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
@@ -210,7 +205,6 @@ import {
   type ProjectedMemoryBrowseOptions,
   type ProjectedMemoryBrowsePage,
   markProjectedMemoryPathInvalid,
-  getMemoryProjectionPath,
   readProjectedMemoryState,
   readProjectedMemoryBrowse,
   readProjectedGovernanceRecord,

@@ -19,6 +19,7 @@ import {
   appendLifecycleEventsSerialized,
   drainPendingLifecycleAppendsSerialized,
   pendingLifecycleLedgerDir,
+  ProjectionLedgerLagManager,
   readAllLifecycleEventsFromLedgerBuffer,
   type LifecyclePendingIo,
 } from "./storage/memory-lifecycle-ledger-access.js";
@@ -1523,17 +1524,24 @@ test("scoped rebuild metadata distinguishes source-ledger high-water from projec
     assert.equal(highWater?.sourceEventCount, 2, "source high-water still records the full ledger snapshot");
   });
 });
-test("getMemoryTimeline identity probe failure falls back to ledger without rejecting (#2119 review)", async () => {
-  const projected = lifecycleEvent("projected-1", "memory-target", "2026-01-01T00:00:00.000Z");
-  const appended = lifecycleEvent("appended-1", "memory-target", "2026-01-02T00:00:00.000Z");
-  await withStaleLifecycleProjection([projected], [appended], async (storage, memoryDir) => {
-    const projectionPath = path.join(memoryDir, "state", "memory-projection.sqlite");
-    await chmod(projectionPath, 0o000).catch(() => {});
-    try {
-      const timeline = await storage.getMemoryTimeline("memory-target", 5);
-      assert.ok(timeline.length > 0, "timeline read succeeds via ledger fallback when identity probe fails");
-    } finally {
-      await chmod(projectionPath, 0o644).catch(() => {});
-    }
-  });
+test("timeline lag resolver keeps ledger fallback when projection identity probing fails (#2119 review)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-probe-failure-"));
+  const ledgerPath = path.join(memoryDir, "memory-lifecycle-ledger.jsonl");
+  const event = lifecycleEvent("current-1", "memory-target", "2026-01-02T00:00:00.000Z");
+  await writeFile(path.join(memoryDir, "state"), "not a directory", "utf8");
+  await writeFile(ledgerPath, `${JSON.stringify(event)}\n`, "utf8");
+  try {
+    const manager = new ProjectionLedgerLagManager();
+    const timeline = await manager.resolveTimelineWithLag({
+      baseDir: memoryDir,
+      ledgerPath,
+      memoryId: "memory-target",
+      cappedLimit: 5,
+      readSecureFile: (filePath) => readFile(filePath, "utf8"),
+      projectionAge: () => "projection unavailable",
+    });
+    assert.deepEqual(timeline, [event]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
