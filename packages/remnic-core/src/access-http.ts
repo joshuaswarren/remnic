@@ -46,7 +46,7 @@ import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation, type OperationName } from "./access-boundary.js";
 import { authorizationProbeNamespaces, probeOperationAuthorization } from "./access-authorization-probe.js";
 import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
-import { respondLcmCompactionCapabilitiesHttp } from "./access-http-lcm-compaction.js";
+import { respondAccessCapabilitiesHttp } from "./access-http-lcm-compaction.js";
 import {
   assertOperationAllowed,
   capabilityAllowsOp,
@@ -902,7 +902,7 @@ export class EngramAccessHttpServer {
       });
       return;
     }
-    if (req.method === "GET" && pathname === "/engram/v1/capabilities") return respondLcmCompactionCapabilitiesHttp(res);
+    if (req.method === "GET" && pathname === "/engram/v1/capabilities") return respondAccessCapabilitiesHttp(res);
     if (req.method === "GET" && pathname === "/engram/v1/authorization") {
       res.setHeader("cache-control", "no-store");
       const probe = probeOperationAuthorization(tokenCapabilityStore.getStore(), parsed.searchParams.getAll("op"));
@@ -1375,6 +1375,7 @@ export class EngramAccessHttpServer {
       return;
     }
 
+
     if (
       req.method === "POST" &&
       (
@@ -1382,7 +1383,8 @@ export class EngramAccessHttpServer {
         pathname === "/remnic/v1/offline-sync/convergence-complete"
       )
     ) {
-      this.enforceTokenOp("offline_sync_apply_file_content");
+      void getOperation("offline_sync_apply_file_content");
+      this.enforceTokenAnyOf(["offline_sync_apply_file_content", "offline_sync_apply"]);
       const namespaceParams = parsed.searchParams.getAll("namespace").filter(Boolean);
       const requestedNamespaces: Array<string | undefined> =
         namespaceParams.length > 0 ? namespaceParams : [undefined];
@@ -3908,6 +3910,15 @@ export class EngramAccessHttpServer {
   private enforceTokenOp(op: OperationName): void {
     void getOperation(op); // preserve the registration side-effect assertion
     assertOperationAllowed(tokenCapabilityStore.getStore(), op);
+  }
+
+  private enforceTokenAnyOf(ops: readonly OperationName[]): void {
+    for (const op of ops) void getOperation(op);
+    const capabilities = tokenCapabilityStore.getStore();
+    if (ops.some((op) => capabilityAllowsOp(capabilities, op))) return;
+    throw new EngramAccessForbiddenError(
+      `token is not permitted to call any required operation: ${ops.join(", ")}`,
+    );
   }
  
   /**

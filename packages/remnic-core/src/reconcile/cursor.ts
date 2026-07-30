@@ -3,6 +3,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ReconcilePlanEntry, ReconcileSemanticAgreement } from "./plan.js";
 
+export type ConvergeRefreshTarget = "local" | "receiver";
+
 export interface ConvergeCursorFileState {
   path: string;
   sha256: string;
@@ -18,6 +20,7 @@ export interface ConvergeCursorState {
   baseFiles: ConvergeCursorFileState[];
   semanticAgreements?: ReconcileSemanticAgreement[];
   completedPaths?: string[];
+  pendingRefreshes?: ConvergeRefreshTarget[];
 }
 
 export function normalizeConvergePeerUrl(peerUrl: string): string {
@@ -151,6 +154,11 @@ export function normalizeConvergeCursor(input: unknown): ConvergeCursorState {
       }
     }
   }
+  const pendingRefreshes: ConvergeRefreshTarget[] = [];
+  if (Array.isArray(obj.pendingRefreshes)) {
+    if (obj.pendingRefreshes.includes("local")) pendingRefreshes.push("local");
+    if (obj.pendingRefreshes.includes("receiver")) pendingRefreshes.push("receiver");
+  }
   return {
     version: 1,
     peerUrl: obj.peerUrl.trim(),
@@ -159,6 +167,7 @@ export function normalizeConvergeCursor(input: unknown): ConvergeCursorState {
     baseFiles,
     semanticAgreements,
     completedPaths,
+    pendingRefreshes,
   };
 }
 
@@ -193,4 +202,39 @@ export async function writeConvergeCursor(
     await fs.unlink(tmp).catch(() => {});
     throw error;
   }
+}
+
+export async function markConvergeRefreshPending(
+  cursorPath: string,
+  options: {
+    peerUrl: string;
+    namespace: string;
+    target: ConvergeRefreshTarget;
+  },
+): Promise<void> {
+  const current = await readConvergeCursor(cursorPath);
+  const pendingRefreshes = new Set(current?.pendingRefreshes ?? []);
+  pendingRefreshes.add(options.target);
+  await writeConvergeCursor(cursorPath, {
+    version: 1,
+    peerUrl: current?.peerUrl ?? options.peerUrl,
+    namespace: current?.namespace ?? options.namespace,
+    lastConvergedAt: current?.lastConvergedAt,
+    baseFiles: current?.baseFiles ?? [],
+    semanticAgreements: current?.semanticAgreements ?? [],
+    completedPaths: current?.completedPaths ?? [],
+    pendingRefreshes: [...pendingRefreshes].sort(),
+  });
+}
+
+export async function clearConvergeRefreshPending(
+  cursorPath: string,
+  target: ConvergeRefreshTarget,
+): Promise<void> {
+  const current = await readConvergeCursor(cursorPath);
+  if (!current?.pendingRefreshes?.includes(target)) return;
+  await writeConvergeCursor(cursorPath, {
+    ...current,
+    pendingRefreshes: current.pendingRefreshes.filter((pending) => pending !== target),
+  });
 }

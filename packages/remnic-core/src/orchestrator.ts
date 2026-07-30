@@ -76,6 +76,7 @@ import type {
 import {
   createSearchBackend,
   createConversationIndexRuntime,
+  isSearchBackendEnabled,
 } from "./search/factory.js";
 import { NoopSearchBackend } from "./search/noop-backend.js";
 import {
@@ -1280,7 +1281,12 @@ export class Orchestrator {
   }
 
   async refreshNamespacesAfterConvergence(namespaces: readonly string[]): Promise<void> {
-    return refreshConvergedNamespaces(namespaces, this.namespaceSearchRouter, this.getStorage.bind(this));
+    return refreshConvergedNamespaces(
+      namespaces,
+      this.namespaceSearchRouter,
+      this.getStorage.bind(this),
+      isSearchBackendEnabled(this.config),
+    );
   }
 
 

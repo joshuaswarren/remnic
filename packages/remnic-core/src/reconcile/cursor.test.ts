@@ -4,9 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import {
+  clearConvergeRefreshPending,
   defaultConvergeCursorPath,
   deriveConvergeCursorBase,
   hashPeerNamespace,
+  markConvergeRefreshPending,
   normalizeConvergeCursor,
   normalizeConvergePeerUrl,
   readConvergeCursor,
@@ -163,6 +165,36 @@ test("writeConvergeCursor & readConvergeCursor: atomic write roundtrip", async (
     const readUpdated = await readConvergeCursor(cursorPath);
     assert.ok(readUpdated);
     assert.equal(readUpdated.completedPaths?.length, 2);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("converge refresh obligations survive restart and clear independently", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-cursor-refresh-"));
+  const cursorPath = defaultConvergeCursorPath(tmpDir, "https://peer.example.test", "team");
+  try {
+    await markConvergeRefreshPending(cursorPath, {
+      peerUrl: "https://peer.example.test",
+      namespace: "team",
+      target: "receiver",
+    });
+    await markConvergeRefreshPending(cursorPath, {
+      peerUrl: "https://peer.example.test",
+      namespace: "team",
+      target: "local",
+    });
+
+    const restarted = await readConvergeCursor(cursorPath);
+    assert.ok(restarted);
+    assert.deepEqual(restarted.pendingRefreshes, ["local", "receiver"]);
+    assert.deepEqual(restarted.baseFiles, []);
+
+    await clearConvergeRefreshPending(cursorPath, "receiver");
+    assert.deepEqual((await readConvergeCursor(cursorPath))?.pendingRefreshes, ["local"]);
+
+    await clearConvergeRefreshPending(cursorPath, "local");
+    assert.deepEqual((await readConvergeCursor(cursorPath))?.pendingRefreshes, []);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

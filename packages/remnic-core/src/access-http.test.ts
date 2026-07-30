@@ -3772,6 +3772,34 @@ test("HTTP authorization probe verifies requested operation grants without invok
   }
 });
 
+test("HTTP capabilities explicitly advertise receiver convergence finalization", async () => {
+  const service = {} as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const route = `http://127.0.0.1:${status.port}/engram/v1/capabilities`;
+    const denied = await fetch(route);
+    assert.equal(denied.status, 401);
+
+    const response = await fetch(route, {
+      headers: { authorization: "Bearer test-token" },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      lcmCompactionFlushBatch: true,
+      offlineSyncConvergenceComplete: true,
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP convergence completion forwards one authenticated namespace batch refresh", async () => {
   const calls: Array<{ namespaces: string[]; principal?: string; sourceId: string }> = [];
   const service = {
@@ -3819,6 +3847,50 @@ test("HTTP convergence completion forwards one authenticated namespace batch ref
       principal: "writer",
       sourceId: "remnic-converge",
     }]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP convergence completion accepts either receiver mutation grant", async () => {
+  let completions = 0;
+  const service = {
+    offlineSyncFinalizeConvergence: async () => {
+      completions += 1;
+      return { namespaces: ["team"], refreshed: true as const };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "file-token", capabilities: { version: 1, ops: ["offline_sync_apply_file_content"] } },
+      { token: "delete-token", capabilities: { version: 1, ops: ["offline_sync_apply"] } },
+      { token: "read-token", capabilities: { version: 1, ops: ["offline_sync_snapshot"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const route = `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/convergence-complete?namespace=team`;
+  const complete = (token: string) => fetch(route, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+    },
+  });
+
+  try {
+    const fileResponse = await complete("file-token");
+    assert.equal(fileResponse.status, 200);
+    await fileResponse.text();
+    const deleteResponse = await complete("delete-token");
+    assert.equal(deleteResponse.status, 200);
+    await deleteResponse.text();
+    const deniedResponse = await complete("read-token");
+    assert.equal(deniedResponse.status, 403);
+    await deniedResponse.text();
+    assert.equal(completions, 2);
   } finally {
     await server.stop();
   }
