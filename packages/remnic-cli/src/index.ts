@@ -12974,12 +12974,23 @@ Options:
     case "converge": {
       const action = rest[0] ?? "plan";
       const json = rest.includes("--json");
+      const args = rest.slice(1);
+      if (
+        action === "help"
+        || action === "--help"
+        || action === "-h"
+        || args.includes("--help")
+        || args.includes("-h")
+      ) {
+        await cmdConverge(action, args, json);
+        break;
+      }
       const configPath = resolveConfigPath();
       const raw = fs.existsSync(configPath)
         ? JSON.parse(fs.readFileSync(configPath, "utf8"))
         : {};
       const config = parseConfig(resolveRemnicConfigRecord(raw));
-      await cmdConverge(action, rest.slice(1), json, config);
+      await cmdConverge(action, args, json, config);
       break;
     }
 

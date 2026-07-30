@@ -27,7 +27,8 @@ export function parseFixtureHandRolledConfig(value: unknown): FixtureHandRolledC
     enabled: coerceBool(fusionRaw.enabled) ?? false,
     gapMs: typeof fusionRaw.gapMs === "number" ? fusionRaw.gapMs : 1000,
   };
-  const { label } = raw as { label?: string };
+  const { label, ...unknown } = raw as { label?: string };
+  if (Object.keys(unknown).length > 0) throw new Error("unknown");
   return { enabled, intervalMinutes, fusion, label: typeof label === "string" ? label.trim() : undefined };
 }
 

@@ -2431,7 +2431,12 @@ test("parseConfig validates converge conflict policy and defaults to newest-wins
     );
   }
 
-  for (const converge of [0, null]) {
+  for (const converge of [0, null, [], new Date(), new Map()]) {
     assert.throws(() => parseConfig({ converge }), /converge must be a plain object/);
   }
+
+  assert.throws(
+    () => parseConfig({ converge: { conflictPolciy: "manual" } }),
+    /converge contains unknown key "conflictPolciy"/,
+  );
 });

@@ -427,12 +427,13 @@ function extractParserKeys(
         ts.forEachChild(node, visit);
         return;
       }
-      // Destructuring: const { a, b: renamed } = raw;
     }
+    // Object-rest bindings are neither config keys nor aliases to the parser input.
     if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer) {
       const resolved = resolveAliasChain(node.initializer);
       if (resolved) {
         for (const element of node.name.elements) {
+          if (element.dotDotDotToken) continue;
           const propName = element.propertyName ?? element.name;
           if (ts.isIdentifier(propName)) {
             recordKey([...resolved.info.prefix, ...resolved.segments], propName.text);

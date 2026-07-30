@@ -247,6 +247,25 @@ test("remnic converge apply: manual conflict policy stops mutation on unresolved
   assert.equal(result.transfers.conflictsResolved, 0);
 });
 
+test("remnic converge apply: newest-wins stops when timestamps cannot resolve a conflict", async () => {
+  const localMap = new Map<string, ReconcileFileState[]>([
+    ["default", [{ path: "facts/shared.md", sha256: shaA, mtimeMs: 1000 }]],
+  ]);
+  const peerMap = new Map<string, ReconcileFileState[]>([
+    ["default", [{ path: "facts/shared.md", sha256: shaB, mtimeMs: 1000 }]],
+  ]);
+
+  const result = await executeConvergeApply({
+    localFilesByNamespace: localMap,
+    peerFilesByNamespace: peerMap,
+    conflictPolicy: "newest-wins",
+  });
+
+  assert.equal(result.converged, false);
+  assert.equal(result.status, "stopped_unresolved_conflicts");
+  assert.equal(result.cursorUpdated, false);
+});
+
 test("remnic converge apply: dry-run mode simulates transfers without disk writes", async () => {
   const peerFile: ReconcileFileState = { path: "facts/remote.md", sha256: shaA };
   const localMap = new Map<string, ReconcileFileState[]>([["default", []]]);

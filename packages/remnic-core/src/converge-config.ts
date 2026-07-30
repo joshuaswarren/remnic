@@ -15,8 +15,15 @@ export function parseConvergeConfig(block: unknown): ConvergeConfig {
   if (block === null || typeof block !== "object" || Array.isArray(block)) {
     throw new Error("converge must be a plain object");
   }
-
-  const conflictPolicy = (block as Record<string, unknown>).conflictPolicy;
+  const prototype = Object.getPrototypeOf(block);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error("converge must be a plain object");
+  }
+  const { conflictPolicy, ...unknown } = block as Record<string, unknown>;
+  const unknownKey = Object.keys(unknown)[0];
+  if (unknownKey !== undefined) {
+    throw new Error(`converge contains unknown key ${JSON.stringify(unknownKey)}`);
+  }
   if (conflictPolicy === undefined) {
     return { conflictPolicy: DEFAULT_CONVERGE_CONFLICT_POLICY };
   }

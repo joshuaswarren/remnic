@@ -83,8 +83,8 @@ openclaw engram migrate normalize-frontmatter  # Canonical frontmatter rewrite (
 openclaw engram migrate rescore-importance     # Recompute local importance scores
 openclaw engram migrate rechunk                # Rebuild chunk files from current chunking heuristics
 openclaw engram migrate reextract --model gpt-5-mini  # Queue bounded re-extraction requests
-remnic converge plan --peer <url>    # Build a non-mutating convergence plan
-remnic converge apply --peer <url>   # Apply a convergence plan
+remnic converge plan --peer https://peer.example.com    # Build a non-mutating convergence plan
+remnic converge apply --peer https://peer.example.com   # Apply a convergence plan
 ```
 
 Compatibility diagnostics:
@@ -278,9 +278,9 @@ that plan only when requested.
 
 ### Replica reconciliation (issue #2150)
 
-Preview a plan before applying it:
+Command syntax (replace the bracketed placeholders before running):
 
-```bash
+```text
 remnic converge plan --peer <url> [--token <token>] [--conflict-policy <policy>] [--json]
 remnic converge apply --peer <url> [--token <token>] [--conflict-policy <policy>] [--dry-run] [--json]
 ```

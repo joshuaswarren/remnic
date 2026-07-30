@@ -487,8 +487,8 @@ export async function executeConvergeApply(
   }
 
   const unresolvedCount = plan.byNamespace.reduce((acc, report) => acc + report.unresolved, 0);
-  if (unresolvedCount > 0 && conflictPolicy === "manual") {
-    // Manual policy stops before any unresolved conflict can mutate a peer.
+  if (unresolvedCount > 0) {
+    // Every policy stops when its conflict rule cannot choose a safe resolution.
     return {
       converged: false,
       status: "stopped_unresolved_conflicts",
