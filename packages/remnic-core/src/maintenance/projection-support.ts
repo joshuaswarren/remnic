@@ -6,8 +6,18 @@
  */
 
 import path from "node:path";
-import { openProjectionReadonly } from "../memory-projection-store.js";
+import {
+  openProjectionReadonly,
+  readProjectedEntityMentions,
+  readProjectedGovernanceRecord,
+  readProjectedNativeKnowledgeChunks,
+  type MemoryProjectionGovernanceAppliedActionRow,
+  type MemoryProjectionGovernanceReviewQueueRow,
+  type ProjectedEntityMentionRow,
+  type ProjectedNativeKnowledgeChunkRow,
+} from "../memory-projection-store.js";
 import { memoryLifecycleEventProjectionIdentity } from "../memory-lifecycle-ledger-utils.js";
+import type { MemoryLifecycleEvent } from "../types.js";
 
 /** Read the projection meta rebuiltAt timestamp; null when absent/unopenable. */
 export function readProjectionRebuiltAt(memoryDir: string): string | null {
@@ -23,6 +33,16 @@ export function readProjectionRebuiltAt(memoryDir: string): string | null {
   } finally {
     db.close();
   }
+}
+
+/** Format projection age description string for fallback warning telemetry. */
+export function formatProjectionAge(rebuiltAt: string | null): string {
+  if (!rebuiltAt) return "projection never rebuilt";
+  const ageMs = Date.now() - Date.parse(rebuiltAt);
+  if (!Number.isFinite(ageMs)) return `projection rebuiltAt=${rebuiltAt}`;
+  const ageMin = Math.max(0, Math.round(ageMs / 60_000));
+  const age = ageMin >= 120 ? `${Math.round(ageMin / 60)}h` : `${ageMin}m`;
+  return `projection ${age} stale, last rebuilt ${rebuiltAt}`;
 }
 
 export interface ProjectionLifecycleLedgerHighWater {
@@ -78,6 +98,66 @@ export function readProjectionLifecycleLedgerHighWater(
     db.close();
   }
 }
+/** Write the high-water ledger marker counts to projection meta store. */
+export function writeProjectionMetaHighWater(
+  insertMeta: { run: (key: string, value: string) => void },
+  sourceLifecycleLedgerEventCount: number,
+  timelineRows: MemoryLifecycleEvent[],
+): void {
+  insertMeta.run("sourceLifecycleLedgerEventCount", String(sourceLifecycleLedgerEventCount));
+  insertMeta.run(
+    "projectedLifecycleLedgerEventCount",
+    String(new Set(timelineRows.map(memoryLifecycleEventProjectionIdentity)).size),
+  );
+}
+
+export function readProjectedEntityMentionRows(
+  memoryDir: string,
+): { projectionExists: boolean; rows: ProjectedEntityMentionRow[] } {
+  const rows = readProjectedEntityMentions(memoryDir);
+  if (rows === null) return { projectionExists: false, rows: [] };
+  return { projectionExists: true, rows };
+}
+
+export function readProjectedNativeKnowledgeRows(
+  memoryDir: string,
+): { projectionExists: boolean; rows: ProjectedNativeKnowledgeChunkRow[] } {
+  const rows = readProjectedNativeKnowledgeChunks(memoryDir);
+  if (rows === null) return { projectionExists: false, rows: [] };
+  return { projectionExists: true, rows };
+}
+
+export function readProjectedGovernanceRows(memoryDir: string): {
+  projectionExists: boolean;
+  runId: string | null;
+  summary: unknown;
+  metrics: unknown;
+  reviewQueueRows: MemoryProjectionGovernanceReviewQueueRow[];
+  appliedActionRows: MemoryProjectionGovernanceAppliedActionRow[];
+  report: string;
+} {
+  const record = readProjectedGovernanceRecord(memoryDir);
+  if (record === null) {
+    return {
+      projectionExists: false,
+      runId: null,
+      summary: undefined,
+      metrics: undefined,
+      reviewQueueRows: [],
+      appliedActionRows: [],
+      report: "",
+    };
+  }
+  return {
+    projectionExists: true,
+    runId: record.runId,
+    summary: record.summary,
+    metrics: record.metrics,
+    reviewQueueRows: record.reviewQueueRows,
+    appliedActionRows: record.appliedActionRows,
+    report: record.report,
+  };
+}
 
 /**
  * Assert an optionally injected storage (e.g. the daemon's live unlocked
@@ -107,5 +187,15 @@ export interface SkippedDuplicateMemory {
 }
 
 export interface SkippedBlankIdMemory {
+  path: string;
+}
+export interface SkippedDuplicateTimelineEvent {
+  eventId: string;
+  keptPath: string;
+  skippedPath: string;
+}
+
+export interface SkippedBlankIdTimelineEvent {
+  eventId: string;
   path: string;
 }

@@ -1,7 +1,7 @@
 import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { displayErrorDetail } from "../runtime/better-sqlite.js";
-import { rename, stat, unlink } from "node:fs/promises";
+import { lstat, rename, stat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { MemoryLifecycleEvent } from "../types.js";
@@ -20,6 +20,15 @@ import {
   readMemoryLifecycleEventsFromLines,
   STATE_FILE_MAX_DECRYPT_BYTES,
 } from "./secure-line-reader.js";
+import { getMemoryProjectionPath } from "../memory-projection-store.js";
+import {
+  readProjectionLifecycleLedgerHighWater,
+  type ProjectionLifecycleLedgerHighWater,
+} from "../maintenance/projection-support.js";
+import {
+  type ProjectionLedgerLagTelemetry,
+  warnProjectionFallback,
+} from "../storage-guards.js";
 
 /** Reads a lifecycle-ledger file through the secure whole-file/plaintext line source. */
 export type LedgerSecureReader = (filePath: string) => Promise<string>;
@@ -232,6 +241,140 @@ export async function readBoundedLifecycleEventsWithProjectionLag(
     if (err instanceof SecureStoreLockedError) throw err;
     if (!isErrnoCode(err, "ENOENT")) throw err;
     return { events: [], currentEventCount: 0, deltaEvents: 0 };
+  }
+}
+/**
+ * Probe filesystem identity stamps (dev:ino:size:mtimeMs:ctimeMs) for the
+ * projection database and lifecycle-ledger file. Returns `null` when either
+ * file is missing or unstatable so caller can disable the lag cache without
+ * throwing on transient I/O or permission errors (#2119 / review).
+ */
+export async function probeProjectionLedgerIdentities(
+  projectionPath: string,
+  ledgerPath: string,
+): Promise<{ projectionIdentity: string; ledgerIdentity: string } | null> {
+  try {
+    const [projectionIdentity, ledgerIdentity] = await Promise.all(
+      [projectionPath, ledgerPath].map(async (filePath) => {
+        try {
+          const file = await lstat(filePath);
+          return `${file.dev}:${file.ino}:${file.size}:${file.mtimeMs}:${file.ctimeMs}`;
+        } catch (err) {
+          if (isErrnoCode(err, "ENOENT")) return "absent";
+          // Probe failure: disable lag cache, do not block the primary timeline read (#2119 review).
+          return null;
+        }
+      }),
+    );
+    if (!projectionIdentity || !ledgerIdentity) return null;
+    return { projectionIdentity, ledgerIdentity };
+  } catch {
+    return null;
+  }
+}
+
+export interface ProjectionLedgerLagScan {
+  telemetry: ProjectionLedgerLagTelemetry;
+  events: MemoryLifecycleEvent[];
+  memoryId: string;
+  limit: number;
+}
+
+export class ProjectionLedgerLagManager {
+  private highWaterCache: {
+    projectionIdentity: string;
+    highWater: ProjectionLifecycleLedgerHighWater;
+  } | null = null;
+  private lagCache: {
+    generation: string;
+    telemetry: ProjectionLedgerLagTelemetry;
+  } | null = null;
+  private lagInFlight: {
+    generation: string;
+    scan: Promise<ProjectionLedgerLagScan>;
+  } | null = null;
+
+  async resolveTimelineWithLag(options: {
+    baseDir: string;
+    ledgerPath: string;
+    memoryId: string;
+    cappedLimit: number;
+    readSecureFile: LedgerSecureReader;
+    projectionAge: () => string;
+  }): Promise<MemoryLifecycleEvent[]> {
+    const { baseDir, ledgerPath, memoryId, cappedLimit, readSecureFile, projectionAge } = options;
+    const projectionPath = getMemoryProjectionPath(baseDir);
+    const identities = await probeProjectionLedgerIdentities(projectionPath, ledgerPath);
+
+    if (!identities) {
+      warnProjectionFallback(baseDir, "getMemoryTimeline", projectionAge);
+      return readBoundedLifecycleEventsFromLedger(ledgerPath, readSecureFile, cappedLimit, memoryId);
+    }
+
+    const { projectionIdentity, ledgerIdentity } = identities;
+    const generation = `${projectionIdentity}\0${ledgerIdentity}`;
+
+    const cachedLag = this.lagCache?.generation === generation
+      ? this.lagCache.telemetry
+      : null;
+    if (cachedLag) {
+      warnProjectionFallback(baseDir, "getMemoryTimeline", projectionAge, cachedLag);
+      return readBoundedLifecycleEventsFromLedger(ledgerPath, readSecureFile, cappedLimit, memoryId);
+    }
+
+    const inFlight = this.lagInFlight?.generation === generation
+      ? this.lagInFlight.scan
+      : null;
+    if (inFlight) {
+      const result = await inFlight;
+      this.lagCache = { generation, telemetry: result.telemetry };
+      warnProjectionFallback(baseDir, "getMemoryTimeline", projectionAge, result.telemetry);
+      if (result.memoryId === memoryId && result.limit === cappedLimit) return result.events;
+      return readBoundedLifecycleEventsFromLedger(ledgerPath, readSecureFile, cappedLimit, memoryId);
+    }
+
+    let highWater = this.highWaterCache?.projectionIdentity === projectionIdentity
+      ? this.highWaterCache.highWater
+      : null;
+    if (!highWater) {
+      highWater = readProjectionLifecycleLedgerHighWater(baseDir);
+      if (highWater) {
+        this.highWaterCache = { projectionIdentity, highWater };
+      }
+    }
+
+    if (highWater) {
+      const scan = readBoundedLifecycleEventsWithProjectionLag(
+        ledgerPath,
+        readSecureFile,
+        cappedLimit,
+        memoryId,
+        highWater.projectedEventIdentities,
+      ).then((fallback): ProjectionLedgerLagScan => ({
+        telemetry: {
+          projectedEvents: highWater.eventCount,
+          currentLedgerEvents: fallback.currentEventCount,
+          deltaEvents: fallback.deltaEvents,
+        },
+        events: fallback.events,
+        memoryId,
+        limit: cappedLimit,
+      }));
+      this.lagInFlight = { generation, scan };
+      try {
+        const result = await scan;
+        this.lagCache = { generation, telemetry: result.telemetry };
+        warnProjectionFallback(baseDir, "getMemoryTimeline", projectionAge, result.telemetry);
+        return result.events;
+      } finally {
+        if (this.lagInFlight?.scan === scan) {
+          this.lagInFlight = null;
+        }
+      }
+    }
+
+    warnProjectionFallback(baseDir, "getMemoryTimeline", projectionAge);
+    return readBoundedLifecycleEventsFromLedger(ledgerPath, readSecureFile, cappedLimit, memoryId);
   }
 }
 

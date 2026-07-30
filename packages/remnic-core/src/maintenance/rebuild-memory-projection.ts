@@ -56,20 +56,26 @@ export interface RebuildMemoryProjectionOptions {
   updatedBefore?: string;
 }
 
-export type { SkippedBlankIdMemory, SkippedDuplicateMemory } from "./projection-support.js";
-import { assertInjectedStorageRooted } from "./projection-support.js";
-import type { SkippedBlankIdMemory, SkippedDuplicateMemory } from "./projection-support.js";
+export type {
+  SkippedBlankIdMemory,
+  SkippedBlankIdTimelineEvent,
+  SkippedDuplicateMemory,
+  SkippedDuplicateTimelineEvent,
+} from "./projection-support.js";
+import {
+  assertInjectedStorageRooted,
+  readProjectedEntityMentionRows,
+  readProjectedGovernanceRows,
+  readProjectedNativeKnowledgeRows,
+  writeProjectionMetaHighWater,
+} from "./projection-support.js";
+import type {
+  SkippedBlankIdMemory,
+  SkippedBlankIdTimelineEvent,
+  SkippedDuplicateMemory,
+  SkippedDuplicateTimelineEvent,
+} from "./projection-support.js";
 
-export interface SkippedDuplicateTimelineEvent {
-  eventId: string;
-  keptPath: string;
-  skippedPath: string;
-}
-
-export interface SkippedBlankIdTimelineEvent {
-  eventId: string;
-  path: string;
-}
 
 export interface RebuildMemoryProjectionResult {
   dryRun: boolean;
@@ -739,53 +745,6 @@ function readProjectedTimelineRows(
   }
 }
 
-function readProjectedEntityMentionRows(
-  memoryDir: string,
-): { projectionExists: boolean; rows: ProjectedEntityMentionRow[] } {
-  const rows = readProjectedEntityMentions(memoryDir);
-  if (rows === null) return { projectionExists: false, rows: [] };
-  return { projectionExists: true, rows };
-}
-
-function readProjectedNativeKnowledgeRows(
-  memoryDir: string,
-): { projectionExists: boolean; rows: ProjectedNativeKnowledgeChunkRow[] } {
-  const rows = readProjectedNativeKnowledgeChunks(memoryDir);
-  if (rows === null) return { projectionExists: false, rows: [] };
-  return { projectionExists: true, rows };
-}
-
-function readProjectedGovernanceRows(memoryDir: string): {
-  projectionExists: boolean;
-  runId: string | null;
-  summary: unknown;
-  metrics: unknown;
-  reviewQueueRows: MemoryProjectionGovernanceReviewQueueRow[];
-  appliedActionRows: MemoryProjectionGovernanceAppliedActionRow[];
-  report: string;
-} {
-  const record = readProjectedGovernanceRecord(memoryDir);
-  if (record === null) {
-    return {
-      projectionExists: false,
-      runId: null,
-      summary: undefined,
-      metrics: undefined,
-      reviewQueueRows: [],
-      appliedActionRows: [],
-      report: "",
-    };
-  }
-  return {
-    projectionExists: true,
-    runId: record.runId,
-    summary: record.summary,
-    metrics: record.metrics,
-    reviewQueueRows: record.reviewQueueRows,
-    appliedActionRows: record.appliedActionRows,
-    report: record.report,
-  };
-}
 
 function writeProjectionDb(
   dbPath: string,
@@ -807,11 +766,7 @@ function writeProjectionDb(
     insertMeta.run("schemaVersion", String(MEMORY_PROJECTION_SCHEMA_VERSION));
     insertMeta.run("rebuiltAt", nowIso);
     insertMeta.run("usedLifecycleLedger", usedLifecycleLedger ? "true" : "false");
-    insertMeta.run("sourceLifecycleLedgerEventCount", String(sourceLifecycleLedgerEventCount));
-    insertMeta.run(
-      "projectedLifecycleLedgerEventCount",
-      String(new Set(timelineRows.map(memoryLifecycleEventProjectionIdentity)).size),
-    );
+    writeProjectionMetaHighWater(insertMeta, sourceLifecycleLedgerEventCount, timelineRows);
     insertMeta.run("latestGovernanceRunId", governance?.runId ?? "");
 
     const insertCurrent = db.prepare(`
