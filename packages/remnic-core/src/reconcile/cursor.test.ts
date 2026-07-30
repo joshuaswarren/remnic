@@ -8,6 +8,7 @@ import {
   deriveConvergeCursorBase,
   hashPeerNamespace,
   normalizeConvergeCursor,
+  normalizeConvergePeerUrl,
   readConvergeCursor,
   writeConvergeCursor,
   type ConvergeCursorState,
@@ -39,6 +40,21 @@ test("hashPeerNamespace: preserves path case while normalizing URL authority and
   assert.equal(
     lowercasePath,
     hashPeerNamespace("HTTP://PEER.EXAMPLE.COM/memory/", "default"),
+  );
+});
+
+test("normalizeConvergePeerUrl: strips credentials and request-only URL parts without folding path case", () => {
+  assert.equal(
+    normalizeConvergePeerUrl(" HTTPS://user:secret@PEER.EXAMPLE.COM:443/Memory/?token=abc#fragment "),
+    "https://peer.example.com/Memory",
+  );
+  assert.equal(
+    hashPeerNamespace("https://user:secret@peer.example.com/Memory?token=abc#fragment", "default"),
+    hashPeerNamespace("https://peer.example.com/Memory/", "DEFAULT "),
+  );
+  assert.notEqual(
+    hashPeerNamespace("https://peer.example.com/Memory", "default"),
+    hashPeerNamespace("https://peer.example.com/memory", "default"),
   );
 });
 

@@ -18,6 +18,10 @@ import {
   type EngramAccessWriteResponse,
 } from "./access-service.js";
 import { maybeHandleLifecycleFlush, type LifecycleFlushHttpDeps } from "./access-http-lifecycle-flush.js";
+import {
+  respondOfflineManifestStream,
+  respondOfflineSnapshotStream,
+} from "./access-http-offline-stream.js";
 import { nonEmptyQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js";
@@ -1144,6 +1148,20 @@ export class EngramAccessHttpServer {
 
     if (
       req.method === "GET" &&
+      (pathname === "/engram/v1/offline-sync/capabilities" ||
+        pathname === "/remnic/v1/offline-sync/capabilities")
+    ) {
+      this.enforceTokenOp("offline_sync_snapshot");
+      this.respondJson(res, 200, {
+        version: 1,
+        convergenceFinalization: true,
+        manifestStream: true,
+      });
+      return;
+    }
+
+    if (
+      req.method === "GET" &&
       (pathname === "/engram/v1/offline-sync/snapshot" || pathname === "/remnic/v1/offline-sync/snapshot")
     ) {
       this.enforceTokenOp("offline_sync_snapshot"); // boundary dispatch (issue #1525)
@@ -1215,9 +1233,43 @@ export class EngramAccessHttpServer {
         includeContent: false,
         signal: this.createRequestAbortSignal(req, res),
       });
-      await this.respondOfflineSnapshotStream(res, result);
+      await respondOfflineSnapshotStream(res, result, correlationIdStore.getStore());
       return;
     }
+    if (
+      req.method === "GET" &&
+      (pathname === "/engram/v1/offline-sync/manifest-stream" ||
+        pathname === "/remnic/v1/offline-sync/manifest-stream")
+    ) {
+      this.enforceTokenOp("offline_sync_snapshot_stream");
+      const includeTranscriptsRaw = parsed.searchParams.get("include_transcripts");
+      const includeContentRaw = parsed.searchParams.get("content");
+      if (
+        includeTranscriptsRaw !== null &&
+        includeTranscriptsRaw !== "true" &&
+        includeTranscriptsRaw !== "false"
+      ) {
+        throw new EngramAccessInputError(
+          `include_transcripts must be one of: true, false (got: ${includeTranscriptsRaw})`,
+        );
+      }
+      if (includeContentRaw !== null && includeContentRaw !== "false") {
+        throw new EngramAccessInputError("manifest-stream content must be false");
+      }
+      const namespaceParam = parsed.searchParams.get("namespace");
+      const result = await this.service.offlineSyncManifestStream({
+        namespace: this.resolveNamespace(
+          req,
+          namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined,
+        ),
+        principal: this.resolveRequestPrincipal(req),
+        includeTranscripts: includeTranscriptsRaw !== "false",
+        signal: this.createRequestAbortSignal(req, res),
+      });
+      await respondOfflineManifestStream(res, result, correlationIdStore.getStore());
+      return;
+    }
+
 
     if (
       req.method === "POST" &&
@@ -3370,61 +3422,6 @@ export class EngramAccessHttpServer {
     res.end(body);
   }
 
-  private async respondOfflineSnapshotStream(
-    res: ServerResponse,
-    snapshot: Awaited<ReturnType<EngramAccessService["offlineSyncSnapshotStream"]>>,
-  ): Promise<void> {
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/x-ndjson; charset=utf-8");
-    res.setHeader("cache-control", "no-store");
-    const cid = correlationIdStore.getStore();
-    if (cid) {
-      res.setHeader("x-request-id", cid);
-    }
-    const waitForDrainOrClose = async (): Promise<boolean> => new Promise((resolve, reject) => {
-      const cleanup = () => {
-        res.off("drain", onDrain);
-        res.off("close", onClose);
-        res.off("error", onError);
-      };
-      const onDrain = () => {
-        cleanup();
-        resolve(true);
-      };
-      const onClose = () => {
-        cleanup();
-        resolve(false);
-      };
-      const onError = (error: Error) => {
-        cleanup();
-        reject(error);
-      };
-      res.once("drain", onDrain);
-      res.once("close", onClose);
-      res.once("error", onError);
-    });
-    const writeLine = async (payload: unknown): Promise<boolean> => {
-      if (res.destroyed || res.writableEnded) return false;
-      if (res.write(`${JSON.stringify(payload)}\n`)) return true;
-      if (res.destroyed || res.writableEnded) return false;
-      return waitForDrainOrClose();
-    };
-    if (!await writeLine({
-      type: "snapshot",
-      namespace: snapshot.namespace,
-      format: snapshot.format,
-      schemaVersion: snapshot.schemaVersion,
-      createdAt: snapshot.createdAt,
-      sourceId: snapshot.sourceId,
-      includeTranscripts: snapshot.includeTranscripts,
-    })) return;
-    for await (const file of snapshot.files) {
-      if (!await writeLine({ type: "file", file })) return;
-    }
-    if (!res.destroyed && !res.writableEnded) {
-      res.end();
-    }
-  }
 
   private respondBinary(
     res: ServerResponse,

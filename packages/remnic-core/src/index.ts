@@ -852,6 +852,7 @@ export {
   fileStatesFromSnapshot,
   globToRegExp,
   iterateOfflineSyncSnapshotFileRecords,
+  isInternalRemnicStatePath,
   normalizeOfflineSyncChangeset,
   normalizeOfflineSyncSnapshot,
   offlineSyncStateFromSnapshot,

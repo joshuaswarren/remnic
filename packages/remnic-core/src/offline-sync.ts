@@ -515,7 +515,16 @@ function assertUniquePaths(entries: readonly { path: string }[], context: string
   }
 }
 
+export function isInternalRemnicStatePath(relPosix: string): boolean {
+  const normalized = relPosix.includes("\\") ? relPosix.replaceAll("\\", "/") : relPosix;
+  return normalized === ".remnic"
+    || normalized.startsWith(".remnic/")
+    || normalized.endsWith("/.remnic")
+    || normalized.includes("/.remnic/");
+}
+
 function shouldExcludeRelPath(relPosix: string, includeTranscripts: boolean): boolean {
+  if (isInternalRemnicStatePath(relPosix)) return true;
   const parts = relPosix.split("/");
   if (parts.some((part) => DEFAULT_TRANSFER_EXCLUDE_DIRS.has(part))) return true;
   if (parts.some((part) => part === SYNC_INTERNAL_DIR)) return true;
@@ -615,6 +624,7 @@ export function parseOfflineSyncExcludes(raw: unknown): string[] {
 }
 
 function shouldIgnoreIncomingRuntimePath(relPosix: string): boolean {
+  if (isInternalRemnicStatePath(relPosix)) return true;
   const parts = relPosix.split("/");
   const basename = parts[parts.length - 1] ?? "";
   return isCanonicalRuntimeStatePath(parts) && basename.includes(".tmp-");
