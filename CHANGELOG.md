@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `remnic converge plan` CLI subcommand to preview corpus convergence state across configured or specified peers.
+
 ## [v9.41.0] — 2026-07-30
 
 ### Fixed

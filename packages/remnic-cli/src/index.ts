@@ -178,6 +178,7 @@ import { runMeetingsBinaryCommand } from "./commands/meetings.js";
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
+import { cmdConverge } from "./converge.js";
 import {
   type ConfiguredNamespace,
   readConfiguredNamespace,
@@ -411,7 +412,8 @@ type CommandName =
   | "capsule"
   | "offline"
   | "capture"
-  | "oauth";
+  | "oauth"
+  | "converge";
 
 type DaemonAction = "start" | "stop" | "restart" | "install" | "uninstall" | "status";
 type TokenAction = "generate" | "list" | "revoke";
@@ -12967,6 +12969,12 @@ Options:
       const action = rest[0] ?? "help";
       const json = rest.includes("--json");
       await cmdOffline(action, rest.slice(1), json);
+      break;
+    }
+    case "converge": {
+      const action = rest[0] ?? "plan";
+      const json = rest.includes("--json");
+      await cmdConverge(action, rest.slice(1), json);
       break;
     }
 
