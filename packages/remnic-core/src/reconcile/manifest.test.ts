@@ -132,13 +132,61 @@ test("semantic collapse prevents different active fact paths from transferring b
       namespace: "default",
       action: "identical",
       reason: "semantic_duplicate",
-      localSha256: localFile.sha256,
-      peerSha256: peerFile.sha256,
+      semanticAgreement: {
+        local: localFile,
+        peer: peerFile,
+      },
+      semanticChange: "unchanged",
     },
   ]);
   assert.equal(collapsed.byNamespace[0]?.identical, 1);
   assert.equal(collapsed.byNamespace[0]?.pull, 0);
   assert.equal(collapsed.byNamespace[0]?.push, 0);
+});
+
+test("semantic collapse classifies a later one-sided metadata edit from its per-side base", () => {
+  const semanticHash = ContentHashIndex.computeHash("same active fact");
+  const priorLocal = { path: "facts/local-id.md", sha256: "a".repeat(64) };
+  const currentLocal = { ...priorLocal, sha256: "c".repeat(64) };
+  const peerFile = { path: "facts/peer-id.md", sha256: "b".repeat(64) };
+  const manifest = (file: typeof currentLocal): ReconcileManifest => ({
+    format: "remnic-reconcile-manifest",
+    schemaVersion: 1,
+    files: [{
+      ...file,
+      memory: {
+        id: file.path,
+        category: "fact",
+        contentHash: semanticHash,
+        status: "active",
+      },
+    }],
+  });
+  const plan = planReconciliation([{
+    namespace: "default",
+    local: [currentLocal],
+    peer: [peerFile],
+  }]);
+
+  const collapsed = collapseActiveFactDuplicates(
+    plan,
+    new Map([["default", manifest(currentLocal)]]),
+    new Map([["default", manifest(peerFile)]]),
+    new Map([["default", [{ local: priorLocal, peer: peerFile }]]])
+  );
+
+  assert.deepEqual(collapsed.entries, [{
+    path: currentLocal.path,
+    namespace: "default",
+    action: "identical",
+    reason: "semantic_duplicate",
+    semanticAgreement: {
+      local: currentLocal,
+      peer: peerFile,
+    },
+    semanticChange: "local_changed",
+  }]);
+  assert.equal(collapsed.converged, true);
 });
 
 test("semantic collapse does not fold non-active facts or unrelated path conflicts", () => {
@@ -213,6 +261,49 @@ test("semantic collapse preserves same-path metadata updates", () => {
 
   assert.deepEqual(collapsed, plan);
   assert.equal(collapsed.entries[0]?.action, "push");
+});
+
+test("semantic collapse preserves a shared-path metadata update when peer canonical path differs", () => {
+  const semanticHash = ContentHashIndex.computeHash("same raw fact");
+  const sharedLocal = { path: "facts/b.md", sha256: "a".repeat(64) };
+  const sharedPeer = { path: "facts/b.md", sha256: "b".repeat(64) };
+  const peerDuplicate = { path: "facts/a.md", sha256: "c".repeat(64) };
+  const plan = planReconciliation([{
+    namespace: "default",
+    local: [sharedLocal],
+    peer: [peerDuplicate, sharedPeer],
+    base: [{ path: sharedPeer.path, sha256: sharedPeer.sha256 }],
+  }]);
+  const manifest = (files: Array<{ path: string; sha256: string }>): ReconcileManifest => ({
+    format: "remnic-reconcile-manifest",
+    schemaVersion: 1,
+    files: files.map((file) => ({
+      ...file,
+      memory: {
+        id: file.path,
+        category: "fact",
+        contentHash: semanticHash,
+        status: "active",
+      },
+    })),
+  });
+
+  const collapsed = collapseActiveFactDuplicates(
+    plan,
+    new Map([["default", manifest([sharedLocal])]]),
+    new Map([["default", manifest([peerDuplicate, sharedPeer])]])
+  );
+
+  assert.deepEqual(collapsed.entries, [{
+    path: sharedLocal.path,
+    namespace: "default",
+    action: "push",
+    reason: "local_changed",
+    localSha256: sharedLocal.sha256,
+    peerSha256: sharedPeer.sha256,
+    baseSha256: sharedPeer.sha256,
+  }]);
+  assert.equal(collapsed.converged, false);
 });
 
 test("semantic collapse remains converged after transferring the canonical one-sided duplicate", () => {

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import {
   defaultConvergeCursorPath,
+  deriveConvergeCursorBase,
   hashPeerNamespace,
   normalizeConvergeCursor,
   readConvergeCursor,
@@ -13,6 +14,7 @@ import {
 } from "./cursor.js";
 
 const shaA = "a".repeat(64);
+const shaB = "b".repeat(64);
 
 test("hashPeerNamespace: deterministic key normalization", () => {
   const k1 = hashPeerNamespace("http://peer.example.com/", "default");
@@ -46,6 +48,18 @@ test("defaultConvergeCursorPath: constructs path under memoryDir state", () => {
   assert.ok(p.endsWith(".json"));
 });
 
+test("deriveConvergeCursorBase retains a deferred semantic agreement", () => {
+  const semanticAgreement = {
+    local: { path: "facts/local.md", sha256: shaA },
+    peer: { path: "facts/peer.md", sha256: shaB },
+  };
+
+  assert.deepEqual(
+    deriveConvergeCursorBase([], "default", [semanticAgreement]).semanticAgreements,
+    [semanticAgreement]
+  );
+});
+
 test("normalizeConvergeCursor: validates envelope shape", () => {
   assert.throws(() => normalizeConvergeCursor(null), /must be an object/);
   assert.throws(() => normalizeConvergeCursor({ version: 2 }), /version must be 1/);
@@ -63,11 +77,19 @@ test("normalizeConvergeCursor: validates envelope shape", () => {
     peerUrl: "http://peer",
     namespace: "default",
     baseFiles: [{ path: "a.md", sha256: shaA }],
+    semanticAgreements: [{
+      local: { path: "facts/local.md", sha256: shaA },
+      peer: { path: "facts/peer.md", sha256: shaB },
+    }],
   });
   assert.equal(valid.peerUrl, "http://peer");
   assert.equal(valid.namespace, "default");
   assert.equal(valid.baseFiles.length, 1);
   assert.equal(valid.baseFiles[0]?.path, "a.md");
+  assert.deepEqual(valid.semanticAgreements, [{
+    local: { path: "facts/local.md", sha256: shaA },
+    peer: { path: "facts/peer.md", sha256: shaB },
+  }]);
 });
 
 test("readConvergeCursor: returns null when file is missing or invalid", async () => {
@@ -96,6 +118,10 @@ test("writeConvergeCursor & readConvergeCursor: atomic write roundtrip", async (
       lastConvergedAt: new Date().toISOString(),
       baseFiles: [{ path: "facts/a.md", sha256: shaA, bytes: 120, mtimeMs: 1000 }],
       completedPaths: ["facts/a.md"],
+      semanticAgreements: [{
+        local: { path: "facts/local.md", sha256: shaA },
+        peer: { path: "facts/peer.md", sha256: shaB },
+      }],
     };
 
     await writeConvergeCursor(cursorPath, cursor);
@@ -106,6 +132,10 @@ test("writeConvergeCursor & readConvergeCursor: atomic write roundtrip", async (
     assert.equal(read.baseFiles.length, 1);
     assert.equal(read.baseFiles[0]?.sha256, shaA);
     assert.deepEqual(read.completedPaths, ["facts/a.md"]);
+    assert.deepEqual(read.semanticAgreements, [{
+      local: { path: "facts/local.md", sha256: shaA },
+      peer: { path: "facts/peer.md", sha256: shaB },
+    }]);
 
     // Update existing cursor atomically
     const updated: ConvergeCursorState = {

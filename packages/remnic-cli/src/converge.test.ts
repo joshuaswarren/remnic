@@ -645,8 +645,48 @@ test("remnic converge apply: peer-wins guards against the planned local revision
     assert.equal(result.transfers.conflictsResolved, 1);
     assert.equal(result.transfers.failed, 0);
     assert.equal(await fs.readFile(path.join(rootDir, "facts/shared.md"), "utf8"), "peer content");
+    const cursor = await readConvergeCursor(defaultConvergeCursorPath(
+      rootDir,
+      "https://peer.example.test",
+      "default"
+    ));
+    assert.equal(cursor?.baseFiles[0]?.sha256, peerSha256);
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("remnic converge apply: pull advances the cursor to the peer digest", async () => {
+  const cursorDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-pull-cursor-test-"));
+  try {
+    const filePath = "facts/shared.md";
+    const localContent = Buffer.from("local content");
+    const peerContent = Buffer.from("peer content");
+    const localSha256 = createHash("sha256").update(localContent).digest("hex");
+    const peerSha256 = createHash("sha256").update(peerContent).digest("hex");
+    const peerUrl = "https://peer.example.test";
+
+    const result = await executeConvergeApply({
+      cursorDir,
+      peerUrl,
+      baseFilesByNamespace: new Map([
+        ["default", [{ path: filePath, sha256: localSha256 }]],
+      ]),
+      localFilesByNamespace: new Map([
+        ["default", [{ path: filePath, sha256: localSha256 }]],
+      ]),
+      peerFilesByNamespace: new Map([
+        ["default", [{ path: filePath, sha256: peerSha256 }]],
+      ]),
+      localFileBuffers: new Map([["default", new Map([[filePath, localContent]])]]),
+      peerFileBuffers: new Map([["default", new Map([[filePath, peerContent]])]]),
+    });
+
+    assert.equal(result.transfers.pulled, 1);
+    const cursor = await readConvergeCursor(defaultConvergeCursorPath(cursorDir, peerUrl, "default"));
+    assert.equal(cursor?.baseFiles[0]?.sha256, peerSha256);
+  } finally {
+    await fs.rm(cursorDir, { recursive: true, force: true });
   }
 });
 
@@ -726,24 +766,25 @@ test("remnic converge CLI rejects removed and unknown conflict-policy overrides"
   }
 });
 
-test("remnic converge plan builds semantic manifests from local and peer memory bytes", async () => {
+test("remnic converge retains per-side semantic state across a later metadata edit", async () => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-manifest-"));
   const cursorDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-cursor-"));
   try {
     const body = "same active fact";
     const semanticHash = ContentHashIndex.computeHash(body);
-    const localContent = [
+    const memory = (id: string, updated: string): string => [
       "---",
-      "id: local-id",
+      `id: ${id}`,
       "category: fact",
       "created: 2026-01-01T00:00:00.000Z",
-      "updated: 2026-01-01T00:00:00.000Z",
+      `updated: ${updated}`,
       `contentHash: ${semanticHash}`,
       "status: active",
       "---",
       body,
     ].join("\n");
-    const peerContent = localContent;
+    let localContent = memory("local-id", "2026-01-01T00:00:00.000Z");
+    const peerContent = memory("peer-id", "2026-01-02T00:00:00.000Z");
     const localSha = createHash("sha256").update(localContent).digest("hex");
     const peerSha = createHash("sha256").update(peerContent).digest("hex");
     await fs.mkdir(path.join(rootDir, "facts"), { recursive: true });
@@ -784,19 +825,63 @@ test("remnic converge plan builds semantic manifests from local and peer memory 
     };
     const plan = await computeConvergePlan(options);
 
-    assert.equal(localSha, peerSha);
+    assert.notEqual(localSha, peerSha);
     assert.equal(plan.converged, true, JSON.stringify(plan));
-    assert.equal(plan.entries.length, 1);
-    assert.equal(plan.entries[0]?.action, "identical");
-    assert.equal(plan.entries[0]?.reason, "semantic_duplicate");
-    assert.equal(plan.entries[0]?.path, "facts/local-id.md");
+    assert.deepEqual(plan.entries[0]?.semanticAgreement, {
+      local: { path: "facts/local-id.md", sha256: localSha },
+      peer: { path: "facts/peer-id.md", sha256: peerSha },
+    });
+    assert.equal(plan.entries[0]?.semanticChange, "unchanged");
 
     const result = await executeConvergeApply(options);
     assert.equal(result.converged, true);
-    const cursor = await readConvergeCursor(defaultConvergeCursorPath(cursorDir, peerUrl, "default"));
+    const cursorPath = defaultConvergeCursorPath(cursorDir, peerUrl, "default");
+    const cursor = await readConvergeCursor(cursorPath);
     assert.deepEqual(cursor?.baseFiles, []);
-    const rerun = await computeConvergePlan(options);
-    assert.equal(rerun.converged, true, JSON.stringify(rerun));
+    assert.deepEqual(cursor?.semanticAgreements, [{
+      local: { path: "facts/local-id.md", sha256: localSha },
+      peer: { path: "facts/peer-id.md", sha256: peerSha },
+    }]);
+
+    localContent = memory("local-id", "2026-01-03T00:00:00.000Z");
+    const editedLocalSha = createHash("sha256").update(localContent).digest("hex");
+    await fs.writeFile(path.join(rootDir, "facts/local-id.md"), localContent);
+    const explicitPlan = await computeConvergePlan({
+      ...options,
+      semanticAgreementsByNamespace: new Map([["default", [{
+        local: { path: "facts/local-id.md", sha256: editedLocalSha },
+        peer: { path: "facts/peer-id.md", sha256: peerSha },
+      }]]]),
+    });
+    assert.equal(explicitPlan.entries[0]?.semanticChange, "unchanged");
+
+    const changedPlan = await computeConvergePlan(options);
+    assert.equal(changedPlan.converged, true, JSON.stringify(changedPlan));
+    assert.equal(changedPlan.entries[0]?.action, "identical");
+    assert.equal(changedPlan.entries[0]?.semanticChange, "local_changed");
+    assert.deepEqual(changedPlan.entries[0]?.semanticAgreement, {
+      local: { path: "facts/local-id.md", sha256: editedLocalSha },
+      peer: { path: "facts/peer-id.md", sha256: peerSha },
+    });
+    assert.equal(changedPlan.entries[0]?.localSha256, undefined);
+    assert.equal(changedPlan.entries[0]?.peerSha256, undefined);
+
+    const changedResult = await executeConvergeApply(options);
+    assert.deepEqual(changedResult.transfers, {
+      pulled: 0,
+      pushed: 0,
+      conflictsResolved: 0,
+      suppressed: 0,
+      failed: 0,
+    });
+    const changedCursor = await readConvergeCursor(cursorPath);
+    assert.deepEqual(changedCursor?.semanticAgreements, [{
+      local: { path: "facts/local-id.md", sha256: editedLocalSha },
+      peer: { path: "facts/peer-id.md", sha256: peerSha },
+    }]);
+
+    const unchangedPlan = await computeConvergePlan(options);
+    assert.equal(unchangedPlan.entries[0]?.semanticChange, "unchanged");
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
     await fs.rm(cursorDir, { recursive: true, force: true });
