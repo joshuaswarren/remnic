@@ -116,6 +116,11 @@ function qmdOptions(config: PluginConfig): QmdClientOptions {
   };
 }
 
+export function isSearchBackendEnabled(config: PluginConfig): boolean {
+  const backend = config.searchBackend ?? "qmd";
+  return backend !== "noop" && (backend !== "qmd" || resolveQmdCapabilities(config).qmd);
+}
+
 /**
  * Create a SearchBackend from plugin config.
  *
@@ -124,14 +129,9 @@ function qmdOptions(config: PluginConfig): QmdClientOptions {
  * - "qmd" (default) → QmdClient if qmdEnabled, else NoopSearchBackend
  */
 export function createSearchBackend(config: PluginConfig): SearchBackend {
+  if (!isSearchBackendEnabled(config)) return new NoopSearchBackend();
   const nonQmd = resolveNonQmdBackend(config);
   if (nonQmd) return nonQmd;
-
-  // Default: QMD — fall back to noop if qmdEnabled is false
-  if (!resolveQmdCapabilities(config).qmd) {
-    return new NoopSearchBackend();
-  }
-
   return new QmdClient(config.qmdCollection, config.qmdMaxResults, qmdOptions(config));
 }
 

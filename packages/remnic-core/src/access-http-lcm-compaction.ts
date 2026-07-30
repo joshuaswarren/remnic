@@ -22,10 +22,13 @@ export interface LcmCompactionFlushHttpOptions {
   respondJson: JsonResponder;
 }
 
-export function respondLcmCompactionCapabilitiesHttp(response: ServerResponse): void {
+export function respondAccessCapabilitiesHttp(response: ServerResponse): void {
   response.statusCode = 200;
   response.setHeader("content-type", "application/json; charset=utf-8");
-  response.end(JSON.stringify({ lcmCompactionFlushBatch: true }, null, 2));
+  response.end(JSON.stringify({
+    lcmCompactionFlushBatch: true,
+    offlineSyncConvergenceComplete: true,
+  }, null, 2));
 }
 
 export interface LcmCompactionFlushRunnerOptions {
