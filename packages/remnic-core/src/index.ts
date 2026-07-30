@@ -510,33 +510,8 @@ export {
   type RemnicChatGptMemoryCard,
   type RemnicChatGptMemoryInspectorResult,
 } from "./mcp-memory-inspector-app.js";
-
-export {
-  PreActionFailureGate,
-  normalizeActionIntent,
-  sanitizePayloadString,
-  PRE_ACTION_FINGERPRINT_VERSION,
-  PRE_ACTION_WARNING_VERSION,
-  PRE_ACTION_GATE_DEFAULT_TIMEOUT_MS,
-  type PreActionGateRequest,
-  type PreActionGateResult,
-  type PreActionGateStatus,
-  type NormalizedActionIntent,
-  type PreActionGateDependencies,
-} from "./coding/pre-action-gate.js";
-export {
-  readCausalTrajectoryRecordsStrict,
-  readCausalTrajectoryRevisionToken,
-  advanceCausalTrajectoryRevisionToken,
-  type ActionIntent,
-  type CommandIntent,
-  type EditIntent,
-  type ActionIdentity,
-  type ActionStrategyId,
-  type EditKind,
-  type CausalTrajectoryCodingContext,
-  type CausalTrajectoryStrictReadResult,
-} from "./causal-trajectory.js";
+export * from "./coding/pre-action-gate.js";
+export * from "./causal-trajectory.js";
 // Coding-agent subsystem (issue #569)
 export {
   resolveGitContext,
@@ -1465,10 +1440,7 @@ export {
   type ForkLineage,
 } from "./transfer/capsule-fork.js";
 
-// ---------------------------------------------------------------------------
-// Coding-graph engine contract (#1551 PR1) — types owned by core,
-// implemented by @remnic/coding-graph (à-la-carte optional).
-// ---------------------------------------------------------------------------
+// Coding-graph engine contract (#1551 PR1), implemented by optional @remnic/coding-graph.
 
 export {
   CODING_GRAPH_ENGINE_VERSION,
@@ -1486,8 +1458,4 @@ export type {
   SymbolIR,
 } from "./coding/coding-graph-types.js";
 export type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
-export {
-  commitPreparedFileAtomically,
-  copyExistingFileToBackup,
-  writeFileAtomically,
-} from "./maintenance/atomic-file.js";
+export * from "./maintenance/atomic-file.js";

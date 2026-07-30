@@ -462,7 +462,6 @@ export interface CodingKnowledgeConfig {
   architectureCard: boolean;
   /** Last-seen-head persistence + delta briefing line. */
   sessionDelta: boolean;
-  /** Pre-action failure gate check. Effective only under the master gate. */
   preActionGate: boolean;
   /** Opt-in LLM summary pass (costs tokens — default off, per rule 48). */
   architectureCardLlmSummary: boolean;
