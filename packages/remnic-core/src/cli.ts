@@ -31,6 +31,7 @@ import { chunkContent } from "./chunking.js";
 import { rescoreMemoryImportance } from "./importance.js";
 import { renderQmdBacklogStatus } from "./qmd-status.js";
 import { renderExtractionLivenessStats } from "./extraction-liveness.js";
+import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
 import { exportJsonBundle } from "./transfer/export-json.js";
 import { exportMarkdownBundle } from "./transfer/export-md.js";
 import { backupMemoryDir } from "./transfer/backup.js";
@@ -3653,9 +3654,7 @@ export function registerCli(
         .command("stats")
         .description("Show memory system statistics")
         .action(async () => {
-          // Ensure QMD is probed before checking availability
           await orchestrator.qmd.probe();
-
           const memories = await orchestrator.storage.readAllMemories();
           const entities = await orchestrator.storage.readEntities();
           const profile = await orchestrator.storage.readProfile();
@@ -3664,7 +3663,8 @@ export function registerCli(
           console.log(`Total memories: ${memories.length}`);
           console.log(`Total entities: ${entities.length}`);
           console.log(`Profile size: ${profile.length} chars`);
-          for (const line of await renderExtractionLivenessStats(orchestrator)) console.log(line);
+          const extractionWatermark = await readAggregateExtractionWatermark({ config: orchestrator.config, rootStorage: orchestrator.storage, storageForNamespace: (ns) => orchestrator.getStorage(ns) });
+          for (const line of await renderExtractionLivenessStats(orchestrator, extractionWatermark)) console.log(line);
           console.log(`QMD: ${orchestrator.qmd.isAvailable() ? "available" : "not available"}`);
           for (const line of await renderQmdBacklogStatus(orchestrator.qmd, orchestrator.config.qmdEmbeddingBacklogThreshold)) console.log(line);
 

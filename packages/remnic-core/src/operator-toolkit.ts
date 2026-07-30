@@ -4,6 +4,7 @@ import { access, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:
 import { lintWorkspaceFiles } from "./hygiene.js";
 import { parseConfig } from "./config.js";
 import { summarizeExtractionLiveness, type ExtractionBufferSource } from "./extraction-liveness.js";
+import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
 import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import { resolvePluginEntry } from "./plugin-entry-resolver.js";
@@ -53,6 +54,7 @@ import type {
   DreamsPhasesConfig,
   FileHygieneConfig,
   MemoryFile,
+  MetaState,
   PluginConfig,
 } from "./types.js";
 import { reportBufferSurpriseDistribution } from "./buffer-surprise-report.js";
@@ -155,12 +157,12 @@ interface ConversationIndexLike {
     }>;
   };
 }
-
 export interface OperatorToolkitOrchestrator extends ConversationIndexLike {
   config: PluginConfig;
   storage: StorageManager;
   qmd: QmdRuntimeLike;
   buffer?: ExtractionBufferSource;
+  getStorage?(namespace: string): Promise<StorageManager>;
 }
 
 export interface OperatorConfigLoadResult {
@@ -1496,11 +1498,10 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   checks.push(await summarizeGraphEdgeDecayStatus(config));
 
   // Tier distribution (issue #686 retention-completion).
-  // Shows hot/cold counts, per-status breakdown, and forgotten-memory count.
-  // Informational only — never errors, never blocks doctor from returning ok.
   checks.push(await summarizeTierDistribution(options.orchestrator.storage));
-  checks.push(await summarizeDreamsPhases(config, storage));
-  checks.push(await summarizeExtractionLiveness(config, storage, options.orchestrator.buffer));
+  checks.push(await summarizeDreamsPhases(config, storage, meta));
+  const extractionWatermark = await readAggregateExtractionWatermark({ config, rootStorage: storage, rootMeta: meta, storageForNamespace: (ns, rootDir) => options.orchestrator.getStorage?.(ns) ?? new StorageManager(rootDir) });
+  checks.push(await summarizeExtractionLiveness(config, extractionWatermark, options.orchestrator.buffer));
   checks.push(...(await summarizeCorpusAndReplica(config, (d) => new StorageManager(d), options.resolveSecretRef)));
   // Security mitigation status (issue #565).
   // Reports whether the cross-namespace budget and anomaly detection
@@ -1898,11 +1899,10 @@ export async function summarizeTierDistribution(
 export async function summarizeDreamsPhases(
   config: Pick<PluginConfig, "memoryDir" | "dreamsPhases">,
   storage: StorageManager = new StorageManager(config.memoryDir),
+  loadedMeta?: MetaState,
 ): Promise<OperatorDoctorCheck> {
   const phases: DreamsPhasesConfig = config.dreamsPhases;
-
-  // Load meta.json for best-available last-run timestamps.
-  const meta = await storage.loadMeta();
+  const meta = loadedMeta ?? (await storage.loadMeta());
 
   let deepSleepLastRun: string | null = null;
   let deepSleepLastRunWarning: string | null = null;

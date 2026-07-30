@@ -21,7 +21,7 @@
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 import { log } from "./logger.js";
 import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
-import type { MetaState, PluginConfig } from "./types.js";
+import type { PluginConfig } from "./types.js";
 
 /** Default staleness window: 24h. A watermark older than this with a non-empty buffer is degraded. */
 const DEFAULT_STALE_WINDOW_MS = 86_400_000;
@@ -60,23 +60,57 @@ export interface ExtractionBufferSource {
   getBufferSnapshot(): Promise<ExtractionBufferSnapshot>;
 }
 
+export interface ExtractionRootStats {
+  extractionCount?: number;
+  lastConsolidationAt?: string | null;
+}
+
+export interface ExtractionWatermarkRead {
+  lastExtractionAt: string | null;
+  readFailed: boolean;
+  readError?: string;
+  pending?: boolean;
+  rootStats?: ExtractionRootStats;
+}
+
+export type ExtractionWatermarkOrStorage =
+  | ExtractionWatermarkRead
+  | { readMetadata(): Promise<{ lastExtractionAt?: string | null } | null> }
+  | { loadMeta(): Promise<{ lastExtractionAt?: string | null }> };
+
+export async function coerceExtractionWatermark(
+  watermark: ExtractionWatermarkOrStorage,
+): Promise<ExtractionWatermarkRead> {
+  if (watermark && "readFailed" in watermark && typeof watermark.readFailed === "boolean") {
+    return watermark as ExtractionWatermarkRead;
+  }
+  try {
+    let lastExtractionAt: string | null = null;
+    if ("loadMeta" in watermark && typeof watermark.loadMeta === "function") {
+      const meta = await watermark.loadMeta();
+      lastExtractionAt = meta?.lastExtractionAt ?? null;
+    } else if ("readMetadata" in watermark && typeof watermark.readMetadata === "function") {
+      const meta = await watermark.readMetadata();
+      lastExtractionAt = meta?.lastExtractionAt ?? null;
+    }
+    return {
+      lastExtractionAt,
+      readFailed: true,
+      readError: "aggregate watermark unavailable from legacy root-store-only storage argument",
+    };
+  } catch (error) {
+    return {
+      lastExtractionAt: null,
+      readFailed: true,
+      readError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 /**
- * The liveness payload surfaced on `/health.extraction` and in the doctor/stats
- * details.
- *
- * DAEMON-SCOPED SIGNAL: a daemon exposes a single extraction verdict; the
- * last-extraction watermark is read from the daemon's default/root store, so
- * `/health` returns the same `extraction` block for every namespace argument.
- *
- * KNOWN LIMITATION (issue #2159): extraction stamps `lastExtractionAt` on the
- * PER-NAMESPACE store (`storageFor(selfNamespace)`), so this watermark reflects
- * only extraction that stamped the root store (default-namespace work). On a
- * single-namespace deployment (the common case) the watermark and buffer share
- * one scope and the verdict is exact. On a multi-namespace deployment the verdict
- * is NOT guaranteed correct for work isolated to a non-default namespace: it can
- * over-report `degraded` (the default namespace idle while another is extracting)
- * or miss a stall confined to a non-default namespace. Aggregating the watermark
- * across namespace stores is tracked in #2159.
+ * The daemon-scoped liveness payload surfaced on `/health.extraction` and in
+ * doctor/stats details. Its watermark is the maximum successful extraction
+ * across every distinct namespace store, matching the daemon-wide buffer scope.
  */
 export interface ExtractionLivenessStatus {
   lastExtractionAt: string | null;
@@ -85,18 +119,8 @@ export interface ExtractionLivenessStatus {
   oldestBufferedTurnAgeMs: number | null;
   degraded: boolean;
   degradedReason: string | null;
-  /**
-   * Scope of the last-extraction watermark: `root-store` today (read from the
-   * daemon's default/root store only), `aggregate` once it is resolved across
-   * every namespace store (#2159). A monitor can alert on
-   * `watermarkScope !== "aggregate"` while namespaces are enabled instead of
-   * trusting a number that may be wrong in either direction.
-   */
-  watermarkScope: "root-store" | "aggregate";
-}
-
-interface ExtractionLivenessStorageLike {
-  loadMeta(): Promise<Pick<MetaState, "lastExtractionAt">>;
+  watermarkPending?: boolean;
+  watermarkScope: "aggregate";
 }
 
 interface ExtractionLivenessOrchestratorLike {
@@ -190,7 +214,7 @@ export function evaluateExtractionLiveness(input: {
   nowMs: number;
   metaReadFailed?: boolean;
   metaReadError?: string;
-  watermarkScope?: "root-store" | "aggregate";
+  watermarkPending?: boolean;
 }): ExtractionLivenessStatus {
   const { config, lastExtractionAt, snapshot, nowMs } = input;
   const lastMs = lastExtractionAt !== null ? Date.parse(lastExtractionAt) : Number.NaN;
@@ -204,8 +228,10 @@ export function evaluateExtractionLiveness(input: {
   // (§22): a storage/pipeline outage must not read as healthy, and must stay
   // distinct from a pipeline that has genuinely never extracted.
   const metaReadFailed = input.metaReadFailed === true;
+  const watermarkPending = input.watermarkPending === true;
   const readFailed = snapshot.readFailed === true;
-  const degraded = config.enabled && (metaReadFailed || readFailed || (hasBacklog && stale));
+  const degraded =
+    config.enabled && (metaReadFailed || readFailed || (!watermarkPending && hasBacklog && stale));
 
   let degradedReason: string | null = null;
   if (degraded) {
@@ -230,7 +256,8 @@ export function evaluateExtractionLiveness(input: {
     oldestBufferedTurnAgeMs: ageMsFrom(snapshot.oldestTurnTimestamp, nowMs),
     degraded,
     degradedReason,
-    watermarkScope: input.watermarkScope ?? "root-store",
+    ...(watermarkPending ? { watermarkPending: true } : {}),
+    watermarkScope: "aggregate",
   };
 }
 
@@ -262,40 +289,27 @@ async function readBufferSnapshot(
 }
 
 /**
- * Gather the liveness status from a meta store (last-extraction watermark) and
- * an optional buffer (backlog). A read failure on EITHER side is captured and
- * surfaced as a DEGRADED status with a distinct reason (§22) rather than being
- * swallowed into a healthy-looking verdict; no failure path throws.
+ * Gather the liveness status from an aggregate watermark read and an optional
+ * buffer. A read failure on either side is surfaced as a degraded status with a
+ * distinct reason rather than swallowed into a healthy-looking verdict.
  */
 export async function gatherExtractionLivenessStatus(input: {
   config: ExtractionLivenessConfig;
-  storage: ExtractionLivenessStorageLike;
+  watermark: ExtractionWatermarkOrStorage;
   buffer: ExtractionBufferSource | undefined;
   nowMs: number;
 }): Promise<ExtractionLivenessStatus> {
-  const { config, storage, buffer, nowMs } = input;
-  let lastExtractionAt: string | null = null;
-  let metaReadFailed = false;
-  let metaReadError: string | undefined;
-  try {
-    lastExtractionAt = (await storage.loadMeta()).lastExtractionAt ?? null;
-  } catch (err) {
-    // A swallowed loadMeta() failure that reads as "never extracted" is the
-    // exact §22 conflation this feature exists to kill — surface it explicitly.
-    metaReadFailed = true;
-    metaReadError = err instanceof Error ? err.message : String(err);
-  }
+  const { config, buffer, nowMs } = input;
+  const watermarkRead = await coerceExtractionWatermark(input.watermark);
   const snapshot = await readBufferSnapshot(buffer);
   return evaluateExtractionLiveness({
     config,
-    lastExtractionAt,
+    lastExtractionAt: watermarkRead.lastExtractionAt,
     snapshot,
     nowMs,
-    metaReadFailed,
-    metaReadError,
-    // Today the watermark comes from the root store only; #2159 flips this to
-    // "aggregate" when the resolver reads across every namespace store.
-    watermarkScope: "root-store",
+    metaReadFailed: watermarkRead.readFailed,
+    metaReadError: watermarkRead.readError,
+    watermarkPending: watermarkRead.pending,
   });
 }
 
@@ -349,25 +363,19 @@ export function resolveExtractionLivenessConfig(
 }
 
 /**
- * Compute the liveness status for the authenticated `/health` payload and emit
- * the throttled aggregated WARN.
- *
- * The watermark is read from the daemon's default/root store (`orchestrator.storage`),
- * which is why `/health` returns the same `extraction` block for any namespace
- * argument. KNOWN LIMITATION (issue #2159): extraction writes `lastExtractionAt`
- * per-namespace, so this watermark reflects only default-namespace extraction and
- * the verdict is exact only for a single-namespace daemon (see
- * `ExtractionLivenessStatus`).
+ * Compute the daemon-wide liveness status for the authenticated `/health`
+ * payload and emit the throttled aggregate warning.
  */
 export async function computeExtractionLivenessStatus(
-  orchestrator: ExtractionLivenessOrchestratorLike & { storage: ExtractionLivenessStorageLike },
+  orchestrator: ExtractionLivenessOrchestratorLike,
+  watermark: ExtractionWatermarkOrStorage,
   throttle?: ExtractionLivenessWarnThrottle,
   nowMs: number = Date.now(),
 ): Promise<ExtractionLivenessStatus> {
   const config = resolveExtractionLivenessConfig(orchestrator.config.extractionLiveness);
   const status = await gatherExtractionLivenessStatus({
     config,
-    storage: orchestrator.storage,
+    watermark,
     buffer: orchestrator.buffer,
     nowMs,
   });
@@ -381,22 +389,18 @@ export async function computeExtractionLivenessStatus(
  */
 export async function summarizeExtractionLiveness(
   config: Pick<PluginConfig, "extractionLiveness">,
-  storage: ExtractionLivenessStorageLike,
+  watermark: ExtractionWatermarkOrStorage,
   buffer?: ExtractionBufferSource,
   nowMs: number = Date.now(),
 ): Promise<OperatorDoctorCheck> {
   const livenessConfig = resolveExtractionLivenessConfig(config.extractionLiveness);
   const status = await gatherExtractionLivenessStatus({
     config: livenessConfig,
-    storage,
+    watermark,
     buffer,
     nowMs,
   });
-  const scopeNote =
-    ` Watermark scope: ${status.watermarkScope}` +
-    (status.watermarkScope === "root-store"
-      ? " (default-namespace only; multi-namespace aggregation tracked in #2159)."
-      : ".");
+  const scopeNote = ` Watermark scope: ${status.watermarkScope}.`;
   const summary =
     (status.degraded
       ? `Extraction pipeline degraded: ${status.degradedReason}.`
@@ -416,44 +420,38 @@ export async function summarizeExtractionLiveness(
   };
 }
 
-/** Meta fields the `remnic stats` view renders directly, beyond the liveness watermark. */
-type ExtractionStatsMeta = Pick<MetaState, "extractionCount" | "lastExtractionAt" | "lastConsolidationAt">;
-
 /**
- * Lines for `remnic stats`: extraction watermark, buffer backlog, and the
- * liveness verdict so dashboards can alert on a stalled pipeline. The meta
- * watermark is loaded HERE (not by the caller) so a meta-read failure surfaces
- * as an explicit DEGRADED verdict plus "unavailable" counts (§22) instead of
- * crashing the whole `stats` command.
+ * Lines for `remnic stats`: the aggregate extraction watermark, root metadata
+ * counters, buffer backlog, and liveness verdict. Root counter failures render
+ * those counters unavailable; the injected aggregate read alone determines
+ * watermark liveness so stats cannot diverge from health and doctor.
  */
 export async function renderExtractionLivenessStats(
-  orchestrator: ExtractionLivenessOrchestratorLike & { storage: { loadMeta(): Promise<ExtractionStatsMeta> } },
+  orchestrator: ExtractionLivenessOrchestratorLike,
+  watermark: ExtractionWatermarkRead,
   nowMs: number = Date.now(),
 ): Promise<string[]> {
-  let meta: ExtractionStatsMeta | null = null;
-  let metaReadFailed = false;
-  let metaReadError: string | undefined;
-  try {
-    meta = await orchestrator.storage.loadMeta();
-  } catch (err) {
-    metaReadFailed = true;
-    metaReadError = err instanceof Error ? err.message : String(err);
-  }
   const status = evaluateExtractionLiveness({
     config: resolveExtractionLivenessConfig(orchestrator.config.extractionLiveness),
-    lastExtractionAt: meta?.lastExtractionAt ?? null,
+    lastExtractionAt: watermark.lastExtractionAt,
     snapshot: await readBufferSnapshot(orchestrator.buffer),
     nowMs,
-    metaReadFailed,
-    metaReadError,
+    metaReadFailed: watermark.readFailed,
+    metaReadError: watermark.readError,
+    watermarkPending: watermark.pending,
   });
   const oldestAge =
     status.oldestBufferedTurnAgeMs !== null ? formatAgeMs(status.oldestBufferedTurnAgeMs) : "n/a";
-  const unavailable = metaReadFailed ? "unavailable" : "never";
+  const rootStats = watermark.rootStats;
+  const watermarkDisplay = watermark.readFailed
+    ? "unavailable"
+    : watermark.pending
+      ? "pending"
+      : status.lastExtractionAt ?? "never";
   return [
-    `Extractions: ${meta?.extractionCount ?? unavailable}`,
-    `Last extraction: ${meta?.lastExtractionAt ?? unavailable}`,
-    `Last consolidation: ${meta?.lastConsolidationAt ?? unavailable}`,
+    `Extractions: ${rootStats?.extractionCount ?? "unavailable"}`,
+    `Last extraction: ${watermarkDisplay}`,
+    `Last consolidation: ${rootStats ? rootStats.lastConsolidationAt ?? "never" : "unavailable"}`,
     `Buffered sessions: ${status.bufferedSessionCount} (${status.pendingTurnCount} turns pending)`,
     `Oldest buffered turn age: ${oldestAge}`,
     `Extraction watermark scope: ${status.watermarkScope}`,

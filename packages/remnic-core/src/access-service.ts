@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import { computeExtractionLivenessStatus, ExtractionLivenessWarnThrottle } from "./extraction-liveness.js";
+import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   recordCitationUsage as recordCitationUsageForAccess,
@@ -2369,10 +2370,31 @@ export class EngramAccessService {
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const searchBackend = this.orchestrator.config.searchBackend ?? "qmd";
     const qmdEnabled = resolveQmdCapabilities(this.orchestrator.config).qmd === true;
-    const extraction = await computeExtractionLivenessStatus(this.orchestrator, this.extractionLivenessWarn);
+    const caps = tokenCapabilityStore.getStore();
+    const extractionWatermark = await readAggregateExtractionWatermark({
+      config: this.orchestrator.config,
+      rootStorage: this.orchestrator.storage,
+      storageForNamespace: (candidate) => this.orchestrator.getStorage(candidate),
+      rootsCache: this.corpusWatermarkCache,
+    });
+    const extraction = await computeExtractionLivenessStatus(
+      this.orchestrator,
+      extractionWatermark,
+      caps?.namespaces !== undefined ? undefined : this.extractionLivenessWarn,
+    );
+    const visibleExtraction =
+      caps?.namespaces !== undefined
+        ? {
+            ...extraction,
+            lastExtractionAt: null,
+            bufferedSessionCount: 0,
+            pendingTurnCount: 0,
+            oldestBufferedTurnAgeMs: null,
+            degradedReason: extraction.degraded ? "daemon extraction pipeline degraded" : null,
+          }
+        : extraction;
     // ONE call: the corpus array and the flag describing it must not come from
     // two independently-cached scans (round 8, codex P1).
-    const caps = tokenCapabilityStore.getStore();
     const corpusCensus = await computeServiceCorpusCensus(this.orchestrator, {
       cache: this.corpusWatermarkCache, caps });
     let projectionAvailable = false;
@@ -2398,7 +2420,7 @@ export class EngramAccessService {
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
-      extraction,
+      extraction: visibleExtraction,
       corpus: corpusCensus.watermarks,
       // Describes THIS response's array (round 8): a separate scan could report
       // complete while the shipped corpus was partial, and peers trust it.

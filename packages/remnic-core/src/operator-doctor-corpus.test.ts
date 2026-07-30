@@ -143,11 +143,18 @@ test("runOperatorDoctor: includes the corpus_watermark check", async () => {
   const { root, memoryDir, configPath, orchestrator } = await makeFixture();
   try {
     await writeMemory(memoryDir, "facts/2026-03-08/a.md");
+    let metadataReads = 0;
+    const loadMeta = orchestrator.storage.loadMeta.bind(orchestrator.storage);
+    orchestrator.storage.loadMeta = async () => {
+      metadataReads += 1;
+      return loadMeta();
+    };
     const report = await runOperatorDoctor({ configPath, orchestrator });
     const check = report.checks.find((c) => c.key === "corpus_watermark");
     assert.ok(check, "expected a corpus_watermark check");
     assert.equal(check?.status, "ok");
     assert.equal(corpusOf(check)[0]?.memoryFileCount, 1);
+    assert.equal(metadataReads, 1, "doctor reuses the root metadata read for extraction liveness");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

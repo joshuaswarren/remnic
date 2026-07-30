@@ -42,7 +42,7 @@ export async function summarizeCorpusWatermark(
     // The doctor orchestrator has no live namespace catalog, so config-driven
     // enumeration (deduped by root inside the shared helper) is the whole set.
     const rootByNamespace = new Map<string, string>();
-    for (const root of await resolveCorpusNamespaceRoots({ config })) {
+    for (const root of await resolveCorpusNamespaceRoots({ config, propagateDiscoveryErrors: true })) {
       rootByNamespace.set(root.namespace, root.rootDir);
     }
     resolved = [...rootByNamespace.keys()];

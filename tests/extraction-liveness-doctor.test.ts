@@ -112,7 +112,11 @@ const staleBuffer: ExtractionBufferSource = {
 
 test("summarizeExtractionLiveness: ok with the expected key when nothing is buffered", async () => {
   const fixture = await makeFixture();
-  const check = await summarizeExtractionLiveness(fixture.config, fixture.storage, undefined);
+  const check = await summarizeExtractionLiveness(
+    fixture.config,
+    { lastExtractionAt: null, readFailed: false },
+    undefined,
+  );
   assert.equal(check.key, "extraction_liveness");
   assert.equal(check.status, "ok");
   assert.equal(check.remediation, undefined);
@@ -124,7 +128,11 @@ test("summarizeExtractionLiveness: ok with the expected key when nothing is buff
 test("summarizeExtractionLiveness: warns when a non-empty buffer's watermark is absent/stale", async () => {
   const fixture = await makeFixture({ overrides: { extractionLiveness: { staleWindowMs: 1000 } } });
   // No meta.json written → lastExtractionAt is null (never succeeded).
-  const check = await summarizeExtractionLiveness(fixture.config, fixture.storage, staleBuffer);
+  const check = await summarizeExtractionLiveness(
+    fixture.config,
+    { lastExtractionAt: null, readFailed: false },
+    staleBuffer,
+  );
   assert.equal(check.status, "warn");
   assert.ok(check.remediation && check.remediation.length > 0, "a warn carries a remediation hint");
   const details = check.details as { degraded: boolean; bufferedSessionCount: number; pendingTurnCount: number };
@@ -135,51 +143,37 @@ test("summarizeExtractionLiveness: warns when a non-empty buffer's watermark is 
 
 test("summarizeExtractionLiveness: ok when the watermark is fresh even with a backlog", async () => {
   const fixture = await makeFixture({ overrides: { extractionLiveness: { staleWindowMs: 3_600_000 } } });
-  const stateDir = path.join(fixture.memoryDir, "state");
-  await mkdir(stateDir, { recursive: true });
-  await writeFile(
-    path.join(stateDir, "meta.json"),
-    JSON.stringify({
-      extractionCount: 1,
-      lastExtractionAt: new Date().toISOString(),
-      lastConsolidationAt: null,
-      totalMemories: 0,
-      totalEntities: 0,
-    }),
-    "utf-8",
+  const check = await summarizeExtractionLiveness(
+    fixture.config,
+    { lastExtractionAt: new Date().toISOString(), readFailed: false },
+    staleBuffer,
   );
-  const check = await summarizeExtractionLiveness(fixture.config, fixture.storage, staleBuffer);
   assert.equal(check.status, "ok");
 });
 
 test("summarizeExtractionLiveness: disabled gate never warns", async () => {
   const fixture = await makeFixture({ overrides: { extractionLiveness: { enabled: false, staleWindowMs: 1000 } } });
-  const check = await summarizeExtractionLiveness(fixture.config, fixture.storage, staleBuffer);
+  const check = await summarizeExtractionLiveness(
+    fixture.config,
+    { lastExtractionAt: null, readFailed: false },
+    staleBuffer,
+  );
   assert.equal(check.status, "ok");
 });
 
 test("summarizeExtractionLiveness: warns naming the read failure when the buffer snapshot throws (§22)", async () => {
   // Fresh watermark → the ONLY fault is the unreadable buffer, not staleness.
   const fixture = await makeFixture({ overrides: { extractionLiveness: { staleWindowMs: 3_600_000 } } });
-  const stateDir = path.join(fixture.memoryDir, "state");
-  await mkdir(stateDir, { recursive: true });
-  await writeFile(
-    path.join(stateDir, "meta.json"),
-    JSON.stringify({
-      extractionCount: 1,
-      lastExtractionAt: new Date().toISOString(),
-      lastConsolidationAt: null,
-      totalMemories: 0,
-      totalEntities: 0,
-    }),
-    "utf-8",
-  );
   const throwingBuffer: ExtractionBufferSource = {
     async getBufferSnapshot() {
       throw new Error("buffer file corrupt");
     },
   };
-  const check = await summarizeExtractionLiveness(fixture.config, fixture.storage, throwingBuffer);
+  const check = await summarizeExtractionLiveness(
+    fixture.config,
+    { lastExtractionAt: new Date().toISOString(), readFailed: false },
+    throwingBuffer,
+  );
   assert.notEqual(check.status, "ok", "an unreadable buffer is not a healthy pipeline");
   assert.equal(check.status, "warn");
   assert.match(check.summary, /unreadable/);
@@ -188,20 +182,19 @@ test("summarizeExtractionLiveness: warns naming the read failure when the buffer
   assert.equal(details.degraded, true);
 });
 
-test("summarizeExtractionLiveness: warns naming the watermark read failure when loadMeta throws (§22)", async () => {
+test("summarizeExtractionLiveness: warns naming an aggregate watermark read failure (§22)", async () => {
   const fixture = await makeFixture({ overrides: { extractionLiveness: { staleWindowMs: 3_600_000 } } });
-  const throwingStorage = {
-    loadMeta: async () => {
-      throw new Error("meta.json unreadable");
-    },
-  };
   // Empty buffer: proves the meta-read failure alone drives the degradation.
   const emptyBuffer: ExtractionBufferSource = {
     async getBufferSnapshot() {
       return { bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null };
     },
   };
-  const check = await summarizeExtractionLiveness(fixture.config, throwingStorage, emptyBuffer);
+  const check = await summarizeExtractionLiveness(
+    fixture.config,
+    { lastExtractionAt: null, readFailed: true, readError: "meta.json unreadable" },
+    emptyBuffer,
+  );
   assert.notEqual(check.status, "ok", "an unreadable watermark is not a healthy pipeline");
   assert.equal(check.status, "warn");
   assert.match(check.summary, /watermark unreadable/);

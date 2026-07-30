@@ -312,9 +312,13 @@ export interface CorpusNamespaceRoot {
  */
 export async function resolveCorpusNamespaceRoots(options: {
   config: PluginConfig;
+  propagateDiscoveryErrors?: boolean;
 }): Promise<CorpusNamespaceRoot[]> {
   const { config } = options;
-  const configDriven = await listNamespaces({ config });
+  const configDriven = await listNamespaces({
+    config,
+    propagateDiscoveryErrors: options.propagateDiscoveryErrors,
+  });
   // Default namespace first so it wins the representative label when several
   // configured names collapse onto one root (namespaces disabled → memoryDir).
   const ordered = [
@@ -376,6 +380,7 @@ export class CorpusWatermarkCache {
   private readonly clock: () => number;
   private rootsEntry: { value: CorpusNamespaceRoot[]; expiresAt: number } | undefined;
   private rootsInFlight: Promise<void> | undefined;
+  private rootsRefreshError: unknown;
   private readonly queued = new Map<string, () => void>();
   private activeRefreshes = 0;
   private readonly maxConcurrentRefreshes: number;
@@ -444,15 +449,26 @@ export class CorpusWatermarkCache {
       this.rootsInFlight = compute()
         .then((value) => {
           this.rootsEntry = { value, expiresAt: this.clock() + this.ttlMs };
+          this.rootsRefreshError = undefined;
         })
-        .catch(() => {
-          // Enumeration failed: keep serving any stale roots; retry next probe.
+        .catch((error: unknown) => {
+          this.rootsRefreshError = error;
+          // Keep serving any stale roots; callers that require completeness
+          // inspect the refresh status before trusting them.
         })
         .finally(() => {
           this.rootsInFlight = undefined;
         });
     }
     return this.rootsEntry?.value;
+  }
+
+  getResolvedRootsStatus(compute: () => Promise<CorpusNamespaceRoot[]>): {
+    roots: CorpusNamespaceRoot[] | undefined;
+    refreshError: unknown;
+  } {
+    const roots = this.getResolvedRoots(compute);
+    return { roots, refreshError: this.rootsRefreshError };
   }
   /** Await every background refresh — in-flight AND queued (issue #2156 round-9) —
    *  plus any roots refresh (shutdown / deterministic tests). */
@@ -518,10 +534,17 @@ export async function computeServiceCorpusCensus(
 ): Promise<{ watermarks: CorpusWatermark[]; complete: boolean }> {
   let roots: CorpusNamespaceRoot[] | undefined;
   if (options.cache) {
-    roots = options.cache.getResolvedRoots(() => resolveCorpusNamespaceRoots({ config: host.config }));
+    const { roots: cachedRoots, refreshError } = options.cache.getResolvedRootsStatus(() =>
+      resolveCorpusNamespaceRoots({ config: host.config, propagateDiscoveryErrors: true }),
+    );
+    if (refreshError !== undefined) return { watermarks: [], complete: false };
+    roots = cachedRoots;
   } else {
     try {
-      roots = await resolveCorpusNamespaceRoots({ config: host.config });
+      roots = await resolveCorpusNamespaceRoots({
+        config: host.config,
+        propagateDiscoveryErrors: true,
+      });
     } catch {
       return { watermarks: [], complete: false }; // never enumerated — not an empty corpus
     }

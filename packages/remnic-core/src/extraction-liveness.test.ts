@@ -194,6 +194,30 @@ test("evaluate: an unreadable buffer degrades with a distinct reason, even with 
   assert.equal(disabled.degraded, false, "disabled gate suppresses even a read-failure degradation");
 });
 
+test("evaluate: a warming aggregate watermark remains pending without degrading", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: null,
+    snapshot: snapshot({ bufferedSessionCount: 1, pendingTurnCount: 2 }),
+    nowMs: NOW,
+    watermarkPending: true,
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.watermarkPending, true);
+});
+
+test("evaluate: warming watermark does not suppress an independent buffer read failure", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: null,
+    snapshot: snapshot({ readFailed: true, readError: "buffer unavailable" }),
+    nowMs: NOW,
+    watermarkPending: true,
+  });
+  assert.equal(status.degraded, true);
+  assert.match(status.degradedReason ?? "", /buffer unavailable/);
+});
+
 test("evaluate: an unreadable watermark degrades with a distinct reason, even with an empty buffer (§22)", () => {
   const status = evaluateExtractionLiveness({
     config: ENABLED,
@@ -311,22 +335,14 @@ test("getBufferSnapshot: counts retained (deferred) turns as pending, not just a
   assert.equal(snap.oldestTurnTimestamp, "2026-04-01T00:00:00.000Z", "oldest is the first retained turn");
 });
 
-test("evaluate: emits watermarkScope, defaulting to root-store and honoring an explicit scope", () => {
-  const rootScoped = evaluateExtractionLiveness({
+test("evaluate: emits only the aggregate watermark scope", () => {
+  const status = evaluateExtractionLiveness({
     config: ENABLED,
     lastExtractionAt: null,
     snapshot: snapshot(),
     nowMs: NOW,
   });
-  assert.equal(rootScoped.watermarkScope, "root-store", "defaults to root-store today (#2159)");
-  const aggregate = evaluateExtractionLiveness({
-    config: ENABLED,
-    lastExtractionAt: null,
-    snapshot: snapshot(),
-    nowMs: NOW,
-    watermarkScope: "aggregate",
-  });
-  assert.equal(aggregate.watermarkScope, "aggregate", "threads an explicit scope for #2159");
+  assert.equal(status.watermarkScope, "aggregate");
 });
 
 // ── ExtractionLivenessWarnThrottle ───────────────────────────────────────────
@@ -339,7 +355,7 @@ test("throttle: warns once per staleness window and again after it elapses; rese
     oldestBufferedTurnAgeMs: null,
     degraded: true,
     degradedReason: "stalled",
-    watermarkScope: "root-store",
+    watermarkScope: "aggregate",
   };
   const healthy: ExtractionLivenessStatus = { ...degraded, degraded: false, degradedReason: null };
   const t = new ExtractionLivenessWarnThrottle();
@@ -351,13 +367,31 @@ test("throttle: warns once per staleness window and again after it elapses; rese
   assert.equal(t.maybeWarn(degraded, WINDOW, NOW + WINDOW + 2), true, "recovery reset lets a fresh episode warn at once");
 });
 
+test("summarizeExtractionLiveness: fails closed for legacy root-store-only storage argument", async () => {
+  const storage = {
+    readMetadata: async () => ({ lastExtractionAt: "2026-07-29T10:00:00.000Z" }),
+  };
+  const doctorCheck = await summarizeExtractionLiveness(
+    { extractionLiveness: { enabled: true, staleWindowMs: WINDOW } },
+    storage,
+    undefined,
+    NOW,
+  );
+  assert.equal(doctorCheck.status, "warn");
+  assert.ok(doctorCheck.summary.includes("aggregate watermark unavailable"));
+});
+
 // ── renderExtractionLivenessStats ────────────────────────────────────────────
 
 test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded verdict", async () => {
+  let rootReads = 0;
   const orchestrator = {
     config: { extractionLiveness: { enabled: true, staleWindowMs: WINDOW } },
     storage: {
-      loadMeta: async () => ({ extractionCount: 7, lastExtractionAt: ancient, lastConsolidationAt: null }),
+      loadMeta: async () => {
+        rootReads += 1;
+        return { extractionCount: 7, lastExtractionAt: ancient, lastConsolidationAt: null };
+      },
     },
     buffer: {
       getBufferSnapshot: async (): Promise<ExtractionBufferSnapshot> => ({
@@ -367,13 +401,31 @@ test("renderExtractionLivenessStats: emits watermark, backlog, and a degraded ve
       }),
     },
   };
-  const lines = await renderExtractionLivenessStats(orchestrator, NOW);
+  const lines = await renderExtractionLivenessStats(
+    orchestrator,
+    {
+      lastExtractionAt: ancient,
+      readFailed: false,
+      rootStats: { extractionCount: 7, lastConsolidationAt: null },
+    },
+    NOW,
+  );
   assert.ok(lines.includes("Extractions: 7"), "reports extraction count");
+  assert.equal(rootReads, 0, "rendering reuses the aggregate reader's root metadata");
   assert.ok(lines.includes("Buffered sessions: 2 (5 turns pending)"), "reports backlog");
-  assert.ok(lines.includes("Extraction watermark scope: root-store"), "reports the watermark scope");
+  assert.ok(lines.includes("Extraction watermark scope: aggregate"), "reports the watermark scope");
   assert.ok(
     lines.some((l) => l.startsWith("Extraction liveness: DEGRADED")),
     "reports a degraded verdict when the watermark is stale",
+  );
+  const warmingLines = await renderExtractionLivenessStats(
+    orchestrator,
+    { lastExtractionAt: null, readFailed: false, pending: true },
+    NOW,
+  );
+  assert.ok(
+    warmingLines.some((line) => line === "Extraction liveness: ok"),
+    "cache warming is pending rather than degraded",
   );
 });
 
@@ -393,7 +445,11 @@ test("renderExtractionLivenessStats: reports DEGRADED when the buffer read fails
       },
     },
   };
-  const lines = await renderExtractionLivenessStats(orchestrator, NOW);
+  const lines = await renderExtractionLivenessStats(
+    orchestrator,
+    { lastExtractionAt: new Date(NOW).toISOString(), readFailed: false },
+    NOW,
+  );
   const verdict = lines.find((l) => l.startsWith("Extraction liveness:"));
   assert.ok(verdict, "emits a liveness verdict line");
   assert.match(verdict, /DEGRADED/);
@@ -418,7 +474,11 @@ test("renderExtractionLivenessStats: reports DEGRADED + unavailable counts when 
       }),
     },
   };
-  const lines = await renderExtractionLivenessStats(orchestrator, NOW);
+  const lines = await renderExtractionLivenessStats(
+    orchestrator,
+    { lastExtractionAt: null, readFailed: true, readError: "meta.json corrupt" },
+    NOW,
+  );
   assert.ok(lines.includes("Extractions: unavailable"), "meta counts read as unavailable, not 0/never");
   const verdict = lines.find((l) => l.startsWith("Extraction liveness:"));
   assert.match(verdict ?? "", /DEGRADED/);
@@ -448,12 +508,14 @@ test("resolveExtractionLivenessConfig: absent or partial block defaults to enabl
 });
 
 test("summarizeExtractionLiveness: no throw when the extractionLiveness block is absent or partial (host/legacy config)", async () => {
-  const storage = { loadMeta: async () => ({ lastExtractionAt: null }) };
   // A PluginConfig built directly (host adapter / older persisted config) can omit
   // the block or leave it partial; every liveness surface must return a sane status
   // rather than crash (#2155 review).
   for (const config of [{}, { extractionLiveness: {} }, { extractionLiveness: { enabled: true } }]) {
-    const check = await summarizeExtractionLiveness(config as never, storage);
+    const check = await summarizeExtractionLiveness(
+      config as never,
+      { lastExtractionAt: null, readFailed: false },
+    );
     assert.equal(check.key, "extraction_liveness");
     assert.ok(check.status === "ok" || check.status === "warn", `sane status for ${JSON.stringify(config)}`);
     assert.ok(!check.summary.includes("liveness check disabled"), "missing/partial block reads as enabled default");
