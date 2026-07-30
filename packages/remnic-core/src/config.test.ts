@@ -2418,6 +2418,16 @@ test("parseConfig bounds the delegate health timeout above a safe default", () =
   assert.equal(defaultTimeoutMs, 10_000);
   assert.ok(defaultTimeoutMs > 2_000);
   assert.equal(parseConfig({ bridgeHealthTimeoutMs: "7500" }).bridgeHealthTimeoutMs, 7_500);
-  assert.equal(parseConfig({ bridgeHealthTimeoutMs: 0 }).bridgeHealthTimeoutMs, 1);
-  assert.equal(parseConfig({ bridgeHealthTimeoutMs: 300_000 }).bridgeHealthTimeoutMs, 120_000);
+  assert.throws(
+    () => parseConfig({ bridgeHealthTimeoutMs: 0 }),
+    /bridgeHealthTimeoutMs must be an integer in \[1, 120000\]/,
+  );
+  assert.throws(
+    () => parseConfig({ bridgeHealthTimeoutMs: 300_000 }),
+    /bridgeHealthTimeoutMs must be an integer in \[1, 120000\]/,
+  );
+  assert.throws(
+    () => parseConfig({ bridgeHealthTimeoutMs: 3.7 }),
+    /bridgeHealthTimeoutMs must be an integer in \[1, 120000\]/,
+  );
 });
