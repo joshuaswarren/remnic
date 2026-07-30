@@ -40,6 +40,10 @@ import {
   type CodingNamespaceOverlay,
 } from "./coding/coding-namespace.js";
 import {
+  resolveCodingContextFromOptions,
+  type InterruptibleCodingScopeInput,
+} from "./access-coding-context-resolution.js";
+import {
   handleCodingDecision,
   type DecisionSurfaceRequest,
   type DecisionSurfaceResponse,
@@ -936,11 +940,6 @@ export interface CodingScopedWriteInput {
   projectTag?: string;
 }
 
-type InterruptibleCodingScopedWriteInput = CodingScopedWriteInput & {
-  abortSignal?: AbortSignal;
-  /** Absolute epoch deadline shared by the extraction lifecycle. */
-  deadlineMs?: number;
-};
 export type { EngramAccessNamespaceWritableRequest } from "./access-namespace-preflight.js";
 /**
  * Internal, single-resolution plan describing the effective memory scope for a
@@ -1480,45 +1479,6 @@ export class EngramAccessService {
     return result.namespace;
   }
 
-  /**
-   * Resolve a coding context from `cwd`/`projectTag` WITHOUT persisting it to
-   * any session — the read-only half of `maybeAttachCodingContext`. Returns
-   * null when project scoping is off or nothing resolves. `projectTag` takes
-   * priority over `cwd` (matching `maybeAttachCodingContext`).
-   */
-  private async resolveCodingContextFromOptions(
-    options: InterruptibleCodingScopedWriteInput,
-  ): Promise<CodingContext | null> {
-    if (!this.orchestrator.config.codingMode?.projectScope) return null;
-    if (typeof options.projectTag === "string" && options.projectTag.trim().length > 0) {
-      const projectId = projectTagProjectId(options.projectTag);
-      return { projectId, branch: null, rootPath: projectId, defaultBranch: null };
-    }
-    if (typeof options.cwd === "string" && options.cwd.trim().length > 0) {
-      try {
-        const gitCtx = await resolveGitContext(options.cwd, {
-          abortSignal: options.abortSignal,
-          deadlineMs: options.deadlineMs,
-        });
-        if (gitCtx) {
-          return {
-            projectId: gitCtx.projectId,
-            branch: gitCtx.branch,
-            rootPath: gitCtx.rootPath,
-            defaultBranch: gitCtx.defaultBranch,
-          };
-        }
-      } catch (error) {
-        if (
-          options.abortSignal?.aborted ||
-          (options.deadlineMs !== undefined && Date.now() >= options.deadlineMs)
-        ) {
-          throw error;
-        }
-      }
-    }
-    return null;
-  }
 
   /** Shared coding-scope derivation for the read/write resolvers below —
    *  coding context, overlay, principal, scope-profile plan for an IMPLICIT
@@ -1527,7 +1487,7 @@ export class EngramAccessService {
    *  of truth for the namespacesEnabled/projectScope gates (rule 22; keeps the
    *  scattered-config-read ratchet flat). READ-ONLY: never mutates session. */
   private async resolveCodingScopeInputs(
-    request: InterruptibleCodingScopedWriteInput & {
+    request: InterruptibleCodingScopeInput & {
       namespace?: string;
       sessionKey?: string;
       authenticatedPrincipal?: string;
@@ -1550,7 +1510,7 @@ export class EngramAccessService {
       resolveNamespaceCapabilities(this.orchestrator.config).namespaces &&
       this.orchestrator.config.codingMode?.projectScope
         ? this.orchestrator.getCodingContextForSession(request.sessionKey) ??
-          (await this.resolveCodingContextFromOptions(request))
+          (await resolveCodingContextFromOptions(request))
         : null;
     const overlay =
       hasSession &&
@@ -1726,7 +1686,7 @@ export class EngramAccessService {
    * precedence), falling back to the per-call `cwd`/`projectTag`.
    */
   private async resolveMemoryScopePlan(
-    request: InterruptibleCodingScopedWriteInput & {
+    request: InterruptibleCodingScopeInput & {
       namespace?: string;
       sessionKey?: string;
       authenticatedPrincipal?: string;
@@ -4060,7 +4020,7 @@ export class EngramAccessService {
       effectiveCodingContext =
         (typeof this.orchestrator.getCodingContextForSession === "function"
           ? this.orchestrator.getCodingContextForSession(request.sessionKey)
-          : null) ?? (await this.resolveCodingContextFromOptions(request));
+          : null) ?? (await resolveCodingContextFromOptions(request));
     }
     return this.handleIdempotentWrite<EngramAccessObserveResponse>({
       operation: "observe",
