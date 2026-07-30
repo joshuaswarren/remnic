@@ -7,6 +7,8 @@ import {
   type ReconcileFileState,
   type ReconcilePlan,
   type ReconcilePlanEntry,
+  type ReconcileSemanticAgreement,
+  type ReconcileSemanticChange,
   summarizeReconcilePlan,
 } from "./plan.js";
 
@@ -153,10 +155,28 @@ function comparePlanEntries(left: ReconcilePlanEntry, right: ReconcilePlanEntry)
   return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
 }
 
+function semanticAgreementKey(agreement: ReconcileSemanticAgreement): string {
+  return `${agreement.local.path}\0${agreement.peer.path}`;
+}
+
+function classifySemanticChange(
+  current: ReconcileSemanticAgreement,
+  prior: ReconcileSemanticAgreement | undefined
+): ReconcileSemanticChange {
+  if (!prior) return "unchanged";
+  const localChanged = current.local.sha256 !== prior.local.sha256;
+  const peerChanged = current.peer.sha256 !== prior.peer.sha256;
+  if (localChanged && peerChanged) return "both_modified";
+  if (localChanged) return "local_changed";
+  if (peerChanged) return "peer_changed";
+  return "unchanged";
+}
+
 export function collapseActiveFactDuplicates(
   plan: ReconcilePlan,
   localManifests: ReadonlyMap<string, ReconcileManifest>,
-  peerManifests: ReadonlyMap<string, ReconcileManifest>
+  peerManifests: ReadonlyMap<string, ReconcileManifest>,
+  priorSemanticAgreements?: ReadonlyMap<string, readonly ReconcileSemanticAgreement[]>,
 ): ReconcilePlan {
   const entriesByNamespace = new Map<string, ReconcilePlanEntry[]>();
   for (const entry of plan.entries) {
@@ -174,6 +194,12 @@ export function collapseActiveFactDuplicates(
     const peerByPath = activeFactByPath(peerManifest);
     const localFilesByPath = new Map((localManifest?.files ?? []).map((file) => [file.path, file]));
     const peerFilesByPath = new Map((peerManifest?.files ?? []).map((file) => [file.path, file]));
+    const priorSemanticByPathPair = new Map(
+      (priorSemanticAgreements?.get(namespace) ?? []).map((agreement) => [
+        semanticAgreementKey(agreement),
+        agreement,
+      ])
+    );
     const localByHash = new Map<string, ActiveFactManifestFile[]>();
     const peerByHash = new Map<string, ActiveFactManifestFile[]>();
 
@@ -214,6 +240,26 @@ export function collapseActiveFactDuplicates(
           ...localCandidates.map((file) => file.path),
           ...peerCandidates.map((file) => file.path),
         ]);
+        const authoritativeSamePathEntries = new Set(entries.filter(
+          (entry) =>
+            duplicatePaths.has(entry.path)
+            && localFilesByPath.has(entry.path)
+            && peerFilesByPath.has(entry.path)
+            && entry.action !== "identical"
+        ));
+        if (authoritativeSamePathEntries.size > 0) {
+          for (const entry of entries) {
+            if (
+              duplicatePaths.has(entry.path)
+              && !authoritativeSamePathEntries.has(entry)
+              && (entry.action === "pull" || entry.action === "push" || entry.action === "identical")
+            ) {
+              removed.add(entry);
+              changed = true;
+            }
+          }
+          continue;
+        }
         const unsafeEntry = entries.some(
           (entry) => duplicatePaths.has(entry.path) && (entry.action === "suppress" || entry.action === "conflict")
         );
@@ -226,13 +272,20 @@ export function collapseActiveFactDuplicates(
             removed.add(entry);
           }
         }
+        const semanticAgreement: ReconcileSemanticAgreement = {
+          local: { path: localPath, sha256: localFile.sha256 },
+          peer: { path: peerPath, sha256: peerFile.sha256 },
+        };
         replacements.push({
           path: localPath < peerPath ? localPath : peerPath,
           namespace,
           action: "identical",
           reason: "semantic_duplicate",
-          localSha256: localFile.sha256,
-          peerSha256: peerFile.sha256,
+          semanticAgreement,
+          semanticChange: classifySemanticChange(
+            semanticAgreement,
+            priorSemanticByPathPair.get(semanticAgreementKey(semanticAgreement))
+          ),
         });
         changed = true;
         continue;
