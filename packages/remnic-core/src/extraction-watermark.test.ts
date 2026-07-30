@@ -254,6 +254,64 @@ test("overflowed calendar timestamp in namespace store fails the aggregate read"
   }
 });
 
+test("valid ISO timestamp variants remain eligible for aggregate watermark selection", async () => {
+  const fixture = await namespacedFixture();
+  try {
+    const result = await readAggregateExtractionWatermark({
+      config: fixture.config,
+      rootStorage: storage(fixture.memoryDir, async () => "2026-07-20T12:00:00Z"),
+      storageForNamespace: async (namespace) =>
+        storage(
+          fixture.namespaceDirs[namespace],
+          async () =>
+            namespace === "team-a"
+              ? "2026-07-20T14:00:00+02:00"
+              : "2026-07-20T08:00:00-05:00",
+        ),
+    });
+
+    assert.equal(result.lastExtractionAt, "2026-07-20T08:00:00-05:00");
+    assert.equal(result.readFailed, false);
+  } finally {
+    await rm(fixture.memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("overflowed consolidation timestamp in namespace store fails the aggregate read", async () => {
+  const fixture = await namespacedFixture();
+  try {
+    const result = await readAggregateExtractionWatermark({
+      config: fixture.config,
+      rootStorage: {
+        dir: fixture.memoryDir,
+        loadMeta: async () => ({
+          lastExtractionAt: "2026-07-20T12:00:00.000Z",
+          extractionCount: 2,
+          lastConsolidationAt: "2026-07-20T13:00:00.000Z",
+        }),
+      },
+      storageForNamespace: async (namespace) => ({
+        dir: fixture.namespaceDirs[namespace],
+        loadMeta: async () => ({
+          lastExtractionAt: "2026-07-21T12:00:00.000Z",
+          extractionCount: 3,
+          lastConsolidationAt:
+            namespace === "team-a"
+              ? "2026-02-30T13:00:00.000Z"
+              : "2026-07-21T13:00:00.000Z",
+        }),
+      }),
+    });
+
+    assert.equal(result.lastExtractionAt, null);
+    assert.equal(result.readFailed, true);
+    assert.equal(result.rootStats, undefined);
+    assert.match(result.readError ?? "", /consolidation timestamp invalid/);
+  } finally {
+    await rm(fixture.memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("namespace discovery I/O failure is an explicit incomplete read", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-extraction-watermark-enumeration-"));
   try {

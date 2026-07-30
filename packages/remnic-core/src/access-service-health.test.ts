@@ -474,10 +474,12 @@ test("health keeps namespace QMD failures scoped to the namespace", async () => 
   }
 });
 
-test("health surfaces extraction liveness as degraded when the buffer is non-empty and the watermark is stale", async () => {
+test("health surfaces extraction liveness as degraded when the buffer is non-empty and the watermark is stale", async (t) => {
+  const nowMs = Date.parse("2026-07-30T12:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: nowMs });
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-liveness-"));
   try {
-    const oldTs = new Date(Date.now() - 10_000).toISOString();
+    const oldTs = new Date(nowMs - 10_000).toISOString();
     const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 1000 } });
     const service = new EngramAccessService({
       config,
@@ -506,11 +508,7 @@ test("health surfaces extraction liveness as degraded when the buffer is non-emp
     assert.equal(health.extraction.bufferedSessionCount, 3);
     assert.equal(health.extraction.pendingTurnCount, 12);
     assert.equal(health.extraction.lastExtractionAt, oldTs);
-    const oldestAge = health.extraction.oldestBufferedTurnAgeMs ?? -1;
-    assert.ok(
-      oldestAge >= 10_000 && oldestAge < 60_000,
-      `oldest buffered turn age reflects the ~10s offset, not merely non-negative (got ${oldestAge}ms)`,
-    );
+    assert.equal(health.extraction.oldestBufferedTurnAgeMs, 10_000);
     assert.ok(
       health.extraction.degradedReason !== null && health.extraction.degradedReason.length > 0,
       "degraded reason is populated",
@@ -523,13 +521,12 @@ test("health surfaces extraction liveness as degraded when the buffer is non-emp
     assert.equal(scopedHealth.extraction.degraded, true);
     assert.equal(scopedHealth.extraction.bufferedSessionCount, 3);
     assert.equal(scopedHealth.extraction.pendingTurnCount, 12);
-    assert.ok(
-      scopedHealth.extraction.oldestBufferedTurnAgeMs !== null &&
-        Math.abs(scopedHealth.extraction.oldestBufferedTurnAgeMs - oldestAge) < 100,
-    );
+    assert.equal(scopedHealth.extraction.oldestBufferedTurnAgeMs, 10_000);
     assert.match(scopedHealth.extraction.degradedReason ?? "", /3 buffered session/);
+    assert.match(scopedHealth.extraction.degradedReason ?? "", /12 turn\(s\) pending extraction/);
     assert.doesNotMatch(scopedHealth.extraction.degradedReason ?? "", /last succeeded|unreadable/);
   } finally {
+    t.mock.timers.reset();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -686,6 +683,13 @@ test("health reports extraction liveness degraded when the buffer read fails (§
     assert.equal(health.extraction.degraded, true, "an unreadable buffer must not report a healthy pipeline");
     assert.match(health.extraction.degradedReason ?? "", /unreadable/);
     assert.match(health.extraction.degradedReason ?? "", /buffer file corrupt/);
+    const scopedHealth = await tokenCapabilityStore.run(
+      { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
+      () => service.health(),
+    );
+    assert.equal(scopedHealth.extraction.lastExtractionAt, null);
+    assert.match(scopedHealth.extraction.degradedReason ?? "", /extraction buffer unreadable/);
+    assert.doesNotMatch(scopedHealth.extraction.degradedReason ?? "", /buffer file corrupt/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -716,6 +720,13 @@ test("health reports extraction liveness degraded when the watermark (meta) read
     assert.equal(health.extraction.degraded, true, "an unreadable watermark must not report a healthy pipeline");
     assert.match(health.extraction.degradedReason ?? "", /watermark unreadable/);
     assert.match(health.extraction.degradedReason ?? "", /meta\.json unreadable/);
+    const scopedHealth = await tokenCapabilityStore.run(
+      { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
+      () => service.health(),
+    );
+    assert.equal(scopedHealth.extraction.lastExtractionAt, null);
+    assert.match(scopedHealth.extraction.degradedReason ?? "", /extraction watermark unreadable/);
+    assert.doesNotMatch(scopedHealth.extraction.degradedReason ?? "", /meta\.json unreadable/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

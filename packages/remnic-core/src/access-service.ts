@@ -2393,14 +2393,24 @@ export class EngramAccessService {
       extractionWatermark,
       caps?.namespaces !== undefined ? undefined : this.extractionLivenessWarn,
     );
+    let scopedDegradedReason: string | null = null;
+    if (extraction.degraded) {
+      if (extraction.degradedReason?.includes("watermark unreadable")) {
+        scopedDegradedReason = "daemon extraction pipeline degraded; extraction watermark unreadable";
+      } else if (extraction.degradedReason?.includes("buffer unreadable")) {
+        scopedDegradedReason = "daemon extraction pipeline degraded; extraction buffer unreadable";
+      } else {
+        scopedDegradedReason =
+          `daemon extraction pipeline degraded; ${extraction.bufferedSessionCount} buffered session(s), ` +
+          `${extraction.pendingTurnCount} turn(s) pending extraction`;
+      }
+    }
     const visibleExtraction =
       caps?.namespaces !== undefined
         ? {
             ...extraction,
             lastExtractionAt: null,
-            degradedReason: extraction.degraded
-              ? `daemon extraction pipeline degraded; ${extraction.bufferedSessionCount} buffered session(s), ${extraction.pendingTurnCount} turn(s) pending extraction`
-              : null,
+            degradedReason: scopedDegradedReason,
           }
         : extraction;
     // ONE call: the corpus array and the flag describing it must not come from

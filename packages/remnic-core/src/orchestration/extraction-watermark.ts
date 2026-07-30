@@ -48,10 +48,38 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function canonicalTimestampMs(value: string): number | null {
+const ISO_TIMESTAMP_PATTERN =
+  /^([+-]?\d{4,6})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/;
+
+function validatedTimestampMs(value: string): number | null {
+  const match = ISO_TIMESTAMP_PATTERN.exec(value);
   const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) return null;
-  return new Date(parsed).toISOString() === value ? parsed : null;
+  if (!match || !Number.isFinite(parsed)) return null;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fraction, zone] = match;
+  const zoneSign = zone === "Z" || zone[0] === "+" ? 1 : -1;
+  const offsetMinutes =
+    zone === "Z" ? 0 : zoneSign * (Number(zone.slice(1, 3)) * 60 + Number(zone.slice(4, 6)));
+  const representedCalendar = new Date(parsed + offsetMinutes * 60_000);
+  const millisecond = Number((fraction ?? "").padEnd(3, "0").slice(0, 3));
+  const expected = [
+    Number(yearText),
+    Number(monthText),
+    Number(dayText),
+    Number(hourText),
+    Number(minuteText),
+    Number(secondText),
+    millisecond,
+  ];
+  const actual = [
+    representedCalendar.getUTCFullYear(),
+    representedCalendar.getUTCMonth() + 1,
+    representedCalendar.getUTCDate(),
+    representedCalendar.getUTCHours(),
+    representedCalendar.getUTCMinutes(),
+    representedCalendar.getUTCSeconds(),
+    representedCalendar.getUTCMilliseconds(),
+  ];
+  return actual.every((part, index) => part === expected[index]) ? parsed : null;
 }
 
 function mergeRootStats(
@@ -83,10 +111,19 @@ function mergeRootStats(
 }
 
 function watermarkFromMeta(meta: ExtractionWatermarkMeta, name: string): ExtractionWatermarkRead {
-  if (meta.lastExtractionAt !== null && meta.lastExtractionAt !== undefined) {
-    if (canonicalTimestampMs(meta.lastExtractionAt) === null) {
-      return readFailure(`${name} watermark timestamp invalid`);
-    }
+  if (
+    meta.lastExtractionAt !== null &&
+    meta.lastExtractionAt !== undefined &&
+    validatedTimestampMs(meta.lastExtractionAt) === null
+  ) {
+    return readFailure(`${name} watermark timestamp invalid`);
+  }
+  if (
+    meta.lastConsolidationAt !== null &&
+    meta.lastConsolidationAt !== undefined &&
+    validatedTimestampMs(meta.lastConsolidationAt) === null
+  ) {
+    return readFailure(`${name} consolidation timestamp invalid`);
   }
   const hasRootStats = meta.extractionCount !== undefined || meta.lastConsolidationAt !== undefined;
   return {
@@ -139,10 +176,10 @@ function isReadFailure(value: CorpusNamespaceRoot[] | ExtractionWatermarkRead): 
 
 function newerWatermark(current: string | null, candidate: string | null): string | null {
   if (candidate === null) return current;
-  const candidateMs = canonicalTimestampMs(candidate);
+  const candidateMs = validatedTimestampMs(candidate);
   if (candidateMs === null) return current;
   if (current === null) return candidate;
-  const currentMs = canonicalTimestampMs(current);
+  const currentMs = validatedTimestampMs(current);
   return currentMs === null || candidateMs > currentMs ? candidate : current;
 }
 
