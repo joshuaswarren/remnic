@@ -280,7 +280,7 @@ async function postPeerFileContent(
   metadata: { sha256: string; mtimeMs: number; baseSha256?: string },
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<boolean> {
+): Promise<"applied" | "skipped" | false> {
   const base = peerUrl.replace(/\/+$/, "");
   const routes = [
     `/remnic/v1/offline-sync/apply-file-content?namespace=${encodeURIComponent(namespace)}`,
@@ -327,7 +327,9 @@ async function postPeerFileContent(
           return false;
         }
         if (result.done) {
-          return result.skipped || (result.applied && offset + chunk.length === content.length);
+          if (result.skipped) return "skipped";
+          if (result.applied && offset + chunk.length === content.length) return "applied";
+          return false;
         }
         if (result.applied || result.skipped || chunk.length === 0) {
           return false;
@@ -340,6 +342,43 @@ async function postPeerFileContent(
     }
   }
   return false;
+}
+
+async function postPeerConvergenceComplete(
+  peerUrl: string,
+  namespaces: readonly string[],
+  token?: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<boolean> {
+  const query = namespaces
+    .map((namespace) => `namespace=${encodeURIComponent(namespace)}`)
+    .join("&");
+  try {
+    const response = await fetchImpl(
+      `${peerUrl.replace(/\/+$/, "")}/remnic/v1/offline-sync/convergence-complete?${query}`,
+      {
+        method: "POST",
+        headers: {
+          "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    if (!response.ok) return false;
+    const result: unknown = await response.json().catch(() => null);
+    return Boolean(
+      result
+      && typeof result === "object"
+      && "namespaces" in result
+      && Array.isArray(result.namespaces)
+      && result.namespaces.length === namespaces.length
+      && result.namespaces.every((namespace, index) => namespace === namespaces[index])
+      && "refreshed" in result
+      && result.refreshed === true
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function computeConvergePlan(options: ConvergePlanOptions = {}): Promise<ReconcilePlan> {
@@ -523,6 +562,7 @@ export async function executeConvergeApply(
     suppressed: 0,
     failed: 0,
   };
+  const peerMutatedNamespaces = new Set<string>();
 
   let resolvedToken: string | undefined;
   if (options.peerToken) {
@@ -705,7 +745,7 @@ export async function executeConvergeApply(
           const expectedPeerSha256 = entry.action === "conflict"
             ? entry.peerSha256
             : entry.baseSha256;
-          const ok = await postPeerFileContent(
+          const applied = await postPeerFileContent(
             options.peerUrl,
             entry.namespace,
             entry.path,
@@ -718,7 +758,8 @@ export async function executeConvergeApply(
             resolvedToken,
             fetchFn,
           );
-          if (ok) {
+          if (applied) {
+            if (applied === "applied") peerMutatedNamespaces.add(entry.namespace);
             if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
             else actualTransfers.pushed += 1;
           } else {
@@ -732,6 +773,18 @@ export async function executeConvergeApply(
       }
     } else if (transferType === "suppress") {
       actualTransfers.suppressed += 1;
+    }
+  }
+
+  if (options.peerUrl && peerMutatedNamespaces.size > 0) {
+    const namespaces = [...peerMutatedNamespaces].sort();
+    if (!await postPeerConvergenceComplete(
+      options.peerUrl,
+      namespaces,
+      resolvedToken,
+      fetchFn,
+    )) {
+      actualTransfers.failed += 1;
     }
   }
 

@@ -218,6 +218,7 @@ import {
   runPatternReinforcement,
   type PatternReinforcementResult,
 } from "./maintenance/pattern-reinforcement.js";
+import { refreshConvergedNamespaces } from "./orchestration/convergence-refresh.js";
 import { ModelRegistry } from "./model-registry.js";
 import { applyRuntimeRetrievalPolicy, expandQuery } from "./retrieval.js";
 import {
@@ -1278,10 +1279,10 @@ export class Orchestrator {
     return await this.namespaceSearchRouter.healthForNamespace(namespace, execution);
   }
 
-  private isSearchAvailableForNamespaceRouting(): boolean {
-    if (resolveNamespaceCapabilities(this.config).namespaces) return true;
-    return this.qmd.isAvailable();
+  async refreshNamespacesAfterConvergence(namespaces: readonly string[]): Promise<void> {
+    return refreshConvergedNamespaces(namespaces, this.namespaceSearchRouter, this.getStorage.bind(this));
   }
+
 
   invalidateLiveContentHashIndex(): void {
     this.contentHashIndex = null;
@@ -1530,7 +1531,7 @@ export class Orchestrator {
     });
     this.contradictionLinkingCoordinator = new ContradictionLinkingCoordinator({
       getConfig: () => this.config,
-      isSearchAvailable: () => this.isSearchAvailableForNamespaceRouting(),
+      isSearchAvailable: () => resolveNamespaceCapabilities(this.config).namespaces || this.qmd.isAvailable(),
       searchAcrossNamespaces: (options) => this.searchAcrossNamespaces(options),
       extractMemoryIdsFromResults: (results) => this.extractMemoryIdsFromResults(results),
       namespaceFromPath: (p) => this.namespaceFromPath(p),

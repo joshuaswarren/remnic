@@ -333,6 +333,9 @@ test("remnic converge apply: uses chunked offline-sync HTTP contracts for pull a
     if (url.includes("/remnic/v1/offline-sync/apply-file-content?namespace=default")) {
       return Response.json({ done: true, applied: true, skipped: false });
     }
+    if (url.includes("/remnic/v1/offline-sync/convergence-complete?namespace=default")) {
+      return Response.json({ namespaces: ["default"], refreshed: true });
+    }
     return new Response(null, { status: 404 });
   };
   const localBuffers = new Map<string, Map<string, Buffer>>([
@@ -503,7 +506,10 @@ test("remnic converge apply: local-wins guards against the planned peer revision
   const localSha256 = createHash("sha256").update(localContent).digest("hex");
   const peerSha256 = createHash("sha256").update(peerContent).digest("hex");
   let baseHeader: string | null = null;
-  const fetchImpl: typeof fetch = async (_input, init) => {
+  const fetchImpl: typeof fetch = async (input, init) => {
+    if (String(input).includes("/offline-sync/convergence-complete")) {
+      return Response.json({ namespaces: ["default"], refreshed: true });
+    }
     baseHeader = new Headers(init?.headers).get("x-remnic-base-sha256");
     return Response.json({ done: true, applied: true, skipped: false });
   };
@@ -527,4 +533,190 @@ test("remnic converge apply: local-wins guards against the planned peer revision
   assert.equal(result.transfers.conflictsResolved, 1);
   assert.equal(result.transfers.failed, 0);
   assert.equal(baseHeader, peerSha256);
+});
+
+test("remnic converge apply: finalizes each mutated peer namespace once after a successful batch", async () => {
+  const teamA = Buffer.from("team a");
+  const teamB = Buffer.from("team b");
+  const shared = Buffer.from("shared");
+  const buffers = new Map<string, Map<string, Buffer>>([
+    ["team", new Map([
+      ["facts/a.md", teamA],
+      ["facts/b.md", teamB],
+    ])],
+    ["shared", new Map([["facts/c.md", shared]])],
+  ]);
+  const localFiles = new Map<string, ReconcileFileState[]>([
+    ["team", [
+      { path: "facts/a.md", sha256: createHash("sha256").update(teamA).digest("hex") },
+      { path: "facts/b.md", sha256: createHash("sha256").update(teamB).digest("hex") },
+    ]],
+    ["shared", [
+      { path: "facts/c.md", sha256: createHash("sha256").update(shared).digest("hex") },
+    ]],
+  ]);
+  const finalized: string[][] = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/offline-sync/apply-file-content")) {
+      return Response.json({ done: true, applied: true, skipped: false });
+    }
+    if (url.pathname.endsWith("/offline-sync/convergence-complete")) {
+      assert.equal(new Headers(init?.headers).get("x-remnic-source-id"), "remnic-converge");
+      const namespaces = url.searchParams.getAll("namespace");
+      finalized.push(namespaces);
+      return Response.json({ namespaces, refreshed: true });
+    }
+    return new Response(null, { status: 404 });
+  };
+
+  const result = await executeConvergeApply({
+    peerUrl: "https://peer.example.test",
+    fetchImpl,
+    localFilesByNamespace: localFiles,
+    peerFilesByNamespace: new Map([
+      ["team", []],
+      ["shared", []],
+    ]),
+    localFileBuffers: buffers,
+  });
+
+  assert.equal(result.transfers.pushed, 3);
+  assert.equal(result.transfers.failed, 0);
+  assert.deepEqual(finalized, [["shared", "team"]]);
+});
+
+test("remnic converge apply: does not finalize peer namespaces after an incomplete batch", async () => {
+  const content = Buffer.from("local");
+  let finalizeCalls = 0;
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/offline-sync/convergence-complete")) {
+      finalizeCalls += 1;
+      return Response.json({ namespaces: ["team"], refreshed: true });
+    }
+    return Response.json({
+      done: true,
+      applied: false,
+      skipped: false,
+      conflict: { path: "facts/a.md", reason: "both_modified" },
+    });
+  };
+
+  const result = await executeConvergeApply({
+    peerUrl: "https://peer.example.test",
+    fetchImpl,
+    localFilesByNamespace: new Map([
+      ["team", [{
+        path: "facts/a.md",
+        sha256: createHash("sha256").update(content).digest("hex"),
+      }]],
+    ]),
+    peerFilesByNamespace: new Map([["team", []]]),
+    localFileBuffers: new Map([["team", new Map([["facts/a.md", content]])]]),
+  });
+
+  assert.equal(result.transfers.failed, 1);
+  assert.equal(finalizeCalls, 0);
+});
+
+test("remnic converge apply: finalizes completed namespaces when another namespace fails", async () => {
+  const team = Buffer.from("team");
+  const shared = Buffer.from("shared");
+  const finalized: string[][] = [];
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/offline-sync/convergence-complete")) {
+      const namespaces = url.searchParams.getAll("namespace");
+      finalized.push(namespaces);
+      return Response.json({ namespaces, refreshed: true });
+    }
+    if (url.searchParams.get("namespace") === "team") {
+      return Response.json({ done: true, applied: true, skipped: false });
+    }
+    return Response.json({
+      done: true,
+      applied: false,
+      skipped: false,
+      conflict: { path: "facts/shared.md", reason: "both_modified" },
+    });
+  };
+
+  const result = await executeConvergeApply({
+    peerUrl: "https://peer.example.test",
+    fetchImpl,
+    localFilesByNamespace: new Map([
+      ["team", [{ path: "facts/team.md", sha256: createHash("sha256").update(team).digest("hex") }]],
+      ["shared", [{ path: "facts/shared.md", sha256: createHash("sha256").update(shared).digest("hex") }]],
+    ]),
+    peerFilesByNamespace: new Map([
+      ["team", []],
+      ["shared", []],
+    ]),
+    localFileBuffers: new Map([
+      ["team", new Map([["facts/team.md", team]])],
+      ["shared", new Map([["facts/shared.md", shared]])],
+    ]),
+  });
+
+  assert.equal(result.transfers.failed, 1);
+  assert.deepEqual(finalized, [["team"]]);
+});
+
+test("remnic converge apply: does not finalize a peer namespace when every write is skipped", async () => {
+  const content = Buffer.from("already present");
+  let finalizeCalls = 0;
+  const fetchImpl: typeof fetch = async (input) => {
+    if (String(input).includes("/offline-sync/convergence-complete")) {
+      finalizeCalls += 1;
+      return Response.json({ namespaces: ["team"], refreshed: true });
+    }
+    return Response.json({ done: true, applied: false, skipped: true });
+  };
+
+  const result = await executeConvergeApply({
+    peerUrl: "https://peer.example.test",
+    fetchImpl,
+    localFilesByNamespace: new Map([
+      ["team", [{
+        path: "facts/a.md",
+        sha256: createHash("sha256").update(content).digest("hex"),
+      }]],
+    ]),
+    peerFilesByNamespace: new Map([["team", []]]),
+    localFileBuffers: new Map([["team", new Map([["facts/a.md", content]])]]),
+  });
+
+  assert.equal(result.transfers.failed, 0);
+  assert.equal(finalizeCalls, 0);
+});
+
+test("remnic converge apply: a failed peer refresh prevents convergence and cursor advancement", async () => {
+  const content = Buffer.from("local");
+  let finalizeCalls = 0;
+  const fetchImpl: typeof fetch = async (input) => {
+    if (String(input).includes("/offline-sync/convergence-complete")) {
+      finalizeCalls += 1;
+      return new Response(null, { status: 503 });
+    }
+    return Response.json({ done: true, applied: true, skipped: false });
+  };
+
+  const result = await executeConvergeApply({
+    peerUrl: "https://peer.example.test",
+    fetchImpl,
+    localFilesByNamespace: new Map([
+      ["team", [{
+        path: "facts/a.md",
+        sha256: createHash("sha256").update(content).digest("hex"),
+      }]],
+    ]),
+    peerFilesByNamespace: new Map([["team", []]]),
+    localFileBuffers: new Map([["team", new Map([["facts/a.md", content]])]]),
+  });
+
+  assert.equal(result.transfers.failed, 1);
+  assert.equal(result.converged, false);
+  assert.equal(result.cursorUpdated, false);
+  assert.equal(finalizeCalls, 1);
 });

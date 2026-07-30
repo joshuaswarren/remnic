@@ -3648,3 +3648,55 @@ test("HTTP authorization probe verifies requested operation grants without invok
     await server.stop();
   }
 });
+
+test("HTTP convergence completion forwards one authenticated namespace batch refresh", async () => {
+  const calls: Array<{ namespaces: string[]; principal?: string; sourceId: string }> = [];
+  const service = {
+    offlineSyncFinalizeConvergence: async (options: {
+      namespaces: string[];
+      principal?: string;
+      sourceId: string;
+    }) => {
+      calls.push(options);
+      return { namespaces: options.namespaces, refreshed: true as const };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "writer",
+    adminConsoleEnabled: false,
+  });
+  const route = "/remnic/v1/offline-sync/convergence-complete?namespace=team&namespace=shared";
+
+  const status = await server.start();
+  try {
+    const denied = await fetch(`http://127.0.0.1:${status.port}${route}`, {
+      method: "POST",
+      headers: { "x-remnic-source-id": encodeURIComponent("remnic-converge") },
+    });
+    assert.equal(denied.status, 401);
+
+    const response = await fetch(`http://127.0.0.1:${status.port}${route}`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+      },
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      namespaces: ["team", "shared"],
+      refreshed: true,
+    });
+    assert.deepEqual(calls, [{
+      namespaces: ["team", "shared"],
+      principal: "writer",
+      sourceId: "remnic-converge",
+    }]);
+  } finally {
+    await server.stop();
+  }
+});
