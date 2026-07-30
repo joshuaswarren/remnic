@@ -448,6 +448,7 @@ export async function checkDaemonHealth(
   port: number,
   timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
 ): Promise<boolean> {
+  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return false;
   const deadline = Date.now() + timeoutMs;
   try {
     const { request } = await import("node:http");

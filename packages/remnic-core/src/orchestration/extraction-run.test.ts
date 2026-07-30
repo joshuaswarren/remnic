@@ -980,3 +980,136 @@ test("namespace isolation: the provider breaker suppresses extraction across nam
     await h.cleanup();
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// Extraction liveness watermark (#2223): a successfully parsed extraction must
+// advance lastExtractionAt even when it emits no durable objects. Normal live
+// turns do not set persistProcessedFingerprint, which is the gap case.
+// ---------------------------------------------------------------------------
+
+function emptySuccessResult(): ExtractionResult {
+  return { facts: [], profileUpdates: [], entities: [], questions: [] };
+}
+
+// Normal live turns (TurnIngestionCoordinator.processTurn path) do NOT set
+// persistProcessedFingerprint — the case the pre-#2223 watermark stamp skipped.
+function liveTurns(content: string): BufferTurn[] {
+  return [
+    { role: "user", content: `u:${content}`, timestamp: "2026-07-15T00:00:00Z" },
+    { role: "assistant", content: `a:${content}`, timestamp: "2026-07-15T00:00:01Z" },
+  ] as BufferTurn[];
+}
+
+test("extraction liveness (#2223): a normal live empty success advances lastExtractionAt without persisting memories", async () => {
+  const h = await makeHarness();
+  try {
+    const coord = h.newCoordinator();
+    h.setRespond(() => emptySuccessResult());
+    const storage = await h.storageForNs("default");
+    const before = await storage.loadMeta();
+    const baselineCount = before.extractionCount;
+
+    const result = await coord.runExtraction(liveTurns("nothing-durable-here"), {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: false,
+      bufferKey: "nothing-durable-here",
+    });
+
+    assert.equal(result.status, "skipped");
+    assert.equal(result.reason, "empty_extraction_result");
+    assert.equal(h.persistCalls(), 0, "no durable memories persisted for an empty result");
+
+    const after = await storage.loadMeta();
+    assert.equal(after.extractionCount, baselineCount + 1, "empty success increments extractionCount");
+    assert.ok(after.lastExtractionAt, "empty success stamps lastExtractionAt");
+    assert.equal(h.recordedProcessedCount(), 0, "normal live turns never record a processed fingerprint");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("extraction liveness (#2223): a fingerprinted empty success advances the watermark once and records the fingerprint once", async () => {
+  const h = await makeHarness();
+  try {
+    const coord = h.newCoordinator();
+    h.setRespond(() => emptySuccessResult());
+    const storage = await h.storageForNs("default");
+    const before = await storage.loadMeta();
+    const baselineCount = before.extractionCount;
+
+    const result = await coord.runExtraction(makeTurns("fingerprinted-empty"), {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: false,
+      bufferKey: "fingerprinted-empty",
+    });
+
+    assert.equal(result.status, "skipped");
+    assert.equal(result.reason, "empty_extraction_result");
+    assert.equal(h.persistCalls(), 0);
+
+    const after = await storage.loadMeta();
+    assert.equal(after.extractionCount, baselineCount + 1, "fingerprinted empty success increments extractionCount exactly once");
+    assert.ok(after.lastExtractionAt, "fingerprinted empty success stamps lastExtractionAt");
+    assert.equal(h.recordedProcessedCount(), 1, "processed fingerprint recorded exactly once");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("extraction liveness (#2223): a non-empty success advances lastExtractionAt", async () => {
+  const h = await makeHarness();
+  try {
+    const coord = h.newCoordinator();
+    h.setRespond(() => successResult());
+    const storage = await h.storageForNs("default");
+    const before = await storage.loadMeta();
+    const baselineCount = before.extractionCount;
+
+    const result = await coord.runExtraction(makeTurns("durable-fact"), {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: false,
+      bufferKey: "durable-fact",
+    });
+
+    assert.equal(result.status, "completed");
+    assert.ok(h.persistCalls() >= 1);
+
+    const after = await storage.loadMeta();
+    assert.equal(after.extractionCount, baselineCount + 1, "non-empty success increments extractionCount");
+    assert.ok(after.lastExtractionAt, "non-empty success stamps lastExtractionAt");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("extraction liveness (#2223): a provider failure does not advance lastExtractionAt", async () => {
+  const h = await makeHarness({ extractionBreakerFailureThreshold: 100 });
+  try {
+    const coord = h.newCoordinator();
+    h.setRespond(() => failureResult("provider_retryable"));
+    const storage = await h.storageForNs("default");
+    const before = await storage.loadMeta();
+    const baselineWatermark = before.lastExtractionAt;
+    const baselineCount = before.extractionCount;
+
+    const result = await coord.runExtraction(makeTurns("failing-extraction"), {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: false,
+      bufferKey: "failing-extraction",
+    });
+
+    assert.equal(result.status, "skipped");
+    assert.equal(result.reason, "empty_extraction_result");
+
+    const after = await storage.loadMeta();
+    assert.equal(after.lastExtractionAt, baselineWatermark, "failure must not stamp lastExtractionAt");
+    assert.equal(after.extractionCount, baselineCount, "failure must not increment extractionCount");
+  } finally {
+    await h.cleanup();
+  }
+});
