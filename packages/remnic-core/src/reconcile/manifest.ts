@@ -35,6 +35,7 @@ export interface ReconcileManifest {
 export interface BuildReconcileManifestOptions {
   files: Iterable<ReconcileFileState>;
   readFile: (file: ReconcileFileState) => Promise<Buffer | string | null>;
+  cachedFiles?: Iterable<ReconcileManifestFile>;
 }
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
@@ -94,8 +95,19 @@ function parsedMemoryIdentity(filePath: string, raw: Buffer | string): Reconcile
 }
 
 export async function buildReconcileManifest(options: BuildReconcileManifestOptions): Promise<ReconcileManifest> {
+  const cachedByPath = new Map<string, ReconcileManifestFile>();
+  for (const cached of options.cachedFiles ?? []) {
+    cachedByPath.set(cached.path, cached);
+  }
+
   const files: ReconcileManifestFile[] = [];
   for (const file of options.files) {
+    const cached = cachedByPath.get(file.path);
+    if (cached?.sha256.toLowerCase() === file.sha256.toLowerCase()) {
+      files.push({ ...file, ...(cached.memory ? { memory: cached.memory } : {}) });
+      continue;
+    }
+
     let raw: Buffer | string | null = null;
     if (isMemoryPath(file.path)) {
       try {
@@ -236,7 +248,10 @@ export function collapseActiveFactDuplicates(
         return false;
       });
       const canonicalPath = localPath ?? peerPath;
-      if (!canonicalPath || sameSideEntries.length < 2) continue;
+      const hasSharedCanonical = localPath !== undefined && localPath === peerPath;
+      if (!canonicalPath || sameSideEntries.length === 0 || (!hasSharedCanonical && sameSideEntries.length < 2)) {
+        continue;
+      }
       for (const entry of sameSideEntries) {
         if (entry.path !== canonicalPath) {
           removed.add(entry);

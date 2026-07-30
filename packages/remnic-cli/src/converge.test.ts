@@ -605,3 +605,60 @@ test("remnic converge plan builds semantic manifests from local and peer memory 
     await fs.rm(cursorDir, { recursive: true, force: true });
   }
 });
+
+test("remnic converge plan reuses unchanged shared peer semantics to collapse cross-path duplicates", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-shared-manifest-"));
+  try {
+    const body = "same active fact at a shared path";
+    const semanticHash = ContentHashIndex.computeHash(body);
+    const memory = (id: string): string => [
+      "---",
+      `id: ${id}`,
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      `contentHash: ${semanticHash}`,
+      "status: active",
+      "---",
+      body,
+    ].join("\n");
+    const canonicalContent = memory("a");
+    const sharedContent = memory("z");
+    const sharedSha = createHash("sha256").update(sharedContent).digest("hex");
+    await fs.mkdir(path.join(rootDir, "facts"), { recursive: true });
+    await fs.writeFile(path.join(rootDir, "facts/a.md"), canonicalContent);
+    await fs.writeFile(path.join(rootDir, "facts/z.md"), sharedContent);
+    let peerContentRequests = 0;
+
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/offline-sync/snapshot")) {
+        return Response.json({
+          files:
+            url.searchParams.get("namespace") === "default"
+              ? [{ path: "facts/z.md", sha256: sharedSha, bytes: sharedContent.length, mtimeMs: 2000 }]
+              : [],
+          tombstones: [],
+        });
+      }
+      if (url.pathname.endsWith("/offline-sync/file-content")) {
+        peerContentRequests += 1;
+      }
+      return new Response(null, { status: 404 });
+    };
+
+    const plan = await computeConvergePlan({
+      config: parseConfig({ memoryDir: rootDir }),
+      peerUrl: "https://peer.example.test",
+      fetchImpl,
+    });
+
+    assert.equal(peerContentRequests, 0);
+    assert.equal(plan.converged, true, JSON.stringify(plan));
+    assert.deepEqual(plan.entries.map((entry) => [entry.path, entry.action, entry.reason]), [
+      ["facts/a.md", "identical", "semantic_duplicate"],
+    ]);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});

@@ -214,3 +214,48 @@ test("semantic collapse preserves same-path metadata updates", () => {
   assert.deepEqual(collapsed, plan);
   assert.equal(collapsed.entries[0]?.action, "push");
 });
+
+test("semantic collapse remains converged after transferring the canonical one-sided duplicate", () => {
+  const semanticHash = ContentHashIndex.computeHash("same one-sided fact");
+  const canonical = { path: "facts/a.md", sha256: "a".repeat(64) };
+  const duplicate = { path: "facts/b.md", sha256: "b".repeat(64) };
+  const manifest = (files: Array<{ path: string; sha256: string }>): ReconcileManifest => ({
+    format: "remnic-reconcile-manifest",
+    schemaVersion: 1,
+    files: files.map((file) => ({
+      ...file,
+      memory: {
+        id: file.path,
+        category: "fact",
+        contentHash: semanticHash,
+        status: "active",
+      },
+    })),
+  });
+  const localManifest = manifest([canonical, duplicate]);
+  const firstPlan = planReconciliation([{ namespace: "default", local: [canonical, duplicate], peer: [] }]);
+
+  const firstCollapsed = collapseActiveFactDuplicates(
+    firstPlan,
+    new Map([["default", localManifest]]),
+    new Map([["default", manifest([])]])
+  );
+
+  assert.deepEqual(
+    firstCollapsed.entries.map((entry) => [entry.path, entry.action]),
+    [[canonical.path, "push"]]
+  );
+
+  const rerunPlan = planReconciliation([{ namespace: "default", local: [canonical, duplicate], peer: [canonical] }]);
+  const rerunCollapsed = collapseActiveFactDuplicates(
+    rerunPlan,
+    new Map([["default", localManifest]]),
+    new Map([["default", manifest([canonical])]])
+  );
+
+  assert.equal(rerunCollapsed.converged, true, JSON.stringify(rerunCollapsed));
+  assert.deepEqual(
+    rerunCollapsed.entries.map((entry) => [entry.path, entry.action]),
+    [[canonical.path, "identical"]]
+  );
+});

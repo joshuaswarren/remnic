@@ -461,11 +461,11 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       const peerData = await fetchPeerSnapshot(peerUrl, ns, resolvedToken, fetchFn);
       peerMap.set(ns, peerData.files);
       peerTombstones.set(ns, peerData.tombstones);
-      const localPaths = new Set((localMap.get(ns) ?? []).map((file) => file.path));
       peerManifests.set(
         ns,
         await buildReconcileManifest({
-          files: peerData.files.filter((file) => !localPaths.has(file.path)),
+          files: peerData.files,
+          cachedFiles: localManifests.get(ns)?.files,
           readFile: async (file) => {
             const remote = await fetchPeerFileContent(peerUrl, ns, file.path, resolvedToken, fetchFn);
             if (!remote || remote.sha256 !== file.sha256) {
