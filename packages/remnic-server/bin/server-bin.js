@@ -15,6 +15,7 @@ Options:
   --host <addr>       Bind address (default: 127.0.0.1)
   --port <number>     Port number (default: 4318)
   --auth-token <tok>  Bearer token for auth (or set REMNIC_AUTH_TOKEN)
+  --healthcheck       Probe the protected health endpoint and exit
   --help              Show this help
 
 Environment:
