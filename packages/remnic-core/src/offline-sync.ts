@@ -54,6 +54,11 @@ export interface OfflineSyncFileDigest {
   bytes: number;
 }
 
+export interface OfflineSyncDeletionRevision {
+  path: string;
+  mtimeMs: number;
+}
+
 export interface OfflineSyncSnapshot {
   format: typeof OFFLINE_SYNC_SNAPSHOT_FORMAT;
   schemaVersion: 1;
@@ -61,6 +66,7 @@ export interface OfflineSyncSnapshot {
   sourceId: string;
   includeTranscripts: boolean;
   files: OfflineSyncFileRecord[];
+  deletions?: OfflineSyncDeletionRevision[];
 }
 
 export type OfflineSyncChange =
@@ -74,6 +80,7 @@ export type OfflineSyncChange =
       type: "delete";
       path: string;
       baseSha256: string;
+      mtimeMs?: number;
     };
 
 export interface OfflineSyncChangeset {
@@ -139,6 +146,14 @@ export interface OfflineSyncFileTarget {
   path: string;
   filePath: string;
 }
+
+export interface OfflineSyncFileDeleteTarget extends OfflineSyncFileTarget {
+  mtimeMs?: number;
+}
+
+export type OfflineSyncRecordDeletionRevision = (
+  target: OfflineSyncFileDeleteTarget & { mtimeMs: number },
+) => Promise<void>;
 
 export interface OfflineSyncFileWriteTarget extends OfflineSyncFileTarget {
   content: Buffer;
@@ -360,6 +375,88 @@ function normalizeFileStates(input: readonly unknown[] | undefined): OfflineSync
   return input.map((entry, index) => normalizeFileState(entry, `baseFiles[${index}]`));
 }
 
+function normalizeDeletionRevisions(
+  input: unknown,
+  fieldPrefix: string,
+): OfflineSyncDeletionRevision[] | undefined {
+  if (input === undefined) return undefined;
+  if (!Array.isArray(input)) {
+    throw new Error(`${fieldPrefix} must be an array`);
+  }
+  const deletions = input.map((entry, index): OfflineSyncDeletionRevision => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`${fieldPrefix}[${index}] must be an object`);
+    }
+    const obj = entry as Record<string, unknown>;
+    return {
+      path: normalizeRelativePath(obj.path, `${fieldPrefix}[${index}].path`),
+      mtimeMs: assertOfflineSyncMtimeMs(obj.mtimeMs, `${fieldPrefix}[${index}].mtimeMs`),
+    };
+  });
+  assertUniquePaths(deletions, fieldPrefix);
+  return deletions.sort(compareByPath);
+}
+
+function snapshotBuilderDeletions(options: {
+  deletions?: readonly OfflineSyncDeletionRevision[];
+  files: readonly OfflineSyncFileState[];
+  paths?: readonly string[];
+  includeTranscripts: boolean;
+  excludeNodeLocalState?: boolean;
+  userExcludeRegexps?: readonly RegExp[];
+}): OfflineSyncDeletionRevision[] | undefined {
+  const deletions = normalizeDeletionRevisions(options.deletions, "deletions");
+  if (deletions === undefined) return undefined;
+  if (deletions.length === 0) return deletions;
+  const presentPaths = new Set(options.files.map((file) => file.path.toLowerCase()));
+  const scopedPaths = options.paths
+    ? new Set(options.paths.map((relPath) => relPath.toLowerCase()))
+    : undefined;
+  return deletions.filter((deletion) =>
+    (scopedPaths === undefined || scopedPaths.has(deletion.path.toLowerCase())) &&
+    !presentPaths.has(deletion.path.toLowerCase()) &&
+    !(options.excludeNodeLocalState === false
+      ? shouldExcludeRelPath(deletion.path, options.includeTranscripts)
+      : shouldExcludePushRelPath(
+          deletion.path,
+          options.includeTranscripts,
+          options.userExcludeRegexps,
+        )));
+}
+
+export async function filterOfflineSyncDeletionRevisions(options: {
+  root: string;
+  deletions: readonly OfflineSyncDeletionRevision[];
+  includeTranscripts?: boolean;
+  userExcludeRegexps?: readonly RegExp[];
+}): Promise<OfflineSyncDeletionRevision[]> {
+  const deletions = normalizeDeletionRevisions(options.deletions, "deletions");
+  if (deletions === undefined) throw new Error("deletions must be an array");
+  if (deletions.length === 0) return deletions;
+  const root = await prepareSafeArchiveRoot(
+    path.resolve(options.root),
+    "filterOfflineSyncDeletionRevisions",
+    "root",
+  );
+  const includeTranscripts = options.includeTranscripts !== false;
+  const filtered: OfflineSyncDeletionRevision[] = [];
+  for (const deletion of deletions) {
+    if (shouldExcludePushRelPath(deletion.path, includeTranscripts, options.userExcludeRegexps)) {
+      continue;
+    }
+    const filePath = path.join(root.abs, ...deletion.path.split("/"));
+    const present = await lstat(filePath).then(
+      () => true,
+      (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      },
+    );
+    if (!present) filtered.push(deletion);
+  }
+  return filtered;
+}
+
 export function normalizeOfflineSyncSnapshot(
   input: unknown,
   options: { requireContent?: boolean } = {},
@@ -385,16 +482,21 @@ export function normalizeOfflineSyncSnapshot(
       normalizeFileRecord(entry, `files[${index}]`, options.requireContent === true))
     .filter((file) => !shouldIgnoreIncomingRuntimePath(file.path))
     .sort(compareByPath);
-  assertUniquePaths(files, "offline sync snapshot");
+  const deletions = normalizeDeletionRevisions(obj.deletions, "deletions")
+    ?.filter((deletion) => !shouldIgnoreIncomingRuntimePath(deletion.path));
+  const entries = deletions && deletions.length > 0 ? [...files, ...deletions] : files;
+  assertUniquePaths(entries, "offline sync snapshot");
   if (!includeTranscripts) {
-    const transcriptPath = files.find((file) => file.path.split("/")[0] === "transcripts")?.path;
+    const transcriptPath = entries
+      .find((entry) => entry.path.split("/")[0] === "transcripts")?.path;
     if (transcriptPath) {
       throw new Error(
         `offline sync snapshot includeTranscripts is false but contains transcript path: ${transcriptPath}`,
       );
     }
   }
-  const excludedPath = files.find((file) => shouldExcludeRelPath(file.path, true))?.path;
+  const excludedPath = entries
+    .find((entry) => shouldExcludeRelPath(entry.path, true))?.path;
   if (excludedPath) {
     throw new Error(`offline sync snapshot contains excluded path: ${excludedPath}`);
   }
@@ -405,6 +507,7 @@ export function normalizeOfflineSyncSnapshot(
     sourceId,
     includeTranscripts,
     files,
+    ...(deletions === undefined ? {} : { deletions }),
   };
 }
 
@@ -455,10 +558,14 @@ export function normalizeOfflineSyncChangeset(
       };
     }
     if (type === "delete") {
+      const mtimeMs = change.mtimeMs === undefined
+        ? undefined
+        : assertOfflineSyncMtimeMs(change.mtimeMs, `changes[${index}].mtimeMs`);
       return {
         type: "delete",
         path: relPath,
         baseSha256: assertSha256(change.baseSha256, `changes[${index}].baseSha256`),
+        ...(mtimeMs === undefined ? {} : { mtimeMs }),
       };
     }
     throw new Error(`changes[${index}].type must be "upsert" or "delete"`);
@@ -836,6 +943,7 @@ export async function buildOfflineSyncSnapshot(options: {
   root: string;
   sourceId: string;
   includeContent?: boolean;
+  deletions?: readonly OfflineSyncDeletionRevision[];
   includeTranscripts?: boolean;
   now?: Date;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
@@ -857,13 +965,22 @@ export async function buildOfflineSyncSnapshot(options: {
   for await (const file of iterateOfflineSyncSnapshotFileRecords(options)) files.push(file);
   throwIfOfflineSyncAborted(options.signal);
 
+  const sortedFiles = files.sort(compareByPath);
+  const deletions = snapshotBuilderDeletions({
+    deletions: options.deletions,
+    files: sortedFiles,
+    includeTranscripts,
+    excludeNodeLocalState: options.excludeNodeLocalState,
+    userExcludeRegexps: options.userExcludeRegexps,
+  });
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
     schemaVersion: 1,
     createdAt: (options.now ?? new Date()).toISOString(),
     sourceId: normalizeSourceId(options.sourceId, "sourceId"),
     includeTranscripts,
-    files: files.sort(compareByPath),
+    files: sortedFiles,
+    ...(deletions === undefined ? {} : { deletions }),
   };
 }
 
@@ -871,6 +988,7 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
   root: string;
   sourceId: string;
   baseFiles?: readonly OfflineSyncFileState[];
+  deletions?: readonly OfflineSyncDeletionRevision[];
   baseCapturedAt?: Date;
   includeContent?: boolean;
   includeTranscripts?: boolean;
@@ -947,13 +1065,22 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
   await walk(root.abs);
   throwIfOfflineSyncAborted(options.signal);
 
+  const sortedFiles = files.sort(compareByPath);
+  const deletions = snapshotBuilderDeletions({
+    deletions: options.deletions,
+    files: sortedFiles,
+    includeTranscripts,
+    excludeNodeLocalState: options.excludeNodeLocalState,
+    userExcludeRegexps: options.userExcludeRegexps,
+  });
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
     schemaVersion: 1,
     createdAt: (options.now ?? new Date()).toISOString(),
     sourceId: normalizeSourceId(options.sourceId, "sourceId"),
     includeTranscripts,
-    files: files.sort(compareByPath),
+    files: sortedFiles,
+    ...(deletions === undefined ? {} : { deletions }),
   };
 }
 
@@ -961,6 +1088,7 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
   root: string;
   sourceId: string;
   paths: readonly string[];
+  deletions?: readonly OfflineSyncDeletionRevision[];
   includeContent?: boolean;
   includeTranscripts?: boolean;
   now?: Date;
@@ -1014,13 +1142,23 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
   }
   throwIfOfflineSyncAborted(options.signal);
 
+  const sortedFiles = files.sort(compareByPath);
+  const deletions = snapshotBuilderDeletions({
+    deletions: options.deletions,
+    files: sortedFiles,
+    paths: [...seen],
+    includeTranscripts,
+    excludeNodeLocalState: options.excludeNodeLocalState,
+    userExcludeRegexps: options.userExcludeRegexps,
+  });
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
     schemaVersion: 1,
     createdAt: (options.now ?? new Date()).toISOString(),
     sourceId: normalizeSourceId(options.sourceId, "sourceId"),
     includeTranscripts,
-    files: files.sort(compareByPath),
+    files: sortedFiles,
+    ...(deletions === undefined ? {} : { deletions }),
   };
 }
 
@@ -1116,6 +1254,7 @@ export async function buildOfflineSyncChangeset(options: {
   root: string;
   sourceId: string;
   baseFiles?: readonly OfflineSyncFileState[];
+  deletions?: readonly OfflineSyncDeletionRevision[];
   baseCapturedAt?: Date;
   excludePaths?: readonly string[];
   includeTranscripts?: boolean;
@@ -1137,6 +1276,7 @@ export async function buildOfflineSyncChangeset(options: {
     root: options.root,
     sourceId: options.sourceId,
     baseFiles: options.baseFiles,
+    deletions: options.deletions,
     baseCapturedAt: options.baseCapturedAt,
     includeContent: false,
     includeTranscripts,
@@ -1150,6 +1290,7 @@ export async function buildOfflineSyncChangeset(options: {
     sourceId: options.sourceId,
     baseFiles: options.baseFiles,
     currentFiles: current.files,
+    deletions: current.deletions,
     excludePaths: options.excludePaths,
     includeTranscripts,
     now: options.now,
@@ -1163,6 +1304,7 @@ export async function buildOfflineSyncChangesetFromSnapshot(options: {
   sourceId: string;
   currentFiles: readonly OfflineSyncFileState[];
   baseFiles?: readonly OfflineSyncFileState[];
+  deletions?: readonly OfflineSyncDeletionRevision[];
   excludePaths?: readonly string[];
   includeTranscripts?: boolean;
   now?: Date;
@@ -1189,6 +1331,10 @@ export async function buildOfflineSyncChangesetFromSnapshot(options: {
     normalizeFileStates(options.currentFiles),
     includeTranscripts,
   ));
+  const deletions = normalizeDeletionRevisions(options.deletions, "deletions");
+  const deletionMtimeByPath = deletions === undefined
+    ? undefined
+    : new Map(deletions.map((deletion) => [deletion.path, deletion.mtimeMs] as const));
   const changes: OfflineSyncChange[] = [];
 
   for (const relPath of unionPaths(base, currentMap)) {
@@ -1226,10 +1372,12 @@ export async function buildOfflineSyncChangesetFromSnapshot(options: {
       continue;
     }
     if (!currentEntry && baseEntry) {
+      const mtimeMs = deletionMtimeByPath?.get(relPath);
       changes.push({
         type: "delete",
         path: relPath,
         baseSha256: baseEntry.sha256,
+        ...(mtimeMs === undefined ? {} : { mtimeMs }),
       });
     }
   }
@@ -1353,7 +1501,8 @@ export async function applyOfflineSyncSnapshot(options: {
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
-  deleteFile?: (target: OfflineSyncFileTarget) => Promise<void>;
+  deleteFile?: (target: OfflineSyncFileDeleteTarget) => Promise<void>;
+  recordDeletionRevision?: OfflineSyncRecordDeletionRevision;
 }): Promise<OfflineSyncApplySnapshotResult> {
   const snapshot = normalizeOfflineSyncSnapshot(options.snapshot);
   const baseMap = byPath(filterBaseFilesForMode(
@@ -1361,6 +1510,9 @@ export async function applyOfflineSyncSnapshot(options: {
     snapshot.includeTranscripts,
   ));
   const incomingMap = byPath(snapshot.files);
+  const deletionMtimeByPath = snapshot.deletions === undefined
+    ? undefined
+    : new Map(snapshot.deletions.map((deletion) => [deletion.path, deletion.mtimeMs] as const));
   const incomingBuffers = verifyRecordContents(snapshot.files, "offline sync snapshot", {
     requireContent: false,
   });
@@ -1378,6 +1530,23 @@ export async function applyOfflineSyncSnapshot(options: {
       })).files;
   const currentMap = byPath(currentFiles);
   const deferredPaths = new Set(options.deferredPaths ?? []);
+  if (deletionMtimeByPath && options.recordDeletionRevision) {
+    for (const [relPath, mtimeMs] of deletionMtimeByPath) {
+      if (
+        currentMap.has(relPath) ||
+        deferredPaths.has(relPath) ||
+        matchesOfflineSyncDefaultExclude(relPath)
+      ) {
+        continue;
+      }
+      await options.recordDeletionRevision({
+        root: root.abs,
+        path: relPath,
+        filePath: await resolveSafeArchiveTarget(root, relPath),
+        mtimeMs,
+      });
+    }
+  }
   const nextBase = new Map(baseMap);
   const conflicts: OfflineSyncConflict[] = [];
   let upserted = 0;
@@ -1500,7 +1669,12 @@ export async function applyOfflineSyncSnapshot(options: {
       shouldPreferIncomingOfflineRuntimeFile(relPath) &&
       (base || shouldDeleteAbsentIncomingOfflineRuntimeFile(relPath))
     ) {
-      await deleteSafeFile(root, relPath, options.deleteFile);
+      await deleteSafeFile(
+        root,
+        relPath,
+        options.deleteFile,
+        deletionMtimeByPath?.get(relPath),
+      );
       nextBase.delete(relPath);
       deleted += 1;
       continue;
@@ -1511,7 +1685,12 @@ export async function applyOfflineSyncSnapshot(options: {
       continue;
     }
     if (base && currentEntry.sha256 === base.sha256) {
-      await deleteSafeFile(root, relPath, options.deleteFile);
+      await deleteSafeFile(
+        root,
+        relPath,
+        options.deleteFile,
+        deletionMtimeByPath?.get(relPath),
+      );
       nextBase.delete(relPath);
       deleted += 1;
       continue;
@@ -1549,7 +1728,8 @@ export async function applyOfflineSyncChangeset(options: {
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
-  deleteFile?: (target: OfflineSyncFileTarget) => Promise<void>;
+  deleteFile?: (target: OfflineSyncFileDeleteTarget) => Promise<void>;
+  recordDeletionRevision?: OfflineSyncRecordDeletionRevision;
 }): Promise<OfflineSyncApplyChangesetResult> {
   let changeset: OfflineSyncChangeset;
   try {
@@ -1640,11 +1820,19 @@ export async function applyOfflineSyncChangeset(options: {
     }
 
     if (!currentEntry) {
+      if (change.mtimeMs !== undefined && options.recordDeletionRevision) {
+        await options.recordDeletionRevision({
+          root: root.abs,
+          path: change.path,
+          filePath: await resolveSafeArchiveTarget(root, change.path),
+          mtimeMs: change.mtimeMs,
+        });
+      }
       skipped += 1;
       continue;
     }
     if (currentEntry.sha256 === change.baseSha256) {
-      await deleteSafeFile(root, change.path, options.deleteFile);
+      await deleteSafeFile(root, change.path, options.deleteFile, change.mtimeMs);
       currentMap.delete(change.path);
       appliedDeletes += 1;
       continue;
@@ -2320,11 +2508,17 @@ async function writeOfflineUploadContent(options: {
 async function deleteSafeFile(
   root: SafeArchiveRoot,
   relPath: string,
-  deleteFile?: (target: OfflineSyncFileTarget) => Promise<void>,
+  deleteFile?: (target: OfflineSyncFileDeleteTarget) => Promise<void>,
+  mtimeMs?: number,
 ): Promise<void> {
   const target = await resolveSafeArchiveTarget(root, relPath);
   if (deleteFile) {
-    await deleteFile({ root: root.abs, path: relPath, filePath: target });
+    await deleteFile({
+      root: root.abs,
+      path: relPath,
+      filePath: target,
+      ...(mtimeMs === undefined ? {} : { mtimeMs }),
+    });
     return;
   }
   await unlink(target).catch((error: unknown) => {

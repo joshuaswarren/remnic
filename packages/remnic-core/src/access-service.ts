@@ -283,6 +283,7 @@ import {
   buildOfflineSyncSnapshotFromBase,
   buildOfflineSyncSnapshotForPaths,
   iterateOfflineSyncSnapshotFileRecords,
+  filterOfflineSyncDeletionRevisions,
   OFFLINE_SYNC_SNAPSHOT_FORMAT,
   readOfflineSyncFileContentChunk,
   type OfflineSyncApplyFileContentChunkResult,
@@ -5489,6 +5490,8 @@ export class EngramAccessService {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await offlineSyncStorageForSnapshot(this.orchestrator, resolvedNamespace);
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
+    const deletions = [...await storage.readDeletionRevisions()]
+      .map(([path, mtimeMs]) => ({ path, mtimeMs }));
     const snapshotBuilder = options.includeContent === false && options.baseFiles && options.baseFiles.length > 0
       ? buildOfflineSyncSnapshotFromBase
       : buildOfflineSyncSnapshot;
@@ -5502,6 +5505,7 @@ export class EngramAccessService {
       readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
       signal: options.signal,
       userExcludeRegexps: this.offlineSyncUserExcludes,
+      deletions,
     });
     return {
       namespace: resolvedNamespace,
@@ -5515,6 +5519,13 @@ export class EngramAccessService {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await offlineSyncStorageForSnapshot(this.orchestrator, resolvedNamespace);
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
+    const deletions = await filterOfflineSyncDeletionRevisions({
+      root: storage.dir,
+      deletions: [...await storage.readDeletionRevisions()]
+        .map(([path, mtimeMs]) => ({ path, mtimeMs })),
+      includeTranscripts: options.includeTranscripts !== false,
+      userExcludeRegexps: this.offlineSyncUserExcludes,
+    });
     return {
       namespace: resolvedNamespace,
       format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
@@ -5522,6 +5533,7 @@ export class EngramAccessService {
       createdAt: new Date().toISOString(),
       sourceId: `remnic:${resolvedNamespace}:${storageHash}`,
       includeTranscripts: options.includeTranscripts !== false,
+      deletions,
       files: iterateOfflineSyncSnapshotFileRecords({
         root: storage.dir,
         includeContent: options.includeContent === true,
@@ -5705,7 +5717,10 @@ export class EngramAccessService {
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
         writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
-        deleteFile: async ({ filePath }) => storage.deleteOfflineSyncFile(filePath),
+        deleteFile: async ({ filePath, mtimeMs }) =>
+          storage.deleteOfflineSyncFile(filePath, mtimeMs ?? null),
+        recordDeletionRevision: async ({ filePath, mtimeMs }) =>
+          storage.recordReplicatedDeletionRevision(filePath, mtimeMs),
       });
       return {
         namespace: resolvedNamespace,

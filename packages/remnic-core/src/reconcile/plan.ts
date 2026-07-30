@@ -62,6 +62,8 @@ export interface ReconcilePlanEntry {
   baseSha256?: string;
   /** Set only when `action` is `conflict`. */
   resolution?: ReconcileResolution;
+  /** Original revision time when conflict resolution propagates a deletion. */
+  deletionMtimeMs?: number;
   /**
    * Which side holds the retracted revision. Set only when `action` is
    * `suppress`: with different digests on each side and only one retracted,
@@ -652,6 +654,15 @@ export function planNamespaceReconciliation(
       // a deliberate deletion. Without a base the peer simply never saw the
       // path, and a bootstrap merge must push — both sides hold unique data.
       if (baseSha256 !== undefined) {
+        const peerDeletionMtime = peerDeletionMtimeMs.get(path);
+        const resolution = baseSha256 === localFile.sha256
+          ? "unresolved"
+          : resolveConflict(
+              policy,
+              localFile.mtimeMs,
+              peerDeletionMtime,
+              "unresolved",
+            );
         entries.push({
           path,
           namespace,
@@ -659,14 +670,10 @@ export function planNamespaceReconciliation(
           reason: baseSha256 === localFile.sha256 ? "peer_deleted" : "local_modified_peer_deleted",
           localSha256: localFile.sha256,
           baseSha256,
-          resolution: baseSha256 === localFile.sha256
-            ? "unresolved"
-            : resolveConflict(
-                policy,
-                localFile.mtimeMs,
-                peerDeletionMtimeMs.get(path),
-                "unresolved",
-              ),
+          resolution,
+          ...(resolution === "peer-wins" && peerDeletionMtime !== undefined
+            ? { deletionMtimeMs: peerDeletionMtime }
+            : {}),
         });
         continue;
       }
@@ -756,6 +763,15 @@ export function planNamespaceReconciliation(
       continue;
     }
     if (baseSha256 !== undefined) {
+      const localDeletionMtime = localDeletionMtimeMs.get(path);
+      const resolution = baseSha256 === peerFile.sha256
+        ? "unresolved"
+        : resolveConflict(
+            policy,
+            localDeletionMtime,
+            peerFile.mtimeMs,
+            "unresolved",
+          );
       entries.push({
         path,
         namespace,
@@ -763,14 +779,10 @@ export function planNamespaceReconciliation(
         reason: baseSha256 === peerFile.sha256 ? "local_deleted" : "local_deleted_peer_modified",
         peerSha256: peerFile.sha256,
         baseSha256,
-        resolution: baseSha256 === peerFile.sha256
-          ? "unresolved"
-          : resolveConflict(
-              policy,
-              localDeletionMtimeMs.get(path),
-              peerFile.mtimeMs,
-              "unresolved",
-            ),
+        resolution,
+        ...(resolution === "local-wins" && localDeletionMtime !== undefined
+          ? { deletionMtimeMs: localDeletionMtime }
+          : {}),
       });
       continue;
     }

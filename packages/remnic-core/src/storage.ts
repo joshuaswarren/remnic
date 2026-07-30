@@ -4,15 +4,17 @@ import {
   readdir,
   readFile,
   realpath,
+  rename,
   stat,
   writeFile,
   mkdir,
   unlink,
   appendFile,
   open,
+  type FileHandle,
 } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
 import path from "node:path";
 import { log } from "./logger.js";
@@ -49,6 +51,7 @@ export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
+import { withHeldFileLock, type HeldFileLockController } from "./utils/serialize-mutations.js";
 import { qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 import {
   clearMemoryCache,
@@ -263,6 +266,33 @@ type OfflineSyncDigestCacheEntry = {
   sha256: string;
   bytes: number;
 };
+
+type DeletionRevisionMetadata = {
+  version: 1;
+  deletions: Array<{ path: string; mtimeMs: number }>;
+};
+
+const DELETION_REVISION_MAX_MTIME_MS = 8_640_000_000_000_000;
+const DELETION_REVISION_LOCK_STALE_MS = 60_000;
+const DELETION_REVISION_LOCK_MAX_WAIT_MS = 120_000;
+
+function isValidDeletionRevisionPath(value: unknown): value is string {
+  return (
+    typeof value === "string"
+    && value.length > 0
+    && !value.includes("\\")
+    && !value.includes("\0")
+    && !path.posix.isAbsolute(value)
+    && path.posix.normalize(value) === value
+    && value !== "."
+    && value !== ".."
+    && !value.startsWith("../")
+  );
+}
+
+function deletionRevisionPathIdentity(value: string): string {
+  return value.normalize("NFC").toUpperCase().toLowerCase().replace(/\u00df/g, "ss");
+}
 
 export interface ReextractJobRequest {
   memoryId: string;
@@ -2646,6 +2676,233 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return resolved;
   }
 
+
+  private parseDeletionRevisionMetadata(raw: string): Map<string, number> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("Deletion revision metadata is invalid.");
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Deletion revision metadata is invalid.");
+    }
+    const root = parsed as Record<string, unknown>;
+    if (
+      Object.keys(root).sort().join(",") !== "deletions,version"
+      || root.version !== 1
+      || !Array.isArray(root.deletions)
+    ) {
+      throw new Error("Deletion revision metadata is invalid.");
+    }
+    const revisions = new Map<string, number>();
+    const pathByIdentity = new Map<string, string>();
+    for (const rawEntry of root.deletions) {
+      if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+        throw new Error("Deletion revision metadata is invalid.");
+      }
+      const entry = rawEntry as Record<string, unknown>;
+      if (
+        Object.keys(entry).sort().join(",") !== "mtimeMs,path"
+        || !isValidDeletionRevisionPath(entry.path)
+        || typeof entry.mtimeMs !== "number"
+        || !Number.isFinite(entry.mtimeMs)
+        || entry.mtimeMs < 0
+        || entry.mtimeMs > DELETION_REVISION_MAX_MTIME_MS
+        || revisions.has(entry.path)
+      ) {
+        throw new Error("Deletion revision metadata is invalid.");
+      }
+      const identity = deletionRevisionPathIdentity(entry.path);
+      if (pathByIdentity.has(identity)) {
+        throw new Error("Deletion revision metadata is invalid.");
+      }
+      pathByIdentity.set(identity, entry.path);
+      revisions.set(entry.path, entry.mtimeMs);
+    }
+    return new Map(
+      [...revisions.entries()].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+    );
+  }
+
+  private async readDeletionRevisionMetadata(): Promise<Map<string, number>> {
+    let raw: string;
+    try {
+      raw = await readFile(this.deletionRevisionMetadataPath, "utf8");
+    } catch (error) {
+      if (isErrnoCode(error, "ENOENT")) return new Map();
+      throw new Error("Deletion revision metadata is unavailable.");
+    }
+    return this.parseDeletionRevisionMetadata(raw);
+  }
+
+  private async writeDeletionRevisionMetadata(
+    revisions: ReadonlyMap<string, number>,
+    lock: HeldFileLockController
+  ): Promise<void> {
+    const deletions = [...revisions.entries()]
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([entryPath, mtimeMs]) => ({ path: entryPath, mtimeMs }));
+    const metadata: DeletionRevisionMetadata = { version: 1, deletions };
+    const temporaryPath =
+      `${this.deletionRevisionMetadataPath}.${process.pid}.${randomUUID()}.tmp`;
+    let handle: FileHandle | null = null;
+    try {
+      handle = await open(temporaryPath, "wx", 0o600);
+      await handle.writeFile(`${JSON.stringify(metadata)}\n`, "utf8");
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      if (!(await lock.refresh())) {
+        throw new Error("Deletion revision metadata lock was lost.");
+      }
+      await rename(temporaryPath, this.deletionRevisionMetadataPath);
+    } finally {
+      if (handle !== null) await handle.close().catch(() => undefined);
+      await unlink(temporaryPath).catch((error: unknown) => {
+        if (!isErrnoCode(error, "ENOENT")) throw error;
+      });
+    }
+  }
+
+  private async withDeletionRevisionLock<T>(
+    task: (lock: HeldFileLockController) => Promise<T>
+  ): Promise<T> {
+    return withHeldFileLock(
+      this.deletionRevisionLockPath,
+      {
+        staleMs: DELETION_REVISION_LOCK_STALE_MS,
+        maxWaitMs: DELETION_REVISION_LOCK_MAX_WAIT_MS,
+      },
+      async (acquired, lock) => {
+        if (!acquired) throw new Error("Deletion revision metadata lock is unavailable.");
+        return task(lock);
+      }
+    );
+  }
+
+  async readDeletionRevisions(): Promise<ReadonlyMap<string, number>> {
+    return this.withDeletionRevisionLock(async () => this.readDeletionRevisionMetadata());
+  }
+
+  async recordReplicatedDeletionRevision(filePath: string, mtimeMs: number): Promise<void> {
+    const target = this.assertManagedStoragePath(
+      filePath,
+      "storage.recordReplicatedDeletionRevision"
+    );
+    if (
+      typeof mtimeMs !== "number"
+      || !Number.isFinite(mtimeMs)
+      || mtimeMs < 0
+      || mtimeMs > DELETION_REVISION_MAX_MTIME_MS
+    ) {
+      throw new Error("Deletion revision timestamp is invalid.");
+    }
+    const relativePath = path.relative(this.baseDir, target).split(path.sep).join("/");
+    if (!isValidDeletionRevisionPath(relativePath)) {
+      throw new Error("Deletion revision path is invalid.");
+    }
+    await this.withDeletionRevisionLock(async (lock) => {
+      const revisions = await this.readDeletionRevisionMetadata();
+      const identity = deletionRevisionPathIdentity(relativePath);
+      let existingPath: string | undefined;
+      for (const candidatePath of revisions.keys()) {
+        if (deletionRevisionPathIdentity(candidatePath) === identity) {
+          existingPath = candidatePath;
+          break;
+        }
+      }
+      const existingMtimeMs =
+        existingPath === undefined ? undefined : revisions.get(existingPath);
+      if (existingMtimeMs !== undefined && existingMtimeMs >= mtimeMs) return;
+
+      const updated = new Map(revisions);
+      if (existingPath !== undefined) updated.delete(existingPath);
+      updated.set(relativePath, mtimeMs);
+      await this.writeDeletionRevisionMetadata(updated, lock);
+    });
+  }
+
+  protected async writeManagedStorageFile(
+    filePath: string,
+    write: () => Promise<void>
+  ): Promise<void> {
+    const target = this.assertManagedStoragePath(filePath, "storage.writeManagedStorageFile");
+    const relativePath = path.relative(this.baseDir, target).split(path.sep).join("/");
+    if (!isValidDeletionRevisionPath(relativePath)) {
+      throw new Error("Deletion revision path is invalid.");
+    }
+    await this.withDeletionRevisionLock(async (lock) => {
+      const before = await this.readDeletionRevisionMetadata();
+      const identity = deletionRevisionPathIdentity(relativePath);
+      const existingPath = [...before.keys()]
+        .find((candidatePath) => deletionRevisionPathIdentity(candidatePath) === identity);
+      await write();
+      if (existingPath === undefined) return;
+      const updated = new Map(before);
+      updated.delete(existingPath);
+      await this.writeDeletionRevisionMetadata(updated, lock);
+    });
+  }
+
+  protected async deleteManagedStorageFile(
+    filePath: string,
+    deletionMtimeMs?: number | null
+  ): Promise<boolean> {
+    const target = this.assertManagedStoragePath(filePath, "storage.deleteManagedStorageFile");
+    if (
+      deletionMtimeMs !== undefined && deletionMtimeMs !== null
+      && (
+        typeof deletionMtimeMs !== "number"
+        || !Number.isFinite(deletionMtimeMs)
+        || deletionMtimeMs < 0
+        || deletionMtimeMs > DELETION_REVISION_MAX_MTIME_MS
+      )
+    ) {
+      throw new Error("Deletion revision timestamp is invalid.");
+    }
+    return this.withDeletionRevisionLock(async (lock) => {
+      try {
+        await lstat(target);
+      } catch (error) {
+        if (isErrnoCode(error, "ENOENT")) return false;
+        throw error;
+      }
+      const relativePath = path.relative(this.baseDir, target).split(path.sep).join("/");
+      if (!isValidDeletionRevisionPath(relativePath)) {
+        throw new Error("Deletion revision path is invalid.");
+      }
+      const revision = deletionMtimeMs === null ? undefined : deletionMtimeMs ?? Date.now();
+      const before = await this.readDeletionRevisionMetadata();
+      const identity = deletionRevisionPathIdentity(relativePath);
+      let existingPath: string | undefined;
+      for (const candidatePath of before.keys()) {
+        if (deletionRevisionPathIdentity(candidatePath) === identity) {
+          existingPath = candidatePath;
+          break;
+        }
+      }
+      const existing = existingPath === undefined ? undefined : before.get(existingPath);
+      const changed =
+        (existingPath !== undefined && existingPath !== relativePath)
+        || (revision === undefined ? existing !== undefined : existing !== revision);
+      if (changed) {
+        const updated = new Map(before);
+        if (existingPath !== undefined) updated.delete(existingPath);
+        if (revision !== undefined) updated.set(relativePath, revision);
+        await this.writeDeletionRevisionMetadata(updated, lock);
+      }
+      try {
+        await unlink(target);
+        return true;
+      } catch (error) {
+        if (changed) await this.writeDeletionRevisionMetadata(before, lock);
+        if (isErrnoCode(error, "ENOENT")) return false;
+        throw error;
+      }
+    });
+  }
+
   async readOfflineSyncFile(filePath: string): Promise<Buffer> {
     const target = this.assertManagedStoragePath(filePath, "storage.readOfflineSyncFile");
     return readMaybeEncryptedFileBuffer(target, this._secureStoreKey, this.baseDir);
@@ -2928,6 +3185,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
   private get offlineSyncDigestCachePath(): string {
     return path.join(this.baseDir, ".offline-sync", "digest-cache.v1.json");
+  }
+  private get deletionRevisionMetadataPath(): string {
+    return path.join(this.baseDir, ".offline-sync", "deletion-revisions.v1.json");
+  }
+  private get deletionRevisionLockPath(): string {
+    return `${this.deletionRevisionMetadataPath}.lock`;
   }
   private get entitySynthesisQueuePath(): string {
     return path.join(this.stateDir, "entity-synthesis-queue.json");
@@ -4881,14 +5144,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const sourcePath = path.resolve(memory.path);
     const destPath = path.resolve(targetPath);
     if (sourcePath !== destPath) {
-      try {
-        await unlink(memory.path);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (!message.includes("ENOENT")) {
-          throw err;
-        }
-      }
+      await this.deleteManagedStorageFile(memory.path);
       // Re-invalidate after the unlink — writeMemoryFileAtomic already
       // invalidated, but a concurrent readAllMemories() may have re-populated
       // the cache between the write and the unlink.
@@ -4910,14 +5166,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const existing = await this.readMemoryByPath(targetPath);
     if (existing?.frontmatter.id === memory.frontmatter.id) {
-      try {
-        await unlink(memory.path);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (!message.includes("ENOENT")) {
-          throw err;
-        }
-      }
+      await this.deleteManagedStorageFile(memory.path);
       updateProjectedMemoryPath(this.baseDir, memory.frontmatter.id, toMemoryPathRel(this.baseDir, targetPath));
       this.bumpMemoryStatusVersion();
       return { changed: false, targetPath };
@@ -4983,7 +5232,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             throw err;
           }
         }
-        await unlink(current.path);
+        if (!(await this.deleteManagedStorageFile(current.path))) return null;
         markDurable();
         markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
         this.invalidateAllMemoriesCache();
@@ -5085,7 +5334,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return await this.runTombstoneBlockedInvalidation(
       memory,
       async (current, rebuildMarker, markDurable) => {
-        await unlink(current.path);
+        if (!(await this.deleteManagedStorageFile(current.path))) return false;
         markDurable();
         markProjectedMemoryPathInvalid(this.baseDir, id);
         this.invalidateAllMemoriesCache();
