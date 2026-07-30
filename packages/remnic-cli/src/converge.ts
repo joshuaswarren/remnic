@@ -104,7 +104,7 @@ async function fetchPeerSnapshot(
   namespace: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<{ files: ReconcileFileState[]; tombstones: Set<string>; capturedAtMs?: number }> {
+): Promise<{ files: ReconcileFileState[]; tombstones: Set<string> }> {
   let base = peerUrl;
   while (base.endsWith("/")) {
     base = base.slice(0, -1);
@@ -169,14 +169,7 @@ async function fetchPeerSnapshot(
       }
       tombstones.add(tombstone.toLowerCase());
     }
-    let capturedAtMs: number | undefined;
-    if ("createdAt" in data) {
-      if (typeof data.createdAt !== "string" || !Number.isFinite(Date.parse(data.createdAt))) {
-        throw new Error(`invalid peer snapshot for namespace ${namespace}: createdAt must be an ISO timestamp`);
-      }
-      capturedAtMs = Date.parse(data.createdAt);
-    }
-    return { files, tombstones, capturedAtMs };
+    return { files, tombstones };
   }
 
   throw new Error(`failed to fetch peer snapshot for namespace ${namespace}: ${lastFailure}`);
@@ -284,6 +277,12 @@ async function fetchPeerFileContent(
   return null;
 }
 
+function withoutTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return value.slice(0, end);
+}
+
 async function postPeerFileContent(
   peerUrl: string,
   namespace: string,
@@ -292,12 +291,13 @@ async function postPeerFileContent(
   metadata: { sha256: string; mtimeMs: number; baseSha256?: string },
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<boolean> {
-  const base = peerUrl.replace(/\/+$/, "");
+): Promise<"applied" | "skipped" | false> {
+  const base = withoutTrailingSlashes(peerUrl);
   const routes = [
     `/remnic/v1/offline-sync/apply-file-content?namespace=${encodeURIComponent(namespace)}`,
     `/engram/v1/offline-sync/apply-file-content?namespace=${encodeURIComponent(namespace)}`,
   ];
+  let previousAttemptFailed = false;
   for (const route of routes) {
     try {
       let offset = 0;
@@ -339,7 +339,9 @@ async function postPeerFileContent(
           return false;
         }
         if (result.done) {
-          return result.skipped || (result.applied && offset + chunk.length === content.length);
+          if (result.skipped) return previousAttemptFailed ? "applied" : "skipped";
+          if (result.applied && offset + chunk.length === content.length) return "applied";
+          return false;
         }
         if (result.applied || result.skipped || chunk.length === 0) {
           return false;
@@ -348,7 +350,47 @@ async function postPeerFileContent(
       } while (offset < content.length);
       return false;
     } catch {
-      // try next route
+      previousAttemptFailed = true;
+    }
+  }
+  return false;
+}
+
+async function postPeerConvergenceComplete(
+  peerUrl: string,
+  namespaces: readonly string[],
+  token?: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<boolean> {
+  const base = withoutTrailingSlashes(peerUrl);
+  const query = namespaces
+    .map((namespace) => `namespace=${encodeURIComponent(namespace)}`)
+    .join("&");
+  const routes = [
+    "/remnic/v1/offline-sync/convergence-complete",
+    "/engram/v1/offline-sync/convergence-complete",
+  ];
+  for (const route of routes) {
+    const response = await fetchImpl(`${base}${route}?${query}`, {
+      method: "POST",
+      headers: {
+        "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+    }).catch(() => null);
+    if (!response?.ok) continue;
+    const result: unknown = await response.json().catch(() => null);
+    if (
+      result
+      && typeof result === "object"
+      && "namespaces" in result
+      && Array.isArray(result.namespaces)
+      && result.namespaces.length === namespaces.length
+      && result.namespaces.every((namespace, index) => namespace === namespaces[index])
+      && "refreshed" in result
+      && result.refreshed === true
+    ) {
+      return true;
     }
   }
   return false;
@@ -361,13 +403,14 @@ async function postPeerFileDeletion(
   baseSha256: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<boolean> {
-  const base = peerUrl.replace(/\/+$/, "");
+): Promise<"applied" | "skipped" | false> {
+  const base = withoutTrailingSlashes(peerUrl);
   const routes = ["/remnic/v1/offline-sync/apply", "/engram/v1/offline-sync/apply"];
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...(token ? { authorization: `Bearer ${token}` } : {}),
   };
+  let previousAttemptFailed = false;
   for (const route of routes) {
     try {
       const response = await fetchImpl(`${base}${route}`, {
@@ -396,12 +439,15 @@ async function postPeerFileDeletion(
         || typeof result.skipped !== "number"
         || !("conflicts" in result)
         || !Array.isArray(result.conflicts)
+        || result.conflicts.length > 0
       ) {
         return false;
       }
-      return result.conflicts.length === 0 && (result.appliedDeletes === 1 || result.skipped === 1);
+      if (result.appliedDeletes === 1) return "applied";
+      if (result.skipped === 1) return previousAttemptFailed ? "applied" : "skipped";
+      return false;
     } catch {
-      // try next route
+      previousAttemptFailed = true;
     }
   }
   return false;
@@ -416,8 +462,6 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   const peerTombstones = new Map<string, Set<string>>();
   const localDeletionMtimeMs = new Map<string, ReadonlyMap<string, number>>();
   const peerDeletionMtimeMs = new Map<string, ReadonlyMap<string, number>>();
-  const localSnapshotMtimeMs = new Map<string, number>();
-  const peerSnapshotMtimeMs = new Map<string, number>();
 
   if (options.baseFilesByNamespace) {
     for (const [ns, files] of options.baseFilesByNamespace) {
@@ -490,7 +534,6 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
           bytes: record.bytes,
         }));
         localMap.set(ns, files);
-        localSnapshotMtimeMs.set(ns, Date.parse(snapshot.createdAt));
         const tombstones = await readLocalTombstones(rootInfo.rootDir);
         localTombstones.set(ns, tombstones);
       } catch {
@@ -515,9 +558,6 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       const peerData = await fetchPeerSnapshot(options.peerUrl, ns, resolvedToken, fetchFn);
       peerMap.set(ns, peerData.files);
       peerTombstones.set(ns, peerData.tombstones);
-      if (peerData.capturedAtMs !== undefined) {
-        peerSnapshotMtimeMs.set(ns, peerData.capturedAtMs);
-      }
     }
   }
 
@@ -539,20 +579,6 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     const peerFiles = peerMap.get(ns) ?? [];
     const localDeletions = new Map(localDeletionMtimeMs.get(ns) ?? []);
     const peerDeletions = new Map(peerDeletionMtimeMs.get(ns) ?? []);
-    if (baseFiles) {
-      const localPaths = new Set(localFiles.map((file) => file.path));
-      const peerPaths = new Set(peerFiles.map((file) => file.path));
-      for (const baseFile of baseFiles) {
-        const localCapturedAtMs = localSnapshotMtimeMs.get(ns);
-        if (!localPaths.has(baseFile.path) && !localDeletions.has(baseFile.path) && localCapturedAtMs !== undefined) {
-          localDeletions.set(baseFile.path, localCapturedAtMs);
-        }
-        const peerCapturedAtMs = peerSnapshotMtimeMs.get(ns);
-        if (!peerPaths.has(baseFile.path) && !peerDeletions.has(baseFile.path) && peerCapturedAtMs !== undefined) {
-          peerDeletions.set(baseFile.path, peerCapturedAtMs);
-        }
-      }
-    }
     inputs.push({
       namespace: ns,
       local: localFiles,
@@ -634,6 +660,7 @@ export async function executeConvergeApply(
     suppressed: 0,
     failed: 0,
   };
+  const peerMutatedNamespaces = new Set<string>();
 
   let resolvedToken: string | undefined;
   if (options.peerToken) {
@@ -813,7 +840,7 @@ export async function executeConvergeApply(
           const expectedPeerSha256 = entry.action === "conflict"
             ? entry.peerSha256
             : entry.baseSha256;
-          const ok = await postPeerFileContent(
+          const applied = await postPeerFileContent(
             options.peerUrl,
             entry.namespace,
             entry.path,
@@ -826,7 +853,8 @@ export async function executeConvergeApply(
             resolvedToken,
             fetchFn,
           );
-          if (ok) {
+          if (applied) {
+            if (applied === "applied") peerMutatedNamespaces.add(entry.namespace);
             if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
             else actualTransfers.pushed += 1;
           } else {
@@ -883,7 +911,7 @@ export async function executeConvergeApply(
           deleted = true;
         }
       } else if (options.peerUrl && entry.peerSha256) {
-        deleted = await postPeerFileDeletion(
+        const deletionResult = await postPeerFileDeletion(
           options.peerUrl,
           entry.namespace,
           entry.path,
@@ -891,11 +919,25 @@ export async function executeConvergeApply(
           resolvedToken,
           fetchFn,
         );
+        deleted = Boolean(deletionResult);
+        if (deletionResult === "applied") peerMutatedNamespaces.add(entry.namespace);
       }
       if (deleted) actualTransfers.conflictsResolved += 1;
       else actualTransfers.failed += 1;
     } else if (transferType === "suppress") {
       actualTransfers.suppressed += 1;
+    }
+  }
+
+  if (options.peerUrl && peerMutatedNamespaces.size > 0) {
+    const namespaces = [...peerMutatedNamespaces].sort();
+    if (!await postPeerConvergenceComplete(
+      options.peerUrl,
+      namespaces,
+      resolvedToken,
+      fetchFn,
+    )) {
+      actualTransfers.failed += 1;
     }
   }
 

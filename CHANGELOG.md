@@ -8,6 +8,12 @@ All notable changes to this project will be documented in this file.
 
 - `converge.conflictPolicy` configures `newest-wins` or `manual` conflict handling. The default remains `newest-wins`, including timestamped delete-versus-modify conflicts, and `--conflict-policy` overrides it for one command (#2150 increment 5).
 
+## [v9.44.0] — 2026-07-30
+
+### Added
+
+- After a converge batch writes files, the receiver updates search and rebuilds the memory view. It runs once for each changed namespace (#2150 increment 4).
+
 ## [v9.42.0] — 2026-07-30
 
 ### Added

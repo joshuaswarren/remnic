@@ -3648,3 +3648,139 @@ test("HTTP authorization probe verifies requested operation grants without invok
     await server.stop();
   }
 });
+
+test("HTTP convergence completion forwards one authenticated namespace batch refresh", async () => {
+  const calls: Array<{ namespaces: string[]; principal?: string; sourceId: string }> = [];
+  const service = {
+    offlineSyncFinalizeConvergence: async (options: {
+      namespaces: string[];
+      principal?: string;
+      sourceId: string;
+    }) => {
+      calls.push(options);
+      return { namespaces: options.namespaces, refreshed: true as const };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "writer",
+    adminConsoleEnabled: false,
+  });
+  const route = "/remnic/v1/offline-sync/convergence-complete?namespace=team&namespace=shared";
+
+  const status = await server.start();
+  try {
+    const denied = await fetch(`http://127.0.0.1:${status.port}${route}`, {
+      method: "POST",
+      headers: { "x-remnic-source-id": encodeURIComponent("remnic-converge") },
+    });
+    assert.equal(denied.status, 401);
+
+    const response = await fetch(`http://127.0.0.1:${status.port}${route}`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+      },
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      namespaces: ["team", "shared"],
+      refreshed: true,
+    });
+    assert.deepEqual(calls, [{
+      namespaces: ["team", "shared"],
+      principal: "writer",
+      sourceId: "remnic-converge",
+    }]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP convergence completion enforces the per-principal write rate limit", async () => {
+  let completions = 0;
+  const service = {
+    offlineSyncFinalizeConvergence: async () => {
+      completions += 1;
+      return { namespaces: ["team"], refreshed: true as const };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const route = `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/convergence-complete?namespace=team`;
+  const requestOptions: RequestInit = {
+    method: "POST",
+    headers: {
+      authorization: "Bearer test-token",
+      "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+    },
+  };
+
+  try {
+    const first = await fetch(route, requestOptions);
+    assert.equal(first.status, 200);
+    await first.text();
+
+    const second = await fetch(route, requestOptions);
+    assert.equal(second.status, 429);
+    const rateLimited: unknown = await second.json();
+    assert.ok(rateLimited && typeof rateLimited === "object" && "code" in rateLimited);
+    assert.equal(rateLimited.code, "write_rate_limited");
+    assert.equal(completions, 1, "the rate-limited completion must not reach the service");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP convergence completion denies scoped tokens that omit the namespace", async () => {
+  let completions = 0;
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-http-convergence-completion-namespace",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    offlineSyncFinalizeConvergence: async () => {
+      completions += 1;
+      return { namespaces: ["default"], refreshed: true as const };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "scoped-token", capabilities: { version: 1, namespaces: ["team"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/convergence-complete`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer scoped-token",
+          "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+        },
+      },
+    );
+
+    assert.equal(response.status, 403);
+    await response.text();
+    assert.equal(completions, 0, "the denied completion must not reach the service");
+  } finally {
+    await server.stop();
+  }
+});
