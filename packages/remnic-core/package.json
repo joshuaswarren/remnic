@@ -166,6 +166,16 @@
       "remnic-source": "./src/reconcile/plan.ts",
       "import": "./dist/reconcile/plan.js"
     },
+    "./reconcile/manifest": {
+      "types": "./dist/reconcile/manifest.d.ts",
+      "remnic-source": "./src/reconcile/manifest.ts",
+      "import": "./dist/reconcile/manifest.js"
+    },
+    "./reconcile/manifest.js": {
+      "types": "./dist/reconcile/manifest.d.ts",
+      "remnic-source": "./src/reconcile/manifest.ts",
+      "import": "./dist/reconcile/manifest.js"
+    },
     "./reconcile/cursor": {
       "types": "./dist/reconcile/cursor.d.ts",
       "remnic-source": "./src/reconcile/cursor.ts",

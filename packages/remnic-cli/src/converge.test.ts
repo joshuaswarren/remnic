@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES, parseConfig } from "@remnic/core";
+import { ContentHashIndex, OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES, parseConfig } from "@remnic/core";
 import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
 import {
   defaultConvergeCursorPath,
@@ -527,4 +527,81 @@ test("remnic converge apply: local-wins guards against the planned peer revision
   assert.equal(result.transfers.conflictsResolved, 1);
   assert.equal(result.transfers.failed, 0);
   assert.equal(baseHeader, peerSha256);
+});
+
+test("remnic converge plan builds semantic manifests from local and peer memory bytes", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-manifest-"));
+  const cursorDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-cursor-"));
+  try {
+    const body = "same active fact";
+    const semanticHash = ContentHashIndex.computeHash(body);
+    const localContent = [
+      "---",
+      "id: local-id",
+      "category: fact",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      `contentHash: ${semanticHash}`,
+      "status: active",
+      "---",
+      body,
+    ].join("\n");
+    const peerContent = localContent;
+    const localSha = createHash("sha256").update(localContent).digest("hex");
+    const peerSha = createHash("sha256").update(peerContent).digest("hex");
+    await fs.mkdir(path.join(rootDir, "facts"), { recursive: true });
+    await fs.writeFile(path.join(rootDir, "facts/local-id.md"), localContent);
+
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/offline-sync/snapshot")) {
+        return Response.json({
+          files:
+            url.searchParams.get("namespace") === "default"
+              ? [{ path: "facts/peer-id.md", sha256: peerSha, bytes: peerContent.length, mtimeMs: 2000 }]
+              : [],
+          tombstones: [],
+        });
+      }
+      if (url.pathname.endsWith("/offline-sync/file-content")) {
+        return new Response(peerContent, {
+          headers: {
+            "x-remnic-file-path": encodeURIComponent("facts/peer-id.md"),
+            "x-remnic-file-sha256": peerSha,
+            "x-remnic-file-bytes": String(peerContent.length),
+            "x-remnic-file-mtime-ms": "2000",
+            "x-remnic-chunk-offset": "0",
+            "x-remnic-chunk-bytes": String(peerContent.length),
+          },
+        });
+      }
+      return new Response(null, { status: 404 });
+    };
+
+    const peerUrl = "https://peer.example.test";
+    const options = {
+      config: parseConfig({ memoryDir: rootDir }),
+      cursorDir,
+      peerUrl,
+      fetchImpl,
+    };
+    const plan = await computeConvergePlan(options);
+
+    assert.equal(localSha, peerSha);
+    assert.equal(plan.converged, true, JSON.stringify(plan));
+    assert.equal(plan.entries.length, 1);
+    assert.equal(plan.entries[0]?.action, "identical");
+    assert.equal(plan.entries[0]?.reason, "semantic_duplicate");
+    assert.equal(plan.entries[0]?.path, "facts/local-id.md");
+
+    const result = await executeConvergeApply(options);
+    assert.equal(result.converged, true);
+    const cursor = await readConvergeCursor(defaultConvergeCursorPath(cursorDir, peerUrl, "default"));
+    assert.deepEqual(cursor?.baseFiles, []);
+    const rerun = await computeConvergePlan(options);
+    assert.equal(rerun.converged, true, JSON.stringify(rerun));
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+    await fs.rm(cursorDir, { recursive: true, force: true });
+  }
 });
