@@ -50,6 +50,12 @@ function errorMessage(error: unknown): string {
 async function readWatermark(storage: ExtractionWatermarkStorage, name: string): Promise<ExtractionWatermarkRead> {
   try {
     const meta = await storage.loadMeta();
+    if (meta.lastExtractionAt !== null && meta.lastExtractionAt !== undefined) {
+      const parsed = Date.parse(meta.lastExtractionAt);
+      if (!Number.isFinite(parsed)) {
+        return readFailure(`${name} watermark timestamp invalid`);
+      }
+    }
     const hasRootStats = meta.extractionCount !== undefined || meta.lastConsolidationAt !== undefined;
     return {
       lastExtractionAt: meta.lastExtractionAt ?? null,
@@ -124,30 +130,34 @@ export async function readAggregateExtractionWatermark(
     targets.push(root);
   }
 
-  const rootRead = await readWatermark(options.rootStorage, "root store");
-  if (rootRead.readFailed) return rootRead;
+  const canAccessRoot = !options.caps || capabilityAllowsNamespace(options.caps, options.config.defaultNamespace);
+  let rootRead: ExtractionWatermarkRead = { lastExtractionAt: null, readFailed: false };
+  if (canAccessRoot) {
+    rootRead = await readWatermark(options.rootStorage, "root store");
+    if (rootRead.readFailed) return rootRead;
+  }
   let lastExtractionAt = rootRead.lastExtractionAt;
 
-  for (const target of targets) {
-    let storage: ExtractionWatermarkStorage;
-    try {
-      storage = await options.storageForNamespace(target.namespace, target.rootDir);
-    } catch (error) {
-      return readFailure(
-        `namespace watermark storage unavailable: ${errorMessage(error)}`,
-        rootRead.rootStats
-      );
-    }
-    const namespaceRead = await readWatermark(storage, "namespace");
-    if (namespaceRead.readFailed) {
-      return readFailure(
-        namespaceRead.readError ?? "namespace watermark unreadable",
-        rootRead.rootStats
-      );
-    }
-    lastExtractionAt = newerWatermark(lastExtractionAt, namespaceRead.lastExtractionAt);
-  }
+  const reads = await Promise.all(
+    targets.map(async (target) => {
+      try {
+        const storage = await options.storageForNamespace(target.namespace, target.rootDir);
+        return await readWatermark(storage, "namespace");
+      } catch (error) {
+        return readFailure(`namespace watermark storage unavailable: ${errorMessage(error)}`);
+      }
+    })
+  );
 
+  for (const read of reads) {
+    if (read.readFailed) {
+      return readFailure(
+        read.readError ?? "namespace watermark unreadable",
+        rootRead.rootStats
+      );
+    }
+    lastExtractionAt = newerWatermark(lastExtractionAt, read.lastExtractionAt);
+  }
   return {
     lastExtractionAt,
     readFailed: false,

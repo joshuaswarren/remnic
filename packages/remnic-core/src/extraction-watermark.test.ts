@@ -125,6 +125,23 @@ test("scoped capabilities filter candidate namespaces during aggregate read", as
     await rm(fixture.memoryDir, { recursive: true, force: true });
   }
 });
+test("unparsable non-null timestamp in namespace store fails the aggregate read", async () => {
+  const fixture = await namespacedFixture();
+  try {
+    const result = await readAggregateExtractionWatermark({
+      config: fixture.config,
+      rootStorage: storage(fixture.memoryDir, async () => "2026-07-20T12:00:00.000Z"),
+      storageForNamespace: async (namespace) =>
+        storage(fixture.namespaceDirs[namespace], async () => (namespace === "team-a" ? "invalid-date-string" : "2026-07-25T12:00:00.000Z")),
+    });
+
+    assert.equal(result.lastExtractionAt, null);
+    assert.equal(result.readFailed, true);
+    assert.match(result.readError ?? "", /watermark timestamp invalid/);
+  } finally {
+    await rm(fixture.memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("namespace discovery I/O failure is an explicit incomplete read", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-extraction-watermark-enumeration-"));
