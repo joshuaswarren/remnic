@@ -5,16 +5,23 @@ import path from "node:path";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { StorageManager } from "./storage.js";
 import { initLogger, resetLogger } from "./logger.js";
-import { __resetProjectionFallbackWarnSuppressionForTest } from "./storage-guards.js";
+import {
+  __resetProjectionFallbackWarnSuppressionForTest,
+  PROJECTION_LEDGER_LAG_WARN_THRESHOLD_EVENTS,
+  warnProjectionFallback,
+} from "./storage-guards.js";
 import { encryptFileBody, filePathAad, isEncryptedFile, readMaybeEncryptedFile, readMaybeEncryptedFileBuffer } from "./secure-store/secure-fs.js";
 import type { MemoryLifecycleEvent } from "./types.js";
 import {
   appendLifecycleEventsSerialized,
   drainPendingLifecycleAppendsSerialized,
   pendingLifecycleLedgerDir,
+  ProjectionLedgerLagManager,
   readAllLifecycleEventsFromLedgerBuffer,
+  readBoundedLifecycleEventsWithProjectionLag,
   type LifecyclePendingIo,
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { withHeldFileLock } from "./utils/serialize-mutations.js";
@@ -26,6 +33,10 @@ import {
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
   MEMORY_LIFECYCLE_LEDGER_APPEND_LOCK_MAX_WAIT_MS,
 } from "./memory-lifecycle-ledger-utils.js";
+import {
+  readProjectionLifecycleLedgerHighWater,
+} from "./maintenance/projection-support.js";
+import { rebuildMemoryProjection } from "./maintenance/rebuild-memory-projection.js";
 
 function lifecycleEvent(
   eventId: string,
@@ -52,6 +63,32 @@ async function withLifecycleLedger(
   await writeFile(ledgerPath, `${rows.join("\n")}\n`, "utf8");
   try {
     await run(new StorageManager(memoryDir), ledgerPath);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+}
+
+async function withStaleLifecycleProjection(
+  projectedRows: MemoryLifecycleEvent[],
+  appendedRows: MemoryLifecycleEvent[],
+  run: (storage: StorageManager, memoryDir: string) => Promise<void>,
+): Promise<void> {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-projection-"));
+  const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+  await mkdir(path.dirname(ledgerPath), { recursive: true });
+  await writeFile(
+    ledgerPath,
+    `${projectedRows.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    "utf8",
+  );
+  await rebuildMemoryProjection({ memoryDir, dryRun: false });
+  await appendFile(
+    ledgerPath,
+    `${appendedRows.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    "utf8",
+  );
+  try {
+    await run(new StorageManager(memoryDir), memoryDir);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -1301,5 +1338,258 @@ test("getMemoryTimeline fallback WARN is loud with lag and rate-limited when the
   } finally {
     resetLogger();
     __resetProjectionFallbackWarnSuppressionForTest();
+  }
+});
+
+test("getMemoryTimeline fallback emits below-threshold ledger lag telemetry without a WARN (#2119)", async () => {
+  const warns: string[] = [];
+  const debug: string[] = [];
+  initLogger({ info() {}, warn: (message) => warns.push(message), error() {}, debug: (message) => debug.push(message) }, true);
+  __resetProjectionFallbackWarnSuppressionForTest();
+  try {
+    const projected = lifecycleEvent("projected-1", "memory-existing", "2026-01-01T00:01:00.000Z");
+    const appended = lifecycleEvent("current-1", "memory-target", "2026-01-01T00:02:00.000Z");
+    await withStaleLifecycleProjection([projected], [appended], async (storage, memoryDir) => {
+      const highWater = readProjectionLifecycleLedgerHighWater(memoryDir);
+      assert.equal(highWater?.eventCount, 1, "rebuild persists the source-ledger event-count high-water");
+
+      const timeline = await storage.getMemoryTimeline("memory-target", 5);
+      assert.deepEqual(timeline.map((event) => event.eventId), ["current-1"]);
+      assert.equal(warns.length, 0, "lag at or below the threshold must not WARN");
+      const telemetry = debug.find((message) => message.includes("storage.getMemoryTimeline"));
+      assert.ok(telemetry, "fallback emits ledger-relative lag telemetry below the WARN threshold");
+      assert.match(telemetry, /projected_events=1/);
+      assert.match(telemetry, /current_ledger_events=2/);
+      assert.match(telemetry, /delta_events=1/);
+      assert.match(telemetry, /fallback_action=full-ledger-scan/);
+    });
+  } finally {
+    resetLogger();
+    __resetProjectionFallbackWarnSuppressionForTest();
+  }
+});
+
+test("projection lag excludes blank memory ids and deduplicates identities on disk (#2119 review)", async () => {
+  const debug: string[] = [];
+  initLogger({ info() {}, warn() {}, error() {}, debug: (message) => debug.push(message) }, true);
+  __resetProjectionFallbackWarnSuppressionForTest();
+  try {
+    const projected = lifecycleEvent("projected-1", "memory-existing", "2026-01-01T00:01:00.000Z");
+    const appended = lifecycleEvent("current-1", "memory-target", "2026-01-01T00:02:00.000Z");
+    const blank = { ...lifecycleEvent("blank-1", "unused", "2026-01-01T00:03:00.000Z"), memoryId: "   " };
+    await withStaleLifecycleProjection([projected], [blank, appended, appended], async (storage) => {
+      await storage.getMemoryTimeline("memory-target", 5);
+      const telemetry = debug.find((message) => message.includes("storage.getMemoryTimeline"));
+      assert.ok(telemetry);
+      assert.match(telemetry, /current_ledger_events=2/);
+      assert.match(telemetry, /delta_events=1/);
+    });
+  } finally {
+    resetLogger();
+    __resetProjectionFallbackWarnSuppressionForTest();
+  }
+});
+
+test("getMemoryTimeline fallback WARNS above the ledger lag threshold and rate-limits repeats (#2119)", async () => {
+  const warns: string[] = [];
+  initLogger({ info() {}, warn: (message) => warns.push(message), error() {}, debug() {} }, false);
+  __resetProjectionFallbackWarnSuppressionForTest();
+  try {
+    const projected = lifecycleEvent("projected-1", "memory-existing", "2026-01-01T00:00:00.000Z");
+    const delta = PROJECTION_LEDGER_LAG_WARN_THRESHOLD_EVENTS + 1;
+    const appended = Array.from({ length: delta }, (_, index) =>
+      lifecycleEvent(
+        `current-${index}`,
+        "memory-target",
+        `2026-01-01T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+      ));
+    await withStaleLifecycleProjection([projected], appended, async (storage) => {
+      const first = await storage.getMemoryTimeline("memory-target", 5);
+      const second = await storage.getMemoryTimeline("memory-target", 5);
+      assert.equal(first.length, 5);
+      assert.deepEqual(second, first);
+
+      const timelineWarns = warns.filter((message) => message.includes("storage.getMemoryTimeline"));
+      assert.equal(timelineWarns.length, 1, "two above-threshold fallbacks emit one WARN per suppression interval");
+      const warning = timelineWarns[0]!;
+      assert.match(warning, /falling back to full corpus/);
+      assert.match(warning, /projected_events=1/);
+      assert.match(warning, new RegExp(`current_ledger_events=${delta + 1}`));
+      assert.match(warning, new RegExp(`delta_events=${delta}`));
+      assert.match(warning, new RegExp(`threshold_events=${PROJECTION_LEDGER_LAG_WARN_THRESHOLD_EVENTS}`));
+      assert.match(warning, /fallback_action=full-ledger-scan/);
+      assert.match(warning, /last rebuilt/);
+    });
+  } finally {
+    resetLogger();
+    __resetProjectionFallbackWarnSuppressionForTest();
+  }
+});
+
+test("projection fallback threshold zero still WARNS for positive ledger lag (#2119)", () => {
+  const warns: string[] = [];
+  initLogger({ info() {}, warn: (message) => warns.push(message), error() {}, debug() {} }, false);
+  __resetProjectionFallbackWarnSuppressionForTest();
+  try {
+    warnProjectionFallback(
+      "memory-dir",
+      "getMemoryTimeline",
+      undefined,
+      {
+        projectedEvents: 0,
+        currentLedgerEvents: 1,
+        deltaEvents: 1,
+        warnThresholdEvents: 0,
+      },
+    );
+    assert.equal(warns.length, 1, "zero is an active threshold, not a disabled sentinel");
+    assert.match(warns[0]!, /threshold_events=0/);
+  } finally {
+    resetLogger();
+    __resetProjectionFallbackWarnSuppressionForTest();
+  }
+});
+
+test("ledger lag stays event-relative when compaction shrinks and rewrites the ledger (#2119)", async () => {
+  const warns: string[] = [];
+  initLogger({ info() {}, warn: (message) => warns.push(message), error() {}, debug() {} }, false);
+  __resetProjectionFallbackWarnSuppressionForTest();
+  try {
+    const projectedCount = PROJECTION_LEDGER_LAG_WARN_THRESHOLD_EVENTS + 50;
+    const projected = Array.from({ length: projectedCount }, (_, index) =>
+      lifecycleEvent(
+        `projected-${index}`,
+        "memory-existing",
+        `2026-01-01T${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      ));
+    const delta = PROJECTION_LEDGER_LAG_WARN_THRESHOLD_EVENTS + 1;
+    const appended = Array.from({ length: delta }, (_, index) =>
+      lifecycleEvent(
+        `current-${index}`,
+        "memory-target",
+        `2026-01-02T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+      ));
+    await withStaleLifecycleProjection(projected, [], async (storage, memoryDir) => {
+      const retained = projected.at(-1)!;
+      const compactedRows = [{
+        ...retained,
+        eventId: `rebuild-${retained.memoryId}-${retained.eventType}-${retained.timestamp}`,
+      }, ...appended];
+      await writeFile(
+        path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl"),
+        `${compactedRows.map((event) => JSON.stringify(event)).join("\n")}\n`,
+        "utf8",
+      );
+
+      const timeline = await storage.getMemoryTimeline("memory-target", 5);
+      assert.equal(timeline.length, 5);
+      const warning = warns.find((message) => message.includes("storage.getMemoryTimeline"));
+      assert.ok(warning);
+      assert.match(warning, new RegExp(`projected_events=${projectedCount}`));
+      assert.match(warning, new RegExp(`current_ledger_events=${delta + 1}`));
+      assert.match(warning, new RegExp(`delta_events=${delta}`));
+    });
+  } finally {
+    resetLogger();
+    __resetProjectionFallbackWarnSuppressionForTest();
+  }
+});
+
+test("concurrent cold fallbacks singleflight the full ledger lag scan (#2119)", async () => {
+  const projected = lifecycleEvent("projected-1", "memory-existing", "2026-01-01T00:00:00.000Z");
+  const appended = lifecycleEvent("current-1", "memory-target", "2026-01-02T00:00:00.000Z");
+  await withStaleLifecycleProjection([projected], [appended], async (storage, memoryDir) => {
+    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
+    const key = Buffer.alloc(32, 11);
+    const plaintext = await readFile(ledgerPath, "utf8");
+    await writeFile(ledgerPath, encryptFileBody(plaintext, key, filePathAad(ledgerPath, memoryDir)));
+    storage.setSecureStoreKey(key);
+
+    const secureStorage = storage as unknown as {
+      readStorageSecureFile(filePath: string): Promise<string>;
+    };
+    const originalRead = secureStorage.readStorageSecureFile.bind(storage);
+    const readRelease = Promise.withResolvers<void>();
+    const readStart = Promise.withResolvers<void>();
+    let secureReads = 0;
+    secureStorage.readStorageSecureFile = async (filePath) => {
+      secureReads += 1;
+      readStart.resolve();
+      await readRelease.promise;
+      return originalRead(filePath);
+    };
+
+    const first = storage.getMemoryTimeline("memory-target", 5);
+    await readStart.promise;
+    const second = storage.getMemoryTimeline("memory-target", 5);
+    await yieldToEventLoop();
+    await yieldToEventLoop();
+    readRelease.resolve();
+    const timelines = await Promise.all([first, second]);
+
+    assert.deepEqual(timelines[0], timelines[1]);
+    assert.equal(secureReads, 1, "concurrent callers share the generation's full ledger scan");
+  });
+});
+
+test("scoped rebuild metadata distinguishes source-ledger high-water from projected events (#2119)", async () => {
+  const projected = lifecycleEvent("projected-1", "memory-existing", "2026-01-01T00:00:00.000Z");
+  const outsideScope = lifecycleEvent("current-1", "memory-outside-scope", "2026-01-02T00:00:00.000Z");
+  await withStaleLifecycleProjection([projected], [outsideScope], async (_storage, memoryDir) => {
+    await rebuildMemoryProjection({
+      memoryDir,
+      dryRun: false,
+      updatedAfter: "2026-01-03T00:00:00.000Z",
+    });
+    const highWater = readProjectionLifecycleLedgerHighWater(memoryDir);
+    assert.equal(highWater?.eventCount, 1, "projected count reflects the rows written by the scoped merge");
+    assert.equal(highWater?.sourceEventCount, 2, "source high-water still records the full ledger snapshot");
+  });
+});
+test("timeline lag resolver keeps ledger fallback when projection identity probing fails (#2119 review)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-probe-failure-"));
+  const ledgerPath = path.join(memoryDir, "memory-lifecycle-ledger.jsonl");
+  const event = lifecycleEvent("current-1", "memory-target", "2026-01-02T00:00:00.000Z");
+  await writeFile(path.join(memoryDir, "state"), "not a directory", "utf8");
+  await writeFile(ledgerPath, `${JSON.stringify(event)}\n`, "utf8");
+  try {
+    const manager = new ProjectionLedgerLagManager();
+    const timeline = await manager.resolveTimelineWithLag({
+      baseDir: memoryDir,
+      ledgerPath,
+      memoryId: "memory-target",
+      cappedLimit: 5,
+      readSecureFile: (filePath) => readFile(filePath, "utf8"),
+      projectionAge: () => "projection unavailable",
+    });
+    assert.deepEqual(timeline, [event]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("lag tracker failures do not drop valid fallback timeline rows (#2119 review)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lifecycle-tracker-failure-"));
+  const ledgerPath = path.join(memoryDir, "memory-lifecycle-ledger.jsonl");
+  const event = lifecycleEvent("current-1", "memory-target", "2026-01-02T00:00:00.000Z");
+  await writeFile(ledgerPath, `${JSON.stringify(event)}\n`, "utf8");
+  try {
+    const result = await readBoundedLifecycleEventsWithProjectionLag(
+      ledgerPath,
+      (filePath) => readFile(filePath, "utf8"),
+      5,
+      "memory-target",
+      {
+        highWater: { eventCount: 0, sourceEventCount: 0 },
+        record() {
+          throw new Error("projection tracker unavailable");
+        },
+        close() {},
+      },
+    );
+    assert.deepEqual(result.events, [event]);
+    assert.equal(result.telemetryAvailable, false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });

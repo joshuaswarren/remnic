@@ -8,6 +8,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Memory timeline fallback telemetry now measures projection lag against unique
+  lifecycle-ledger events, survives ledger compaction, and warns only when the
+  lag exceeds its event threshold while retaining projection-age context.
 - Extraction liveness watermark now advances on every successfully parsed
   extraction, including runs that emit no durable facts/entities/questions
   (issue #2223). Previously a normal live extraction with an all-empty parsed

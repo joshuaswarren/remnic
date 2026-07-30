@@ -18,6 +18,7 @@ import {
   buildLifecycleEventsForMemory,
   inferMemoryStatus,
   MEMORY_LIFECYCLE_EVENT_SORT_ORDER,
+  memoryLifecycleEventProjectionIdentity,
   sortMemoryLifecycleEvents,
   toMemoryPathRel,
 } from "../memory-lifecycle-ledger-utils.js";
@@ -55,20 +56,26 @@ export interface RebuildMemoryProjectionOptions {
   updatedBefore?: string;
 }
 
-export type { SkippedBlankIdMemory, SkippedDuplicateMemory } from "./projection-support.js";
-import { assertInjectedStorageRooted } from "./projection-support.js";
-import type { SkippedBlankIdMemory, SkippedDuplicateMemory } from "./projection-support.js";
+export type {
+  SkippedBlankIdMemory,
+  SkippedBlankIdTimelineEvent,
+  SkippedDuplicateMemory,
+  SkippedDuplicateTimelineEvent,
+} from "./projection-support.js";
+import {
+  assertInjectedStorageRooted,
+  readProjectedEntityMentionRows,
+  readProjectedGovernanceRows,
+  readProjectedNativeKnowledgeRows,
+  writeProjectionMetaHighWater,
+} from "./projection-support.js";
+import type {
+  SkippedBlankIdMemory,
+  SkippedBlankIdTimelineEvent,
+  SkippedDuplicateMemory,
+  SkippedDuplicateTimelineEvent,
+} from "./projection-support.js";
 
-export interface SkippedDuplicateTimelineEvent {
-  eventId: string;
-  keptPath: string;
-  skippedPath: string;
-}
-
-export interface SkippedBlankIdTimelineEvent {
-  eventId: string;
-  path: string;
-}
 
 export interface RebuildMemoryProjectionResult {
   dryRun: boolean;
@@ -569,6 +576,7 @@ async function loadAuthoritativeProjectionSnapshot(options: {
     }
     | null;
   usedLifecycleLedger: boolean;
+  sourceLifecycleLedgerEventCount: number;
   scope: {
     updatedAfter: string | null;
     updatedBefore: string | null;
@@ -607,6 +615,9 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   );
   const events = deduplicatedTimeline.events;
   const usedLifecycleLedger = timeline.usedLifecycleLedger;
+  const sourceLifecycleLedgerEventCount = new Set(
+    lifecycleEvents.map(memoryLifecycleEventProjectionIdentity),
+  ).size;
   const currentRows = projectionMemories.map((memory) => toCurrentStateRow(options.memoryDir, memory));
   const scope = normalizeProjectionScope(options);
   const scopedMemories = filterMemoriesForProjectionScope(projectionMemories, scope);
@@ -645,6 +656,7 @@ async function loadAuthoritativeProjectionSnapshot(options: {
     nativeKnowledgeRows,
     governance,
     usedLifecycleLedger,
+    sourceLifecycleLedgerEventCount,
     scope,
     skippedDuplicateMemories: selected.skippedDuplicateMemories,
     skippedBlankIdMemories: selected.skippedBlankIdMemories,
@@ -733,53 +745,6 @@ function readProjectedTimelineRows(
   }
 }
 
-function readProjectedEntityMentionRows(
-  memoryDir: string,
-): { projectionExists: boolean; rows: ProjectedEntityMentionRow[] } {
-  const rows = readProjectedEntityMentions(memoryDir);
-  if (rows === null) return { projectionExists: false, rows: [] };
-  return { projectionExists: true, rows };
-}
-
-function readProjectedNativeKnowledgeRows(
-  memoryDir: string,
-): { projectionExists: boolean; rows: ProjectedNativeKnowledgeChunkRow[] } {
-  const rows = readProjectedNativeKnowledgeChunks(memoryDir);
-  if (rows === null) return { projectionExists: false, rows: [] };
-  return { projectionExists: true, rows };
-}
-
-function readProjectedGovernanceRows(memoryDir: string): {
-  projectionExists: boolean;
-  runId: string | null;
-  summary: unknown;
-  metrics: unknown;
-  reviewQueueRows: MemoryProjectionGovernanceReviewQueueRow[];
-  appliedActionRows: MemoryProjectionGovernanceAppliedActionRow[];
-  report: string;
-} {
-  const record = readProjectedGovernanceRecord(memoryDir);
-  if (record === null) {
-    return {
-      projectionExists: false,
-      runId: null,
-      summary: undefined,
-      metrics: undefined,
-      reviewQueueRows: [],
-      appliedActionRows: [],
-      report: "",
-    };
-  }
-  return {
-    projectionExists: true,
-    runId: record.runId,
-    summary: record.summary,
-    metrics: record.metrics,
-    reviewQueueRows: record.reviewQueueRows,
-    appliedActionRows: record.appliedActionRows,
-    report: record.report,
-  };
-}
 
 function writeProjectionDb(
   dbPath: string,
@@ -790,6 +755,7 @@ function writeProjectionDb(
   nativeKnowledgeRows: ProjectedNativeKnowledgeChunkRow[],
   governance: Awaited<ReturnType<typeof loadLatestGovernanceProjection>>,
   usedLifecycleLedger: boolean,
+  sourceLifecycleLedgerEventCount: number,
 ): void {
   const db = openBetterSqlite3(dbPath);
   const memoryDir = path.dirname(path.dirname(dbPath));
@@ -800,6 +766,7 @@ function writeProjectionDb(
     insertMeta.run("schemaVersion", String(MEMORY_PROJECTION_SCHEMA_VERSION));
     insertMeta.run("rebuiltAt", nowIso);
     insertMeta.run("usedLifecycleLedger", usedLifecycleLedger ? "true" : "false");
+    writeProjectionMetaHighWater(insertMeta, sourceLifecycleLedgerEventCount, timelineRows);
     insertMeta.run("latestGovernanceRunId", governance?.runId ?? "");
 
     const insertCurrent = db.prepare(`
@@ -1161,6 +1128,7 @@ export async function rebuildMemoryProjection(
       nextNativeKnowledgeRows,
       nextGovernance,
       snapshot.usedLifecycleLedger,
+      snapshot.sourceLifecycleLedgerEventCount,
     );
     backupPath = await backupExistingProjection(options.memoryDir, outputPath, now);
     backupPath = await commitPreparedFileAtomically(tempPath, outputPath, backupPath);

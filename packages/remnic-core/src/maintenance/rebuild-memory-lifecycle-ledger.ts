@@ -11,23 +11,14 @@ import {
   buildLifecycleEventsForMemory,
   compareMemoryLifecycleEvents,
   sortMemoryLifecycleEvents,
+  isFrontmatterDerivedLifecycleEventType,
+  memoryLifecycleEventProjectionIdentity,
   memoryLifecycleLedgerLockPath,
   MEMORY_LIFECYCLE_LEDGER_LOCK_STALE_MS,
 } from "../memory-lifecycle-ledger-utils.js";
 import { withHeldFileLock, type HeldFileLockOptions, type HeldFileLockController } from "../utils/serialize-mutations.js";
 import { probeEncryptedRegularFileHeader } from "../secure-store/secure-fs.js";
 
-/**
- * Event types `buildLifecycleEventsForMemory` reconstructs from frontmatter.
- * Everything else in the ledger is append-only history with no frontmatter
- * equivalent and must be carried over by a preserving rebuild (issue #1910).
- */
-const FRONTMATTER_DERIVED_EVENT_TYPES: Record<string, true> = {
-  created: true,
-  updated: true,
-  superseded: true,
-  archived: true,
-};
 
 export interface RebuildMemoryLifecycleLedgerOptions {
   memoryDir: string;
@@ -322,17 +313,15 @@ export async function rebuildMemoryLifecycleLedger(
       // retried append of the same logical event still collapses to one. Rows
       // that are not frontmatter-derived are append-only history with no
       // reconstruction — always carried over, deduped by eventId in the merge.
-      const contentKey = (event: MemoryLifecycleEvent): string =>
-        `${event.memoryId}\u0000${event.eventType}\u0000${event.timestamp}`;
-      const reconstructedKeys = new Set(events.map(contentKey));
+      const reconstructedKeys = new Set(events.map(memoryLifecycleEventProjectionIdentity));
       const racedFrontmatterByKey = new Map<string, MemoryLifecycleEvent>();
       const appendOnly: MemoryLifecycleEvent[] = [];
       for (const event of existing) {
-        if (!FRONTMATTER_DERIVED_EVENT_TYPES[event.eventType]) {
+        if (!isFrontmatterDerivedLifecycleEventType(event.eventType)) {
           appendOnly.push(event);
           continue;
         }
-        const key = contentKey(event);
+        const key = memoryLifecycleEventProjectionIdentity(event);
         if (reconstructedKeys.has(key)) continue; // collapsed into reconstruction
         if (!racedFrontmatterByKey.has(key)) racedFrontmatterByKey.set(key, event);
       }
