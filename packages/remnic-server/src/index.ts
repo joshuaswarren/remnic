@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokensCached, getAllValidTokenEntriesCached, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
 import { envOverrides, readCompatEnv } from "./server-env.js";
@@ -260,6 +260,51 @@ function loadResolvedConfig(resolved: ResolvedConfigPath): ServerConfig {
   }
 
   return loadConfigFile(resolved.path);
+}
+type ServerRuntimeOptions = {
+  configPath?: string;
+  host?: string;
+  port?: number;
+  authToken?: string;
+};
+
+type EffectiveServerRuntimeConfig = {
+  resolvedConfigPath: ResolvedConfigPath;
+  fileConfig: ServerConfig;
+  envRemnic: Record<string, unknown> | undefined;
+  serverConfig: Partial<ServerConfig["server"]>;
+  parsedServerConfig: ParsedServerConfig;
+};
+
+function resolveEffectiveServerRuntimeConfig(
+  options?: ServerRuntimeOptions,
+): EffectiveServerRuntimeConfig {
+  const resolvedConfigPath = resolveConfigPath(options?.configPath);
+  const fileConfig = loadResolvedConfig(resolvedConfigPath);
+  const { remnic: envRemnic, ...envServer } = envOverrides();
+  const cliServerConfig: Partial<ServerConfig["server"]> = {};
+  if (options?.host !== undefined) cliServerConfig.host = options.host;
+  if (options?.port !== undefined) cliServerConfig.port = parseServerPort(options.port, "options.port");
+  if (options?.authToken !== undefined) cliServerConfig.authToken = options.authToken;
+
+  const serverConfig = {
+    ...fileConfig.server,
+    ...envServer,
+    ...cliServerConfig,
+  };
+  const portSource = cliServerConfig.port !== undefined
+    ? "options.port"
+    : envServer.port !== undefined
+      ? "REMNIC_PORT/ENGRAM_PORT"
+      : "server.port";
+
+  return {
+    resolvedConfigPath,
+    fileConfig,
+    envRemnic,
+    serverConfig,
+    parsedServerConfig: parseServerConfig(serverConfig, { portSource }),
+  };
 }
 
 export function mergeRemnicConfigForServer(
@@ -731,12 +776,7 @@ export interface ServerResult {
   abortDeferredInit: () => void;
 }
 
-export async function startServer(options?: {
-  configPath?: string;
-  host?: string;
-  port?: number;
-  authToken?: string;
-}): Promise<ServerResult> {
+export async function startServer(options?: ServerRuntimeOptions): Promise<ServerResult> {
   initLogger();
 
   // Startup driver-load check (issue #1829): attempt to load the better-sqlite3
@@ -757,30 +797,14 @@ export async function startServer(options?: {
     );
   }
 
-  const resolvedConfigPath = resolveConfigPath(options?.configPath);
-  const fileConfig = loadResolvedConfig(resolvedConfigPath);
-
-  const env = envOverrides();
-  const { remnic: envRemnic, ...envServer } = env;
-
-  // Merge: file < env < cli flags
+  const {
+    resolvedConfigPath,
+    fileConfig,
+    envRemnic,
+    serverConfig,
+    parsedServerConfig,
+  } = resolveEffectiveServerRuntimeConfig(options);
   const remnicConfig = mergeRemnicConfigForServer(fileConfig.remnic, envRemnic);
-  const cliServerConfig: Partial<ServerConfig["server"]> = {};
-  if (options?.host !== undefined) cliServerConfig.host = options.host;
-  if (options?.port !== undefined) cliServerConfig.port = parseServerPort(options.port, "options.port");
-  if (options?.authToken !== undefined) cliServerConfig.authToken = options.authToken;
-
-  const serverConfig = {
-    ...fileConfig.server,
-    ...envServer,
-    ...cliServerConfig,
-  };
-  const portSource = cliServerConfig.port !== undefined
-    ? "options.port"
-    : envServer.port !== undefined
-      ? "REMNIC_PORT/ENGRAM_PORT"
-      : "server.port";
-  const parsedServerConfig = parseServerConfig(serverConfig, { portSource });
 
   const config = parseConfig(remnicConfig);
   // Re-init now that config is known. The call at the top of startServer runs
@@ -997,9 +1021,66 @@ export async function startServer(options?: {
   return { config, service, httpServer, host, port, stop, cancelStartupSync: () => startupSyncAbort.abort(), abortDeferredInit: () => orchestrator.abortDeferredInit() };
 }
 
+const HEALTHCHECK_TIMEOUT_MS = 5_000;
+const HEALTHCHECK_PLACEHOLDER_TOKENS = new Set([
+  "change-me",
+  "changeme",
+  "replace-me",
+  "replace-this-token",
+  "your-token",
+  "your-token-here",
+]);
+
+function usableHealthcheckToken(value: string | undefined): string | undefined {
+  const token = value?.trim();
+  if (!token) return undefined;
+  if (HEALTHCHECK_PLACEHOLDER_TOKENS.has(token.toLowerCase())) return undefined;
+  if (/\$\{[^}]+\}|<[^>]+>/.test(token)) return undefined;
+  return token;
+}
+
+function resolveHealthcheckToken(configuredToken: string | undefined): string | undefined {
+  const configured = usableHealthcheckToken(configuredToken);
+  if (configured) return configured;
+  const entry = loadTokenStore().tokens.find(
+    ({ connector, token }) => connector !== "chatgpt" && usableHealthcheckToken(token) !== undefined,
+  );
+  return usableHealthcheckToken(entry?.token);
+}
+
+export async function runServerHealthcheck(options?: {
+  configPath?: string;
+  port?: number;
+  timeoutMs?: number;
+}): Promise<boolean> {
+  const timeoutMs = options?.timeoutMs ?? HEALTHCHECK_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || !Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("Invalid timeoutMs: expected a positive integer");
+  }
+  const { parsedServerConfig } = resolveEffectiveServerRuntimeConfig({
+    configPath: options?.configPath,
+    port: options?.port,
+  });
+  const token = resolveHealthcheckToken(parsedServerConfig.authToken);
+  if (!token) return false;
+
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${parsedServerConfig.port}/engram/v1/health`,
+      {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+    );
+    return response.status === 200;
+  } catch {
+    return false;
+  }
+}
+
 // ── CLI entry point ──────────────────────────────────────────────────────────
 
-const BOOLEAN_CLI_OPTIONS = new Set(["help"]);
+const BOOLEAN_CLI_OPTIONS = new Set(["help", "healthcheck"]);
 const VALUE_CLI_OPTIONS = new Set(["config", "host", "port", "auth-token"]);
 
 function parseCliArgs(argv: string[]): Record<string, string | undefined> {
@@ -1060,6 +1141,7 @@ Options:
   --host <addr>       Bind address (default: 127.0.0.1)
   --port <number>     Port number (default: 4318)
   --auth-token <tok>  Bearer token for auth (or set REMNIC_AUTH_TOKEN)
+  --healthcheck       Probe the protected health endpoint and exit
   --help              Show this help
 
 Environment:
@@ -1073,6 +1155,21 @@ Environment:
   OPENAI_API_KEY       OpenAI API key for extraction; ignored when config sets openaiApiKey=false
 `);
     process.exit(0);
+  }
+
+  if (args.healthcheck) {
+    if (args["auth-token"] !== undefined) {
+      throw new Error("Option --auth-token cannot be used with --healthcheck; use config or REMNIC_AUTH_TOKEN");
+    }
+    if (args.host !== undefined) {
+      throw new Error("Option --host cannot be used with --healthcheck; loopback probing is automatic");
+    }
+    const healthy = await runServerHealthcheck({
+      configPath: args.config,
+      port: args.port === undefined ? undefined : parseServerPort(args.port, "--port"),
+    });
+    if (!healthy) throw new Error("Server healthcheck failed");
+    return;
   }
 
   const result = await startServer({

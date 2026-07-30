@@ -38,6 +38,7 @@ import {
   type DaemonAuthToken,
   checkDaemonHealthSync,
   loadDaemonAuth,
+  parseOpenClawBridgeConfig,
   resolveBridgeMode,
 } from "./bridge.js";
 import {
@@ -771,6 +772,8 @@ export interface MaybeRegisterDelegateOptions {
   serviceId: string;
   /** The parsed plugin config's `bridgeMode` value. */
   configBridgeMode: string;
+  /** Raw total timeout for liveness and older-daemon health fallback. */
+  bridgeHealthTimeoutMs?: unknown;
   passive: boolean;
   allowPromptInjection: boolean;
   /** Embedded parity: `heartbeat.enabled && heartbeat.gateExtractionDuringHeartbeat`. */
@@ -973,7 +976,7 @@ const delegateAuthorizationPreflightServices = new WeakMap<object, Set<string>>(
  */
 export interface MaybeRegisterDelegateDeps {
   /** Injectable liveness preflight — defaults to the bridge's worker-backed sync probe. */
-  checkHealth: (host: string, port: number) => boolean;
+  checkHealth: (host: string, port: number, timeoutMs: number) => boolean;
   /** Injectable authorization preflight for standalone daemon compatibility. */
   probeAuthorization?: (
     target: DelegateDaemonTarget,
@@ -1020,9 +1023,25 @@ export function maybeRegisterDelegateRuntime(
     );
     return true;
   }
+  let bridgeHealthTimeoutMs: number;
+  try {
+    bridgeHealthTimeoutMs = parseOpenClawBridgeConfig({
+      bridgeHealthTimeoutMs: options.bridgeHealthTimeoutMs,
+    }).healthTimeoutMs;
+  } catch (err) {
+    log.error(`${String(err)} — falling back to the embedded runtime`);
+    delegateEmbeddedFallbackApis.add(api);
+    return false;
+  }
   // register() is synchronous, so the preflight uses the bridge's
   // worker-backed sync health check (the same probe detectBridgeMode uses).
-  if (!deps.checkHealth(bridge.daemonHost, bridge.daemonPort)) {
+  if (
+    !deps.checkHealth(
+      bridge.daemonHost,
+      bridge.daemonPort,
+      bridgeHealthTimeoutMs,
+    )
+  ) {
     // Record the fallback so a later register() on the same api does not switch
     // to delegate and stack memory paths on top of the embedded hooks just bound.
     delegateEmbeddedFallbackApis.add(api);

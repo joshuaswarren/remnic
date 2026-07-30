@@ -11,6 +11,31 @@ All notable changes to this project will be documented in this file.
   as an unreadable watermark instead of publishing a surviving timestamp as
   fresh.
 
+## [v9.40.0] — 2026-07-30
+
+### Fixed
+
+- OpenClaw delegate preflight now uses an authenticated liveness endpoint that
+  skips detailed QMD and corpus diagnostics. Older daemons fall back to the
+  detailed health endpoint, and `bridgeHealthTimeoutMs` provides a shared probe
+  deadline with a 10-second default.
+
+## [v9.38.3] — 2026-07-30
+
+### Fixed
+
+- Memory timeline fallback telemetry now measures projection lag against unique
+  lifecycle-ledger events, survives ledger compaction, and warns only when the
+  lag exceeds its event threshold while retaining projection-age context.
+- Extraction liveness watermark now advances on every successfully parsed
+  extraction, including runs that emit no durable facts/entities/questions
+  (issue #2223). Previously a normal live extraction with an all-empty parsed
+  result cleared its buffer and healed retry state without stamping
+  `MetaState.lastExtractionAt`, so `/health.extraction` could report a stale
+  last success and `degraded: true` while extraction was actually alive.
+  Provider-reported failures and null/unparseable responses never advance the
+  watermark.
+
 ## [v9.38.0] — 2026-07-29
 
 ### Added

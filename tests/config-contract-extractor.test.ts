@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import {
-  collectModuleParserFiles,
   extractParsedKeyPaths,
+  extractRealConfigKeys,
 } from "../scripts/config-contract/extract-parsed-keys.ts";
 
 /**
@@ -84,12 +84,7 @@ test("unparseable ids are scope-qualified: identical constructs in different fun
 });
 
 function extractReal() {
-  return extractParsedKeyPaths({
-    repoRoot: REPO_ROOT,
-    entryFile: path.join(REPO_ROOT, "packages", "remnic-core", "src", "config.ts"),
-    entryFunction: "parseConfig",
-    includeFiles: collectModuleParserFiles(REPO_ROOT),
-  });
+  return extractRealConfigKeys(REPO_ROOT);
 }
 
 test("real config.ts extraction matches the committed snapshot (config-surface change detector)", () => {

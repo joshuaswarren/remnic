@@ -1781,6 +1781,57 @@ test("runExtraction preserves empty-result buffers when fingerprint persistence 
   assert.equal(clearCalls, 0);
 });
 
+test("runExtraction keeps the empty live path fail-open when liveness metadata write fails (#2223)", async () => {
+  const config = parseConfig({});
+  config.extractionMinChars = 0;
+  config.extractionMinUserTurns = 1;
+
+  let clearCalls = 0;
+  let saveMetaCalls = 0;
+  const meta = {
+    extractionCount: 0,
+    lastExtractionAt: null,
+    lastConsolidationAt: null,
+    totalMemories: 0,
+    totalEntities: 0,
+    processedExtractionFingerprints: [] as Array<{ fingerprint: string; observedAt: string }>,
+  };
+
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  orchestrator.buffer = {
+    clearAfterExtraction: async () => {
+      clearCalls += 1;
+    },
+  };
+  orchestrator.storageRouter = {
+    storageFor: async () => ({
+      listEntityNames: async () => [],
+      loadMeta: async () => meta,
+      saveMeta: async () => {
+        saveMetaCalls += 1;
+        throw new Error("meta save failed");
+      },
+    }),
+  };
+  orchestrator.extraction = {
+    extract: async () => ({ facts: [], entities: [], questions: [], profileUpdates: [] }),
+  };
+
+  // Normal live turn (no persistProcessedFingerprint): the liveness stamp is
+  // diagnostic only, so a metadata write failure must neither reject the task
+  // nor retain the buffer — extraction succeeded and produced nothing durable.
+  const result = await orchestrator.runExtraction(
+    [makeTurn("session-live-empty", "a transient note not worth remembering")],
+    { bufferKey: "session-live-empty" },
+  );
+
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "empty_extraction_result");
+  assert.equal(saveMetaCalls, 1, "the liveness stamp was attempted");
+  assert.equal(clearCalls, 1, "fail-open: the live buffer clears despite the metadata write failure");
+});
+
 test("runExtraction preserves deduped buffers when the caller aborts during meta load", async () => {
   const config = parseConfig({});
   config.extractionMinChars = 0;

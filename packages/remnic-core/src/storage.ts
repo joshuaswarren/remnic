@@ -1,4 +1,4 @@
-import { readProjectionRebuiltAt } from "./maintenance/projection-support.js";
+import { formatProjectionAge, readProjectionRebuiltAt } from "./maintenance/projection-support.js";
 import {
   lstat,
   readdir,
@@ -25,6 +25,8 @@ import {
   type DrainPendingLifecycleForSyncResult,
   drainPendingLifecycleLedgerForSync,
   drainPendingLifecycleLedgerIfAny,
+  pendingLifecycleLedgerDir,
+  ProjectionLedgerLagManager,
   readAllLifecycleEventsFromLedger,
   readAllLifecycleEventsFromLedgerBuffer,
   readBoundedLifecycleEventsFromLedger,
@@ -1732,7 +1734,7 @@ export type SealedWriteExtras = Omit<
 export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
   private artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null = null;
-  /** Read by storage/entity-store.ts (decomposition), hence not `private`. */
+  private projectionLedgerLagManager = new ProjectionLedgerLagManager();
   static readonly KNOWLEDGE_INDEX_CACHE_TTL_MS = 600_000; // 10 minutes (entity mutations invalidate)
   /** Read by storage/memory-read-store.ts (decomposition). */
   static readonly ARTIFACT_INDEX_CACHE_TTL_MS = 60_000; // 1 minute
@@ -6543,26 +6545,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const projected = readProjectedMemoryTimeline(this.baseDir, memoryId, cappedLimit);
     if (projected && projected.length > 0) return projected;
-    // Loud, rate-limited staleness telemetry (#2119): a fallback here means the
-    // projection is missing/empty/stale, so surface HOW stale it is. The lag is
-    // computed lazily — only when warnProjectionFallback actually logs (once per
-    // interval) — so a hot fallback path pays for a projection meta read at most
-    // once per suppression window, not per call.
-    warnProjectionFallback(this.baseDir, "getMemoryTimeline", () => {
-      const rebuiltAt = readProjectionRebuiltAt(this.baseDir);
-      if (!rebuiltAt) return "projection never rebuilt";
-      const ageMs = Date.now() - Date.parse(rebuiltAt);
-      if (!Number.isFinite(ageMs)) return `projection rebuiltAt=${rebuiltAt}`;
-      const ageMin = Math.max(0, Math.round(ageMs / 60_000));
-      const age = ageMin >= 120 ? `${Math.round(ageMin / 60)}h` : `${ageMin}m`;
-      return `projection ${age} stale, last rebuilt ${rebuiltAt}`;
-    });
-    return readBoundedLifecycleEventsFromLedger(
-      this.memoryLifecycleLedgerPath,
-      (p) => this.readStorageSecureFile(p),
+    return this.projectionLedgerLagManager.resolveTimelineWithLag({
+      baseDir: this.baseDir,
+      ledgerPath: this.memoryLifecycleLedgerPath,
+      memoryId,
       cappedLimit,
-      memoryId
-    );
+      readSecureFile: (p) => this.readStorageSecureFile(p),
+      projectionAge: () => formatProjectionAge(readProjectionRebuiltAt(this.baseDir)),
+    });
   }
 
   // ---------------------------------------------------------------------------

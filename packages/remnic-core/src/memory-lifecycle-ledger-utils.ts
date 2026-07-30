@@ -24,6 +24,27 @@ export const MEMORY_LIFECYCLE_EVENT_SORT_ORDER: Record<MemoryLifecycleEventType,
   archived: 10,
 };
 
+const FRONTMATTER_DERIVED_EVENT_TYPES: Record<string, true> = {
+  created: true,
+  updated: true,
+  superseded: true,
+  archived: true,
+};
+
+export function isFrontmatterDerivedLifecycleEventType(eventType: string): boolean {
+  return FRONTMATTER_DERIVED_EVENT_TYPES[eventType] === true;
+}
+
+export function memoryLifecycleEventProjectionIdentity(event: {
+  eventId: string;
+  memoryId: string;
+  eventType: string;
+  timestamp: string;
+}): string {
+  if (!isFrontmatterDerivedLifecycleEventType(event.eventType)) return `event\u0000${event.eventId}`;
+  return `frontmatter\u0000${event.memoryId}\u0000${event.eventType}\u0000${event.timestamp}`;
+}
+
 /**
  * Deterministic sort rank for a lifecycle event type. The ledger readers admit
  * any structurally valid row (permissive `eventType`, issue #1910), so an

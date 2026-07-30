@@ -21,6 +21,7 @@ import path from "node:path";
 import { readProjectionRebuiltAt } from "../maintenance/projection-support.js";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { MaintenanceScheduler } from "./maintenance.js";
 import {
@@ -2949,6 +2950,35 @@ test("scheduled projection rebuild skips when the projection was rebuilt within 
       "no backup means no rebuild occurred",
     );
   } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("maintenance tool request invokes the scheduled projection rebuild wiring (#2119)", async () => {
+  const memoryDir = await seedMemoryDirWithOneFact();
+  const scheduler = new MaintenanceScheduler({
+    config: fixtureConfig({
+      memoryDir,
+      projectionRebuildEnabled: true,
+      projectionRebuildIntervalMs: 6 * 60 * 60 * 1000,
+    }),
+    getQmd: () => ({ isAvailable: () => false }) as unknown as SearchBackend,
+    namespaceSearchRouter: {} as unknown as NamespaceSearchRouter,
+    namespaceCatalog: {} as unknown as NamespaceCatalog,
+  });
+  try {
+    scheduler.requestQmdMaintenanceForTool("test");
+    for (let attempt = 0; attempt < 100 && probeProjectionHealth(memoryDir).state === "absent"; attempt += 1) {
+      await delay(10);
+    }
+    assert.equal(
+      probeProjectionHealth(memoryDir).state,
+      "openable",
+      "the public maintenance request entrypoint must reach the projection rebuild",
+    );
+    assert.equal(readProjectedMemoryBrowse(memoryDir, { limit: 5, offset: 0 })?.total, 1);
+  } finally {
+    await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

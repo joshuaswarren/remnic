@@ -1249,13 +1249,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   /** OpenClaw bridge mode (#2120): `"embedded"` (default) or `"delegate"`. */
   bridgeMode: string;
   codexCompat: CodexCompatConfig;
-  /**
-   * When true (default), the extraction prompt instructs the LLM to classify
-   * each fact as `"project"` or `"global"` scope. Global-scoped facts are
-   * promoted to the shared namespace so they are visible across all projects.
-   * When false, all facts go to whatever namespace the session is in (pre-
-   * scope-classification behavior). Rule 30: configuration gate.
-   */
+  /** When true (default), LLM classifies facts as `"project"` or `"global"` scope for promotion across projects. */
   extractionScopeClassificationEnabled: boolean;
   // Extraction judge (issue #376)
   /** Enable the LLM-as-judge fact-worthiness gate on extracted facts. Default false (opt-in). */

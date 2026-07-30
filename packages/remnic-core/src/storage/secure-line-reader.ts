@@ -227,6 +227,7 @@ export async function readMemoryLifecycleEventsFromLines(
   limit: number,
   memoryId?: string,
   compare?: (a: MemoryLifecycleEvent, b: MemoryLifecycleEvent) => number,
+  onEvent?: (event: MemoryLifecycleEvent) => void,
 ): Promise<MemoryLifecycleEvent[]> {
   if (limit <= 0) return [];
   const top = compare ? new BoundedLifecycleTopN(limit, compare) : null;
@@ -238,8 +239,9 @@ export async function readMemoryLifecycleEventsFromLines(
     if (!line) continue;
     try {
       const parsed = JSON.parse(line) as Partial<MemoryLifecycleEvent>;
-      if (memoryId !== undefined && parsed.memoryId !== memoryId) continue;
       if (!isValidLifecycleEventRow(parsed)) continue;
+      onEvent?.(parsed);
+      if (memoryId !== undefined && parsed.memoryId !== memoryId) continue;
       if (top) {
         top.add(parsed, seq++);
       } else if (ring.length < limit) {

@@ -61,6 +61,66 @@ test("parseConfig validates agentAccessHttp.port bounds and CLI strings", () => 
   }
 });
 
+test("HTTP liveness is authenticated and does not run detailed health diagnostics", async () => {
+  let healthCalls = 0;
+  const service = {
+    health: async () => {
+      healthCalls += 1;
+      return new Promise<never>(() => {});
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const denied = await fetch(`http://127.0.0.1:${status.port}/engram/v1/live`);
+    assert.equal(denied.status, 401);
+
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/live`, {
+      headers: { authorization: "Bearer test-token" },
+      signal: AbortSignal.timeout(500),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, ready: true });
+    assert.equal(healthCalls, 0);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP detailed health route still runs service diagnostics", async () => {
+  let healthCalls = 0;
+  const service = {
+    health: async () => {
+      healthCalls += 1;
+      return { ok: true, diagnostics: "complete" };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/health`, {
+      headers: { authorization: "Bearer test-token" },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, diagnostics: "complete" });
+    assert.equal(healthCalls, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP memory browse rejects malformed pagination and sort query values", async () => {
   const calls: unknown[] = [];
   const service = {

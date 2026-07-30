@@ -2059,6 +2059,94 @@ test("maybeRegister stays embedded after a daemon-down fallback (no stacking)", 
   }
 });
 
+test("maybeRegister passes the configured timeout to the daemon health preflight", () => {
+  const priorEnv = process.env.REMNIC_BRIDGE_MODE;
+  const priorLegacyEnv = process.env.ENGRAM_BRIDGE_MODE;
+  Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+  Reflect.deleteProperty(process.env, "ENGRAM_BRIDGE_MODE");
+  try {
+    const api = recordingApi();
+    let capturedTimeoutMs: number | undefined;
+    const handled = maybeRegisterDelegateRuntime(
+      api,
+      {
+        serviceId: "openclaw-remnic",
+        configBridgeMode: "delegate",
+        bridgeHealthTimeoutMs: 7_500,
+        passive: false,
+        allowPromptInjection: true,
+        gateHeartbeatTurns: false,
+        recallBudgetChars: 8_000,
+        memoryDir: "/tmp/remnic-delegate-test-memory",
+        sessionTogglesEnabled: false,
+        respectBundledActiveMemoryToggle: false,
+        cleanUserMessage: (text: string) => text,
+        hookTimeoutMs: 5_000,
+        shouldSkipRecall: () => false,
+        flushOnResetEnabled: true,
+      },
+      {
+        checkHealth: (_host, _port, timeoutMs) => {
+          capturedTimeoutMs = timeoutMs;
+          return false;
+        },
+      },
+    );
+
+    assert.equal(handled, false);
+    assert.equal(capturedTimeoutMs, 7_500);
+  } finally {
+    if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorEnv;
+    if (priorLegacyEnv === undefined) Reflect.deleteProperty(process.env, "ENGRAM_BRIDGE_MODE");
+    else process.env.ENGRAM_BRIDGE_MODE = priorLegacyEnv;
+  }
+});
+
+test("maybeRegister rejects an invalid delegate timeout and falls back to embedded", () => {
+  const priorEnv = process.env.REMNIC_BRIDGE_MODE;
+  const priorLegacyEnv = process.env.ENGRAM_BRIDGE_MODE;
+  Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+  Reflect.deleteProperty(process.env, "ENGRAM_BRIDGE_MODE");
+  try {
+    const api = recordingApi();
+    let healthCalls = 0;
+    const handled = maybeRegisterDelegateRuntime(
+      api,
+      {
+        serviceId: "openclaw-remnic",
+        configBridgeMode: "delegate",
+        bridgeHealthTimeoutMs: 0,
+        passive: false,
+        allowPromptInjection: true,
+        gateHeartbeatTurns: false,
+        recallBudgetChars: 8_000,
+        memoryDir: "/tmp/remnic-delegate-test-memory",
+        sessionTogglesEnabled: false,
+        respectBundledActiveMemoryToggle: false,
+        cleanUserMessage: (text: string) => text,
+        hookTimeoutMs: 5_000,
+        shouldSkipRecall: () => false,
+        flushOnResetEnabled: true,
+      },
+      {
+        checkHealth: () => {
+          healthCalls += 1;
+          return true;
+        },
+      },
+    );
+
+    assert.equal(handled, false);
+    assert.equal(healthCalls, 0);
+  } finally {
+    if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
+    else process.env.REMNIC_BRIDGE_MODE = priorEnv;
+    if (priorLegacyEnv === undefined) Reflect.deleteProperty(process.env, "ENGRAM_BRIDGE_MODE");
+    else process.env.ENGRAM_BRIDGE_MODE = priorLegacyEnv;
+  }
+});
+
 test("delegate recall degrades to no injection on a daemon HTTP error response", async () => {
   const stub = await startDaemonStub(() => {
     throw new Error("boom"); // startDaemonStub catches nothing: force via 500 below
