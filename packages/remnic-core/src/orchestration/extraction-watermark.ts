@@ -3,6 +3,7 @@ import path from "node:path";
 import { capabilityAllowsNamespace, type TokenCapabilities } from "../access-token-capabilities.js";
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import { resolveCorpusNamespaceRoots, type CorpusNamespaceRoot } from "../corpus-watermark.js";
+import { normalizeNamespaceIdentity } from "../namespaces/identity.js";
 import type { ExtractionRootStats, ExtractionWatermarkRead } from "../extraction-liveness.js";
 import type { MetaState, PluginConfig } from "../types.js";
 
@@ -130,7 +131,8 @@ export async function readAggregateExtractionWatermark(
     targets.push(root);
   }
 
-  const canAccessRoot = !options.caps || capabilityAllowsNamespace(options.caps, options.config.defaultNamespace);
+  const defaultNamespace = normalizeNamespaceIdentity(options.config.defaultNamespace);
+  const canAccessRoot = !options.caps || capabilityAllowsNamespace(options.caps, defaultNamespace);
   let rootRead: ExtractionWatermarkRead = { lastExtractionAt: null, readFailed: false };
   if (canAccessRoot) {
     rootRead = await readWatermark(options.rootStorage, "root store");

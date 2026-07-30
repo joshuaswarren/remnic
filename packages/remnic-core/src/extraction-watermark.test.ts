@@ -125,6 +125,24 @@ test("scoped capabilities filter candidate namespaces during aggregate read", as
     await rm(fixture.memoryDir, { recursive: true, force: true });
   }
 });
+
+test("default root capability check uses the normalized namespace identity", async () => {
+  const fixture = await namespacedFixture();
+  try {
+    const result = await readAggregateExtractionWatermark({
+      config: { ...fixture.config, defaultNamespace: " default " },
+      rootStorage: storage(fixture.memoryDir, async () => "2026-07-26T12:00:00.000Z"),
+      storageForNamespace: async (namespace) =>
+        storage(fixture.namespaceDirs[namespace], async () => "2026-07-25T12:00:00.000Z"),
+      caps: { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
+    });
+
+    assert.equal(result.lastExtractionAt, "2026-07-26T12:00:00.000Z");
+    assert.equal(result.readFailed, false);
+  } finally {
+    await rm(fixture.memoryDir, { recursive: true, force: true });
+  }
+});
 test("unparsable non-null timestamp in namespace store fails the aggregate read", async () => {
   const fixture = await namespacedFixture();
   try {
