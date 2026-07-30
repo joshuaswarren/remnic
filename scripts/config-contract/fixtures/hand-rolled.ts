@@ -4,7 +4,7 @@
  */
 type Rec = Record<string, unknown>;
 function requireObject(value: unknown, _name: string): Rec {
-  if (!value || typeof value !== "object") throw new Error("bad");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("bad");
   return value as Rec;
 }
 function coerceBool(value: unknown): boolean | undefined {

@@ -4056,15 +4056,10 @@ function loadStandaloneConvergeCommandConfig(): PluginConfig {
 function parseConvergePluginConfig(value: unknown): PluginConfig | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   if (Object.keys(value as Record<string, unknown>).length === 0) return undefined;
-  try {
-    return parseConfig(resolveRemnicConfigRecord(value));
-  } catch (error) {
-    // A present `converge` block that fails to parse is an explicit invalid operator
-    // config — surface it rather than silently defaulting to newest-wins (which could
-    // auto-resolve conflicts). Non-converge parse issues fall back to standalone.
-    if ("converge" in (value as Record<string, unknown>)) throw error;
-    return undefined;
-  }
+  // Present and non-empty config is authoritative. Parse strictly — any invalid value
+  // (unknown key, bad policy, malformed/nested structure) MUST surface as an error,
+  // never silently default to newest-wins, which could auto-resolve conflicts.
+  return parseConfig(resolveRemnicConfigRecord(value));
 }
 
 export function loadConvergeCommandConfig(): PluginConfig {

@@ -252,20 +252,6 @@ test("converge falls back to standalone config when a plugin entry has no config
       loadConvergeCommandConfig().converge.conflictPolicy,
       "manual",
     );
-    await writeFile(
-      openclawConfigPath,
-      JSON.stringify({
-        plugins: {
-          entries: {
-            "openclaw-remnic": { config: { remnic: false }, enabled: true },
-          },
-        },
-      }),
-    );
-    assert.equal(
-      loadConvergeCommandConfig().converge.conflictPolicy,
-      "manual",
-    );
   } finally {
     restoreEnv();
     await rm(home, { recursive: true, force: true });
