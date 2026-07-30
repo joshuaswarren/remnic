@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
 import { parseConfig } from "./config.js";
+import { TOKEN_CAPABILITIES_VERSION, tokenCapabilityStore } from "./access-token-capabilities.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
 import type { Orchestrator } from "./orchestrator.js";
 import type { SearchBackend } from "./search/port.js";
@@ -548,6 +549,12 @@ test("health reports extraction liveness ok when the buffer is empty (nothing to
     assert.equal(health.extraction.degraded, false);
     assert.equal(health.extraction.bufferedSessionCount, 0);
     assert.equal(health.extraction.lastExtractionAt, oldTs);
+    const scopedHealth = await tokenCapabilityStore.run(
+      { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
+      () => service.health(),
+    );
+    assert.equal(scopedHealth.extraction.degraded, health.extraction.degraded);
+    assert.equal(scopedHealth.extraction.lastExtractionAt, null);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

@@ -2376,13 +2376,14 @@ export class EngramAccessService {
       rootStorage: this.orchestrator.storage,
       storageForNamespace: (candidate) => this.orchestrator.getStorage(candidate),
       rootsCache: this.corpusWatermarkCache,
-      caps,
     });
     const extraction = await computeExtractionLivenessStatus(
       this.orchestrator,
       extractionWatermark,
-      caps?.namespaces !== undefined ? undefined : this.extractionLivenessWarn,
+      this.extractionLivenessWarn,
     );
+    const visibleExtraction =
+      caps?.namespaces !== undefined ? { ...extraction, lastExtractionAt: null } : extraction;
     // ONE call: the corpus array and the flag describing it must not come from
     // two independently-cached scans (round 8, codex P1).
     const corpusCensus = await computeServiceCorpusCensus(this.orchestrator, {
@@ -2410,7 +2411,7 @@ export class EngramAccessService {
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
-      extraction,
+      extraction: visibleExtraction,
       corpus: corpusCensus.watermarks,
       // Describes THIS response's array (round 8): a separate scan could report
       // complete while the shipped corpus was partial, and peers trust it.
