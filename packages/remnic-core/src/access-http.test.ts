@@ -858,6 +858,7 @@ test("HTTP offline snapshot forwards namespace and transfer options", async () =
         createdAt: new Date("2026-05-21T00:00:00Z").toISOString(),
         sourceId: "remote:test",
         includeTranscripts: options.includeTranscripts !== false,
+        deletions: [{ path: "facts/deleted.md", mtimeMs: 1235 }],
         files: [],
       };
     },
@@ -876,12 +877,18 @@ test("HTTP offline snapshot forwards namespace and transfer options", async () =
       `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/snapshot?namespace=team&include_transcripts=false&content=false`,
       { headers: { authorization: "Bearer test-token" } },
     );
-    const body = await response.json() as { namespace?: string; includeTranscripts?: boolean; files?: unknown[] };
+    const body = await response.json() as {
+      namespace?: string;
+      includeTranscripts?: boolean;
+      files?: unknown[];
+      deletions?: unknown[];
+    };
 
     assert.equal(response.status, 200);
     assert.equal(body.namespace, "team");
     assert.equal(body.includeTranscripts, false);
     assert.deepEqual(body.files, []);
+    assert.deepEqual(body.deletions, [{ path: "facts/deleted.md", mtimeMs: 1235 }]);
     assert.deepEqual(calls, [{
       namespace: "team",
       principal: "reader",
@@ -1016,6 +1023,7 @@ test("HTTP offline snapshot stream emits metadata records as NDJSON", async () =
         createdAt: new Date("2026-05-21T00:00:00Z").toISOString(),
         sourceId: "remote:test",
         includeTranscripts: options.includeTranscripts !== false,
+        deletions: [{ path: "facts/deleted.md", mtimeMs: 1235 }],
         files: (async function* () {
           yield {
             path: "facts/a.md",
@@ -1050,6 +1058,7 @@ test("HTTP offline snapshot stream emits metadata records as NDJSON", async () =
     assert.equal(response.headers.get("content-type"), "application/x-ndjson; charset=utf-8");
     assert.equal(lines[0]?.type, "snapshot");
     assert.equal(lines[0]?.namespace, "team");
+    assert.deepEqual(lines[0]?.deletions, [{ path: "facts/deleted.md", mtimeMs: 1235 }]);
     assert.equal(lines[1]?.type, "file");
     assert.deepEqual((lines[1]?.file as { path?: string }).path, "facts/a.md");
     assert.deepEqual(calls, [{

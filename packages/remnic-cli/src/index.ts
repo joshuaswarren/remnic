@@ -9196,6 +9196,7 @@ export async function runOfflineSyncOnce(options: {
       readFileDigest: storageIo.readFileDigest,
       writeFile: storageIo.writeFile,
       deleteFile: storageIo.deleteFile,
+      recordDeletionRevision: storageIo.recordDeletionRevision,
     });
   } catch (error) {
     if (!isMissingOfflineContentError(error)) {
@@ -9242,6 +9243,7 @@ export async function runOfflineSyncOnce(options: {
         readFileDigest: storageIo.readFileDigest,
         writeFile: storageIo.writeFile,
         deleteFile: storageIo.deleteFile,
+        recordDeletionRevision: storageIo.recordDeletionRevision,
       });
     } catch (retryApplyError) {
       if (pushed || partialHydration.hydratedFiles.length > 0) {
@@ -9509,6 +9511,7 @@ Environment fallbacks:
       readFileDigest: storageIo.readFileDigest,
       writeFile: storageIo.writeFile,
       deleteFile: storageIo.deleteFile,
+      recordDeletionRevision: storageIo.recordDeletionRevision,
     });
     const state = offlineSyncStateFromSnapshot({
       remoteId: remoteUrl,

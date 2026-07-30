@@ -1265,6 +1265,52 @@ test("offlineSyncFiles reports symlink requested paths as input errors", async (
   }
 });
 
+test("offlineSyncSnapshot and stream expose durable namespace deletion revisions", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-snapshot-deletions-"));
+  try {
+    const relPath = "facts/deleted.md";
+    const filePath = path.join(root, relPath);
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, "deleted content");
+    const storage = new StorageManager(root);
+    await storage.deleteOfflineSyncFile(filePath);
+    const mtimeMs = (await storage.readDeletionRevisions()).get(relPath);
+    assert.ok(mtimeMs !== undefined);
+
+    const { service } = makeService();
+    (service as unknown as {
+      orchestrator: {
+        config: PluginConfig;
+        getStorage(namespace: string): Promise<StorageManager>;
+      };
+    }).orchestrator.getStorage = async () => storage;
+
+    const snapshot = await service.offlineSyncSnapshot({
+      namespace: "team",
+      principal: "reader",
+      includeContent: false,
+    });
+    const stream = await service.offlineSyncSnapshotStream({
+      namespace: "team",
+      principal: "reader",
+      includeContent: false,
+    });
+
+    assert.deepEqual(snapshot.deletions, [{ path: relPath, mtimeMs }]);
+    assert.deepEqual(stream.deletions, snapshot.deletions);
+
+    await writeFile(filePath, "recreated content");
+    const recreatedStream = await service.offlineSyncSnapshotStream({
+      namespace: "team",
+      principal: "reader",
+      includeContent: false,
+    });
+    assert.deepEqual(recreatedStream.deletions, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offlineSyncSnapshot does not trust client base capture time for server fast-base scans", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-snapshot-client-clock-"));
   try {
@@ -1293,6 +1339,9 @@ test("offlineSyncSnapshot does not trust client base capture time for server fas
       dir: root,
       async drainPendingMemoryLifecycleEventsForSync() {
         return { folded: false, pendingDeferred: false };
+      },
+      async readDeletionRevisions() {
+        return new Map<string, number>();
       },
       async readOfflineSyncFile(targetPath: string) {
         return readFile(targetPath);
@@ -1357,6 +1406,9 @@ test("offlineSyncSnapshot drains pending recall-impression spills so a recorded 
       dir: root,
       async drainPendingMemoryLifecycleEventsForSync() {
         return { folded: false, pendingDeferred: false };
+      },
+      async readDeletionRevisions() {
+        return new Map<string, number>();
       },
       async readOfflineSyncFile(targetPath: string) {
         return readFile(targetPath);
@@ -1440,6 +1492,9 @@ test("offlineSyncSnapshot does NOT drain the global impression queue during a na
       async drainPendingMemoryLifecycleEventsForSync() {
         lifecycleDrainCalls += 1;
         return { folded: false, pendingDeferred: false };
+      },
+      async readDeletionRevisions() {
+        return new Map<string, number>();
       },
       async readOfflineSyncFile(targetPath: string) {
         return readFile(targetPath);

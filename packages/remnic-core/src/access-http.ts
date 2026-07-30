@@ -3417,6 +3417,7 @@ export class EngramAccessHttpServer {
       createdAt: snapshot.createdAt,
       sourceId: snapshot.sourceId,
       includeTranscripts: snapshot.includeTranscripts,
+      deletions: snapshot.deletions,
     })) return;
     for await (const file of snapshot.files) {
       if (!await writeLine({ type: "file", file })) return;

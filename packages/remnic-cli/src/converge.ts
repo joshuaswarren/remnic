@@ -11,6 +11,7 @@ import {
   OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
   OFFLINE_SYNC_CHANGESET_FORMAT,
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
+  OFFLINE_SYNC_MAX_MTIME_MS,
   applyOfflineSyncFileContentChunk,
 } from "@remnic/core";
 import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
@@ -36,6 +37,7 @@ import {
   type ReconcileManifest,
 } from "@remnic/core/reconcile/manifest.js";
 import { createOfflineStorageIo } from "./offline-storage-io.js";
+import { validateArchiveRelativePath } from "@remnic/core/transfer/fs-utils.js";
 import { resolveAgentAccessAuthToken } from "@remnic/core/resolve-auth-token.js";
 export interface ConvergePlanOptions {
   config?: PluginConfig;
@@ -112,7 +114,11 @@ async function fetchPeerSnapshot(
   namespace: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<{ files: ReconcileFileState[]; tombstones: Set<string> }> {
+): Promise<{
+  files: ReconcileFileState[];
+  tombstones: Set<string>;
+  deletions: ReadonlyMap<string, number>;
+}> {
   let base = peerUrl;
   while (base.endsWith("/")) {
     base = base.slice(0, -1);
@@ -177,7 +183,41 @@ async function fetchPeerSnapshot(
       }
       tombstones.add(tombstone.toLowerCase());
     }
-    return { files, tombstones };
+
+    const rawDeletions = "deletions" in data ? data.deletions : undefined;
+    if (rawDeletions !== undefined && !Array.isArray(rawDeletions)) {
+      throw new Error(`invalid peer snapshot for namespace ${namespace}: deletions must be an array`);
+    }
+    const deletions = new Map<string, number>();
+    const deletionPathKeys = new Set<string>();
+    for (const deletion of rawDeletions ?? []) {
+      if (!deletion || typeof deletion !== "object" || Array.isArray(deletion)) {
+        throw new Error(`invalid peer snapshot for namespace ${namespace}: malformed deletion revision`);
+      }
+      const record = deletion as Record<string, unknown>;
+      if (
+        typeof record.path !== "string"
+        || typeof record.mtimeMs !== "number"
+        || !Number.isFinite(record.mtimeMs)
+        || record.mtimeMs < 0
+        || record.mtimeMs > OFFLINE_SYNC_MAX_MTIME_MS
+      ) {
+        throw new Error(`invalid peer snapshot for namespace ${namespace}: malformed deletion revision`);
+      }
+      let deletionPath: string;
+      try {
+        deletionPath = validateArchiveRelativePath(record.path, "deletions[].path");
+      } catch {
+        throw new Error(`invalid peer snapshot for namespace ${namespace}: malformed deletion revision path`);
+      }
+      const pathKey = deletionPath.toLowerCase();
+      if (deletionPathKeys.has(pathKey)) {
+        throw new Error(`invalid peer snapshot for namespace ${namespace}: duplicate deletion revision path`);
+      }
+      deletionPathKeys.add(pathKey);
+      deletions.set(deletionPath, record.mtimeMs);
+    }
+    return { files, tombstones, deletions };
   }
 
   throw new Error(`failed to fetch peer snapshot for namespace ${namespace}: ${lastFailure}`);
@@ -409,6 +449,7 @@ async function postPeerFileDeletion(
   namespace: string,
   filePath: string,
   baseSha256: string,
+  deletionMtimeMs: number,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<"applied" | "skipped" | false> {
@@ -432,7 +473,7 @@ async function postPeerFileDeletion(
             createdAt: new Date().toISOString(),
             sourceId: "remnic-converge",
             includeTranscripts: false,
-            changes: [{ type: "delete", path: filePath, baseSha256 }],
+            changes: [{ type: "delete", path: filePath, baseSha256, mtimeMs: deletionMtimeMs }],
           },
         }),
       });
@@ -538,11 +579,14 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     for (const rootInfo of roots) {
       const ns = rootInfo.namespace;
       namespacesToPlan.add(ns);
+      const io = await createOfflineStorageIo(rootInfo.rootDir);
+      const storedDeletions = await io.readDeletionRevisions();
       try {
         const snapshot = await buildOfflineSyncSnapshotFromBase({
           root: rootInfo.rootDir,
           sourceId: "local",
           includeContent: false,
+          deletions: [...storedDeletions].map(([path, mtimeMs]) => ({ path, mtimeMs })),
         });
         const files: ReconcileFileState[] = snapshot.files.map((record) => ({
           path: record.path,
@@ -551,8 +595,13 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
           bytes: record.bytes,
         }));
         localMap.set(ns, files);
+        if (!localDeletionMtimeMs.has(ns)) {
+          localDeletionMtimeMs.set(
+            ns,
+            new Map((snapshot.deletions ?? []).map((revision) => [revision.path, revision.mtimeMs])),
+          );
+        }
         try {
-          const io = await createOfflineStorageIo(rootInfo.rootDir);
           localManifests.set(
             ns,
             await buildReconcileManifest({
@@ -596,6 +645,9 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       const peerData = await fetchPeerSnapshot(peerUrl, ns, resolvedToken, fetchFn);
       peerMap.set(ns, peerData.files);
       peerTombstones.set(ns, peerData.tombstones);
+      if (!peerDeletionMtimeMs.has(ns)) {
+        peerDeletionMtimeMs.set(ns, peerData.deletions);
+      }
       peerManifests.set(
         ns,
         await buildReconcileManifest({
@@ -945,13 +997,18 @@ export async function executeConvergeApply(
         }
       } else {
         const rootDir = rootMap.get(entry.namespace);
-        if (rootDir && entry.localSha256) {
+        if (rootDir && entry.localSha256 && entry.deletionMtimeMs !== undefined) {
           try {
             const io = await createOfflineStorageIo(rootDir);
             const filePath = path.join(rootDir, entry.path);
             const current = await io.readFileDigest({ root: rootDir, path: entry.path, filePath });
             if (current.sha256 === entry.localSha256) {
-              await io.deleteFile!({ root: rootDir, path: entry.path, filePath });
+              await io.deleteFile!({
+                root: rootDir,
+                path: entry.path,
+                filePath,
+                mtimeMs: entry.deletionMtimeMs,
+              });
               deleted = true;
             }
           } catch {
@@ -974,12 +1031,13 @@ export async function executeConvergeApply(
           bufferedFiles!.delete(entry.path);
           deleted = true;
         }
-      } else if (options.peerUrl && entry.peerSha256) {
+      } else if (options.peerUrl && entry.peerSha256 && entry.deletionMtimeMs !== undefined) {
         const deletionResult = await postPeerFileDeletion(
           options.peerUrl,
           entry.namespace,
           entry.path,
           entry.peerSha256,
+          entry.deletionMtimeMs,
           resolvedToken,
           fetchFn,
         );

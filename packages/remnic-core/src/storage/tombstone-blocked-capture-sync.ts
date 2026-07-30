@@ -178,6 +178,14 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected abstract bumpMemoryStatusVersion(): void;
   protected abstract bumpMemoryCorpusVersion(): void;
   protected abstract markFactHashIndexNotAuthoritative(): void;
+  protected abstract deleteManagedStorageFile(
+    filePath: string,
+    deletionMtimeMs?: number | null
+  ): Promise<boolean>;
+  protected abstract writeManagedStorageFile(
+    filePath: string,
+    write: () => Promise<void>
+  ): Promise<void>;
 
   private async writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const options = this.tombstoneBlockedCaptureIndexOptions();
@@ -541,7 +549,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       memory,
       async (current, rebuildMarker, markDurable) => {
         if (!shouldDelete(current)) return false;
-        await unlink(current.path);
+        if (!(await this.deleteManagedStorageFile(current.path))) return false;
         markDurable();
         deleted = current;
         const memoryDir = this.tombstoneBlockedCaptureIndexOptions().memoryDir;
@@ -646,7 +654,10 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     await this.runTombstoneBlockedOfflineSyncMutation(
       target,
       this.tombstoneBlockedCaptureIndexOptions().parseMemory?.(target, content) ?? null,
-      () => this.writeStorageSecureFile(target, content)
+      () => this.writeManagedStorageFile(
+        target,
+        () => this.writeStorageSecureFile(target, content)
+      )
     );
   }
 
@@ -812,7 +823,10 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         await this.runTombstoneBlockedOfflineSyncMutation(
           target,
           prepared.after,
-          () => this.writeStorageSecureFileChunks(target, prepared.chunks),
+          () => this.writeManagedStorageFile(
+            target,
+            () => this.writeStorageSecureFileChunks(target, prepared.chunks)
+          ),
           coordinate,
           streamedIdentity
         );
@@ -847,17 +861,20 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     await requestEntityCanonicalIdReconcile(stateDir);
   }
 
-  async deleteOfflineSyncFile(filePath: string): Promise<void> {
+  async deleteOfflineSyncFile(
+    filePath: string,
+    deletionMtimeMs?: number | null
+  ): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.deleteOfflineSyncFile");
-    await this.deleteTombstoneBlockedOfflineSyncFile(target);
+    await this.deleteTombstoneBlockedOfflineSyncFile(target, deletionMtimeMs);
   }
 
-  protected async deleteTombstoneBlockedOfflineSyncFile(target: string): Promise<void> {
+  protected async deleteTombstoneBlockedOfflineSyncFile(
+    target: string,
+    deletionMtimeMs?: number | null
+  ): Promise<void> {
     await this.runTombstoneBlockedOfflineSyncMutation(target, null, async () => {
-      await unlink(target).catch((error: unknown) => {
-        if (isErrnoCode(error, "ENOENT")) return;
-        throw error;
-      });
+      await this.deleteManagedStorageFile(target, deletionMtimeMs);
     });
   }
 

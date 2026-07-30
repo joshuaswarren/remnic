@@ -17,6 +17,7 @@ import {
   compileOfflineSyncExcludeGlobs,
   globToRegExp,
   OFFLINE_SYNC_MAX_MTIME_MS,
+  normalizeOfflineSyncSnapshot,
   readOfflineSyncFileContentChunk,
   shouldPreferIncomingOfflineRuntimeFile,
   summarizeOfflineSyncPendingChanges,
@@ -106,6 +107,105 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
     await rm(root, { recursive: true, force: true });
   }
 });
+test("offline snapshots preserve actual deletion revisions and never use capture time", async () => {
+  const root = await tempDir("remnic-offline-deletion-census");
+  try {
+    const deletion = { path: "facts/deleted.md", mtimeMs: 2000 };
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "local",
+      now: new Date(4000),
+      deletions: [deletion],
+    });
+    assert.deepEqual(snapshot.deletions, [deletion]);
+    assert.equal(snapshot.createdAt, new Date(4000).toISOString());
+
+    await write(root, deletion.path, "recreated");
+    const recreated = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "local",
+      now: new Date(5000),
+      deletions: [deletion],
+    });
+    assert.deepEqual(recreated.deletions, []);
+
+    const legacy = normalizeOfflineSyncSnapshot({
+      format: "remnic.offline-sync.snapshot.v1",
+      schemaVersion: 1,
+      createdAt: new Date(6000).toISOString(),
+      sourceId: "legacy",
+      includeTranscripts: false,
+      files: [],
+    });
+    assert.equal(legacy.deletions, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline delete changes propagate the originating deletion revision", async () => {
+  const root = await tempDir("remnic-offline-delete-revision");
+  try {
+    const relativePath = "facts/deleted.md";
+    const content = Buffer.from("delete me");
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    await write(root, relativePath, content);
+    let receivedMtimeMs: number | undefined;
+
+    const result = await applyOfflineSyncChangeset({
+      root,
+      currentFiles: [{ path: relativePath, sha256, bytes: content.length, mtimeMs: 1000 }],
+      changeset: {
+        format: "remnic.offline-sync.changeset.v1",
+        schemaVersion: 1,
+        createdAt: new Date(4000).toISOString(),
+        sourceId: "peer",
+        includeTranscripts: false,
+        changes: [{ type: "delete", path: relativePath, baseSha256: sha256, mtimeMs: 2000 }],
+      },
+      deleteFile: async ({ filePath, mtimeMs }) => {
+        receivedMtimeMs = mtimeMs;
+        await rm(filePath);
+      },
+    });
+
+    assert.equal(result.appliedDeletes, 1);
+    assert.equal(receivedMtimeMs, 2000);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline apply relays known deletion metadata when the target is already absent", async () => {
+  const root = await tempDir("remnic-offline-delete-relay");
+  try {
+    const relativePath = "facts/deleted.md";
+    const sha256 = "a".repeat(64);
+    let receivedRevision: { path: string; mtimeMs: number } | undefined;
+
+    const result = await applyOfflineSyncChangeset({
+      root,
+      currentFiles: [],
+      changeset: {
+        format: "remnic.offline-sync.changeset.v1",
+        schemaVersion: 1,
+        createdAt: new Date(4000).toISOString(),
+        sourceId: "peer",
+        includeTranscripts: false,
+        changes: [{ type: "delete", path: relativePath, baseSha256: sha256, mtimeMs: 2000 }],
+      },
+      recordDeletionRevision: async ({ path, mtimeMs }) => {
+        receivedRevision = { path, mtimeMs };
+      },
+    });
+
+    assert.equal(result.skipped, 1);
+    assert.deepEqual(receivedRevision, { path: relativePath, mtimeMs: 2000 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 
 test("offline snapshot abort signal stops filesystem snapshot work", async () => {
   const root = await tempDir("remnic-offline-snapshot-abort");

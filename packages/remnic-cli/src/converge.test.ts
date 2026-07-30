@@ -4,7 +4,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { ContentHashIndex, OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES, parseConfig } from "@remnic/core";
+import {
+  ContentHashIndex,
+  OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
+  parseConfig,
+  StorageManager,
+} from "@remnic/core";
 import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
 import {
   defaultConvergeCursorPath,
@@ -344,6 +349,75 @@ test("remnic converge apply: configured newest-wins compares deletion and modifi
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
+test("remnic converge plan uses the durable local deletion revision instead of census time", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-local-deletion-revision-"));
+  try {
+    const filePath = "facts/deleted-locally.md";
+    const absolutePath = path.join(rootDir, filePath);
+    const baseSha = "d".repeat(64);
+    const peerSha = "e".repeat(64);
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, "base content");
+    const storage = new StorageManager(rootDir);
+    await storage.deleteOfflineSyncFile(absolutePath);
+    const deletedAtMs = (await storage.readDeletionRevisions()).get(filePath);
+    assert.ok(deletedAtMs !== undefined);
+
+    const plan = await computeConvergePlan({
+      config: parseConfig({ memoryDir: rootDir }),
+      peerUrl: "https://peer.example.test",
+      baseFilesByNamespace: new Map([["default", [{ path: filePath, sha256: baseSha }]]]),
+      fetchImpl: async () => Response.json({
+        files: [{ path: filePath, sha256: peerSha, mtimeMs: deletedAtMs - 1, bytes: 12 }],
+        tombstones: [],
+        deletions: [],
+      }),
+    });
+
+    const entry = plan.entries.find((candidate) => candidate.path === filePath);
+    assert.equal(entry?.reason, "local_deleted_peer_modified");
+    assert.equal(entry?.resolution, "local-wins");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("remnic converge plan carries peer deletion revisions into newest-wins", async () => {
+  const filePath = "facts/deleted-by-peer.md";
+  const plan = await computeConvergePlan({
+    peerUrl: "https://peer.example.test",
+    baseFilesByNamespace: new Map([["default", [{ path: filePath, sha256: shaA }]]]),
+    localFilesByNamespace: new Map([
+      ["default", [{ path: filePath, sha256: shaB, mtimeMs: 2000 }]],
+    ]),
+    fetchImpl: async () => Response.json({
+      files: [],
+      tombstones: [],
+      deletions: [{ path: filePath, mtimeMs: 3000 }],
+    }),
+  });
+
+  const entry = plan.entries.find((candidate) => candidate.path === filePath);
+  assert.equal(entry?.reason, "local_modified_peer_deleted");
+  assert.equal(entry?.resolution, "peer-wins");
+});
+
+test("remnic converge plan leaves delete-versus-modify unresolved when a peer omits deletion metadata", async () => {
+  const filePath = "facts/legacy-peer-deletion.md";
+  const plan = await computeConvergePlan({
+    peerUrl: "https://peer.example.test",
+    baseFilesByNamespace: new Map([["default", [{ path: filePath, sha256: shaA }]]]),
+    localFilesByNamespace: new Map([
+      ["default", [{ path: filePath, sha256: shaB, mtimeMs: 2000 }]],
+    ]),
+    fetchImpl: async () => Response.json({ files: [], tombstones: [] }),
+  });
+
+  const entry = plan.entries.find((candidate) => candidate.path === filePath);
+  assert.equal(entry?.reason, "local_modified_peer_deleted");
+  assert.equal(entry?.resolution, "unresolved");
+});
+
 test("remnic converge apply: dry-run mode simulates transfers without disk writes", async () => {
   const peerFile: ReconcileFileState = { path: "facts/remote.md", sha256: shaA };
   const localMap = new Map<string, ReconcileFileState[]>([["default", []]]);
@@ -514,13 +588,13 @@ test("remnic converge apply: a newer local deletion uses the guarded remote dele
     namespace: string;
     changeset: {
       format: string;
-      changes: Array<{ type: string; path: string; baseSha256: string }>;
+      changes: Array<{ type: string; path: string; baseSha256: string; mtimeMs?: number }>;
     };
   };
   assert.equal(body.namespace, "default");
   assert.equal(body.changeset.format, "remnic.offline-sync.changeset.v1");
   assert.deepEqual(body.changeset.changes, [
-    { type: "delete", path: filePath, baseSha256: peerSha },
+    { type: "delete", path: filePath, baseSha256: peerSha, mtimeMs: 3000 },
   ]);
   assert.ok(requests.some(({ url }) => url.includes("/offline-sync/convergence-complete?namespace=default")));
 });

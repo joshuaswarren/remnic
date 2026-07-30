@@ -53,6 +53,8 @@ export interface OfflineStorageIo {
   writeStagingFile: Parameters<typeof applyOfflineSyncFileContentChunk>[0]["writeStagingFile"];
   writeFileChunks: Parameters<typeof applyOfflineSyncFileContentChunk>[0]["writeFileChunks"];
   deleteFile: Parameters<typeof applyOfflineSyncSnapshot>[0]["deleteFile"];
+  recordDeletionRevision: Parameters<typeof applyOfflineSyncSnapshot>[0]["recordDeletionRevision"];
+  readDeletionRevisions: () => Promise<ReadonlyMap<string, number>>;
 }
 
 export async function createConfiguredOfflineStorage(
@@ -115,6 +117,7 @@ export async function createOfflineStorageIo(
     configuredStorage ?? (await createConfiguredOfflineStorage(memoryDir));
   return {
     readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+    readDeletionRevisions: () => storage.readDeletionRevisions(),
     readFileDigest: async ({ filePath }) => {
       const hash = createHash("sha256");
       let bytes = 0;
@@ -142,7 +145,9 @@ export async function createOfflineStorageIo(
     writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
     writeStagingFile: async ({ filePath, content }) => storage.writeOfflineSyncStagingFile(filePath, content),
     writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
-    deleteFile: async ({ filePath }) => storage.deleteOfflineSyncFile(filePath),
+    deleteFile: async ({ filePath, mtimeMs }) => storage.deleteOfflineSyncFile(filePath, mtimeMs ?? null),
+    recordDeletionRevision: async ({ filePath, mtimeMs }) =>
+      storage.recordReplicatedDeletionRevision(filePath, mtimeMs),
   };
 }
 
