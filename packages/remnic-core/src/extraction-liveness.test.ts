@@ -194,6 +194,18 @@ test("evaluate: an unreadable buffer degrades with a distinct reason, even with 
   assert.equal(disabled.degraded, false, "disabled gate suppresses even a read-failure degradation");
 });
 
+test("evaluate: a warming aggregate watermark remains pending without degrading", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: null,
+    snapshot: snapshot({ bufferedSessionCount: 1, pendingTurnCount: 2 }),
+    nowMs: NOW,
+    watermarkPending: true,
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.watermarkPending, true);
+});
+
 test("evaluate: an unreadable watermark degrades with a distinct reason, even with an empty buffer (§22)", () => {
   const status = evaluateExtractionLiveness({
     config: ENABLED,
@@ -343,7 +355,7 @@ test("throttle: warns once per staleness window and again after it elapses; rese
   assert.equal(t.maybeWarn(degraded, WINDOW, NOW + WINDOW + 2), true, "recovery reset lets a fresh episode warn at once");
 });
 
-test("summarizeExtractionLiveness: adapts legacy storage object argument", async () => {
+test("summarizeExtractionLiveness: fails closed for legacy root-store-only storage argument", async () => {
   const storage = {
     readMetadata: async () => ({ lastExtractionAt: "2026-07-29T10:00:00.000Z" }),
   };
@@ -353,8 +365,8 @@ test("summarizeExtractionLiveness: adapts legacy storage object argument", async
     undefined,
     NOW,
   );
-  assert.equal(doctorCheck.status, "ok");
-  assert.ok(doctorCheck.summary.includes("last extraction 2026-07-29T10:00:00.000Z"));
+  assert.equal(doctorCheck.status, "warn");
+  assert.ok(doctorCheck.summary.includes("aggregate watermark unavailable"));
 });
 
 // ── renderExtractionLivenessStats ────────────────────────────────────────────

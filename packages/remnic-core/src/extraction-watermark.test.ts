@@ -198,7 +198,7 @@ test("a failed stale-cache refresh makes later reads incomplete", async () => {
   }
 });
 
-test("a cold namespace-root cache is an explicit incomplete read", async () => {
+test("a cold namespace-root cache is pending, not a failed read", async () => {
   const fixture = await namespacedFixture();
   try {
     let rootReads = 0;
@@ -215,8 +215,8 @@ test("a cold namespace-root cache is an explicit incomplete read", async () => {
     });
 
     assert.equal(result.lastExtractionAt, null);
-    assert.equal(result.readFailed, true);
-    assert.match(result.readError ?? "", /namespace root cache is warming/);
+    assert.equal(result.readFailed, false);
+    assert.equal(result.pending, true);
     assert.equal(rootReads, 0, "a root survivor is not read or published before enumeration completes");
   } finally {
     await rm(fixture.memoryDir, { recursive: true, force: true });

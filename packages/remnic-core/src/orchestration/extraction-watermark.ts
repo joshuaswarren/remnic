@@ -87,7 +87,7 @@ async function resolveRoots(
     if (refreshError !== undefined) {
       return readFailure(`namespace watermark enumeration failed: ${errorMessage(refreshError)}`);
     }
-    return roots ?? readFailure("namespace watermark enumeration unavailable: namespace root cache is warming");
+    return roots ?? { lastExtractionAt: null, readFailed: false, pending: true };
   }
   try {
     return await compute();

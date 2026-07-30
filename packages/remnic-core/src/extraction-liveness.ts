@@ -69,6 +69,7 @@ export interface ExtractionWatermarkRead {
   lastExtractionAt: string | null;
   readFailed: boolean;
   readError?: string;
+  pending?: boolean;
   rootStats?: ExtractionRootStats;
 }
 
@@ -92,7 +93,11 @@ export async function coerceExtractionWatermark(
       const meta = await watermark.readMetadata();
       lastExtractionAt = meta?.lastExtractionAt ?? null;
     }
-    return { lastExtractionAt, readFailed: false };
+    return {
+      lastExtractionAt,
+      readFailed: true,
+      readError: "aggregate watermark unavailable from legacy root-store-only storage argument",
+    };
   } catch (error) {
     return {
       lastExtractionAt: null,
@@ -114,6 +119,7 @@ export interface ExtractionLivenessStatus {
   oldestBufferedTurnAgeMs: number | null;
   degraded: boolean;
   degradedReason: string | null;
+  watermarkPending?: boolean;
   watermarkScope: "aggregate";
 }
 
@@ -208,6 +214,7 @@ export function evaluateExtractionLiveness(input: {
   nowMs: number;
   metaReadFailed?: boolean;
   metaReadError?: string;
+  watermarkPending?: boolean;
 }): ExtractionLivenessStatus {
   const { config, lastExtractionAt, snapshot, nowMs } = input;
   const lastMs = lastExtractionAt !== null ? Date.parse(lastExtractionAt) : Number.NaN;
@@ -221,8 +228,9 @@ export function evaluateExtractionLiveness(input: {
   // (§22): a storage/pipeline outage must not read as healthy, and must stay
   // distinct from a pipeline that has genuinely never extracted.
   const metaReadFailed = input.metaReadFailed === true;
+  const watermarkPending = input.watermarkPending === true;
   const readFailed = snapshot.readFailed === true;
-  const degraded = config.enabled && (metaReadFailed || readFailed || (hasBacklog && stale));
+  const degraded = config.enabled && !watermarkPending && (metaReadFailed || readFailed || (hasBacklog && stale));
 
   let degradedReason: string | null = null;
   if (degraded) {
@@ -247,6 +255,7 @@ export function evaluateExtractionLiveness(input: {
     oldestBufferedTurnAgeMs: ageMsFrom(snapshot.oldestTurnTimestamp, nowMs),
     degraded,
     degradedReason,
+    ...(watermarkPending ? { watermarkPending: true } : {}),
     watermarkScope: "aggregate",
   };
 }
@@ -299,6 +308,7 @@ export async function gatherExtractionLivenessStatus(input: {
     nowMs,
     metaReadFailed: watermarkRead.readFailed,
     metaReadError: watermarkRead.readError,
+    watermarkPending: watermarkRead.pending,
   });
 }
 
