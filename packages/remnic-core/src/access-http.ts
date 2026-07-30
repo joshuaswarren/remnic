@@ -1332,14 +1332,18 @@ export class EngramAccessHttpServer {
     ) {
       this.enforceTokenOp("offline_sync_apply_file_content");
       const namespaceParams = parsed.searchParams.getAll("namespace").filter(Boolean);
-      const namespaces = namespaceParams
+      const requestedNamespaces: Array<string | undefined> =
+        namespaceParams.length > 0 ? namespaceParams : [undefined];
+      const namespaces = requestedNamespaces
         .map((namespace) => this.resolveNamespace(req, namespace))
         .filter((namespace): namespace is string => namespace !== undefined);
+      this.ensureWriteRateLimitAvailable(req);
       const result = await this.service.offlineSyncFinalizeConvergence({
         ...(namespaces.length > 0 ? { namespaces } : {}),
         principal: this.resolveRequestPrincipal(req),
         sourceId: this.readRequiredDecodedHeader(req, "x-remnic-source-id"),
       });
+      this.recordWriteRateLimitHit(req);
       this.respondJson(res, 200, result);
       return;
     }
