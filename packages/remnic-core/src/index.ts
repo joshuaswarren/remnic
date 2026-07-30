@@ -854,6 +854,7 @@ export {
   filterOfflineSyncDeletionRevisions,
   globToRegExp,
   iterateOfflineSyncSnapshotFileRecords,
+  isInternalRemnicStatePath,
   normalizeOfflineSyncChangeset,
   normalizeOfflineSyncSnapshot,
   offlineSyncStateFromSnapshot,

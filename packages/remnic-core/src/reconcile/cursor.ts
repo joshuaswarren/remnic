@@ -20,20 +20,23 @@ export interface ConvergeCursorState {
   completedPaths?: string[];
 }
 
-export function hashPeerNamespace(peerUrl: string, namespace: string): string {
-  let normalizedUrl: string;
+export function normalizeConvergePeerUrl(peerUrl: string): string {
+  const trimmed = peerUrl.trim();
   try {
-    const url = new URL(peerUrl);
-    const credentials =
-      url.username || url.password
-        ? `${url.username}${url.password ? `:${url.password}` : ""}@`
-        : "";
-    normalizedUrl =
-      `${url.protocol.toLowerCase()}//${credentials}${url.hostname.toLowerCase()}` +
-      `${url.port ? `:${url.port}` : ""}${url.pathname.replace(/\/+$/, "")}${url.search}${url.hash}`;
+    const url = new URL(trimmed);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.toString().replace(/\/$/, "");
   } catch {
-    normalizedUrl = peerUrl.trim().replace(/\/+$/, "").toLowerCase();
+    return trimmed.replace(/\/+$/, "");
   }
+}
+
+export function hashPeerNamespace(peerUrl: string, namespace: string): string {
+  const normalizedUrl = normalizeConvergePeerUrl(peerUrl);
   const normalizedNs = namespace.trim().toLowerCase();
   return createHash("sha256")
     .update(`${normalizedUrl}\0${normalizedNs}`)

@@ -13,7 +13,10 @@ import {
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   OFFLINE_SYNC_MAX_MTIME_MS,
   applyOfflineSyncFileContentChunk,
+  isInternalRemnicStatePath,
+  OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
 } from "@remnic/core";
+import { parseFrontmatter } from "@remnic/core/storage.js";
 import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
 import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
 import { listNamespaces } from "@remnic/core/namespaces/migrate.js";
@@ -30,6 +33,7 @@ import {
   readConvergeCursor,
   writeConvergeCursor,
   type ConvergeCursorState,
+  normalizeConvergePeerUrl,
 } from "@remnic/core/reconcile/cursor.js";
 import {
   buildReconcileManifest,
@@ -39,6 +43,20 @@ import {
 import { createOfflineStorageIo } from "./offline-storage-io.js";
 import { validateArchiveRelativePath } from "@remnic/core/transfer/fs-utils.js";
 import { resolveAgentAccessAuthToken } from "@remnic/core/resolve-auth-token.js";
+import {
+  DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  fetchPeerFileContent,
+  fetchPeerManifestStream,
+  fetchPeerSyncCapabilities,
+  fetchPeerSnapshot,
+  postPeerConvergenceComplete,
+  postPeerFileContent,
+  postPeerFileDeletion,
+  streamPeerFileContent,
+  type PeerFileContent,
+  type PeerFileChunk,
+  type PeerFileSource,
+} from "./converge-peer-transport.js";
 export interface ConvergePlanOptions {
   config?: PluginConfig;
   peerUrl?: string;
@@ -46,6 +64,7 @@ export interface ConvergePlanOptions {
   cursorDir?: string;
   conflictPolicy?: ConvergeConflictPolicy;
   fetchImpl?: typeof fetch;
+  peerRequestTimeoutMs?: number;
   resolveSecretRef?: ResolveSecretRefFn;
   baseFilesByNamespace?: Map<string, ReconcileFileState[]>;
   semanticAgreementsByNamespace?: Map<string, ReconcileSemanticAgreement[]>;
@@ -78,35 +97,9 @@ export interface ConvergeApplyResult {
   cursorUpdated: boolean;
 }
 
-async function readLocalTombstones(rootDir: string): Promise<Set<string>> {
-  const shaSet = new Set<string>();
-  const candidates = [
-    path.join(rootDir, "state", "tombstones.jsonl"),
-    path.join(rootDir, "tombstones.jsonl"),
-  ];
-  for (const tombPath of candidates) {
-    try {
-      const content = await fs.promises.readFile(tombPath, "utf-8");
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const record = JSON.parse(trimmed) as { contentHash?: unknown; fileSha256?: unknown };
-          if (typeof record.contentHash === "string" && /^[0-9a-f]{64}$/i.test(record.contentHash)) {
-            shaSet.add(record.contentHash.toLowerCase());
-          }
-          if (typeof record.fileSha256 === "string" && /^[0-9a-f]{64}$/i.test(record.fileSha256)) {
-            shaSet.add(record.fileSha256.toLowerCase());
-          }
-        } catch {
-          // ignore unparseable line
-        }
-      }
-    } catch {
-      // file does not exist
-    }
-  }
-  return shaSet;
+interface TombstoneEvidence {
+  contentHashes: Set<string>;
+  fileSha256: Set<string>;
 }
 
 async function fetchPeerSnapshot(
@@ -129,14 +122,51 @@ async function fetchPeerSnapshot(
   ];
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
   let lastFailure = "no snapshot route responded";
+const TOMBSTONE_PATHS = ["state/tombstones.jsonl", "tombstones.jsonl"] as const;
 
-  for (const route of routes) {
-    let response: Response;
+function parseTombstoneEvidence(content: string): TombstoneEvidence {
+  const contentHashes = new Set<string>();
+  const fileSha256 = new Set<string>();
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
     try {
-      response = await fetchImpl(`${base}${route}`, { headers });
-    } catch (error) {
-      lastFailure = error instanceof Error ? error.message : String(error);
+      const record = JSON.parse(trimmed) as { contentHash?: unknown; fileSha256?: unknown };
+      if (typeof record.contentHash === "string" && /^[0-9a-f]{64}$/i.test(record.contentHash)) {
+        contentHashes.add(record.contentHash.toLowerCase());
+      }
+      if (typeof record.fileSha256 === "string" && /^[0-9a-f]{64}$/i.test(record.fileSha256)) {
+        fileSha256.add(record.fileSha256.toLowerCase());
+      }
+    } catch {
       continue;
+    }
+  }
+  return { contentHashes, fileSha256 };
+}
+
+function tombstonedFileDigests(
+  evidence: TombstoneEvidence,
+  manifest: ReconcileManifest | undefined,
+): Set<string> {
+  const result = new Set(evidence.fileSha256);
+  for (const file of manifest?.files ?? []) {
+    if (file.memory && evidence.contentHashes.has(file.memory.contentHash.toLowerCase())) {
+      result.add(file.sha256.toLowerCase());
+    }
+  }
+  return result;
+}
+
+async function readLocalTombstoneEvidence(rootDir: string): Promise<TombstoneEvidence> {
+  const merged: TombstoneEvidence = { contentHashes: new Set(), fileSha256: new Set() };
+  for (const relativePath of TOMBSTONE_PATHS) {
+    let content: string;
+    try {
+      content = await fs.promises.readFile(path.join(rootDir, relativePath), "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
     }
     if (!response.ok) {
       lastFailure = `HTTP ${response.status}`;
@@ -218,111 +248,31 @@ async function fetchPeerSnapshot(
       deletions.set(deletionPath, record.mtimeMs);
     }
     return { files, tombstones, deletions };
+    const parsed = parseTombstoneEvidence(content);
+    for (const value of parsed.contentHashes) merged.contentHashes.add(value);
+    for (const value of parsed.fileSha256) merged.fileSha256.add(value);
   }
-
-  throw new Error(`failed to fetch peer snapshot for namespace ${namespace}: ${lastFailure}`);
+  return merged;
 }
 
-interface PeerFileContent {
-  content: Buffer;
-  sha256: string;
-  bytes: number;
-  mtimeMs: number;
-}
-
-function requiredResponseNumber(response: Response, name: string): number {
-  const raw = response.headers.get(name);
-  const value = raw === null ? Number.NaN : Number(raw);
-  if (!Number.isFinite(value) || value < 0) {
-    throw new Error(`offline file content response had invalid ${name}`);
+async function discoverCursorNamespaces(memoryDir: string, peerUrl: string): Promise<string[]> {
+  const cursorDir = path.join(path.resolve(memoryDir), ".remnic", "state", "converge-cursors");
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(cursorDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
-  return value;
-}
-
-async function fetchPeerFileContent(
-  peerUrl: string,
-  namespace: string,
-  filePath: string,
-  token?: string,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<PeerFileContent | null> {
-  const base = peerUrl.replace(/\/+$/, "");
-  const routes = [
-    "/remnic/v1/offline-sync/file-content",
-    "/engram/v1/offline-sync/file-content",
-  ];
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    ...(token ? { authorization: `Bearer ${token}` } : {}),
-  };
-  for (const route of routes) {
-    try {
-      const chunks: Buffer[] = [];
-      const hash = createHash("sha256");
-      let offset = 0;
-      let expectedBytes: number | undefined;
-      let expectedSha256: string | undefined;
-      let mtimeMs: number | undefined;
-      do {
-        const response = await fetchImpl(`${base}${route}`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            namespace,
-            includeTranscripts: false,
-            path: filePath,
-            offset,
-            length: OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
-          }),
-        });
-        if (!response.ok) throw new Error(`offline file content request failed: ${response.status}`);
-        const content = Buffer.from(await response.arrayBuffer());
-        const chunkOffset = requiredResponseNumber(response, "x-remnic-chunk-offset");
-        const chunkBytes = requiredResponseNumber(response, "x-remnic-chunk-bytes");
-        const totalBytes = requiredResponseNumber(response, "x-remnic-file-bytes");
-        const responseMtimeMs = requiredResponseNumber(response, "x-remnic-file-mtime-ms");
-        const sha256 = response.headers.get("x-remnic-file-sha256");
-        const encodedPath = response.headers.get("x-remnic-file-path");
-        if (
-          !sha256
-          || chunkOffset !== offset
-          || chunkBytes !== content.length
-          || (encodedPath !== null && decodeURIComponent(encodedPath) !== filePath)
-          || (expectedBytes !== undefined && expectedBytes !== totalBytes)
-          || (expectedSha256 !== undefined && expectedSha256 !== sha256)
-        ) {
-          throw new Error(`offline file content response changed during transfer: ${filePath}`);
-        }
-        if (content.length === 0 && offset < totalBytes) {
-          throw new Error(`offline file content chunk was empty before EOF: ${filePath}`);
-        }
-        expectedBytes = totalBytes;
-        expectedSha256 = sha256;
-        mtimeMs = responseMtimeMs;
-        chunks.push(content);
-        hash.update(content);
-        offset += content.length;
-      } while (expectedBytes === undefined || offset < expectedBytes);
-      if (
-        expectedBytes === undefined
-        || expectedSha256 === undefined
-        || mtimeMs === undefined
-        || offset !== expectedBytes
-        || hash.digest("hex") !== expectedSha256
-      ) {
-        throw new Error(`offline file content checksum mismatch: ${filePath}`);
-      }
-      return {
-        content: Buffer.concat(chunks, expectedBytes),
-        sha256: expectedSha256,
-        bytes: expectedBytes,
-        mtimeMs,
-      };
-    } catch {
-      // try next route
-    }
+  const namespaces = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const cursor = await readConvergeCursor(path.join(cursorDir, entry.name));
+    if (!cursor) throw new Error(`invalid converge cursor: ${entry.name}`);
+    if (path.basename(defaultConvergeCursorPath(memoryDir, peerUrl, cursor.namespace)) !== entry.name) continue;
+    namespaces.add(cursor.namespace);
   }
-  return null;
+  return [...namespaces].sort();
 }
 
 function withoutTrailingSlashes(value: string): string {
@@ -518,7 +468,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   if (options.baseFilesByNamespace) {
     for (const [ns, files] of options.baseFilesByNamespace) {
       namespacesToPlan.add(ns);
-      baseMap.set(ns, files);
+      baseMap.set(ns, files.filter((file) => !isInternalRemnicStatePath(file.path)));
     }
   }
   if (options.semanticAgreementsByNamespace) {
@@ -530,7 +480,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   if (options.localFilesByNamespace) {
     for (const [ns, files] of options.localFilesByNamespace) {
       namespacesToPlan.add(ns);
-      localMap.set(ns, files);
+      localMap.set(ns, files.filter((file) => !isInternalRemnicStatePath(file.path)));
     }
   }
   if (options.localTombstonesByNamespace) {
@@ -547,7 +497,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   if (options.peerFilesByNamespace) {
     for (const [ns, files] of options.peerFilesByNamespace) {
       namespacesToPlan.add(ns);
-      peerMap.set(ns, files);
+      peerMap.set(ns, files.filter((file) => !isInternalRemnicStatePath(file.path)));
     }
   }
   if (options.peerTombstonesByNamespace) {
@@ -569,6 +519,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       // ignore missing/invalid config in fallback mode
     }
   }
+  const memoryDir = options.cursorDir ?? config?.memoryDir;
 
   if (!options.localFilesByNamespace && config) {
     const roots = await resolveCorpusNamespaceRoots({ config });
@@ -588,12 +539,14 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
           includeContent: false,
           deletions: [...storedDeletions].map(([path, mtimeMs]) => ({ path, mtimeMs })),
         });
-        const files: ReconcileFileState[] = snapshot.files.map((record) => ({
-          path: record.path,
-          sha256: record.sha256,
-          mtimeMs: record.mtimeMs,
-          bytes: record.bytes,
-        }));
+        const files: ReconcileFileState[] = snapshot.files
+          .filter((record) => !isInternalRemnicStatePath(record.path))
+          .map((record) => ({
+            path: record.path,
+            sha256: record.sha256,
+            mtimeMs: record.mtimeMs,
+            bytes: record.bytes,
+          }));
         localMap.set(ns, files);
         if (!localDeletionMtimeMs.has(ns)) {
           localDeletionMtimeMs.set(
@@ -619,16 +572,44 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
           );
         } catch {
           localManifests.delete(ns);
+        const evidence = await readLocalTombstoneEvidence(rootInfo.rootDir);
+        const io = await createOfflineStorageIo(rootInfo.rootDir);
+        let manifestReadFailed = false;
+        const manifest = await buildReconcileManifest({
+          files,
+          parseMemory: parseFrontmatter,
+          readFile: async (file) => {
+            const readFile = io.readFile;
+            if (!readFile) {
+              manifestReadFailed = true;
+              throw new Error("offline storage cannot read reconciliation manifest files");
+            }
+            try {
+              return await readFile({
+                root: rootInfo.rootDir,
+                path: file.path,
+                filePath: path.join(rootInfo.rootDir, file.path),
+              });
+            } catch (error) {
+              manifestReadFailed = true;
+              throw error;
+            }
+          },
+        });
+        if (manifestReadFailed) {
+          throw new Error(`failed to build local reconciliation manifest for namespace ${ns}`);
         }
-        const tombstones = await readLocalTombstones(rootInfo.rootDir);
-        localTombstones.set(ns, tombstones);
-      } catch {
-        localMap.set(ns, []);
-      }
+        localManifests.set(ns, manifest);
+        localTombstones.set(ns, tombstonedFileDigests(evidence, manifest));
     }
   }
 
   const peerUrl = options.peerUrl;
+  if (memoryDir && peerUrl) {
+    for (const namespace of await discoverCursorNamespaces(memoryDir, peerUrl)) {
+      namespacesToPlan.add(namespace);
+    }
+  }
   if (!options.peerFilesByNamespace && peerUrl) {
     let resolvedToken: string | undefined;
     if (options.peerToken) {
@@ -641,6 +622,13 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       }
     }
     const fetchFn = options.fetchImpl ?? globalThis.fetch;
+    const timeoutMs = options.peerRequestTimeoutMs ?? DEFAULT_PEER_REQUEST_TIMEOUT_MS;
+    const capabilities = await fetchPeerSyncCapabilities(
+      peerUrl,
+      resolvedToken,
+      fetchFn,
+      timeoutMs,
+    );
     for (const ns of namespacesToPlan) {
       const peerData = await fetchPeerSnapshot(peerUrl, ns, resolvedToken, fetchFn);
       peerMap.set(ns, peerData.files);
@@ -652,20 +640,62 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
         ns,
         await buildReconcileManifest({
           files: peerData.files,
+      const peerData = await fetchPeerSnapshot(peerUrl, ns, resolvedToken, fetchFn, timeoutMs);
+      const streamedManifest = capabilities?.manifestStream
+        ? await fetchPeerManifestStream(peerUrl, ns, resolvedToken, fetchFn, timeoutMs)
+        : null;
+      const peerFiles = streamedManifest?.files ?? peerData.files;
+      peerMap.set(ns, peerFiles);
+      let peerManifest = streamedManifest;
+      if (!peerManifest) {
+        let readFailure: Error | undefined;
+        peerManifest = await buildReconcileManifest({
+          files: peerFiles,
+          parseMemory: parseFrontmatter,
           cachedFiles: localManifests.get(ns)?.files,
           readFile: async (file) => {
-            const remote = await fetchPeerFileContent(peerUrl, ns, file.path, resolvedToken, fetchFn);
+            let remote: PeerFileContent | null;
+            try {
+              remote = await fetchPeerFileContent(peerUrl, ns, file.path, resolvedToken, fetchFn, timeoutMs);
+            } catch (error) {
+              readFailure = error instanceof Error ? error : new Error(String(error));
+              throw readFailure;
+            }
             if (!remote || remote.sha256 !== file.sha256) {
-              throw new Error(`failed to read peer reconciliation manifest file: ${file.path}`);
+              readFailure = new Error(`failed to read peer reconciliation manifest file: ${file.path}`);
+              throw readFailure;
             }
             return remote.content;
           },
-        }),
-      );
+        });
+        if (readFailure) throw readFailure;
+      }
+      peerManifests.set(ns, peerManifest);
+      const evidence: TombstoneEvidence = { contentHashes: new Set(), fileSha256: new Set() };
+      for (const tombstonePath of TOMBSTONE_PATHS) {
+        const state = peerFiles.find((file) => file.path === tombstonePath);
+        if (!state) continue;
+        const remote = await fetchPeerFileContent(
+          peerUrl,
+          ns,
+          tombstonePath,
+          resolvedToken,
+          fetchFn,
+          timeoutMs,
+        );
+        if (!remote || remote.sha256.toLowerCase() !== state.sha256.toLowerCase()) {
+          throw new Error(`failed to read peer tombstone evidence: ${tombstonePath}`);
+        }
+        const parsed = parseTombstoneEvidence(remote.content.toString("utf8"));
+        for (const value of parsed.contentHashes) evidence.contentHashes.add(value);
+        for (const value of parsed.fileSha256) evidence.fileSha256.add(value);
+      }
+      const mapped = tombstonedFileDigests(evidence, peerManifests.get(ns));
+      for (const digest of peerData.tombstones) mapped.add(digest);
+      peerTombstones.set(ns, mapped);
     }
   }
 
-  const memoryDir = options.cursorDir ?? config?.memoryDir;
   if (
     memoryDir
     && options.peerUrl
@@ -675,14 +705,24 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       const cursorPath = defaultConvergeCursorPath(memoryDir, options.peerUrl, ns);
       const cursor = await readConvergeCursor(cursorPath);
       if (!options.baseFilesByNamespace && cursor?.baseFiles && cursor.baseFiles.length > 0) {
-        baseMap.set(ns, cursor.baseFiles);
+        baseMap.set(
+          ns,
+          cursor.baseFiles.filter((file) => !isInternalRemnicStatePath(file.path)),
+        );
       }
       if (
         !options.semanticAgreementsByNamespace
         && cursor?.semanticAgreements
         && cursor.semanticAgreements.length > 0
       ) {
-        semanticAgreementMap.set(ns, cursor.semanticAgreements);
+        semanticAgreementMap.set(
+          ns,
+          cursor.semanticAgreements.filter(
+            (agreement) =>
+              !isInternalRemnicStatePath(agreement.local.path)
+              && !isInternalRemnicStatePath(agreement.peer.path),
+          ),
+        );
       }
     }
   }
@@ -761,7 +801,7 @@ export async function executeConvergeApply(
 
   if (options.dryRun) {
     return {
-      converged: false,
+      converged: plan.converged,
       status: "dry_run",
       plan,
       transfers: plannedTransfers,
@@ -789,6 +829,7 @@ export async function executeConvergeApply(
     }
   }
   const fetchFn = options.fetchImpl ?? globalThis.fetch;
+  const timeoutMs = options.peerRequestTimeoutMs ?? DEFAULT_PEER_REQUEST_TIMEOUT_MS;
 
   let config = options.config;
   if (!config) {
@@ -828,146 +869,218 @@ export async function executeConvergeApply(
         transferType = entry.localSha256 ? "push" : "delete-peer";
       }
     }
+    const localPath = entry.semanticAgreement?.local.path ?? entry.path;
+    const peerPath = entry.semanticAgreement?.peer.path ?? entry.path;
 
     if (transferType === "pull") {
-      let remoteFile: PeerFileContent | null = null;
-      const buffered = options.peerFileBuffers?.get(entry.namespace)?.get(entry.path);
+      const buffered = options.peerFileBuffers?.get(entry.namespace)?.get(peerPath);
+      if (options.localFileBuffers) {
+        let remoteFile: PeerFileContent | null = null;
+        if (buffered) {
+          const state = options.peerFilesByNamespace
+            ?.get(entry.namespace)
+            ?.find((file) => file.path === peerPath);
+          remoteFile = {
+            content: buffered,
+            sha256: state?.sha256 ?? entry.peerSha256 ?? createHash("sha256").update(buffered).digest("hex"),
+            bytes: buffered.length,
+            mtimeMs: state?.mtimeMs ?? 0,
+          };
+        } else if (options.peerUrl) {
+          remoteFile = await fetchPeerFileContent(
+            options.peerUrl,
+            entry.namespace,
+            peerPath,
+            resolvedToken,
+            fetchFn,
+            timeoutMs,
+          );
+        }
+        if (!remoteFile || (entry.peerSha256 && remoteFile.sha256 !== entry.peerSha256)) {
+          actualTransfers.failed += 1;
+          continue;
+        }
+        let namespaceFiles = options.localFileBuffers.get(entry.namespace);
+        if (!namespaceFiles) {
+          namespaceFiles = new Map();
+          options.localFileBuffers.set(entry.namespace, namespaceFiles);
+        }
+        namespaceFiles.set(localPath, remoteFile.content);
+        if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
+        else actualTransfers.pulled += 1;
+        continue;
+      }
+
+      const rootDir = rootMap.get(entry.namespace);
+      if (!rootDir) {
+        actualTransfers.failed += 1;
+        continue;
+      }
+      const io = await createOfflineStorageIo(rootDir);
+      const expectedLocalSha256 = entry.action === "conflict" ? entry.localSha256 : entry.baseSha256;
+      let transferComplete = false;
+      let transferRejected = false;
+      const applyChunk = async (chunk: PeerFileChunk): Promise<void> => {
+        if (transferRejected) return;
+        if (entry.peerSha256 && chunk.sha256 !== entry.peerSha256) {
+          transferRejected = true;
+          return;
+        }
+        const chunkResult = await applyOfflineSyncFileContentChunk({
+          root: rootDir,
+          sourceId: "remnic-converge",
+          path: localPath,
+          sha256: chunk.sha256,
+          bytes: chunk.bytes,
+          mtimeMs: chunk.mtimeMs,
+          offset: chunk.offset,
+          content: chunk.content,
+          ...(expectedLocalSha256 ? { baseSha256: expectedLocalSha256 } : {}),
+          readFile: io.readFile,
+          readFileDigest: io.readFileDigest,
+          writeFile: io.writeFile,
+          writeStagingFile: io.writeStagingFile,
+          writeFileChunks: io.writeFileChunks,
+        });
+        if (chunkResult.conflict) {
+          transferRejected = true;
+        } else if (chunkResult.done) {
+          transferComplete = chunkResult.applied || chunkResult.skipped;
+        } else if (chunkResult.applied || chunkResult.skipped || chunk.content.length === 0) {
+          transferRejected = true;
+        }
+      };
+
+      let metadata: Omit<PeerFileContent, "content"> | null = null;
       if (buffered) {
         const state = options.peerFilesByNamespace
           ?.get(entry.namespace)
-          ?.find((file) => file.path === entry.path);
-        remoteFile = {
-          content: buffered,
-          sha256: state?.sha256 ?? entry.peerSha256 ?? createHash("sha256").update(buffered).digest("hex"),
-          bytes: buffered.length,
-          mtimeMs: state?.mtimeMs ?? 0,
-        };
+          ?.find((file) => file.path === peerPath);
+        const sha256 = state?.sha256 ?? entry.peerSha256 ?? createHash("sha256").update(buffered).digest("hex");
+        const bytes = buffered.length;
+        const mtimeMs = state?.mtimeMs ?? 0;
+        let offset = 0;
+        do {
+          const content = buffered.subarray(
+            offset,
+            Math.min(bytes, offset + OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES),
+          );
+          await applyChunk({ content, offset, sha256, bytes, mtimeMs });
+          offset += content.length;
+        } while (!transferRejected && !transferComplete && offset < bytes);
+        metadata = { sha256, bytes, mtimeMs };
       } else if (options.peerUrl) {
-        remoteFile = await fetchPeerFileContent(
+        metadata = await streamPeerFileContent(
           options.peerUrl,
           entry.namespace,
-          entry.path,
+          peerPath,
+          applyChunk,
           resolvedToken,
           fetchFn,
+          timeoutMs,
         );
       }
-
-      if (remoteFile !== null && (!entry.peerSha256 || remoteFile.sha256 === entry.peerSha256)) {
-        if (options.localFileBuffers) {
-          let nsMap = options.localFileBuffers.get(entry.namespace);
-          if (!nsMap) {
-            nsMap = new Map();
-            options.localFileBuffers.set(entry.namespace, nsMap);
-          }
-          nsMap.set(entry.path, remoteFile.content);
-          if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
-          else actualTransfers.pulled += 1;
-        } else {
-          const rootDir = rootMap.get(entry.namespace);
-          if (rootDir) {
-            const io = await createOfflineStorageIo(rootDir);
-            const expectedLocalSha256 = entry.action === "conflict"
-              ? entry.localSha256
-              : entry.baseSha256;
-            let offset = 0;
-            let transferComplete = false;
-            do {
-              const chunk = remoteFile.content.subarray(
-                offset,
-                Math.min(
-                  remoteFile.content.length,
-                  offset + OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
-                ),
-              );
-              const chunkResult = await applyOfflineSyncFileContentChunk({
-                root: rootDir,
-                sourceId: "remnic-converge",
-                path: entry.path,
-                sha256: remoteFile.sha256,
-                bytes: remoteFile.bytes,
-                mtimeMs: remoteFile.mtimeMs,
-                offset,
-                content: chunk,
-                ...(expectedLocalSha256 ? { baseSha256: expectedLocalSha256 } : {}),
-                readFile: io.readFile,
-                readFileDigest: io.readFileDigest,
-                writeFile: io.writeFile,
-                writeStagingFile: io.writeStagingFile,
-                writeFileChunks: io.writeFileChunks,
-              });
-              if (chunkResult.conflict) {
-                break;
-              }
-              if (chunkResult.done) {
-                transferComplete = chunkResult.applied || chunkResult.skipped;
-                break;
-              }
-              if (chunkResult.applied || chunkResult.skipped || chunk.length === 0) {
-                break;
-              }
-              offset += chunk.length;
-            } while (offset < remoteFile.content.length);
-            if (transferComplete) {
-              if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
-              else actualTransfers.pulled += 1;
-            } else {
-              actualTransfers.failed += 1;
-            }
-          } else {
-            actualTransfers.failed += 1;
-          }
-        }
+      if (
+        metadata
+        && transferComplete
+        && !transferRejected
+        && (!entry.peerSha256 || metadata.sha256 === entry.peerSha256)
+      ) {
+        if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
+        else actualTransfers.pulled += 1;
       } else {
         actualTransfers.failed += 1;
       }
     } else if (transferType === "push") {
-      let content: Buffer | null = null;
-      let mtimeMs = options.localFilesByNamespace
-        ?.get(entry.namespace)
-        ?.find((file) => file.path === entry.path)
-        ?.mtimeMs;
-      if (options.localFileBuffers?.get(entry.namespace)?.has(entry.path)) {
-        content = options.localFileBuffers.get(entry.namespace)!.get(entry.path)!;
-      } else {
+      const localBuffer = options.localFileBuffers?.get(entry.namespace)?.get(localPath);
+      let source: PeerFileSource | null = null;
+      let closeSource: (() => Promise<void>) | undefined;
+      const expectedPeerSha256 = entry.action === "conflict" ? entry.peerSha256 : entry.baseSha256;
+      if (localBuffer && entry.localSha256) {
+        source = {
+          sha256: entry.localSha256,
+          bytes: localBuffer.length,
+          mtimeMs: options.localFilesByNamespace
+            ?.get(entry.namespace)
+            ?.find((file) => file.path === localPath)
+            ?.mtimeMs ?? 0,
+          ...(expectedPeerSha256 ? { baseSha256: expectedPeerSha256 } : {}),
+          readChunk: async (offset, length) => localBuffer.subarray(offset, offset + length),
+        };
+      } else if (entry.localSha256) {
         const rootDir = rootMap.get(entry.namespace);
         if (rootDir) {
-          const filePath = path.join(rootDir, entry.path);
           try {
+            const filePath = path.join(rootDir, localPath);
             const io = await createOfflineStorageIo(rootDir);
-            content = await io.readFile!({ root: rootDir, path: entry.path, filePath });
-            mtimeMs ??= (await fs.promises.stat(filePath)).mtimeMs;
+            const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
+            if (current.sha256 !== entry.localSha256) {
+              throw new Error(`local file changed during push: ${localPath}`);
+            }
+            const stat = await fs.promises.stat(filePath);
+            let chunks: AsyncIterator<Buffer> | undefined;
+            let chunkOffset = 0;
+            const resetChunks = async (): Promise<void> => {
+              await chunks?.return?.();
+              chunks = io.readFileChunks({
+                root: rootDir,
+                path: localPath,
+                filePath,
+                chunkSize: OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
+              })[Symbol.asyncIterator]();
+              chunkOffset = 0;
+            };
+            closeSource = async () => {
+              await chunks?.return?.();
+            };
+            source = {
+              sha256: entry.localSha256,
+              bytes: current.bytes,
+              mtimeMs: stat.mtimeMs,
+              ...(expectedPeerSha256 ? { baseSha256: expectedPeerSha256 } : {}),
+              readChunk: async (offset, length) => {
+                if (!chunks || offset < chunkOffset) await resetChunks();
+                while (chunkOffset < offset) {
+                  const skipped = await chunks!.next();
+                  if (skipped.done || chunkOffset + skipped.value.length > offset) {
+                    throw new Error(`cannot resume local file upload at offset ${offset}: ${localPath}`);
+                  }
+                  chunkOffset += skipped.value.length;
+                }
+                const next = await chunks!.next();
+                if (next.done) return Buffer.alloc(0);
+                if (next.value.length > length) {
+                  throw new Error(`local file chunk exceeds requested length: ${localPath}`);
+                }
+                chunkOffset += next.value.length;
+                return next.value;
+              },
+            };
           } catch {
-            content = null;
+            source = null;
           }
         }
       }
 
-      if (content !== null) {
-        if (options.peerFileBuffers) {
-          let nsMap = options.peerFileBuffers.get(entry.namespace);
-          if (!nsMap) {
-            nsMap = new Map();
-            options.peerFileBuffers.set(entry.namespace, nsMap);
+      try {
+        if (options.peerFileBuffers && localBuffer) {
+          let namespaceFiles = options.peerFileBuffers.get(entry.namespace);
+          if (!namespaceFiles) {
+            namespaceFiles = new Map();
+            options.peerFileBuffers.set(entry.namespace, namespaceFiles);
           }
-          nsMap.set(entry.path, content);
+          namespaceFiles.set(peerPath, localBuffer);
           if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
           else actualTransfers.pushed += 1;
-        } else if (options.peerUrl && entry.localSha256) {
-          const expectedPeerSha256 = entry.action === "conflict"
-            ? entry.peerSha256
-            : entry.baseSha256;
+        } else if (options.peerUrl && source) {
           const applied = await postPeerFileContent(
             options.peerUrl,
             entry.namespace,
-            entry.path,
-            content,
-            {
-              sha256: entry.localSha256,
-              mtimeMs: mtimeMs ?? 0,
-              ...(expectedPeerSha256 ? { baseSha256: expectedPeerSha256 } : {}),
-            },
+            peerPath,
+            source,
             resolvedToken,
             fetchFn,
+            timeoutMs,
           );
           if (applied) {
             if (applied === "applied") peerMutatedNamespaces.add(entry.namespace);
@@ -979,20 +1092,20 @@ export async function executeConvergeApply(
         } else {
           actualTransfers.failed += 1;
         }
-      } else {
-        actualTransfers.failed += 1;
+      } finally {
+        await closeSource?.();
       }
     } else if (transferType === "delete-local") {
       let deleted = false;
       const bufferedFiles = options.localFileBuffers?.get(entry.namespace);
       if (options.localFileBuffers) {
-        const current = bufferedFiles?.get(entry.path);
+        const current = bufferedFiles?.get(localPath);
         if (
           current
           && entry.localSha256
           && createHash("sha256").update(current).digest("hex") === entry.localSha256
         ) {
-          bufferedFiles!.delete(entry.path);
+          bufferedFiles!.delete(localPath);
           deleted = true;
         }
       } else {
@@ -1000,8 +1113,8 @@ export async function executeConvergeApply(
         if (rootDir && entry.localSha256 && entry.deletionMtimeMs !== undefined) {
           try {
             const io = await createOfflineStorageIo(rootDir);
-            const filePath = path.join(rootDir, entry.path);
-            const current = await io.readFileDigest({ root: rootDir, path: entry.path, filePath });
+            const filePath = path.join(rootDir, localPath);
+            const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
             if (current.sha256 === entry.localSha256) {
               await io.deleteFile!({
                 root: rootDir,
@@ -1009,6 +1122,7 @@ export async function executeConvergeApply(
                 filePath,
                 mtimeMs: entry.deletionMtimeMs,
               });
+              await io.deleteFile!({ root: rootDir, path: localPath, filePath });
               deleted = true;
             }
           } catch {
@@ -1022,24 +1136,25 @@ export async function executeConvergeApply(
       let deleted = false;
       const bufferedFiles = options.peerFileBuffers?.get(entry.namespace);
       if (options.peerFileBuffers) {
-        const current = bufferedFiles?.get(entry.path);
+        const current = bufferedFiles?.get(peerPath);
         if (
           current
           && entry.peerSha256
           && createHash("sha256").update(current).digest("hex") === entry.peerSha256
         ) {
-          bufferedFiles!.delete(entry.path);
+          bufferedFiles!.delete(peerPath);
           deleted = true;
         }
       } else if (options.peerUrl && entry.peerSha256 && entry.deletionMtimeMs !== undefined) {
         const deletionResult = await postPeerFileDeletion(
           options.peerUrl,
           entry.namespace,
-          entry.path,
+          peerPath,
           entry.peerSha256,
           entry.deletionMtimeMs,
           resolvedToken,
           fetchFn,
+          timeoutMs,
         );
         deleted = Boolean(deletionResult);
         if (deletionResult === "applied") peerMutatedNamespaces.add(entry.namespace);
@@ -1047,7 +1162,60 @@ export async function executeConvergeApply(
       if (deleted) actualTransfers.conflictsResolved += 1;
       else actualTransfers.failed += 1;
     } else if (transferType === "suppress") {
-      actualTransfers.suppressed += 1;
+      let suppressed = entry.suppressSide !== undefined;
+      if (entry.suppressSide === "local" || entry.suppressSide === "both") {
+        let deletedLocal = false;
+        if (entry.localSha256 && options.localFileBuffers) {
+          const files = options.localFileBuffers.get(entry.namespace);
+          const current = files?.get(localPath);
+          if (current && createHash("sha256").update(current).digest("hex") === entry.localSha256) {
+            files!.delete(localPath);
+            deletedLocal = true;
+          }
+        } else if (entry.localSha256) {
+          const rootDir = rootMap.get(entry.namespace);
+          if (rootDir) {
+            try {
+              const io = await createOfflineStorageIo(rootDir);
+              const filePath = path.join(rootDir, localPath);
+              const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
+              if (current.sha256 === entry.localSha256) {
+                await io.deleteFile!({ root: rootDir, path: localPath, filePath });
+                deletedLocal = true;
+              }
+            } catch {
+              deletedLocal = false;
+            }
+          }
+        }
+        suppressed &&= deletedLocal;
+      }
+      if (entry.suppressSide === "peer" || entry.suppressSide === "both") {
+        let deletedPeer = false;
+        if (entry.peerSha256 && options.peerFileBuffers) {
+          const files = options.peerFileBuffers.get(entry.namespace);
+          const current = files?.get(peerPath);
+          if (current && createHash("sha256").update(current).digest("hex") === entry.peerSha256) {
+            files!.delete(peerPath);
+            deletedPeer = true;
+          }
+        } else if (entry.peerSha256 && options.peerUrl) {
+          const result = await postPeerFileDeletion(
+            options.peerUrl,
+            entry.namespace,
+            peerPath,
+            entry.peerSha256,
+            resolvedToken,
+            fetchFn,
+            timeoutMs,
+          );
+          deletedPeer = Boolean(result);
+          if (result === "applied") peerMutatedNamespaces.add(entry.namespace);
+        }
+        suppressed &&= deletedPeer;
+      }
+      if (suppressed) actualTransfers.suppressed += 1;
+      else actualTransfers.failed += 1;
     }
   }
 
@@ -1058,6 +1226,7 @@ export async function executeConvergeApply(
       namespaces,
       resolvedToken,
       fetchFn,
+      timeoutMs,
     )) {
       actualTransfers.failed += 1;
     }
@@ -1082,7 +1251,7 @@ async function updateCursorsForPlan(
   plan: ReconcilePlan,
   options: ConvergeApplyOptions,
 ): Promise<void> {
-  const peerUrl = options.peerUrl ?? "local";
+  const peerUrl = normalizeConvergePeerUrl(options.peerUrl ?? "local");
   let memoryDir: string | undefined;
   if (options.cursorDir) {
     memoryDir = options.cursorDir;

@@ -2837,19 +2837,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       const identity = deletionRevisionPathIdentity(relativePath);
       const existingPath = [...before.keys()]
         .find((candidatePath) => deletionRevisionPathIdentity(candidatePath) === identity);
-      if (existingPath === undefined) {
-        await write();
-        return;
-      }
+      await write();
+      if (existingPath === undefined) return;
       const updated = new Map(before);
       updated.delete(existingPath);
       await this.writeDeletionRevisionMetadata(updated, lock);
-      try {
-        await write();
-      } catch (error) {
-        await this.writeDeletionRevisionMetadata(before, lock);
-        throw error;
-      }
     });
   }
 

@@ -16,8 +16,10 @@ import {
   buildOfflineSyncSnapshotForPaths,
   compileOfflineSyncExcludeGlobs,
   globToRegExp,
+  isInternalRemnicStatePath,
   OFFLINE_SYNC_MAX_MTIME_MS,
   normalizeOfflineSyncSnapshot,
+  OFFLINE_SYNC_SNAPSHOT_FORMAT,
   readOfflineSyncFileContentChunk,
   shouldPreferIncomingOfflineRuntimeFile,
   summarizeOfflineSyncPendingChanges,
@@ -206,6 +208,98 @@ test("offline apply relays known deletion metadata when the target is already ab
   }
 });
 
+
+test("offline sync excludes the internal Remnic tree from snapshots and file transfer", async () => {
+  const root = await tempDir("remnic-offline-internal-state");
+  const internalPaths = [
+    ".remnic/state/converge-cursors/peer.json",
+    ".remnic/state/converge.lock",
+    ".remnic/state/converge.tmp-123",
+    ".remnic/state/conflicts/fact.remote",
+  ];
+  const corpusPath = "Facts/.remnic-notes/MixedCase.md";
+  try {
+    for (const relPath of internalPaths) await write(root, relPath, relPath);
+    await write(root, corpusPath, "corpus");
+
+    assert.equal(isInternalRemnicStatePath(".remnic"), true);
+    assert.equal(isInternalRemnicStatePath(internalPaths[0]!), true);
+    assert.equal(isInternalRemnicStatePath(".Remnic/state/cursor.json"), false);
+    assert.equal(isInternalRemnicStatePath("facts/.remnic/note.md"), true);
+    assert.equal(isInternalRemnicStatePath("facts\\.remnic\\note.md"), true);
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "local",
+      includeContent: false,
+    });
+    assert.deepEqual(snapshot.files.map((file) => file.path), [corpusPath]);
+
+    await assert.rejects(
+      () => buildOfflineSyncSnapshotForPaths({
+        root,
+        sourceId: "local",
+        paths: [internalPaths[0]!],
+      }),
+      /offline sync snapshot path is excluded/,
+    );
+    await assert.rejects(
+      () => readOfflineSyncFileContentChunk({
+        root,
+        path: internalPaths[0]!,
+      }),
+      /offline sync file content path is excluded/,
+    );
+
+    const cursorContent = Buffer.from(internalPaths[0]!);
+    await assert.rejects(
+      () => applyOfflineSyncFileContentChunk({
+        root,
+        sourceId: "peer",
+        path: internalPaths[0]!,
+        sha256: createHash("sha256").update(cursorContent).digest("hex"),
+        bytes: cursorContent.length,
+        mtimeMs: Date.now(),
+        offset: 0,
+        content: cursorContent,
+      }),
+      /offline sync file content path is excluded/,
+    );
+    const writes: string[] = [];
+    const applyResult = await applyOfflineSyncSnapshot({
+      root,
+      snapshot: {
+        format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "peer",
+        includeTranscripts: true,
+        files: [{
+          path: internalPaths[0]!,
+          sha256: createHash("sha256").update(cursorContent).digest("hex"),
+          bytes: cursorContent.length,
+          mtimeMs: Date.now(),
+          contentBase64: cursorContent.toString("base64"),
+        }],
+      },
+      baseFiles: [],
+      currentFiles: [],
+      writeFile: async ({ path: relPath }) => {
+        writes.push(relPath);
+      },
+      deleteFile: async ({ path: relPath }) => {
+        writes.push(relPath);
+      },
+    });
+    assert.deepEqual(writes, []);
+    assert.equal(applyResult.upserted, 0);
+    assert.equal(applyResult.deleted, 0);
+
+    assert.equal(await readUtf8(root, internalPaths[0]!), internalPaths[0]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("offline snapshot abort signal stops filesystem snapshot work", async () => {
   const root = await tempDir("remnic-offline-snapshot-abort");

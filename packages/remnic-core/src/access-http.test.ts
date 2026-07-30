@@ -1071,6 +1071,120 @@ test("HTTP offline snapshot stream emits metadata records as NDJSON", async () =
     await server.stop();
   }
 });
+test("HTTP offline manifest stream preserves snapshot-stream auth and emits body-free rows", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const service = {
+    offlineSyncManifestStream: async (options: Record<string, unknown>) => {
+      calls.push(options);
+      return {
+        namespace: options.namespace ?? "default",
+        format: "remnic-reconcile-manifest",
+        schemaVersion: 1,
+        files: (async function* () {
+          yield {
+            path: "facts/a.md",
+            sha256: "a".repeat(64),
+            bytes: 12,
+            mtimeMs: 1234,
+            memory: {
+              id: "fact-a",
+              status: "active",
+              category: "fact",
+              contentHash: "b".repeat(64),
+            },
+          };
+        })(),
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    principal: "reader",
+    authTokenEntriesGetter: () => [
+      { token: "wrong-op", capabilities: { version: 1, ops: ["offline_sync_snapshot"] } },
+      {
+        token: "wrong-namespace",
+        capabilities: { version: 1, ops: ["offline_sync_snapshot_stream"], namespaces: ["other"] },
+      },
+      {
+        token: "reader",
+        capabilities: { version: 1, ops: ["offline_sync_snapshot_stream"], namespaces: ["team"] },
+      },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const request = (token: string, query = "namespace=team&include_transcripts=false") =>
+    fetch(`http://127.0.0.1:${status.port}/remnic/v1/offline-sync/manifest-stream?${query}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  try {
+    assert.equal((await request("wrong-op")).status, 403);
+    assert.equal((await request("wrong-namespace")).status, 403);
+    assert.equal(calls.length, 0);
+    assert.equal((await request("reader", "namespace=team&include_transcripts=invalid")).status, 400);
+    assert.equal((await request("reader", "namespace=team&content=true")).status, 400);
+    assert.equal(calls.length, 0);
+
+    const response = await request("reader");
+    const text = await response.text();
+    const lines = text.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "application/x-ndjson; charset=utf-8");
+    assert.equal(lines[0]?.type, "manifest");
+    assert.equal(lines[1]?.type, "file");
+    assert.deepEqual(lines[1]?.file, {
+      path: "facts/a.md",
+      sha256: "a".repeat(64),
+      bytes: 12,
+      mtimeMs: 1234,
+      memory: {
+        id: "fact-a",
+        status: "active",
+        category: "fact",
+        contentHash: "b".repeat(64),
+      },
+    });
+    assert.doesNotMatch(text, /contentBase64|rawContent|memory body/);
+    assert.deepEqual({
+      namespace: calls[0]?.namespace,
+      principal: calls[0]?.principal,
+      includeTranscripts: calls[0]?.includeTranscripts,
+    }, {
+      namespace: "team",
+      principal: "reader",
+      includeTranscripts: false,
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP offline sync capabilities advertise manifest streaming", async () => {
+  const server = new EngramAccessHttpServer({
+    service: {} as EngramAccessService,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/offline-sync/capabilities`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      version: 1,
+      convergenceFinalization: true,
+      manifestStream: true,
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
 
 test("HTTP offline files forwards namespace and requested paths", async () => {
   const calls: Array<{

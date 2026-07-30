@@ -18,6 +18,10 @@ import {
   type EngramAccessWriteResponse,
 } from "./access-service.js";
 import { maybeHandleLifecycleFlush, type LifecycleFlushHttpDeps } from "./access-http-lifecycle-flush.js";
+import {
+  respondOfflineManifestStream,
+  respondOfflineSnapshotStream,
+} from "./access-http-offline-stream.js";
 import { nonEmptyQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js";
@@ -1144,6 +1148,20 @@ export class EngramAccessHttpServer {
 
     if (
       req.method === "GET" &&
+      (pathname === "/engram/v1/offline-sync/capabilities" ||
+        pathname === "/remnic/v1/offline-sync/capabilities")
+    ) {
+      this.enforceTokenOp("offline_sync_snapshot");
+      this.respondJson(res, 200, {
+        version: 1,
+        convergenceFinalization: true,
+        manifestStream: true,
+      });
+      return;
+    }
+
+    if (
+      req.method === "GET" &&
       (pathname === "/engram/v1/offline-sync/snapshot" || pathname === "/remnic/v1/offline-sync/snapshot")
     ) {
       this.enforceTokenOp("offline_sync_snapshot"); // boundary dispatch (issue #1525)
@@ -1215,9 +1233,43 @@ export class EngramAccessHttpServer {
         includeContent: false,
         signal: this.createRequestAbortSignal(req, res),
       });
-      await this.respondOfflineSnapshotStream(res, result);
+      await respondOfflineSnapshotStream(res, result, correlationIdStore.getStore());
       return;
     }
+    if (
+      req.method === "GET" &&
+      (pathname === "/engram/v1/offline-sync/manifest-stream" ||
+        pathname === "/remnic/v1/offline-sync/manifest-stream")
+    ) {
+      this.enforceTokenOp("offline_sync_snapshot_stream");
+      const includeTranscriptsRaw = parsed.searchParams.get("include_transcripts");
+      const includeContentRaw = parsed.searchParams.get("content");
+      if (
+        includeTranscriptsRaw !== null &&
+        includeTranscriptsRaw !== "true" &&
+        includeTranscriptsRaw !== "false"
+      ) {
+        throw new EngramAccessInputError(
+          `include_transcripts must be one of: true, false (got: ${includeTranscriptsRaw})`,
+        );
+      }
+      if (includeContentRaw !== null && includeContentRaw !== "false") {
+        throw new EngramAccessInputError("manifest-stream content must be false");
+      }
+      const namespaceParam = parsed.searchParams.get("namespace");
+      const result = await this.service.offlineSyncManifestStream({
+        namespace: this.resolveNamespace(
+          req,
+          namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined,
+        ),
+        principal: this.resolveRequestPrincipal(req),
+        includeTranscripts: includeTranscriptsRaw !== "false",
+        signal: this.createRequestAbortSignal(req, res),
+      });
+      await respondOfflineManifestStream(res, result, correlationIdStore.getStore());
+      return;
+    }
+
 
     if (
       req.method === "POST" &&

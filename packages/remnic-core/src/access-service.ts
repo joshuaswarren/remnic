@@ -180,7 +180,7 @@ import type {
   Orchestrator,
   RecallInvocationOptions,
 } from "./orchestrator.js";
-import { parseEntityFile, StorageManager } from "./storage.js";
+import { parseEntityFile, parseFrontmatter, StorageManager } from "./storage.js";
 import {
   buildGraphSnapshot,
   type GraphSnapshotRequest,
@@ -294,6 +294,10 @@ import {
   type OfflineSyncSnapshot,
 } from "./offline-sync.js";
 import { offlineSyncStorageForSnapshot } from "./offline-sync-impression-drain.js";
+import {
+  createOfflineSyncManifestStream,
+  type OfflineSyncManifestStreamResponse,
+} from "./access-offline-manifest.js";
 import {
   evaluateActionConfidence,
   type ActionConfidenceInput,
@@ -780,6 +784,12 @@ export interface EngramAccessOfflineSyncSnapshotRequest {
   includeContent?: boolean;
   baseCapturedAt?: Date;
   baseFiles?: OfflineSyncFileState[];
+}
+
+export interface EngramAccessOfflineSyncManifestRequest {
+  namespace?: string;
+  principal?: string;
+  includeTranscripts?: boolean;
 }
 
 export interface EngramAccessOfflineSyncFilesRequest {
@@ -5535,6 +5545,19 @@ export class EngramAccessService {
       }),
     };
   }
+  async offlineSyncManifestStream(
+    options: EngramAccessOfflineSyncManifestRequest & { signal?: AbortSignal } = {},
+  ): Promise<OfflineSyncManifestStreamResponse> {
+    const namespace = this.resolveReadableNamespace(options.namespace, options.principal);
+    return createOfflineSyncManifestStream(
+      this.orchestrator,
+      namespace,
+      this.offlineSyncUserExcludes,
+      options,
+      parseFrontmatter,
+    );
+  }
+
 
   async offlineSyncFiles(
     options: EngramAccessOfflineSyncFilesRequest,
