@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Bidirectional resumable converge transport CLI subcommand (`remnic converge apply`) and durable peer+namespace cursor state (#2150 increment 2).
 - `remnic converge plan` CLI subcommand to preview corpus convergence state across configured or specified peers.
 
 ## [v9.41.0] — 2026-07-30
