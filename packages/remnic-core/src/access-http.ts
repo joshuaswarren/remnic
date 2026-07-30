@@ -3422,6 +3422,62 @@ export class EngramAccessHttpServer {
     res.end(body);
   }
 
+  private async respondOfflineSnapshotStream(
+    res: ServerResponse,
+    snapshot: Awaited<ReturnType<EngramAccessService["offlineSyncSnapshotStream"]>>,
+  ): Promise<void> {
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/x-ndjson; charset=utf-8");
+    res.setHeader("cache-control", "no-store");
+    const cid = correlationIdStore.getStore();
+    if (cid) {
+      res.setHeader("x-request-id", cid);
+    }
+    const waitForDrainOrClose = async (): Promise<boolean> => new Promise((resolve, reject) => {
+      const cleanup = () => {
+        res.off("drain", onDrain);
+        res.off("close", onClose);
+        res.off("error", onError);
+      };
+      const onDrain = () => {
+        cleanup();
+        resolve(true);
+      };
+      const onClose = () => {
+        cleanup();
+        resolve(false);
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      res.once("drain", onDrain);
+      res.once("close", onClose);
+      res.once("error", onError);
+    });
+    const writeLine = async (payload: unknown): Promise<boolean> => {
+      if (res.destroyed || res.writableEnded) return false;
+      if (res.write(`${JSON.stringify(payload)}\n`)) return true;
+      if (res.destroyed || res.writableEnded) return false;
+      return waitForDrainOrClose();
+    };
+    if (!await writeLine({
+      type: "snapshot",
+      namespace: snapshot.namespace,
+      format: snapshot.format,
+      schemaVersion: snapshot.schemaVersion,
+      createdAt: snapshot.createdAt,
+      sourceId: snapshot.sourceId,
+      includeTranscripts: snapshot.includeTranscripts,
+      deletions: snapshot.deletions,
+    })) return;
+    for await (const file of snapshot.files) {
+      if (!await writeLine({ type: "file", file })) return;
+    }
+    if (!res.destroyed && !res.writableEnded) {
+      res.end();
+    }
+  }
 
   private respondBinary(
     res: ServerResponse,

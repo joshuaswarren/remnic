@@ -222,6 +222,10 @@ test("newest-wins compares delete revision times with surviving modifications", 
   assert.equal(entryFor(entries, "facts/peer-deletion-wins.md").resolution, "peer-wins");
   assert.equal(entryFor(entries, "facts/peer-modification-wins.md").resolution, "peer-wins");
   assert.equal(entryFor(entries, "facts/local-deletion-wins.md").resolution, "local-wins");
+  assert.equal(entryFor(entries, "facts/peer-deletion-wins.md").deletionMtimeMs, 3000);
+  assert.equal(entryFor(entries, "facts/local-deletion-wins.md").deletionMtimeMs, 3000);
+  assert.equal(entryFor(entries, "facts/local-modification-wins.md").deletionMtimeMs, undefined);
+  assert.equal(entryFor(entries, "facts/peer-modification-wins.md").deletionMtimeMs, undefined);
 });
 
 test("namespaces are planned independently and reported separately", () => {
