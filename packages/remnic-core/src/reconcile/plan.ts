@@ -7,6 +7,7 @@ import {
   DEFAULT_CONVERGE_CONFLICT_POLICY,
 } from "../converge-config.js";
 import type { ConvergeConflictPolicy } from "../types.js";
+export type ReconcileConflictPolicy = ConvergeConflictPolicy;
 
 /**
  * Bootstrap reconciliation planner for two peer daemons whose corpora have
