@@ -220,6 +220,26 @@ test("external wiki search never follows catalog traversal outside pagesDir", as
   }
 });
 
+test("external wiki search bounds page reads without rejecting larger catalogs", async () => {
+  const files: Record<string, string> = {};
+  const catalogLines: string[] = [];
+  for (let index = 0; index < 41; index += 1) {
+    const slug = `page-${String(index).padStart(2, "0")}`;
+    const title = index === 40 ? "Target Needle" : `Reference ${index}`;
+    catalogLines.push(`- [[wiki/${slug}|${title}]] - compiled knowledge`);
+    files[`wiki/${slug}.md`] = `# ${title}\n\n${title} concept page.\n`;
+  }
+  files["INDEX.md"] = catalogLines.join("\n");
+  const root = await createWiki("large-catalog", files);
+
+  try {
+    const result = await searchExternalWikis([root], { query: "target needle" });
+    assert.equal(result.hits[0]?.title, "Target Needle");
+  } finally {
+    await removeWikis([root]);
+  }
+});
+
 test("external wiki search enforces the requested snippet length cap", async () => {
   const root = await createWiki("caps", {
     "INDEX.md": "- [[wiki/long-page|Long Page]] - bounded snippets\n",

@@ -104,7 +104,7 @@ export async function searchExternalWikis(
   const perRootHits = await Promise.all(
     selectedRoots.map(async (root) => {
       try {
-        const catalog = await loadExternalWikiCatalog(root, { maxEntries: maxCandidateFiles });
+        const catalog = await loadExternalWikiCatalog(root);
         if (!catalog.indexPresent) degradedWikiIds.add(root.id);
         const candidates = await rankCandidates(
           root,

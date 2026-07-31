@@ -4086,6 +4086,16 @@ test("HTTP external wiki search aliases return the same cited result", async () 
       body: JSON.stringify({ query: "  " }),
     });
     assert.equal(invalid.status, 400);
+
+    const unknownWiki = await fetch(`http://127.0.0.1:${status.port}/remnic/v1/external-wikis/search`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query: "topic", wikiId: "unknown" }),
+    });
+    assert.equal(unknownWiki.status, 400);
   } finally {
     await server.stop();
     await rm(rootDir, { recursive: true, force: true });

@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 import { defineOperation } from "./access-boundary.js";
+import { EngramAccessInputError } from "./access-errors.js";
 import {
+  ExternalWikiSearchError,
   type ExternalWikiSearchInput,
   type ExternalWikiSearchResult,
   searchExternalWikis,
@@ -25,7 +27,14 @@ export const externalWikiSearchOperation = defineOperation<ExternalWikiSearchInp
   description: "Search configured external compiled-wiki roots and return cited snippets.",
   schema: externalWikiSearchSchema,
   fleetWide: true,
-  handler: async (input, ctx) => ({
-    result: await searchExternalWikis(ctx.service.configRef.externalWikis, input),
-  }),
+  handler: async (input, ctx) => {
+    try {
+      return { result: await searchExternalWikis(ctx.service.configRef.externalWikis, input) };
+    } catch (error) {
+      if (error instanceof ExternalWikiSearchError) {
+        throw new EngramAccessInputError(error.message);
+      }
+      throw error;
+    }
+  },
 });

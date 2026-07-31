@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- External compiled wiki search now returns bounded, cited snippets on demand
+  through MCP, HTTP, and CLI surfaces without changing ordinary recall.
+
 ### Fixed
 
 - Extraction health no longer treats local filter skips as successful runs. Live empty runs record health only when later steps succeed.

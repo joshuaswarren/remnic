@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { EngramAccessInputError } from "./access-errors.js";
 import type { EngramAccessService } from "./access-service.js";
 import { externalWikiSearchOperation } from "./external-wiki-access.js";
 import type { ExternalWikiRoot } from "./external-wiki.js";
@@ -42,6 +43,19 @@ test("external wiki operation searches roots from the service config", async () 
     );
     assert.equal(output.result.hits[0]?.wikiId, "planning");
     assert.equal(output.result.hits[0]?.path, "wiki/planning.md");
+  } finally {
+    await rm(root.rootDir, { recursive: true, force: true });
+  }
+});
+
+test("external wiki operation translates unknown wiki ids to access input errors", async () => {
+  const root = await fixtureRoot();
+  try {
+    const service = { configRef: { externalWikis: [root] } } as EngramAccessService;
+    await assert.rejects(
+      externalWikiSearchOperation.run({ query: "topic", wikiId: "unknown" }, { service }),
+      EngramAccessInputError
+    );
   } finally {
     await rm(root.rootDir, { recursive: true, force: true });
   }
