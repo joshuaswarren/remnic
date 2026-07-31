@@ -94,8 +94,8 @@ function groundingCopularClaim(text: string): GroundingCopularClaim | undefined 
   if (subjectLexeme === undefined || predicateLexeme === undefined) return undefined;
 
   return {
-    subject: stemToken(subjectLexeme.token, subjectLexeme.preserveTerminalS),
-    predicate: stemToken(predicateLexeme.token, predicateLexeme.preserveTerminalS),
+    subject: stemToken(subjectLexeme.token, subjectLexeme.preserveTerminalS, true),
+    predicate: stemToken(predicateLexeme.token, predicateLexeme.preserveTerminalS, true),
   };
 }
 
@@ -137,18 +137,44 @@ function isGroundingAlignmentModifier(token: string): boolean {
   return GROUNDING_ALIGNMENT_MODIFIERS.has(token);
 }
 
+function groundingSubjectTokenSequence(text: string): string[] {
+  const lexemes = groundingLexemes(text)
+    .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true);
+  const predicateIndex = lexemes.findIndex(({ isPredicate }) => isPredicate);
+  if (predicateIndex < 1) return [];
+  return lexemes
+    .slice(0, predicateIndex)
+    .filter(({ token }) => !isGroundingAlignmentModifier(token) && !token.endsWith("ly"))
+    .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS, true));
+}
+
 
 function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): boolean {
   const candidateTokens = normalizedGroundingAlignmentTokenSequence(candidate);
   const sourceTokens = normalizedGroundingAlignmentTokenSequence(source);
+  const candidateSubjectTokens = groundingSubjectTokenSequence(candidate);
+  const sourceSubjectTokens = groundingSubjectTokenSequence(source);
+  const hasCorrectionReordering = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
+    && /\b(?:not|rather\s+than|instead\s+of)\b/iu.test(source);
+  if (
+    candidateSubjectTokens.length > 0
+    && sourceSubjectTokens.length > 0
+    && !hasCorrectionReordering
+    && (
+      candidateSubjectTokens.length !== sourceSubjectTokens.length
+      || candidateSubjectTokens.some(
+        (token, index) => !areGroundingTokensCompatible(token, sourceSubjectTokens[index]!),
+      )
+    )
+  ) {
+    return false;
+  }
   if (candidateTokens.length < 3 || sourceTokens.length < 3) {
     return hasCopularPredicateEvidence(candidate, source);
   }
 
   const candidateSubject = candidateTokens[0];
   if (candidateSubject === undefined) return false;
-  const hasCorrectionReordering = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
-    && /\b(?:not|rather\s+than|instead\s+of)\b/iu.test(source);
   for (let sourceSubjectIndex = 0; sourceSubjectIndex < sourceTokens.length; sourceSubjectIndex += 1) {
     if (!areGroundingTokensCompatible(candidateSubject, sourceTokens[sourceSubjectIndex]!)) continue;
     let sourceCursor = sourceSubjectIndex + 1;
@@ -256,7 +282,7 @@ function isSourceGroundedClause(
     }
     const sourceSpans = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
       ? [sentence]
-      : splitGroundingClauses([sentence]);
+      : splitGroundingClauses([sentence], true);
     for (const sourceSpan of sourceSpans) {
       const sourceSpanText = normalizeForExactMatch(sourceSpan);
       if (containsExactTokenSequence(candidate, sourceSpanText)) {
@@ -298,12 +324,12 @@ function isSourceGrounded(
   });
   if (hasSupportedExactMatch) return true;
 
-  const clauses = candidateClauses(candidateText);
+  const clauses = candidateClauses(candidate);
   if (clauses.length > 1) {
     return clauses.every((clause) =>
       isSourceGroundedClause(clause, sourceText, includeInterrogativeSource));
   }
-  return isSourceGroundedClause(candidateText, sourceText, includeInterrogativeSource);
+  return isSourceGroundedClause(candidate, sourceText, includeInterrogativeSource);
 }
 
 function normalizedEntityIdentifierTokens(name: string): string[] {
@@ -341,17 +367,22 @@ function buildEntitySupportSource(name: string, source: string): string {
 function hasGroundedPredicateAnchor(candidate: string, sentence: string): boolean {
   const candidateTokens = normalizedGroundingTokenSequence(candidate);
   const sourceTokens = normalizedGroundingTokenSequence(sentence);
-  const comparableCandidateTokens = GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateTokens[0] ?? "")
+  const comparableCandidateTokens = GROUNDING_ROLE_SUBJECT_TOKENS.has(
+    (candidateTokens[0] ?? "").replace(/^[\u0000\u0001]/u, ""),
+  )
     ? candidateTokens.slice(1)
     : candidateTokens;
   if (comparableCandidateTokens.length < 2) return false;
   const subjectToken = comparableCandidateTokens[0];
-  if (subjectToken === undefined || !sourceTokens.includes(subjectToken)) {
+  if (
+    subjectToken === undefined
+    || !sourceTokens.some((sourceToken) => areGroundingTokensCompatible(subjectToken, sourceToken))
+  ) {
     return false;
   }
   const candidatePredicateTokens = comparableCandidateTokens.slice(1);
-  const sourceTokenSet = new Set(sourceTokens);
-  const sharedPredicateTokens = candidatePredicateTokens.filter((token) => sourceTokenSet.has(token));
+  const sharedPredicateTokens = candidatePredicateTokens.filter((token) =>
+    sourceTokens.some((sourceToken) => areGroundingTokensCompatible(token, sourceToken)));
   const requiredSharedTokens = Math.min(2, candidatePredicateTokens.length);
   return sharedPredicateTokens.length >= requiredSharedTokens;
 }
@@ -365,7 +396,7 @@ function hasGroundingAnchor(
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence)) return false;
     const sourceSpans = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
       ? [sentence]
-      : splitGroundingClauses([sentence]);
+      : splitGroundingClauses([sentence], true);
     return sourceSpans.some((sourceSpan) => {
       const exactMatch = containsExactTokenSequence(candidate, sourceSpan)
         && !hasContradictoryPolarity(candidate, sourceSpan);
@@ -413,7 +444,9 @@ const GROUNDING_ROLE_SUBJECT_TOKENS = new Set(["assistant", "user"]);
 
 function hasRoleNormalizedGrounding(candidate: string, source: string): boolean {
   const candidateTokens = groundingTokenSequence(candidate);
-  if (!GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateTokens[0] ?? "")) return false;
+  if (!GROUNDING_ROLE_SUBJECT_TOKENS.has(
+    (candidateTokens[0] ?? "").replace(/^[\u0000\u0001]/u, ""),
+  )) return false;
   const claimTokens = candidateTokens.slice(1);
   if (claimTokens.length === 0) return false;
 
@@ -424,7 +457,10 @@ function hasRoleNormalizedGrounding(candidate: string, source: string): boolean 
     let sourceIndex = 0;
     let sharedTokens = 0;
     for (const claimToken of claimTokens) {
-      const matchingIndex = sourceTokens.indexOf(claimToken, sourceIndex);
+      const matchingIndex = sourceTokens.findIndex(
+        (sourceToken, index) =>
+          index >= sourceIndex && areGroundingTokensCompatible(claimToken, sourceToken),
+      );
       if (matchingIndex === -1) continue;
       sharedTokens += 1;
       sourceIndex = matchingIndex + 1;
@@ -448,8 +484,9 @@ function resolveGroundingContext(
   assertionSource: string | undefined,
   roleAssertionSources: ExtractionGroundingRoleSources | undefined,
 ): GroundingContext {
-  const candidateRole = groundingTokenSequence(candidate)[0];
-  if (!GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateRole ?? "")) {
+  const candidateRole = (groundingTokenSequence(candidate)[0] ?? "")
+    .replace(/^[\u0000\u0001]/u, "");
+  if (!GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateRole)) {
     return { source, assertionSource, allowRoleNormalization: false };
   }
   if (roleAssertionSources === undefined) {
@@ -458,9 +495,12 @@ function resolveGroundingContext(
   const roleSource = candidateRole === "user"
     ? roleAssertionSources.profile
     : roleAssertionSources.identity;
+  if (roleSource === undefined) {
+    return { source, assertionSource, allowRoleNormalization: true };
+  }
   return {
-    source: roleSource ?? "",
-    assertionSource: roleSource ?? "",
+    source: roleSource,
+    assertionSource: roleSource,
     allowRoleNormalization: true,
     fallbackSource: source,
     fallbackAssertionSource: assertionSource,
@@ -480,7 +520,7 @@ function selectGroundingContext(candidate: string, context: GroundingContext): G
   if (
     context.fallbackSource === undefined
     || !hasExplicitRoleSubjectToken(
-      groundingTokenSequence(candidate)[0],
+      (groundingTokenSequence(candidate)[0] ?? "").replace(/^[\u0000\u0001]/u, ""),
       sourceSentences(context.fallbackSource).map((sentence) => groundingTokenSequence(sentence)),
     )
   ) return context;
@@ -516,7 +556,9 @@ function isGroundedCandidate(
   const roleGrounded = allowRoleNormalization && hasRoleNormalizedGrounding(candidate, source);
   const candidateTokens = groundingTokenSequence(candidate);
   const roleNormalizedCandidate = allowRoleNormalization
-    && GROUNDING_ROLE_SUBJECT_TOKENS.has(candidateTokens[0] ?? "");
+    && GROUNDING_ROLE_SUBJECT_TOKENS.has(
+      (candidateTokens[0] ?? "").replace(/^[\u0000\u0001]/u, ""),
+    );
   if (roleNormalizedCandidate && !roleGrounded) return false;
   if (!sourceGrounded && !roleGrounded) return false;
   if (assertionSource === undefined) return true;
@@ -961,6 +1003,25 @@ function groundQuestion(
   return question;
 }
 
+function isRoleGroundedCandidate(
+  candidate: string,
+  source: string,
+  assertionSource: string | undefined,
+  roleAssertionSources: ExtractionGroundingRoleSources | undefined,
+): boolean {
+  const context = selectGroundingContext(
+    candidate,
+    resolveGroundingContext(candidate, source, assertionSource, roleAssertionSources),
+  );
+  return isGroundedCandidate(
+    candidate,
+    context.source,
+    context.assertionSource,
+    false,
+    context.allowRoleNormalization,
+  );
+}
+
 export function filterExtractionResultBySource(
   result: ExtractionResult,
   source: string,
@@ -990,10 +1051,8 @@ export function filterExtractionResultBySource(
     );
     return grounded === undefined ? [] : [grounded];
   });
-  const profileGroundingSource = roleAssertionSources?.profile ?? source;
-  const profileAssertionSource = roleAssertionSources?.profile ?? assertionSource;
   const profileUpdates = result.profileUpdates.filter((update) =>
-    isGroundedCandidate(update, profileGroundingSource, profileAssertionSource, false, true),
+    isRoleGroundedCandidate(update, source, assertionSource, roleAssertionSources),
   );
   const entities = result.entities.flatMap((entity) => {
     const grounded = filterGroundedEntity(entity, source, assertionSource);
@@ -1006,15 +1065,12 @@ export function filterExtractionResultBySource(
   const relationships = result.relationships?.filter((relationship) =>
     isGroundedRelationship(relationship, source, assertionSource),
   );
-  const identityGroundingSource = roleAssertionSources?.identity ?? source;
-  const identityAssertionSource = roleAssertionSources?.identity ?? assertionSource;
   const identityReflection = result.identityReflection
-    && isGroundedCandidate(
+    && isRoleGroundedCandidate(
       result.identityReflection,
-      identityGroundingSource,
-      identityAssertionSource,
-      false,
-      true,
+      source,
+      assertionSource,
+      roleAssertionSources,
     )
     ? result.identityReflection
     : undefined;
