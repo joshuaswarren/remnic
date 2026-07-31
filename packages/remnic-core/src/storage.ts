@@ -6920,20 +6920,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
     const filePath = await this.resolveCategoryWritePath(category, id, today);
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
-    // A retried chunk write lands on the SAME deterministic path, so the
-    // target can already hold a valid prior chunk: snapshot it, and a repair
-    // failure restores it — unlink only a file THIS invocation created
-    // (Codex P2, round 22).
-    let priorChunk: MemoryFile | null = null;
-    try {
-      const priorRaw = await readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
-      const parsedPrior = parseFrontmatter(priorRaw);
-      if (parsedPrior) {
-        priorChunk = { path: filePath, frontmatter: parsedPrior.frontmatter, content: parsedPrior.content };
-      }
-    } catch {
-      priorChunk = null;
-    }
 
     const written = await this.writeTombstoneBlockedChunk(
       filePath,
@@ -6941,7 +6927,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       fm,
       sanitized.text,
       () => this.findExistingTombstoneBlockedMemory(sanitized.text, category, fm.sourceConnector),
-      async () => {
+      async (priorChunk) => {
         if (refIds && typeof rawEntityRef === "string") {
           await this.entityRefRepair.repair(filePath, fm, rawEntityRef, refIds, sanitized.text, {
             regateFact: true,

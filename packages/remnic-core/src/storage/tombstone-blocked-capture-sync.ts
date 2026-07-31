@@ -330,7 +330,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     frontmatter: MemoryFrontmatter,
     content: string,
     findDuplicate: () => Promise<MemoryFile | null>,
-    afterWrite: () => Promise<void>
+    afterWrite: (current: MemoryFile | null) => Promise<void>
   ): Promise<string> {
     const incomingIdentity = buildExplicitCaptureDedupKey(content, frontmatter.category, frontmatter.sourceConnector);
     let lockIdentities = [buildCapturePathLockIdentity(pathname), incomingIdentity];
@@ -354,7 +354,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
           }
         }
         await this.writeTombstoneBlockedMemory(pathname, fileContent, frontmatter, content);
-        await afterWrite();
+        await afterWrite(current);
       }, lockIdentities);
       if (retryIdentity === undefined) return result;
       lockIdentities = [...new Set([...lockIdentities, retryIdentity])];
