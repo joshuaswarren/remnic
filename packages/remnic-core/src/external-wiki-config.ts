@@ -34,19 +34,14 @@ function parseRootDir(value: unknown, keyName: string): string {
 
 function pathsOverlap(left: string, right: string): boolean {
   const relative = path.relative(left, right);
-  return relative === "" || (
-    relative !== ".." &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
-  );
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-function parseRootRelativePath(
-  value: unknown,
-  fallback: string,
-  keyName: string,
-): string {
+function parseRootRelativePath(value: unknown, fallback: string, keyName: string): string {
   const candidate = value === undefined ? fallback : requireString(value, keyName);
+  if (candidate.includes("\\")) {
+    throw new Error(`${keyName} must use POSIX separators`);
+  }
   const normalized = path.normalize(candidate);
   if (
     path.isAbsolute(candidate) ||
@@ -59,10 +54,7 @@ function parseRootRelativePath(
   return normalized;
 }
 
-export function parseExternalWikiRoots(
-  value: unknown,
-  memoryDir?: string,
-): ExternalWikiRoot[] {
+export function parseExternalWikiRoots(value: unknown, memoryDir?: string): ExternalWikiRoot[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("externalWikis must be an array");
 
@@ -77,11 +69,7 @@ export function parseExternalWikiRoots(
     if (seenIds.has(id)) throw new Error(`externalWikis contains duplicate id "${id}"`);
     seenIds.add(id);
 
-    const includeInDefaultRecall = parseBoolean(
-      raw.includeInDefaultRecall,
-      false,
-      `${keyName}.includeInDefaultRecall`,
-    );
+    const includeInDefaultRecall = parseBoolean(raw.includeInDefaultRecall, false, `${keyName}.includeInDefaultRecall`);
     if (includeInDefaultRecall) {
       throw new Error(`${keyName}.includeInDefaultRecall=true is not supported yet`);
     }
@@ -89,15 +77,12 @@ export function parseExternalWikiRoots(
     const rootDir = parseRootDir(raw.rootDir, `${keyName}.rootDir`);
     if (
       memoryDir !== undefined &&
-      (pathsOverlap(path.resolve(memoryDir), rootDir) ||
-        pathsOverlap(rootDir, path.resolve(memoryDir)))
+      (pathsOverlap(path.resolve(memoryDir), rootDir) || pathsOverlap(rootDir, path.resolve(memoryDir)))
     ) {
       throw new Error(`${keyName}.rootDir must be outside memoryDir`);
     }
 
-    const label = raw.label === undefined
-      ? undefined
-      : requireString(raw.label, `${keyName}.label`);
+    const label = raw.label === undefined ? undefined : requireString(raw.label, `${keyName}.label`);
     return {
       id,
       rootDir,

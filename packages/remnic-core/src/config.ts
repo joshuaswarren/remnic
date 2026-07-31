@@ -27,6 +27,7 @@ import type {
   TrustWeights,
 } from "./types.js";
 import { parseConvergeConfig } from "./converge-config.js";
+import { isExternalWikiCollectionName } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
 import { cloneDefaultSessionObserverBands } from "./session-observer-bands.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
@@ -1559,6 +1560,35 @@ export function parseConfig(
     "maintenance.namespaceLockStaleMs",
   );
 
+  const wikiMergeIntoRecall = resolveBooleanConfig(
+    cfg.wikiMergeIntoRecall,
+    false,
+    "wikiMergeIntoRecall",
+  );
+  if (wikiMergeIntoRecall) {
+    throw new Error(
+      "wikiMergeIntoRecall=true is not supported; external wiki content is available only through on-demand search",
+    );
+  }
+  const qmdCollection =
+    typeof cfg.qmdCollection === "string"
+      ? cfg.qmdCollection
+      : "openclaw-engram";
+  const qmdColdCollection =
+    typeof cfg.qmdColdCollection === "string" && cfg.qmdColdCollection.length > 0
+      ? cfg.qmdColdCollection
+      : "openclaw-engram-cold";
+  if (isExternalWikiCollectionName(qmdCollection)) {
+    throw new Error(
+      "qmdCollection must be a memory collection; external wiki collections are on-demand only",
+    );
+  }
+  if (isExternalWikiCollectionName(qmdColdCollection)) {
+    throw new Error(
+      "qmdColdCollection must be a memory collection; external wiki collections are on-demand only",
+    );
+  }
+
   return {
     openaiApiKey: apiKey,
     openaiBaseUrl: baseUrl,
@@ -1609,13 +1639,8 @@ export function parseConfig(
       typeof cfg.maxMemoryTokens === "number" ? cfg.maxMemoryTokens : 2000,
     memoryOsPreset,
     qmdEnabled: cfg.qmdEnabled !== false,
-    qmdCollection:
-      typeof cfg.qmdCollection === "string"
-        ? cfg.qmdCollection
-        // TODO(#403): Keep legacy collection name for backwards compat so existing
-        // installs don't lose their QMD vector store data on upgrade. New installs
-        // can override via qmdCollection config. Consider migrating in a future PR.
-        : "openclaw-engram",
+    qmdCollection,
+    wikiMergeIntoRecall,
     qmdMaxResults:
       typeof cfg.qmdMaxResults === "number" ? cfg.qmdMaxResults : 8,
     qmdEmbeddingBacklogThreshold: (() => {
@@ -1628,11 +1653,7 @@ export function parseConfig(
       return Number.isFinite(n) && Number.isInteger(n) && n >= 0 ? n : 1000;
     })(),
     qmdColdTierEnabled: cfg.qmdColdTierEnabled === true,
-    qmdColdCollection:
-      typeof cfg.qmdColdCollection === "string" && cfg.qmdColdCollection.length > 0
-        ? cfg.qmdColdCollection
-        // TODO(#403): Keep legacy collection name for backwards compat.
-        : "openclaw-engram-cold",
+    qmdColdCollection,
     qmdColdMaxResults:
       typeof cfg.qmdColdMaxResults === "number" ? cfg.qmdColdMaxResults : 8,
     // Issue #678 PR 2/4: gate hot/cold tier migration (a deep-sleep activity)

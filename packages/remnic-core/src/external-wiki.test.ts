@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import * as core from "./index.js";
@@ -11,6 +10,7 @@ import type {
   readExternalWikiPage,
   validateExternalWikiLayout,
 } from "./external-wiki.js";
+import { withTempDir } from "./testing/tmp-dir.js";
 
 const externalWiki = core as typeof core & {
   loadExternalWikiCatalog: typeof loadExternalWikiCatalog;
@@ -32,15 +32,8 @@ function wikiConfig(rootDir: string, overrides: Partial<ExternalWikiRoot> = {}):
   };
 }
 
-async function withWiki(
-  run: (rootDir: string) => Promise<void>,
-): Promise<void> {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-external-wiki-"));
-  try {
-    await run(rootDir);
-  } finally {
-    await rm(rootDir, { recursive: true, force: true });
-  }
+async function withWiki(run: (rootDir: string) => Promise<void>): Promise<void> {
+  await withTempDir(run, "remnic-external-wiki-");
 }
 
 test("external wiki reader APIs are exported from core", () => {
@@ -72,19 +65,16 @@ test("rejects missing pages directories and symlink escapes", async () => {
   await withWiki(async (rootDir) => {
     await assert.rejects(
       () => externalWiki.validateExternalWikiLayout(wikiConfig(rootDir)),
-      /pages directory does not exist/,
+      /pages directory does not exist/
     );
 
-    const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-wiki-outside-"));
-    try {
+    await withTempDir(async (outsideDir) => {
       await symlink(outsideDir, path.join(rootDir, "wiki"));
       await assert.rejects(
         () => externalWiki.validateExternalWikiLayout(wikiConfig(rootDir)),
-        /pages directory escapes rootDir/,
+        /pages directory escapes rootDir/
       );
-    } finally {
-      await rm(outsideDir, { recursive: true, force: true });
-    }
+    }, "remnic-wiki-outside-");
   });
 });
 
@@ -98,7 +88,7 @@ test("parses markdown and wiki-link catalog entries deterministically", () => {
       "- [Escape](../outside.md) - ignored",
       "- [Duplicate](wiki/cache-consistency.md) - ignored",
     ].join("\n"),
-    wikiConfig("/srv/wiki"),
+    wikiConfig("/srv/wiki")
   );
 
   assert.deepEqual(parsed, [
@@ -132,19 +122,31 @@ test("loads a bounded index and falls back to a sorted page listing", async () =
       { title: "Zeta", path: "zeta.md" },
     ]);
 
-    await writeFile(
-      path.join(rootDir, "INDEX.md"),
-      "- [Zeta](wiki/zeta.md) - Last page.\n",
+    await assert.rejects(
+      () => externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir), { maxEntries: 1 }),
+      /more than 1 markdown files/
     );
+    await assert.rejects(
+      () => externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir, { enabled: false })),
+      /external wiki "reading" is disabled/
+    );
+    await assert.rejects(
+      () => externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir), { maxEntries: 100_001 }),
+      /maxEntries must be at most 100000/
+    );
+    await assert.rejects(
+      () => externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir), { maxDepth: 129 }),
+      /maxDepth must be at most 128/
+    );
+
+    await writeFile(path.join(rootDir, "INDEX.md"), "- [Zeta](wiki/zeta.md) - Last page.\n");
     const indexed = await externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir));
     assert.equal(indexed.indexPresent, true);
-    assert.deepEqual(indexed.entries, [
-      { title: "Zeta", path: "zeta.md", indexBlurb: "Last page.", indexLine: 1 },
-    ]);
+    assert.deepEqual(indexed.entries, [{ title: "Zeta", path: "zeta.md", indexBlurb: "Last page.", indexLine: 1 }]);
 
     await assert.rejects(
       () => externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir), { maxIndexBytes: 8 }),
-      /INDEX\.md exceeds 8 bytes/,
+      /INDEX\.md exceeds 8 bytes/
     );
   });
 });
@@ -155,11 +157,7 @@ test("loads concept pages on demand with containment and byte limits", async () 
     await writeFile(path.join(rootDir, "wiki", "concept.md"), "# Concept\n\nSource-backed synthesis.\n");
     await writeFile(path.join(rootDir, "secret.md"), "not a concept page\n");
 
-    const page = await externalWiki.readExternalWikiPage(
-      wikiConfig(rootDir),
-      "concept.md",
-      1_024,
-    );
+    const page = await externalWiki.readExternalWikiPage(wikiConfig(rootDir), "concept.md", 1_024);
     assert.deepEqual(page, {
       wikiId: "reading",
       path: "concept.md",
@@ -170,15 +168,41 @@ test("loads concept pages on demand with containment and byte limits", async () 
 
     await assert.rejects(
       () => externalWiki.readExternalWikiPage(wikiConfig(rootDir), "../secret.md", 1_024),
-      /page path must stay within the pages directory/,
+      /page path must stay within the pages directory/
     );
     await assert.rejects(
       () => externalWiki.readExternalWikiPage(wikiConfig(rootDir), "concept.txt", 1_024),
-      /page path must end in \.md/,
+      /page path must end in \.md/
     );
     await assert.rejects(
       () => externalWiki.readExternalWikiPage(wikiConfig(rootDir), "concept.md", 8),
-      /concept\.md exceeds 8 bytes/,
+      /concept\.md exceeds 8 bytes/
+    );
+  });
+});
+
+test("rejects non-portable paths, symlink escapes, invalid UTF-8, and excessive limits", async () => {
+  await withWiki(async (rootDir) => {
+    await mkdir(path.join(rootDir, "wiki"));
+    await writeFile(path.join(rootDir, "wiki", "invalid.md"), Buffer.from([0xc3, 0x28]));
+    await writeFile(path.join(rootDir, "outside.md"), "# Outside\n");
+    await symlink(path.join(rootDir, "outside.md"), path.join(rootDir, "wiki", "escape.md"));
+
+    await assert.rejects(
+      () => externalWiki.readExternalWikiPage(wikiConfig(rootDir), "nested\\page.md"),
+      /page path must use POSIX separators/
+    );
+    await assert.rejects(
+      () => externalWiki.readExternalWikiPage(wikiConfig(rootDir), "escape.md"),
+      /page path must stay within the pages directory/
+    );
+    await assert.rejects(
+      () => externalWiki.readExternalWikiPage(wikiConfig(rootDir), "invalid.md"),
+      /invalid\.md is not valid UTF-8/
+    );
+    await assert.rejects(
+      () => externalWiki.readExternalWikiPage(wikiConfig(rootDir), "invalid.md", 16_777_217),
+      /maxBytes must be at most 16777216/
     );
   });
 });

@@ -201,6 +201,7 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 | `recallSingleFlightEnabled` | `true` | Coalesce identical concurrent recalls for the same principal into a single in-flight execution (issue #1906); each caller still receives its own cloned response. Set `false` to restore per-request execution. |
 | `qmdEnabled` | `true` | Use QMD for hybrid search |
 | `qmdCollection` | `openclaw-engram` | QMD collection name |
+| `wikiMergeIntoRecall` | `false` | Reserved guard for external compiled wikis. `true` is rejected; use on-demand wiki search instead. |
 | `qmdMaxResults` | `8` | Final result cap after over-scanning and ranking (fetch size may be larger) |
 | `qmdColdTierEnabled` | `false` | Query a secondary cold QMD collection after hot recall misses; generic recall never reads archive records |
 | `qmdColdCollection` | `openclaw-engram-cold` | QMD collection name used for cold-tier recall |
@@ -1303,6 +1304,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `memoryOsPreset` | (unset) | `balanced` |
 | `qmdEnabled` | `true` | `true` |
 | `qmdCollection` | `openclaw-engram` | `openclaw-engram` |
+| `wikiMergeIntoRecall` | `false` | `false` (the only supported value) |
 | `qmdMaxResults` | `8` | `8` |
 | `qmdColdTierEnabled` | `false` | `false` unless you are actively tiering hot/cold QMD collections |
 | `qmdColdCollection` | `openclaw-engram-cold` | `openclaw-engram-cold` |

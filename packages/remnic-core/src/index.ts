@@ -29,8 +29,6 @@ export { resolvePluginEntry, type PluginEntryResolverOptions } from "./plugin-en
 export { parseConfig, isOpenaiApiKeyDisabled, resolveEnvVars } from "./config.js";
 export { resolveRemnicConfigRecord } from "./config-record.js";
 export * from "./external-wiki.js";
-export * from "./external-wiki-search.js";
-export * from "./external-wiki-cli.js";
 export {
   parseFlexibleIsoTimestamp,
   parseIsoOffsetTimestamp,
@@ -1211,9 +1209,16 @@ export {
   type BulkImportCliCommandOptions,
 } from "./cli.js";
 
+// ---------------------------------------------------------------------------
+// Wearable transcript subsystem (Limitless / Bee / Omi connectors).
+// ---------------------------------------------------------------------------
 export * from "./wearables/index.js";
 export * from "./activity/index.js";
 export * from "./meetings/index.js";
+
+// ---------------------------------------------------------------------------
+// Shared importer base (issue #568)
+// ---------------------------------------------------------------------------
 
 export {
   DEFAULT_IMPORT_BATCH_SIZE,

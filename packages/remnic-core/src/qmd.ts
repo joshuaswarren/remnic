@@ -1,39 +1,35 @@
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { abortError, isAbortError, throwIfAborted } from "./abort-error.js";
 import { log } from "./logger.js";
 import { clearQmdResultCaches, getCachedQmdSearch, setCachedQmdSearch } from "./memory-cache.js";
 import {
-  abortError,
-  isAbortError,
-  throwIfAborted,
-} from "./abort-error.js";
-import type { QmdSearchExplain, QmdSearchResult } from "./types.js";
-import {
-  resolveEnsureCollectionArgs,
-  type SearchBackend,
-  type SearchDegradation,
-  type SearchExecutionOptions,
-  type SearchQueryOptions,
-} from "./search/port.js";
-import { launchProcess, type CommandChildProcess } from "./runtime/child-process.js";
-import { mergeEnv } from "./runtime/env.js";
-import {
+  QMD_PROBE_RETRY_BACKOFF_MS,
+  QMD_PROBE_TIMEOUT_MS,
+  QMD_SUPPORTED_VERSION,
+  type QmdProbeFailureKind,
   classifyProbeFailure,
   compareQmdVersions,
   getQmdPostInstallProbeTargets,
   parseQmdVersion,
   parseQmdVersionOutput,
-  QMD_PROBE_RETRY_BACKOFF_MS,
-  QMD_PROBE_TIMEOUT_MS,
-  QMD_SUPPORTED_VERSION,
   qmdVersionToString,
   resolveQmdCapabilities,
   shouldAutoUpgradeQmd,
   versionAtLeast,
-  type QmdProbeFailureKind,
 } from "./qmd-preflight.js";
-import { fetchQmdStatus, embedQmdFiles, EMPTY_QMD_STATUS, type QmdStatusReport } from "./qmd-status.js";
+import { EMPTY_QMD_STATUS, type QmdStatusReport, embedQmdFiles, fetchQmdStatus } from "./qmd-status.js";
+import { type CommandChildProcess, launchProcess } from "./runtime/child-process.js";
+import { mergeEnv } from "./runtime/env.js";
+import {
+  type SearchBackend,
+  type SearchDegradation,
+  type SearchExecutionOptions,
+  type SearchQueryOptions,
+  resolveEnsureCollectionArgs,
+} from "./search/port.js";
+import type { QmdSearchExplain, QmdSearchResult } from "./types.js";
 // Re-export version-check / probe-preflight helpers (moved to qmd-preflight.ts,
 // issue #1841) so existing imports from "./qmd.js" keep resolving.
 export {
@@ -225,7 +221,12 @@ function sleep(ms: number): Promise<void> {
 function errorMessage(err: unknown): string {
   if (typeof err === "string") return err;
   if (err instanceof Error) return err.message;
-  if (err && typeof err === "object" && "message" in err && typeof (err as { message?: unknown }).message === "string") {
+  if (
+    err &&
+    typeof err === "object" &&
+    "message" in err &&
+    typeof (err as { message?: unknown }).message === "string"
+  ) {
     return (err as { message: string }).message;
   }
   return String(err);
@@ -340,12 +341,11 @@ function normalizeStructuredSearches(value: unknown): QmdStructuredSearch[] {
 }
 
 function buildSyntheticHydeQuery(query: string, intent?: string): string {
-  const base = intent && intent.trim().length > 0
-    ? `A relevant Remnic memory for ${intent.trim()} would answer: ${query.trim()}`
-    : `A relevant Remnic memory would answer: ${query.trim()}`;
-  return base.length > QMD_STRUCTURED_HYDE_MAX_CHARS
-    ? base.slice(0, QMD_STRUCTURED_HYDE_MAX_CHARS)
-    : base;
+  const base =
+    intent && intent.trim().length > 0
+      ? `A relevant Remnic memory for ${intent.trim()} would answer: ${query.trim()}`
+      : `A relevant Remnic memory would answer: ${query.trim()}`;
+  return base.length > QMD_STRUCTURED_HYDE_MAX_CHARS ? base.slice(0, QMD_STRUCTURED_HYDE_MAX_CHARS) : base;
 }
 
 /**
@@ -361,7 +361,7 @@ function buildSyntheticHydeQuery(query: string, intent?: string): string {
 export function buildDefaultStructuredSearches(
   query: string,
   options?: SearchQueryOptions,
-  strategy: QmdSearchStrategy = "hybrid",
+  strategy: QmdSearchStrategy = "hybrid"
 ): QmdStructuredSearch[] {
   const explicit = normalizeStructuredSearches(options?.structuredSearches);
   if (explicit.length > 0) return explicit;
@@ -371,11 +371,7 @@ export function buildDefaultStructuredSearches(
   if (strategy === "lex") return [lex];
   const vec: QmdStructuredSearch = { type: "vec", query: trimmed };
   if (strategy === "lex-vec") return [lex, vec];
-  return [
-    lex,
-    vec,
-    { type: "hyde", query: buildSyntheticHydeQuery(trimmed, options?.intent) },
-  ];
+  return [lex, vec, { type: "hyde", query: buildSyntheticHydeQuery(trimmed, options?.intent) }];
 }
 
 function parseExplainScores(value: unknown): number[] | undefined {
@@ -390,24 +386,21 @@ export function parseQmdExplain(value: unknown): QmdSearchExplain | undefined {
   const rrf =
     typeof candidate.rrf === "number"
       ? candidate.rrf
-      : candidate.rrf && typeof candidate.rrf === "object" &&
-        typeof (candidate.rrf as Record<string, unknown>).totalScore === "number"
-      ? ((candidate.rrf as Record<string, unknown>).totalScore as number)
-      : undefined;
+      : candidate.rrf &&
+          typeof candidate.rrf === "object" &&
+          typeof (candidate.rrf as Record<string, unknown>).totalScore === "number"
+        ? ((candidate.rrf as Record<string, unknown>).totalScore as number)
+        : undefined;
   const rrfObj =
-    candidate.rrf && typeof candidate.rrf === "object"
-      ? (candidate.rrf as Record<string, unknown>)
-      : undefined;
+    candidate.rrf && typeof candidate.rrf === "object" ? (candidate.rrf as Record<string, unknown>) : undefined;
   const parsed: QmdSearchExplain = {
     ftsScores: parseExplainScores(candidate.ftsScores),
     vectorScores: parseExplainScores(candidate.vectorScores),
     rrf,
     rrfRank: typeof rrfObj?.rank === "number" ? rrfObj.rank : undefined,
-    rrfPositionScore:
-      typeof rrfObj?.positionScore === "number" ? rrfObj.positionScore : undefined,
+    rrfPositionScore: typeof rrfObj?.positionScore === "number" ? rrfObj.positionScore : undefined,
     rrfBaseScore: typeof rrfObj?.baseScore === "number" ? rrfObj.baseScore : undefined,
-    rrfTopRankBonus:
-      typeof rrfObj?.topRankBonus === "number" ? rrfObj.topRankBonus : undefined,
+    rrfTopRankBonus: typeof rrfObj?.topRankBonus === "number" ? rrfObj.topRankBonus : undefined,
     rerankScore: typeof candidate.rerankScore === "number" ? candidate.rerankScore : undefined,
     blendedScore: typeof candidate.blendedScore === "number" ? candidate.blendedScore : undefined,
   };
@@ -482,9 +475,9 @@ const QMD_MUTEX = new AsyncMutex();
 function runQmd(
   args: string[],
   timeoutMs: number = QMD_TIMEOUT_MS,
-  qmdPath: string = "qmd",
+  qmdPath = "qmd",
   signal?: AbortSignal,
-  runtimeEnv?: QmdRuntimeEnv,
+  runtimeEnv?: QmdRuntimeEnv
 ): Promise<{ stdout: string; stderr: string }> {
   // Serialize all qmd calls. This avoids SQLite lock contention when multiple
   // channels/agents trigger QMD operations at nearly the same time.
@@ -539,7 +532,7 @@ function runQmdOnce(
   timeoutMs: number,
   qmdPath: string,
   signal?: AbortSignal,
-  runtimeEnv?: QmdRuntimeEnv,
+  runtimeEnv?: QmdRuntimeEnv
 ): Promise<{ stdout: string; stderr: string }> {
   const isVersionCheck = args.length === 1 && args[0] === "--version";
   return runCommandWithTimeout(qmdPath, args, {
@@ -560,7 +553,7 @@ function runCommandWithTimeout(
     env?: QmdRuntimeEnv;
     label?: string;
     isSuccessExitCode?: (code: number | null) => boolean;
-  },
+  }
 ): Promise<{ stdout: string; stderr: string }> {
   const label = options.label ?? `${command} ${args.join(" ")}`;
   const isSuccessExitCode = options.isSuccessExitCode ?? ((code: number | null) => code === 0);
@@ -588,7 +581,7 @@ function runCommandWithTimeout(
       reject(
         Object.assign(new Error(`${label} timed out after ${options.timeoutMs}ms`), {
           timedOut: true as const,
-        }),
+        })
       );
     }, options.timeoutMs);
     const onAbort = () => {
@@ -625,11 +618,7 @@ function runCommandWithTimeout(
       if (isSuccessExitCode(code)) {
         resolve({ stdout, stderr });
       } else {
-        reject(
-          new Error(
-            `${label} failed (code ${code}): ${truncateForLog(stderr || stdout)}`,
-          ),
-        );
+        reject(new Error(`${label} failed (code ${code}): ${truncateForLog(stderr || stdout)}`));
       }
     });
   });
@@ -639,7 +628,7 @@ function runProcessCommand(
   command: string,
   args: string[],
   timeoutMs: number,
-  signal?: AbortSignal,
+  signal?: AbortSignal
 ): Promise<{ stdout: string; stderr: string }> {
   return runCommandWithTimeout(command, args, {
     timeoutMs,
@@ -744,7 +733,7 @@ class QmdDaemonSession {
             capabilities: {},
             clientInfo: { name: "openclaw-remnic", version: "1.0.0" },
           },
-          60_000,
+          60_000
         );
         if (!result) {
           // Null result (non-timeout failure) — kill and let the next probe respawn.
@@ -779,8 +768,8 @@ class QmdDaemonSession {
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    timeoutMs: number = 30_000,
-    signal?: AbortSignal,
+    timeoutMs = 30_000,
+    signal?: AbortSignal
   ): Promise<unknown> {
     if (!this.child || this.child.killed || !this.initialized) {
       throw new Error("QMD mcp process not running");
@@ -834,7 +823,7 @@ class QmdDaemonSession {
     method: string,
     params: Record<string, unknown>,
     timeoutMs: number,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       throwIfAborted(signal, `QMD mcp ${method} aborted before request`);
@@ -954,10 +943,7 @@ const QMD_RESULT_LINE_RE = /^#([0-9a-fA-F]+)\s+(\d+)%\s+(.+)/;
  */
 const QMD_PATH_TITLE_RE = /^(.+?\.[a-zA-Z]{2,10})\s+-\s+(.*)$/;
 
-function parseQmdMarkdownResultText(
-  text: string,
-  transport: QmdSearchResult["transport"],
-): QmdSearchResult[] {
+function parseQmdMarkdownResultText(text: string, transport: QmdSearchResult["transport"]): QmdSearchResult[] {
   const results: QmdSearchResult[] = [];
   for (const line of text.split("\n")) {
     const m = QMD_RESULT_LINE_RE.exec(line.trim());
@@ -970,17 +956,14 @@ function parseQmdMarkdownResultText(
       docid: m[1],
       path: pathTitleSplit[1] ?? "unknown",
       snippet: "",
-      score: parseInt(m[2], 10) / 100,
+      score: Number.parseInt(m[2], 10) / 100,
       transport,
     });
   }
   return results;
 }
 
-function parseMcpSearchResult(
-  result: unknown,
-  transport: QmdSearchResult["transport"] = "daemon",
-): QmdSearchResult[] {
+function parseMcpSearchResult(result: unknown, transport: QmdSearchResult["transport"] = "daemon"): QmdSearchResult[] {
   const resultObj = result as Record<string, unknown> | null;
   if (!resultObj) return [];
   const results: QmdSearchResult[] = [];
@@ -989,16 +972,17 @@ function parseMcpSearchResult(
       const d = doc as Record<string, unknown>;
       results.push({
         docid: typeof d.docid === "string" ? d.docid.replace(/^#/, "") : "",
-        path: typeof d.file === "string"
-          ? d.file
-          : typeof d.path === "string"
-          ? d.path
-          : (typeof d.docid === "string" ? d.docid.replace(/^#/, "") : "unknown"),
+        path:
+          typeof d.file === "string"
+            ? d.file
+            : typeof d.path === "string"
+              ? d.path
+              : typeof d.docid === "string"
+                ? d.docid.replace(/^#/, "")
+                : "unknown",
         snippet: typeof d.snippet === "string" ? d.snippet : "",
         score: typeof d.score === "number" ? d.score : 0,
-        line: typeof d.line === "number" && Number.isFinite(d.line)
-          ? Math.max(1, Math.floor(d.line))
-          : undefined,
+        line: typeof d.line === "number" && Number.isFinite(d.line) ? Math.max(1, Math.floor(d.line)) : undefined,
         explain: parseQmdExplain(d.explain),
         transport,
       });
@@ -1037,7 +1021,7 @@ function parseMcpSearchResult(
 
 function parseQmdSearchStdout(
   stdout: string,
-  transport: QmdSearchResult["transport"] = "subprocess",
+  transport: QmdSearchResult["transport"] = "subprocess"
 ): QmdSearchResult[] {
   const trimmedOut = stdout.trim();
   if (!trimmedOut || trimmedOut === "No results found.") return [];
@@ -1046,19 +1030,14 @@ function parseQmdSearchStdout(
   return parsed.map(
     (entry: Record<string, unknown>): QmdSearchResult => ({
       docid: (entry.docid as string) ?? "",
-      path:
-        (entry.file as string) ??
-        (entry.path as string) ??
-        (entry.docid as string) ??
-        "unknown",
+      path: (entry.file as string) ?? (entry.path as string) ?? (entry.docid as string) ?? "unknown",
       snippet: (entry.snippet as string) ?? "",
       score: typeof entry.score === "number" ? entry.score : 0,
-      line: typeof entry.line === "number" && Number.isFinite(entry.line)
-        ? Math.max(1, Math.floor(entry.line))
-        : undefined,
+      line:
+        typeof entry.line === "number" && Number.isFinite(entry.line) ? Math.max(1, Math.floor(entry.line)) : undefined,
       explain: parseQmdExplain(entry.explain),
       transport,
-    }),
+    })
   );
 }
 
@@ -1073,15 +1052,11 @@ function stableRuntimeEnvKey(runtimeEnv: QmdRuntimeEnv): string {
   return JSON.stringify(
     Object.keys(runtimeEnv)
       .sort()
-      .map((key) => [key, runtimeEnv[key]]),
+      .map((key) => [key, runtimeEnv[key]])
   );
 }
 
-function recordAutoUpgradeStatus(
-  state: QmdGlobalState,
-  targetKey: string,
-  status: string,
-): void {
+function recordAutoUpgradeStatus(state: QmdGlobalState, targetKey: string, status: string): void {
   state.lastAutoUpgradeStatusByTarget[targetKey] = status;
   state.lastAutoUpgradeStatus = status;
 }
@@ -1090,7 +1065,7 @@ function retainSharedDaemonSession(
   qmdPath: string,
   runtimeEnv: QmdRuntimeEnv = {},
   indexName?: string,
-  cliVersion?: string | null,
+  cliVersion?: string | null
 ): QmdDaemonSession {
   const normalizedPath = qmdPath.trim() || "qmd";
   const normalizedIndex = indexName?.trim() || "";
@@ -1197,7 +1172,7 @@ export class QmdClient implements SearchBackend {
   constructor(
     private readonly collection: string,
     private readonly maxResults: number,
-    opts?: QmdClientOptions,
+    opts?: QmdClientOptions
   ) {
     this.slowLog = opts?.slowLog;
     this.updateTimeoutMs = opts?.updateTimeoutMs ?? 120_000;
@@ -1210,12 +1185,10 @@ export class QmdClient implements SearchBackend {
     this.qmdAutoUpgradeEnabled = opts?.qmdAutoUpgradeEnabled === true;
     this.qmdAutoUpgradeCheckIntervalMs = Math.max(
       60_000,
-      Math.floor(opts?.qmdAutoUpgradeCheckIntervalMs ?? QMD_AUTO_UPGRADE_CHECK_INTERVAL_MS),
+      Math.floor(opts?.qmdAutoUpgradeCheckIntervalMs ?? QMD_AUTO_UPGRADE_CHECK_INTERVAL_MS)
     );
     this.qmdChunkStrategy =
-      opts?.qmdChunkStrategy === "auto" || opts?.qmdChunkStrategy === "regex"
-        ? opts.qmdChunkStrategy
-        : undefined;
+      opts?.qmdChunkStrategy === "auto" || opts?.qmdChunkStrategy === "regex" ? opts.qmdChunkStrategy : undefined;
     this.qmdCandidateLimit =
       typeof opts?.qmdCandidateLimit === "number" &&
       Number.isFinite(opts.qmdCandidateLimit) &&
@@ -1225,9 +1198,7 @@ export class QmdClient implements SearchBackend {
     this.qmdQueryRerankEnabled = opts?.qmdQueryRerankEnabled !== false;
     this.qmdIndexName = opts?.qmdIndexName?.trim() || undefined;
     this.qmdSearchStrategy =
-      opts?.qmdSearchStrategy === "lex" || opts?.qmdSearchStrategy === "lex-vec"
-        ? opts.qmdSearchStrategy
-        : "hybrid";
+      opts?.qmdSearchStrategy === "lex" || opts?.qmdSearchStrategy === "lex-vec" ? opts.qmdSearchStrategy : "hybrid";
     this.qmdSubprocessStrategy = opts?.qmdSubprocessStrategy === "search" ? "search" : "query";
     this.qmdFallbackPaths = opts?.qmdFallbackPaths
       ? opts.qmdFallbackPaths.map((candidate) => candidate.trim()).filter(Boolean)
@@ -1246,7 +1217,7 @@ export class QmdClient implements SearchBackend {
     this.daemonRecheckIntervalMs = opts?.daemonRecheckIntervalMs ?? 15_000;
   }
 
-  private qmdPath: string = "qmd";
+  private qmdPath = "qmd";
 
   private buildRuntimeEnv(opts?: QmdClientOptions): QmdRuntimeEnv {
     const env: QmdRuntimeEnv = {};
@@ -1302,10 +1273,7 @@ export class QmdClient implements SearchBackend {
   private async probeDaemon(): Promise<boolean> {
     this.lastDaemonCheckAtMs = Date.now();
     const normalizedPath = this.qmdPath.trim() || "qmd";
-    const daemonIndexName =
-      this.qmdIndexName && this.qmdCapabilities.mcpIndexSelection
-        ? this.qmdIndexName
-        : undefined;
+    const daemonIndexName = this.qmdIndexName && this.qmdCapabilities.mcpIndexSelection ? this.qmdIndexName : undefined;
     const daemonSessionPath = `${normalizedPath}\0${daemonIndexName ?? ""}\0${this.cliVersion ?? ""}`;
     if (!this.daemonSession || this.daemonSessionPath !== daemonSessionPath) {
       await releaseSharedDaemonSession(this.daemonSession);
@@ -1313,7 +1281,7 @@ export class QmdClient implements SearchBackend {
         normalizedPath,
         this.qmdRuntimeEnv,
         daemonIndexName,
-        this.cliVersion,
+        this.cliVersion
       );
       this.daemonSessionPath = daemonSessionPath;
     }
@@ -1327,7 +1295,9 @@ export class QmdClient implements SearchBackend {
       ]);
       if (!ok) {
         const loading = this.daemonSession.isLoading();
-        log.debug(`QMD daemon: stdio session not ready within ${PROBE_QUICK_TIMEOUT_MS}ms probe window${loading ? " (still loading)" : ""}`);
+        log.debug(
+          `QMD daemon: stdio session not ready within ${PROBE_QUICK_TIMEOUT_MS}ms probe window${loading ? " (still loading)" : ""}`
+        );
         this.daemonAvailable = false;
         return false;
       }
@@ -1342,10 +1312,7 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  private runVersionProbe(
-    qmdPath: string,
-    signal?: AbortSignal,
-  ): Promise<{ stdout: string; stderr: string }> {
+  private runVersionProbe(qmdPath: string, signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
     return runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, qmdPath, signal, this.qmdRuntimeEnv);
   }
 
@@ -1354,18 +1321,19 @@ export class QmdClient implements SearchBackend {
       allowAutoUpgrade?: boolean;
       preserveStateOnFailure?: boolean;
       signal?: AbortSignal;
-    } = {},
+    } = {}
   ): Promise<boolean> {
-    const priorState = options.preserveStateOnFailure === true
-      ? {
-        available: this.available,
-        qmdPath: this.qmdPath,
-        qmdPathSource: this.qmdPathSource,
-        cliVersion: this.cliVersion,
-        lastCliProbeError: this.lastCliProbeError,
-        qmdCapabilities: this.qmdCapabilities,
-      }
-      : null;
+    const priorState =
+      options.preserveStateOnFailure === true
+        ? {
+            available: this.available,
+            qmdPath: this.qmdPath,
+            qmdPathSource: this.qmdPathSource,
+            cliVersion: this.cliVersion,
+            lastCliProbeError: this.lastCliProbeError,
+            qmdCapabilities: this.qmdCapabilities,
+          }
+        : null;
     const restorePriorState = (): void => {
       if (!priorState) return;
       this.available = priorState.available;
@@ -1388,7 +1356,7 @@ export class QmdClient implements SearchBackend {
     const recordProbeSuccess = async (
       result: { stdout: string; stderr: string },
       qmdPath: string,
-      source: typeof this.qmdPathSource,
+      source: typeof this.qmdPathSource
     ): Promise<void> => {
       this.available = true;
       this.qmdPath = qmdPath;
@@ -1423,15 +1391,9 @@ export class QmdClient implements SearchBackend {
           failureKind = classifyProbeFailure(err);
           // Never retry a hard misconfiguration (missing/not-executable) — only
           // transient slowness. (Caller cancellation is handled above.)
-          if (
-            failureKind === "transient" &&
-            attempt < QMD_PROBE_RETRY_BACKOFF_MS.length
-          ) {
+          if (failureKind === "transient" && attempt < QMD_PROBE_RETRY_BACKOFF_MS.length) {
             try {
-              await sleepWithSignal(
-                QMD_PROBE_RETRY_BACKOFF_MS[attempt] ?? 500,
-                options.signal,
-              );
+              await sleepWithSignal(QMD_PROBE_RETRY_BACKOFF_MS[attempt] ?? 500, options.signal);
             } catch {
               // Aborted mid-backoff: caller cancelled — stop, emit no warning.
               callerCancelled = true;
@@ -1447,17 +1409,15 @@ export class QmdClient implements SearchBackend {
       if (!callerCancelled) {
         if (failureKind === "transient") {
           this.logCliProbeWarning(
-            `QMD: qmdPath ${configuredPath} version check timed out (host may be under load); retried ${retries} time${retries === 1 ? "" : "s"}`,
+            `QMD: qmdPath ${configuredPath} version check timed out (host may be under load); retried ${retries} time${retries === 1 ? "" : "s"}`
           );
         } else if (failureKind === "missing") {
           this.logCliProbeWarning(
-            `QMD: configured qmdPath not found or not executable (${configuredPath}): ${this.lastCliProbeError}`,
+            `QMD: configured qmdPath not found or not executable (${configuredPath}): ${this.lastCliProbeError}`
           );
         } else {
           // Preserve the historical generic message for exit-code/other failures.
-          this.logCliProbeWarning(
-            `QMD: configured qmdPath failed (${configuredPath}): ${this.lastCliProbeError}`,
-          );
+          this.logCliProbeWarning(`QMD: configured qmdPath failed (${configuredPath}): ${this.lastCliProbeError}`);
         }
       }
     }
@@ -1503,10 +1463,7 @@ export class QmdClient implements SearchBackend {
     const targetKey = this.autoUpgradeTargetKey();
     const now = Date.now();
     const lastCheckAtMs = state.lastAutoUpgradeCheckByTargetMs[targetKey];
-    if (
-      Number.isFinite(lastCheckAtMs) &&
-      now - lastCheckAtMs < this.qmdAutoUpgradeCheckIntervalMs
-    ) {
+    if (Number.isFinite(lastCheckAtMs) && now - lastCheckAtMs < this.qmdAutoUpgradeCheckIntervalMs) {
       return;
     }
     state.lastAutoUpgradeCheckByTargetMs[targetKey] = now;
@@ -1524,7 +1481,7 @@ export class QmdClient implements SearchBackend {
       recordAutoUpgradeStatus(
         state,
         targetKey,
-        `current: installed=${qmdVersionToString(installed)} supported=${qmdVersionToString(supported)}`,
+        `current: installed=${qmdVersionToString(installed)} supported=${qmdVersionToString(supported)}`
       );
       return;
     }
@@ -1532,7 +1489,7 @@ export class QmdClient implements SearchBackend {
       const status = `skipped: configured qmdPath=${this.qmdPath}`;
       recordAutoUpgradeStatus(state, targetKey, status);
       log.warn(
-        `QMD auto-upgrade skipped because qmdPath is explicitly configured (${this.qmdPath}); install ${QMD_PACKAGE_NAME}@${this.qmdSupportedVersion} manually for that path.`,
+        `QMD auto-upgrade skipped because qmdPath is explicitly configured (${this.qmdPath}); install ${QMD_PACKAGE_NAME}@${this.qmdSupportedVersion} manually for that path.`
       );
       return;
     }
@@ -1540,13 +1497,9 @@ export class QmdClient implements SearchBackend {
     const packageSpec = `${QMD_PACKAGE_NAME}@${this.qmdSupportedVersion}`;
     try {
       log.warn(
-        `QMD auto-upgrade: installed=${qmdVersionToString(installed)} supported=${qmdVersionToString(supported)}; running npm install -g ${packageSpec}`,
+        `QMD auto-upgrade: installed=${qmdVersionToString(installed)} supported=${qmdVersionToString(supported)}; running npm install -g ${packageSpec}`
       );
-      await runProcessCommand(
-        "npm",
-        ["install", "-g", packageSpec],
-        QMD_AUTO_UPGRADE_TIMEOUT_MS,
-      );
+      await runProcessCommand("npm", ["install", "-g", packageSpec], QMD_AUTO_UPGRADE_TIMEOUT_MS);
       const postInstall = await this.probePostInstallQmdVersion(supported);
       this.qmdPath = postInstall.qmdPath;
       this.qmdPathSource = postInstall.source;
@@ -1567,7 +1520,7 @@ export class QmdClient implements SearchBackend {
       recordAutoUpgradeStatus(
         state,
         targetKey,
-        `upgraded: installed=${this.cliVersion ?? "unknown"} target=${this.qmdSupportedVersion}`,
+        `upgraded: installed=${this.cliVersion ?? "unknown"} target=${this.qmdSupportedVersion}`
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1590,7 +1543,7 @@ export class QmdClient implements SearchBackend {
           QMD_PROBE_TIMEOUT_MS,
           candidate.qmdPath,
           undefined,
-          this.qmdRuntimeEnv,
+          this.qmdRuntimeEnv
         );
         const postInstall = {
           ...candidate,
@@ -1622,8 +1575,7 @@ export class QmdClient implements SearchBackend {
   private logCliProbeWarning(message: string): void {
     const state = getGlobalQmdState();
     const now = Date.now();
-    const canWarn =
-      state.lastCliWarnAtMs === null || now - state.lastCliWarnAtMs >= QMD_CLI_WARN_THROTTLE_MS;
+    const canWarn = state.lastCliWarnAtMs === null || now - state.lastCliWarnAtMs >= QMD_CLI_WARN_THROTTLE_MS;
     if (!canWarn) {
       log.debug(message);
       return;
@@ -1666,8 +1618,7 @@ export class QmdClient implements SearchBackend {
       .join(",");
     const globalState = getGlobalQmdState();
     const autoUpgradeStatus =
-      globalState.lastAutoUpgradeStatusByTarget[this.autoUpgradeTargetKey()] ??
-      globalState.lastAutoUpgradeStatus;
+      globalState.lastAutoUpgradeStatusByTarget[this.autoUpgradeTargetKey()] ?? globalState.lastAutoUpgradeStatus;
     const probeError = this.lastCliProbeError ? ` cliProbeError=${this.lastCliProbeError}` : "";
     return `cli=${this.available} daemon=${this.daemonAvailable} session=${!!this.daemonSession} cliPath=${cliPath} cliPathSource=${this.qmdPathSource} cliVersion=${cliVersion} supportedVersion=${status.supportedVersion} upgradeAvailable=${status.upgradeAvailable} qmdFeatures=${enabledFeatures || "none"}${autoUpgradeStatus ? ` autoUpgrade=${autoUpgradeStatus}` : ""}${probeError}`;
   }
@@ -1728,6 +1679,18 @@ export class QmdClient implements SearchBackend {
     return fetchQmdStatus((args, timeoutMs) => this.runQmdCommand(args, timeoutMs), this.collection, QMD_TIMEOUT_MS);
   }
 
+  async collectionStatus(collection: string): Promise<Pick<QmdStatusReport, "totalFiles">> {
+    if (!this.isAvailable() || !this.qmdCapabilities.safeStatusDeviceProbe) {
+      return { totalFiles: null };
+    }
+    const report = await fetchQmdStatus(
+      (args, timeoutMs) => this.runQmdCommand(args, timeoutMs),
+      collection,
+      QMD_TIMEOUT_MS
+    );
+    return { totalFiles: report.totalFiles };
+  }
+
   isDaemonMode(): boolean {
     return this.daemonAvailable;
   }
@@ -1763,24 +1726,26 @@ export class QmdClient implements SearchBackend {
     }
     this.daemonTransientFailures += 1;
     if (this.daemonTransientFailures >= QmdClient.DAEMON_MAX_TRANSIENT_FAILURES) {
-      log.debug(`QMD daemon ${label} failed after ${durationMs}ms (${this.daemonTransientFailures} consecutive failures, invalidating): ${err}`);
+      log.debug(
+        `QMD daemon ${label} failed after ${durationMs}ms (${this.daemonTransientFailures} consecutive failures, invalidating): ${err}`
+      );
       this.daemonSession?.invalidate();
       this.daemonAvailable = false;
       this.daemonTransientFailures = 0;
     } else {
-      log.debug(`QMD daemon ${label} failed after ${durationMs}ms (transient ${this.daemonTransientFailures}/${QmdClient.DAEMON_MAX_TRANSIENT_FAILURES}): ${err}`);
+      log.debug(
+        `QMD daemon ${label} failed after ${durationMs}ms (transient ${this.daemonTransientFailures}/${QmdClient.DAEMON_MAX_TRANSIENT_FAILURES}): ${err}`
+      );
     }
   }
 
   private async runQmdCommand(
     args: string[],
     timeoutMs: number,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<{ stdout: string; stderr: string }> {
     const commandArgs =
-      this.qmdIndexName && this.qmdCapabilities.mcpIndexSelection
-        ? ["--index", this.qmdIndexName, ...args]
-        : args;
+      this.qmdIndexName && this.qmdCapabilities.mcpIndexSelection ? ["--index", this.qmdIndexName, ...args] : args;
     return runQmd(commandArgs, timeoutMs, this.qmdPath, signal, this.qmdRuntimeEnv);
   }
 
@@ -1886,10 +1851,7 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  private addResolvedSearchOptionsToMcpArgs(
-    args: Record<string, unknown>,
-    options?: SearchQueryOptions,
-  ): void {
+  private addResolvedSearchOptionsToMcpArgs(args: Record<string, unknown>, options?: SearchQueryOptions): void {
     if (options?.intent) {
       args.intent = options.intent;
     }
@@ -1921,7 +1883,7 @@ export class QmdClient implements SearchBackend {
     collection?: string,
     maxResults?: number,
     options?: SearchQueryOptions,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<QmdSearchResult[]> {
     const trimmed = query.trim();
     if (!trimmed) return [];
@@ -2003,7 +1965,7 @@ export class QmdClient implements SearchBackend {
       (degradation) => {
         subprocessDegraded = true;
         this.notifyDegradation(execution?.onDegradation, degradation.code, degradation.detail);
-      },
+      }
     );
     // Never cache a degraded empty result: a 60s TTL hit would serve the
     // failure as a genuine no-matches WITHOUT re-reporting the degradation
@@ -2017,7 +1979,7 @@ export class QmdClient implements SearchBackend {
   async searchGlobal(
     query: string,
     maxResults?: number,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<QmdSearchResult[]> {
     const trimmed = query.trim();
     if (!trimmed) return [];
@@ -2062,13 +2024,7 @@ export class QmdClient implements SearchBackend {
     }
 
     // Subprocess fallback (only reached when daemon is unavailable and not loading)
-    return this.searchGlobalViaSubprocess(
-      trimmed,
-      n,
-      searchOptions,
-      execution?.signal,
-      execution?.onDegradation,
-    );
+    return this.searchGlobalViaSubprocess(trimmed, n, searchOptions, execution?.signal, execution?.onDegradation);
   }
 
   /**
@@ -2078,7 +2034,7 @@ export class QmdClient implements SearchBackend {
     query: string,
     collection?: string,
     maxResults?: number,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<QmdSearchResult[]> {
     const trimmed = query.trim();
     if (!trimmed) return [];
@@ -2128,7 +2084,7 @@ export class QmdClient implements SearchBackend {
     query: string,
     collection?: string,
     maxResults?: number,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<QmdSearchResult[]> {
     const trimmed = query.trim();
     if (!trimmed) return [];
@@ -2179,7 +2135,7 @@ export class QmdClient implements SearchBackend {
     query: string,
     collection?: string,
     maxResults?: number,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<QmdSearchResult[]> {
     const n = maxResults ?? this.maxResults;
     const trimmed = query.trim();
@@ -2204,9 +2160,7 @@ export class QmdClient implements SearchBackend {
     }
 
     // Sort by score descending, take top N
-    return [...merged.values()]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, n);
+    return [...merged.values()].sort((a, b) => b.score - a.score).slice(0, n);
   }
 
   private async searchViaDaemon(
@@ -2214,7 +2168,7 @@ export class QmdClient implements SearchBackend {
     collection: string | undefined,
     maxResults: number,
     options?: SearchQueryOptions,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<QmdSearchResult[] | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
@@ -2248,7 +2202,7 @@ export class QmdClient implements SearchBackend {
 
       if (this.slowLog?.enabled && durationMs >= this.slowLog.thresholdMs) {
         log.warn(
-          `SLOW QMD daemon query: durationMs=${durationMs} collection=${collection ?? "global"} maxResults=${maxResults} queryChars=${query.length} v2=${v2}`,
+          `SLOW QMD daemon query: durationMs=${durationMs} collection=${collection ?? "global"} maxResults=${maxResults} queryChars=${query.length} v2=${v2}`
         );
       }
 
@@ -2278,7 +2232,7 @@ export class QmdClient implements SearchBackend {
     query: string,
     collection: string,
     maxResults: number,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<QmdSearchResult[] | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
@@ -2296,7 +2250,7 @@ export class QmdClient implements SearchBackend {
             limit: maxResults,
           },
           this.daemonTimeoutMs,
-          signal,
+          signal
         );
       } else {
         // QMD v1: dedicated `search` tool for BM25
@@ -2304,7 +2258,7 @@ export class QmdClient implements SearchBackend {
           "search",
           { query, limit: maxResults, collection },
           this.daemonTimeoutMs,
-          signal,
+          signal
         );
       }
       const durationMs = Date.now() - startedAtMs;
@@ -2331,7 +2285,7 @@ export class QmdClient implements SearchBackend {
     query: string,
     collection: string,
     maxResults: number,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<QmdSearchResult[] | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
@@ -2349,7 +2303,7 @@ export class QmdClient implements SearchBackend {
             limit: maxResults,
           },
           this.daemonTimeoutMs,
-          signal,
+          signal
         );
       } else {
         // QMD v1: dedicated `vsearch` tool for vector search
@@ -2357,7 +2311,7 @@ export class QmdClient implements SearchBackend {
           "vsearch",
           { query, limit: maxResults, collection },
           this.daemonTimeoutMs,
-          signal,
+          signal
         );
       }
       const durationMs = Date.now() - startedAtMs;
@@ -2389,7 +2343,7 @@ export class QmdClient implements SearchBackend {
   private notifyDegradation(
     onDegradation: SearchExecutionOptions["onDegradation"],
     code: SearchDegradation["code"],
-    detail?: string,
+    detail?: string
   ): void {
     if (!onDegradation) return;
     try {
@@ -2436,7 +2390,7 @@ export class QmdClient implements SearchBackend {
     maxResults: number,
     options?: SearchQueryOptions,
     signal?: AbortSignal,
-    onDegradation?: SearchExecutionOptions["onDegradation"],
+    onDegradation?: SearchExecutionOptions["onDegradation"]
   ): Promise<QmdSearchResult[]> {
     if (this.available === false) return [];
 
@@ -2461,7 +2415,7 @@ export class QmdClient implements SearchBackend {
       const durationMs = Date.now() - startedAtMs;
       if (this.slowLog?.enabled && durationMs >= this.slowLog.thresholdMs) {
         log.warn(
-          `SLOW QMD query: durationMs=${durationMs} collection=${collection} maxResults=${maxResults} queryChars=${query.length}`,
+          `SLOW QMD query: durationMs=${durationMs} collection=${collection} maxResults=${maxResults} queryChars=${query.length}`
         );
       }
 
@@ -2484,7 +2438,7 @@ export class QmdClient implements SearchBackend {
     collection: string,
     maxResults: number,
     signal?: AbortSignal,
-    onDegradation?: SearchExecutionOptions["onDegradation"],
+    onDegradation?: SearchExecutionOptions["onDegradation"]
   ): Promise<QmdSearchResult[]> {
     if (this.available === false) return [];
     const startedAtMs = Date.now();
@@ -2511,7 +2465,7 @@ export class QmdClient implements SearchBackend {
     collection: string,
     maxResults: number,
     signal?: AbortSignal,
-    onDegradation?: SearchExecutionOptions["onDegradation"],
+    onDegradation?: SearchExecutionOptions["onDegradation"]
   ): Promise<QmdSearchResult[]> {
     if (this.available === false) return [];
     const startedAtMs = Date.now();
@@ -2519,7 +2473,7 @@ export class QmdClient implements SearchBackend {
       const { stdout } = await this.runQmdCommand(
         ["vsearch", query, "-c", collection, "--json", "-n", String(maxResults)],
         QMD_TIMEOUT_MS,
-        signal,
+        signal
       );
       log.debug(`QMD vsearch: ${Date.now() - startedAtMs}ms`);
       return parseQmdSearchStdout(stdout);
@@ -2539,7 +2493,7 @@ export class QmdClient implements SearchBackend {
     maxResults: number,
     options?: SearchQueryOptions,
     signal?: AbortSignal,
-    onDegradation?: SearchExecutionOptions["onDegradation"],
+    onDegradation?: SearchExecutionOptions["onDegradation"]
   ): Promise<QmdSearchResult[]> {
     if (this.available === false) return [];
 
@@ -2562,7 +2516,7 @@ export class QmdClient implements SearchBackend {
       const durationMs = Date.now() - startedAtMs;
       if (this.slowLog?.enabled && durationMs >= this.slowLog.thresholdMs) {
         log.warn(
-          `SLOW QMD global ${bm25 ? "search" : "query"}: durationMs=${durationMs} maxResults=${maxResults} queryChars=${query.length}`,
+          `SLOW QMD global ${bm25 ? "search" : "query"}: durationMs=${durationMs} maxResults=${maxResults} queryChars=${query.length}`
         );
       }
 
@@ -2579,40 +2533,26 @@ export class QmdClient implements SearchBackend {
   }
 
   async update(execution?: SearchExecutionOptions): Promise<void> {
-    await this.runUpdateForCollection(
-      this.collection,
-      { perCollectionThrottle: false },
-      execution?.signal,
-    );
+    await this.runUpdateForCollection(this.collection, { perCollectionThrottle: false }, execution?.signal);
   }
 
   async updateStrict(execution?: SearchExecutionOptions): Promise<void> {
     await this.runUpdateForCollection(
       this.collection,
       { perCollectionThrottle: false, strict: true },
-      execution?.signal,
+      execution?.signal
     );
   }
 
-  async updateCollection(
-    collection: string,
-    execution?: SearchExecutionOptions,
-  ): Promise<void> {
-    await this.runUpdateForCollection(
-      collection,
-      { perCollectionThrottle: true },
-      execution?.signal,
-    );
+  async updateCollection(collection: string, execution?: SearchExecutionOptions): Promise<void> {
+    await this.runUpdateForCollection(collection, { perCollectionThrottle: true }, execution?.signal);
   }
 
-  async updateCollectionStrict(
-    collection: string,
-    execution?: SearchExecutionOptions,
-  ): Promise<void> {
+  async updateCollectionStrict(collection: string, execution?: SearchExecutionOptions): Promise<void> {
     await this.runUpdateForCollection(
       collection,
       { perCollectionThrottle: true, strict: true, force: true },
-      execution?.signal,
+      execution?.signal
     );
   }
 
@@ -2623,7 +2563,7 @@ export class QmdClient implements SearchBackend {
   private async runUpdateForCollection(
     collection: string,
     options: { perCollectionThrottle: boolean; strict?: boolean; force?: boolean },
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<void> {
     if (this.available === false) {
       if (options.strict) {
@@ -2641,61 +2581,40 @@ export class QmdClient implements SearchBackend {
     const globalState = getGlobalQmdState();
     const now = Date.now();
     if (!options.force && options.perCollectionThrottle) {
-      if (
-        globalState.lastGlobalUpdateFailAtMs &&
-        now - globalState.lastGlobalUpdateFailAtMs < QMD_UPDATE_BACKOFF_MS
-      ) {
+      if (globalState.lastGlobalUpdateFailAtMs && now - globalState.lastGlobalUpdateFailAtMs < QMD_UPDATE_BACKOFF_MS) {
         log.debug("QMD update: suppressed by global failure backoff");
         if (options.strict) throw new Error("QMD update skipped by global failure backoff");
         return;
       }
       const lastCollectionRun = globalState.lastUpdateByCollectionMs[name];
-      if (
-        Number.isFinite(lastCollectionRun) &&
-        now - lastCollectionRun < this.updateMinIntervalMs
-      ) {
+      if (Number.isFinite(lastCollectionRun) && now - lastCollectionRun < this.updateMinIntervalMs) {
         log.debug(`QMD update: suppressed by per-collection min-interval gate (${name})`);
         if (options.strict) throw new Error("QMD update skipped by per-collection min-interval gate");
         return;
       }
       const lastCollectionFail = globalState.lastUpdateFailByCollectionMs[name];
-      if (
-        Number.isFinite(lastCollectionFail) &&
-        now - lastCollectionFail < QMD_UPDATE_BACKOFF_MS
-      ) {
+      if (Number.isFinite(lastCollectionFail) && now - lastCollectionFail < QMD_UPDATE_BACKOFF_MS) {
         log.debug(`QMD update: suppressed by per-collection failure backoff (${name})`);
         if (options.strict) throw new Error("QMD update skipped by per-collection failure backoff");
         return;
       }
     } else if (!options.force) {
-      if (
-        this.lastUpdateRunAtMs &&
-        now - this.lastUpdateRunAtMs < this.updateMinIntervalMs
-      ) {
+      if (this.lastUpdateRunAtMs && now - this.lastUpdateRunAtMs < this.updateMinIntervalMs) {
         log.debug("QMD update: suppressed due to min-interval gate");
         if (options.strict) throw new Error("QMD update skipped by min-interval gate");
         return;
       }
-      if (
-        this._lastUpdateFailAtMs &&
-        now - this._lastUpdateFailAtMs < QMD_UPDATE_BACKOFF_MS
-      ) {
+      if (this._lastUpdateFailAtMs && now - this._lastUpdateFailAtMs < QMD_UPDATE_BACKOFF_MS) {
         log.debug("QMD update: suppressed due to recent failures (backoff)");
         if (options.strict) throw new Error("QMD update skipped by recent failure backoff");
         return;
       }
-      if (
-        globalState.lastGlobalUpdateRunAtMs &&
-        now - globalState.lastGlobalUpdateRunAtMs < this.updateMinIntervalMs
-      ) {
+      if (globalState.lastGlobalUpdateRunAtMs && now - globalState.lastGlobalUpdateRunAtMs < this.updateMinIntervalMs) {
         log.debug("QMD update: suppressed by global min-interval gate");
         if (options.strict) throw new Error("QMD update skipped by global min-interval gate");
         return;
       }
-      if (
-        globalState.lastGlobalUpdateFailAtMs &&
-        now - globalState.lastGlobalUpdateFailAtMs < QMD_UPDATE_BACKOFF_MS
-      ) {
+      if (globalState.lastGlobalUpdateFailAtMs && now - globalState.lastGlobalUpdateFailAtMs < QMD_UPDATE_BACKOFF_MS) {
         log.debug("QMD update: suppressed by global failure backoff");
         if (options.strict) throw new Error("QMD update skipped by global failure backoff");
         return;
@@ -2705,7 +2624,7 @@ export class QmdClient implements SearchBackend {
       if (!globalState.warnedGlobalUpdateBehavior) {
         globalState.warnedGlobalUpdateBehavior = true;
         log.warn(
-          "QMD update runs globally across collections in current CLI versions; Engram now rate-limits update calls to reduce gateway load.",
+          "QMD update runs globally across collections in current CLI versions; Engram now rate-limits update calls to reduce gateway load."
         );
       }
       const startedAtMs = Date.now();
@@ -2773,7 +2692,7 @@ export class QmdClient implements SearchBackend {
       this.collection,
       filePaths,
       300_000,
-      this.buildEmbedArgs(this.collection),
+      this.buildEmbedArgs(this.collection)
     );
     if (result.ok) clearQmdResultCaches();
     return result.ok;
@@ -2781,7 +2700,7 @@ export class QmdClient implements SearchBackend {
 
   private async runEmbedForCollection(
     collection: string,
-    options: { perCollectionThrottle: boolean; strict?: boolean },
+    options: { perCollectionThrottle: boolean; strict?: boolean }
   ): Promise<void> {
     if (this.available === false) {
       if (options.strict) throw new Error("QMD unavailable");
@@ -2795,53 +2714,35 @@ export class QmdClient implements SearchBackend {
     const globalState = getGlobalQmdState();
     const now = Date.now();
     if (options.perCollectionThrottle) {
-      if (
-        globalState.lastGlobalEmbedFailAtMs &&
-        now - globalState.lastGlobalEmbedFailAtMs < QMD_EMBED_BACKOFF_MS
-      ) {
+      if (globalState.lastGlobalEmbedFailAtMs && now - globalState.lastGlobalEmbedFailAtMs < QMD_EMBED_BACKOFF_MS) {
         log.debug(`QMD embed: suppressed by global failure backoff (${name})`);
         if (options.strict) throw new Error("QMD embed skipped by global failure backoff");
         return;
       }
       const lastCollectionRun = globalState.lastEmbedByCollectionMs[name];
-      if (
-        Number.isFinite(lastCollectionRun) &&
-        now - lastCollectionRun < this.updateMinIntervalMs
-      ) {
+      if (Number.isFinite(lastCollectionRun) && now - lastCollectionRun < this.updateMinIntervalMs) {
         log.debug(`QMD embed: suppressed by per-collection min-interval gate (${name})`);
         if (options.strict) throw new Error("QMD embed skipped by per-collection min-interval gate");
         return;
       }
       const lastCollectionFail = globalState.lastEmbedFailByCollectionMs[name];
-      if (
-        Number.isFinite(lastCollectionFail) &&
-        now - lastCollectionFail < QMD_EMBED_BACKOFF_MS
-      ) {
+      if (Number.isFinite(lastCollectionFail) && now - lastCollectionFail < QMD_EMBED_BACKOFF_MS) {
         log.debug(`QMD embed: suppressed by per-collection failure backoff (${name})`);
         if (options.strict) throw new Error("QMD embed skipped by per-collection failure backoff");
         return;
       }
     } else {
-      if (
-        this.lastEmbedFailAtMs &&
-        now - this.lastEmbedFailAtMs < QMD_EMBED_BACKOFF_MS
-      ) {
+      if (this.lastEmbedFailAtMs && now - this.lastEmbedFailAtMs < QMD_EMBED_BACKOFF_MS) {
         log.debug("QMD embed: suppressed due to recent failures (backoff)");
         if (options.strict) throw new Error("QMD embed skipped by recent failure backoff");
         return;
       }
-      if (
-        globalState.lastGlobalEmbedRunAtMs &&
-        now - globalState.lastGlobalEmbedRunAtMs < this.updateMinIntervalMs
-      ) {
+      if (globalState.lastGlobalEmbedRunAtMs && now - globalState.lastGlobalEmbedRunAtMs < this.updateMinIntervalMs) {
         log.debug("QMD embed: suppressed by global min-interval gate");
         if (options.strict) throw new Error("QMD embed skipped by global min-interval gate");
         return;
       }
-      if (
-        globalState.lastGlobalEmbedFailAtMs &&
-        now - globalState.lastGlobalEmbedFailAtMs < QMD_EMBED_BACKOFF_MS
-      ) {
+      if (globalState.lastGlobalEmbedFailAtMs && now - globalState.lastGlobalEmbedFailAtMs < QMD_EMBED_BACKOFF_MS) {
         log.debug("QMD embed: suppressed by global failure backoff");
         if (options.strict) throw new Error("QMD embed skipped by global failure backoff");
         return;
@@ -2903,14 +2804,37 @@ export class QmdClient implements SearchBackend {
     }
   }
 
+  supportsAdditionalCollections(): boolean {
+    return true;
+  }
+
+  async collectionRoot(collection: string, execution?: SearchExecutionOptions): Promise<string | null> {
+    const { stdout } = await this.runQmdCommand(
+      ["collection", "show", collection],
+      QMD_TIMEOUT_MS,
+      execution?.signal
+    );
+    const match = stdout.match(/^\s*Path:\s*(.+?)\s*$/m);
+    return match?.[1]?.trim() || null;
+  }
+
+  async excludeCollectionFromGlobalSearch(collection: string, execution?: SearchExecutionOptions): Promise<void> {
+    await this.runQmdCommand(["collection", "exclude", collection], QMD_TIMEOUT_MS, execution?.signal);
+  }
+
+  async deleteCollection(collection: string, execution?: SearchExecutionOptions): Promise<boolean> {
+    if (collection === this.collection) {
+      throw new Error("Refusing to delete the primary QMD collection");
+    }
+    await this.runQmdCommand(["collection", "remove", collection], QMD_TIMEOUT_MS, execution?.signal);
+    return true;
+  }
+
   async checkCollection(
     collectionOrExecution?: string | SearchExecutionOptions,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<"present" | "missing" | "unknown" | "skipped"> {
-    const { collection, execution: effectiveExecution } = resolveEnsureCollectionArgs(
-      collectionOrExecution,
-      execution,
-    );
+    const { collection, execution: effectiveExecution } = resolveEnsureCollectionArgs(collectionOrExecution, execution);
     if (this.available === false && !this.daemonAvailable) return "unknown";
     // If only daemon is available (no CLI), skip collection check
     if (this.available === false) return "skipped";
@@ -2918,10 +2842,7 @@ export class QmdClient implements SearchBackend {
     try {
       const { stdout } = await this.runQmdCommand(["collection", "list"], QMD_TIMEOUT_MS, effectiveExecution?.signal);
       // Parse text output: "openclaw-engram (qmd://openclaw-engram/)"
-      const collectionRegex = new RegExp(
-        `^${escapeRegExp(targetCollection)}\\s+\\(qmd://`,
-        "m",
-      );
+      const collectionRegex = new RegExp(`^${escapeRegExp(targetCollection)}\\s+\\(qmd://`, "m");
       if (collectionRegex.test(stdout)) {
         return "present";
       }
@@ -2930,7 +2851,7 @@ export class QmdClient implements SearchBackend {
       // Treat command/probe failures as unknown so callers do not disable features
       // permanently after a transient CLI or daemon hiccup.
       log.debug(
-        `QMD collection check unavailable for "${targetCollection}" (will not disable features): ${err instanceof Error ? err.message : String(err)}`,
+        `QMD collection check unavailable for "${targetCollection}" (will not disable features): ${err instanceof Error ? err.message : String(err)}`
       );
       return "unknown";
     }
@@ -2939,12 +2860,9 @@ export class QmdClient implements SearchBackend {
   async ensureCollection(
     memoryDir: string,
     collectionOrExecution?: string | SearchExecutionOptions,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<"present" | "missing" | "unknown" | "skipped"> {
-    const { collection, execution: effectiveExecution } = resolveEnsureCollectionArgs(
-      collectionOrExecution,
-      execution,
-    );
+    const { collection, execution: effectiveExecution } = resolveEnsureCollectionArgs(collectionOrExecution, execution);
     const targetCollection = collection ?? this.collection;
     const collectionState = await this.checkCollection(targetCollection, effectiveExecution);
     if (collectionState !== "missing") return collectionState;
@@ -2953,37 +2871,29 @@ export class QmdClient implements SearchBackend {
       await this.runQmdCommand(
         ["collection", "add", memoryDir, "--name", targetCollection],
         QMD_TIMEOUT_MS,
-        effectiveExecution?.signal,
+        effectiveExecution?.signal
       );
-      log.info(
-        `QMD collection "${targetCollection}" auto-created at ${memoryDir}`,
-      );
+      log.info(`QMD collection "${targetCollection}" auto-created at ${memoryDir}`);
       return "present";
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isCallerCancellation(err, effectiveExecution?.signal)) {
         log.debug(
-          `QMD collection auto-create for "${targetCollection}" was cancelled; keeping collection state unknown`,
+          `QMD collection auto-create for "${targetCollection}" was cancelled; keeping collection state unknown`
         );
         return "unknown";
       }
       const postCreateState = await this.checkCollection(targetCollection, effectiveExecution);
       if (postCreateState === "present") {
-        log.info(
-          `QMD collection "${targetCollection}" is present after auto-create failure; continuing`,
-        );
+        log.info(`QMD collection "${targetCollection}" is present after auto-create failure; continuing`);
         return "present";
       }
       if (/\balready exists\b|\bexists already\b/i.test(msg)) {
-        log.info(
-          `QMD collection "${targetCollection}" already exists after concurrent auto-create; continuing`,
-        );
+        log.info(`QMD collection "${targetCollection}" already exists after concurrent auto-create; continuing`);
         return "present";
       }
       if (postCreateState !== "missing") return postCreateState;
-      log.warn(
-        `QMD collection "${targetCollection}" not found and auto-create failed: ${msg}`,
-      );
+      log.warn(`QMD collection "${targetCollection}" not found and auto-create failed: ${msg}`);
       return "missing";
     }
   }

@@ -4164,6 +4164,14 @@
         "default": "openclaw-engram",
         "description": "QMD collection name"
       },
+      "wikiMergeIntoRecall": {
+        "type": "boolean",
+        "enum": [
+          false
+        ],
+        "default": false,
+        "description": "Reserved safety gate. External wiki collections remain on-demand only; true is not supported."
+      },
       "qmdDaemonEnabled": {
         "type": "boolean",
         "default": true,
@@ -6438,6 +6446,11 @@
       "label": "QMD Collection",
       "advanced": true,
       "placeholder": "openclaw-engram"
+    },
+    "wikiMergeIntoRecall": {
+      "label": "Merge External Wikis Into Recall",
+      "advanced": true,
+      "help": "Reserved safety gate. External wiki collections remain on-demand only; true is not supported."
     },
     "qmdMaxResults": {
       "label": "QMD Max Results",
