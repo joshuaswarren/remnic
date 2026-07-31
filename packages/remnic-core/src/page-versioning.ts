@@ -31,6 +31,7 @@ import {
   pathMayCarryEntityRefs,
   requestEntityCanonicalIdReconcile,
 } from "./storage/entity-canonical-id-references.js";
+import { withRawEntityPageMutation } from "./storage/entity-canonical-id-lock.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -335,28 +336,13 @@ export async function revertToVersion(
     resolvedMemoryDir,
   );
 
-  // Write the reverted content to the actual page
-  await writeFile(pagePath, targetContent, "utf-8");
-  // A revert overwrites a memory file out-of-band (not via a StorageManager
-  // mutation), so bump the corpus sentinel when the reverted page lives under a
-  // recall category dir — forcing a warm hot-memories cache to rescan on its
-  // next read (issue #1902, Codex P1). Non-recall pages (entities/artifacts/
-  // profiles) are not in the corpus scan, so they need no bump.
-  // The hot-memories corpus covers the RECALL corpus, which excludes the
-  // non-memory queue dirs (questions/). Use RECALL_FALLBACK_DIRS — a revert of a
-  // questions/ page must NOT bump the recall corpus sentinel and force a rescan.
+  await withRawEntityPageMutation(resolvedMemoryDir, pagePath, async () => {
+    await writeFile(pagePath, targetContent, "utf-8");
+  });
   const revertedTop = relPath(pagePath, resolvedMemoryDir).split(path.sep)[0];
-  const inRecallTier = (RECALL_FALLBACK_DIRS as readonly string[]).includes(revertedTop);
-  if (inRecallTier) {
+  if ((RECALL_FALLBACK_DIRS as readonly string[]).includes(revertedTop)) {
     bumpMemoryCorpusVersionForDir(resolvedMemoryDir);
   }
-  // A pre-migration snapshot can reintroduce a legacy entityRef — or, under
-  // entities/, a legacy relationship target rewriteRelationshipTargets had
-  // migrated — that the target's completed journal already renamed (issue
-  // #2213); the revert keeps the snapshot bytes faithful, so request one
-  // bounded reconcile pass instead. pathMayCarryEntityRefs is the migration's
-  // own scan scope (hot recall + cold + archive + entities), which is wider
-  // than the corpus bump above on purpose.
   if (pathMayCarryEntityRefs(resolvedMemoryDir, pagePath)) {
     await requestEntityCanonicalIdReconcile(path.join(resolvedMemoryDir, "state"));
   }

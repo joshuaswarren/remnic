@@ -27,6 +27,7 @@ import {
   repairContentAfterJournalMove,
   requestEntityCanonicalIdReconcile,
 } from "../storage/entity-canonical-id-references.js";
+import { withRawEntityPageMutation } from "../storage/entity-canonical-id-lock.js";
 
 // Write-boundary journal cache for redirect rewrites (issue #2213).
 const historicalIdCache = new HistoricalEntityCanonicalIdCache();
@@ -338,6 +339,7 @@ async function stageRedirect(
         // keep their bytes (plus the redirect) untouched, and entities/ pages
         // get the bounded reconcile marker instead — their migrated surface
         // is relationship targets, not an entityRef frontmatter field.
+        await withRawEntityPageMutation(memoryDir, update.mdPath, async () => {
         const stateDir = path.join(memoryDir, "state");
         const kind = classifyEntityRefWritePath(memoryDir, update.mdPath);
         if (kind === "memory") {
@@ -371,6 +373,7 @@ async function stageRedirect(
             await requestEntityCanonicalIdReconcile(stateDir);
           }
         }
+        });
         // The redirect rewrote an on-disk memory file out-of-band (not through a
         // StorageManager mutation). Bump the corpus sentinel per write so a warm
         // hot-memories cache rescans — mid-batch too, never serving pre-redirect

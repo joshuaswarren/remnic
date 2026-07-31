@@ -64,6 +64,19 @@ function isIntlWordBoundary(source: string, index: number): boolean {
   return UNICODE_WORD_SEGMENTER?.segment(source).containing(index)?.index === index;
 }
 
+function isStandaloneJapaneseLeadingParticle(
+  particle: string,
+  source: string,
+  boundaryIndex: number,
+): boolean {
+  if (!JAPANESE_WORD_SEGMENTER || boundaryIndex <= 0 || !JAPANESE_PARTICLE_RE.test(particle)) {
+    return false;
+  }
+  const particleStart = boundaryIndex - particle.length;
+  const segment = JAPANESE_WORD_SEGMENTER.segment(source).containing(particleStart);
+  return segment?.index === particleStart
+    && segment.index + segment.segment.length === boundaryIndex;
+}
 function isKoreanUnspacedQuestionBoundary(suffix: string): boolean {
   return KOREAN_UNSPACED_QUESTION_PARTICLES.some((particle) =>
     suffix.startsWith(particle) &&
@@ -91,18 +104,15 @@ function isUnicodePhraseBoundary(
   source: string = "",
   boundaryIndex: number = -1,
   strictUnicode = false,
-  allowLeadingParticle = false,
 ): boolean {
   return (
     character.length === 0
     || !UNICODE_WORD_OR_NUMBER_RE.test(character)
-    || (allowLeadingParticle && isJapaneseParticleBoundary(character))
     || isJapaneseParticleBoundary(suffix)
     || (!strictUnicode &&
       boundaryIndex >= 0 &&
       !JAPANESE_KANA_RE.test(suffix) &&
       isIntlWordBoundary(source, boundaryIndex))
-    || (allowLeadingParticle && isKoreanParticleBoundary(character))
     || isKoreanParticleBoundary(suffix)
   );
 }
@@ -117,7 +127,10 @@ export function containsPhrase(haystack: string, needle: string): boolean {
     const before = lastUnicodeCharacter(searchHaystack.slice(0, offset));
     const after = searchHaystack.slice(offset + searchNeedle.length);
     if (
-      isUnicodePhraseBoundary(before, "", searchHaystack, offset, caseInsensitive, true)
+      (
+        isUnicodePhraseBoundary(before, "", searchHaystack, offset, caseInsensitive)
+        || isStandaloneJapaneseLeadingParticle(before, searchHaystack, offset)
+      )
       && isUnicodePhraseBoundary(
         firstUnicodeCharacter(after),
         after,

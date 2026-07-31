@@ -10450,7 +10450,7 @@ async function cmdSpace(action: string, rest: string[], json: boolean): Promise<
       console.error("Usage: remnic space push <source> <target>");
       process.exit(1);
     }
-    const result = pushToSpace(sourceId, targetId, { force: rest.includes("--force") });
+    const result = await pushToSpace(sourceId, targetId, { force: rest.includes("--force") });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -10465,7 +10465,7 @@ async function cmdSpace(action: string, rest: string[], json: boolean): Promise<
       console.error("Usage: remnic space pull <source> <target>");
       process.exit(1);
     }
-    const result = pullFromSpace(sourceId, targetId, { force: rest.includes("--force") });
+    const result = await pullFromSpace(sourceId, targetId, { force: rest.includes("--force") });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -10489,7 +10489,7 @@ async function cmdSpace(action: string, rest: string[], json: boolean): Promise<
       console.error("Usage: remnic space promote <source> <target>");
       process.exit(1);
     }
-    const result = promoteSpace(sourceId, targetId, {
+    const result = await promoteSpace(sourceId, targetId, {
       force: rest.includes("--force"),
       forceOverwrite: rest.includes("--force-overwrite"),
     });
