@@ -2112,39 +2112,6 @@ test("grounding scopes nested entity facts to the enclosing entity", () => {
   }]);
 });
 
-test("grounding preserves punctuation in technology identifiers", () => {
-  const cppResult = filterExtractionResultBySource(
-    {
-      facts: [{
-        category: "fact",
-        content: "Alice uses C++.",
-        confidence: 0.9,
-        tags: [],
-      }],
-      profileUpdates: [],
-      entities: [],
-      questions: [],
-    },
-    "Alice uses C.",
-  );
-  const plainCResult = filterExtractionResultBySource(
-    {
-      facts: [{
-        category: "fact",
-        content: "Alice uses C.",
-        confidence: 0.9,
-        tags: [],
-      }],
-      profileUpdates: [],
-      entities: [],
-      questions: [],
-    },
-    "Alice uses C++.",
-  );
-
-  assert.deepEqual(cppResult.facts, []);
-  assert.deepEqual(plainCResult.facts, []);
-});
 
 test("grounding requires unresolved questions on the asserted target turn", () => {
   const result = filterExtractionResultBySource(
@@ -2465,23 +2432,25 @@ test("grounding uses the main source when a role source is omitted", () => {
   assert.deepEqual(result.profileUpdates, ["User prefers tea."]);
 });
 
-test("grounding preserves hash-suffixed technology identifiers", () => {
-  for (const [source, content] of [
-    ["Alice uses C.", "Alice uses C#."],
-    ["Alice uses C#.", "Alice uses C."],
-    ["Alice uses C++.", "Alice uses C#."],
-    ["Alice uses C#.", "Alice uses C++."],
-  ]) {
-    const result = filterExtractionResultBySource(
-      {
-        facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
-        profileUpdates: [],
-        entities: [],
-        questions: [],
-      },
-      source,
-    );
-    assert.deepEqual(result.facts, []);
+test("grounding keeps C, C++, and C# identifiers pairwise distinct", () => {
+  const identifiers = ["C", "C++", "C#"];
+  for (const sourceIdentifier of identifiers) {
+    for (const candidateIdentifier of identifiers) {
+      const content = `Alice uses ${candidateIdentifier}.`;
+      const result = filterExtractionResultBySource(
+        {
+          facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+          profileUpdates: [],
+          entities: [],
+          questions: [],
+        },
+        `Alice uses ${sourceIdentifier}.`,
+      );
+      assert.deepEqual(
+        result.facts.map((fact) => fact.content),
+        sourceIdentifier === candidateIdentifier ? [content] : [],
+      );
+    }
   }
 });
 
@@ -2540,4 +2509,159 @@ test("grounding requires causal evidence before removing why questions", () => {
     "Why did Alice deploy Acme?\nAlice deployed Acme because customers requested it.",
   );
   assert.deepEqual(answered.questions, []);
+});
+
+test("grounding rejects partial assertions from source disjunctions", () => {
+  for (const source of [
+    "Alice uses Redis or PostgreSQL.",
+    "Does Alice use Redis or PostgreSQL?\nYes.",
+  ]) {
+    for (const content of ["Alice uses Redis.", "Alice uses PostgreSQL."]) {
+      const result = filterExtractionResultBySource(
+        {
+          facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+          profileUpdates: [],
+          entities: [],
+          questions: [],
+        },
+        source,
+      );
+      assert.deepEqual(result.facts, []);
+    }
+  }
+
+  for (const source of [
+    "Alice uses Redis or PostgreSQL.",
+    "Does Alice use Redis or PostgreSQL?\nYes.",
+  ]) {
+    const content = "Alice uses Redis or PostgreSQL.";
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      source,
+    );
+    assert.deepEqual(result.facts.map((fact) => fact.content), [content]);
+  }
+
+  const commonPrefix = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice uses Redis.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice uses Redis for cache hits or misses.",
+  );
+  assert.deepEqual(
+    commonPrefix.facts.map((fact) => fact.content),
+    ["Alice uses Redis."],
+  );
+});
+
+test("grounding aligns object wh-question answers by subject and predicate", () => {
+  for (const [questionText, answer, roleReversedAnswer] of [
+    [
+      "What database does Alice use?",
+      "Alice uses PostgreSQL as the database.",
+      "PostgreSQL uses Alice as the database.",
+    ],
+    ["Who does Alice employ?", "Alice employs Bob.", "Bob employs Alice."],
+    ["Whom does Alice employ?", "Alice employs Bob.", "Bob employs Alice."],
+    ["Who does Alice work with?", "Alice works with Bob.", "Bob works with Alice."],
+    ["Whom does Alice connect to?", "Alice connects to Bob.", "Bob connects to Alice."],
+  ]) {
+    const question = { question: questionText, context: "", priority: 0.5 };
+    const answered = filterExtractionResultBySource(
+      { facts: [], profileUpdates: [], entities: [], questions: [question] },
+      `${questionText}\n${answer}`,
+    );
+    assert.deepEqual(answered.questions, []);
+
+    const roleReversed = filterExtractionResultBySource(
+      { facts: [], profileUpdates: [], entities: [], questions: [question] },
+      `${questionText}\n${roleReversedAnswer}`,
+    );
+    assert.deepEqual(roleReversed.questions, [question]);
+  }
+});
+
+test("grounding does not stem verb-like object plurals", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Alice sells the plan.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Alice sells plans.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding recognizes capitalized predicates in subjectless role fragments", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: ["User uses Redis."],
+      entities: [],
+      questions: [],
+    },
+    "Uses Redis.",
+    undefined,
+    { profile: "Uses Redis.", identity: "" },
+  );
+
+  assert.deepEqual(result.profileUpdates, ["User uses Redis."]);
+});
+
+test("grounding keeps sentence-initial plural subjects distinct", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{
+        category: "fact",
+        content: "Plan is active.",
+        confidence: 0.9,
+        tags: [],
+      }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "Plans are active.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding preserves plural identifiers after a proper-name copular subject", () => {
+  for (const [source, content] of [
+    ["Alice is atlas.", "Alice is atla."],
+    ["Alice is the atlas.", "Alice is the atla."],
+  ]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      source,
+    );
+    assert.deepEqual(result.facts, []);
+  }
 });

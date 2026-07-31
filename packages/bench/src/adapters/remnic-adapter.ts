@@ -34,6 +34,7 @@ import {
   parseEntityFile,
   serializeEntityFile,
   StorageManager,
+  withRawEntityPageMutation,
 } from "@remnic/core";
 import { withBenchCoreMemorySource } from "./with-bench-core-memory-source.js";
 import { captureRecallAttribution, captureTaskAttributionWitness } from "./attribution-witness.js";
@@ -1490,6 +1491,18 @@ function pruneBenchEntityStructuredFacts(
 }
 
 async function clearBenchCoreEntitiesForSession(
+  orchestrator: Orchestrator,
+  sessionId: string,
+): Promise<void> {
+  const baseDir = orchestrator.storage.dir;
+  await withRawEntityPageMutation(
+    baseDir,
+    path.join(baseDir, "entities", ".bench-session-cleanup.md"),
+    async () => clearBenchCoreEntitiesForSessionUnlocked(orchestrator, sessionId),
+  );
+}
+
+async function clearBenchCoreEntitiesForSessionUnlocked(
   orchestrator: Orchestrator,
   sessionId: string,
 ): Promise<void> {

@@ -8,6 +8,7 @@ import { markProjectedMemoryPathInvalid } from "../memory-projection-store.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { pathMayCarryEntityRefs, requestEntityCanonicalIdReconcile } from "./entity-canonical-id-references.js";
+import { withRawEntityPageMutation } from "./entity-canonical-id-lock.js";
 import { readMaybeEncryptedFileFromChunks, writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
 import {
   buildExplicitCaptureDedupKey,
@@ -661,11 +662,15 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   }
 
   protected async writeTombstoneBlockedOfflineSyncFile(target: string, content: Buffer): Promise<void> {
-    await this.runTombstoneBlockedOfflineSyncMutation(
-      target,
-      this.tombstoneBlockedCaptureIndexOptions().parseMemory?.(target, content) ?? null,
-      () => this.writeManagedStorageFile(target, () => this.writeStorageSecureFile(target, content))
-    );
+    const options = this.tombstoneBlockedCaptureIndexOptions();
+    const after = options.parseMemory?.(target, content) ?? null;
+    await withRawEntityPageMutation(path.dirname(options.stateDir), target, async () => {
+      await this.runTombstoneBlockedOfflineSyncMutation(
+        target,
+        after,
+        () => this.writeManagedStorageFile(target, () => this.writeStorageSecureFile(target, content))
+      );
+    });
   }
 
   private async prepareTombstoneBlockedOfflineSyncChunks(
@@ -845,8 +850,9 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       ? await this.prepareTombstoneBlockedOfflineSyncChunks(target, chunks)
       : { after: null, chunks };
     const streamedIdentity = prepared.streamedIdentity;
-    const mutate = async (): Promise<void> => {
-      try {
+    const baseDir = path.dirname(this.tombstoneBlockedCaptureIndexOptions().stateDir);
+    try {
+      await withRawEntityPageMutation(baseDir, target, async () => {
         await this.runTombstoneBlockedOfflineSyncMutation(
           target,
           prepared.after,
@@ -854,32 +860,29 @@ export abstract class TombstoneBlockedCaptureIndexHost {
           coordinate,
           streamedIdentity
         );
-      } finally {
-        if (prepared.stagePath !== undefined) await unlink(prepared.stagePath).catch(() => {});
-      }
-    };
-    await mutate();
+      });
+    } finally {
+      if (prepared.stagePath !== undefined) await unlink(prepared.stagePath).catch(() => {});
+    }
   }
 
   async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
     await this.writeTombstoneBlockedOfflineSyncFile(target, content);
-    await this.requestSyncReconcileIfMemoryPath(target);
+    await this.requestSyncReconcileIfMigrationPath(target);
   }
 
   async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
     await this.writeTombstoneBlockedOfflineSyncFileChunks(target, chunks);
-    await this.requestSyncReconcileIfMemoryPath(target);
+    await this.requestSyncReconcileIfMigrationPath(target);
   }
 
   /**
-   * Replicated bytes are opaque (possibly encrypted) and can carry legacy
-   * entity references a completed migration already renamed (issue #2213) —
-   * but only memory-tier markdown can, so transcript/state/other sync traffic
-   * must not trigger the full-corpus reconcile pass.
+   * Opaque replicated bytes can restore legacy memory references or entity
+   * relationship targets. Other sync traffic must not request reconciliation.
    */
-  private async requestSyncReconcileIfMemoryPath(target: string): Promise<void> {
+  private async requestSyncReconcileIfMigrationPath(target: string): Promise<void> {
     const stateDir = this.tombstoneBlockedCaptureIndexOptions().stateDir;
     if (!pathMayCarryEntityRefs(path.dirname(stateDir), target)) return;
     await requestEntityCanonicalIdReconcile(stateDir);
@@ -888,14 +891,18 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   async deleteOfflineSyncFile(filePath: string, deletionMtimeMs?: number | null): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.deleteOfflineSyncFile");
     await this.deleteTombstoneBlockedOfflineSyncFile(target, deletionMtimeMs);
+    await this.requestSyncReconcileIfMigrationPath(target);
   }
 
   protected async deleteTombstoneBlockedOfflineSyncFile(
     target: string,
     deletionMtimeMs?: number | null
   ): Promise<void> {
-    await this.runTombstoneBlockedOfflineSyncMutation(target, null, async () => {
-      await this.deleteManagedStorageFile(target, deletionMtimeMs);
+    const stateDir = this.tombstoneBlockedCaptureIndexOptions().stateDir;
+    await withRawEntityPageMutation(path.dirname(stateDir), target, async () => {
+      await this.runTombstoneBlockedOfflineSyncMutation(target, null, async () => {
+        await this.deleteManagedStorageFile(target, deletionMtimeMs);
+      });
     });
   }
 

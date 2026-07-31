@@ -25,6 +25,7 @@ import {
 import type { RecallXraySnapshot } from "@remnic/core";
 import { LcmEngine } from "@remnic/core/lcm";
 import type { BenchMemoryAdapter } from "./types.js";
+import { withEntityCanonicalMutationLock } from "../../../remnic-core/src/storage/entity-canonical-id-lock.js";
 
 import { captureRecallAttribution } from "./attribution-witness.js";
 import {
@@ -1985,6 +1986,145 @@ test("direct adapter session reset clears caller-owned entity timeline state", a
   } finally {
     await adapter.destroy();
     await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+  }
+});
+
+test("direct adapter session entity cleanup waits for the canonical mutation lock", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-entity-lock-"));
+  const resetSession = "owned-entity-lock-reset-session";
+  const controlMemoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-entity-control-"));
+  const controlSession = "owned-entity-lock-control-session";
+  const otherSession = "owned-entity-lock-other-session";
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    configOverrides: {
+      entityRetrievalEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+  const controlAdapter = await createRemnicAdapter({
+    memoryDir: controlMemoryDir,
+    configOverrides: {
+      entityRetrievalEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+  const storage = new StorageManager(memoryDir);
+  const sharedEntityName = await storage.writeEntity(
+    "Shared Lock Entity",
+    "project",
+    ["Remember the locked reset code is marigold-31."],
+    { source: "extraction", sessionKey: resetSession },
+  );
+  await storage.writeEntity(
+    "Shared Lock Entity",
+    "project",
+    ["Remember the preserved lock code is willow-42."],
+    { source: "extraction", sessionKey: otherSession },
+  );
+  const resetOnlyEntityName = await storage.writeEntity(
+    "Reset Only Lock Entity",
+    "project",
+    ["Remember the locked delete code is spruce-53."],
+    { source: "extraction", sessionKey: resetSession },
+  );
+  const sharedEntityPath = path.join(memoryDir, "entities", `${sharedEntityName}.md`);
+  const resetOnlyEntityPath = path.join(memoryDir, "entities", `${resetOnlyEntityName}.md`);
+  const sharedEntityBeforeReset = await readFile(sharedEntityPath, "utf8");
+  const resetOnlyEntityBeforeReset = await readFile(resetOnlyEntityPath, "utf8");
+  const cleanupReady = createDeferredForTest();
+  const cleanupCanContinue = createDeferredForTest();
+  let sharedEntityWriteEntered = false;
+  let resetPromise: Promise<void> | undefined;
+
+  type EntityCleanupProbeStorage = StorageManager & {
+    writeStorageSecureFile(
+      filePath: string,
+      content: string | Buffer,
+      forceEncrypt?: boolean,
+    ): Promise<void>;
+  };
+  const storagePrototype = StorageManager.prototype as EntityCleanupProbeStorage;
+  const originalReadAllColdMemories = storagePrototype.readAllColdMemories;
+  const originalListEntityNames = storagePrototype.listEntityNames;
+  const originalReadEntity = storagePrototype.readEntity;
+  const originalWriteStorageSecureFile = storagePrototype.writeStorageSecureFile;
+  let prototypesRestored = false;
+  const restoreStoragePrototype = (): void => {
+    if (prototypesRestored) return;
+    prototypesRestored = true;
+    storagePrototype.readAllColdMemories = originalReadAllColdMemories;
+    storagePrototype.listEntityNames = originalListEntityNames;
+    storagePrototype.readEntity = originalReadEntity;
+    storagePrototype.writeStorageSecureFile = originalWriteStorageSecureFile;
+  };
+
+  storagePrototype.readAllColdMemories = async function patchedReadAllColdMemories() {
+    if (this.dir !== memoryDir) {
+      return originalReadAllColdMemories.call(this);
+    }
+    cleanupReady.resolve();
+    await cleanupCanContinue.promise;
+    return [];
+  };
+  storagePrototype.listEntityNames = async function patchedListEntityNames() {
+    if (this.dir !== memoryDir) {
+      return originalListEntityNames.call(this);
+    }
+    return [sharedEntityName, resetOnlyEntityName];
+  };
+  storagePrototype.readEntity = async function patchedReadEntity(entityName: string) {
+    if (this.dir !== memoryDir) {
+      return originalReadEntity.call(this, entityName);
+    }
+    if (entityName === sharedEntityName) return sharedEntityBeforeReset;
+    if (entityName === resetOnlyEntityName) return resetOnlyEntityBeforeReset;
+    return originalReadEntity.call(this, entityName);
+  };
+  storagePrototype.writeStorageSecureFile = function patchedWriteStorageSecureFile(
+    filePath: string,
+    content: string | Buffer,
+    forceEncrypt = false,
+  ): Promise<void> {
+    if (this.dir === memoryDir && filePath === sharedEntityPath) {
+      sharedEntityWriteEntered = true;
+    }
+    return originalWriteStorageSecureFile.call(this, filePath, content, forceEncrypt);
+  };
+
+  try {
+    resetPromise = adapter.reset?.(resetSession);
+    assert.ok(resetPromise);
+    await cleanupReady.promise;
+
+    await withEntityCanonicalMutationLock(path.join(memoryDir, "state"), async () => {
+      cleanupCanContinue.resolve();
+      const controlReset = controlAdapter.reset?.(controlSession);
+      assert.ok(controlReset);
+      await controlReset;
+      assert.equal(
+        sharedEntityWriteEntered,
+        false,
+        "session cleanup must not enter its entity rewrite while the canonical lock is held",
+      );
+      assert.equal(await readFile(sharedEntityPath, "utf8"), sharedEntityBeforeReset);
+      assert.equal(await readFile(resetOnlyEntityPath, "utf8"), resetOnlyEntityBeforeReset);
+    });
+
+    await resetPromise;
+    restoreStoragePrototype();
+    const sharedEntityAfterReset = await storage.readEntity(sharedEntityName);
+    assert.doesNotMatch(sharedEntityAfterReset, /marigold-31/);
+    assert.match(sharedEntityAfterReset, /willow-42/);
+    await assertPathMissingForTest(resetOnlyEntityPath);
+  } finally {
+    cleanupCanContinue.resolve();
+    await resetPromise?.catch(() => undefined);
+    restoreStoragePrototype();
+    await adapter.destroy();
+    await controlAdapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+    await rm(controlMemoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 

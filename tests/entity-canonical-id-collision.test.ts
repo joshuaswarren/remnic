@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 
 import { StorageManager, normalizeEntityName } from "../packages/remnic-core/src/storage.js";
 import { getFingerprint } from "../packages/remnic-core/src/storage/entity-canonical-id-migration.js";
@@ -481,6 +481,66 @@ test("plain memory writes do not change the migration fingerprint; entity writes
 
     await storage.writeEntity("Nightly Ingest", "automation-cron-job", ["Runs at 02:00."]);
     assert.notEqual(await readFp(), before, "an entity mutation must re-trigger the migration");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an external in-place entity edit reopens a completed migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-external-edit-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const oldCanonical = await storage.writeEntity("Alpha One", "project", ["Tracks the alpha rollout."]);
+    const newCanonical = normalizeEntityName("Bravo Two", "project");
+    assert.notEqual(oldCanonical, newCanonical);
+
+    const memory = await storage.writeMemory("fact", "Alpha One tracks the rollout.");
+    const written = (await storage.readAllMemories()).find(
+      (candidate) => candidate.frontmatter.id === memory.id,
+    );
+    assert.ok(written);
+    await storage.writeMemoryFrontmatter(written, { entityRef: oldCanonical });
+    await storage.ensureDirectories();
+
+    const entitiesDir = path.join(dir, "entities");
+    const oldPath = path.join(entitiesDir, `${oldCanonical}.md`);
+    const beforeFingerprint = await getFingerprint(
+      dir,
+      entitiesDir,
+      () => String(storage.getEntityMutationVersion()),
+    );
+    const beforeMutationVersion = storage.getEntityMutationVersion();
+    const beforeDirectory = await stat(entitiesDir);
+    const externalContent = (await readFile(oldPath, "utf8")).replace("# Alpha One", "# Bravo Two");
+    await writeFile(oldPath, externalContent, "utf8");
+    await utimes(oldPath, new Date("2030-01-01T00:00:00.000Z"), new Date("2030-01-01T00:00:00.000Z"));
+
+    const afterDirectory = await stat(entitiesDir);
+    assert.deepEqual(
+      [afterDirectory.dev, afterDirectory.ino, afterDirectory.mtimeMs, afterDirectory.ctimeMs, afterDirectory.size],
+      [beforeDirectory.dev, beforeDirectory.ino, beforeDirectory.mtimeMs, beforeDirectory.ctimeMs, beforeDirectory.size],
+      "rewriting an existing entry must not rely on parent-directory metadata changing",
+    );
+    assert.equal(
+      storage.getEntityMutationVersion(),
+      beforeMutationVersion,
+      "an external editor cannot advance the cooperative entity-mutation sentinel",
+    );
+    assert.notEqual(
+      await getFingerprint(dir, entitiesDir, () => String(storage.getEntityMutationVersion())),
+      beforeFingerprint,
+      "the migration fingerprint must include metadata for each entity page",
+    );
+
+    await storage.ensureDirectories();
+    await assert.rejects(() => readFile(oldPath, "utf8"));
+    assert.match(await readFile(path.join(entitiesDir, `${newCanonical}.md`), "utf8"), /# Bravo Two/);
+    assert.equal(
+      /^entityRef: (.*)$/m.exec(await readFile(written.path, "utf8"))?.[1],
+      newCanonical,
+      "the reopened migration must rewrite references to the changed canonical id",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

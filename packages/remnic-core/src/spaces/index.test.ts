@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs, { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import { createSpace, loadManifest } from "./index.js";
+import { withEntityCanonicalMutationLock } from "../storage/entity-canonical-id-lock.js";
+import { createSpace, loadManifest, pushToSpace, type SpacePushResult } from "./index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../../..");
@@ -234,6 +235,64 @@ test("loadManifest persists bootstrap when manifest disappears between existence
     assert.equal(originalExistsSync(manifestPath), true);
   } finally {
     fs.existsSync = originalExistsSync;
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("pushToSpace serializes entity-page batches with the target canonical mutation lock", async () => {
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "remnic-spaces-entity-lock-"));
+  const sourceDir = path.join(baseDir, "source");
+  const targetDir = path.join(baseDir, "target");
+  const entityRelativePath = path.join("entities", "serialized-project.md");
+  const sourceEntityPath = path.join(sourceDir, entityRelativePath);
+  const targetEntityPath = path.join(targetDir, entityRelativePath);
+  const entityBytes = Buffer.from(
+    "---\nid: serialized-project\n---\n\n# Serialized Project\n\n**Type:** project\n\nPush bytes.\n",
+    "utf8",
+  );
+  const lockHeld = Promise.withResolvers<void>();
+  const releaseLock = Promise.withResolvers<void>();
+  let lockPromise: Promise<void> | undefined;
+  let pushPromise: Promise<SpacePushResult> | undefined;
+
+  try {
+    const source = createSpace({ baseDir, name: "Source", kind: "project", memoryDir: sourceDir });
+    const target = createSpace({ baseDir, name: "Target", kind: "project", memoryDir: targetDir });
+    await mkdir(path.dirname(sourceEntityPath), { recursive: true });
+    await mkdir(path.join(targetDir, "state"), { recursive: true });
+    await writeFile(sourceEntityPath, entityBytes);
+
+    lockPromise = withEntityCanonicalMutationLock(path.join(targetDir, "state"), async () => {
+      lockHeld.resolve();
+      await releaseLock.promise;
+    });
+    await lockHeld.promise;
+
+    let pushFinished = false;
+    pushPromise = pushToSpace(source.id, target.id, { baseDir });
+    void pushPromise.then(
+      () => {
+        pushFinished = true;
+      },
+      () => {
+        pushFinished = true;
+      },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(pushFinished, false, "the push must not finish while the target entity lock is held");
+    assert.equal(existsSync(targetEntityPath), false, "the entity page must not land before lock release");
+
+    releaseLock.resolve();
+    await lockPromise;
+    const result = await pushPromise;
+
+    assert.equal(result.memoriesPushed, 1);
+    assert.deepEqual(await readFile(targetEntityPath), entityBytes);
+  } finally {
+    releaseLock.resolve();
+    await lockPromise?.catch(() => undefined);
+    await pushPromise?.catch(() => undefined);
     await rm(baseDir, { recursive: true, force: true });
   }
 });

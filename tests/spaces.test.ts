@@ -54,7 +54,7 @@ test("pushToSpace skips symlinked markdown files outside the source space", asyn
     return;
   }
 
-  const result = pushToSpace("source", "target", { baseDir });
+  const result = await pushToSpace("source", "target", { baseDir });
   assert.equal(result.memoriesPushed, 1);
 
   const copiedSafe = await readFile(path.join(targetDir, "facts", "safe.md"), "utf-8");

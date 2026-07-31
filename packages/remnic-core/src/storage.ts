@@ -2400,15 +2400,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   /**
-   * Entity-mutation sentinel: advanced only by entity-store content writes.
-   * The migration fingerprint keys on this instead of memory-status, so
-   * supersede/archive/delete no longer re-trigger discovery scans (#2213).
+   * Entity content revision used by migration discovery and entity-page cache coherence.
    */
   getEntityMutationVersion(): number {
     return this.readSharedVersion("entity-mutation", StorageManager.entityMutationVersionByDir);
   }
 
   protected bumpEntityMutationVersion(): void {
+    invalidateForScope(this.baseDir, "entity-write");
     this.bumpSharedVersion("entity-mutation", StorageManager.entityMutationVersionByDir);
   }
 

@@ -27,6 +27,7 @@ import type { StorageManager } from "./storage.js";
 import type { VersioningConfig } from "./page-versioning.js";
 import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
 import { requestEntityCanonicalIdReconcile } from "./storage/entity-canonical-id-references.js";
+import { withRawEntityPageMutation } from "./storage/entity-canonical-id-lock.js";
 import { getVersion } from "./page-versioning.js";
 
 /**
@@ -643,6 +644,7 @@ export async function runConsolidationUndo(options: {
       }
       try {
         await mkdir(path.dirname(p.sourcePath), { recursive: true });
+        await withRawEntityPageMutation(memoryDir, p.sourcePath, async () => {
         // Use exclusive create (wx / O_EXCL) so that if another process
         // recreates the source file between planning and execution, this
         // write fails with EEXIST instead of silently overwriting the new
@@ -658,6 +660,7 @@ export async function runConsolidationUndo(options: {
         // Restored bytes predate the current migration journal and can carry
         // legacy entity references (issue #2213) — request one reconcile pass.
         await requestEntityCanonicalIdReconcile(path.join(memoryDir, "state"));
+        });
         result.restores.push({
           entry: p.entry,
           sourcePath: p.sourcePath,

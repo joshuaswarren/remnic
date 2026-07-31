@@ -111,6 +111,7 @@ export {
   serializeEntityFile,
   type MemoryWriteResult,
 } from "./storage.js";
+export { withRawEntityPageMutation } from "./storage/entity-canonical-id-lock.js";
 export {
   composeMemoryEnvelope,
   buildAccessWriteRequestFingerprint,

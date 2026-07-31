@@ -211,6 +211,18 @@ function hasAlignedSubjectPredicateOverlap(candidate: string, source: string): b
   return false;
 }
 
+function omitsSourceDisjunction(candidate: string, source: string): boolean {
+  if (!/\bor\b/iu.test(source) || /\bor\b/iu.test(candidate)) return false;
+  const candidateTokens = normalizedGroundingTokenSequence(candidate);
+  return splitGroundingClauses([source], true).some((sourceSpan) => {
+    const sourceSpanTokens = normalizedGroundingTokenSequence(sourceSpan);
+    return candidateTokens.length === sourceSpanTokens.length
+      && candidateTokens.every(
+        (token, index) => areGroundingTokensCompatible(token, sourceSpanTokens[index]!),
+      );
+  });
+}
+
 function groundedTokenScore(
   candidate: string,
   source: string,
@@ -242,7 +254,8 @@ function groundedTokenScore(
 }
 
 function candidateClauses(candidate: string): string[] {
-  return splitGroundingClauses(sourceSentences(candidate));
+  return sourceSentences(candidate).flatMap((sentence) =>
+    /\bor\b/iu.test(sentence) ? [sentence] : splitGroundingClauses([sentence]));
 }
 
 function isSourceGroundedClause(
@@ -264,6 +277,7 @@ function isSourceGroundedClause(
       if (
         precedingSentence !== undefined
         && isInterrogativeSourceSentence(precedingSentence)
+        && !omitsSourceDisjunction(candidate, precedingSentence)
         && groundedTokenScore(candidate, precedingSentence) === 1
         && (
           (answerToken === "yes" && !contradictoryPolarity)
@@ -280,6 +294,7 @@ function isSourceGroundedClause(
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence) && !isExplanatoryLabel) {
       continue;
     }
+    if (omitsSourceDisjunction(candidate, sentence)) continue;
     const sourceSpans = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
       ? [sentence]
       : splitGroundingClauses([sentence], true);
@@ -319,6 +334,7 @@ function isSourceGrounded(
     const isExplanatoryLabel = sentenceText.startsWith(`${candidateText}:`)
       && !sentence.trim().endsWith("?");
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence) && !isExplanatoryLabel) return false;
+    if (omitsSourceDisjunction(candidateText, sentenceText)) return false;
     return containsExactTokenSequence(candidateText, sentenceText)
       && !hasContradictoryPolarity(candidateText, sentenceText);
   });
@@ -394,6 +410,7 @@ function hasGroundingAnchor(
 ): boolean {
   return sourceSentences(assertionSource).some((sentence) => {
     if (!includeInterrogativeSource && isInterrogativeSourceSentence(sentence)) return false;
+    if (omitsSourceDisjunction(candidate, sentence)) return false;
     const sourceSpans = /\b(?:rather\s+than|instead\s+of)\b/iu.test(candidate)
       ? [sentence]
       : splitGroundingClauses([sentence], true);
@@ -431,6 +448,7 @@ function hasAnswerSupport(
     if (
       precedingSentence === undefined
       || !isInterrogativeSourceSentence(precedingSentence)
+      || omitsSourceDisjunction(candidate, precedingSentence)
       || groundedTokenScore(candidate, precedingSentence) !== 1
     ) {
       return false;
@@ -920,18 +938,34 @@ function isYesNoAnswer(sentence: string): boolean {
     .test(sentence.trim());
 }
 
+const GROUNDING_WH_OBJECT_QUESTION_PATTERN = new RegExp(
+  "^(?:(?:what|which)(?:\\s+.+?)?|who|whom)\\s+"
+    + "(?:is|are|was|were|do|does|did|can|could|will|would|should|has|have|had)\\s+"
+    + "(.+?)\\??$",
+  "iu",
+);
+
 function hasWhAnswerRoleAlignment(question: string, sentence: string): boolean {
   const normalizedQuestion = question.trim();
-  const objectQuestionMatch = /^(?:what|which)\s+.+?\s+(?:is|are|was|were|do|does|did|can|could|will|would|should|has|have|had)\s+(.+?)\s+([^\s?]+)\??$/iu
-    .exec(normalizedQuestion);
+  const objectQuestionMatch = GROUNDING_WH_OBJECT_QUESTION_PATTERN.exec(normalizedQuestion);
   const sourceTokens = normalizedGroundingTokenSequence(sentence);
   if (objectQuestionMatch !== null) {
-    const subjectTokens = groundingTokenSequence(objectQuestionMatch[1] ?? "");
-    const predicateTokens = groundingTokenSequence(objectQuestionMatch[2] ?? "");
-    if (subjectTokens.length === 0 || predicateTokens.length === 0) return true;
+    const questionBodyLexemes = groundingLexemes(objectQuestionMatch[1] ?? "");
+    const predicateIndex = questionBodyLexemes.findIndex(({ isPredicate }) => isPredicate);
+    if (predicateIndex < 1) return false;
+    const subjectTokens = groundingTokenSequence(
+      questionBodyLexemes.slice(0, predicateIndex).map(({ surface }) => surface).join(" "),
+    );
+    const predicateTokens = groundingTokenSequence(
+      questionBodyLexemes.slice(predicateIndex).map(({ surface }) => surface).join(" "),
+    );
+    if (subjectTokens.length === 0 || predicateTokens.length === 0) return false;
     let sourceIndex = 0;
     for (const token of [...subjectTokens, ...predicateTokens]) {
-      const matchedIndex = sourceTokens.indexOf(token, sourceIndex);
+      const matchedIndex = sourceTokens.findIndex(
+        (sourceToken, index) =>
+          index >= sourceIndex && areGroundingTokensCompatible(token, sourceToken),
+      );
       if (matchedIndex === -1) return false;
       sourceIndex = matchedIndex + 1;
     }
@@ -943,11 +977,15 @@ function hasWhAnswerRoleAlignment(question: string, sentence: string): boolean {
   const predicateTokens = groundingTokenSequence(subjectQuestionMatch[1] ?? "");
   const objectTokens = groundingTokenSequence(subjectQuestionMatch[2] ?? "");
   if (predicateTokens.length === 0 || objectTokens.length === 0) return true;
-  const predicateStart = sourceTokens.indexOf(predicateTokens[0]!);
+  const predicateStart = sourceTokens.findIndex((sourceToken) =>
+    areGroundingTokensCompatible(predicateTokens[0]!, sourceToken));
   if (predicateStart === -1) return false;
   let sourceIndex = predicateStart + predicateTokens.length;
   for (const objectToken of objectTokens) {
-    const objectIndex = sourceTokens.indexOf(objectToken, sourceIndex);
+    const objectIndex = sourceTokens.findIndex(
+      (sourceToken, index) =>
+        index >= sourceIndex && areGroundingTokensCompatible(objectToken, sourceToken),
+    );
     if (objectIndex === -1) return false;
     sourceIndex = objectIndex + 1;
   }
