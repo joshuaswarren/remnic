@@ -107,6 +107,22 @@ test("parses markdown and wiki-link catalog entries deterministically", () => {
   ]);
 });
 
+test("resolves markdown catalog links relative to a nested index file", () => {
+  const parsed = externalWiki.parseExternalWikiCatalog(
+    "- [Nested concept](../wiki/nested.md) - Nested catalog entry.\n",
+    wikiConfig("/srv/wiki", { indexFile: "catalog/INDEX.md" })
+  );
+
+  assert.deepEqual(parsed, [
+    {
+      title: "Nested concept",
+      path: "nested.md",
+      indexBlurb: "Nested catalog entry.",
+      indexLine: 1,
+    },
+  ]);
+});
+
 test("loads a bounded index and falls back to a sorted page listing", async () => {
   await withWiki(async (rootDir) => {
     await mkdir(path.join(rootDir, "wiki", "nested"), { recursive: true });
@@ -147,6 +163,22 @@ test("loads a bounded index and falls back to a sorted page listing", async () =
     await assert.rejects(
       () => externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir), { maxIndexBytes: 8 }),
       /INDEX\.md exceeds 8 bytes/
+    );
+  });
+});
+
+test("bounds all filesystem entries visited by catalog fallback", async () => {
+  await withWiki(async (rootDir) => {
+    await mkdir(path.join(rootDir, "wiki"));
+    await Promise.all(
+      Array.from({ length: 101 }, (_, index) =>
+        writeFile(path.join(rootDir, "wiki", `ignored-${index}.txt`), "ignored\n")
+      )
+    );
+
+    await assert.rejects(
+      () => externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir), { maxEntries: 1 }),
+      /more than 100 filesystem entries/
     );
   });
 });

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { assertExternalWikiRootOutsideMemoryDir } from "./external-wiki-guard.js";
 import { expandTildePath } from "./utils/path.js";
 
 export interface ExternalWikiRoot {
@@ -42,11 +43,6 @@ function parseRootDir(value: unknown, keyName: string): string {
   return path.resolve(expandTildePath(raw));
 }
 
-function pathsOverlap(left: string, right: string): boolean {
-  const relative = path.relative(left, right);
-  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-}
-
 function parseRootRelativePath(value: unknown, fallback: string, keyName: string): string {
   const candidate = value === undefined ? fallback : requireString(value, keyName);
   if (candidate.includes("\\")) {
@@ -85,11 +81,8 @@ export function parseExternalWikiRoots(value: unknown, memoryDir?: string): Exte
     }
 
     const rootDir = parseRootDir(raw.rootDir, `${keyName}.rootDir`);
-    if (
-      memoryDir !== undefined &&
-      (pathsOverlap(path.resolve(memoryDir), rootDir) || pathsOverlap(rootDir, path.resolve(memoryDir)))
-    ) {
-      throw new Error(`${keyName}.rootDir must be outside memoryDir`);
+    if (memoryDir !== undefined) {
+      assertExternalWikiRootOutsideMemoryDir(memoryDir, rootDir);
     }
 
     const label = raw.label === undefined ? undefined : requireString(raw.label, `${keyName}.label`);

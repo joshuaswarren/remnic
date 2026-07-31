@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -4013,5 +4013,81 @@ test("HTTP convergence completion denies scoped tokens that omit the namespace",
     assert.equal(completions, 0, "the denied completion must not reach the service");
   } finally {
     await server.stop();
+  }
+});
+
+test("HTTP external wiki search aliases return the same cited result", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-http-external-wiki-"));
+  await mkdir(path.join(rootDir, "wiki"), { recursive: true });
+  await writeFile(
+    path.join(rootDir, "INDEX.md"),
+    "- [[wiki/planning|Planning Systems]] - deterministic planner fan-out\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "wiki", "planning.md"),
+    "# Planning Systems\n\nDeterministic planner fan-out keeps cited evidence.\n",
+    "utf8",
+  );
+  const service = {
+    configRef: {
+      externalWikis: [{
+        id: "planning",
+        rootDir,
+        enabled: true,
+        pagesDir: "wiki",
+        indexFile: "INDEX.md",
+        indexInQmd: false,
+        includeInDefaultRecall: false,
+      }],
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    let canonicalBody: unknown;
+    for (const prefix of ["remnic", "engram"]) {
+      const response = await fetch(`http://127.0.0.1:${status.port}/${prefix}/v1/external-wikis/search`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          query: "deterministic planner",
+          wikiId: "planning",
+          limit: 2,
+          maxCharsPerHit: 200,
+        }),
+      });
+      assert.equal(response.status, 200);
+      const body: unknown = await response.json();
+      if (canonicalBody === undefined) canonicalBody = body;
+      else assert.deepEqual(body, canonicalBody);
+    }
+    assert.ok(canonicalBody && typeof canonicalBody === "object" && "hits" in canonicalBody);
+    assert.ok(Array.isArray(canonicalBody.hits));
+    const firstHit = canonicalBody.hits[0];
+    assert.ok(firstHit && typeof firstHit === "object" && "path" in firstHit);
+    assert.equal(firstHit.path, "wiki/planning.md");
+
+    const invalid = await fetch(`http://127.0.0.1:${status.port}/remnic/v1/external-wikis/search`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query: "  " }),
+    });
+    assert.equal(invalid.status, 400);
+  } finally {
+    await server.stop();
+    await rm(rootDir, { recursive: true, force: true });
   }
 });

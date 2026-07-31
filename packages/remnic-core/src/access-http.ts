@@ -914,11 +914,6 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/adapters") {
-      // Issue #1850 round 5 (finding 1): adapter metadata is served after
-      // auth but was NOT op-gated, so a deny-all or narrow-ops token reached
-      // it. enforceTokenOp fail-closes it under the per-token ops allow-list;
-      // no-op for unrestricted/legacy tokens. There is no namespace axis —
-      // adapter metadata is not tenant-scoped.
       this.enforceTokenOp("adapters_status"); // boundary dispatch (issue #1850)
       const identity = this.resolveAdapterIdentity(req);
       this.respondJson(res, 200, {
@@ -960,6 +955,21 @@ export class EngramAccessHttpServer {
           "invalid_admin_config_patch",
         );
       }
+      return;
+    }
+    if (
+      req.method === "POST" &&
+      (pathname === "/engram/v1/external-wikis/search" ||
+        pathname === "/remnic/v1/external-wikis/search")
+    ) {
+      this.enforceTokenOp("external_wiki_search");
+      const operation = getOperation("external_wiki_search");
+      if (!operation) throw new EngramAccessInputError("external_wiki_search operation is not registered");
+      const output = await operation.run(await this.readJsonBody(req), { service: this.service });
+      if (!output || typeof output !== "object" || !("result" in output)) {
+        throw new Error("external_wiki_search returned an invalid operation result");
+      }
+      this.respondJson(res, 200, output.result);
       return;
     }
 
@@ -1083,10 +1093,6 @@ export class EngramAccessHttpServer {
       return;
     }
 
-    // Attach / clear coding-agent context for a session (issue #569 PR 5).
-    // Mirrors `setCodingContext` on the access service. Connectors call this
-    // at session start after resolving a git context for the cwd; `remnic
-    // doctor` (PR 8) surfaces the attached context.
     if (req.method === "POST" && pathname === "/engram/v1/coding-context") {
       this.enforceTokenOp("set_coding_context"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "setCodingContext");
@@ -1441,9 +1447,6 @@ export class EngramAccessHttpServer {
       return;
     }
 
-    // Tier-explain (issue #518): structured per-result annotation from
-    // the direct-answer retrieval tier.  Orthogonal to /recall/explain
-    // above, which returns a graph-path explanation document.
     if (req.method === "GET" && pathname === "/engram/v1/recall/tier-explain") {
       this.enforceTokenOp("recall_tier_explain"); // boundary dispatch (issue #1525)
       const sessionParam = parsed.searchParams.get("session");
@@ -1582,11 +1585,6 @@ export class EngramAccessHttpServer {
       return;
     }
 
-    // -- Wearables (Limitless / Bee / Omi transcript ingestion). All
-    //    behavior + validation lives in WearablesService; these routes
-    //    translate transport shape only. Service validation errors map
-    //    to 400 via respondWearablesError; backend faults bubble to the
-    //    global 500 handler.
     if (
       req.method === "GET" &&
       (pathname === "/engram/v1/wearables/status" || pathname === "/remnic/v1/wearables/status")

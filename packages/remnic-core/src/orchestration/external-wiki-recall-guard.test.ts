@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
+import { mkdir, symlink } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 
 import type { QmdSearchResult } from "../types.js";
-import { assertExternalWikiRootOutsideMemoryDir } from "../external-wiki-guard.js";
+import * as wikiGuard from "../external-wiki-guard.js";
+import { withTempDir } from "../testing/tmp-dir.js";
 import {
   filterRecallCandidates,
   isExternalWikiCollectionName,
   isGenericRecallExcludedPath,
 } from "./generic-recall-paths.js";
+
+const { assertExternalWikiRootOutsideMemoryDir } = wikiGuard;
+const assertCanonicalIsolation = (
+  wikiGuard as typeof wikiGuard & {
+    assertExternalWikiRootOutsideMemoryDirCanonical(memoryDir: string, rootDir: string): Promise<void>;
+  }
+).assertExternalWikiRootOutsideMemoryDirCanonical;
 
 function hit(path: string, snippet: string): QmdSearchResult {
   return { docid: path, path, score: 1, snippet };
@@ -62,4 +72,23 @@ test("external wiki roots cannot enter the primary memory collection walk", () =
     /must be outside memoryDir/
   );
   assert.doesNotThrow(() => assertExternalWikiRootOutsideMemoryDir("/data/memory", "/data/compiled-wiki"));
+});
+
+test("external wiki root isolation resolves filesystem aliases", async () => {
+  assert.equal(typeof assertCanonicalIsolation, "function");
+  await withTempDir(async (rootDir) => {
+    const memoryDir = path.join(rootDir, "memory");
+    const nestedWiki = path.join(memoryDir, "compiled-wiki");
+    const wikiAlias = path.join(rootDir, "wiki-alias");
+    await mkdir(nestedWiki, { recursive: true });
+    await symlink(nestedWiki, wikiAlias);
+    const memoryAlias = path.join(rootDir, "memory-alias");
+    await symlink(memoryDir, memoryAlias);
+
+    await assert.rejects(() => assertCanonicalIsolation(memoryDir, wikiAlias), /must be outside memoryDir/);
+    await assert.rejects(
+      () => assertCanonicalIsolation(memoryDir, path.join(memoryAlias, "future-wiki")),
+      /must be outside memoryDir/
+    );
+  }, "remnic-external-wiki-guard-");
 });

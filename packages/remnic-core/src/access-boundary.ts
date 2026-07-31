@@ -37,6 +37,7 @@ import { expandTildePath } from "./utils/path.js";
 export const OPERATION_NAMES = [
   "memory_get",
   "memory_search",
+  "external_wiki_search",
   "memory_store",
   "coding_decision",
   "coding_architecture",
