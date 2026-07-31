@@ -53,49 +53,83 @@ test("externalWikis preserves explicit labels, paths, and opt-in indexing", () =
 
 test("externalWikis rejects default-recall inclusion", () => {
   assert.throws(
-    () => parseConfig({
-      externalWikis: [
-        {
-          id: "reading",
-          rootDir: "/srv/reading-wiki",
-          includeInDefaultRecall: true,
-        },
-      ],
-    }),
-    /externalWikis\[0\]\.includeInDefaultRecall=true is not supported/,
+    () =>
+      parseConfig({
+        externalWikis: [
+          {
+            id: "reading",
+            rootDir: "/srv/reading-wiki",
+            includeInDefaultRecall: true,
+          },
+        ],
+      }),
+    /externalWikis\[0\]\.includeInDefaultRecall=true is not supported/
   );
 });
 
 test("externalWikis rejects ambiguous or escaping layouts", () => {
   assert.throws(
     () => parseConfig({ externalWikis: [{ id: "reading", rootDir: "relative/wiki" }] }),
-    /rootDir must be an absolute path or start with ~\//,
+    /rootDir must be an absolute path or start with ~\//
   );
   assert.throws(
-    () => parseConfig({
-      externalWikis: [{ id: "reading", rootDir: "/srv/wiki", pagesDir: "../other" }],
-    }),
-    /pagesDir must be a relative path within rootDir/,
+    () =>
+      parseConfig({
+        externalWikis: [{ id: "reading", rootDir: "/srv/wiki", pagesDir: "../other" }],
+      }),
+    /pagesDir must be a relative path within rootDir/
   );
   assert.throws(
-    () => parseConfig({
-      externalWikis: [
-        { id: "reading", rootDir: "/srv/a" },
-        { id: "reading", rootDir: "/srv/b" },
-      ],
-    }),
-    /duplicate id "reading"/,
+    () =>
+      parseConfig({
+        externalWikis: [
+          { id: "reading", rootDir: "/srv/a" },
+          { id: "reading", rootDir: "/srv/b" },
+        ],
+      }),
+    /duplicate id "reading"/
+  );
+});
+
+test("externalWikis rejects malformed values and non-portable relative paths", () => {
+  assert.throws(() => parseConfig({ externalWikis: {} }), /externalWikis must be an array/);
+  assert.throws(
+    () =>
+      parseConfig({
+        externalWikis: [{ id: "Reading Wiki", rootDir: "/srv/wiki" }],
+      }),
+    /externalWikis\[0\]\.id must match/
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        externalWikis: [{ id: "reading", rootDir: "/srv/wiki", enabled: "false" }],
+      }),
+    /externalWikis\[0\]\.enabled must be a boolean/
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        externalWikis: [{ id: "reading", rootDir: "/srv/wiki", pagesDir: "nested\\wiki" }],
+      }),
+    /pagesDir must use POSIX separators/
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        externalWikis: [{ id: "reading", rootDir: "/srv/wiki", indexFile: "/tmp/INDEX.md" }],
+      }),
+    /indexFile must be a relative path within rootDir/
   );
 });
 
 test("externalWikis rejects roots inside the primary memory directory", () => {
   assert.throws(
-    () => parseConfig({
-      memoryDir: "/srv/remnic/memory",
-      externalWikis: [
-        { id: "reading", rootDir: "/srv/remnic/memory/external/reading" },
-      ],
-    }),
-    /rootDir must be outside memoryDir/,
+    () =>
+      parseConfig({
+        memoryDir: "/srv/remnic/memory",
+        externalWikis: [{ id: "reading", rootDir: "/srv/remnic/memory/external/reading" }],
+      }),
+    /rootDir must be outside memoryDir/
   );
 });

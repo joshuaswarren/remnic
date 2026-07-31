@@ -6,6 +6,7 @@ const DEFAULT_MAX_INDEX_BYTES = 1_048_576;
 const DEFAULT_MAX_PAGE_BYTES = 1_048_576;
 const DEFAULT_MAX_CATALOG_ENTRIES = 10_000;
 const DEFAULT_MAX_DIRECTORY_DEPTH = 32;
+const MAX_READ_BYTES = 16_777_216;
 
 export type { ExternalWikiRoot } from "./types.js";
 
@@ -53,11 +54,7 @@ function assertPositiveInteger(value: number, keyName: string): void {
 
 function isInside(baseDir: string, candidate: string): boolean {
   const relative = path.relative(baseDir, candidate);
-  return relative === "" || (
-    relative !== ".." &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
-  );
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function resolveInside(baseDir: string, relativePath: string, keyName: string): string {
@@ -68,11 +65,7 @@ function resolveInside(baseDir: string, relativePath: string, keyName: string): 
   return resolved;
 }
 
-async function requireDirectory(
-  candidate: string,
-  rootDir: string,
-  description: string,
-): Promise<string> {
+async function requireDirectory(candidate: string, rootDir: string, description: string): Promise<string> {
   let canonical: string;
   try {
     canonical = await realpath(candidate);
@@ -87,10 +80,7 @@ async function requireDirectory(
   return canonical;
 }
 
-async function optionalDirectory(
-  rootDir: string,
-  name: "raw" | "outputs",
-): Promise<string | undefined> {
+async function optionalDirectory(rootDir: string, name: "raw" | "outputs"): Promise<string | undefined> {
   const candidate = path.join(rootDir, name);
   let canonical: string;
   try {
@@ -104,10 +94,7 @@ async function optionalDirectory(
   return canonical;
 }
 
-async function optionalIndexFile(
-  candidate: string,
-  rootDir: string,
-): Promise<string | undefined> {
+async function optionalIndexFile(candidate: string, rootDir: string): Promise<string | undefined> {
   let canonical: string;
   try {
     canonical = await realpath(candidate);
@@ -120,9 +107,7 @@ async function optionalIndexFile(
   return canonical;
 }
 
-export async function validateExternalWikiLayout(
-  config: ExternalWikiRoot,
-): Promise<ExternalWikiLayout> {
+export async function validateExternalWikiLayout(config: ExternalWikiRoot): Promise<ExternalWikiLayout> {
   let rootDir: string;
   try {
     rootDir = await realpath(config.rootDir);
@@ -137,7 +122,7 @@ export async function validateExternalWikiLayout(
   const pagesDir = await requireDirectory(
     resolveInside(rootDir, config.pagesDir, "pages directory"),
     rootDir,
-    "pages directory",
+    "pages directory"
   );
   const configuredIndexFile = resolveInside(rootDir, config.indexFile, "catalog index");
   const canonicalIndexFile = await optionalIndexFile(configuredIndexFile, rootDir);
@@ -189,14 +174,18 @@ function normalizeCatalogPath(target: string, config: ExternalWikiRoot): string 
 }
 
 function catalogBlurb(line: string, matchEnd: number): string | undefined {
-  const blurb = line.slice(matchEnd).trim().replace(/^[-:|]\s*/, "").trim();
+  const blurb = line
+    .slice(matchEnd)
+    .trim()
+    .replace(/^[-:|]\s*/, "")
+    .trim();
   return blurb.length === 0 ? undefined : blurb;
 }
 
 export function parseExternalWikiCatalog(
   content: string,
   config: ExternalWikiRoot,
-  limits: Pick<ExternalWikiCatalogLimits, "maxEntries"> = {},
+  limits: Pick<ExternalWikiCatalogLimits, "maxEntries"> = {}
 ): ExternalWikiCatalogEntry[] {
   const maxEntries = limits.maxEntries ?? DEFAULT_MAX_CATALOG_ENTRIES;
   assertPositiveInteger(maxEntries, "maxEntries");
@@ -239,18 +228,28 @@ export function parseExternalWikiCatalog(
   return entries;
 }
 
-async function readBoundedUtf8(
-  filePath: string,
-  maxBytes: number,
-  displayPath: string,
-): Promise<string> {
+interface BoundedUtf8Read {
+  content: string;
+  bytes: number;
+}
+
+async function readBoundedUtf8(filePath: string, maxBytes: number, displayPath: string): Promise<BoundedUtf8Read> {
   assertPositiveInteger(maxBytes, "maxBytes");
+  if (maxBytes > MAX_READ_BYTES) {
+    throw new Error(`maxBytes must be at most ${MAX_READ_BYTES}`);
+  }
   const handle = await open(filePath, "r");
   try {
     const buffer = Buffer.allocUnsafe(maxBytes + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     if (bytesRead > maxBytes) throw new Error(`${displayPath} exceeds ${maxBytes} bytes`);
-    return buffer.subarray(0, bytesRead).toString("utf8");
+    let content: string;
+    try {
+      content = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytesRead));
+    } catch {
+      throw new Error(`${displayPath} is not valid UTF-8`);
+    }
+    return { content, bytes: bytesRead };
   } finally {
     await handle.close();
   }
@@ -265,7 +264,7 @@ function humanizePagePath(pagePath: string): string {
 async function listMarkdownPages(
   pagesDir: string,
   maxEntries: number,
-  maxDepth: number,
+  maxDepth: number
 ): Promise<ExternalWikiCatalogEntry[]> {
   assertPositiveInteger(maxEntries, "maxEntries");
   assertPositiveInteger(maxDepth, "maxDepth");
@@ -274,9 +273,7 @@ async function listMarkdownPages(
     if (depth > maxDepth) throw new Error(`pages directory exceeds maxDepth ${maxDepth}`);
     const dir = await opendir(directory);
     for await (const entry of dir) {
-      const relativePath = relativeDirectory
-        ? path.posix.join(relativeDirectory, entry.name)
-        : entry.name;
+      const relativePath = relativeDirectory ? path.posix.join(relativeDirectory, entry.name) : entry.name;
       if (entry.isDirectory()) {
         await walk(path.join(directory, entry.name), relativePath, depth + 1);
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
@@ -288,10 +285,12 @@ async function listMarkdownPages(
     }
   };
   await walk(pagesDir, "", 1);
-  return paths.sort((left, right) => left.localeCompare(right)).map((pagePath) => ({
-    title: humanizePagePath(pagePath),
-    path: pagePath,
-  }));
+  return paths
+    .sort((left, right) => left.localeCompare(right))
+    .map((pagePath) => ({
+      title: humanizePagePath(pagePath),
+      path: pagePath,
+    }));
 }
 
 function assertWikiEnabled(config: ExternalWikiRoot): void {
@@ -300,7 +299,7 @@ function assertWikiEnabled(config: ExternalWikiRoot): void {
 
 export async function loadExternalWikiCatalog(
   config: ExternalWikiRoot,
-  limits: ExternalWikiCatalogLimits = {},
+  limits: ExternalWikiCatalogLimits = {}
 ): Promise<ExternalWikiCatalog> {
   assertWikiEnabled(config);
   const maxIndexBytes = limits.maxIndexBytes ?? DEFAULT_MAX_INDEX_BYTES;
@@ -309,22 +308,20 @@ export async function loadExternalWikiCatalog(
   const layout = await validateExternalWikiLayout(config);
   const entries = layout.indexPresent
     ? parseExternalWikiCatalog(
-        await readBoundedUtf8(layout.indexFile, maxIndexBytes, config.indexFile),
+        (await readBoundedUtf8(layout.indexFile, maxIndexBytes, config.indexFile)).content,
         config,
-        { maxEntries },
+        { maxEntries }
       )
     : await listMarkdownPages(layout.pagesDir, maxEntries, maxDepth);
   return { wikiId: config.id, indexPresent: layout.indexPresent, entries };
 }
 
 function normalizePagePath(relativePath: string): string {
-  const normalized = path.posix.normalize(relativePath.replaceAll("\\", "/"));
-  if (
-    normalized === "." ||
-    normalized === ".." ||
-    normalized.startsWith("../") ||
-    normalized.startsWith("/")
-  ) {
+  if (relativePath.includes("\\")) {
+    throw new Error("page path must use POSIX separators");
+  }
+  const normalized = path.posix.normalize(relativePath);
+  if (normalized === "." || normalized === ".." || normalized.startsWith("../") || normalized.startsWith("/")) {
     throw new Error("page path must stay within the pages directory");
   }
   if (!normalized.toLowerCase().endsWith(".md")) {
@@ -341,7 +338,7 @@ function pageTitle(content: string, pagePath: string): string {
 export async function readExternalWikiPage(
   config: ExternalWikiRoot,
   relativePath: string,
-  maxBytes = DEFAULT_MAX_PAGE_BYTES,
+  maxBytes = DEFAULT_MAX_PAGE_BYTES
 ): Promise<ExternalWikiPage> {
   assertWikiEnabled(config);
   const pagePath = normalizePagePath(relativePath);
@@ -360,12 +357,12 @@ export async function readExternalWikiPage(
     throw new Error("page path must stay within the pages directory");
   }
   if (!(await stat(canonical)).isFile()) throw new Error(`external wiki page is not a file: ${pagePath}`);
-  const content = await readBoundedUtf8(canonical, maxBytes, pagePath);
+  const page = await readBoundedUtf8(canonical, maxBytes, pagePath);
   return {
     wikiId: config.id,
     path: pagePath,
-    title: pageTitle(content, pagePath),
-    content,
-    bytes: Buffer.byteLength(content),
+    title: pageTitle(page.content, pagePath),
+    content: page.content,
+    bytes: page.bytes,
   };
 }
