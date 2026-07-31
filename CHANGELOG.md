@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.45.4] — 2026-07-31
+
 ### Fixed
 
 - Extraction health no longer treats local filter skips as successful runs. Live empty runs record health only when later steps succeed.
