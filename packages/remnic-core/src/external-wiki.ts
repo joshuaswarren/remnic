@@ -1,4 +1,6 @@
+import { constants } from "node:fs";
 import { open, opendir, realpath, stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { ExternalWikiRoot } from "./types.js";
 
@@ -9,6 +11,8 @@ const DEFAULT_MAX_DIRECTORY_DEPTH = 32;
 const MAX_READ_BYTES = 16_777_216;
 const MAX_CATALOG_ENTRIES = 100_000;
 const MAX_DIRECTORY_DEPTH = 128;
+const MIN_VISITED_ENTRIES = 100;
+const MAX_VISITED_ENTRIES = 1_000_000;
 
 export type { ExternalWikiRoot } from "./types.js";
 
@@ -146,7 +150,9 @@ export async function validateExternalWikiLayout(config: ExternalWikiRoot): Prom
   };
 }
 
-function normalizeCatalogPath(target: string, config: ExternalWikiRoot): string | null {
+type CatalogPathBase = "index" | "pages";
+
+function normalizeCatalogPath(target: string, config: ExternalWikiRoot, base: CatalogPathBase): string | null {
   let decoded: string;
   try {
     decoded = decodeURIComponent(target.trim());
@@ -157,25 +163,26 @@ function normalizeCatalogPath(target: string, config: ExternalWikiRoot): string 
   if (
     withoutFragment.length === 0 ||
     withoutFragment.startsWith("/") ||
-    withoutFragment.startsWith("\\") ||
+    withoutFragment.includes("\\") ||
     /^[a-z][a-z0-9+.-]*:/i.test(withoutFragment)
   ) {
     return null;
   }
 
-  let relative = withoutFragment.replaceAll("\\", "/").replace(/^\.\//, "");
-  const pagesPrefix = `${config.pagesDir.replaceAll("\\", "/").replace(/\/$/, "")}/`;
-  if (relative.startsWith(pagesPrefix)) relative = relative.slice(pagesPrefix.length);
-  const normalized = path.posix.normalize(relative);
+  const pagesDir = path.posix.normalize(config.pagesDir);
+  const baseDir = base === "index" ? path.posix.dirname(config.indexFile) : pagesDir;
+  const rootRelativeTarget = path.posix.normalize(path.posix.join(baseDir, withoutFragment));
+  const relative = path.posix.relative(pagesDir, rootRelativeTarget);
   if (
-    normalized === ".." ||
-    normalized.startsWith("../") ||
-    normalized === "." ||
-    !normalized.toLowerCase().endsWith(".md")
+    relative === ".." ||
+    relative.startsWith("../") ||
+    path.posix.isAbsolute(relative) ||
+    relative === "." ||
+    !relative.toLowerCase().endsWith(".md")
   ) {
     return null;
   }
-  return normalized;
+  return relative;
 }
 
 function catalogBlurb(line: string, matchEnd: number): string | undefined {
@@ -203,20 +210,23 @@ export function parseExternalWikiCatalog(
     let target: string;
     let title: string;
     let matchEnd: number;
+    let pathBase: CatalogPathBase;
     if (markdownMatch) {
       title = markdownMatch[1]?.trim() ?? "";
       target = markdownMatch[2]?.trim() ?? "";
       matchEnd = (markdownMatch.index ?? 0) + markdownMatch[0].length;
+      pathBase = "index";
     } else if (wikiMatch) {
       const wikiTarget = wikiMatch[1]?.trim() ?? "";
       title = wikiMatch[2]?.trim() || humanizePagePath(wikiTarget);
       target = wikiTarget.toLowerCase().endsWith(".md") ? wikiTarget : `${wikiTarget}.md`;
       matchEnd = (wikiMatch.index ?? 0) + wikiMatch[0].length;
+      pathBase = "pages";
     } else {
       continue;
     }
 
-    const pagePath = normalizeCatalogPath(target, config);
+    const pagePath = normalizeCatalogPath(target, config, pathBase);
     if (!pagePath || title.length === 0 || seenPaths.has(pagePath)) continue;
     if (entries.length >= maxEntries) {
       throw new Error(`catalog contains more than ${maxEntries} entries`);
@@ -238,10 +248,40 @@ interface BoundedUtf8Read {
   bytes: number;
 }
 
-async function readBoundedUtf8(filePath: string, maxBytes: number, displayPath: string): Promise<BoundedUtf8Read> {
-  assertPositiveInteger(maxBytes, "maxBytes", MAX_READ_BYTES);
-  const handle = await open(filePath, "r");
+async function canonicalOpenedFile(handle: FileHandle, filePath: string, displayPath: string): Promise<string> {
+  if (process.platform === "linux") {
+    const descriptorPath = await realpath(`/proc/self/fd/${handle.fd}`).catch(() => undefined);
+    if (descriptorPath !== undefined) return descriptorPath;
+  }
+
+  let canonical: string;
   try {
+    canonical = await realpath(filePath);
+  } catch {
+    throw new Error(`${displayPath} changed while being opened`);
+  }
+  const [openedStat, pathStat] = await Promise.all([handle.stat(), stat(canonical)]);
+  if (openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) {
+    throw new Error(`${displayPath} changed while being opened`);
+  }
+  return canonical;
+}
+
+async function readBoundedUtf8(
+  filePath: string,
+  allowedRoot: string,
+  maxBytes: number,
+  displayPath: string
+): Promise<BoundedUtf8Read> {
+  assertPositiveInteger(maxBytes, "maxBytes", MAX_READ_BYTES);
+  const handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile()) throw new Error(`${displayPath} is not a file`);
+    const canonical = await canonicalOpenedFile(handle, filePath, displayPath);
+    if (!isInside(allowedRoot, canonical)) {
+      throw new Error(`${displayPath} escapes configured root`);
+    }
     const buffer = Buffer.allocUnsafe(maxBytes + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     if (bytesRead > maxBytes) throw new Error(`${displayPath} exceeds ${maxBytes} bytes`);
@@ -271,10 +311,16 @@ async function listMarkdownPages(
   assertPositiveInteger(maxEntries, "maxEntries", MAX_CATALOG_ENTRIES);
   assertPositiveInteger(maxDepth, "maxDepth", MAX_DIRECTORY_DEPTH);
   const paths: string[] = [];
+  const maxVisitedEntries = Math.min(MAX_VISITED_ENTRIES, Math.max(MIN_VISITED_ENTRIES, maxEntries * 100));
+  let visitedEntries = 0;
   const walk = async (directory: string, relativeDirectory: string, depth: number): Promise<void> => {
     if (depth > maxDepth) throw new Error(`pages directory exceeds maxDepth ${maxDepth}`);
     const dir = await opendir(directory);
     for await (const entry of dir) {
+      visitedEntries += 1;
+      if (visitedEntries > maxVisitedEntries) {
+        throw new Error(`pages directory contains more than ${maxVisitedEntries} filesystem entries`);
+      }
       const relativePath = relativeDirectory ? path.posix.join(relativeDirectory, entry.name) : entry.name;
       if (entry.isDirectory()) {
         await walk(path.join(directory, entry.name), relativePath, depth + 1);
@@ -312,7 +358,7 @@ export async function loadExternalWikiCatalog(
   const layout = await validateExternalWikiLayout(config);
   const entries = layout.indexPresent
     ? parseExternalWikiCatalog(
-        (await readBoundedUtf8(layout.indexFile, maxIndexBytes, config.indexFile)).content,
+        (await readBoundedUtf8(layout.indexFile, layout.rootDir, maxIndexBytes, config.indexFile)).content,
         config,
         { maxEntries }
       )
@@ -361,7 +407,7 @@ export async function readExternalWikiPage(
     throw new Error("page path must stay within the pages directory");
   }
   if (!(await stat(canonical)).isFile()) throw new Error(`external wiki page is not a file: ${pagePath}`);
-  const page = await readBoundedUtf8(canonical, maxBytes, pagePath);
+  const page = await readBoundedUtf8(canonical, layout.pagesDir, maxBytes, pagePath);
   return {
     wikiId: config.id,
     path: pagePath,
@@ -369,4 +415,39 @@ export async function readExternalWikiPage(
     content: page.content,
     bytes: page.bytes,
   };
+}
+
+export async function runExternalWikiCliCommand(
+  roots: readonly ExternalWikiRoot[],
+  rest: readonly string[],
+  io: { stdout: NodeJS.WritableStream; stderr: NodeJS.WritableStream },
+): Promise<number> {
+  const { searchExternalWikis } = await import("./external-wiki-search.js");
+  const query = rest.filter((a) => !a.startsWith("-")).join(" ").trim();
+  if (!query) {
+    io.stderr.write("external-wiki: provide a search query\n");
+    return 1;
+  }
+  const enabled = roots.filter((r) => r.enabled !== false);
+  if (enabled.length === 0) {
+    io.stderr.write("external-wiki: no enabled wiki roots configured\n");
+    return 1;
+  }
+  try {
+    const result = await searchExternalWikis(enabled, { query });
+    if (result.hits.length === 0) {
+      io.stdout.write("No results.\n");
+      return 0;
+    }
+    for (const hit of result.hits) {
+      io.stdout.write(`[${hit.wikiId}] ${hit.path} (score ${hit.score})\n${hit.snippet}\n\n`);
+    }
+    if (result.degradedWikiIds.length > 0) {
+      io.stderr.write(`Warning: degraded roots: ${result.degradedWikiIds.join(", ")}\n`);
+    }
+    return 0;
+  } catch (error) {
+    io.stderr.write(`external-wiki: ${error instanceof Error ? error.message : "search failed"}\n`);
+    return 1;
+  }
 }
