@@ -135,6 +135,87 @@ test("session-start: healthy server returns recall context with codingContext cl
   }
 });
 
+test("session-start: health probe carries the bearer token (auth-gated daemons)", async () => {
+  const home = mkHome();
+  let healthAuth = "unset";
+  const { server, port } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/health") {
+      healthAuth = req.headers.authorization || null;
+      return res.writeHead(200).end("ok");
+    }
+    if (req.url === "/engram/v1/recall") {
+      return res
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({ context: "ctx", count: 1, mode: "auto" }));
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    await runHook("session-start", { session_id: "s1", cwd: home }, { port, home });
+    // Without this header an auth-gated daemon 401s the probe and the hook
+    // reports "daemon not running", silently skipping recall/observe.
+    assert.equal(healthAuth, "Bearer test-token");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("recall body targets REMNIC_NAMESPACE when set, and omits namespace when unset", async () => {
+  const mk = () =>
+    startServer((req, res) => {
+      if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+      if (req.url === "/engram/v1/recall") {
+        return res
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify({ context: "ctx", count: 1, mode: "auto" }));
+      }
+      res.writeHead(404).end();
+    });
+
+  // set → namespace travels in the request body (REST reads it from the body,
+  // not a header; the "claude-code" client id otherwise resolves to the
+  // adapter's own empty namespace and recall returns nothing).
+  {
+    const home = mkHome();
+    const { server, port, calls } = await mk();
+    try {
+      await runHook(
+        "session-start",
+        { session_id: "s1", cwd: home },
+        { port, home, env: { extra: { REMNIC_NAMESPACE: "team-shared" } } },
+      );
+      const recall = calls.find((c) => c.url === "/engram/v1/recall");
+      assert.ok(recall, "recall was called");
+      assert.equal(recall.body.namespace, "team-shared");
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  // unset → opt-in no-op, no namespace field (behaviour unchanged for existing users).
+  // Explicitly clear both env vars so a value inherited from the developer's
+  // shell (`...process.env`) can't leak in and make this path look "set".
+  {
+    const home = mkHome();
+    const { server, port, calls } = await mk();
+    try {
+      await runHook(
+        "session-start",
+        { session_id: "s1", cwd: home },
+        { port, home, env: { extra: { REMNIC_NAMESPACE: "", ENGRAM_NAMESPACE: "" } } },
+      );
+      const recall = calls.find((c) => c.url === "/engram/v1/recall");
+      assert.ok(recall, "recall was called");
+      assert.equal("namespace" in recall.body, false);
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
+
 test("session-start: falls back to minimal mode when full recall fails", async () => {
   const home = mkHome();
   let recallHits = 0;

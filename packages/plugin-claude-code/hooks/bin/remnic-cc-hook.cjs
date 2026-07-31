@@ -203,7 +203,19 @@ function httpPost(urlPath, token, bodyObj, timeoutMs) {
   return new Promise((resolve) => {
     let data;
     try {
-      data = Buffer.from(JSON.stringify(bodyObj), "utf8");
+      // Namespace targeting for namespaced daemons: when REMNIC_NAMESPACE (or
+      // ENGRAM_NAMESPACE) is set, include it in the request body. On the REST
+      // surface the namespace is read from the body, not a header, and the
+      // "claude-code" client id otherwise resolves to the adapter's own
+      // (empty) namespace — so recall/observe silently return nothing. Opt-in:
+      // when the env var is unset this is a no-op and behaviour is unchanged.
+      // An explicit bodyObj.namespace still takes precedence.
+      const ns = process.env.REMNIC_NAMESPACE || process.env.ENGRAM_NAMESPACE;
+      const outBody =
+        ns && bodyObj && typeof bodyObj === "object" && !Array.isArray(bodyObj)
+          ? { namespace: ns, ...bodyObj }
+          : bodyObj;
+      data = Buffer.from(JSON.stringify(outBody), "utf8");
     } catch {
       resolve({ ok: false, status: 0, body: "" });
       return;
@@ -248,8 +260,20 @@ function httpPost(urlPath, token, bodyObj, timeoutMs) {
 
 function httpHealthy(timeoutMs) {
   return new Promise((resolve) => {
+    // When the daemon has an auth token configured (REMNIC_AUTH_TOKEN), every
+    // route — including /engram/v1/health — returns 401 to unauthenticated
+    // requests, so an unauthenticated probe here makes the hook wrongly report
+    // "daemon not running" and skip recall/observe. Send the same bearer token
+    // the recall/observe POSTs use. Unauthenticated daemons ignore the header.
+    const token = process.env.REMNIC_HOOK_TOKEN || resolveToken();
     const req = http.request(
-      { host: HOST, port: PORT, path: "/engram/v1/health", method: "GET" },
+      {
+        host: HOST,
+        port: PORT,
+        path: "/engram/v1/health",
+        method: "GET",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      },
       (res) => {
         res.resume();
         resolve(res.statusCode >= 200 && res.statusCode < 300);
