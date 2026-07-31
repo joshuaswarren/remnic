@@ -18,13 +18,19 @@ export function assertExternalWikiRootOutsideMemoryDir(memoryDir: string, rootDi
   }
 }
 
-async function canonicalPathIfPresent(candidate: string): Promise<string> {
-  const resolved = path.resolve(candidate);
-  try {
-    return await realpath(resolved);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolved;
-    throw error;
+async function canonicalPath(candidate: string): Promise<string> {
+  let existing = path.resolve(candidate);
+  const suffix: string[] = [];
+  while (true) {
+    try {
+      return path.join(await realpath(existing), ...suffix);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(existing);
+      if (parent === existing) throw error;
+      suffix.unshift(path.basename(existing));
+      existing = parent;
+    }
   }
 }
 
@@ -32,9 +38,6 @@ export async function assertExternalWikiRootOutsideMemoryDirCanonical(
   memoryDir: string,
   rootDir: string
 ): Promise<void> {
-  const [canonicalMemoryDir, canonicalRootDir] = await Promise.all([
-    canonicalPathIfPresent(memoryDir),
-    canonicalPathIfPresent(rootDir),
-  ]);
+  const [canonicalMemoryDir, canonicalRootDir] = await Promise.all([canonicalPath(memoryDir), canonicalPath(rootDir)]);
   assertExternalWikiRootOutsideMemoryDir(canonicalMemoryDir, canonicalRootDir);
 }

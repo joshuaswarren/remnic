@@ -82,7 +82,13 @@ test("external wiki root isolation resolves filesystem aliases", async () => {
     const wikiAlias = path.join(rootDir, "wiki-alias");
     await mkdir(nestedWiki, { recursive: true });
     await symlink(nestedWiki, wikiAlias);
+    const memoryAlias = path.join(rootDir, "memory-alias");
+    await symlink(memoryDir, memoryAlias);
 
     await assert.rejects(() => assertCanonicalIsolation(memoryDir, wikiAlias), /must be outside memoryDir/);
+    await assert.rejects(
+      () => assertCanonicalIsolation(memoryDir, path.join(memoryAlias, "future-wiki")),
+      /must be outside memoryDir/
+    );
   }, "remnic-external-wiki-guard-");
 });
