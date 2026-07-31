@@ -28,12 +28,16 @@ function memory(path: string, status: string): MemoryFile {
   };
 }
 
-async function makeCoordinator(memoryDir: string): Promise<RecallSearchPipelineCoordinator> {
+async function makeCoordinator(
+  memoryDir: string,
+  extractionScopeClassificationEnabled = true,
+): Promise<RecallSearchPipelineCoordinator> {
   const config = parseConfig({
     openaiApiKey: "sk-test",
     memoryDir,
     workspaceDir: path.join(memoryDir, "workspace"),
     namespaces: true,
+    extractionScopeClassificationEnabled,
   });
   const deps = {
     config,
@@ -99,6 +103,76 @@ test("recall safety derives sourceConnector exclusively from the hydrated memory
     assert.equal(byPath.get("facts/none.md"), undefined, "an untrusted value is cleared when the memory is connectorless");
     // The shared/cached input objects are never mutated.
     assert.equal(has.sourceConnector, "untrusted", "the input result object is not mutated (copy semantics, no cross-recall leak)");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("recall safety partitions tool-scoped memories by requesting connector", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-connector-partition-"));
+  try {
+    const coordinator = await makeCoordinator(memoryDir);
+    const memories = [
+      {
+        path: "facts/same-tool.md",
+        content: "Use the search tool with a path.",
+        frontmatter: { status: "active", sourceConnector: "chatgpt", toolScoped: true },
+      },
+      {
+        path: "facts/other-tool.md",
+        content: "Use the search tool with a path.",
+        frontmatter: { status: "active", sourceConnector: "pi", toolScoped: true },
+      },
+      {
+        path: "facts/portable.md",
+        content: "Prefer focused searches.",
+        frontmatter: { status: "active", sourceConnector: "pi" },
+      },
+      {
+        path: "facts/legacy.md",
+        content: "Use the search tool with a path.",
+        frontmatter: { status: "active", sourceConnector: "pi" },
+      },
+      {
+        path: "facts/unattributed-tool.md",
+        content: "Use the search tool with a path.",
+        frontmatter: { status: "active", toolScoped: true },
+      },
+    ] as unknown as MemoryFile[];
+    const results = memories.map((candidate, index) => ({
+      ...result("default", candidate.path),
+      ...(index === 1 ? { sourceConnector: "chatgpt" } : {}),
+    }));
+    const memoryByPath = new Map(
+      memories.map((candidate) => [`default\0${candidate.path}`, candidate]),
+    );
+
+    const safe = coordinator.filterSearchResultsByRecallSafety(results, memoryByPath, {
+      requestingConnector: "chatgpt",
+    });
+
+    assert.deepEqual(
+      safe.map((candidate) => candidate.path),
+      [
+        "facts/same-tool.md",
+        "facts/portable.md",
+        "facts/legacy.md",
+        "facts/unattributed-tool.md",
+      ],
+    );
+    assert.equal(safe[0]?.sourceConnector, "chatgpt");
+    assert.equal(results[1]?.sourceConnector, "chatgpt");
+    assert.equal(
+      coordinator.filterSearchResultsByRecallSafety(results, memoryByPath).length,
+      results.length,
+    );
+    const gateDisabled = await makeCoordinator(memoryDir, false);
+    assert.equal(
+      gateDisabled.filterSearchResultsByRecallSafety(results, memoryByPath, {
+        requestingConnector: "chatgpt",
+      }).length,
+      results.length,
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

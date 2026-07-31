@@ -39,6 +39,7 @@ import { collectNativeKnowledgeChunks, formatNativeKnowledgeSection, searchNativ
 import { objectiveStateStoreOverrideForNamespace, searchObjectiveStateSnapshots } from "../objective-state.js";
 import { type GraphRecallRankedResult, type GraphRecallShadowComparison, mergeGraphExpandedResults } from "./graph-recall-coordinator.js";
 import { buildProcedureRecallSection } from "../procedural/procedure-recall.js";
+import { canRecallToolScopedMemory } from "../tool-scoped-memory.js";
 import { buildQmdRecallCacheKey, getCachedQmdRecall, setCachedQmdRecall } from "../qmd-recall-cache.js";
 import { MEMORY_ID_PATTERN } from "../recall-handles.js";
 import {
@@ -1296,7 +1297,11 @@ export class RecallInternalCoordinator {
         source: "fresh",
         success: true,
       });
-      return results;
+      return lifecycleCaps.extractionScopeClassification
+        ? results.filter((artifact) =>
+            canRecallToolScopedMemory(artifact.frontmatter, options.sourceConnector),
+          )
+        : results;
     })();
 
     const objectiveStatePromise = (async (): Promise<string | null> => {
@@ -2794,6 +2799,10 @@ export class RecallInternalCoordinator {
           profileStorage,
           retrievalQuery,
           this.deps.config,
+          {
+            partitionToolScoped: lifecycleCaps.extractionScopeClassification,
+            requestingConnector: options.sourceConnector,
+          },
         );
       } catch (err) {
         log.debug(
@@ -3959,6 +3968,7 @@ export class RecallInternalCoordinator {
           abortSignal: options.abortSignal,
           dropUnresolved: true,
           recallNamespaces,
+          requestingConnector: options.sourceConnector,
         },
       );
 
@@ -3971,7 +3981,7 @@ export class RecallInternalCoordinator {
             recallNamespaces,
             retrievalQuery,
             qmdBoostInput.memoryByPath,
-            { asOfMs },
+            { asOfMs, requestingConnector: options.sourceConnector },
           ),
         qmdBoostInput.results,
       );
@@ -4199,7 +4209,7 @@ export class RecallInternalCoordinator {
               recallNamespaces,
               retrievalQuery,
               undefined,
-              { asOfMs },
+              { asOfMs, requestingConnector: options.sourceConnector },
             );
             // MMR runs on the pre-truncation pool so diverse candidates just
             // below the cutoff can be promoted into the injected set.
@@ -4294,6 +4304,7 @@ export class RecallInternalCoordinator {
             trustByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
+            requestingConnector: options.sourceConnector,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
           // Issue #1577 — read the cold pipeline's trust map back so cold
@@ -4394,7 +4405,7 @@ export class RecallInternalCoordinator {
               recallNamespaces,
               retrievalQuery,
               undefined,
-              { asOfMs },
+              { asOfMs, requestingConnector: options.sourceConnector },
             );
             // MMR runs on the pre-truncation pool so diverse candidates just
             // below the cutoff can be promoted into the injected set.
@@ -4554,6 +4565,7 @@ export class RecallInternalCoordinator {
               trustByPathSink,
               deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
               asOfMs,
+              requestingConnector: options.sourceConnector,
               ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
             });
             // Issue #1577 — read the cold pipeline's trust map back (rule 41).
@@ -4608,7 +4620,7 @@ export class RecallInternalCoordinator {
                     recallNamespaces,
                     retrievalQuery,
                     preloadedMap,
-                    { asOfMs },
+                    { asOfMs, requestingConnector: options.sourceConnector },
                   )
                 ).sort((a, b) => b.score - a.score);
                 // MMR runs on the pre-truncation pool so diverse candidates just
@@ -4707,6 +4719,7 @@ export class RecallInternalCoordinator {
                 trustByPathSink,
                 deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                 asOfMs,
+                requestingConnector: options.sourceConnector,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
               // Issue #1577 — read the cold pipeline's trust map back (rule 41).
@@ -4758,6 +4771,7 @@ export class RecallInternalCoordinator {
             trustByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
+            requestingConnector: options.sourceConnector,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
           // Issue #1577 — read the cold pipeline's trust map back (rule 41).

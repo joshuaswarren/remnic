@@ -197,6 +197,8 @@ export interface RecallInvocationOptions {
   topK?: number;
   mode?: RecallPlanMode;
   abortSignal?: AbortSignal;
+  /** Server-resolved identity of the connector performing this recall. */
+  sourceConnector?: string;
   /**
    * Capture a `RecallXraySnapshot` for this recall (issue #570).  When
    * `true`, the orchestrator builds a snapshot from the data it has

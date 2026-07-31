@@ -6,6 +6,7 @@ import type { MemoryFile, PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
 import { inferIntentFromText, intentCompatibilityScore, isTaskInitiationIntent } from "../intent.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
+import { canRecallToolScopedMemory } from "../tool-scoped-memory.js";
 
 function tokenOverlapScore(prompt: string, memoryText: string): number {
   const norm = (s: string) =>
@@ -44,6 +45,7 @@ export async function buildProcedureRecallSection(
   storage: StorageManager,
   prompt: string,
   config: PluginConfig,
+  options?: { partitionToolScoped?: boolean; requestingConnector?: string },
 ): Promise<string | null> {
   if (config.procedural?.enabled !== true) return null;
   const trimmed = typeof prompt === "string" ? prompt.trim() : "";
@@ -72,7 +74,9 @@ export async function buildProcedureRecallSection(
     .filter(
       (m) =>
         m.frontmatter.category === "procedure" &&
-        isActiveMemoryStatus(m.frontmatter.status),
+        isActiveMemoryStatus(m.frontmatter.status) &&
+        (options?.partitionToolScoped !== true ||
+          canRecallToolScopedMemory(m.frontmatter, options.requestingConnector)),
     )
     .map((m) => ({ m, score: scoreProcedureForPrompt(m, trimmed, queryIntent) }))
     .filter((x) => x.score > 0.04)

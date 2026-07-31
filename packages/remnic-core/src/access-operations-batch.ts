@@ -88,7 +88,7 @@ defineOperation({ name: "recall", description: "Semantic recall.", schema: stric
     if (input.tags !== undefined) { if (!Array.isArray(input.tags) || !input.tags.every((t) => typeof t === "string")) throw new EngramAccessInputError("tags must be an array of strings"); tags = input.tags; }
     let tagMatch: "any" | "all" | undefined;
     if (input.tagMatch !== undefined) { if (input.tagMatch !== "any" && input.tagMatch !== "all") throw new EngramAccessInputError("tagMatch must be one of: any, all"); tagMatch = input.tagMatch; }
-    const result = await ctx.service.recall({ query: typeof input.query === "string" ? input.query : "", sessionKey: optStr(input.sessionKey), authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), topK: optNum(input.topK), mode: optStr(input.mode) as RecallPlanMode | "auto" | undefined, includeDebug: input.includeDebug === true, disclosure, cwd: optStr(input.cwd), projectTag: optStr(input.projectTag), asOf: optStr(input.asOf), ...(tags ? { tags } : {}), ...(tagMatch ? { tagMatch } : {}), ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) });
+    const result = await ctx.service.recall({ query: typeof input.query === "string" ? input.query : "", sessionKey: optStr(input.sessionKey), authenticatedPrincipal: ctx.authenticatedPrincipal, sourceConnector: ctx.sourceConnector, namespace: optStr(input.namespace), topK: optNum(input.topK), mode: optStr(input.mode) as RecallPlanMode | "auto" | undefined, includeDebug: input.includeDebug === true, disclosure, cwd: optStr(input.cwd), projectTag: optStr(input.projectTag), asOf: optStr(input.asOf), ...(tags ? { tags } : {}), ...(tagMatch ? { tagMatch } : {}), ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) });
     return { result };
   },
 });
@@ -115,7 +115,7 @@ defineOperation({ name: "recall_xray", description: "X-ray recall.", schema: str
     let budget: number | undefined;
     if (input.budget !== undefined) { const p = typeof input.budget === "number" ? input.budget : typeof input.budget === "string" ? Number(input.budget) : undefined; if (p === undefined || !Number.isFinite(p) || p <= 0 || !Number.isInteger(p)) throw new EngramAccessInputError("recall_xray: budget expects a positive integer"); budget = p; }
     const dr = optStr(input.disclosure);
-    return { result: await ctx.service.recallXray({ query: defStr(input.query, ""), sessionKey: optStr(input.sessionKey), namespace: optStr(input.namespace), budget, authenticatedPrincipal: ctx.authenticatedPrincipal, ...(dr && dr !== "" ? { disclosure: dr as RecallDisclosure } : {}), ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) }) };
+    return { result: await ctx.service.recallXray({ query: defStr(input.query, ""), sessionKey: optStr(input.sessionKey), namespace: optStr(input.namespace), budget, authenticatedPrincipal: ctx.authenticatedPrincipal, sourceConnector: ctx.sourceConnector, ...(dr && dr !== "" ? { disclosure: dr as RecallDisclosure } : {}), ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) }) };
   },
 });
 defineOperation({ name: "namespace_writable", description: "Read-only preflight: is a namespace writable for the caller's principal?", allowedByOps: ["namespace_writable", "observe", "memory_store"], schema: strictSchema({ namespace: S.str, sessionKey: S.str, op: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => {
@@ -163,7 +163,7 @@ defineOperation({ name: "chatgpt_memory_inspector", description: "Memory inspect
     if (input.currentContextScopes !== undefined) ii.currentContextScopes = input.currentContextScopes as string[];
     if (input.allowUnverifiedPreview !== undefined) ii.allowUnverifiedPreview = input.allowUnverifiedPreview as boolean;
     const rsk = ii.sessionKey ?? (ctx.authenticatedPrincipal ? "remnic:chatgpt-memory-inspector:" + randomUUID() : undefined);
-    const xr = await ctx.service.recallXray({ query: ii.query, sessionKey: rsk, namespace: ii.namespace, currentContextScopes: ii.currentContextScopes, authenticatedPrincipal: ctx.authenticatedPrincipal, mode: "full", disclosure: "chunk", includeRecall: true, ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) });
+    const xr = await ctx.service.recallXray({ query: ii.query, sessionKey: rsk, namespace: ii.namespace, currentContextScopes: ii.currentContextScopes, authenticatedPrincipal: ctx.authenticatedPrincipal, sourceConnector: ctx.sourceConnector, mode: "full", disclosure: "chunk", includeRecall: true, ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) });
     const x = xr.snapshotFound === true ? (xr.snapshot ?? null) : null;
     const r = xr.recall ?? { query: ii.query, namespace: ii.namespace ?? x?.namespace ?? "global", context: "", count: 0, memoryIds: [], results: [], fallbackUsed: false, sourcesUsed: [], disclosure: "chunk" as const };
     const ac = await ctx.service.actionConfidence(buildChatGptMemoryInspectorActionRequest(ii, r, x));

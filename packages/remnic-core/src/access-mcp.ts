@@ -2740,6 +2740,7 @@ export class EngramMcpServer {
       const result = (await op.run(envelope, {
         service: this.service,
         authenticatedPrincipal: effectivePrincipal,
+        ...(sourceConnector ? { sourceConnector } : {}),
         ...(abortSignal ? { abortSignal } : {}),
       })) as { result: unknown };
       throwMcpAbort(abortSignal, "MCP recall aborted before postprocessing");

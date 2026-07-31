@@ -77,6 +77,7 @@ import {
 } from "./in-flight-reads.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
+import { withholdToolScopedFromSharedNamespace } from "./tool-scoped-memory.js";
 import {
   serializeProvenanceFields,
   parseProvenanceSources,
@@ -375,6 +376,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     const safe = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(fm.sourceConnector);
     lines.push(`sourceConnector: ${safe ? fm.sourceConnector : JSON.stringify(fm.sourceConnector)}`);
   }
+  if (fm.toolScoped === true) lines.push("toolScoped: true");
   if (fm.supersedes) lines.push(`supersedes: ${fm.supersedes}`);
   if (fm.expiresAt) lines.push(`expiresAt: ${fm.expiresAt}`);
   if (fm.lineage && fm.lineage.length > 0) {
@@ -899,6 +901,7 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       tags,
       entityRef: fm.entityRef || undefined,
       sourceConnector: fm.sourceConnector ? decodeYamlScalar(fm.sourceConnector) || undefined : undefined,
+      toolScoped: fm.toolScoped === "true" ? true : undefined,
       supersedes: fm.supersedes || undefined,
       expiresAt: fm.expiresAt || undefined,
       lineage: lineage && lineage.length > 0 ? lineage : undefined,
@@ -1752,6 +1755,7 @@ export interface WriteMemoryOptions {
   sources?: ProvenanceSource[];
   provenance?: "verified" | "unverified" | "none";
   sourceConnector?: string;
+  toolScoped?: true;
 }
 
 /**
@@ -3956,6 +3960,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!sanitized.clean) {
       log.warn(`memory content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
     }
+    if (
+      options.toolScoped ||
+      withholdToolScopedFromSharedNamespace({
+        content: sanitized.text,
+        sourceConnector: options.sourceConnector,
+      })
+    ) {
+      fm.toolScoped = true;
+    }
 
     // Persist the raw-content dedup hash on the frontmatter so archive and
     // consolidation paths can remove the correct hash from ContentHashIndex
@@ -4339,6 +4352,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       intentActionType?: string;
       intentEntityTypes?: string[];
       sourceConnector?: string;
+      toolScoped?: true;
     } = {}
   ): Promise<string> {
     await this.ensureDirectories();
@@ -4364,6 +4378,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       intentActionType: options.intentActionType,
       intentEntityTypes: options.intentEntityTypes,
       ...(options.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
+      ...(options.toolScoped ? { toolScoped: true as const } : {}),
     };
 
     const sanitized = sanitizeMemoryContent(quote);
@@ -6854,6 +6869,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
       sourceConnector?: string;
+      toolScoped?: true;
     } = {}
   ): Promise<string> {
     await this.ensureDirectories();
@@ -6868,6 +6884,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const validAt = normalizeMemoryWriteTimestamp("validAt", options.validAt);
     const chunkInvalidAt = normalizeMemoryWriteTimestamp("invalidAt", options.invalidAt);
     const chunkObservedAt = normalizeMemoryWriteTimestamp("observedAt", options.observedAt);
+    const sanitized = sanitizeMemoryContent(content);
+    if (!sanitized.clean) {
+      log.warn(`chunk content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
+    }
 
     const fm: MemoryFrontmatter = {
       id,
@@ -6897,12 +6917,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       ...(options.sources ? { sources: options.sources } : {}),
       ...(options.provenance ? { provenance: options.provenance } : {}),
       ...(options.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
+      ...(options.toolScoped ||
+      withholdToolScopedFromSharedNamespace({
+        content: sanitized.text,
+        sourceConnector: options.sourceConnector,
+      })
+        ? { toolScoped: true as const }
+        : {}),
     };
 
-    const sanitized = sanitizeMemoryContent(content);
-    if (!sanitized.clean) {
-      log.warn(`chunk content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
-    }
     const filePath = await this.resolveCategoryWritePath(category, id, today);
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
     // A retried chunk write lands on the SAME deterministic path, so the

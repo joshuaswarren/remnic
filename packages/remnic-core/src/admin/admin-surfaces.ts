@@ -783,6 +783,7 @@ export interface PromotionStorageProvider {
        */
       lineage: string[];
       sourceConnector?: string;
+      toolScoped?: true;
     }
   ): Promise<string>;
 }
@@ -920,6 +921,7 @@ export async function promoteMemory(options: PromoteMemoryOptions): Promise<Memo
         validAt: sourceMemory.frontmatter.valid_at,
         lineage: [options.sourceMemoryId],
         ...(sourceMemory.frontmatter.sourceConnector ? { sourceConnector: sourceMemory.frontmatter.sourceConnector } : {}),
+        ...(sourceMemory.frontmatter.toolScoped ? { toolScoped: true as const } : {}),
       });
       target.promoted = true;
       target.promotedMemoryId = promotedId;

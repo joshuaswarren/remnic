@@ -377,6 +377,8 @@ export interface EngramAccessRecallRequest {
   sessionKey?: string;
   namespace?: string;
   authenticatedPrincipal?: string;
+  /** Trusted connector identity resolved at the transport boundary. */
+  sourceConnector?: string;
   idempotencyKey?: string;
   topK?: number;
   mode?: RecallPlanMode | "auto";
@@ -2865,6 +2867,7 @@ export class EngramAccessService {
     namespace?: string;
     budget?: number;
     authenticatedPrincipal?: string;
+    sourceConnector?: string;
     /**
      * Disclosure depth used to shape per-result payload (issue #677
      * PR 3/4).  When set, each X-ray result is decorated with the
