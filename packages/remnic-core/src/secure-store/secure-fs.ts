@@ -132,6 +132,20 @@ export function isEncryptedFile(buf: Uint8Array): boolean {
   return b.subarray(0, MAGIC_BYTES.length).equals(MAGIC_BYTES);
 }
 
+type PositionedFileReader = {
+  read: (buffer: Buffer, offset: number, length: number, position: number) => Promise<{ bytesRead: number }>;
+};
+
+async function readPositionedPrefix(handle: PositionedFileReader, buffer: Buffer): Promise<number> {
+  let bytesRead = 0;
+  while (bytesRead < buffer.length) {
+    const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+    if (result.bytesRead === 0) break;
+    bytesRead += result.bytesRead;
+  }
+  return bytesRead;
+}
+
 /**
  * True when the REGULAR file at `probePath` is encrypted at rest (its first
  * bytes are the REMNIC-ENC magic header). ENOENT resolves to false — an absent
@@ -153,14 +167,14 @@ export async function probeEncryptedRegularFileHeader(probePath: string): Promis
   }
   if (!entryStat.isFile()) {
     throw new Error(
-      `refusing to probe non-regular state path ${probePath} `
-      + `(symlink/FIFO/device); opening it could block or escape containment (#2033)`,
+      `refusing to probe non-regular state path ${probePath} ` +
+        `(symlink/FIFO/device); opening it could block or escape containment (#2033)`
     );
   }
   const handle = await openFile(probePath, "r");
   try {
     const header = Buffer.alloc(MAGIC_HEADER_SIZE);
-    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    const bytesRead = await readPositionedPrefix(handle, header);
     return isEncryptedFile(header.subarray(0, bytesRead));
   } finally {
     await handle.close();
@@ -431,7 +445,7 @@ export async function* readMaybeEncryptedFileFromChunks(
   const headerSize = MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE;
   try {
     const prefix = Buffer.alloc(headerSize);
-    const { bytesRead: prefixBytes } = await handle.read(prefix, 0, prefix.length, 0);
+    const prefixBytes = await readPositionedPrefix(handle, prefix);
     const prefixView = prefix.subarray(0, prefixBytes);
     if (!isEncryptedFile(prefixView)) {
       if (prefixBytes > 0) yield Buffer.from(prefixView);
@@ -459,15 +473,9 @@ export async function* readMaybeEncryptedFileFromChunks(
     if (version !== ENVELOPE_VERSION) {
       throw new Error(`secure-store: unsupported envelope version ${version}`);
     }
-    const salt = envelope.subarray(
-      ENVELOPE_LAYOUT.salt,
-      ENVELOPE_LAYOUT.salt + ENVELOPE_SALT_LENGTH
-    );
+    const salt = envelope.subarray(ENVELOPE_LAYOUT.salt, ENVELOPE_LAYOUT.salt + ENVELOPE_SALT_LENGTH);
     const iv = envelope.subarray(ENVELOPE_LAYOUT.iv, ENVELOPE_LAYOUT.iv + IV_LENGTH);
-    const authTag = envelope.subarray(
-      ENVELOPE_LAYOUT.authTag,
-      ENVELOPE_LAYOUT.authTag + AUTH_TAG_LENGTH
-    );
+    const authTag = envelope.subarray(ENVELOPE_LAYOUT.authTag, ENVELOPE_LAYOUT.authTag + AUTH_TAG_LENGTH);
     const decipher = createDecipheriv("aes-256-gcm", key, iv, { authTagLength: AUTH_TAG_LENGTH });
     decipher.setAAD(Buffer.concat([buildHeaderAad(salt), filePathAad(filePath, memoryDir)]));
     decipher.setAuthTag(authTag);

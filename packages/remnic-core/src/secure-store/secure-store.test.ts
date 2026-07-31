@@ -15,7 +15,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open as openFile, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -77,6 +77,7 @@ import {
   migrateMemoryDirToEncrypted,
   probeEncryptedRegularFileHeader,
   readMaybeEncryptedFile,
+  readMaybeEncryptedFileFromChunks,
 } from "./secure-fs.js";
 
 /** Cheap scrypt params for tests — still hex-correct but ~milliseconds. */
@@ -965,6 +966,44 @@ test("secure-store migration encrypts memory category dirs but leaves the questi
   }
 });
 
+test("chunked encrypted reads fill the header across positioned short reads", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "remnic-chunked-header-"));
+  const filePath = path.join(dir, "encrypted.md");
+  const key = Buffer.alloc(32, 9);
+  const plaintext = Buffer.from("streamed encrypted content survives short header reads");
+  await writeFile(filePath, encryptFileBody(plaintext, key, filePathAad(filePath, dir)));
+
+  const probeHandle = await openFile(filePath, "r");
+  type PositionedRead = (
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number | null
+  ) => Promise<{ bytesRead: number; buffer: Buffer }>;
+  const handlePrototype = Object.getPrototypeOf(probeHandle) as { read: PositionedRead };
+  const originalRead = handlePrototype.read;
+  await probeHandle.close();
+  let shortReadsRemaining = 3;
+  handlePrototype.read = async function (buffer, offset, length, position) {
+    const boundedLength = shortReadsRemaining > 0 ? Math.min(length, 4) : length;
+    shortReadsRemaining -= 1;
+    return await originalRead.call(this, buffer, offset, boundedLength, position);
+  };
+
+  try {
+    assert.equal(await probeEncryptedRegularFileHeader(filePath), true);
+    shortReadsRemaining = 3;
+    const chunks: Buffer[] = [];
+    for await (const chunk of readMaybeEncryptedFileFromChunks(filePath, key, dir, 11)) {
+      chunks.push(chunk);
+    }
+    assert.deepEqual(Buffer.concat(chunks), plaintext);
+  } finally {
+    handlePrototype.read = originalRead;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("probeEncryptedRegularFileHeader detects encryption, treats absent as false, and refuses non-regular paths (#2033)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "remnic-probe-header-"));
   try {
@@ -994,7 +1033,7 @@ test("probeEncryptedRegularFileHeader detects encryption, treats absent as false
         assert.match(message, /symlink\/FIFO\/device/);
         assert.ok(message.includes(linkPath));
         return true;
-      },
+      }
     );
 
     // A directory is likewise non-regular and refused.

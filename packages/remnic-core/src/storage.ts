@@ -197,6 +197,11 @@ import {
   parseTombstoneBlockedOfflineSyncMemory,
   type TombstoneBlockedCaptureIndexOptions,
 } from "./storage/tombstone-blocked-capture-index.js";
+import {
+  buildCapturePathLockIdentity,
+  isQueuedReviewMemory,
+  tombstoneBlocked,
+} from "./storage/tombstone-blocked-capture-mutation.js";
 export { ContentHashIndex, FactHashIndexNotAuthoritativeError };
 export type { ContentHashIndexLockOptions };
 export {
@@ -281,20 +286,24 @@ const DELETION_REVISION_LOCK_MAX_WAIT_MS = 120_000;
 
 function isValidDeletionRevisionPath(value: unknown): value is string {
   return (
-    typeof value === "string"
-    && value.length > 0
-    && !value.includes("\\")
-    && !value.includes("\0")
-    && !path.posix.isAbsolute(value)
-    && path.posix.normalize(value) === value
-    && value !== "."
-    && value !== ".."
-    && !value.startsWith("../")
+    typeof value === "string" &&
+    value.length > 0 &&
+    !value.includes("\\") &&
+    !value.includes("\0") &&
+    !path.posix.isAbsolute(value) &&
+    path.posix.normalize(value) === value &&
+    value !== "." &&
+    value !== ".." &&
+    !value.startsWith("../")
   );
 }
 
 function deletionRevisionPathIdentity(value: string): string {
-  return value.normalize("NFC").toUpperCase().toLowerCase().replace(/\u00df/g, "ss");
+  return value
+    .normalize("NFC")
+    .toUpperCase()
+    .toLowerCase()
+    .replace(/\u00df/g, "ss");
 }
 
 export interface ReextractJobRequest {
@@ -1058,7 +1067,6 @@ function inferCurrentStateStatus(
 ): MemoryStatus {
   return inferMemoryStatus(frontmatter, pathRel, fallbackStatus);
 }
-
 
 /**
  * Simple Levenshtein distance between two strings.
@@ -2041,9 +2049,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   setSecureStoreKey(key: Buffer | null, encryptOnWrite = true): void {
     if (!this.applySecureStoreKey(key, encryptOnWrite) || key === null) return;
     void this.entityCanonicalIdMigration.triggerAfterUnlock().catch((error: unknown) => {
-      log.warn(
-        `secure-store unlock migration failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      log.warn(`secure-store unlock migration failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }
 
@@ -2352,10 +2358,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return path.join(this.stateDir, `.${kind}-version.log`);
   }
 
-  private bumpSharedVersion(
-    kind: SharedVersionKind,
-    fallbackMap: Map<string, number>
-  ): number {
+  private bumpSharedVersion(kind: SharedVersionKind, fallbackMap: Map<string, number>): number {
     const filePath = this.versionFilePath(kind);
     try {
       mkdirSync(this.stateDir, { recursive: true });
@@ -2370,10 +2373,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
-  private readSharedVersion(
-    kind: SharedVersionKind,
-    fallbackMap: Map<string, number>
-  ): number {
+  private readSharedVersion(kind: SharedVersionKind, fallbackMap: Map<string, number>): number {
     const filePath = this.versionFilePath(kind);
     try {
       return statSync(filePath).size;
@@ -2682,7 +2682,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return resolved;
   }
 
-
   private parseDeletionRevisionMetadata(raw: string): Map<string, number> {
     let parsed: unknown;
     try {
@@ -2695,9 +2694,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
     const root = parsed as Record<string, unknown>;
     if (
-      Object.keys(root).sort().join(",") !== "deletions,version"
-      || root.version !== 1
-      || !Array.isArray(root.deletions)
+      Object.keys(root).sort().join(",") !== "deletions,version" ||
+      root.version !== 1 ||
+      !Array.isArray(root.deletions)
     ) {
       throw new Error("Deletion revision metadata is invalid.");
     }
@@ -2709,13 +2708,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
       const entry = rawEntry as Record<string, unknown>;
       if (
-        Object.keys(entry).sort().join(",") !== "mtimeMs,path"
-        || !isValidDeletionRevisionPath(entry.path)
-        || typeof entry.mtimeMs !== "number"
-        || !Number.isFinite(entry.mtimeMs)
-        || entry.mtimeMs < 0
-        || entry.mtimeMs > DELETION_REVISION_MAX_MTIME_MS
-        || revisions.has(entry.path)
+        Object.keys(entry).sort().join(",") !== "mtimeMs,path" ||
+        !isValidDeletionRevisionPath(entry.path) ||
+        typeof entry.mtimeMs !== "number" ||
+        !Number.isFinite(entry.mtimeMs) ||
+        entry.mtimeMs < 0 ||
+        entry.mtimeMs > DELETION_REVISION_MAX_MTIME_MS ||
+        revisions.has(entry.path)
       ) {
         throw new Error("Deletion revision metadata is invalid.");
       }
@@ -2726,9 +2725,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       pathByIdentity.set(identity, entry.path);
       revisions.set(entry.path, entry.mtimeMs);
     }
-    return new Map(
-      [...revisions.entries()].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-    );
+    return new Map([...revisions.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)));
   }
 
   private async readDeletionRevisionMetadata(): Promise<Map<string, number>> {
@@ -2747,11 +2744,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     lock: HeldFileLockController
   ): Promise<void> {
     const deletions = [...revisions.entries()]
-      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([entryPath, mtimeMs]) => ({ path: entryPath, mtimeMs }));
     const metadata: DeletionRevisionMetadata = { version: 1, deletions };
-    const temporaryPath =
-      `${this.deletionRevisionMetadataPath}.${process.pid}.${randomUUID()}.tmp`;
+    const temporaryPath = `${this.deletionRevisionMetadataPath}.${process.pid}.${randomUUID()}.tmp`;
     let handle: FileHandle | null = null;
     try {
       handle = await open(temporaryPath, "wx", 0o600);
@@ -2771,9 +2767,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
-  private async withDeletionRevisionLock<T>(
-    task: (lock: HeldFileLockController) => Promise<T>
-  ): Promise<T> {
+  private async withDeletionRevisionLock<T>(task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
     return withHeldFileLock(
       this.deletionRevisionLockPath,
       {
@@ -2792,15 +2786,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   async recordReplicatedDeletionRevision(filePath: string, mtimeMs: number): Promise<void> {
-    const target = this.assertManagedStoragePath(
-      filePath,
-      "storage.recordReplicatedDeletionRevision"
-    );
+    const target = this.assertManagedStoragePath(filePath, "storage.recordReplicatedDeletionRevision");
     if (
-      typeof mtimeMs !== "number"
-      || !Number.isFinite(mtimeMs)
-      || mtimeMs < 0
-      || mtimeMs > DELETION_REVISION_MAX_MTIME_MS
+      typeof mtimeMs !== "number" ||
+      !Number.isFinite(mtimeMs) ||
+      mtimeMs < 0 ||
+      mtimeMs > DELETION_REVISION_MAX_MTIME_MS
     ) {
       throw new Error("Deletion revision timestamp is invalid.");
     }
@@ -2818,8 +2809,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           break;
         }
       }
-      const existingMtimeMs =
-        existingPath === undefined ? undefined : revisions.get(existingPath);
+      const existingMtimeMs = existingPath === undefined ? undefined : revisions.get(existingPath);
       if (existingMtimeMs !== undefined && existingMtimeMs >= mtimeMs) return;
 
       const updated = new Map(revisions);
@@ -2829,10 +2819,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
   }
 
-  protected async writeManagedStorageFile(
-    filePath: string,
-    write: () => Promise<void>
-  ): Promise<void> {
+  protected async writeManagedStorageFile(filePath: string, write: () => Promise<void>): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeManagedStorageFile");
     const relativePath = path.relative(this.baseDir, target).split(path.sep).join("/");
     if (!isValidDeletionRevisionPath(relativePath)) {
@@ -2841,8 +2828,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await this.withDeletionRevisionLock(async (lock) => {
       const before = await this.readDeletionRevisionMetadata();
       const identity = deletionRevisionPathIdentity(relativePath);
-      const existingPath = [...before.keys()]
-        .find((candidatePath) => deletionRevisionPathIdentity(candidatePath) === identity);
+      const existingPath = [...before.keys()].find(
+        (candidatePath) => deletionRevisionPathIdentity(candidatePath) === identity
+      );
       await write();
       if (existingPath === undefined) return;
       const updated = new Map(before);
@@ -2851,19 +2839,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
   }
 
-  protected async deleteManagedStorageFile(
-    filePath: string,
-    deletionMtimeMs?: number | null
-  ): Promise<boolean> {
+  protected async deleteManagedStorageFile(filePath: string, deletionMtimeMs?: number | null): Promise<boolean> {
     const target = this.assertManagedStoragePath(filePath, "storage.deleteManagedStorageFile");
     if (
-      deletionMtimeMs !== undefined && deletionMtimeMs !== null
-      && (
-        typeof deletionMtimeMs !== "number"
-        || !Number.isFinite(deletionMtimeMs)
-        || deletionMtimeMs < 0
-        || deletionMtimeMs > DELETION_REVISION_MAX_MTIME_MS
-      )
+      deletionMtimeMs !== undefined &&
+      deletionMtimeMs !== null &&
+      (typeof deletionMtimeMs !== "number" ||
+        !Number.isFinite(deletionMtimeMs) ||
+        deletionMtimeMs < 0 ||
+        deletionMtimeMs > DELETION_REVISION_MAX_MTIME_MS)
     ) {
       throw new Error("Deletion revision timestamp is invalid.");
     }
@@ -2878,7 +2862,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (!isValidDeletionRevisionPath(relativePath)) {
         throw new Error("Deletion revision path is invalid.");
       }
-      const revision = deletionMtimeMs === null ? undefined : deletionMtimeMs ?? Date.now();
+      const revision = deletionMtimeMs === null ? undefined : (deletionMtimeMs ?? Date.now());
       const before = await this.readDeletionRevisionMetadata();
       const identity = deletionRevisionPathIdentity(relativePath);
       let existingPath: string | undefined;
@@ -2890,8 +2874,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
       const existing = existingPath === undefined ? undefined : before.get(existingPath);
       const changed =
-        (existingPath !== undefined && existingPath !== relativePath)
-        || (revision === undefined ? existing !== undefined : existing !== revision);
+        (existingPath !== undefined && existingPath !== relativePath) ||
+        (revision === undefined ? existing !== undefined : existing !== revision);
       if (changed) {
         const updated = new Map(before);
         if (existingPath !== undefined) updated.delete(existingPath);
@@ -3331,7 +3315,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         () => this.currentHistoricalIds(),
         (identity) => store.appendTombstone({ ...input, rawContent: strippedRawContent, ...identity }),
         (tombstoneId) => store.revoke(tombstoneId, input.createdBy),
-        input.sourceMemoryId,
+        input.sourceMemoryId
       );
     } catch (err) {
       log.warn(`tombstone append failed (memory=${input.sourceMemoryId}): ${err}`);
@@ -3724,12 +3708,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private readonly entityCanonicalIdMigration = new EntityCanonicalIdMigrationRunner(
     () => !(this._secureStoreRequired && !this.isSecureStoreUnlocked()),
     () => this.runLegacyEntityCanonicalIdMigration(),
-    () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => String(this.getEntityMutationVersion())),
+    () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => String(this.getEntityMutationVersion()))
   );
   normalizeEntityName(raw: string, type: string): string {
     return entityRefs.resolveHistoricalEntityCanonicalId(
       this.entityStore.normalizeEntityName(raw, type),
-      this.currentHistoricalIds(),
+      this.currentHistoricalIds()
     );
   }
 
@@ -3783,7 +3767,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       this as unknown as EntityCanonicalIdMigrationHost,
       (content) => parseEntityFile(content, this.entitySchemas),
       (entity) => serializeEntityFile(entity, this.entitySchemas),
-      createMemoryEntityRefSerializer(serializeFrontmatter),
+      createMemoryEntityRefSerializer(serializeFrontmatter)
     );
     return completionFingerprint;
   }
@@ -4033,14 +4017,41 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       await this.writeTombstoneBlockedMemory(filePath, fileContent, fm, sanitized.text, async () => {
         this.invalidateAllMemoriesCache();
       });
+      if (refIds && typeof rawEntityRef === "string") {
+        const refBeforeRepair = fm.entityRef;
+        try {
+          await entityRefs.repairEntityRefAfterJournalMove({
+            stateDir: this.stateDir,
+            currentIds: () => this.currentHistoricalIds(),
+            idsAtResolve: refIds,
+            rawRef: rawEntityRef,
+            frontmatter: fm,
+            rewrite: async () => {
+              await applyTombstoneGate();
+              await this.writeTombstoneBlockedMemory(
+                filePath,
+                `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`,
+                fm,
+                sanitized.text,
+                async () => this.invalidateAllMemoriesCache()
+              );
+              this.invalidateAllMemoriesCache();
+            },
+          });
+        } catch (err) {
+          await unlink(filePath).catch(() => undefined);
+          this.invalidateAllMemoriesCache();
+          await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath);
+          throw err;
+        }
+        await this.entityRefRepair.syncProjection(id, refBeforeRepair, fm.entityRef);
+      }
       return null;
     };
-    const duplicateBlocked = tombstoneBlocked
-      ? await this.withTombstoneBlockedCaptureWriteLock(
-          persistFile,
-          buildExplicitCaptureDedupKey(sanitized.text, category, fm.sourceConnector)
-        )
-      : await persistFile();
+    const duplicateBlocked = await this.withTombstoneBlockedCaptureWriteLock(persistFile, [
+      buildCapturePathLockIdentity(filePath),
+      buildExplicitCaptureDedupKey(sanitized.text, category, fm.sourceConnector),
+    ]);
     if (duplicateBlocked) {
       return {
         id: duplicateBlocked.frontmatter.id,
@@ -4048,38 +4059,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         blockedBy: duplicateBlocked.frontmatter.blockedBy,
         duplicateOf: duplicateBlocked.frontmatter.id,
       };
-    }
-    if (refIds && typeof rawEntityRef === "string") {
-      const refBeforeRepair = fm.entityRef;
-      try {
-        await entityRefs.repairEntityRefAfterJournalMove({
-          stateDir: this.stateDir,
-          currentIds: () => this.currentHistoricalIds(),
-          idsAtResolve: refIds,
-          rawRef: rawEntityRef,
-          frontmatter: fm,
-          rewrite: async () => {
-            // Re-gate under the final ref, then rewrite THROUGH the blocked-
-            // capture surface so any verdict change keeps the index consistent.
-            await applyTombstoneGate();
-            await this.writeTombstoneBlockedMemory(
-              filePath,
-              `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`,
-              fm,
-              sanitized.text,
-              async () => this.invalidateAllMemoriesCache(),
-            );
-            this.invalidateAllMemoriesCache();
-          },
-        });
-      } catch (err) {
-        // Remove the just-created file before propagating (§14): it would
-        // linger un-bumped/un-indexed and a retry would duplicate it.
-        await unlink(filePath).catch(() => undefined);
-        this.invalidateAllMemoriesCache();
-        throw err;
-      }
-      await this.entityRefRepair.syncProjection(id, refBeforeRepair, fm.entityRef);
     }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
@@ -4508,16 +4487,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (newBullets.length === 0) return;
 
     if (!existing) {
-      const content = [
-        "# Behavioral Profile",
-        "",
-        ...newBullets.map((b) => `- ${b}`),
-        "",
-      ].join("\n");
+      const content = ["# Behavioral Profile", "", ...newBullets.map((b) => `- ${b}`), ""].join("\n");
       await this.writeProfile(content);
     } else {
-      const withBullets =
-        existing.trimEnd() + "\n" + newBullets.map((b) => `- ${b}`).join("\n") + "\n";
+      const withBullets = existing.trimEnd() + "\n" + newBullets.map((b) => `- ${b}`).join("\n") + "\n";
       await this.writeProfile(withBullets);
     }
   }
@@ -4882,15 +4855,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             const raw = await readMaybeEncryptedFile(fullPath, this._secureStoreKey, this.baseDir);
             const parsed = parseFrontmatter(raw);
             if (!parsed) return null;
-            return rememberRawFrontmatter({
-              path: fullPath,
-              frontmatter: normalizeFrontmatterForPath(
-                parsed.frontmatter,
-                toMemoryPathRel(this.baseDir, fullPath),
-                parsed.content
-              ),
-              content: parsed.content,
-            } satisfies MemoryFile, raw);
+            return rememberRawFrontmatter(
+              {
+                path: fullPath,
+                frontmatter: normalizeFrontmatterForPath(
+                  parsed.frontmatter,
+                  toMemoryPathRel(this.baseDir, fullPath),
+                  parsed.content
+                ),
+                content: parsed.content,
+              } satisfies MemoryFile,
+              raw
+            );
           } catch (err) {
             // Re-throw store-locked errors so a locked encrypted store fails
             // loudly rather than appearing as an empty memory corpus (Cursor
@@ -5041,15 +5017,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
               const raw = await readMaybeEncryptedFile(fullPath, this._secureStoreKey, this.baseDir);
               const parsed = parseFrontmatter(raw);
               if (parsed) {
-                memories.push(rememberRawFrontmatter({
-                  path: fullPath,
-                  frontmatter: normalizeFrontmatterForPath(
-                    parsed.frontmatter,
-                    toMemoryPathRel(this.baseDir, fullPath),
-                    parsed.content
-                  ),
-                  content: parsed.content,
-                }, raw));
+                memories.push(
+                  rememberRawFrontmatter(
+                    {
+                      path: fullPath,
+                      frontmatter: normalizeFrontmatterForPath(
+                        parsed.frontmatter,
+                        toMemoryPathRel(this.baseDir, fullPath),
+                        parsed.content
+                      ),
+                      content: parsed.content,
+                    },
+                    raw
+                  )
+                );
               }
             } catch (err) {
               // Re-throw store-locked errors — a locked encrypted store
@@ -5119,7 +5100,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`,
         this.resolveWriteKey(),
         {},
-        this.baseDir,
+        this.baseDir
       );
     // Snapshot pre-write destination bytes (raw — encryption-agnostic) so a
     // repair failure restores them or removes a fresh copy (§14): a retained
@@ -5158,17 +5139,51 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     this.notifyCatalogWrite();
   }
   async moveMemoryToPath(memory: MemoryFile, targetPath: string): Promise<void> {
-    await this.writeMemoryFileAtomic(targetPath, memory);
-    const sourcePath = path.resolve(memory.path);
-    const destPath = path.resolve(targetPath);
-    if (sourcePath !== destPath) {
-      await this.deleteManagedStorageFile(memory.path);
-      // Re-invalidate after the unlink — writeMemoryFileAtomic already
-      // invalidated, but a concurrent readAllMemories() may have re-populated
-      // the cache between the write and the unlink.
-      this.invalidateAllMemoriesCache();
-      updateProjectedMemoryPath(this.baseDir, memory.frontmatter.id, toMemoryPathRel(this.baseDir, targetPath));
-    }
+    await this.withTombstoneBlockedMemoryPathLock(
+      memory.path,
+      async (current) => {
+        if (current?.frontmatter.id !== memory.frontmatter.id) {
+          throw new Error(`memory ${memory.frontmatter.id} changed before its tier move`);
+        }
+        const destination = await this.readMemoryByPath(targetPath);
+        const coordinate =
+          tombstoneBlocked(current.frontmatter) ||
+          isQueuedReviewMemory(current) ||
+          (destination !== null && tombstoneBlocked(destination.frontmatter)) ||
+          isQueuedReviewMemory(destination);
+        const index = this.getTombstoneBlockedCaptureIndex();
+        const marker = coordinate ? await index.prepareWrite() : undefined;
+        let durable = false;
+        try {
+          if (destination?.frontmatter.id === current.frontmatter.id) {
+            await this.deleteManagedStorageFile(current.path);
+            durable = true;
+            this.invalidateAllMemoriesCache();
+            updateProjectedMemoryPath(this.baseDir, current.frontmatter.id, toMemoryPathRel(this.baseDir, targetPath));
+          } else {
+            await this.writeMemoryFileAtomic(targetPath, current);
+            durable = true;
+            const sourcePath = path.resolve(current.path);
+            const destPath = path.resolve(targetPath);
+            if (sourcePath !== destPath) {
+              await this.deleteManagedStorageFile(current.path);
+              this.invalidateAllMemoriesCache();
+              updateProjectedMemoryPath(
+                this.baseDir,
+                current.frontmatter.id,
+                toMemoryPathRel(this.baseDir, targetPath)
+              );
+            }
+          }
+          if (marker !== undefined) await this.rebuildTombstoneBlockedCaptureAfterInvalidation(marker);
+        } catch (error) {
+          if (marker !== undefined && !durable) await index.discardWrite(marker).catch(() => index.markUntrusted());
+          if (marker !== undefined && durable) index.markUntrusted();
+          throw error;
+        }
+      },
+      [targetPath]
+    );
   }
 
   async migrateMemoryToTier(
@@ -5179,14 +5194,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const sourcePath = path.resolve(memory.path);
     const destPath = path.resolve(targetPath);
     if (sourcePath === destPath) {
-      return { changed: false, targetPath };
-    }
-
-    const existing = await this.readMemoryByPath(targetPath);
-    if (existing?.frontmatter.id === memory.frontmatter.id) {
-      await this.deleteManagedStorageFile(memory.path);
-      updateProjectedMemoryPath(this.baseDir, memory.frontmatter.id, toMemoryPathRel(this.baseDir, targetPath));
-      this.bumpMemoryStatusVersion();
       return { changed: false, targetPath };
     }
 
@@ -5226,7 +5233,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             archivedAt: now.toISOString(),
             updated: now.toISOString(),
           },
-          refIdsAtWrite,
+          refIdsAtWrite
         );
         const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
         const destPath = path.join(destDir, path.basename(current.path));
@@ -5237,7 +5244,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         if (typeof current.frontmatter.entityRef === "string") {
           try {
             await this.entityRefRepair.repair(
-              destPath, updatedFm, current.frontmatter.entityRef, refIdsAtWrite, current.content,
+              destPath,
+              updatedFm,
+              current.frontmatter.entityRef,
+              refIdsAtWrite,
+              current.content
             );
           } catch (err) {
             // Restore/remove the destination before reporting failure (§14):
@@ -5343,25 +5354,21 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return null;
   }
 
-
   async invalidateMemory(id: string): Promise<boolean> {
     const memories = await this.readAllMemories();
     const memory = memories.find((candidate) => candidate.frontmatter.id === id);
     if (!memory) return false;
 
-    return await this.runTombstoneBlockedInvalidation(
-      memory,
-      async (current, rebuildMarker, markDurable) => {
-        if (!(await this.deleteManagedStorageFile(current.path))) return false;
-        markDurable();
-        markProjectedMemoryPathInvalid(this.baseDir, id);
-        this.invalidateAllMemoriesCache();
-        await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
-        this.bumpMemoryStatusVersion();
-        log.debug(`invalidated memory ${id}`);
-        return true;
-      }
-    );
+    return await this.runTombstoneBlockedInvalidation(memory, async (current, rebuildMarker, markDurable) => {
+      if (!(await this.deleteManagedStorageFile(current.path))) return false;
+      markDurable();
+      markProjectedMemoryPathInvalid(this.baseDir, id);
+      this.invalidateAllMemoriesCache();
+      await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
+      this.bumpMemoryStatusVersion();
+      log.debug(`invalidated memory ${id}`);
+      return true;
+    });
   }
 
   async updateMemory(
@@ -5389,7 +5396,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           ? { sourceConnector: options.sourceConnector }
           : {}),
       },
-      refIdsAtWrite,
+      refIdsAtWrite
     );
     const sanitized = sanitizeMemoryContent(newContent);
     if (!sanitized.clean) {
@@ -5401,8 +5408,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
     if (typeof memory.frontmatter.entityRef === "string") {
       await this.entityRefRepair.repair(
-        memory.path, updated, memory.frontmatter.entityRef, refIdsAtWrite, sanitized.text,
-        { onFailRestore: memory },
+        memory.path,
+        updated,
+        memory.frontmatter.entityRef,
+        refIdsAtWrite,
+        sanitized.text,
+        { onFailRestore: memory }
       );
     }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
@@ -5437,7 +5448,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const resolveIds = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       { ...memory.frontmatter, ...patch },
-      resolveIds,
+      resolveIds
     );
     const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
     const afterStatus = updated.status ?? "active";
@@ -5452,10 +5463,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
     const rawMergedRef = typeof patch.entityRef === "string" ? patch.entityRef : memory.frontmatter.entityRef;
     if (refIds && typeof rawMergedRef === "string") {
-      await this.entityRefRepair.repair(
-        memory.path, updated, rawMergedRef, refIds, memory.content,
-        { onFailRestore: memory },
-      );
+      await this.entityRefRepair.repair(memory.path, updated, rawMergedRef, refIds, memory.content, {
+        onFailRestore: memory,
+      });
     }
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
@@ -6603,26 +6613,31 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         : memoryMap.get(entry.memoryId);
       if (!memory) continue;
 
-      const rowIds = this.currentHistoricalIds();
-      const newFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
-        { ...memory.frontmatter, accessCount: entry.newCount, lastAccessed: entry.lastAccessed },
-        rowIds,
-      );
-
       try {
-        const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
-        await this.writeStorageSecureFile(memory.path, fileContent);
-        if (typeof memory.frontmatter.entityRef === "string") {
-          // onFailRestore (§14): the count patch was never reported applied.
-          await this.entityRefRepair.repair(
-            memory.path, newFm, memory.frontmatter.entityRef, rowIds, memory.content,
-            { onFailRestore: memory },
+        const applied = await this.withTombstoneBlockedMemoryPathLock(memory.path, async (current) => {
+          if (current?.frontmatter.id !== entry.memoryId) return null;
+          const rowIds = this.currentHistoricalIds();
+          const newFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
+            { ...current.frontmatter, accessCount: entry.newCount, lastAccessed: entry.lastAccessed },
+            rowIds
           );
-        }
-        // Patch the hot corpus cache entry in place (#1902); the shared
-        // sentinel is bumped once after the loop for cross-process coherence.
+          const fileContent = `${serializeFrontmatter(newFm)}\n\n${current.content}\n`;
+          await this.writeTombstoneBlockedFrontmatter(current, fileContent, newFm);
+          if (typeof current.frontmatter.entityRef === "string") {
+            await this.entityRefRepair.repair(
+              current.path,
+              newFm,
+              current.frontmatter.entityRef,
+              rowIds,
+              current.content,
+              { onFailRestore: current }
+            );
+          }
+          return { current, newFm };
+        });
+        if (applied === null) continue;
         if (warm) {
-          updateCacheOnWrite(this.baseDir, { ...memory, frontmatter: newFm }, keyId);
+          updateCacheOnWrite(this.baseDir, { ...applied.current, frontmatter: applied.newFm }, keyId);
         }
         appliedPatches.set(path.resolve(memory.path), {
           accessCount: entry.newCount,
@@ -6928,20 +6943,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
-    // A retried chunk write lands on the SAME deterministic path, so the
-    // target can already hold a valid prior chunk: snapshot it, and a repair
-    // failure restores it — unlink only a file THIS invocation created
-    // (Codex P2, round 22).
-    let priorChunk: MemoryFile | null = null;
-    try {
-      const priorRaw = await readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
-      const parsedPrior = parseFrontmatter(priorRaw);
-      if (parsedPrior) {
-        priorChunk = { path: filePath, frontmatter: parsedPrior.frontmatter, content: parsedPrior.content };
-      }
-    } catch {
-      priorChunk = null;
-    }
 
     const written = await this.writeTombstoneBlockedChunk(
       filePath,
@@ -6949,24 +6950,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       fm,
       sanitized.text,
       () => this.findExistingTombstoneBlockedMemory(sanitized.text, category, fm.sourceConnector),
-      async () => {
+      async (priorChunk) => {
+        if (refIds && typeof rawEntityRef === "string") {
+          await this.entityRefRepair.repair(filePath, fm, rawEntityRef, refIds, sanitized.text, {
+            regateFact: true,
+            ...(priorChunk ? { onFailRestore: priorChunk } : { onFailRemove: filePath }),
+          });
+        }
         // Keep the version-keyed hot-memories cache coherent with the new chunk
         // file (issue #1902) — same single-file patch path writeMemory uses.
         await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
         log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
       }
     );
-    // Repair only when THIS chunk persisted: a tombstone-dedupe result
-    // returns an existing id without writing filePath, and an unconditional
-    // repair rewrite would create a stray second chunk from scratch. The
-    // rewrite RE-GATES under the final ref (Bugbot): a journal move into
-    // tombstone-blocked identity space must not leave a fact chunk active.
-    if (written === id && refIds && typeof rawEntityRef === "string") {
-      await this.entityRefRepair.repair(filePath, fm, rawEntityRef, refIds, sanitized.text, {
-        regateFact: true,
-        ...(priorChunk ? { onFailRestore: priorChunk } : { onFailRemove: filePath }),
-      });
-    }
     return written;
   }
 
@@ -6995,25 +6991,33 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!oldMemory) return false;
 
     const now = new Date().toISOString();
-    // Whole-record rewrite — inherited-entityRef rule (issue #2213).
-    const refIdsAtWrite = this.currentHistoricalIds();
-    const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
-      { ...oldMemory.frontmatter, status: "superseded", supersededBy: newMemoryId, supersededAt: now, updated: now },
-      refIdsAtWrite,
-    );
-
-    const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${oldMemory.content}\n`;
+    let currentBefore = oldMemory;
+    let updatedFm = oldMemory.frontmatter;
 
     try {
-      await this.writeStorageSecureFile(oldMemory.path, fileContent);
-      if (typeof oldMemory.frontmatter.entityRef === "string") {
-        // onFailRestore (§14): a record left superseded on disk would skip
-        // its non-resurrection tombstone while caches expose the old state.
-        await this.entityRefRepair.repair(
-          oldMemory.path, updatedFm, oldMemory.frontmatter.entityRef, refIdsAtWrite, oldMemory.content,
-          { onFailRestore: oldMemory },
+      const written = await this.withTombstoneBlockedMemoryPathLock(oldMemory.path, async (current) => {
+        if (current?.frontmatter.id !== oldMemoryId) return false;
+        currentBefore = current;
+        const refIdsAtWrite = this.currentHistoricalIds();
+        updatedFm = entityRefs.canonicalizeEntityRefOption(
+          { ...current.frontmatter, status: "superseded", supersededBy: newMemoryId, supersededAt: now, updated: now },
+          refIdsAtWrite
         );
-      }
+        const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
+        await this.writeTombstoneBlockedFrontmatter(current, fileContent, updatedFm);
+        if (typeof current.frontmatter.entityRef === "string") {
+          await this.entityRefRepair.repair(
+            current.path,
+            updatedFm,
+            current.frontmatter.entityRef,
+            refIdsAtWrite,
+            current.content,
+            { onFailRestore: current }
+          );
+        }
+        return true;
+      });
+      if (!written) return false;
       // Advance the corpus sentinel immediately after the on-disk write, BEFORE
       // the awaited lifecycle append (Cursor Medium, #1902). Otherwise a warm
       // hot-memories cache keeps serving the pre-supersede snapshot during the
@@ -7026,8 +7030,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         timestamp: now,
         actor: "storage.supersedeMemory",
         reasonCode: reason,
-        before: this.summarizeLifecycleState(oldMemory.frontmatter, oldMemory.path),
-        after: this.summarizeLifecycleState(updatedFm, oldMemory.path),
+        before: this.summarizeLifecycleState(currentBefore.frontmatter, currentBefore.path),
+        after: this.summarizeLifecycleState(updatedFm, currentBefore.path),
         relatedMemoryIds: [newMemoryId],
       });
       this.bumpMemoryStatusVersion();
@@ -7037,14 +7041,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // so emitting covers each exactly once (rule 22); facts only. One
       // tombstone PER derived supersession key (thread Oci-Y) so a
       // paraphrased re-write is caught on the keyed tier.
-      if (oldMemory.frontmatter.category === "fact") {
+      if (currentBefore.frontmatter.category === "fact") {
         for (const input of buildRetiredFactTombstoneInputs(
           {
             id: oldMemoryId,
-            content: stripCitationForTemplate(oldMemory.content, this.citationTemplate),
-            contentHash: oldMemory.frontmatter.contentHash,
+            content: stripCitationForTemplate(currentBefore.content, this.citationTemplate),
+            contentHash: currentBefore.frontmatter.contentHash,
             entityRef: updatedFm.entityRef,
-            structuredAttributes: oldMemory.frontmatter.structuredAttributes,
+            structuredAttributes: currentBefore.frontmatter.structuredAttributes,
           },
           {
             reason: "contradiction_resolution",
@@ -7058,7 +7062,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
 
       // Audit-trail correction — sealed even INSIDE the engine (#2022 review).
-      const auditBody = `Superseded: ${oldMemory.content}\n\nReason: ${reason}`;
+      const auditBody = `Superseded: ${currentBefore.content}\n\nReason: ${reason}`;
       const auditInput = {
         content: auditBody,
         category: "correction" as const,
@@ -7129,22 +7133,33 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (!memory) continue;
 
       const now = new Date().toISOString();
-      const rowIds = this.currentHistoricalIds();
-      const updatedFm: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
-        { ...memory.frontmatter, status: "archived", archivedAt: now, updated: now },
-        rowIds,
-      );
+      let currentBefore = memory;
+      let updatedFm = memory.frontmatter;
 
       try {
-        const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
-        await this.writeStorageSecureFile(memory.path, fileContent);
-        if (typeof memory.frontmatter.entityRef === "string") {
-          // onFailRestore (§14): the method reports the row NOT archived.
-          await this.entityRefRepair.repair(
-            memory.path, updatedFm, memory.frontmatter.entityRef, rowIds, memory.content,
-            { onFailRestore: memory },
+        const written = await this.withTombstoneBlockedMemoryPathLock(memory.path, async (current) => {
+          if (current?.frontmatter.id !== id) return false;
+          currentBefore = current;
+          const rowIds = this.currentHistoricalIds();
+          updatedFm = entityRefs.canonicalizeEntityRefOption(
+            { ...current.frontmatter, status: "archived", archivedAt: now, updated: now },
+            rowIds
           );
-        }
+          const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
+          await this.writeTombstoneBlockedFrontmatter(current, fileContent, updatedFm);
+          if (typeof current.frontmatter.entityRef === "string") {
+            await this.entityRefRepair.repair(
+              current.path,
+              updatedFm,
+              current.frontmatter.entityRef,
+              rowIds,
+              current.content,
+              { onFailRestore: current }
+            );
+          }
+          return true;
+        });
+        if (!written) continue;
         // Per-file corpus bump BEFORE the awaited lifecycle append (#1902):
         // the end-of-loop status bump fires only after the whole batch.
         this.bumpMemoryCorpusVersion();
@@ -7154,8 +7169,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           timestamp: updatedFm.archivedAt ?? updatedFm.updated,
           actor: "storage.archiveMemories",
           reasonCode: `summary:${summaryId}`,
-          before: this.summarizeLifecycleState(memory.frontmatter, memory.path),
-          after: this.summarizeLifecycleState(updatedFm, memory.path),
+          before: this.summarizeLifecycleState(currentBefore.frontmatter, currentBefore.path),
+          after: this.summarizeLifecycleState(updatedFm, currentBefore.path),
           relatedMemoryIds: [summaryId],
         });
         archived++;
