@@ -27,7 +27,7 @@ import type {
   TrustWeights,
 } from "./types.js";
 import { parseConvergeConfig } from "./converge-config.js";
-import { isExternalWikiCollectionName } from "./external-wiki-guard.js";
+import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
 import { cloneDefaultSessionObserverBands } from "./session-observer-bands.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
@@ -1560,34 +1560,8 @@ export function parseConfig(
     "maintenance.namespaceLockStaleMs",
   );
 
-  const wikiMergeIntoRecall = resolveBooleanConfig(
-    cfg.wikiMergeIntoRecall,
-    false,
-    "wikiMergeIntoRecall",
-  );
-  if (wikiMergeIntoRecall) {
-    throw new Error(
-      "wikiMergeIntoRecall=true is not supported; external wiki content is available only through on-demand search",
-    );
-  }
-  const qmdCollection =
-    typeof cfg.qmdCollection === "string"
-      ? cfg.qmdCollection
-      : "openclaw-engram";
-  const qmdColdCollection =
-    typeof cfg.qmdColdCollection === "string" && cfg.qmdColdCollection.length > 0
-      ? cfg.qmdColdCollection
-      : "openclaw-engram-cold";
-  if (isExternalWikiCollectionName(qmdCollection)) {
-    throw new Error(
-      "qmdCollection must be a memory collection; external wiki collections are on-demand only",
-    );
-  }
-  if (isExternalWikiCollectionName(qmdColdCollection)) {
-    throw new Error(
-      "qmdColdCollection must be a memory collection; external wiki collections are on-demand only",
-    );
-  }
+  const { wikiMergeIntoRecall, qmdCollection, qmdColdCollection } =
+    parseExternalWikiRecallGuard(cfg);
 
   return {
     openaiApiKey: apiKey,

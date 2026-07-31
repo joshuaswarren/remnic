@@ -1,7 +1,17 @@
 import path from "node:path";
 import { assertExternalWikiRootOutsideMemoryDir } from "./external-wiki-guard.js";
-import type { ExternalWikiRoot } from "./types.js";
 import { expandTildePath } from "./utils/path.js";
+
+export interface ExternalWikiRoot {
+  id: string;
+  rootDir: string;
+  enabled: boolean;
+  label?: string;
+  pagesDir: string;
+  indexFile: string;
+  indexInQmd: boolean;
+  includeInDefaultRecall: false;
+}
 
 const EXTERNAL_WIKI_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 

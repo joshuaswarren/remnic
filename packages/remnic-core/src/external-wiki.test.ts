@@ -3,7 +3,7 @@ import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import * as core from "./index.js";
-import type { ExternalWikiRoot } from "./types.js";
+import type { ExternalWikiRoot } from "./external-wiki-config.js";
 import type {
   loadExternalWikiCatalog,
   parseExternalWikiCatalog,
