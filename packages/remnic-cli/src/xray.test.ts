@@ -17,6 +17,9 @@ function minimalSnapshot(): RecallXraySnapshot {
     capturedAt: 1_700_000_000_000,
     tierExplain: null,
     results: [],
+    appliedResultLimit: 0,
+    appliedResults: [],
+    headroomResults: [],
     filters: [],
     budget: { chars: 4096, used: 0 },
   };

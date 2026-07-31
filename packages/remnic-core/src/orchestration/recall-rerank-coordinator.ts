@@ -35,6 +35,23 @@ import { reorderRecallResultsWithMmr } from "../recall-mmr.js";
 import { applyReasoningTraceBoost } from "../reasoning-trace-recall.js";
 import { memoryMapKey } from "../recall-memory-map.js";
 
+export interface RecallResultPartition {
+  appliedResults: QmdSearchResult[];
+  headroomResults: QmdSearchResult[];
+}
+export interface RecallResultPartitionSink {
+  partition: RecallResultPartition | null;
+}
+
+export function reconcileRecallResultPartition(
+  partition: RecallResultPartition | null | undefined,
+  appliedResults: QmdSearchResult[],
+): RecallResultPartition | null {
+  return partition
+    ? { appliedResults, headroomResults: partition.headroomResults }
+    : null;
+}
+
 /**
  * Coordinator for the recall-result reranking subsystem.
  *
@@ -479,40 +496,58 @@ export class RecallRerankCoordinator {
     return { results, trustByPath: null };
   }
 
+  diversifyRecallResultsWithHeadroom(
+    sectionId: string,
+    results: QmdSearchResult[],
+    limit: number,
+    retrievalQuery?: string,
+    caps: CapabilitySet = resolveCapabilities(this.getConfig()),
+  ): RecallResultPartition {
+    const safeLimit =
+      typeof limit === "number" && Number.isFinite(limit)
+        ? Math.max(0, Math.floor(limit))
+        : 0;
+    const candidates = Array.isArray(results) ? results : [];
+    let orderedPool: QmdSearchResult[] | undefined;
+    const resolveOrderedPool = (): QmdSearchResult[] => {
+      if (orderedPool) return orderedPool;
+      const boosted =
+        caps.recallReasoningTraceBoost && typeof retrievalQuery === "string"
+          ? applyReasoningTraceBoost(candidates, {
+              enabled: true,
+              query: retrievalQuery,
+            })
+          : candidates;
+      orderedPool = this.applyMmrToQmdResults(sectionId, boosted, caps);
+      return orderedPool;
+    };
+
+    return {
+      get appliedResults(): QmdSearchResult[] {
+        if (safeLimit === 0 || candidates.length === 0) return [];
+        return resolveOrderedPool().slice(0, safeLimit);
+      },
+      get headroomResults(): QmdSearchResult[] {
+        if (candidates.length === 0) return [];
+        return resolveOrderedPool().slice(safeLimit);
+      },
+    };
+  }
+
   diversifyAndLimitRecallResults(
     sectionId: string,
     results: QmdSearchResult[],
     limit: number,
     retrievalQuery?: string,
-    // `caps` is additive AND last (issue #1523) so the positional call shape
-    // stays backward-compatible: the recall pipeline threads a resolved set,
-    // but callers that omit it (e.g. direct unit-test invocations) get an
-    // equivalent set derived from the same config — behavior-preserving.
     caps: CapabilitySet = resolveCapabilities(this.getConfig()),
   ): QmdSearchResult[] {
-    const safeLimit =
-      typeof limit === "number" && Number.isFinite(limit)
-        ? Math.max(0, Math.floor(limit))
-        : 0;
-    if (!Array.isArray(results) || results.length === 0) return [];
-    // `recallResultLimit === 0` is a true zero limit (e.g. when
-    // `memoriesSectionEnabled` is false) and must return an empty array so
-    // the memories section is genuinely skipped. This mirrors the
-    // `slice(0, 0)` semantics of every call site this helper replaced.
-    if (safeLimit === 0) return [];
-    // Issue #564 PR 3: when the feature flag is on, boost reasoning_trace
-    // memories for problem-solving asks so they bubble up ahead of ordinary
-    // facts/decisions before MMR picks the final section. No-op when the
-    // flag is off or the query is not a problem-solving ask.
-    const boosted =
-      caps.recallReasoningTraceBoost && typeof retrievalQuery === "string"
-        ? applyReasoningTraceBoost(results, {
-            enabled: true,
-            query: retrievalQuery,
-          })
-        : results;
-    const diversified = this.applyMmrToQmdResults(sectionId, boosted, caps);
-    return diversified.slice(0, safeLimit);
+    return this.diversifyRecallResultsWithHeadroom(
+      sectionId,
+      results,
+      limit,
+      retrievalQuery,
+      caps,
+    ).appliedResults;
   }
 
   /**

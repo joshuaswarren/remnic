@@ -9,7 +9,7 @@ import {
   REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
   type RemnicChatGptMemoryInspectorResult,
 } from "../src/mcp-memory-inspector-app.js";
-import type { RecallXrayResult } from "../src/recall-xray.js";
+import type { RecallXrayResult, RecallXraySnapshot } from "../src/recall-xray.js";
 import { EngramMcpServer } from "../src/access-mcp.js";
 import type {
   EngramAccessRecallResponse,
@@ -20,6 +20,20 @@ interface Capture {
   recalls: Array<Record<string, unknown>>;
   xrays: Array<Record<string, unknown>>;
   actionRequests: Array<Record<string, unknown>>;
+}
+
+function legacyXraySnapshot(
+  snapshot: Omit<
+    RecallXraySnapshot,
+    "appliedResultLimit" | "appliedResults" | "headroomResults"
+  >,
+): RecallXraySnapshot {
+  return {
+    ...snapshot,
+    appliedResultLimit: snapshot.results.length,
+    appliedResults: snapshot.results,
+    headroomResults: [],
+  };
 }
 
 function fakeService(capture: Capture): EngramAccessService {
@@ -73,7 +87,7 @@ function fakeService(capture: Capture): EngramAccessService {
       };
       return {
         snapshotFound: true,
-        snapshot: {
+        snapshot: legacyXraySnapshot({
           schemaVersion: "1" as const,
           query: String(request.query ?? ""),
           snapshotId: "snap-chatgpt-app",
@@ -108,7 +122,7 @@ function fakeService(capture: Capture): EngramAccessService {
           budget: { chars: 4096, used: 51 },
           namespace: typeof request.namespace === "string" ? request.namespace : "global",
           sessionKey: typeof request.sessionKey === "string" ? request.sessionKey : undefined,
-        },
+        }),
         recall,
       };
     },
@@ -387,7 +401,7 @@ test("ChatGPT Apps inspector withholds preview when blocked memory is beyond vis
   const result = buildChatGptMemoryInspectorResult(
     { query: "show preferences", namespace: "work" },
     recall,
-    {
+    legacyXraySnapshot({
       schemaVersion: "1",
       query: "show preferences",
       snapshotId: "snap-blocked-after-visible-slice",
@@ -397,7 +411,7 @@ test("ChatGPT Apps inspector withholds preview when blocked memory is beyond vis
       filters: [],
       budget: { chars: 4096, used: 100 },
       namespace: "work",
-    },
+    }),
     {
       schemaVersion: 1,
       decision: "ask",
@@ -447,7 +461,7 @@ test("ChatGPT Apps inspector redacts blocked visible memory card previews", () =
   const result = buildChatGptMemoryInspectorResult(
     { query: "show preferences", namespace: "work" },
     recall,
-    {
+    legacyXraySnapshot({
       schemaVersion: "1",
       query: "show preferences",
       snapshotId: "snap-visible-blocked",
@@ -478,7 +492,7 @@ test("ChatGPT Apps inspector redacts blocked visible memory card previews", () =
       filters: [],
       budget: { chars: 4096, used: 100 },
       namespace: "work",
-    },
+    }),
     {
       schemaVersion: 1,
       decision: "ask",
@@ -536,7 +550,7 @@ test("ChatGPT Apps inspector matches X-ray provenance by path before duplicate i
   const result = buildChatGptMemoryInspectorResult(
     { query: "show preferences", namespace: "work" },
     recall,
-    {
+    legacyXraySnapshot({
       schemaVersion: "1",
       query: "show preferences",
       snapshotId: "snap-duplicate-id-paths",
@@ -587,7 +601,7 @@ test("ChatGPT Apps inspector matches X-ray provenance by path before duplicate i
       filters: [],
       budget: { chars: 4096, used: 100 },
       namespace: "work",
-    },
+    }),
     {
       schemaVersion: 1,
       decision: "ask",
@@ -645,7 +659,7 @@ test("ChatGPT Apps inspector redacts ambiguous same-id memories when any unmatch
   const result = buildChatGptMemoryInspectorResult(
     { query: "show preferences", namespace: "work", allowUnverifiedPreview: true },
     recall,
-    {
+    legacyXraySnapshot({
       schemaVersion: "1",
       query: "show preferences",
       snapshotId: "snap-ambiguous-blocked-same-id",
@@ -696,7 +710,7 @@ test("ChatGPT Apps inspector redacts ambiguous same-id memories when any unmatch
       filters: [],
       budget: { chars: 4096, used: 100 },
       namespace: "work",
-    },
+    }),
     {
       schemaVersion: 1,
       decision: "ask",
@@ -752,7 +766,7 @@ test("ChatGPT Apps inspector falls back to unique memory id when X-ray path is s
   const result = buildChatGptMemoryInspectorResult(
     { query: "show preferences", namespace: "work" },
     recall,
-    {
+    legacyXraySnapshot({
       schemaVersion: "1",
       query: "show preferences",
       snapshotId: "snap-stale-path-unique-id",
@@ -783,7 +797,7 @@ test("ChatGPT Apps inspector falls back to unique memory id when X-ray path is s
       filters: [],
       budget: { chars: 4096, used: 100 },
       namespace: "work",
-    },
+    }),
     {
       schemaVersion: 1,
       decision: "draft",
@@ -862,7 +876,7 @@ test("ChatGPT Apps inspector pluralizes blocked memory preview messages", () => 
   const result = buildChatGptMemoryInspectorResult(
     { query: "show preferences", namespace: "work" },
     recall,
-    {
+    legacyXraySnapshot({
       schemaVersion: "1",
       query: "show preferences",
       snapshotId: "snap-two-blocked",
@@ -872,7 +886,7 @@ test("ChatGPT Apps inspector pluralizes blocked memory preview messages", () => 
       filters: [],
       budget: { chars: 4096, used: 100 },
       namespace: "work",
-    },
+    }),
     {
       schemaVersion: 1,
       decision: "ask",
@@ -982,7 +996,7 @@ test("ChatGPT Apps inspector treats missing per-memory provenance as unsafe", ()
     sourcesUsed: ["memories"],
     disclosure: "chunk",
   };
-  const xray = {
+  const xray = legacyXraySnapshot({
     schemaVersion: "1" as const,
     query: "show preferences",
     snapshotId: "snap-missing-provenance",
@@ -1000,7 +1014,7 @@ test("ChatGPT Apps inspector treats missing per-memory provenance as unsafe", ()
     filters: [],
     budget: { chars: 4096, used: 100 },
     namespace: "work",
-  };
+  });
   const actionRequest = buildChatGptMemoryInspectorActionRequest(
     { query: "show preferences", namespace: "work" },
     recall,
@@ -1064,7 +1078,7 @@ test("ChatGPT Apps inspector can show unverified previews when explicitly reques
     sourcesUsed: ["memories"],
     disclosure: "chunk",
   };
-  const xray = {
+  const xray = legacyXraySnapshot({
     schemaVersion: "1" as const,
     query: "show preferences",
     snapshotId: "snap-missing-provenance-allowed",
@@ -1082,7 +1096,7 @@ test("ChatGPT Apps inspector can show unverified previews when explicitly reques
     filters: [],
     budget: { chars: 4096, used: 100 },
     namespace: "work",
-  };
+  });
   const actionRequest = buildChatGptMemoryInspectorActionRequest(
     { query: "show preferences", namespace: "work", allowUnverifiedPreview: true },
     recall,
@@ -1147,7 +1161,7 @@ test("ChatGPT Apps inspector keeps path-matched missing-provenance rows unverifi
   const result = buildChatGptMemoryInspectorResult(
     { query: "show preferences", namespace: "work", allowUnverifiedPreview: true },
     recall,
-    {
+    legacyXraySnapshot({
       schemaVersion: "1",
       query: "show preferences",
       snapshotId: "snap-path-matched-missing-provenance",
@@ -1185,7 +1199,7 @@ test("ChatGPT Apps inspector keeps path-matched missing-provenance rows unverifi
       filters: [],
       budget: { chars: 4096, used: 100 },
       namespace: "work",
-    },
+    }),
     {
       schemaVersion: 1,
       decision: "refuse",
@@ -1280,7 +1294,7 @@ test("ChatGPT Apps inspector action confidence blocks recalled memories missing 
     sourcesUsed: ["memories"],
     disclosure: "chunk",
   };
-  const xray = {
+  const xray = legacyXraySnapshot({
     schemaVersion: "1",
     query: "show preferences",
     snapshotId: "snap-missing-xray-row",
@@ -1311,7 +1325,7 @@ test("ChatGPT Apps inspector action confidence blocks recalled memories missing 
     filters: [],
     budget: { chars: 4096, used: 100 },
     namespace: "work",
-  } satisfies import("../src/recall-xray.js").RecallXraySnapshot;
+  });
   const actionRequest = buildChatGptMemoryInspectorActionRequest(
     { query: "show preferences", namespace: "work" },
     recall,
@@ -1352,7 +1366,7 @@ test("ChatGPT Apps inspector action confidence stays partial when recall count e
     sourcesUsed: ["memories"],
     disclosure: "chunk",
   };
-  const xray = {
+  const xray = legacyXraySnapshot({
     schemaVersion: "1",
     query: "show preferences",
     snapshotId: "snap-short-summaries",
@@ -1383,7 +1397,7 @@ test("ChatGPT Apps inspector action confidence stays partial when recall count e
     filters: [],
     budget: { chars: 4096, used: 100 },
     namespace: "work",
-  } satisfies import("../src/recall-xray.js").RecallXraySnapshot;
+  });
 
   const actionRequest = buildChatGptMemoryInspectorActionRequest(
     { query: "show preferences", namespace: "work" },

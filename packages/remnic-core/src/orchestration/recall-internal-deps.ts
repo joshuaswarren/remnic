@@ -34,6 +34,7 @@ import type { CodingContext, EngramTraceEvent, IdentityInjectionMode, MemoryFile
 import type { VerifiedEpisodeResult } from "../verified-recall.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
 import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
+import type { RecallRerankCoordinator, RecallResultPartitionSink } from "./recall-rerank-coordinator.js";
 import type { RecallSectionAppendOptions, RecallSectionBuckets } from "./recall-section-coordinator.js";
 
 export interface RecallInternalDeps {
@@ -74,6 +75,7 @@ export interface RecallInternalDeps {
      * Unset by default so existing call sites are unaffected.
      */
     xrayPoolSizeSink?: { size: number };
+    resultPartitionSink?: RecallResultPartitionSink;
     /**
      * Issue #1577 — out-parameter that receives the TrustScore stage's
      * per-path trust map (admitted + quarantined) when the cold path runs
@@ -179,6 +181,7 @@ export interface RecallInternalDeps {
   ): string[];
   readonly compounding?: CompoundingEngine;
   readonly config: PluginConfig;
+  readonly recallRerankCoordinator: Pick<RecallRerankCoordinator, "diversifyRecallResultsWithHeadroom">;
   currentPolicyVersion(): string;
   diversifyAndLimitRecallResults(
     sectionId: string,

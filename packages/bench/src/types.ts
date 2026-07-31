@@ -83,6 +83,35 @@ export interface TaskTokenUsage {
   output: number;
 }
 
+export interface TaskAttributionWitnessRuntimeV1 {
+  qmdCollection: string;
+  qmdIndex: string;
+  qmdMaxResults: number;
+  attributionThreshold: number;
+}
+
+export interface TaskAttributionGoldWitnessV1 {
+  goldMemory: string;
+  storeMemoryIds: string[] | null;
+  oracleMemoryIds: string[] | null;
+}
+
+export interface TaskAttributionRetrievalWitnessV1 {
+  sessionId: string;
+  appliedCap: number | null;
+  atCapMemoryIds: string[] | null;
+  headroomMemoryIds: string[] | null;
+}
+
+export interface TaskAttributionWitnessV1 {
+  schemaVersion: 1;
+  runtime: TaskAttributionWitnessRuntimeV1;
+  golds: TaskAttributionGoldWitnessV1[];
+  retrievals: TaskAttributionRetrievalWitnessV1[];
+}
+
+export type TaskAttributionWitness = TaskAttributionWitnessV1;
+
 export interface TaskResult {
   taskId: string;
   question: string;
@@ -93,6 +122,7 @@ export interface TaskResult {
   tokens: TaskTokenUsage;
   /** Plain-statement gold knowledge points for op-level failure attribution, issue #1954. */
   goldMemories?: string[];
+  attributionWitness?: TaskAttributionWitness;
   details?: Record<string, unknown>;
 }
 

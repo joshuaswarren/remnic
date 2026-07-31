@@ -96,7 +96,13 @@ import {
 } from "../orchestrator.js";
 import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
 import type { RecallSectionBuckets } from "./recall-section-coordinator.js";
+import {
+  reconcileRecallResultPartition,
+  type RecallResultPartition,
+  type RecallResultPartitionSink,
+} from "./recall-rerank-coordinator.js";
 import type { RecallInternalDeps } from "./recall-internal-deps.js";
+
 export class RecallInternalCoordinator {
   constructor(
     private readonly deps: RecallInternalDeps,
@@ -280,6 +286,7 @@ export class RecallInternalCoordinator {
     // sites) updates the same counter; the X-ray capture block
     // reads this as the cold-fallback pool.
     const xrayColdPoolSink = { size: 0 };
+    let selectedResultPartition: RecallResultPartition | null = null;
     let identityInjectionModeUsed: IdentityInjectionMode | "none" = "none";
     let identityInjectedChars = 0;
     let identityInjectionTruncated = false;
@@ -567,6 +574,7 @@ export class RecallInternalCoordinator {
             query: retrievalQuery,
             tierExplain: null,
             results: [],
+            appliedResultLimit: recallResultLimit,
             filters: [
               {
                 name: "planner-mode",
@@ -4102,13 +4110,25 @@ export class RecallInternalCoordinator {
       // Diversify via MMR over the full candidate pool *before* truncating to
       // the final recall limit. Running MMR after the slice would be unable
       // to promote diverse candidates sitting just below the cutoff.
-      memoryResults = this.deps.diversifyAndLimitRecallResults(
-        "memories",
-        memoryResults,
-        recallResultLimit,
-        retrievalQuery,
-        caps,
-      );
+      const hotQmdPartition =
+        options.xrayCapture === true
+          ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+              "memories",
+              memoryResults,
+              recallResultLimit,
+              retrievalQuery,
+              caps,
+            )
+          : null;
+      memoryResults = hotQmdPartition
+        ? [...hotQmdPartition.appliedResults]
+        : this.deps.diversifyAndLimitRecallResults(
+            "memories",
+            memoryResults,
+            recallResultLimit,
+            retrievalQuery,
+            caps,
+          );
       // E-Mem-inspired memory reconstruction: fill gaps for referenced entities
       if (resolveRecallEnhancementCapabilities(this.deps.config).memoryReconstruction && memoryResults.length > 0) {
         try {
@@ -4160,6 +4180,7 @@ export class RecallInternalCoordinator {
         }
         recallSource = "hot_qmd";
         recalledMemoryCount = memoryResults.length;
+        selectedResultPartition = hotQmdPartition;
         this.deps.publishRecallResults({
           title: "Relevant Memories",
           results: memoryResults,
@@ -4217,16 +4238,29 @@ export class RecallInternalCoordinator {
               xrayBranchPoolSize.hot_embedding,
               boostedScoped.length,
             );
-            return this.deps.diversifyAndLimitRecallResults(
-              "memories",
-              boostedScoped,
-              recallResultLimit,
-              retrievalQuery,
-              caps,
-            );
+            return boostedScoped;
           },
           [] as QmdSearchResult[],
         );
+        const embeddingPartition =
+          options.xrayCapture === true
+            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                "memories",
+                scoped,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+              )
+            : null;
+        scoped =
+          embeddingPartition?.appliedResults ??
+          this.deps.diversifyAndLimitRecallResults(
+            "memories",
+            scoped,
+            recallResultLimit,
+            retrievalQuery,
+            caps,
+          );
         // Issue #1577 — apply TrustScore on the embedding-fallback path so the
         // feature gate is consistent across ALL recall paths (rule 41 parity).
         {
@@ -4270,6 +4304,7 @@ export class RecallInternalCoordinator {
           }
           recallSource = "hot_embedding";
           recalledMemoryCount = scoped.length;
+          selectedResultPartition = reconcileRecallResultPartition(embeddingPartition, scoped);
           this.deps.publishRecallResults({
             title: "Relevant Memories",
             results: scoped,
@@ -4288,6 +4323,8 @@ export class RecallInternalCoordinator {
             .filter(Boolean);
           xrayRecalledResults = scoped;
         } else {
+          const coldPartitionSink: RecallResultPartitionSink | undefined =
+            options.xrayCapture === true ? { partition: null } : undefined;
           const longTerm = await this.deps.applyColdFallbackPipeline({
             prompt: retrievalQuery,
             recallNamespaces,
@@ -4301,6 +4338,7 @@ export class RecallInternalCoordinator {
               backendDegradations.push(degradation);
             },
             xrayPoolSizeSink: xrayColdPoolSink,
+            resultPartitionSink: coldPartitionSink,
             trustByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
@@ -4320,6 +4358,7 @@ export class RecallInternalCoordinator {
             }
             recallSource = "cold_fallback";
             recalledMemoryCount = longTerm.length;
+            selectedResultPartition = coldPartitionSink?.partition ?? null;
             this.deps.publishRecallResults({
               title: "Long-Term Memories (Fallback)",
               results: longTerm,
@@ -4413,16 +4452,29 @@ export class RecallInternalCoordinator {
               xrayBranchPoolSize.hot_embedding,
               boostedScoped.length,
             );
-            return this.deps.diversifyAndLimitRecallResults(
-              "memories",
-              boostedScoped,
-              recallResultLimit,
-              retrievalQuery,
-              caps,
-            );
+            return boostedScoped;
           },
           [] as QmdSearchResult[],
         );
+        const embeddingPartition =
+          options.xrayCapture === true
+            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                "memories",
+                scoped,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+              )
+            : null;
+        scoped =
+          embeddingPartition?.appliedResults ??
+          this.deps.diversifyAndLimitRecallResults(
+            "memories",
+            scoped,
+            recallResultLimit,
+            retrievalQuery,
+            caps,
+          );
         // Issue #1577 — apply TrustScore on the embedding-fallback path so the
         // feature gate is consistent across ALL recall paths (rule 41 parity).
         {
@@ -4463,6 +4515,7 @@ export class RecallInternalCoordinator {
         }
         recallSource = "hot_embedding";
         recalledMemoryCount = scoped.length;
+        selectedResultPartition = reconcileRecallResultPartition(embeddingPartition, scoped);
         this.deps.publishRecallResults({
           title: "Relevant Memories",
           results: scoped,
@@ -4549,6 +4602,8 @@ export class RecallInternalCoordinator {
             queryAwarePrefilter.candidatePaths &&
             queryAwareScopedMemories.length === 0
           ) {
+            const coldPartitionSink: RecallResultPartitionSink | undefined =
+              options.xrayCapture === true ? { partition: null } : undefined;
             const longTerm = await this.deps.applyColdFallbackPipeline({
               prompt: retrievalQuery,
               recallNamespaces,
@@ -4562,6 +4617,7 @@ export class RecallInternalCoordinator {
                 backendDegradations.push(degradation);
               },
               xrayPoolSizeSink: xrayColdPoolSink,
+              resultPartitionSink: coldPartitionSink,
               trustByPathSink,
               deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
               asOfMs,
@@ -4573,6 +4629,7 @@ export class RecallInternalCoordinator {
             if (longTerm.length > 0) {
               recallSource = "cold_fallback";
               recalledMemoryCount = longTerm.length;
+              selectedResultPartition = coldPartitionSink?.partition ?? null;
               this.deps.publishRecallResults({
                 title: "Long-Term Memories (Fallback)",
                 results: longTerm,
@@ -4629,16 +4686,29 @@ export class RecallInternalCoordinator {
                   xrayBranchPoolSize.recent_scan,
                   boostedRecent.length,
                 );
-                return this.deps.diversifyAndLimitRecallResults(
-                  "memories",
-                  boostedRecent,
-                  recallResultLimit,
-                  retrievalQuery,
-                  caps,
-                );
+                return boostedRecent;
               },
               [] as QmdSearchResult[],
             );
+            const recentPartition =
+              options.xrayCapture === true
+                ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                    "memories",
+                    recent,
+                    recallResultLimit,
+                    retrievalQuery,
+                    caps,
+                  )
+                : null;
+            recent =
+              recentPartition?.appliedResults ??
+              this.deps.diversifyAndLimitRecallResults(
+                "memories",
+                recent,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+              );
             // Issue #1577 — apply TrustScore on the recent-scan path so the
             // feature gate is consistent across ALL recall paths (rule 41).
             {
@@ -4685,6 +4755,7 @@ export class RecallInternalCoordinator {
               }
               recallSource = "recent_scan";
               recalledMemoryCount = recent.length;
+              selectedResultPartition = reconcileRecallResultPartition(recentPartition, recent);
               this.deps.publishRecallResults({
                 title: "Recent Memories",
                 results: recent,
@@ -4703,6 +4774,8 @@ export class RecallInternalCoordinator {
                 .filter(Boolean);
               xrayRecalledResults = recent;
             } else {
+              const coldPartitionSink: RecallResultPartitionSink | undefined =
+                options.xrayCapture === true ? { partition: null } : undefined;
               const longTerm = await this.deps.applyColdFallbackPipeline({
                 prompt: retrievalQuery,
                 recallNamespaces,
@@ -4716,6 +4789,7 @@ export class RecallInternalCoordinator {
                   backendDegradations.push(degradation);
                 },
                 xrayPoolSizeSink: xrayColdPoolSink,
+                resultPartitionSink: coldPartitionSink,
                 trustByPathSink,
                 deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                 asOfMs,
@@ -4734,6 +4808,7 @@ export class RecallInternalCoordinator {
                 }
                 recallSource = "cold_fallback";
                 recalledMemoryCount = longTerm.length;
+                selectedResultPartition = coldPartitionSink?.partition ?? null;
                 this.deps.publishRecallResults({
                   title: "Long-Term Memories (Fallback)",
                   results: longTerm,
@@ -4755,6 +4830,8 @@ export class RecallInternalCoordinator {
             }
           }
         } else {
+          const coldPartitionSink: RecallResultPartitionSink | undefined =
+            options.xrayCapture === true ? { partition: null } : undefined;
           const longTerm = await this.deps.applyColdFallbackPipeline({
             prompt: retrievalQuery,
             recallNamespaces,
@@ -4768,6 +4845,7 @@ export class RecallInternalCoordinator {
               backendDegradations.push(degradation);
             },
             xrayPoolSizeSink: xrayColdPoolSink,
+            resultPartitionSink: coldPartitionSink,
             trustByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
@@ -4785,6 +4863,7 @@ export class RecallInternalCoordinator {
             }
             recallSource = "cold_fallback";
             recalledMemoryCount = longTerm.length;
+            selectedResultPartition = coldPartitionSink?.partition ?? null;
             this.deps.publishRecallResults({
               title: "Long-Term Memories (Fallback)",
               results: longTerm,
@@ -5027,6 +5106,31 @@ export class RecallInternalCoordinator {
     ) {
       try {
         const servedBy = mapRecallSourceToXrayServedBy(recallSource);
+        const toPartitionXrayResult = (
+          candidate: QmdSearchResult,
+        ): RecallXrayResult => {
+          const scoreDecomposition: RecallXrayScoreDecomposition = {
+            final: candidate.score,
+          };
+          if (
+            candidate.explain?.reinforcementBoost !== undefined &&
+            candidate.explain.reinforcementBoost > 0
+          ) {
+            scoreDecomposition.reinforcementBoost =
+              candidate.explain.reinforcementBoost;
+          }
+          return {
+            memoryId: candidate.docid,
+            path: candidate.path,
+            servedBy,
+            scoreDecomposition,
+            admittedBy: [],
+          };
+        };
+        const appliedResults =
+          selectedResultPartition?.appliedResults.map(toPartitionXrayResult) ?? [];
+        const headroomResults =
+          selectedResultPartition?.headroomResults.map(toPartitionXrayResult) ?? [];
         // Derive xray results from `recalledMemoryPaths` as the single
         // source of truth — `recalledMemoryIds` and `recalledMemoryPaths`
         // are built with two independent filters upstream
@@ -5187,6 +5291,9 @@ export class RecallInternalCoordinator {
           query: retrievalQuery,
           tierExplain: null,
           results: [...results, ...lcmStructuredXrayResults],
+          appliedResultLimit: recallResultLimit,
+          appliedResults,
+          headroomResults,
           filters,
           budget: {
             chars: this.deps.getRecallBudgetChars(options.budgetCharsOverride),

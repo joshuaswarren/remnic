@@ -103,7 +103,7 @@ import { LifecyclePolicyCoordinator } from "./orchestration/lifecycle-policy-coo
 import { EntitySynthesisCoordinator } from "./orchestration/entity-synthesis-coordinator.js";
 import { RecallResultFormatter } from "./orchestration/recall-result-formatter.js";
 import { ConversationIndexCoordinator } from "./orchestration/conversation-index-coordinator.js";
-import { RecallRerankCoordinator } from "./orchestration/recall-rerank-coordinator.js";
+import { RecallRerankCoordinator, type RecallResultPartitionSink } from "./orchestration/recall-rerank-coordinator.js";
 import {
   RecallSectionCoordinator,
   type RecallSectionAppendOptions,
@@ -3512,7 +3512,6 @@ export class Orchestrator {
       abortSignal,
     );
   }
-
   private diversifyAndLimitRecallResults(
     sectionId: string,
     results: QmdSearchResult[],
@@ -3650,6 +3649,7 @@ export class Orchestrator {
      * Unset by default so existing call sites are unaffected.
      */
     xrayPoolSizeSink?: { size: number };
+    resultPartitionSink?: RecallResultPartitionSink;
     /**
      * Issue #1577 — out-parameter that receives the TrustScore stage's
      * per-path trust map (admitted + quarantined) when the cold path runs

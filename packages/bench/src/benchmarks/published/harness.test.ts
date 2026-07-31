@@ -4,6 +4,41 @@ import test from "node:test";
 import { runPublishedHarness, type HarnessContext, type HarnessPlan } from "./harness.ts";
 import type { BenchmarkDefinition, BenchmarkResult, ResolvedRunBenchmarkOptions } from "../../types.ts";
 
+interface FakeRecallAttribution {
+  sessionId: string;
+  appliedCap: number;
+  atCapMemoryIds: string[];
+  headroomMemoryIds: string[];
+}
+
+interface FakeAttributionWitness {
+  schemaVersion: 1;
+  runtime: {
+    qmdCollection: string;
+    qmdIndex: string;
+    qmdMaxResults: number;
+    attributionThreshold: number;
+  };
+  golds: Array<{
+    goldMemory: string;
+    storeMemoryIds: string[] | null;
+    oracleMemoryIds: string[] | null;
+  }>;
+  retrievals: FakeRecallAttribution[];
+}
+
+interface FakeAttributionWitnessRequest {
+  goldMemories: string[];
+  retrievals: FakeRecallAttribution[];
+}
+function attributionWitnessFromTask(task: unknown): unknown {
+  if (!task || typeof task !== "object" || !("attributionWitness" in task)) {
+    return undefined;
+  }
+  return task.attributionWitness;
+}
+
+
 /**
  * Fake system under test that records every call into a deterministic
  * log. Recall always returns a synthesized string containing the session
@@ -16,12 +51,19 @@ function makeFakeSystem(opts?: {
   responderModel?: string;
   judgeModel?: string;
   omitResponderIdentity?: boolean;
+  traceAttributionBySession?: Record<string, FakeRecallAttribution>;
+  attributionWitness?: FakeAttributionWitness;
 }) {
   const calls: Array<
     | { kind: "reset" }
     | { kind: "store"; sessionId: string; messageCount: number }
     | { kind: "drain" }
     | { kind: "recall"; sessionId: string; question: string }
+    | { kind: "recallWithTrace"; sessionId: string; question: string }
+    | {
+        kind: "captureAttributionWitness";
+        request: FakeAttributionWitnessRequest;
+      }
     | { kind: "search"; query: string; limit: number }
     | { kind: "judge"; question: string; predicted: string; expected: string }
     | { kind: "binaryJudge"; prompt: string }
@@ -41,6 +83,34 @@ function makeFakeSystem(opts?: {
     async recall(sessionId: string, question: string) {
       calls.push({ kind: "recall", sessionId, question });
       return `${opts?.recallPrefix ?? "recall"}:${sessionId}:${question}`;
+    },
+    async recallWithTrace(sessionId: string, question: string) {
+      calls.push({ kind: "recallWithTrace", sessionId, question });
+      return {
+        text: `${opts?.recallPrefix ?? "recall"}:${sessionId}:${question}`,
+        trace: {
+          schemaVersion: 1 as const,
+          sensitivity: {
+            classification: "restricted" as const,
+            contentEncoding: "sha256+length" as const,
+            containsGold: false as const,
+          },
+          sections: [],
+          selections: [],
+          lcmCandidates: [],
+          budget: {
+            requestedChars: 0,
+            composedChars: 0,
+            returnedChars: 0,
+            truncated: false,
+          },
+        },
+        attribution: opts?.traceAttributionBySession?.[sessionId],
+      };
+    },
+    async captureAttributionWitness(request: FakeAttributionWitnessRequest) {
+      calls.push({ kind: "captureAttributionWitness", request });
+      return opts?.attributionWitness;
     },
     async search(query: string, limit: number) {
       calls.push({ kind: "search", query, limit });
@@ -1604,4 +1674,129 @@ test("runPublishedHarness preserves goldMemories on TaskResult in trial executio
   assert.equal(result.results.tasks.length, 1);
   assert.deepEqual(result.results.tasks[0]?.goldMemories, ["Gold fact 1", "Gold fact 2"]);
   assert.equal(result.results.tasks[0]?.actual, "(error: Simulated responder failure)");
+});
+
+test("runPublishedHarness captures one ordered attribution witness before the next plan reset", async () => {
+  const retrievals: FakeRecallAttribution[] = [
+    {
+      sessionId: "session-beta",
+      appliedCap: 2,
+      atCapMemoryIds: ["fact-beta-2", "fact-beta-1"],
+      headroomMemoryIds: ["fact-beta-3"],
+    },
+    {
+      sessionId: "session-alpha",
+      appliedCap: 1,
+      atCapMemoryIds: ["fact-alpha-1"],
+      headroomMemoryIds: ["fact-alpha-2", "fact-alpha-3"],
+    },
+  ];
+  const witness: FakeAttributionWitness = {
+    schemaVersion: 1,
+    runtime: {
+      qmdCollection: "remnic-bench-runtime-hot",
+      qmdIndex: "remnic-bench-runtime-index",
+      qmdMaxResults: 37,
+      attributionThreshold: 0.6,
+    },
+    golds: [
+      {
+        goldMemory: "Gold fact one",
+        storeMemoryIds: ["fact-beta-2"],
+        oracleMemoryIds: ["fact-beta-2", "fact-alpha-1"],
+      },
+      {
+        goldMemory: "Gold fact two",
+        storeMemoryIds: [],
+        oracleMemoryIds: null,
+      },
+    ],
+    retrievals,
+  };
+  const { system, calls } = makeFakeSystem({
+    traceAttributionBySession: Object.fromEntries(
+      retrievals.map((retrieval) => [retrieval.sessionId, retrieval]),
+    ),
+    attributionWitness: witness,
+  });
+
+  const result = await runPublishedHarness({
+    options: makeOptions(system),
+    metricsSpec: { metrics: ["f1"] },
+    plans: [
+      {
+        ingestSessions: [
+          { sessionId: "session-beta", messages: [{ role: "user", content: "beta" }] },
+          { sessionId: "session-alpha", messages: [{ role: "user", content: "alpha" }] },
+        ],
+        trials: [{
+          taskId: "witness-task",
+          question: "What should be remembered?",
+          expected: "answer",
+          recallSessionIds: ["session-beta", "session-alpha"],
+          goldMemories: ["Gold fact one", "Gold fact two"],
+        }],
+      },
+      {
+        ingestSessions: [],
+        trials: [{
+          taskId: "legacy-task",
+          question: "Does the next plan still run?",
+          expected: "answer",
+          recallSessionIds: [],
+        }],
+      },
+    ],
+  });
+
+  const captureCalls = calls.filter(
+    (call): call is Extract<(typeof calls)[number], { kind: "captureAttributionWitness" }> =>
+      call.kind === "captureAttributionWitness",
+  );
+  assert.equal(captureCalls.length, 1);
+  assert.deepEqual(captureCalls[0]?.request, {
+    goldMemories: ["Gold fact one", "Gold fact two"],
+    retrievals,
+  });
+  assert.equal(calls.some((call) => call.kind === "recall"), false);
+  assert.deepEqual(
+    calls
+      .filter((call) => call.kind === "recallWithTrace")
+      .map((call) => call.sessionId),
+    ["session-beta", "session-alpha"],
+  );
+
+  const firstReset = calls.findIndex((call) => call.kind === "reset");
+  const capture = calls.findIndex((call) => call.kind === "captureAttributionWitness");
+  const secondReset = calls.findIndex(
+    (call, index) => call.kind === "reset" && index > firstReset,
+  );
+  assert.ok(firstReset < capture && capture < secondReset);
+  assert.deepEqual(attributionWitnessFromTask(result.results.tasks[0]), witness);
+});
+
+test("runPublishedHarness keeps gold-bearing tasks compatible with adapters that expose no witness API", async () => {
+  const { system, calls } = makeFakeSystem();
+  Reflect.deleteProperty(system, "recallWithTrace");
+  Reflect.deleteProperty(system, "captureAttributionWitness");
+
+  const result = await runPublishedHarness({
+    options: makeOptions(system),
+    metricsSpec: { metrics: ["f1"] },
+    plans: [{
+      ingestSessions: [{ sessionId: "legacy-session", messages: [{ role: "user", content: "memory" }] }],
+      trials: [{
+        taskId: "legacy-gold-task",
+        question: "What was remembered?",
+        expected: "answer",
+        recallSessionIds: ["legacy-session"],
+        goldMemories: ["A legacy gold fact"],
+      }],
+    }],
+  });
+
+  assert.equal(calls.filter((call) => call.kind === "recall").length, 1);
+  assert.equal(calls.some((call) => call.kind === "captureAttributionWitness"), false);
+  assert.equal(result.results.tasks.length, 1);
+  assert.equal(attributionWitnessFromTask(result.results.tasks[0]), undefined);
 });

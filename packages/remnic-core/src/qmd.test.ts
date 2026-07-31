@@ -12,6 +12,7 @@ import {
   parseQmdVersion,
   parseQmdExplain,
   resolveQmdCapabilities,
+  QmdClient,
   shouldAutoUpgradeQmd,
 } from "./qmd.js";
 
@@ -181,6 +182,29 @@ test("QmdClient preserves configured qmdPath diagnostics when all probes fail", 
     if (originalWindowsPath === undefined) delete process.env.Path;
     else process.env.Path = originalWindowsPath;
   }
+});
+
+test("QmdClient strict configured path never probes PATH or fallback binaries", async () => {
+  const configuredPath = "/explicit/benchmark/qmd";
+  const probedPaths: string[] = [];
+  const client = new QmdClient("test-collection", 10, {
+    qmdPath: configuredPath,
+    qmdFallbackPaths: ["/implicit/fallback/qmd"],
+    qmdStrictPath: true,
+  });
+  const internals = client as unknown as {
+    runVersionProbe: (qmdPath: string) => Promise<{ stdout: string; stderr: string }>;
+  };
+  internals.runVersionProbe = async (qmdPath: string) => {
+    probedPaths.push(qmdPath);
+    if (qmdPath === configuredPath) {
+      throw Object.assign(new Error("configured binary missing"), { code: "ENOENT" });
+    }
+    return { stdout: "qmd 2.5.3", stderr: "" };
+  };
+
+  assert.equal(await client.probe(), false);
+  assert.deepEqual(probedPaths, [configuredPath]);
 });
 
 test("QmdClient read-only availability failures preserve operational state", async () => {

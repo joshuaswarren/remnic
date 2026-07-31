@@ -12,6 +12,23 @@ import {
 const SENSITIVE_MEMORY_ID = "entities/Secret Person/profile.md";
 
 function sensitiveSnapshot(): RecallXraySnapshot {
+  const results: RecallXraySnapshot["results"] = [{
+    memoryId: SENSITIVE_MEMORY_ID,
+    path: "/secret/path.md",
+    servedBy: "hybrid",
+    scoreDecomposition: { vector: 0.8, final: 0.7 },
+    graphPath: ["secret-node"],
+    admittedBy: ["validity"],
+    tags: ["secret-tag"],
+    sourceSpan: {
+      quote: "secret quote",
+      observedAt: "2026-01-01T00:00:00.000Z",
+      provenance: "verified",
+    },
+    disclosure: "section",
+    estimatedTokens: 10,
+  }];
+
   return {
     schemaVersion: "1",
     query: "secret query",
@@ -21,22 +38,10 @@ function sensitiveSnapshot(): RecallXraySnapshot {
     tierExplain: null,
     filters: [{ name: "validity", considered: 3, admitted: 2, reason: "raw reason" }],
     budget: { chars: 100, used: 40 },
-    results: [{
-      memoryId: SENSITIVE_MEMORY_ID,
-      path: "/secret/path.md",
-      servedBy: "hybrid",
-      scoreDecomposition: { vector: 0.8, final: 0.7 },
-      graphPath: ["secret-node"],
-      admittedBy: ["validity"],
-      tags: ["secret-tag"],
-      sourceSpan: {
-        quote: "secret quote",
-        observedAt: "2026-01-01T00:00:00.000Z",
-        provenance: "verified",
-      },
-      disclosure: "section",
-      estimatedTokens: 10,
-    }],
+    results,
+    appliedResultLimit: results.length,
+    appliedResults: results,
+    headroomResults: [],
   };
 }
 

@@ -26,7 +26,7 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -218,6 +218,101 @@ test("bench attribute and bench drift-gen dispatch to handlers without falling t
   const driftResult = await runCli(["bench", "drift-gen", "--help"]);
   assert.equal(driftResult.stdout.includes(BANNER_MARKER), false);
   assert.match(driftResult.stdout, /Usage: remnic bench/);
+});
+
+test("bench attribute dispatch forwards paired QMD fallback arguments", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-attribute-dispatch-"));
+  const originalMarker = process.env.QMD_DISPATCH_MARKER;
+  try {
+    const resultsDir = path.join(dir, "results");
+    const memoryDir = path.join(dir, "memories");
+    const markerPath = path.join(dir, "qmd-calls.log");
+    const qmdPath = path.join(dir, "qmd");
+    await mkdir(resultsDir, { recursive: true });
+    await mkdir(memoryDir, { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "gold.md"),
+      "---\nid: mem-gold\n---\nAvery Quill prefers Earl Grey tea with lemon\n",
+      "utf8",
+    );
+    await writeFile(
+      qmdPath,
+      '#!/bin/sh\nprintf "%s\\n" "$*" >> "$QMD_DISPATCH_MARKER"\nprintf "[]\\n"\n',
+      { mode: 0o700 },
+    );
+    process.env.QMD_DISPATCH_MARKER = markerPath;
+    await writeFile(
+      path.join(resultsDir, "run-dispatch-qmd.json"),
+      JSON.stringify({
+        meta: {
+          id: "run-dispatch-qmd",
+          benchmark: "locomo",
+          benchmarkTier: "remnic",
+          version: "1.0.0",
+          remnicVersion: "9.35.3",
+          gitSha: "abc1234",
+          timestamp: "2026-07-30T12:00:00Z",
+          mode: "full",
+          runCount: 1,
+          seeds: [42],
+        },
+        config: {
+          systemProvider: null,
+          judgeProvider: null,
+          adapterMode: "real",
+          remnicConfig: { recallLimit: 1 },
+        },
+        cost: {
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          estimatedCostUsd: 0,
+          totalLatencyMs: 0,
+          meanQueryLatencyMs: 0,
+        },
+        results: {
+          tasks: [{
+            taskId: "task-dispatch-qmd",
+            question: "What tea does Avery prefer?",
+            expected: "Earl Grey",
+            actual: "Green tea",
+            scores: { overall: 0 },
+            latencyMs: 0,
+            tokens: { input: 0, output: 0 },
+            goldMemories: ["Avery Quill prefers Earl Grey tea with lemon"],
+          }],
+          aggregates: {},
+        },
+        environment: { os: "linux", nodeVersion: process.version },
+      }),
+      "utf8",
+    );
+
+    const result = await runCli([
+      "bench",
+      "attribute",
+      "--run",
+      "run-dispatch-qmd",
+      "--results-dir",
+      resultsDir,
+      "--memory-dir",
+      memoryDir,
+      "--qmd",
+      qmdPath,
+      "--collection",
+      "bench-explicit-fallback",
+      "--json",
+    ]);
+
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout.includes(BANNER_MARKER), false);
+    const qmdCalls = await readFile(markerPath, "utf8");
+    assert.match(qmdCalls, /bench-explicit-fallback/);
+  } finally {
+    if (originalMarker === undefined) delete process.env.QMD_DISPATCH_MARKER;
+    else process.env.QMD_DISPATCH_MARKER = originalMarker;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 // ════════════════════════════════════════════════════════════════════════════
