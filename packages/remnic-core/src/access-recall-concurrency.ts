@@ -13,7 +13,7 @@
  * module. `raceAbort` and `attachFlightAbort` need no host (they operate on the
  * caller signal / flight object alone).
  */
-import { abortError, throwIfAborted } from "./abort-error.js";
+import { abortError, raceAbort, throwIfAborted } from "./abort-error.js";
 import { hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import {
   EngramAccessInputError,
@@ -26,6 +26,8 @@ import {
   type CrossNamespaceBudget,
   toBudgetWarning,
 } from "./cross-namespace-budget.js";
+
+export { raceAbort } from "./abort-error.js";
 
 /**
  * Per-principal recall concurrency slot (issue #1906). `active` counts
@@ -199,32 +201,6 @@ export async function withRecallConcurrency<T>(
   }
 }
 
-/**
- * Race `p` against `signal` (issue #1906). A single-flight caller waits on
- * the shared flight promise but must be able to leave on its own abort. The
- * abort listener is removed as soon as the race settles (either `p` won or
- * the abort fired) so a settled-first promise never leaks a listener on a
- * long-lived signal.
- *
- * Pre-check the signal BEFORE building the race: an already-aborted signal
- * must win even when `p` is already fulfilled. `Promise.race` settles from
- * already-resolved members in array order, so a fulfilled `p` (index 0) would
- * otherwise beat the synchronously-rejected abort racer (index 1) and let an
- * aborted caller proceed into its own persistence + budget accounting before
- * the next abort check runs (round 15 #1).
- */
-export function raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return p;
-  if (signal.aborted) return Promise.reject(abortError("operation aborted"));
-  let onAbort: (() => void) | undefined;
-  const racer = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(abortError("operation aborted"));
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-  return Promise.race([p, racer]).finally(() => {
-    if (onAbort) signal.removeEventListener("abort", onAbort);
-  });
-}
 
 /**
  * Attach a caller to a single-flight recall (issue #1906 review). Increments

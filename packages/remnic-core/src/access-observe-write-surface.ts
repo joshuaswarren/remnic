@@ -110,6 +110,10 @@ export interface AccessObserveWriteSurfaceDeps {
       authenticatedPrincipal?: string;
     }
   ): Promise<MemoryScopePlan>;
+  cancelPendingObservePreparations?(
+    sessionKey: string,
+    scopeHint?: string,
+  ): void;
   cancelPendingObserveExtractions?(
     sessionKey: string,
     principal?: string,
@@ -131,6 +135,10 @@ export interface AccessObserveWriteSurfaceDeps {
 export class AccessObserveWriteSurface {
   private quarantineStoreInstance?: WriteQuarantineStore;
   private readonly pendingObserveExtractions = new PendingObserveExtractionTracker();
+
+  public cancelPendingObservePreparations(sessionKey: string, scopeHint?: string): void {
+    this.pendingObserveExtractions.cancelPreparations(sessionKey, scopeHint);
+  }
 
   public cancelPendingObserveExtractions(
     sessionKey: string,

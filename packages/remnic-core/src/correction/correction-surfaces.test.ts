@@ -39,8 +39,8 @@ function extractToolNames(response: unknown): Set<string> {
 }
 
 interface MockCalls {
-  planRequests: Array<{ text: string; targetIds?: string[]; principal?: string }>;
-  applyRequests: Array<{ planId: string; confirm: boolean; principal?: string }>;
+  planRequests: Array<{ text: string; targetIds?: string[]; principal?: string; abortSignal?: AbortSignal }>;
+  applyRequests: Array<{ planId: string; confirm: boolean; principal?: string; abortSignal?: AbortSignal }>;
 }
 
 function makeMockService(
@@ -50,22 +50,26 @@ function makeMockService(
   const calls: MockCalls = { planRequests: [], applyRequests: [] };
   const service = {
     briefingEnabled: true,
-    correctionPlan(req: {
-      text: string;
-      targetIds?: string[];
-      principal?: string;
-    }): Promise<CorrectionPlan> {
-      calls.planRequests.push(req);
+    correctionPlan(
+      req: {
+        text: string;
+        targetIds?: string[];
+        principal?: string;
+      },
+      opts?: { abortSignal?: AbortSignal },
+    ): Promise<CorrectionPlan> {
+      calls.planRequests.push({ ...req, ...(opts?.abortSignal ? { abortSignal: opts.abortSignal } : {}) });
       return Promise.resolve(planResponse);
     },
     correctionApply(
       planId: string,
-      opts: { confirm?: boolean; principal?: string },
+      opts: { confirm?: boolean; principal?: string; abortSignal?: AbortSignal },
     ): Promise<CorrectionOutcome> {
       calls.applyRequests.push({
         planId,
         confirm: opts.confirm === true,
         ...(opts.principal ? { principal: opts.principal } : {}),
+        ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
       });
       return Promise.resolve(applyResponse);
     },
@@ -130,22 +134,26 @@ test("tools/list gate: correction tools present when correctionVisible on (defau
 // MCP dispatch: tools/call → boundary operation → service method
 // ---------------------------------------------------------------------------
 
-test("MCP surface: memory_correct_plan dispatches to service.correctionPlan", async () => {
+test("MCP surface: memory_correct_plan forwards the request abort signal", async () => {
   const { service, calls } = makeMockService(STUB_PLAN, STUB_OUTCOME);
   const server = new EngramMcpServer(service, { emitLegacyTools: true, correctionVisible: true });
-  const response = await server.handleRequest({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "tools/call",
-    params: {
-      name: "engram.memory_correct_plan",
-      arguments: { text: "we migrated to MySQL in March", targetIds: ["mem-1"] },
+  const abortController = new AbortController();
+  const response = await server.handleRequest(
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "engram.memory_correct_plan",
+        arguments: { text: "we migrated to MySQL in March", targetIds: ["mem-1"] },
+      },
     },
-  });
+    { abortSignal: abortController.signal },
+  );
   assert.equal(calls.planRequests.length, 1, "service.correctionPlan called exactly once");
   assert.equal(calls.planRequests[0]?.text, "we migrated to MySQL in March");
   assert.deepEqual(calls.planRequests[0]?.targetIds, ["mem-1"]);
-  // The response result is the plan returned by the service.
+  assert.equal(calls.planRequests[0]?.abortSignal, abortController.signal);
   assert.equal(
     typeof response === "object" && response !== null && "result" in response,
     true,
@@ -153,21 +161,26 @@ test("MCP surface: memory_correct_plan dispatches to service.correctionPlan", as
   );
 });
 
-test("MCP surface: memory_correct_apply dispatches to service.correctionApply with confirm", async () => {
+test("MCP surface: memory_correct_apply forwards confirmation and the request abort signal", async () => {
   const { service, calls } = makeMockService(STUB_PLAN, STUB_OUTCOME);
   const server = new EngramMcpServer(service, { emitLegacyTools: true, correctionVisible: true });
-  await server.handleRequest({
-    jsonrpc: "2.0",
-    id: 2,
-    method: "tools/call",
-    params: {
-      name: "engram.memory_correct_apply",
-      arguments: { planId: "corr-test-1", confirm: true },
+  const abortController = new AbortController();
+  await server.handleRequest(
+    {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "engram.memory_correct_apply",
+        arguments: { planId: "corr-test-1", confirm: true },
+      },
     },
-  });
+    { abortSignal: abortController.signal },
+  );
   assert.equal(calls.applyRequests.length, 1, "service.correctionApply called exactly once");
   assert.equal(calls.applyRequests[0]?.planId, "corr-test-1");
   assert.equal(calls.applyRequests[0]?.confirm, true);
+  assert.equal(calls.applyRequests[0]?.abortSignal, abortController.signal);
 });
 
 test("MCP surface: remnic.memory_correct_plan alias dispatches identically", async () => {

@@ -262,10 +262,13 @@ export async function capturePassiveCorrections(
       );
       continue;
     }
-    if (ctx.abortSignal?.aborted) return { telemetry, plans };
     plans.push(plan);
     // Record the fingerprint only after a successful plan.
     dedupState.add(fp);
+    if (ctx.abortSignal?.aborted) {
+      telemetry.queued += 1;
+      return { telemetry, plans };
+    }
 
     // 3. Dispatch by mode
     if (config.mode === "queue") {

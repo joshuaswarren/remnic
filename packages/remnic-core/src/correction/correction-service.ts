@@ -52,6 +52,7 @@ export interface CorrectionNamespacePolicy {
     namespace: string;
     sessionKey?: string;
     principal?: string;
+    abortSignal?: AbortSignal;
   }): Promise<boolean>;
   /** Namespaces the caller may read — scopes the planner's search. */
   readableNamespaces(request: {
@@ -144,11 +145,12 @@ export class CorrectionService {
       abortSignal: opts.abortSignal,
       // Authorize rescope destinations through the namespace policy bound to
       // THIS caller's principal (review thread: authorize-rescope-destination).
-      canWriteDestination: (dest) =>
+      canWriteDestination: (dest, abortSignal) =>
         this.deps.policy.canWriteNamespace({
           namespace: dest,
           ...(opts.sessionKey ? { sessionKey: opts.sessionKey } : {}),
           ...(opts.principal ? { principal: opts.principal } : {}),
+          ...(abortSignal ? { abortSignal } : {}),
         }),
     });
   }

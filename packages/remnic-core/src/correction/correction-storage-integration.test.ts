@@ -16,12 +16,17 @@ import type { MemoryFile } from "../types.js";
 
 import { StorageManager, ContentHashIndex } from "../storage.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
+import { loadRedactionRules } from "../extraction-redaction-rules.js";
+import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import {
+  type CorrectionAccessWiring,
   isEligibleCorrectionCandidate,
   applyEditMemory,
   appendTombstoneFn,
+  appendAuditRecordFn,
   retireMemoryFn,
   rescopeMemoryFn,
+  registerRedactionRuleFn,
   writeReplacementMemory,
 } from "./correction-access-wiring.js";
 
@@ -287,6 +292,78 @@ test("#2128 tombstone append returns its committed id after cancellation", async
 
     assert.equal(committed, true);
     assert.equal(typeof id, "string");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("#2206 redaction adapter returns after a committed rule write despite cancellation", async () => {
+  const { storage, cleanup } = await makeStorage("remnic-corr-redaction-abort-");
+  try {
+    const abortController = new AbortController();
+    let commitCompleted = false;
+    const wiring = {
+      orchestrator: { getStorage: async () => storage },
+    } as unknown as CorrectionAccessWiring;
+
+    await registerRedactionRuleFn(
+      wiring,
+      "default",
+      "do-not-store-this",
+      abortController.signal,
+      async (outputPath, content) => {
+        await writeFileAtomically(outputPath, content);
+        commitCompleted = true;
+        abortController.abort(new Error("correction deadline exceeded"));
+      },
+    );
+
+    assert.equal(commitCompleted, true);
+    assert.deepEqual(
+      (await loadRedactionRules(storage.dir)).map((rule) => rule.pattern),
+      ["do-not-store-this"],
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("#2206 audit adapter returns its committed id despite cancellation", async () => {
+  const { storage, cleanup } = await makeStorage("remnic-corr-audit-abort-");
+  try {
+    const originalWriteSealedMemory = storage.writeSealedMemory.bind(storage);
+    const abortController = new AbortController();
+    let committed = false;
+    storage.writeSealedMemory = async (...args: Parameters<typeof storage.writeSealedMemory>) => {
+      const result = await originalWriteSealedMemory(...args);
+      committed = true;
+      abortController.abort(new Error("correction deadline exceeded"));
+      return result;
+    };
+    const wiring = {
+      orchestrator: { getStorage: async () => storage },
+    } as unknown as CorrectionAccessWiring;
+
+    const auditId = await appendAuditRecordFn(
+      wiring,
+      "default",
+      {
+        planId: "plan-2206",
+        classification: "outdated",
+        outcome: {
+          planId: "plan-2206",
+          status: "partial",
+          results: [],
+          auditMemoryId: "",
+          appliedAt: "2026-07-30T00:00:00.000Z",
+        },
+        requestText: "update the stored fact",
+      },
+      abortController.signal,
+    );
+
+    assert.equal(committed, true);
+    assert.equal((await storage.getMemoryById(auditId))?.frontmatter.category, "correction");
   } finally {
     await cleanup();
   }

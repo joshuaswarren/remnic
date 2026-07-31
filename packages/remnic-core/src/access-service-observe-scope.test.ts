@@ -243,6 +243,166 @@ test("#2128 pending observe preparation is a force-flush barrier", async () => {
   assert.equal(waited, true);
 });
 
+test("#2206 scoped wait ignores unresolved preparations with a different hint", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const target = tracker.reserve("opaque-session", "projectTag:project-a");
+  const unrelated = tracker.reserve("opaque-session", "projectTag:project-b");
+  let settled = false;
+  const waitPromise = tracker
+    .wait(
+      "opaque-session",
+      "alice",
+      "alice-project-a",
+      undefined,
+      undefined,
+      "projectTag:project-a",
+    )
+    .then(() => {
+      settled = true;
+    });
+
+  target.release();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const settledBeforeUnrelatedRelease = settled;
+  unrelated.release();
+  await waitPromise;
+
+  assert.equal(settledBeforeUnrelatedRelease, true);
+});
+
+test("#2206 scoped wait fences a reservation that later resolves into the flushed scope", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const reservation = tracker.reserve("opaque-session", "cwd:/workspace/project/nested");
+  const unrelated = tracker.reserve("opaque-session", "cwd:/workspace/other/nested");
+
+  await tracker.wait(
+    "opaque-session",
+    "alice",
+    "alice-project",
+    undefined,
+    undefined,
+    "projectTag:Acme/Webshop",
+  );
+  assert.equal(reservation.isCancelled(), false, "the raw hint mismatch initially excludes the reservation");
+
+  reservation.setScope("alice", "alice-project");
+  unrelated.setScope("alice", "alice-other-project");
+
+  assert.equal(
+    reservation.isCancelled(),
+    true,
+    "a reservation existing at the wait boundary cannot enter the flushed scope later",
+  );
+  assert.equal(unrelated.isCancelled(), false, "the fence must not cancel a different resolved scope");
+  unrelated.release();
+  reservation.release();
+});
+
+test("#2206 resolved scope overrides a mismatched preparation hint", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const preparation = tracker.reserve("opaque-session", "cwd:/workspace/project/src");
+  preparation.setScope("alice", "alice-project");
+  let settled = false;
+  const waitPromise = tracker
+    .wait(
+      "opaque-session",
+      "alice",
+      "alice-project",
+      undefined,
+      undefined,
+      "projectTag:Acme/Webshop",
+    )
+    .then(() => {
+      settled = true;
+    });
+
+  await Promise.resolve();
+  assert.equal(settled, false);
+  preparation.release();
+  await waitPromise;
+  assert.equal(settled, true);
+});
+
+test("#2206 resolved scope mismatch overrides an identical preparation hint", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const unrelated = tracker.reserve("opaque-session", "projectTag:project-a");
+  unrelated.setScope("alice", "alice-project-b");
+  let settled = false;
+  const waitPromise = tracker
+    .wait(
+      "opaque-session",
+      "alice",
+      "alice-project-a",
+      undefined,
+      undefined,
+      "projectTag:project-a",
+    )
+    .then(() => {
+      settled = true;
+    });
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const settledBeforeUnrelatedRelease = settled;
+  unrelated.release();
+  await waitPromise;
+
+  assert.equal(settledBeforeUnrelatedRelease, true);
+});
+
+test("#2206 unresolved preparation without a hint remains a conservative barrier", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const preparation = tracker.reserve("opaque-session");
+  let settled = false;
+  const waitPromise = tracker
+    .wait(
+      "opaque-session",
+      "alice",
+      "alice-project",
+      undefined,
+      undefined,
+      "projectTag:project-a",
+    )
+    .then(() => {
+      settled = true;
+    });
+
+  await Promise.resolve();
+  assert.equal(settled, false);
+  preparation.release();
+  await waitPromise;
+  assert.equal(settled, true);
+});
+
+test("#2206 raw-hint cancellation only cancels matching preparations", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const unresolved = tracker.reserve("opaque-session", "projectTag:project-a");
+  const resolved = tracker.reserve("opaque-session", "projectTag:project-a");
+  const unrelated = tracker.reserve("opaque-session", "projectTag:project-b");
+  resolved.setScope("alice", "alice-project-a");
+  let releaseExtraction!: () => void;
+  const extraction = new Promise<void>((resolve) => {
+    releaseExtraction = resolve;
+  });
+  const unrelatedController = new AbortController();
+  tracker.track(
+    tracker.key("opaque-session", "alice", "alice-project-b"),
+    extraction,
+    unrelatedController,
+  );
+
+  tracker.cancelPreparations("opaque-session", "projectTag:project-a");
+
+  assert.equal(unresolved.isCancelled(), true);
+  assert.equal(resolved.isCancelled(), true);
+  assert.equal(unrelated.isCancelled(), false);
+  assert.equal(unrelatedController.signal.aborted, false);
+  unresolved.release();
+  resolved.release();
+  unrelated.release();
+  releaseExtraction();
+  await extraction;
+});
+
 test("#2128 scoped observe preparation cancellation preserves another project", () => {
   const tracker = new PendingObserveExtractionTracker();
   const projectA = tracker.reserve("opaque-session", "projectTag:project-a");
@@ -255,7 +415,6 @@ test("#2128 scoped observe preparation cancellation preserves another project", 
   projectA.release();
   projectB.release();
 });
-
 
 test("#2128 cancellation matches resolved scope despite a different request hint", () => {
   const tracker = new PendingObserveExtractionTracker();

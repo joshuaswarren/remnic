@@ -5,6 +5,7 @@ import {
   type EngramAccessExtractionForceFlushRequest,
   type EngramAccessExtractionForceFlushResponse,
   EngramAccessInputError,
+  type MemoryScopePlan,
 } from "./access-service.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { log } from "./logger.js";
@@ -58,9 +59,44 @@ export async function extractionForceFlush(
   };
   let abortHandler: (() => void) | undefined;
 
+  const reservationScopeHint = pendingObserveScopeHint(request);
+  const cancelBeforeScopeResolution = (): void => {
+    const explicitNamespace = request.namespace?.trim();
+    if (explicitNamespace) {
+      deps.cancelPendingObserveExtractions?.(
+        request.sessionKey,
+        authenticatedPrincipal ?? sessionPrincipal,
+        explicitNamespace,
+        reservationScopeHint,
+      );
+      return;
+    }
+    if (reservationScopeHint !== undefined) {
+      deps.cancelPendingObservePreparations?.(request.sessionKey, reservationScopeHint);
+      return;
+    }
+    if (!namespacesEnabled) {
+      deps.cancelPendingObserveExtractions?.(request.sessionKey);
+    }
+  };
+
   try {
-    const scope = await deps.resolveMemoryScopePlan(request);
-    const reservationScopeHint = pendingObserveScopeHint(request);
+    let scope: MemoryScopePlan;
+    try {
+      scope = await awaitSessionFlushPhase(
+        () => deps.resolveMemoryScopePlan(request),
+        {
+          abortSignal: request.abortSignal,
+          extractionDeadlineMs: request.deadlineMs,
+          reason: "access_force_flush",
+          deadlineStage: "scope_resolution",
+          onDeadline: cancelBeforeScopeResolution,
+        },
+      );
+    } catch (error) {
+      if (request.abortSignal?.aborted) cancelBeforeScopeResolution();
+      throw error;
+    }
     const cancelScopedPendingObserveExtractions = (): void => {
       deps.cancelPendingObserveExtractions?.(
         request.sessionKey,

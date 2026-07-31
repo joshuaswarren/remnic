@@ -35,7 +35,7 @@ interface ObserveProbe {
   }>;
 }
 
-function makeObserveProbe(memoryDir: string): ObserveProbe {
+function makeObserveProbe(memoryDir: string, projectScope = true): ObserveProbe {
   const contexts = new Map<string, CodingContext>();
   const lcmCalls: ObserveProbe["lcmCalls"] = [];
   const extractionCalls: ObserveProbe["extractionCalls"] = [];
@@ -47,7 +47,7 @@ function makeObserveProbe(memoryDir: string): ObserveProbe {
     namespacePolicies: [
       { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
     ],
-    codingMode: { projectScope: true },
+    codingMode: { projectScope },
     memoryDir,
     // Disable objective-state snapshots so the probe doesn't need a writable
     // storage backend — the idempotency contract under test is LCM + extraction.
@@ -269,6 +269,38 @@ test("#1649 review fix: rebinding the session's ambient coding context makes the
         /idempotencyKey reuse conflict/.test(err.message),
       "key reuse after ambient scope rebind must throw a conflict, not silently replay",
     );
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#2206 project-scope-off ignores ambient coding context in observe idempotency", async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-unscoped-replay-"));
+  try {
+    const probe = makeObserveProbe(memoryDir, false);
+    const service = new EngramAccessService(probe.orch);
+    const key = "observe-batch-unscoped-replay-#6";
+    const req = observeRequest({
+      idempotencyKey: key,
+      projectTag: "Acme/Webshop",
+    });
+
+    const first = await service.observe(req);
+    assert.equal(first.effectiveNamespace, "default");
+    assert.equal(first.scopeDebug?.codingOverlayApplied, false);
+    assert.equal(probe.contexts.size, 0, "disabled project scoping must not attach projectTag context");
+    probe.contexts.set(req.sessionKey, {
+      projectId: "tag:ignored-while-unscoped",
+      branch: "changed-branch",
+      rootPath: "/projects/ignored",
+      defaultBranch: "main",
+    });
+    assert.ok(probe.contexts.has(req.sessionKey), "the ambient context change must be injected");
+
+    const replay = await service.observe(req);
+    assert.equal(replay.idempotencyReplay, true);
+    assert.equal(probe.extractionCalls.length, 1);
+    assert.equal(probe.lcmCalls.length, 1);
   } finally {
     rmSync(memoryDir, { recursive: true, force: true });
   }
