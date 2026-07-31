@@ -28,6 +28,7 @@ export { resolvePluginEntry, type PluginEntryResolverOptions } from "./plugin-en
 
 export { parseConfig, isOpenaiApiKeyDisabled, resolveEnvVars } from "./config.js";
 export { resolveRemnicConfigRecord } from "./config-record.js";
+export * from "./external-wiki.js";
 export {
   parseFlexibleIsoTimestamp,
   parseIsoOffsetTimestamp,
