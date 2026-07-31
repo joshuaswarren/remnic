@@ -25,9 +25,11 @@ import {
   isInsideDirectoryRealpath,
   isActiveMemoryRelativePath,
   formatConsolidationUndoResult,
+  type ConsolidationUndoResult,
 } from "../src/consolidation-undo.ts";
 import { symlink } from "node:fs/promises";
 import type { VersioningConfig } from "@remnic/core";
+import { withEntityCanonicalMutationLock } from "../packages/remnic-core/src/storage/entity-canonical-id-lock.js";
 
 const versioning: VersioningConfig = {
   enabled: true,
@@ -40,6 +42,30 @@ async function makeStorage(dir: string): Promise<StorageManager> {
   storage.setVersioningConfig({ ...versioning });
   await storage.ensureDirectories();
   return storage;
+}
+
+class ConsolidationRestoreBarrierStorage extends StorageManager {
+  restoreTargetPath: string | undefined;
+  readonly restorePrepared = Promise.withResolvers<void>();
+
+  override async readMemoryByPath(filePath: string) {
+    const memory = await super.readMemoryByPath(filePath);
+    if (memory && filePath === this.restoreTargetPath) {
+      const derivedFrom = memory.frontmatter.derived_from;
+      if (Array.isArray(derivedFrom)) {
+        const entries = derivedFrom.slice();
+        const prepared = this.restorePrepared;
+        Object.defineProperty(derivedFrom, Symbol.iterator, {
+          configurable: true,
+          value: function* () {
+            yield* entries;
+            prepared.resolve();
+          },
+        });
+      }
+    }
+    return memory;
+  }
 }
 
 test("runConsolidationUndo restores sources and archives the target on the happy path", async () => {
@@ -778,6 +804,99 @@ test("runConsolidationUndo tolerates non-string derived_from entries without cra
     // reason.
     assert.ok(Array.isArray(result.restores));
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("consolidation undo entity restores wait for the canonical mutation lock", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-undo-entity-lock-"));
+  const storage = new ConsolidationRestoreBarrierStorage(dir);
+  const entitySourcePath = path.join(dir, "entities", "undo-lock-source.md");
+  const controlSourcePath = path.join(dir, "facts", "undo-lock-control.md");
+  const originalEntity = "---\nid: undo-lock-source\n---\n\nentity snapshot bytes\n";
+  const originalControl = "---\nid: undo-lock-control\n---\n\ncontrol snapshot bytes\n";
+  let undoPromise: Promise<ConsolidationUndoResult> | undefined;
+
+  try {
+    storage.setVersioningConfig({ ...versioning });
+    await storage.ensureDirectories();
+    await Promise.all([
+      mkdir(path.dirname(entitySourcePath), { recursive: true }),
+      mkdir(path.dirname(controlSourcePath), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(entitySourcePath, originalEntity, "utf8"),
+      writeFile(controlSourcePath, originalControl, "utf8"),
+    ]);
+    const [entityEntry, controlEntry] = await Promise.all([
+      storage.snapshotForProvenance(entitySourcePath),
+      storage.snapshotForProvenance(controlSourcePath),
+    ]);
+    assert.ok(entityEntry);
+    assert.ok(controlEntry);
+    await Promise.all([unlink(entitySourcePath), unlink(controlSourcePath)]);
+    storage.invalidateAllMemoriesCacheForDir();
+
+    const { id: targetId } = await storage.writeMemory("fact", "entity restore target", {
+      source: "semantic-consolidation",
+      derivedFrom: [entityEntry],
+      derivedVia: "merge",
+    });
+    const { id: controlTargetId } = await storage.writeMemory("fact", "control restore target", {
+      source: "semantic-consolidation",
+      derivedFrom: [controlEntry],
+      derivedVia: "merge",
+    });
+    const memories = await storage.readAllMemories();
+    const target = memories.find((memory) => memory.frontmatter.id === targetId);
+    const controlTarget = memories.find((memory) => memory.frontmatter.id === controlTargetId);
+    assert.ok(target);
+    assert.ok(controlTarget);
+    storage.restoreTargetPath = target.path;
+    let undoFinished = false;
+
+    await withEntityCanonicalMutationLock(path.join(dir, "state"), async () => {
+      undoPromise = runConsolidationUndo({
+        storage,
+        memoryDir: dir,
+        targetPath: target.path,
+        versioning,
+      });
+      void undoPromise.then(
+        () => {
+          undoFinished = true;
+        },
+        () => undefined,
+      );
+
+      await storage.restorePrepared.promise;
+      const controlResult = await runConsolidationUndo({
+        storage,
+        memoryDir: dir,
+        targetPath: controlTarget.path,
+        versioning,
+      });
+      assert.equal(controlResult.error, undefined);
+      assert.equal(await readFile(controlSourcePath, "utf8"), originalControl);
+      assert.equal(
+        undoFinished,
+        false,
+        "the entity restore must not finish while its canonical mutation lock is held",
+      );
+      await assert.rejects(
+        () => readFile(entitySourcePath, "utf8"),
+        /ENOENT/,
+        "the entity restore write must not enter while the canonical mutation lock is held",
+      );
+    });
+
+    assert.ok(undoPromise);
+    const result = await undoPromise;
+    assert.equal(result.error, undefined);
+    assert.equal(result.restores[0]?.outcome, "restored");
+    assert.equal(await readFile(entitySourcePath, "utf8"), originalEntity);
+  } finally {
+    await undoPromise?.catch(() => undefined);
     await rm(dir, { recursive: true, force: true });
   }
 });

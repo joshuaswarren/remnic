@@ -7,8 +7,9 @@ import test from "node:test";
 
 import { runBinaryLifecyclePipeline } from "./pipeline.js";
 import { manifestPath, writeManifest } from "./manifest.js";
-import type { BinaryLifecycleConfig } from "./types.js";
+import type { BinaryLifecycleConfig, PipelineResult } from "./types.js";
 import type { BinaryStorageBackend } from "./backend.js";
+import { withEntityCanonicalMutationLock } from "../storage/entity-canonical-id-lock.js";
 
 const baseConfig: BinaryLifecycleConfig = {
   enabled: true,
@@ -663,6 +664,110 @@ test("binary lifecycle fails closed without overwriting an invalid manifest", as
     assert.equal(await readFile(mPath, "utf8"), '{"version":1,"assets":[');
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("binary lifecycle entity redirects wait for the canonical mutation lock", async () => {
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-entity-lock-"));
+  const controlDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-control-"));
+  const entityPath = path.join(targetDir, "entities", "binary-lock-target.md");
+  const originalEntity = "entity before redirect\n\n![img](../image.png)\n";
+  const redirectedEntity = "entity before redirect\n\n![img](remote/image.png)\n";
+  let targetPromise: Promise<PipelineResult> | undefined;
+
+  try {
+    await Promise.all([
+      mkdir(path.dirname(entityPath), { recursive: true }),
+      mkdir(path.join(targetDir, "state"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(path.join(targetDir, "image.png"), "image", "utf8"),
+      writeFile(entityPath, originalEntity, "utf8"),
+      writeFile(path.join(controlDir, "image.png"), "image", "utf8"),
+      writeFile(path.join(controlDir, "note.md"), "![img](image.png)\n", "utf8"),
+    ]);
+    const manifest = {
+      version: 1 as const,
+      assets: [
+        {
+          originalPath: "image.png",
+          mirroredPath: "remote/image.png",
+          contentHash: sha256("image"),
+          sizeBytes: "image".length,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          status: "mirrored" as const,
+        },
+      ],
+    };
+    await Promise.all([
+      writeManifest(targetDir, manifest),
+      writeManifest(controlDir, manifest),
+    ]);
+
+    const redirectPrepared = Promise.withResolvers<void>();
+    const continueRedirect = Promise.withResolvers<void>();
+    let targetFinished = false;
+
+    await withEntityCanonicalMutationLock(path.join(targetDir, "state"), async () => {
+      targetPromise = runBinaryLifecyclePipeline(
+        targetDir,
+        baseConfig,
+        nestedRemoteBackend,
+        noopLogger,
+        {
+          readMarkdownFile: async (filePath) => {
+            const content = await readFile(filePath, "utf8");
+            if (filePath === entityPath) {
+              redirectPrepared.resolve();
+              await continueRedirect.promise;
+            }
+            return content;
+          },
+        },
+      );
+      void targetPromise.then(
+        () => {
+          targetFinished = true;
+        },
+        () => undefined,
+      );
+
+      await redirectPrepared.promise;
+      continueRedirect.resolve();
+      const controlResult = await runBinaryLifecyclePipeline(
+        controlDir,
+        baseConfig,
+        nestedRemoteBackend,
+        noopLogger,
+      );
+      assert.equal(controlResult.redirected, 1);
+      assert.equal(
+        await readFile(path.join(controlDir, "note.md"), "utf8"),
+        "![img](remote/image.png)\n",
+      );
+      assert.equal(
+        targetFinished,
+        false,
+        "the target redirect must not finish while its entity mutation lock is held",
+      );
+      assert.equal(
+        await readFile(entityPath, "utf8"),
+        originalEntity,
+        "the entity redirect write must not enter while the canonical mutation lock is held",
+      );
+    });
+
+    assert.ok(targetPromise);
+    const targetResult = await targetPromise;
+    assert.equal(targetResult.redirected, 1);
+    assert.equal(await readFile(entityPath, "utf8"), redirectedEntity);
+  } finally {
+    await targetPromise?.catch(() => undefined);
+    await Promise.all([
+      rm(targetDir, { recursive: true, force: true }),
+      rm(controlDir, { recursive: true, force: true }),
+    ]);
   }
 });
 

@@ -11,6 +11,7 @@ import {
   diffVersions,
   type VersioningConfig,
 } from "../packages/remnic-core/src/page-versioning.js";
+import { withEntityCanonicalMutationLock } from "../packages/remnic-core/src/storage/entity-canonical-id-lock.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -432,4 +433,49 @@ test("revertToVersion bumps the corpus sentinel for recall pages but not non-rec
   const beforeEnt = await size();
   await revertToVersion(entPath, "1", cfg, undefined, tmp);
   assert.equal(await size(), beforeEnt, "reverting a non-recall page does not bump the corpus sentinel");
+});
+
+test("entity page reverts wait for the canonical mutation lock", async () => {
+  const tmp = await makeTmpDir();
+  let revertPromise: Promise<unknown> | undefined;
+  try {
+    const cfg = config(tmp);
+    const entityPath = path.join(tmp, "entities", "project-versioned.md");
+    await fs.mkdir(path.dirname(entityPath), { recursive: true });
+    await fs.mkdir(path.join(tmp, "state"), { recursive: true });
+    await fs.writeFile(entityPath, "original entity", "utf8");
+    await createVersion(entityPath, "original entity", "write", cfg, undefined, undefined, tmp);
+    await fs.writeFile(entityPath, "current entity", "utf8");
+    await createVersion(entityPath, "current entity", "write", cfg, undefined, undefined, tmp);
+
+    const revertPrepared = Promise.withResolvers<void>();
+    await withEntityCanonicalMutationLock(path.join(tmp, "state"), async () => {
+      revertPromise = revertToVersion(
+        entityPath,
+        "1",
+        cfg,
+        {
+          debug(message) {
+            if (message.includes("created version 3")) revertPrepared.resolve();
+          },
+          warn() {},
+        },
+        tmp,
+      );
+      await revertPrepared.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        await fs.readFile(entityPath, "utf8"),
+        "current entity",
+        "the entity page overwrite must not enter while the canonical lock is held",
+      );
+    });
+
+    assert.ok(revertPromise);
+    await revertPromise;
+    assert.equal(await fs.readFile(entityPath, "utf8"), "original entity");
+  } finally {
+    await revertPromise?.catch(() => undefined);
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
 });

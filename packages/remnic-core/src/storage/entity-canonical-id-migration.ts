@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   access,
   lstat,
@@ -96,33 +96,63 @@ async function fingerprintPath(filePath: string): Promise<string> {
     : "missing";
 }
 
+async function fingerprintEntityEntries(entitiesDir: string): Promise<string> {
+  let names: string[];
+  try {
+    names = (await readdir(entitiesDir))
+      .filter((name) => path.extname(name) === ".md")
+      .sort();
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) return "missing";
+    throw error;
+  }
+  const hash = createHash("sha256");
+  for (const name of names) {
+    hash.update(`${name.length}:${name}:`);
+    try {
+      const entry = await lstat(path.join(entitiesDir, name), { bigint: true });
+      hash.update(`${entry.dev}:${entry.ino}:${entry.size}:${entry.mtimeNs}:${entry.ctimeNs}`);
+    } catch (error) {
+      if (!isErrnoCode(error, "ENOENT")) throw error;
+      hash.update("missing");
+    }
+    hash.update("\n");
+  }
+  return hash.digest("hex");
+}
+
 /**
- * Completion fingerprint for the migration runner's skip gate. Incorporates
- * only state that can change what a re-run would DO: the entities directory
- * (creates/deletes/renames), the alias table (normalization inputs), the
- * caller-supplied entity-mutation version (store-mediated entity content
- * edits, which touch neither of the first two), and the reconcile-pending
- * marker raw-byte writers touch. It must NOT incorporate the memory-corpus
- * write version: plain memory creates cannot introduce legacy entity
- * references (writes normalize through the historical mapping table), and
- * keying the gate to them re-ran the migration after every fact write — the
- * issue #2213 hot loop.
+ * Completion fingerprint for migration inputs only. Entity entry identities
+ * catch same-path edits that do not change the directory inode; the cooperative
+ * sentinel covers managed writes. Memory-corpus writes stay excluded so plain
+ * fact writes do not reopen migration.
  */
 export async function getFingerprint(
   baseDir: string,
   entitiesDir: string,
   getEntityMutationVersion: () => string,
 ): Promise<string> {
-  const [entityFingerprint, aliasFingerprint, reconcileFingerprint, consumingFingerprint] = await Promise.all([
+  const [
+    entityDirectoryFingerprint,
+    entityEntriesFingerprint,
+    aliasFingerprint,
+    reconcileFingerprint,
+    consumingFingerprint,
+  ] = await Promise.all([
     fingerprintPath(entitiesDir),
+    fingerprintEntityEntries(entitiesDir),
     fingerprintPath(path.join(baseDir, "config", "aliases.json")),
     fingerprintPath(path.join(baseDir, "state", ENTITY_CANONICAL_ID_RECONCILE_MARKER)),
-    // A `.consuming` generation stranded by a crashed PEER process must also
-    // re-invoke a live runner whose cached fingerprint predates it.
     fingerprintPath(path.join(baseDir, "state", ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER)),
   ]);
-  return [entityFingerprint, aliasFingerprint, reconcileFingerprint, consumingFingerprint, getEntityMutationVersion()]
-    .join(":");
+  return [
+    entityDirectoryFingerprint,
+    entityEntriesFingerprint,
+    aliasFingerprint,
+    reconcileFingerprint,
+    consumingFingerprint,
+    getEntityMutationVersion(),
+  ].join(":");
 }
 
 export async function validateRoots(

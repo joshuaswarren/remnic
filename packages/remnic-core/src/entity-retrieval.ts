@@ -403,23 +403,37 @@ async function readCurrentPersistedEntityIndex(
 const namespaceEntityIndexCache = new Map<string, EntityMentionIndex>();
 const MAX_NAMESPACE_ENTITY_INDEX_CACHE_ENTRIES = 32;
 
+function nativeEntityIndexRevision(chunks: NativeKnowledgeChunk[]): string {
+  const projection = chunks.map((chunk) => [
+    chunk.chunkId,
+    chunk.sourcePath,
+    chunk.title,
+    chunk.sourceKind,
+    uniqueStrings(chunk.aliases ?? []),
+    compactLine(chunk.content, 180),
+    chunk.derivedDate ?? null,
+  ]);
+  return createHash("sha256").update(JSON.stringify(projection)).digest("hex");
+}
+
 function namespaceEntityIndexCacheKey(
   storages: StorageManager[],
   recallNamespaces: string[],
+  nativeRevision: string,
 ): string {
-  const namespaceKey = uniqueStrings(recallNamespaces).sort().join("\u001f");
+  const namespaceKey = uniqueStrings(recallNamespaces).join("\u001f");
   const storageKey = storages
     .map((scopedStorage) => {
       const aliases = Object.entries(scopedStorage.entityAliases)
         .sort(([left], [right]) => left.localeCompare(right));
       return (
         `${path.resolve(scopedStorage.dir)}@${scopedStorage.getMemoryStatusVersion()}` +
-        `:${scopedStorage.getMemoryCorpusVersion()}:${scopedStorage.hotCacheKeyId()}:${JSON.stringify(aliases)}`
+        `:${scopedStorage.getMemoryCorpusVersion()}:${scopedStorage.getEntityMutationVersion()}` +
+        `:${scopedStorage.hotCacheKeyId()}:${JSON.stringify(aliases)}`
       );
     })
-    .sort()
     .join("\u001f");
-  return `${namespaceKey}\u001e${storageKey}`;
+  return `${namespaceKey}\u001e${storageKey}\u001e${nativeRevision}`;
 }
 
 function rememberNamespaceEntityIndex(key: string, index: EntityMentionIndex): void {
@@ -1030,6 +1044,9 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
     resolveNamespaceCapabilities(options.config).namespaces &&
     options.namespaceStorage !== undefined &&
     (options.recallNamespaces?.length ?? 0) > 0;
+  if (namespaceScoped) {
+    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces);
+  }
   const resolvedStorages = namespaceScoped
     ? await resolveEntityIndexStorages(
       options.storage,
@@ -1039,8 +1056,12 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
     )
     : undefined;
   const namespaceCacheKey =
-    resolvedStorages && options.recallNamespaces
-      ? namespaceEntityIndexCacheKey(resolvedStorages, options.recallNamespaces)
+    resolvedStorages && options.recallNamespaces && nativeChunks
+      ? namespaceEntityIndexCacheKey(
+        resolvedStorages,
+        options.recallNamespaces,
+        nativeEntityIndexRevision(nativeChunks),
+      )
       : undefined;
   let index: EntityMentionIndex | undefined = namespaceCacheKey
     ? namespaceEntityIndexCache.get(namespaceCacheKey)

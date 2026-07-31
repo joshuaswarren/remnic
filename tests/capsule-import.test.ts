@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rm,
   stat,
   symlink,
   writeFile,
@@ -16,9 +17,13 @@ import { gzipSync } from "node:zlib";
 import { exportCapsule } from "../packages/remnic-core/src/transfer/capsule-export.js";
 import {
   importCapsule,
+  type ImportCapsuleResult,
   type ImportCapsuleMode,
 } from "../packages/remnic-core/src/transfer/capsule-import.js";
 import { listVersions } from "../packages/remnic-core/src/page-versioning.js";
+import {
+  withEntityCanonicalMutationLock,
+} from "../packages/remnic-core/src/storage/entity-canonical-id-lock.js";
 import {
   ExportBundleV1Schema,
   type ExportBundleV1,
@@ -1221,4 +1226,66 @@ test("import canonicalizes a legacy entityRef through the target's migration jou
   // Body and unrelated frontmatter stay byte-identical.
   assert.match(written, /id: fact-legacy-ref/);
   assert.match(written, /body\n$/);
+});
+
+test("entity page imports wait for the target canonical mutation lock", async () => {
+  const entityRel = "entities/capsule-import-lock-target.md";
+  const originalEntity = "original import entity bytes\n";
+  const importedEntity = "imported entity bytes\n";
+  const { archivePath, sourceRoot } = await exportTo(
+    [{ rel: entityRel, content: importedEntity }],
+    "entity-lock-import",
+  );
+  const targetRoot = await makeMemoryDir([{ rel: entityRel, content: originalEntity }]);
+  const controlRoot = await makeMemoryDir([{ rel: entityRel, content: originalEntity }]);
+  const entityPath = path.join(targetRoot, entityRel);
+  let importPromise: Promise<ImportCapsuleResult> | undefined;
+
+  try {
+    await mkdir(path.join(targetRoot, "state"), { recursive: true });
+    let importFinished = false;
+
+    await withEntityCanonicalMutationLock(path.join(targetRoot, "state"), async () => {
+      importPromise = importCapsule({
+        archivePath,
+        root: targetRoot,
+        mode: "overwrite",
+      });
+      void importPromise.then(
+        () => {
+          importFinished = true;
+        },
+        () => undefined,
+      );
+
+      const controlResult = await importCapsule({
+        archivePath,
+        root: controlRoot,
+        mode: "overwrite",
+      });
+      assert.equal(controlResult.imported.length, 1);
+      assert.equal(
+        importFinished,
+        false,
+        "the target import must not finish while its entity mutation lock is held",
+      );
+      assert.equal(
+        await readFile(entityPath, "utf-8"),
+        originalEntity,
+        "the target entity write must not enter while its canonical mutation lock is held",
+      );
+    });
+
+    assert.ok(importPromise);
+    const result = await importPromise;
+    assert.equal(result.imported.length, 1);
+    assert.equal(await readFile(entityPath, "utf-8"), importedEntity);
+  } finally {
+    await importPromise?.catch(() => undefined);
+    await Promise.all([
+      rm(sourceRoot, { recursive: true, force: true }),
+      rm(targetRoot, { recursive: true, force: true }),
+      rm(controlRoot, { recursive: true, force: true }),
+    ]);
+  }
 });
