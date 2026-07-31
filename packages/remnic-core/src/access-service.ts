@@ -4018,12 +4018,9 @@ export class EngramAccessService {
       // Explicit namespace pins the scope (resolveMemoryScopePlan returns early),
       // so the coding context is irrelevant — skip it to avoid false conflicts
       // when the session context changes under a namespace-pinned observe.
-      // resolveCodingContextFromOptions self-gates on projectScope (no scattered
-      // config read here).
-      effectiveCodingContext =
-        (typeof this.orchestrator.getCodingContextForSession === "function"
-          ? this.orchestrator.getCodingContextForSession(request.sessionKey)
-          : null) ?? (await resolveCodingContextFromOptions(request));
+      // Reuse the write resolver's namespace/projectScope gates so context
+      // ignored by runObserve cannot change the retry fingerprint.
+      effectiveCodingContext = (await this.resolveCodingScopeInputs(request)).codingContext;
     }
     return this.handleIdempotentWrite<EngramAccessObserveResponse>({
       operation: "observe",
@@ -4329,6 +4326,10 @@ export class EngramAccessService {
   async extractionForceFlush(request: EngramAccessExtractionForceFlushRequest): Promise<EngramAccessExtractionForceFlushResponse> {
     return delegateExtractionForceFlush(this.accessObserveWriteSurface, request);
   }
+  cancelPendingObservePreparations(sessionKey: string, scopeHint?: string): void {
+    this.accessObserveWriteSurface.cancelPendingObservePreparations(sessionKey, scopeHint);
+  }
+
   cancelPendingObserveExtractions(
     sessionKey: string,
     principal?: string,

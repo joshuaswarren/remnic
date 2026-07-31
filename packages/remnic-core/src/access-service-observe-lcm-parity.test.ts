@@ -34,7 +34,7 @@ import { EngramAccessForbiddenError } from "./access-errors.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import { SessionOwnershipError } from "./orchestration/session-context.js";
-import type { EngramAccessObserveRequest } from "./access-service.js";
+import type { EngramAccessObserveRequest, MemoryScopePlan } from "./access-service.js";
 import {
   combineNamespaces,
   lcmSessionKeyForNamespace,
@@ -977,6 +977,119 @@ test("#2206: an expired force-flush deadline stops before scope resolution", asy
     /scope_resolution/,
   );
   assert.equal(scopeResolutionStarted, false);
+});
+
+test("#2206: abort during scope resolution cancels pre-resolution observe preparations", async () => {
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+  const abortController = new AbortController();
+  let releaseObserveScope!: () => void;
+  let signalObserveScopeStarted!: () => void;
+  let signalFlushScopeStarted!: () => void;
+  const observeScopeGate = new Promise<void>((resolve) => {
+    releaseObserveScope = resolve;
+  });
+  const observeScopeStarted = new Promise<void>((resolve) => {
+    signalObserveScopeStarted = resolve;
+  });
+  const flushScopeStarted = new Promise<void>((resolve) => {
+    signalFlushScopeStarted = resolve;
+  });
+  const internals = service as unknown as {
+    resolveMemoryScopePlan: (
+      request: EngramAccessObserveRequest & { messages?: unknown },
+    ) => Promise<MemoryScopePlan>;
+  };
+  const resolveMemoryScopePlan = internals.resolveMemoryScopePlan.bind(service);
+  internals.resolveMemoryScopePlan = async (request) => {
+    if (request.messages !== undefined) {
+      signalObserveScopeStarted();
+      await observeScopeGate;
+      return resolveMemoryScopePlan(request);
+    }
+    signalFlushScopeStarted();
+    return new Promise<never>(() => {});
+  };
+
+  const observe = service.observe(observeRequest({
+    sessionKey: "pi-geek:abort-scope-resolution",
+    namespace: "pi-geek",
+    authenticatedPrincipal: "pi-geek",
+    skipExtraction: false,
+  }));
+  await observeScopeStarted;
+  const flush = service.extractionForceFlush({
+    sessionKey: "pi-geek:abort-scope-resolution",
+    namespace: "pi-geek",
+    authenticatedPrincipal: "pi-geek",
+    abortSignal: abortController.signal,
+  });
+  await flushScopeStarted;
+  abortController.abort();
+
+  await assert.rejects(flush, /extraction force-flush aborted/);
+  releaseObserveScope();
+  const response = await observe;
+  assert.equal(response.extractionQueued, false);
+  assert.equal(probe.extractionCalls.length, 0);
+});
+
+test("#2206: scope-resolution deadline cancels preparations by raw projectTag and cwd hints", async () => {
+  const rawHintCases = [
+    { projectTag: "Acme/Webshop" },
+    { cwd: "/workspace/acme/webshop" },
+  ];
+
+  for (const rawHintCase of rawHintCases) {
+    const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+    const service = new EngramAccessService(probe.orch);
+    let releaseObserveScope!: () => void;
+    let signalObserveScopeStarted!: () => void;
+    let flushScopeStarted = false;
+    const observeScopeGate = new Promise<void>((resolve) => {
+      releaseObserveScope = resolve;
+    });
+    const observeScopeStarted = new Promise<void>((resolve) => {
+      signalObserveScopeStarted = resolve;
+    });
+    const internals = service as unknown as {
+      resolveMemoryScopePlan: (
+        request: EngramAccessObserveRequest & { messages?: unknown },
+      ) => Promise<MemoryScopePlan>;
+    };
+    const resolveMemoryScopePlan = internals.resolveMemoryScopePlan.bind(service);
+    internals.resolveMemoryScopePlan = async (request) => {
+      if (request.messages !== undefined) {
+        signalObserveScopeStarted();
+        await observeScopeGate;
+        return resolveMemoryScopePlan(request);
+      }
+      flushScopeStarted = true;
+      throw new Error("scope resolution must not start");
+    };
+
+    const observe = service.observe(observeRequest({
+      sessionKey: "pi-geek:raw-hint-deadline",
+      authenticatedPrincipal: "pi-geek",
+      skipExtraction: false,
+      ...rawHintCase,
+    }));
+    await observeScopeStarted;
+    await assert.rejects(
+      service.extractionForceFlush({
+        sessionKey: "pi-geek:raw-hint-deadline",
+        authenticatedPrincipal: "pi-geek",
+        deadlineMs: Date.now() - 1,
+        ...rawHintCase,
+      }),
+      /scope_resolution/,
+    );
+    assert.equal(flushScopeStarted, false);
+    releaseObserveScope();
+    const response = await observe;
+    assert.equal(response.extractionQueued, false);
+    assert.equal(probe.extractionCalls.length, 0);
+  }
 });
 
 test("#2128: aborted or expired extraction force-flush never touches a buffer", async () => {

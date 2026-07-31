@@ -546,7 +546,9 @@ test("#2206 cancellation terminalizes a plan after a replacement commits but ret
     const plan = await planner.plan({ text: "old", targetIds: ["mem-old"] }, ["default"]);
     const abortController = new AbortController();
     const deps = makeExecutorDeps(state);
+    let retirementAttempted = false;
     deps.retireMemory = async () => {
+      retirementAttempted = true;
       abortController.abort(new Error("correction deadline exceeded"));
       throw new Error("injected retirement failure");
     };
@@ -556,6 +558,7 @@ test("#2206 cancellation terminalizes a plan after a replacement commits but ret
       abortSignal: abortController.signal,
     });
 
+    assert.equal(retirementAttempted, true, "the cancellation must be injected from retirement");
     assert.equal(outcome.status, "partial");
     assert.equal((await planner.loadPlan("default", plan.planId))?.status, "partial");
     assert.equal(state.writtenReplacements.length, 1);
@@ -565,6 +568,13 @@ test("#2206 cancellation terminalizes a plan after a replacement commits but ret
       outcome.results.some((result) => result.action.kind === "redaction_rule" && result.status === "skipped"),
       true,
     );
+    const supersedeResults = outcome.results.filter((result) => result.action.kind === "supersede");
+    assert.deepEqual(
+      supersedeResults.map((result) => result.status),
+      ["applied", "failed"],
+      "the outcome must expose the committed replacement and failed retirement",
+    );
+    assert.match(supersedeResults[1]?.error ?? "", /injected retirement failure/);
     assert.equal(state.auditRecords.length, 1);
   });
 });

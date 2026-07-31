@@ -194,9 +194,34 @@ test("#2206 dedup records a plan that commits as cancellation arrives", async ()
   );
 
   assert.deepEqual(first.plans.map((candidate) => candidate.planId), [plan.planId]);
+  assert.equal(first.telemetry.queued, 1, "the committed pending plan must count as queued");
   assert.equal(dedup.size, 1);
   assert.equal(second.telemetry.queued, 0);
   assert.equal(planningCalls, 1);
+});
+
+test("#2206 auto mode counts a plan left pending when cancellation lands at commit", async () => {
+  const plan = makePlan({ confidence: 0.9, classification: "outdated" });
+  const abortController = new AbortController();
+  const appliedPlans: string[] = [];
+  const deps = mockDeps(plan, { appliedPlans });
+  deps.planCorrection = async () => {
+    abortController.abort(new Error("extraction deadline exceeded"));
+    return plan;
+  };
+
+  const result = await capturePassiveCorrections(
+    [makeCorrection()],
+    { ...LIVE_CTX, abortSignal: abortController.signal },
+    AUTO_CONFIG,
+    deps,
+    new Set<string>(),
+  );
+
+  assert.equal(abortController.signal.aborted, true, "cancellation must land as planning commits");
+  assert.deepEqual(result.plans.map((candidate) => candidate.planId), [plan.planId]);
+  assert.equal(result.telemetry.queued, 1);
+  assert.deepEqual(appliedPlans, []);
 });
 
 // ---------------------------------------------------------------------------
