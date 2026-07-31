@@ -733,6 +733,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   memoryOsPreset?: MemoryOsPresetName;
   qmdEnabled: boolean;
   qmdCollection: string;
+  /** External wiki collections are excluded from ordinary recall. V1 rejects true. */
+  wikiMergeIntoRecall: boolean;
   qmdMaxResults: number;
   qmdEmbeddingBacklogThreshold: number;
   qmdColdTierEnabled?: boolean;

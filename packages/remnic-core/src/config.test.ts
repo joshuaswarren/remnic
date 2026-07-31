@@ -533,6 +533,30 @@ test("parseConfig initGateTimeoutMs defaults to OpenClaw cold-start budget", () 
   assert.equal(result.initGateTimeoutMs, 30_000);
 });
 
+test("parseConfig keeps external wiki merge out of default recall", () => {
+  assert.equal(parseConfig({}).wikiMergeIntoRecall, false);
+  assert.equal(parseConfig({ wikiMergeIntoRecall: false }).wikiMergeIntoRecall, false);
+  assert.throws(
+    () => parseConfig({ wikiMergeIntoRecall: true }),
+    /wikiMergeIntoRecall=true is not supported/,
+  );
+  assert.throws(
+    () => parseConfig({ wikiMergeIntoRecall: "maybe" }),
+    /wikiMergeIntoRecall must be a boolean-like value/,
+  );
+});
+
+test("parseConfig rejects external wiki collections as default memory collections", () => {
+  assert.throws(
+    () => parseConfig({ qmdCollection: "external-wiki-reading" }),
+    /qmdCollection must be a memory collection/,
+  );
+  assert.throws(
+    () => parseConfig({ qmdColdCollection: "external-wiki-archive" }),
+    /qmdColdCollection must be a memory collection/,
+  );
+});
+
 test("parseConfig qmdSearchStrategy defaults to hybrid and validates the enum", () => {
   // Default must equal the historical lex+vec+hyde behavior. Issue #1335.
   assert.equal(parseConfig({}).qmdSearchStrategy, "hybrid");
