@@ -1,5 +1,7 @@
 import path from "node:path";
 import type { QmdSearchResult } from "../types.js";
+import { isExternalWikiCollectionName } from "../external-wiki-guard.js";
+export { isExternalWikiCollectionName } from "../external-wiki-guard.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import {
   isActivityDigestPath,
@@ -81,12 +83,24 @@ export function isTopLevelArchivePath(
   return /^(?:archive|namespaces[\\/][^\\/]+[\\/]archive)(?:[\\/]|$)/i.test(normalized);
 }
 
+function isExternalWikiQmdPath(
+  filePath: string,
+  source: GenericRecallPathSource,
+): boolean {
+  if (source !== "qmd") return false;
+  const normalized = normalizeQmdUriPath(filePath, source).replace(/\\/g, "/");
+  const slashIndex = normalized.indexOf("/");
+  const collection = slashIndex === -1 ? normalized : normalized.slice(0, slashIndex);
+  return isExternalWikiCollectionName(collection);
+}
+
 export function isGenericRecallExcludedPath(
   filePath: string,
   policy: GenericRecallPathPolicy = {},
   source: GenericRecallPathSource = "filesystem",
 ): boolean {
   return (
+    isExternalWikiQmdPath(filePath, source) ||
     isArtifactMemoryPath(filePath) ||
     isActivityDigestPath(filePath, policy.memoryDir) ||
     isTopLevelArchivePath(filePath, policy, source) ||

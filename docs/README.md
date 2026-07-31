@@ -48,6 +48,7 @@ packaged adapter is.
 - [Temporal recall](temporal-recall.md) — `valid_at` / `invalid_at` fact lifecycle and the `as_of` recall filter.
 - [Contradiction review](contradiction-review.md) — Nightly scan that finds contradictory memory pairs and queues them for resolution.
 - [Tags](tags.md) — Free-form tag filters on recall and propose, and how tags differ from taxonomy.
+- [External compiled wikis](external-wikis.md) — Keep compiled knowledge outside automatic recall and hot facts; search it on demand.
 
 ### Memory OS
 
