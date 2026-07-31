@@ -130,6 +130,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "compression_guidelines_optimize", operation: "compression_guidelines_optimize" },
   { tool: "compression_guidelines_activate", operation: "compression_guidelines_activate" },
   { tool: "memory_search", operation: "memory_search" },
+  { tool: "external_wiki_search", operation: "external_wiki_search" },
   { tool: "memory_profile", operation: "memory_profile" },
   { tool: "memory_entities_list", operation: "memory_entities_list" },
   { tool: "memory_questions", operation: "memory_questions" },
@@ -175,6 +176,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
 export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "GET", pathname: "/engram/v1/adapters", operation: "adapters_status" },
   { method: "POST", pathname: "/engram/v1/recall", operation: "recall" },
+  { method: "POST", pathname: "/engram/v1/external-wikis/search", operation: "external_wiki_search" },
   { method: "POST", pathname: "/engram/v1/coding-context", operation: "set_coding_context" },
   { method: "POST", pathname: "/engram/v1/capsules/export", operation: "capsule_export" },
   { method: "POST", pathname: "/engram/v1/capsules/import", operation: "capsule_import" },

@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1282,4 +1282,98 @@ test("MCP graph_edge_decay_run: unrestricted and legacy tokens reach the handler
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+function readMcpResult(response: unknown): Record<string, unknown> {
+  assert.ok(response && typeof response === "object" && "result" in response);
+  const result = response.result;
+  assert.ok(result && typeof result === "object");
+  return Object.fromEntries(Object.entries(result));
+}
+
+test("MCP external_wiki_search exposes aliases and dispatches the stable result", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-mcp-external-wiki-"));
+  await mkdir(path.join(rootDir, "wiki"), { recursive: true });
+  await writeFile(
+    path.join(rootDir, "INDEX.md"),
+    "- [[wiki/retrieval|Retrieval Architecture]] - cited hybrid retrieval\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "wiki", "retrieval.md"),
+    "# Retrieval Architecture\n\nHybrid retrieval keeps cited sources.\n",
+    "utf8",
+  );
+  try {
+    const service = {
+      ...makeMockService(),
+      configRef: {
+        externalWikis: [{
+          id: "reading",
+          rootDir,
+          enabled: true,
+          pagesDir: "wiki",
+          indexFile: "INDEX.md",
+          indexInQmd: false,
+          includeInDefaultRecall: false,
+        }],
+      },
+    } as unknown as EngramAccessService;
+    const server = new EngramMcpServer(service);
+
+    const listed = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+      params: {},
+    });
+    const listedResult = readMcpResult(listed);
+    assert.ok(Array.isArray(listedResult.tools));
+    const toolNames = listedResult.tools.flatMap((tool) =>
+      tool && typeof tool === "object" && "name" in tool && typeof tool.name === "string"
+        ? [tool.name]
+        : []
+    );
+    assert.ok(toolNames.includes("remnic.external_wiki_search"));
+    assert.ok(toolNames.includes("engram.external_wiki_search"));
+
+    let canonicalResult: unknown;
+    for (const name of ["remnic.external_wiki_search", "engram.external_wiki_search"]) {
+      const response = await server.handleRequest(makeToolRequest(name, {
+        query: "hybrid retrieval",
+        limit: 3,
+        wikiId: "reading",
+        maxCharsPerHit: 400,
+      }));
+      const result = readMcpResult(response);
+      assert.equal(result.isError, false);
+      assert.ok(result.structuredContent && typeof result.structuredContent === "object");
+      if (canonicalResult === undefined) canonicalResult = result.structuredContent;
+      else assert.deepEqual(result.structuredContent, canonicalResult);
+    }
+    assert.ok(canonicalResult && typeof canonicalResult === "object" && "hits" in canonicalResult);
+    assert.ok(Array.isArray(canonicalResult.hits));
+    assert.equal(canonicalResult.hits.length, 1);
+    const firstHit = canonicalResult.hits[0];
+    assert.ok(firstHit && typeof firstHit === "object" && "path" in firstHit);
+    assert.equal(firstHit.path, "wiki/retrieval.md");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("MCP external_wiki_search rejects an empty query before service dispatch", async () => {
+  let configRead = false;
+  const service = {
+    ...makeMockService(),
+    get configRef() {
+      configRead = true;
+      return parseConfig({ memoryDir: os.tmpdir(), externalWikis: [] });
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest(makeToolRequest("remnic.external_wiki_search", { query: "  " }));
+  assert.equal(readMcpResult(response).isError, true);
+  assert.equal(configRead, false);
 });
