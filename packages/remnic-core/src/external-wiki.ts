@@ -1,6 +1,6 @@
 import { open, opendir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import type { ExternalWikiRoot } from "./types.js";
+import type { ExternalWikiRoot } from "./external-wiki-config.js";
 
 const DEFAULT_MAX_INDEX_BYTES = 1_048_576;
 const DEFAULT_MAX_PAGE_BYTES = 1_048_576;
@@ -10,7 +10,7 @@ const MAX_READ_BYTES = 16_777_216;
 const MAX_CATALOG_ENTRIES = 100_000;
 const MAX_DIRECTORY_DEPTH = 128;
 
-export type { ExternalWikiRoot } from "./types.js";
+export type { ExternalWikiRoot } from "./external-wiki-config.js";
 
 export interface ExternalWikiLayout {
   rootDir: string;
