@@ -850,6 +850,7 @@ export class AccessAdminOpsSurface {
           lineage: memory.lineage,
           sourceMemoryId: memory.sourceMemoryId,
           actor: memory.actor,
+          ...(memory.toolScoped ? { toolScoped: true as const } : {}),
         });
         // #1645: a tombstone-blocked promotion lands pending_review (no active
         // copy in the target). Report it as a failed promotion so the admin

@@ -1059,6 +1059,7 @@ export class EngramAccessHttpServer {
         query: body.query ?? "",
         sessionKey: body.sessionKey,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        sourceConnector: this.resolveConnector(req),
         idempotencyKey: body.idempotencyKey,
         namespace: this.resolveNamespace(req, body.namespace),
         topK: body.topK,
@@ -1540,6 +1541,7 @@ export class EngramAccessHttpServer {
           namespace,
           budget,
           authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          sourceConnector: this.resolveConnector(req),
           ...(disclosure !== undefined ? { disclosure } : {}),
         });
       } catch (err) {

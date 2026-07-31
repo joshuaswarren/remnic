@@ -569,6 +569,7 @@ async function rescopeMemoryFn(
       ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
       ...(fm.structuredAttributes ? { structuredAttributes: fm.structuredAttributes } : {}),
       ...(fm.valid_at ? { validAt: fm.valid_at } : {}),
+      ...(fm.sourceConnector ? { sourceConnector: fm.sourceConnector } : {}),
     },
     { source: `correction:rescope:${namespace}` },
     { salvage: true },
@@ -582,6 +583,7 @@ async function rescopeMemoryFn(
     ...(fm.memoryKind ? { memoryKind: fm.memoryKind } : {}),
     ...(Array.isArray(fm.links) ? { links: fm.links } : {}),
     ...(fm.intentGoal ? { intentGoal: fm.intentGoal } : {}),
+    ...(fm.toolScoped ? { toolScoped: true as const } : {}),
   });
   if (destBlocked) {
     // #1645: destination tombstone-blocked the rescope (pending_review). Don't

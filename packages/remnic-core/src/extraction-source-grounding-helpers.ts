@@ -31,12 +31,16 @@ export function hasExplicitRoleSubjectToken(
   sourceTokensBySentence: ReadonlyArray<ReadonlyArray<string>>,
 ): boolean {
   return candidateRole !== undefined
-    && sourceTokensBySentence.some((tokens) => tokens.includes(candidateRole));
+    && sourceTokensBySentence.some((tokens) =>
+      tokens.some((token) => token.replace(/^[\u0000\u0001]/u, "") === candidateRole));
 }
 
-export function splitGroundingClauses(sentences: ReadonlyArray<string>): string[] {
-  return sentences.flatMap((sentence) =>
-    sentence
+export function splitGroundingClauses(
+  sentences: ReadonlyArray<string>,
+  inheritCoordinatedSubjects = false,
+): string[] {
+  return sentences.flatMap((sentence) => {
+    const clauses = sentence
       .split(/,\s+(?=[\p{L}][\p{L}\p{N}'’-]*\s+\S)/gu)
       .flatMap((commaClause) =>
         commaClause
@@ -47,8 +51,49 @@ export function splitGroundingClauses(sentences: ReadonlyArray<string>): string[
               .map((clause) => clause.trim())
               .filter((clause) => clause.length > 0),
           ),
-      ),
-  );
+      );
+    if (!inheritCoordinatedSubjects || clauses.length < 2) return clauses;
+
+    const firstLexemes = groundingLexemes(clauses[0]!)
+      .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true);
+    const firstPredicateIndex = firstLexemes.findIndex(({ isPredicate }) => isPredicate);
+    let subjectLexemes = firstLexemes
+      .slice(0, firstPredicateIndex < 1 ? 1 : firstPredicateIndex)
+      .filter(({ token }) => !token.endsWith("ly"));
+    let subject = subjectLexemes.map(({ surface }) => surface).join(" ");
+    let predicate = firstLexemes[firstPredicateIndex < 1 ? 1 : firstPredicateIndex]?.surface;
+    if (subject.length === 0 || predicate === undefined) return clauses;
+
+    const sourceSpans = [clauses[0]!];
+    for (const clause of clauses.slice(1)) {
+      const clauseLexemes = groundingLexemes(clause)
+        .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true);
+      const clausePredicateIndex = clauseLexemes.findIndex(({ isPredicate }) => isPredicate);
+      const clauseSubjectLexemes = clausePredicateIndex > 0
+        ? clauseLexemes
+          .slice(0, clausePredicateIndex)
+          .filter(({ token }) => !token.endsWith("ly"))
+        : [];
+      const repeatsSubject = clauseSubjectLexemes.length === subjectLexemes.length
+        && subjectLexemes.every(
+          ({ token }, index) => clauseSubjectLexemes[index]?.token === token,
+        );
+      if (repeatsSubject) {
+        sourceSpans.push(clause);
+        continue;
+      }
+      if (clauseSubjectLexemes.length > 0) {
+        subjectLexemes = clauseSubjectLexemes;
+        subject = subjectLexemes.map(({ surface }) => surface).join(" ");
+        predicate = clauseLexemes[clausePredicateIndex]?.surface;
+        sourceSpans.push(clause);
+        continue;
+      }
+      const prefix = clausePredicateIndex === -1 ? `${subject} ${predicate}` : subject;
+      sourceSpans.push(clause, `${prefix} ${clause}`);
+    }
+    return sourceSpans;
+  });
 }
 
 export const GROUNDING_STOPWORDS: Record<string, true> = {
@@ -215,44 +260,122 @@ export const GROUNDING_ENTITY_TYPE_PREFIXES = new Set([
   "other",
 ]);
 
-export const GROUNDING_COMMON_VERB_FORMS = new Set([
-  "contains",
-  "employs",
-  "gives",
-  "has",
-  "hosts",
-  "likes",
-  "makes",
-  "needs",
-  "owns",
-  "prefers",
-  "requires",
-  "runs",
-  "shares",
-  "supports",
-  "takes",
-  "uses",
-  "wants",
-  "works",
-]);
+export const GROUNDING_COMMON_VERB_FORMS: Record<string, true> = {
+  add: true,
+  adds: true,
+  call: true,
+  calls: true,
+  contain: true,
+  contains: true,
+  employ: true,
+  deploy: true,
+  deploys: true,
+  design: true,
+  designs: true,
+  employs: true,
+  fill: true,
+  fills: true,
+  go: true,
+  goes: true,
+  gone: true,
+  went: true,
+  give: true,
+  gives: true,
+  has: true,
+  host: true,
+  hosts: true,
+  like: true,
+  likes: true,
+  manage: true,
+  manages: true,
+  make: true,
+  makes: true,
+  need: true,
+  needs: true,
+  own: true,
+  owns: true,
+  plan: true,
+  plans: true,
+  prefer: true,
+  prefers: true,
+  require: true,
+  requires: true,
+  run: true,
+  runs: true,
+  sleep: true,
+  sleeps: true,
+  stop: true,
+  stops: true,
+  swim: true,
+  swims: true,
+  share: true,
+  shares: true,
+  support: true,
+  supports: true,
+  take: true,
+  takes: true,
+  try: true,
+  tries: true,
+  use: true,
+  uses: true,
+  want: true,
+  wants: true,
+  work: true,
+  works: true,
+};
+
 
 export interface GroundingLexeme {
   token: string;
+  surface: string;
+  isPredicate: boolean;
   preserveTerminalS: boolean;
 }
 
 export function groundingLexemes(text: string): GroundingLexeme[] {
-  return text.normalize("NFKC").match(
+  const rawTokens = text.normalize("NFKC").match(
     /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?(?:\+\+[\p{L}\p{N}]*|#[\p{L}\p{N}]*)?/gu,
-  )
-    ?.map((rawToken) => {
-      const token = rawToken.replaceAll("’", "'").toLocaleLowerCase();
-      return {
-        token,
-        preserveTerminalS: /^\p{Lu}/u.test(rawToken) && !GROUNDING_COMMON_VERB_FORMS.has(token),
-      };
-    })
-    ?? [];
+  ) ?? [];
+  const tokens = rawTokens.map((rawToken) =>
+    rawToken.replaceAll("’", "'").toLocaleLowerCase());
+  let predicateIndex = tokens.findIndex((token, index) => {
+    const previousToken = tokens[index - 1];
+    const followsAuxiliary = previousToken !== undefined
+      && GROUNDING_AUXILIARY_TOKENS.has(previousToken);
+    const capitalized = /^\p{Lu}/u.test(rawTokens[index] ?? "");
+    return followsAuxiliary || (
+      !capitalized
+      && (
+        GROUNDING_COMMON_VERB_FORMS[token] === true
+        || token.endsWith("ed")
+        || token.endsWith("ing")
+      )
+    );
+  });
+  if (predicateIndex === -1) {
+    predicateIndex = tokens.findIndex((token, index) =>
+      index > 0
+      && !/^\p{Lu}/u.test(rawTokens[index] ?? "")
+      && token.endsWith("s")
+      && !token.endsWith("ss"));
+  }
+  if (predicateIndex === -1) {
+    const leadingSubjectLength = rawTokens.findIndex((rawToken) => !/^\p{Lu}/u.test(rawToken));
+    if (leadingSubjectLength > 0) predicateIndex = leadingSubjectLength;
+  }
+  return rawTokens.map((rawToken, index) => {
+    const token = tokens[index]!;
+    const isPredicate = index === predicateIndex;
+    return {
+      token,
+      surface: rawToken,
+      preserveTerminalS: !isPredicate && (
+        /^\p{Lu}/u.test(rawToken)
+        || token.endsWith("s")
+      ),
+      isPredicate,
+    };
+  });
 }
 
 export function tokenSequence(text: string): string[] {
@@ -302,22 +425,37 @@ export function isNegatedAt(tokens: ReadonlyArray<string>, index: number): boole
 export const GROUNDING_MIN_SHARED_TOKENS = 2;
 export const GROUNDING_MIN_COVERAGE = 0.5;
 
-export function stemToken(token: string, preserveTerminalS = false): string {
+const STRICT_GROUNDING_TOKEN_PREFIX = "\u0000";
+const INFLECTED_GROUNDING_TOKEN_PREFIX = "\u0001";
+
+export function stemToken(
+  token: string,
+  preserveTerminalS = false,
+  markExact = false,
+): string {
   if (token.endsWith("'s")) return token.slice(0, -2);
-  if (preserveTerminalS) return token;
+  if (preserveTerminalS) {
+    if (!markExact) return token;
+    return `${STRICT_GROUNDING_TOKEN_PREFIX}${token}`;
+  }
   if (token.length > 5 && token.endsWith("ing")) {
     const stem = token.slice(0, -3);
-    return /(.)\1$/u.test(stem) ? stem.slice(0, -1) : stem;
+    const inflectionDoubled = /(.)\1$/u.test(stem) && stem.length > 3 && !/[lsz]$/u.test(stem);
+    const normalized = inflectionDoubled ? stem.slice(0, -1) : stem;
+    return markExact ? `${INFLECTED_GROUNDING_TOKEN_PREFIX}${normalized}` : normalized;
   }
-  if (token.length > 4 && token.endsWith("ed")) return token.slice(0, -2);
-  if (
-    !preserveTerminalS
-    && token.length > 3
-    && token.endsWith("s")
-    && !token.endsWith("ss")
-    && GROUNDING_COMMON_VERB_FORMS.has(token)
-  ) {
-    return token.slice(0, -1);
+  if (token.length > 4 && token.endsWith("ied")) {
+    const normalized = `${token.slice(0, -3)}y`;
+    return markExact ? `${INFLECTED_GROUNDING_TOKEN_PREFIX}${normalized}` : normalized;
+  }
+  if (token.length > 4 && token.endsWith("ed")) {
+    const stem = token.slice(0, -2);
+    const inflectionDoubled = /(.)\1$/u.test(stem) && stem.length > 3 && !/[lsz]$/u.test(stem);
+    const normalized = inflectionDoubled ? stem.slice(0, -1) : stem;
+    return markExact ? `${INFLECTED_GROUNDING_TOKEN_PREFIX}${normalized}` : normalized;
+  }
+  if (token.length > 3 && token.endsWith("s") && !token.endsWith("ss")) {
+    return token.endsWith("ies") ? `${token.slice(0, -3)}y` : token.slice(0, -1);
   }
   return token;
 }
@@ -326,7 +464,7 @@ export function stemToken(token: string, preserveTerminalS = false): string {
 export function tokenize(text: string): Set<string> {
   const tokens = new Set<string>();
   for (const { token, preserveTerminalS } of groundingLexemes(text)) {
-    if (GROUNDING_STOPWORDS[token] !== true) tokens.add(stemToken(token, preserveTerminalS));
+    if (GROUNDING_STOPWORDS[token] !== true) tokens.add(stemToken(token, preserveTerminalS, true));
   }
   return tokens;
 }
@@ -371,7 +509,7 @@ export function groundingTokenSequence(text: string): string[] {
   }
   return lexemes
     .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
-    .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS));
+    .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS, true));
 }
 export function normalizedGroundingAlignmentTokenSequence(text: string): string[] {
   const normalized = normalizedGroundingTokenSequence(text);
@@ -379,7 +517,7 @@ export function normalizedGroundingAlignmentTokenSequence(text: string): string[
   if (firstLexeme === undefined || !GROUNDING_SUBJECT_PRONOUNS.has(firstLexeme.token)) {
     return normalized;
   }
-  return [stemToken(firstLexeme.token, firstLexeme.preserveTerminalS), ...normalized];
+  return [stemToken(firstLexeme.token, firstLexeme.preserveTerminalS, true), ...normalized];
 }
 
 
@@ -388,7 +526,28 @@ export function normalizedGroundingTokenSequence(text: string): string[] {
 }
 
 export function areGroundingTokensCompatible(left: string, right: string): boolean {
-  return left === right || `${left}e` === right || left === `${right}e`;
+  const leftPrefix = left[0];
+  const rightPrefix = right[0];
+  const leftMarked = leftPrefix === STRICT_GROUNDING_TOKEN_PREFIX
+    || leftPrefix === INFLECTED_GROUNDING_TOKEN_PREFIX;
+  const rightMarked = rightPrefix === STRICT_GROUNDING_TOKEN_PREFIX
+    || rightPrefix === INFLECTED_GROUNDING_TOKEN_PREFIX;
+  const leftToken = leftMarked ? left.slice(1) : left;
+  const rightToken = rightMarked ? right.slice(1) : right;
+  if (leftToken === rightToken) {
+    const strictToInflected = (
+      leftPrefix === STRICT_GROUNDING_TOKEN_PREFIX
+      && rightPrefix === INFLECTED_GROUNDING_TOKEN_PREFIX
+    ) || (
+      rightPrefix === STRICT_GROUNDING_TOKEN_PREFIX
+      && leftPrefix === INFLECTED_GROUNDING_TOKEN_PREFIX
+    );
+    return !strictToInflected;
+  }
+  if (leftPrefix === STRICT_GROUNDING_TOKEN_PREFIX || rightPrefix === STRICT_GROUNDING_TOKEN_PREFIX) {
+    return false;
+  }
+  return `${leftToken}e` === rightToken || leftToken === `${rightToken}e`;
 }
 const GROUNDING_DENIAL_REPORTING_VERBS = new Set([
   "deny",

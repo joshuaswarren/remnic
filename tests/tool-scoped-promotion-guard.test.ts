@@ -161,6 +161,13 @@ test("promotion guard: global tool-scoped fact with sourceConnector stays in ses
       defaultMems.some((m) => m.content?.includes(TOOL_FACT.slice(0, 20))),
       "tool-scoped global fact must remain in the session (default) namespace",
     );
+    assert.equal(
+      defaultMems.find((memory) =>
+        memory.content?.includes(TOOL_FACT.slice(0, 20)),
+      )?.frontmatter.toolScoped,
+      true,
+      "tool-scoped classification must survive in frontmatter for recall partitioning",
+    );
   } finally {
     StorageManager.clearAllStaticCaches();
     await rm(memoryDir, { recursive: true, force: true });
@@ -416,6 +423,12 @@ test("auto-promote: chunked path also withholds a tool-scoped fact with sourceCo
       defaultMems.some((m) => m.content?.includes("search")),
       "chunked fact must actually be persisted in the session namespace (non-vacuous)",
     );
+    const childChunks = defaultMems.filter((memory) => memory.frontmatter.parentId);
+    assert.ok(childChunks.length > 0, "chunking fixture must persist child chunks");
+    assert.ok(
+      childChunks.every((memory) => memory.frontmatter.toolScoped === true),
+      "every persisted child chunk must inherit the parent's tool-scoped classification",
+    );
     assert.equal(
       sharedMems.some((m) => m.content?.includes("search tool")),
       false,
@@ -459,6 +472,13 @@ test("scope-routing: global procedure with portable title + tool-bearing steps +
     assert.ok(
       defaultMems.some((m) => m.content?.includes("locating an implementation")),
       "global procedure must actually be persisted in the session namespace (non-vacuous)",
+    );
+    assert.equal(
+      defaultMems.find((memory) =>
+        memory.content?.includes("locating an implementation"),
+      )?.frontmatter.toolScoped,
+      true,
+      "structured procedure classification must survive even when its title is portable",
     );
     assert.equal(
       sharedMems.some((m) => m.content?.includes("locating an implementation")),

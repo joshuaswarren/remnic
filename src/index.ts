@@ -1956,7 +1956,8 @@ const pluginDefinition = {
     });
     const activeRecallEngine = createActiveRecallEngine(
       {
-        recall: async (query, sessionKey) => orchestrator.recall(query, sessionKey),
+        recall: async (query, sessionKey) =>
+          orchestrator.recall(query, sessionKey, { sourceConnector: "openclaw" }),
         getLastRecallSnapshot: (sessionKey) => orchestrator.getLastRecall(sessionKey),
         explainLastRecall:
           cfg.activeRecallAttachRecallExplain === true
@@ -3093,6 +3094,7 @@ const pluginDefinition = {
         ).catch(() => []);
         let recallComposition: RecallContextComposition | undefined;
         const context = await orchestrator.recall(prompt, sessionKey, {
+          sourceConnector: "openclaw",
           onContextComposition: (composition) => {
             recallComposition = composition;
           },

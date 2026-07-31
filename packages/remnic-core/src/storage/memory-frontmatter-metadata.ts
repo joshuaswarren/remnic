@@ -1,17 +1,12 @@
 export type RawFrontmatterOwner = object;
 
-const rawFrontmatterByMemory = new WeakMap<RawFrontmatterOwner, string>();
-
-export function extractRawFrontmatter(raw: string): string | null {
-  return raw.match(/^---\n([\s\S]*?)\n---\n?/)?.[1] ?? null;
-}
+const rawDocumentByMemory = new WeakMap<RawFrontmatterOwner, string>();
 
 export function rememberRawFrontmatter<T extends RawFrontmatterOwner>(owner: T, raw: string): T {
-  const frontmatter = extractRawFrontmatter(raw);
-  if (frontmatter !== null) rawFrontmatterByMemory.set(owner, frontmatter);
+  if (/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(raw)) rawDocumentByMemory.set(owner, raw);
   return owner;
 }
 
-export function readRawFrontmatter(owner: RawFrontmatterOwner): string | undefined {
-  return rawFrontmatterByMemory.get(owner);
+export function readRawMemoryDocument(owner: RawFrontmatterOwner): string | undefined {
+  return rawDocumentByMemory.get(owner);
 }

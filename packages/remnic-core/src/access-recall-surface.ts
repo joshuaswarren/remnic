@@ -862,6 +862,7 @@ export class AccessRecallSurface {
         contextComposition = composition;
       },
       ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
+      ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
@@ -943,6 +944,7 @@ export class AccessRecallSurface {
     namespace?: string;
     budget?: number;
     authenticatedPrincipal?: string;
+    sourceConnector?: string;
     /**
      * Disclosure depth used to shape per-result payload (issue #677
      * PR 3/4).  When set, each X-ray result is decorated with the
@@ -1095,6 +1097,7 @@ export class AccessRecallSurface {
           ...(authenticatedPrincipal
             ? { principalOverride: authenticatedPrincipal }
             : {}),
+          ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
           ...(request.currentContextScopes !== undefined
             ? { currentContextScopes: request.currentContextScopes }
             : {}),

@@ -30,9 +30,15 @@ export function buildExplicitCaptureDedupKey(
   ].join(" ");
 }
 
+export function buildCapturePathLockIdentity(pathname: string): string {
+  return `path ${pathname.length} ${pathname}`;
+}
+
 export function captureIdentityHash(memory: MemoryFile): string {
   return createHash("sha256")
-    .update(buildExplicitCaptureDedupKey(memory.content, memory.frontmatter.category, memory.frontmatter.sourceConnector))
+    .update(
+      buildExplicitCaptureDedupKey(memory.content, memory.frontmatter.category, memory.frontmatter.sourceConnector)
+    )
     .digest("hex");
 }
 
@@ -48,9 +54,7 @@ export class TombstoneBlockedCaptureWriteLock {
 
   private captureWriteLockPathForHash(identityHash: string): string {
     const filename =
-      identityHash.length === 0
-        ? "explicit-capture-write.lock"
-        : `explicit-capture-write-${identityHash}.lock`;
+      identityHash.length === 0 ? "explicit-capture-write.lock" : `explicit-capture-write-${identityHash}.lock`;
     return path.join(this.options.stateDir, "tombstone-blocked-capture", filename);
   }
 
@@ -87,7 +91,7 @@ export class TombstoneBlockedCaptureWriteLock {
     task: () => Promise<T>,
     identityHashes: readonly string[]
   ): Promise<T> {
-    const lockPaths = [...new Set(identityHashes.map((hash) => this.captureWriteLockPathForHash(hash)))].sort();
+    const lockPaths = [...new Set(identityHashes.map((hash) => this.captureWriteLockPathForHash(hash)))];
     const acquire = async (index: number): Promise<T> => {
       if (index === lockPaths.length) return await task();
       return await this.withSingleCaptureWriteLock(lockPaths[index], () => acquire(index + 1));
@@ -95,20 +99,13 @@ export class TombstoneBlockedCaptureWriteLock {
     return await acquire(0);
   }
 
-
-  async withCaptureWriteLock<T>(
-    task: () => Promise<T>,
-    identity?: string | readonly string[]
-  ): Promise<T> {
+  async withCaptureWriteLock<T>(task: () => Promise<T>, identity?: string | readonly string[]): Promise<T> {
     const identities =
       Array.isArray(identity) && identity.length > 0 ? identity : [typeof identity === "string" ? identity : ""];
     return await this.withCaptureWriteLocks(task, identities, []);
   }
 
-  async withCaptureWriteLockHashes<T>(
-    task: () => Promise<T>,
-    identityHashes: readonly string[]
-  ): Promise<T> {
+  async withCaptureWriteLockHashes<T>(task: () => Promise<T>, identityHashes: readonly string[]): Promise<T> {
     return await this.withCaptureWriteLocks(task, [], identityHashes);
   }
 
@@ -134,17 +131,44 @@ export class TombstoneBlockedCaptureWriteLock {
       key.length === 0 ? "" : createHash("sha256").update(key).digest("hex");
     const identityKeys = [...new Set(identities)];
     const hashes = [...new Set(identityHashes)];
-    const missingIdentityHashes = identityKeys
-      .filter((key) => !current || (!current.has(key) && !current.has(hashToken(key))))
-      .map(identityHash);
-    const missingHashes = hashes.filter((hash) => !current || !current.has(`\u0000${hash}`));
-    const physicalMissing = [...new Set([...missingIdentityHashes, ...missingHashes])];
-    if (current && physicalMissing.length > 0) {
-      const heldLockPaths = [...current]
+    const requested = [
+      ...identityKeys
+        .filter((key) => !current || (!current.has(key) && !current.has(hashToken(key))))
+        .map((key) => ({ hash: identityHash(key), pathLock: key.startsWith("path ") })),
+      ...hashes.filter((hash) => !current || !current.has(`\u0000${hash}`)).map((hash) => ({ hash, pathLock: false })),
+    ]
+      .filter((entry, index, entries) => entries.findIndex((candidate) => candidate.hash === entry.hash) === index)
+      .sort(
+        (left, right) =>
+          Number(left.pathLock) - Number(right.pathLock) ||
+          this.captureWriteLockPathForHash(left.hash).localeCompare(this.captureWriteLockPathForHash(right.hash))
+      );
+    const physicalMissing = requested.map((entry) => entry.hash);
+    if (current && requested.length > 0) {
+      const held = [...current]
         .filter((token) => token.startsWith("\u0000"))
-        .map((token) => this.captureWriteLockPathForHash(token.slice(1)));
-      const requestedLockPaths = physicalMissing.map((hash) => this.captureWriteLockPathForHash(hash));
-      if (heldLockPaths.some((held) => requestedLockPaths.some((requested) => requested < held))) {
+        .map((token) => {
+          const hash = token.slice(1);
+          const pathLock = [...current].some(
+            (key) => !key.startsWith("\u0000") && key.startsWith("path ") && hashToken(key) === token
+          );
+          return { hash, pathLock };
+        });
+      const requestedFirst = requested[0];
+      const heldLast = held
+        .sort(
+          (left, right) =>
+            Number(left.pathLock) - Number(right.pathLock) ||
+            this.captureWriteLockPathForHash(left.hash).localeCompare(this.captureWriteLockPathForHash(right.hash))
+        )
+        .at(-1);
+      if (
+        heldLast &&
+        requestedFirst &&
+        (Number(requestedFirst.pathLock) < Number(heldLast.pathLock) ||
+          (requestedFirst.pathLock === heldLast.pathLock &&
+            this.captureWriteLockPathForHash(requestedFirst.hash) < this.captureWriteLockPathForHash(heldLast.hash)))
+      ) {
         throw new Error(CAPTURE_WRITE_LOCK_BUSY_MESSAGE);
       }
     }
@@ -159,7 +183,6 @@ export class TombstoneBlockedCaptureWriteLock {
     return await this.withPhysicalCaptureWriteLocks(run, physicalMissing);
   }
 }
-
 
 export type TombstoneBlockedMutationHost = {
   readCurrent: () => Promise<MemoryFile | null>;
@@ -187,17 +210,16 @@ export type TombstoneBlockedMutation = {
 
 export async function runTombstoneBlockedMutation(
   host: TombstoneBlockedMutationHost,
-  mutation: TombstoneBlockedMutation,
+  mutation: TombstoneBlockedMutation
 ): Promise<void> {
   let lockIdentity: string | readonly string[] = mutation.identity;
-  let mustLock = mutation.blocked || mutation.coordinate === true;
   for (;;) {
     let retryIdentity: string | undefined;
     const mutate = async (): Promise<void> => {
       const current = await host.readCurrent();
       const currentBlocked = host.isBlocked(current);
       const currentQueuedReview = host.isQueuedReview(current);
-      if (current !== null && (currentBlocked || currentQueuedReview)) {
+      if (current !== null && (mutation.coordinate === true || currentBlocked || currentQueuedReview)) {
         const currentIdentity = host.memoryIdentity(current);
         const heldIdentities = Array.isArray(lockIdentity) ? lockIdentity : [lockIdentity];
         if (!heldIdentities.includes(currentIdentity)) {
@@ -230,17 +252,10 @@ export async function runTombstoneBlockedMutation(
       if (rebuildMarker) await mutation.beforeIndexUpdate?.();
       await mutation.updateIndex(rebuildMarker, currentBlocked && current !== null ? current : undefined);
     };
-    if (mustLock) {
-      await host.withCaptureWriteLock(mutate, lockIdentity);
-    } else {
-      await mutate();
-    }
+    await host.withCaptureWriteLock(mutate, lockIdentity);
     if (retryIdentity === undefined) return;
-    const identities = Array.isArray(lockIdentity)
-      ? [...lockIdentity, retryIdentity]
-      : [lockIdentity, retryIdentity];
+    const identities = Array.isArray(lockIdentity) ? [...lockIdentity, retryIdentity] : [lockIdentity, retryIdentity];
     lockIdentity = [...new Set(identities)];
-    mustLock = true;
   }
 }
 
@@ -254,31 +269,4 @@ export function isQueuedReviewFrontmatter(frontmatter: MemoryFrontmatter): boole
 
 export function isQueuedReviewMemory(memory: MemoryFile | null): memory is MemoryFile {
   return memory !== null && isQueuedReviewFrontmatter(memory.frontmatter);
-}
-
-export type TombstoneBlockedChunkMutation = {
-  blocked: boolean;
-  id: string;
-  identity: string;
-  findDuplicate: () => Promise<MemoryFile | null>;
-  persistMemory: () => Promise<void>;
-  afterWrite: () => Promise<void>;
-  withCaptureWriteLock: (task: () => Promise<string>, identity: string) => Promise<string>;
-};
-
-export async function runTombstoneBlockedChunkMutation(
-  mutation: TombstoneBlockedChunkMutation,
-): Promise<string> {
-  const persist = async (): Promise<string> => {
-    if (mutation.blocked) {
-      const duplicate = await mutation.findDuplicate();
-      if (duplicate) return duplicate.frontmatter.id;
-    }
-    await mutation.persistMemory();
-    await mutation.afterWrite();
-    return mutation.id;
-  };
-  return mutation.blocked
-    ? await mutation.withCaptureWriteLock(persist, mutation.identity)
-    : await persist();
 }

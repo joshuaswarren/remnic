@@ -32,6 +32,7 @@ import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
+import { assertSafeEntityId } from "./entity-id-safety.js";
 import { normalizeSupersessionKey } from "../temporal-supersession.js";
 
 export const ENTITY_CANONICAL_ID_MIGRATION_FILE = "entity-canonical-id-migration-v1.json";
@@ -51,6 +52,8 @@ function parseJournalMappings(raw: string): Readonly<Record<string, string>> {
   const cleaned: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const [legacyId, canonicalId] of Object.entries(mappings)) {
     if (legacyId.length > 0 && typeof canonicalId === "string" && canonicalId.length > 0) {
+      assertSafeEntityId(legacyId);
+      assertSafeEntityId(canonicalId);
       cleaned[legacyId] = canonicalId;
     }
   }
