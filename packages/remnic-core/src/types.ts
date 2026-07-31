@@ -670,6 +670,17 @@ export interface SemanticChunkingConfigShape {
   fallbackToRecursive: boolean;
 }
 
+export interface ExternalWikiRoot {
+  id: string;
+  rootDir: string;
+  enabled: boolean;
+  label?: string;
+  pagesDir: string;
+  indexFile: string;
+  indexInQmd: boolean;
+  includeInDefaultRecall: false;
+}
+
 export interface PluginConfig extends BoundedJsonlStateConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
@@ -787,6 +798,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   /** Optional absolute path to qmd binary. If unset, PATH/fallback discovery is used. */
   qmdPath?: string;
   memoryDir: string;
+  externalWikis: ExternalWikiRoot[];
   debug: boolean;
   identityEnabled: boolean;
   identityContinuityEnabled: boolean;

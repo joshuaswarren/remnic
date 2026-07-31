@@ -63,6 +63,7 @@ import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js"
 import { parseChatConfig } from "./chat/chat-config.js";
 import { parseCorrectionIntentConfig, parseFaithfulnessGateConfig } from "./faithfulness-config.js";
 import { parseOfflineSyncExcludes } from "./offline-sync.js";
+import { parseExternalWikiRoots } from "./external-wiki-config.js";
 import {
   parseScopeProfiles,
   parseScopeTeams,
@@ -1726,6 +1727,7 @@ export function parseConfig(
         ? cfg.qmdPath
         : undefined,
     memoryDir,
+    externalWikis: parseExternalWikiRoots(cfg.externalWikis, memoryDir),
     debug: cfg.debug === true,
     identityEnabled: cfg.identityEnabled !== false,
     identityContinuityEnabled,
