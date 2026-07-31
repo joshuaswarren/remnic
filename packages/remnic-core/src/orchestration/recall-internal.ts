@@ -1297,7 +1297,7 @@ export class RecallInternalCoordinator {
         source: "fresh",
         success: true,
       });
-      return caps.extractionScopeClassification
+      return lifecycleCaps.extractionScopeClassification
         ? results.filter((artifact) =>
             canRecallToolScopedMemory(artifact.frontmatter, options.sourceConnector),
           )
@@ -2800,7 +2800,7 @@ export class RecallInternalCoordinator {
           retrievalQuery,
           this.deps.config,
           {
-            partitionToolScoped: caps.extractionScopeClassification,
+            partitionToolScoped: lifecycleCaps.extractionScopeClassification,
             requestingConnector: options.sourceConnector,
           },
         );
