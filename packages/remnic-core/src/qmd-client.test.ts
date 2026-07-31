@@ -13,11 +13,7 @@ test("QmdClient rechecks daemon availability before returning unavailable", asyn
     available: boolean;
     daemonAvailable: boolean;
     probeDaemon: () => Promise<boolean>;
-    searchViaDaemon: (
-      query: string,
-      collection: string | undefined,
-      maxResults: number,
-    ) => Promise<QmdSearchResult[]>;
+    searchViaDaemon: (query: string, collection: string | undefined, maxResults: number) => Promise<QmdSearchResult[]>;
   };
   let probeCount = 0;
   internals.available = false;
@@ -49,13 +45,9 @@ type SubprocessInternals = {
   runQmdCommand: (
     args: string[],
     timeoutMs?: number,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ) => Promise<{ stdout: string; stderr: string }>;
-  searchViaSubprocess: (
-    query: string,
-    collection: string,
-    maxResults: number,
-  ) => Promise<QmdSearchResult[]>;
+  searchViaSubprocess: (query: string, collection: string, maxResults: number) => Promise<QmdSearchResult[]>;
   searchGlobalViaSubprocess: (query: string, maxResults: number) => Promise<QmdSearchResult[]>;
 };
 
@@ -79,7 +71,7 @@ test("updateStrict respects QMD update min-interval throttles", async () => {
     await client.updateStrict();
     await assert.rejects(
       () => client.updateStrict(),
-      /QMD update skipped by min-interval gate|QMD update skipped by global min-interval gate/,
+      /QMD update skipped by min-interval gate|QMD update skipped by global min-interval gate/
     );
   } finally {
     client.resetUpdateThrottles();
@@ -100,10 +92,7 @@ test("embedCollectionStrict rejects QMD embed subprocess failures", async () => 
   };
 
   try {
-    await assert.rejects(
-      () => client.embedCollectionStrict("memories--project"),
-      /embed subprocess failed/,
-    );
+    await assert.rejects(() => client.embedCollectionStrict("memories--project"), /embed subprocess failed/);
   } finally {
     client.resetUpdateThrottles();
   }
@@ -120,7 +109,7 @@ test("embedCollectionStrict respects QMD embed min-interval throttles", async ()
     await client.embedCollectionStrict("memories--project");
     await assert.rejects(
       () => client.embedCollectionStrict("memories--project"),
-      /QMD embed skipped by per-collection min-interval gate/,
+      /QMD embed skipped by per-collection min-interval gate/
     );
   } finally {
     client.resetUpdateThrottles();
@@ -196,6 +185,78 @@ test("ensureCollection rechecks collection state after auto-create failure", asy
     ["collection", "add", "/tmp/remnic-memory", "--name", "memories"],
     ["collection", "list"],
   ]);
+});
+
+test("QmdClient advertises isolated additional collection support", () => {
+  const client = new QmdClient("memories", 3, {});
+
+  assert.equal(client.supportsAdditionalCollections(), true);
+});
+
+test("QmdClient excludes a dedicated collection from global search", async () => {
+  const client = new QmdClient("memories", 3, {});
+  const calls = captureSubprocessArgs(client);
+  const controller = new AbortController();
+
+  await client.excludeCollectionFromGlobalSearch("external-wiki-reading", {
+    signal: controller.signal,
+  });
+
+  assert.deepEqual(calls, [["collection", "exclude", "external-wiki-reading"]]);
+});
+
+test("QmdClient reports status for a named collection", async () => {
+  const client = new QmdClient("memories", 3, {});
+  const internals = client as unknown as SubprocessInternals & {
+    qmdCapabilities: { safeStatusDeviceProbe: boolean };
+  };
+  const calls: string[][] = [];
+  internals.available = true;
+  internals.qmdCapabilities = { safeStatusDeviceProbe: true };
+  internals.runQmdCommand = async (args) => {
+    calls.push(args);
+    return { stdout: "Total: 12\nVectors: 10\nPending: 2", stderr: "" };
+  };
+
+  const status = await client.collectionStatus("external-wiki-reading");
+
+  assert.equal(status.totalFiles, 12);
+  assert.deepEqual(calls, [["status", "-c", "external-wiki-reading"]]);
+});
+
+test("QmdClient reports the configured root for a named collection", async () => {
+  const client = new QmdClient("memories", 3, {});
+  const internals = client as unknown as SubprocessInternals;
+  const calls: string[][] = [];
+  internals.available = true;
+  internals.runQmdCommand = async (args) => {
+    calls.push(args);
+    return {
+      stdout: [
+        "Collection: external-wiki-reading",
+        "  Path:     /srv/reading/wiki",
+        "  Pattern:  **/*.md",
+        "  Include:  no",
+      ].join("\n"),
+      stderr: "",
+    };
+  };
+
+  const root = await client.collectionRoot("external-wiki-reading");
+
+  assert.equal(root, "/srv/reading/wiki");
+  assert.deepEqual(calls, [["collection", "show", "external-wiki-reading"]]);
+});
+
+test("QmdClient removes a dedicated collection but refuses its primary collection", async () => {
+  const client = new QmdClient("memories", 3, {});
+  const calls = captureSubprocessArgs(client);
+
+  await assert.rejects(() => client.deleteCollection("memories"), /primary QMD collection/i);
+  const removed = await client.deleteCollection("external-wiki-reading");
+
+  assert.equal(removed, true);
+  assert.deepEqual(calls, [["collection", "remove", "external-wiki-reading"]]);
 });
 
 test("subprocess fallback defaults to `qmd query` for scoped and global recall", async () => {
