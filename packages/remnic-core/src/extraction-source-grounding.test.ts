@@ -2321,6 +2321,212 @@ test("grounding aligns predicates after medial source modifiers", () => {
   }
 });
 
+test("grounding normalizes regular third-person verb inflections", () => {
+  for (const [source, content] of [
+    ["Alice deploys Acme.", "Alice deployed Acme."],
+    ["Alice designs Atlas.", "Alice designed Atlas."],
+    ["Alice manages Beacon.", "Alice managed Beacon."],
+    ["Alice plans Atlas.", "Alice planned Atlas."],
+    ["Alice stops Beacon.", "Alice stopped Beacon."],
+    ["Alice tries again.", "Alice tried again."],
+    ["They add tags.", "They added tags."],
+    ["They call Alice.", "They called Alice."],
+    ["They fill forms.", "They filled forms."],
+    ["Alice Smith plans Atlas.", "Alice Smith planned Atlas."],
+    ["Alice King works at Acme.", "Alice King worked at Acme."],
+  ]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      source,
+    );
+    assert.deepEqual(result.facts.map((fact) => fact.content), [content]);
+  }
+});
+
+test("grounding keeps silent-e compatibility out of proper identifiers", () => {
+  for (const [source, content] of [
+    ["Alice works at Strip.", "Alice works at Stripe."],
+    ["Alice met Kat.", "Alice met Kate."],
+    ["Alice owns Plan.", "Alice planned."],
+  ]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      source,
+    );
+    assert.deepEqual(result.facts, []);
+  }
+});
+
+test("grounding preserves lowercase identifier tokens ending in s", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [{ category: "fact", content: "alice deployed atla.", confidence: 0.9, tags: [] }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    },
+    "alice deployed atlas.",
+  );
+
+  assert.deepEqual(result.facts, []);
+});
+
+test("grounding role normalization matches exact-marked identifiers case-insensitively", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: ["User works at Stripe."],
+      entities: [],
+      questions: [],
+    },
+    "I work at stripe.",
+    undefined,
+    { profile: "I work at stripe.", identity: "" },
+  );
+
+  assert.deepEqual(result.profileUpdates, ["User works at Stripe."]);
+});
+
+test("grounding does not stem role-source identifiers ending in s", () => {
+  for (const content of ["User uses Redi.", "User uses Redis."]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [],
+        profileUpdates: [content],
+        entities: [],
+        questions: [],
+      },
+      "I use redis.",
+      undefined,
+      { profile: "I use redis.", identity: "" },
+    );
+    assert.deepEqual(
+      result.profileUpdates,
+      content.endsWith("Redis.") ? [content] : [],
+    );
+  }
+});
+
+test("grounding does not treat role-source object plurals as predicates", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: ["User planned."],
+      entities: [],
+      questions: [],
+    },
+    "I own plans.",
+    undefined,
+    { profile: "I own plans.", identity: "" },
+  );
+
+  assert.deepEqual(result.profileUpdates, []);
+});
+
+test("grounding falls back to explicitly role-labeled source sentences", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: ["User prefers tea."],
+      entities: [],
+      questions: [],
+    },
+    "User prefers tea.",
+    undefined,
+    { profile: "", identity: "" },
+  );
+
+  assert.deepEqual(result.profileUpdates, ["User prefers tea."]);
+});
+
+test("grounding uses the main source when a role source is omitted", () => {
+  const result = filterExtractionResultBySource(
+    {
+      facts: [],
+      profileUpdates: ["User prefers tea."],
+      entities: [],
+      questions: [],
+    },
+    "I prefer tea.",
+    undefined,
+    { identity: "" },
+  );
+
+  assert.deepEqual(result.profileUpdates, ["User prefers tea."]);
+});
+
+test("grounding preserves hash-suffixed technology identifiers", () => {
+  for (const [source, content] of [
+    ["Alice uses C.", "Alice uses C#."],
+    ["Alice uses C#.", "Alice uses C."],
+    ["Alice uses C++.", "Alice uses C#."],
+    ["Alice uses C#.", "Alice uses C++."],
+  ]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      source,
+    );
+    assert.deepEqual(result.facts, []);
+  }
+});
+
+
+test("grounding inherits coordinated subjects and predicates", () => {
+  for (const [source, content] of [
+    ["Alice works at Acme and owns Mars.", "Alice owns Mars."],
+    ["Alice uses PostgreSQL, Redis, and Kafka.", "Alice uses Kafka."],
+  ]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      source,
+    );
+    assert.deepEqual(result.facts.map((fact) => fact.content), [content]);
+  }
+});
+
+test("grounding does not inherit across explicit coordinated subjects", () => {
+  for (const [source, content] of [
+    ["Alice works at Acme and Bob owns Mars.", "Alice owns Mars."],
+    ["Alice works at Acme and Bob sleeps.", "Alice sleeps."],
+    ["Alice works at Acme, Bob called Alice, and designed Mars.", "Alice designed Mars."],
+    ["Alice works at Acme and Bob can swim.", "Alice can swim."],
+    ["Acme works with Alice, Acme Labs called Bob, and designed Mars.", "Acme designed Mars."],
+    ["Alice works at Acme and Bob went home.", "Alice went home."],
+    ["Alice works at Acme and Bob ate lunch.", "Alice ate lunch."],
+  ]) {
+    const result = filterExtractionResultBySource(
+      {
+        facts: [{ category: "fact", content, confidence: 0.9, tags: [] }],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      },
+      source,
+    );
+    assert.deepEqual(result.facts, []);
+  }
+});
+
 test("grounding requires causal evidence before removing why questions", () => {
   const question = { question: "Why did Alice deploy Acme?", context: "", priority: 0.5 };
   const unanswered = filterExtractionResultBySource(
