@@ -370,3 +370,38 @@ export async function readExternalWikiPage(
     bytes: page.bytes,
   };
 }
+
+export async function runExternalWikiCliCommand(
+  roots: readonly ExternalWikiRoot[],
+  rest: readonly string[],
+  io: { stdout: NodeJS.WritableStream; stderr: NodeJS.WritableStream },
+): Promise<number> {
+  const { searchExternalWikis } = await import("./external-wiki-search.js");
+  const query = rest.filter((a) => !a.startsWith("-")).join(" ").trim();
+  if (!query) {
+    io.stderr.write("external-wiki: provide a search query\n");
+    return 1;
+  }
+  const enabled = roots.filter((r) => r.enabled !== false);
+  if (enabled.length === 0) {
+    io.stderr.write("external-wiki: no enabled wiki roots configured\n");
+    return 1;
+  }
+  try {
+    const result = await searchExternalWikis(enabled, { query });
+    if (result.hits.length === 0) {
+      io.stdout.write("No results.\n");
+      return 0;
+    }
+    for (const hit of result.hits) {
+      io.stdout.write(`[${hit.wikiId}] ${hit.path} (score ${hit.score})\n${hit.snippet}\n\n`);
+    }
+    if (result.degradedWikiIds.length > 0) {
+      io.stderr.write(`Warning: degraded roots: ${result.degradedWikiIds.join(", ")}\n`);
+    }
+    return 0;
+  } catch (error) {
+    io.stderr.write(`external-wiki: ${error instanceof Error ? error.message : "search failed"}\n`);
+    return 1;
+  }
+}
