@@ -112,6 +112,30 @@ test("StorageManager round-trips derived_from entries whose paths contain commas
   }
 });
 
+test("StorageManager rejects a tier move from a stale caller snapshot", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-derived-stale-move-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "payload", { source: "test" });
+    const stale = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.ok(stale);
+
+    const newerUpdated = new Date(Date.parse(stale.frontmatter.updated) + 1_000).toISOString();
+    await storage.writeMemoryFrontmatter(stale, { tags: ["concurrent-update"], updated: newerUpdated });
+    const targetPath = path.join(dir, "facts", "2026-04-19", `${id}.md`);
+
+    await assert.rejects(
+      () => storage.moveMemoryToPath(stale, targetPath),
+      /changed before its tier move/,
+    );
+    const retained = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.deepEqual(retained?.frontmatter.tags, ["concurrent-update"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("StorageManager accepts single-quoted and bare YAML derived_from entries from external editors", async () => {
   // External YAML emitters may produce any of: double-quoted (our
   // canonical form), single-quoted, or bare inline lists.  The parser

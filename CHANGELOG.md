@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Release publishing now waits for the complete root test corpus, split into deterministic bounded shards against the exact event commit.
+- External-wiki catalog links resolve consistently and the CLI uses one exported implementation with JSON and filter support.
+- Offline snapshot streams retain deletion metadata, scoped extraction health retains backlog counts, and repeated tier moves stay idempotent without dropping validated frontmatter.
+
 ## [v9.45.4] — 2026-07-31
 
 ### Fixed

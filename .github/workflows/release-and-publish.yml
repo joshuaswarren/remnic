@@ -21,7 +21,56 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-tests:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: root
+            groups: '--group root --group misc'
+          - shard: packages-1
+            groups: '--group packages --shard 1/2'
+          - shard: packages-2
+            groups: '--group packages --shard 2/2'
+    name: release tests (${{ matrix.shard }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Build core
+        run: pnpm --filter @remnic/core build
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Tests
+        run: node scripts/run-root-tests.mjs ${{ matrix.groups }}
+        env:
+          REMNIC_REQUIRE_NATIVE_TESTS: "1"
+          REMNIC_REQUIRE_CAPABILITY_TESTS: "1"
+
   release:
+    needs: release-tests
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -29,6 +78,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -39,11 +89,6 @@ jobs:
           node-version: '22.13.0'
           registry-url: 'https://registry.npmjs.org'
           cache: pnpm
-
-      - name: Sync with latest main before validation
-        run: |
-          git fetch origin main
-          git checkout -B main origin/main
 
       - name: Capture release source SHA
         id: source_sha
@@ -59,7 +104,6 @@ jobs:
       - name: Verify quality gates
         run: |
           pnpm run check-types
-          echo "Skipping pnpm test due to 44m hang (unrelated storage-fact-hash-index-defer ENOTEMPTY issue)"
           pnpm run build
           node scripts/check-release-artifacts.mjs
 

@@ -36,6 +36,7 @@ import {
   partitionNativeDependent,
   probeBetterSqlite3,
   selectTestPatterns,
+  selectTestShard,
 } from "./root-test-runner-lib.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -91,8 +92,9 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 
 let selectedGroups;
 let selectedPatterns;
+let selectedShard;
 try {
-  ({ groups: selectedGroups } = parseRunnerArgs(process.argv.slice(2)));
+  ({ groups: selectedGroups, shard: selectedShard } = parseRunnerArgs(process.argv.slice(2)));
   selectedPatterns = selectTestPatterns(selectedGroups);
 } catch (error) {
   console.error(`[root-tests] ERROR: ${error instanceof Error ? error.message : String(error)}`);
@@ -104,12 +106,24 @@ if (selectedGroups.length > 0) {
   );
 }
 
-const { files, emptyPatterns } = expandTestPatterns(repoRoot, selectedPatterns);
+const { files: expandedFiles, emptyPatterns } = expandTestPatterns(repoRoot, selectedPatterns);
 if (emptyPatterns.length > 0) {
   console.error(
     `[root-tests] ERROR: test pattern(s) matched no files — coverage would be silently lost: ${emptyPatterns.join(", ")}`,
   );
   process.exit(1);
+}
+let files = expandedFiles;
+if (selectedShard !== null) {
+  try {
+    files = selectTestShard(files, selectedShard);
+  } catch (error) {
+    console.error(`[root-tests] ERROR: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+  console.warn(
+    `[root-tests] running file shard ${selectedShard.index}/${selectedShard.total} (${files.length}/${expandedFiles.length} file(s))`,
+  );
 }
 
 // Tests under packages/remnic-cli load @remnic/bench through the CLI's
@@ -163,7 +177,7 @@ if (!probe.ok) {
   // entries belonging to other groups are not stale — validate staleness
   // against the full pattern expansion before failing.
   let staleEntries = stale;
-  if (selectedGroups.length > 0 && stale.length > 0) {
+  if ((selectedGroups.length > 0 || selectedShard !== null) && stale.length > 0) {
     const fullFiles = new Set(expandTestPatterns(repoRoot).files);
     staleEntries = stale.filter((entry) => !fullFiles.has(entry));
   }
@@ -220,7 +234,7 @@ function runTsx(testArgs) {
 // runs pass explicit relative paths, chunked under a conservative budget.
 const ARGV_CHAR_BUDGET = 6000;
 const runsArgs =
-  filesToRun.length === files.length
+  selectedShard === null && filesToRun.length === files.length
     ? [selectedPatterns.map((pattern) => pattern.id)]
     : chunkArgsByLength(filesToRun, ARGV_CHAR_BUDGET);
 
