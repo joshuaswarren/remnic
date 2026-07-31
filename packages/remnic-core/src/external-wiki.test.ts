@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import * as core from "./index.js";
@@ -11,6 +10,7 @@ import type {
   readExternalWikiPage,
   validateExternalWikiLayout,
 } from "./external-wiki.js";
+import { withTempDir } from "./testing/tmp-dir.js";
 
 const externalWiki = core as typeof core & {
   loadExternalWikiCatalog: typeof loadExternalWikiCatalog;
@@ -33,12 +33,7 @@ function wikiConfig(rootDir: string, overrides: Partial<ExternalWikiRoot> = {}):
 }
 
 async function withWiki(run: (rootDir: string) => Promise<void>): Promise<void> {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-external-wiki-"));
-  try {
-    await run(rootDir);
-  } finally {
-    await rm(rootDir, { recursive: true, force: true });
-  }
+  await withTempDir(run, "remnic-external-wiki-");
 }
 
 test("external wiki reader APIs are exported from core", () => {
@@ -73,16 +68,13 @@ test("rejects missing pages directories and symlink escapes", async () => {
       /pages directory does not exist/
     );
 
-    const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-wiki-outside-"));
-    try {
+    await withTempDir(async (outsideDir) => {
       await symlink(outsideDir, path.join(rootDir, "wiki"));
       await assert.rejects(
         () => externalWiki.validateExternalWikiLayout(wikiConfig(rootDir)),
         /pages directory escapes rootDir/
       );
-    } finally {
-      await rm(outsideDir, { recursive: true, force: true });
-    }
+    }, "remnic-wiki-outside-");
   });
 });
 
@@ -137,6 +129,14 @@ test("loads a bounded index and falls back to a sorted page listing", async () =
     await assert.rejects(
       () => externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir, { enabled: false })),
       /external wiki "reading" is disabled/
+    );
+    await assert.rejects(
+      () => externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir), { maxEntries: 100_001 }),
+      /maxEntries must be at most 100000/
+    );
+    await assert.rejects(
+      () => externalWiki.loadExternalWikiCatalog(wikiConfig(rootDir), { maxDepth: 129 }),
+      /maxDepth must be at most 128/
     );
 
     await writeFile(path.join(rootDir, "INDEX.md"), "- [Zeta](wiki/zeta.md) - Last page.\n");

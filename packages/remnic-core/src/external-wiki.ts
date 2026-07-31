@@ -7,6 +7,8 @@ const DEFAULT_MAX_PAGE_BYTES = 1_048_576;
 const DEFAULT_MAX_CATALOG_ENTRIES = 10_000;
 const DEFAULT_MAX_DIRECTORY_DEPTH = 32;
 const MAX_READ_BYTES = 16_777_216;
+const MAX_CATALOG_ENTRIES = 100_000;
+const MAX_DIRECTORY_DEPTH = 128;
 
 export type { ExternalWikiRoot } from "./types.js";
 
@@ -46,9 +48,12 @@ export interface ExternalWikiPage {
   bytes: number;
 }
 
-function assertPositiveInteger(value: number, keyName: string): void {
+function assertPositiveInteger(value: number, keyName: string, maximum?: number): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${keyName} must be a positive integer`);
+  }
+  if (maximum !== undefined && value > maximum) {
+    throw new Error(`${keyName} must be at most ${maximum}`);
   }
 }
 
@@ -188,7 +193,7 @@ export function parseExternalWikiCatalog(
   limits: Pick<ExternalWikiCatalogLimits, "maxEntries"> = {}
 ): ExternalWikiCatalogEntry[] {
   const maxEntries = limits.maxEntries ?? DEFAULT_MAX_CATALOG_ENTRIES;
-  assertPositiveInteger(maxEntries, "maxEntries");
+  assertPositiveInteger(maxEntries, "maxEntries", MAX_CATALOG_ENTRIES);
   const entries: ExternalWikiCatalogEntry[] = [];
   const seenPaths = new Set<string>();
 
@@ -234,10 +239,7 @@ interface BoundedUtf8Read {
 }
 
 async function readBoundedUtf8(filePath: string, maxBytes: number, displayPath: string): Promise<BoundedUtf8Read> {
-  assertPositiveInteger(maxBytes, "maxBytes");
-  if (maxBytes > MAX_READ_BYTES) {
-    throw new Error(`maxBytes must be at most ${MAX_READ_BYTES}`);
-  }
+  assertPositiveInteger(maxBytes, "maxBytes", MAX_READ_BYTES);
   const handle = await open(filePath, "r");
   try {
     const buffer = Buffer.allocUnsafe(maxBytes + 1);
@@ -266,8 +268,8 @@ async function listMarkdownPages(
   maxEntries: number,
   maxDepth: number
 ): Promise<ExternalWikiCatalogEntry[]> {
-  assertPositiveInteger(maxEntries, "maxEntries");
-  assertPositiveInteger(maxDepth, "maxDepth");
+  assertPositiveInteger(maxEntries, "maxEntries", MAX_CATALOG_ENTRIES);
+  assertPositiveInteger(maxDepth, "maxDepth", MAX_DIRECTORY_DEPTH);
   const paths: string[] = [];
   const walk = async (directory: string, relativeDirectory: string, depth: number): Promise<void> => {
     if (depth > maxDepth) throw new Error(`pages directory exceeds maxDepth ${maxDepth}`);
@@ -305,6 +307,8 @@ export async function loadExternalWikiCatalog(
   const maxIndexBytes = limits.maxIndexBytes ?? DEFAULT_MAX_INDEX_BYTES;
   const maxEntries = limits.maxEntries ?? DEFAULT_MAX_CATALOG_ENTRIES;
   const maxDepth = limits.maxDepth ?? DEFAULT_MAX_DIRECTORY_DEPTH;
+  assertPositiveInteger(maxEntries, "maxEntries", MAX_CATALOG_ENTRIES);
+  assertPositiveInteger(maxDepth, "maxDepth", MAX_DIRECTORY_DEPTH);
   const layout = await validateExternalWikiLayout(config);
   const entries = layout.indexPresent
     ? parseExternalWikiCatalog(
