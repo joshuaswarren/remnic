@@ -35,6 +35,7 @@ export const MCP_READ_ONLY_TOOL_SUFFIXES: Readonly<Record<string, true>> = {
   identity_anchor_get: true,
   memory_identity: true,
   memory_search: true,
+  external_wiki_search: true,
   memory_profile: true,
   memory_entities_list: true,
   memory_questions: true,

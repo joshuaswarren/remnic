@@ -43,7 +43,10 @@ import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { expandTildePath } from "./utils/path.js";
 
 import { applyToolOutputSchemas } from "./access-mcp-output-schemas.js";
-import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js";import { WEARABLES_MCP_TOOLS } from "./wearables/mcp-tools.js";
+import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";
+import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js";
+import { WEARABLES_MCP_TOOLS } from "./wearables/mcp-tools.js";
+import { EXTERNAL_WIKI_MCP_TOOLS } from "./external-wiki-mcp-tools.js";
 import { abortError, isAbortError } from "./abort-error.js";
 type JsonRpcId = string | number | null;
 
@@ -152,16 +155,10 @@ function withToolAliases(tool: McpTool, emitLegacyTools = true): McpTool[] {
   return emitLegacyTools ? [canonicalTool, tool] : [canonicalTool];
 }
 
-/**
- * MCP tool name (legacy `engram.*` form, since {@link toLegacyToolName}
- * canonicalizes incoming calls) → boundary operation it dispatches through.
- * A tool appears here once its `access-operations.ts` registration lands and
- * its surface-local validation is deleted. The fitness test
- * (`access-surface-catalog.test.ts`) asserts this map and the catalog agree.
- */
 const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.memory_get": "memory_get",
   "engram.memory_search": "memory_search",
+  "engram.external_wiki_search": "external_wiki_search",
   "engram.memory_store": "memory_store",
   "engram.coding_decision": "coding_decision",
   "engram.coding_architecture": "coding_architecture",
@@ -1427,7 +1424,7 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      // ── Memory search & debug tools ────────────────────────────────────
+      ...EXTERNAL_WIKI_MCP_TOOLS,
       {
         name: "engram.memory_search",
         description:

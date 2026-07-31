@@ -160,6 +160,36 @@ Access-layer safety notes:
 
 See [Search Backends](search-backends.md) for detailed configuration and comparison.
 
+## External compiled wikis
+
+`externalWikis` registers read-only compiled knowledge trees for explicit,
+on-demand search. Configuring a root does not add its files to memory storage,
+QMD, hot facts, or default recall. See [External wiki search](external-wikis.md).
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `externalWikis` | `[]` | Configured external wiki roots. |
+| `externalWikis[].id` | required | Stable lowercase id matching `[a-z0-9][a-z0-9_-]{0,63}`. |
+| `externalWikis[].rootDir` | required | Absolute path or `~/` path outside `memoryDir`. |
+| `externalWikis[].enabled` | `true` | Include this root in explicit external wiki searches. |
+| `externalWikis[].label` | unset | Optional display label. |
+| `externalWikis[].pagesDir` | `"wiki"` | Root-relative directory containing markdown concept pages. |
+| `externalWikis[].indexFile` | `"INDEX.md"` | Root-relative catalog file. |
+| `externalWikis[].indexInQmd` | `false` | Reserved dedicated-index flag; filesystem search remains available. |
+| `externalWikis[].includeInDefaultRecall` | `false` | Must remain `false`; `true` is rejected. |
+
+```json
+{
+  "externalWikis": [
+    {
+      "id": "engineering",
+      "rootDir": "/srv/knowledge/engineering",
+      "label": "Engineering knowledge"
+    }
+  ]
+}
+```
+
 ## Retrieval & Recall Budget
 
 | Setting | Default | Description |
