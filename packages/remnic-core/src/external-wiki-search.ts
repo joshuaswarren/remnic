@@ -13,7 +13,7 @@ const DEFAULT_LIMIT = 6;
 const MAX_LIMIT = 20;
 const DEFAULT_MAX_CHARS_PER_HIT = 1_000;
 const MAX_CHARS_PER_HIT = 8_000;
-const DEFAULT_MAX_CANDIDATE_FILES = 40;
+const DEFAULT_MAX_CANDIDATE_FILES = 100;
 const MAX_CANDIDATE_FILES = 100;
 
 export interface ExternalWikiSearchInput {
