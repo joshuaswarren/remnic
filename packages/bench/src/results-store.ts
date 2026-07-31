@@ -180,6 +180,106 @@ function isProviderConfigLike(value: unknown): boolean {
   );
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isUniqueMemoryIdList(value: unknown): value is string[] | null {
+  if (value === null) return true;
+  if (!Array.isArray(value)) return false;
+  const ids = new Set<string>();
+  for (const id of value) {
+    if (!isNonEmptyString(id) || ids.has(id)) return false;
+    ids.add(id);
+  }
+  return true;
+}
+
+function isTaskAttributionWitnessLike(
+  value: unknown,
+  goldMemories: string[] | undefined,
+): boolean {
+  if (!isObjectRecord(value) || value.schemaVersion !== 1) {
+    return false;
+  }
+  const runtime = value.runtime;
+  if (
+    !isObjectRecord(runtime) ||
+    !isNonEmptyString(runtime.qmdCollection) ||
+    !isNonEmptyString(runtime.qmdIndex) ||
+    !isNonNegativeInteger(runtime.qmdMaxResults) ||
+    typeof runtime.attributionThreshold !== "number" ||
+    !Number.isFinite(runtime.attributionThreshold) ||
+    runtime.attributionThreshold < 0 ||
+    runtime.attributionThreshold > 1
+  ) {
+    return false;
+  }
+  if (
+    !Array.isArray(value.golds) ||
+    (goldMemories !== undefined && value.golds.length !== goldMemories.length)
+  ) {
+    return false;
+  }
+  for (let index = 0; index < value.golds.length; index += 1) {
+    const gold = value.golds[index];
+    if (
+      !isObjectRecord(gold) ||
+      !isNonEmptyString(gold.goldMemory) ||
+      (goldMemories !== undefined && gold.goldMemory !== goldMemories[index]) ||
+      !isUniqueMemoryIdList(gold.storeMemoryIds) ||
+      !isUniqueMemoryIdList(gold.oracleMemoryIds)
+    ) {
+      return false;
+    }
+  }
+  if (!Array.isArray(value.retrievals)) {
+    return false;
+  }
+  const sessionIds = new Set<string>();
+  for (const retrieval of value.retrievals) {
+    if (
+      !isObjectRecord(retrieval) ||
+      !isNonEmptyString(retrieval.sessionId) ||
+      sessionIds.has(retrieval.sessionId) ||
+      !(retrieval.appliedCap === null || isNonNegativeInteger(retrieval.appliedCap)) ||
+      !isUniqueMemoryIdList(retrieval.atCapMemoryIds) ||
+      !isUniqueMemoryIdList(retrieval.headroomMemoryIds)
+    ) {
+      return false;
+    }
+    sessionIds.add(retrieval.sessionId);
+    const appliedCap = retrieval.appliedCap;
+    const atCapIds = retrieval.atCapMemoryIds;
+    const headroomIds = retrieval.headroomMemoryIds;
+    if (
+      (appliedCap === null && (atCapIds !== null || headroomIds !== null)) ||
+      (appliedCap !== null && atCapIds !== null && atCapIds.length > appliedCap) ||
+      (appliedCap !== null &&
+        atCapIds !== null &&
+        atCapIds.length < appliedCap &&
+        headroomIds === null) ||
+      (appliedCap !== null &&
+        headroomIds !== null &&
+        headroomIds.length > 0 &&
+        (atCapIds === null || atCapIds.length !== appliedCap))
+    ) {
+      return false;
+    }
+    if (atCapIds !== null && headroomIds !== null) {
+      const atCapSet = new Set(atCapIds);
+      if (headroomIds.some((id) => atCapSet.has(id))) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 function isBenchmarkResult(value: unknown): value is BenchmarkResult {
   if (!isObjectRecord(value)) {
     return false;
@@ -264,6 +364,12 @@ function isTaskResultLike(value: unknown): boolean {
     goldMemories !== undefined &&
     (!Array.isArray(goldMemories) ||
       !goldMemories.every((item) => typeof item === "string"))
+  ) {
+    return false;
+  }
+  if (
+    value.attributionWitness !== undefined &&
+    !isTaskAttributionWitnessLike(value.attributionWitness, goldMemories as string[] | undefined)
   ) {
     return false;
   }

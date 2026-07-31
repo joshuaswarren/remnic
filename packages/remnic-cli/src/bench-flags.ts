@@ -98,6 +98,8 @@ const BENCH_VALUE_FLAGS = Object.freeze([
   "--memcorrect-adapter",
   "--run",
   "--memory-dir",
+  "--qmd",
+  "--collection",
   "--users",
   "--epochs",
   "--facts-per-epoch",
@@ -298,7 +300,7 @@ const BENCH_ACTION_FLAGS: Record<
     legacyEqualsPrefixes: ["--baseline=", "--report="],
   },
   attribute: {
-    value: ["--run", "--results-dir", "--memory-dir", "--threshold"],
+    value: ["--run", "--results-dir", "--memory-dir", "--threshold", "--qmd", "--collection"],
     boolean: ["--json", "--help", "-h"],
   },
   "drift-gen": {

@@ -14,6 +14,12 @@
  * If retrieval also misses, index_miss is finalized as the earlier stage failure.
  */
 
+import type {
+  TaskAttributionGoldWitnessV1,
+  TaskAttributionRetrievalWitnessV1,
+  TaskAttributionWitness,
+} from "./types.js";
+
 export type AttributionClass =
   | "extraction_miss"
   | "index_miss"
@@ -80,6 +86,8 @@ export interface AttributeOptions {
   threshold?: number; /* default 0.6 */
   similarity?: (gold: string, candidate: string) => number;
 }
+
+export const DEFAULT_ATTRIBUTION_THRESHOLD = 0.6;
 
 const DEFAULT_STOPWORDS = new Set([
   "a", "an", "the", "in", "on", "at", "to", "for", "of", "with", "by", "from",
@@ -201,7 +209,7 @@ export async function attributeGoldMemory(
     }
   }
 
-  const threshold = options.threshold ?? 0.6;
+  const threshold = options.threshold ?? DEFAULT_ATTRIBUTION_THRESHOLD;
   const simFn = options.similarity ?? lexicalSimilarity;
 
   // recalledText is the stored run's injected context: a secondary retrieval witness.
@@ -466,24 +474,244 @@ export async function attributeGoldMemory(
   };
 }
 
+function attributeGoldMemoryFromWitness(
+  goldStatement: string,
+  goldWitness: TaskAttributionGoldWitnessV1,
+  retrievals: TaskAttributionRetrievalWitnessV1[],
+  witnessThreshold: number,
+  options: AttributeOptions,
+  recalledText?: string,
+): GoldMemoryAttribution {
+  const threshold = options.threshold ?? DEFAULT_ATTRIBUTION_THRESHOLD;
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+    throw new RangeError("attribution threshold must be a finite number between 0 and 1");
+  }
+  const similarity = options.similarity ?? lexicalSimilarity;
+  const stages: GoldMemoryAttribution["stages"] = {
+    extraction: { status: "unavailable" },
+    index: { status: "unavailable" },
+    retrieval: { status: "unavailable" },
+    use: { status: "unavailable" },
+  };
+
+  if (typeof recalledText === "string" && similarity(goldStatement, recalledText) >= threshold) {
+    const detail = "implied pass from recalled context";
+    stages.extraction = { status: "pass", detail };
+    stages.index = { status: "pass", detail };
+    stages.retrieval = { status: "pass", detail: "Found in recalledText context" };
+    stages.use = { status: "fail", detail: "Gold memory present in context but answer was incorrect" };
+    return {
+      goldMemory: goldStatement,
+      label: { class: "use_miss", reason: "Gold memory present in context but task failed" },
+      stages,
+    };
+  }
+
+  if (options.similarity || threshold !== witnessThreshold) {
+    const detail = "stored extraction witness uses a different similarity policy";
+    stages.extraction = { status: "unavailable", detail };
+    stages.index = { status: "unavailable", detail: "extraction check unavailable" };
+    stages.retrieval = { status: "unavailable", detail: "extraction check unavailable" };
+    stages.use = { status: "unavailable", detail: "not reached" };
+    return {
+      goldMemory: goldStatement,
+      label: { class: "unattributed", reason: detail },
+      stages,
+    };
+  }
+
+  const storeIds = goldWitness.storeMemoryIds;
+  if (storeIds === null) {
+    stages.extraction = { status: "unavailable", detail: "stored extraction witness unavailable" };
+    stages.index = { status: "unavailable", detail: "extraction check unavailable" };
+    stages.retrieval = { status: "unavailable", detail: "extraction check unavailable" };
+    stages.use = { status: "unavailable", detail: "not reached" };
+    return {
+      goldMemory: goldStatement,
+      label: { class: "unattributed", reason: "extraction check unavailable (stored witness)" },
+      stages,
+    };
+  }
+  if (storeIds.length === 0) {
+    const detail = "stored witness found no matching memory";
+    stages.extraction = { status: "fail", detail };
+    stages.index = { status: "unavailable", detail: "not reached" };
+    stages.retrieval = { status: "unavailable", detail: "not reached" };
+    stages.use = { status: "unavailable", detail: "not reached" };
+    return {
+      goldMemory: goldStatement,
+      label: { class: "extraction_miss", reason: detail },
+      stages,
+    };
+  }
+
+  const storeIdSet = new Set(storeIds);
+  stages.extraction = {
+    status: "pass",
+    detail: `Stored witness matched ${storeIds.length} memory id${storeIds.length === 1 ? "" : "s"}`,
+  };
+
+  const oracleIds = goldWitness.oracleMemoryIds;
+  let indexPassed = false;
+  let indexFailed = false;
+  if (oracleIds === null) {
+    stages.index = { status: "unavailable", detail: "stored oracle witness unavailable" };
+  } else if (oracleIds.some((id) => storeIdSet.has(id))) {
+    indexPassed = true;
+    stages.index = { status: "pass", detail: "Found in stored oracle witness" };
+  } else {
+    indexFailed = true;
+    stages.index = { status: "fail", detail: "Not found in stored oracle witness" };
+  }
+
+  let appliedHit: { sessionId: string; rank: number } | undefined;
+  let atCapUnavailable = retrievals.length === 0;
+  for (const retrieval of retrievals) {
+    if (retrieval.atCapMemoryIds === null) {
+      atCapUnavailable = true;
+      continue;
+    }
+    const index = retrieval.atCapMemoryIds.findIndex((id) => storeIdSet.has(id));
+    if (index >= 0) {
+      appliedHit = { sessionId: retrieval.sessionId, rank: index + 1 };
+      break;
+    }
+  }
+
+  let headroomHit: { sessionId: string; rank: number; appliedCap: number } | undefined;
+  if (!appliedHit) {
+    for (const retrieval of retrievals) {
+      if (retrieval.headroomMemoryIds === null || retrieval.appliedCap === null) {
+        continue;
+      }
+      const index = retrieval.headroomMemoryIds.findIndex((id) => storeIdSet.has(id));
+      if (index >= 0) {
+        headroomHit = {
+          sessionId: retrieval.sessionId,
+          rank: retrieval.appliedCap + index + 1,
+          appliedCap: retrieval.appliedCap,
+        };
+        break;
+      }
+    }
+  }
+
+  if (appliedHit) {
+    stages.retrieval = {
+      status: "pass",
+      detail: `Found at rank ${appliedHit.rank} in stored session ${appliedHit.sessionId}`,
+    };
+    if (!indexPassed) {
+      indexPassed = true;
+      indexFailed = false;
+      stages.index = { status: "pass", detail: "implied pass from retrieval" };
+    }
+    stages.use = { status: "fail", detail: "Gold memory present in context but answer was incorrect" };
+    return {
+      goldMemory: goldStatement,
+      label: { class: "use_miss", reason: "Gold memory present in context but task failed" },
+      stages,
+    };
+  }
+
+  let retrievalStageMiss: RetrievalMissStage = "unknown";
+  if (atCapUnavailable) {
+    stages.retrieval = { status: "unavailable", detail: "stored at-cap witness unavailable" };
+  } else if (headroomHit) {
+    retrievalStageMiss = "cap";
+    stages.retrieval = {
+      status: "fail",
+      detail: `Headroom rank ${headroomHit.rank} exceeds applied cap ${headroomHit.appliedCap} in session ${headroomHit.sessionId}`,
+    };
+    if (!indexPassed) {
+      indexPassed = true;
+      indexFailed = false;
+      stages.index = { status: "pass", detail: "implied pass from retrieval headroom" };
+    }
+  } else {
+    stages.retrieval = { status: "fail", detail: "absent from every stored at-cap retrieval witness" };
+  }
+
+  if (indexFailed && stages.retrieval.status === "fail") {
+    stages.use = { status: "unavailable", detail: "not reached" };
+    return {
+      goldMemory: goldStatement,
+      label: { class: "index_miss", reason: "Gold statement missing from search index" },
+      stages,
+    };
+  }
+  if (indexPassed && stages.retrieval.status === "fail") {
+    stages.use = { status: "unavailable", detail: "not reached" };
+    return {
+      goldMemory: goldStatement,
+      label: {
+        class: "retrieval_miss",
+        retrievalStage: retrievalStageMiss,
+        reason: stages.retrieval.detail,
+      },
+      stages,
+    };
+  }
+
+  stages.use = { status: "unavailable", detail: "not reached" };
+  const reason = stages.index.status === "unavailable"
+    ? "index check unavailable; a retrieval miss cannot be isolated from an index miss"
+    : "retrieval check unavailable";
+  return {
+    goldMemory: goldStatement,
+    label: { class: "unattributed", reason },
+    stages,
+  };
+}
+
 export async function attributeTask(
   task: {
     taskId: string;
     question: string;
     scores?: Record<string, number>;
     goldMemories?: string[];
+    attributionWitness?: TaskAttributionWitness;
     details?: Record<string, unknown>;
   },
   env: AttributionEnvironment,
   options: AttributeOptions = {}
 ): Promise<TaskAttribution | null> {
-  const golds = task.goldMemories;
+  const golds = task.goldMemories ??
+    task.attributionWitness?.golds.map((gold) => gold.goldMemory);
   if (!golds || golds.length === 0) {
     return null;
   }
 
-  const memoizedEnv = withMemoizedListMemories(env);
   const recalledText = typeof task.details?.recalledText === "string" ? task.details.recalledText : undefined;
+  if (task.attributionWitness) {
+    const goldAttributions: GoldMemoryAttribution[] = [];
+    for (let index = 0; index < golds.length; index += 1) {
+      const gold = golds[index];
+      const goldWitness = task.attributionWitness.golds[index];
+      if (!goldWitness || goldWitness.goldMemory !== gold) {
+        throw new Error("attribution witness golds must match task goldMemories in length and order");
+      }
+      goldAttributions.push(attributeGoldMemoryFromWitness(
+        gold,
+        goldWitness,
+        task.attributionWitness.retrievals,
+        task.attributionWitness.runtime.attributionThreshold,
+        options,
+        recalledText,
+      ));
+    }
+    if (task.attributionWitness.golds.length !== golds.length) {
+      throw new Error("attribution witness golds must match task goldMemories in length and order");
+    }
+    return {
+      taskId: task.taskId,
+      question: task.question,
+      golds: goldAttributions,
+      overall: computeOverallLabel(goldAttributions),
+    };
+  }
+  const memoizedEnv = withMemoizedListMemories(env);
+
 
   const goldAttributions: GoldMemoryAttribution[] = [];
   for (const gold of golds) {
@@ -511,6 +739,7 @@ export async function attributeRun(
         scores?: Record<string, number>;
         goldMemories?: string[];
         details?: Record<string, unknown>;
+        attributionWitness?: TaskAttributionWitness;
       }[];
     };
   },
@@ -518,7 +747,7 @@ export async function attributeRun(
   options: AttributeOptions = {}
 ): Promise<AttributionReport> {
   const runId = result.meta?.runId ?? result.meta?.id ?? "unknown-run";
-  const memoizedEnv = withMemoizedListMemories(env);
+  let memoizedEnv: AttributionEnvironment | undefined;
 
   const totals: Record<AttributionClass, number> = {
     extraction_miss: 0,
@@ -546,7 +775,10 @@ export async function attributeRun(
       });
       continue;
     }
-    if (!task.goldMemories || task.goldMemories.length === 0) {
+    const goldCount = task.goldMemories?.length ??
+      task.attributionWitness?.golds.length ??
+      0;
+    if (goldCount === 0) {
       skippedTasks.push({
         taskId: task.taskId,
         reason: "No goldMemories specified",
@@ -561,7 +793,10 @@ export async function attributeRun(
       continue;
     }
 
-    const taskAttr = await attributeTask(task, memoizedEnv, options);
+    const taskEnv = task.attributionWitness
+      ? env
+      : (memoizedEnv ??= withMemoizedListMemories(env));
+    const taskAttr = await attributeTask(task, taskEnv, options);
     if (taskAttr) {
       items.push(taskAttr);
     }

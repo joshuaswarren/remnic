@@ -42,7 +42,9 @@ Commands:
                            subsequent local artifacts carry the kappa + warning.
   check                    Legacy latency regression gate (compatibility)
   attribute --run <id> [--results-dir <path>] [--memory-dir <path>] [--threshold <value>]
-                           Attribute operation-level benchmark failures to memory operations
+                           [--qmd <path> --collection <name>]
+                           Attribute failures from stored witnesses by default; paired QMD flags enable
+                           explicit live fallback for legacy runs without witnesses
   drift-gen [generate|validate <dir>] [--users <n>] [--epochs <n>] [--seed <n>]
                            [--out <dir>] [--facts-per-epoch <n>] [--drifting-ratio <r>]
                            [--contradicted-ratio <r>]
@@ -149,6 +151,8 @@ Options:
   --json                   Output JSON for \`list\`
   --run <id>               Benchmark run reference for attribute
   --memory-dir <path>      Memory directory for failure attribution
+  --qmd <path>            QMD executable for explicit legacy attribution fallback
+  --collection <name>     QMD collection paired with --qmd; never inferred or defaulted
   --users <n>              Synthetic user count for drift-gen
   --epochs <n>             Synthetic timeline epochs for drift-gen
   --facts-per-epoch <n>    Facts generated per user per epoch for drift-gen
@@ -184,6 +188,7 @@ Examples:
   remnic bench run --custom ./my-bench.yaml
   remnic bench procedural-ablation --out ./artifacts/procedural-ablation.json
   remnic bench attribute --run run-12345 --memory-dir ./memories
+  remnic bench attribute --run legacy-run --memory-dir ./memories --qmd /opt/qmd --collection memories
   remnic bench drift-gen generate --users 20 --epochs 10 --out ./corpus
   remnic bench drift-gen validate ./corpus
   remnic benchmark run --quick longmemeval`;

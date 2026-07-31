@@ -53,6 +53,7 @@ export interface QmdClientOptions {
   updateMinIntervalMs?: number;
   qmdPath?: string;
   daemonUrl?: string;
+  qmdStrictPath?: boolean;
   daemonRecheckIntervalMs?: number;
   qmdSupportedVersion?: string;
   qmdAutoUpgradeEnabled?: boolean;
@@ -1174,6 +1175,7 @@ export class QmdClient implements SearchBackend {
   private readonly qmdSearchStrategy: QmdSearchStrategy;
   private readonly qmdSubprocessStrategy: QmdSubprocessStrategy;
   private readonly qmdFallbackPaths: string[];
+  private readonly qmdStrictPath: boolean;
   private readonly daemonTimeoutMs: number;
   private readonly qmdRuntimeEnv: QmdRuntimeEnv;
   private qmdPathSource: "auto-path" | "auto-fallback" | "configured" = "auto-path";
@@ -1222,19 +1224,15 @@ export class QmdClient implements SearchBackend {
         : undefined;
     this.qmdQueryRerankEnabled = opts?.qmdQueryRerankEnabled !== false;
     this.qmdIndexName = opts?.qmdIndexName?.trim() || undefined;
-    // Default "hybrid" preserves the historical lex+vec+hyde daemon plan. Issue #1335.
     this.qmdSearchStrategy =
       opts?.qmdSearchStrategy === "lex" || opts?.qmdSearchStrategy === "lex-vec"
         ? opts.qmdSearchStrategy
         : "hybrid";
-    // Default "query" keeps `qmd query` (LLM expansion + rerank) per gotcha #7. Issue #1335.
     this.qmdSubprocessStrategy = opts?.qmdSubprocessStrategy === "search" ? "search" : "query";
     this.qmdFallbackPaths = opts?.qmdFallbackPaths
       ? opts.qmdFallbackPaths.map((candidate) => candidate.trim()).filter(Boolean)
       : QMD_FALLBACK_PATHS;
-    // Default 8000ms preserves the historical hardcoded daemon timeout. Issue #1335.
-    // Floor of 1000ms avoids absurdly small values; callers wanting CPU-only HyDE
-    // headroom can raise this (e.g. 20000) without code changes.
+    this.qmdStrictPath = opts?.qmdStrictPath === true;
     this.daemonTimeoutMs =
       typeof opts?.qmdDaemonTimeoutMs === "number" && Number.isFinite(opts.qmdDaemonTimeoutMs)
         ? Math.max(1_000, Math.floor(opts.qmdDaemonTimeoutMs))
@@ -1344,11 +1342,6 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  /**
-   * Run a single `qmd --version` probe against `qmdPath`. Extracted as its own
-   * method so tests can inject a fake probe runner that exercises the preflight
-   * retry/classification paths without spawning a real qmd binary. Issue #1841.
-   */
   private runVersionProbe(
     qmdPath: string,
     signal?: AbortSignal,
@@ -1468,15 +1461,22 @@ export class QmdClient implements SearchBackend {
         }
       }
     }
+    if (this.configuredQmdPath && this.qmdStrictPath) {
+      if (priorState) {
+        restorePriorState();
+      } else {
+        this.available = false;
+        restoreConfiguredProbeFailure();
+      }
+      return false;
+    }
 
-    // Try PATH first
     try {
       const result = await this.runVersionProbe("qmd", options.signal);
       await recordProbeSuccess(result, "qmd", "auto-path");
       return true;
     } catch (err) {
       markProbeFailure(err);
-      // Try fallback paths
       for (const fallbackPath of this.qmdFallbackPaths) {
         try {
           const result = await this.runVersionProbe(fallbackPath, options.signal);
@@ -1485,7 +1485,6 @@ export class QmdClient implements SearchBackend {
           return true;
         } catch (fallbackErr) {
           markProbeFailure(fallbackErr);
-          // Continue to next fallback
         }
       }
       if (priorState) {

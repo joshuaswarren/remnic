@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readFile,
   rm,
+  rename,
   stat,
   symlink,
   writeFile,
@@ -23,7 +24,9 @@ import {
 } from "@remnic/core";
 import type { RecallXraySnapshot } from "@remnic/core";
 import { LcmEngine } from "@remnic/core/lcm";
+import type { BenchMemoryAdapter } from "./types.js";
 
+import { captureRecallAttribution } from "./attribution-witness.js";
 import {
   buildBenchAdapterConfig,
   buildBenchBaselineRemnicConfig,
@@ -93,8 +96,39 @@ function recallXraySnapshotForTest(
     capturedAt: 123,
     tierExplain: null,
     results: [],
+    appliedResultLimit: 0,
+    appliedResults: [],
+    headroomResults: [],
     filters: [],
     budget: { chars: 100, used: 10 },
+  };
+}
+
+test("captureRecallAttribution preserves complete zero-cap empty evidence", async () => {
+  const attribution = await captureRecallAttribution(
+    {} as Orchestrator,
+    "zero-cap-session",
+    recallXraySnapshotForTest("zero-cap-snapshot", "zero cap"),
+  );
+
+  assert.deepEqual(attribution, {
+    sessionId: "zero-cap-session",
+    appliedCap: 0,
+    atCapMemoryIds: [],
+    headroomMemoryIds: [],
+  });
+});
+
+function recallXrayResultForTest(
+  memoryId: string,
+  memoryPath: string,
+): RecallXraySnapshot["results"][number] {
+  return {
+    memoryId,
+    path: memoryPath,
+    servedBy: "hybrid",
+    scoreDecomposition: { final: 1 },
+    admittedBy: [],
   };
 }
 
@@ -214,6 +248,220 @@ test("recallWithTrace preserves recall text and emits content-free row lineage",
     }
   } finally {
     await adapter.destroy();
+  }
+});
+
+test("recallWithTrace attributes the applied cap and headroom with canonical frontmatter IDs", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-attribution-"));
+  const storage = new StorageManager(memoryDir);
+  const presentationWrite = await storage.writeMemory("fact", "Presentation-only fact");
+  const firstAppliedWrite = await storage.writeMemory("fact", "First applied fact");
+  const secondAppliedWrite = await storage.writeMemory("fact", "Second applied fact");
+  const headroomWrite = await storage.writeMemory("fact", "Headroom fact");
+  const stored = await storage.readAllMemories();
+  const misleadingPaths = new Map<string, string>();
+  for (const [memoryId, misleadingName] of [
+    [presentationWrite.id, "presentation-docid.md"],
+    [firstAppliedWrite.id, "first-applied-docid.md"],
+    [secondAppliedWrite.id, "second-applied-docid.md"],
+    [headroomWrite.id, "headroom-docid.md"],
+  ] as const) {
+    const memory = stored.find((candidate) => candidate.frontmatter.id === memoryId);
+    assert.ok(memory);
+    const misleadingPath = path.join(path.dirname(memory.path), misleadingName);
+    await rename(memory.path, misleadingPath);
+    misleadingPaths.set(memoryId, misleadingPath);
+  }
+
+  const originalCapture = Orchestrator.prototype.recallWithXrayCapture;
+  Orchestrator.prototype.recallWithXrayCapture = async function patchedCapture(prompt) {
+    const presentation = recallXrayResultForTest(
+      "presentation-docid",
+      misleadingPaths.get(presentationWrite.id)!,
+    );
+    const firstApplied = recallXrayResultForTest(
+      "first-applied-docid",
+      misleadingPaths.get(firstAppliedWrite.id)!,
+    );
+    const secondApplied = recallXrayResultForTest(
+      "second-applied-docid",
+      misleadingPaths.get(secondAppliedWrite.id)!,
+    );
+    const headroom = recallXrayResultForTest(
+      "headroom-docid",
+      misleadingPaths.get(headroomWrite.id)!,
+    );
+    const snapshot = {
+      ...recallXraySnapshotForTest("attribution-snapshot", prompt),
+      results: [presentation],
+      appliedResultLimit: 2,
+      appliedResults: [secondApplied, firstApplied],
+      headroomResults: [headroom],
+    } as unknown as RecallXraySnapshot;
+    return {
+      result: "canonical attribution recall",
+      snapshot,
+      recallStartedAt: 1,
+    };
+  };
+
+  let adapter: Awaited<ReturnType<typeof createRemnicAdapter>> | undefined;
+  try {
+    adapter = await createRemnicAdapter({
+      memoryDir,
+      configOverrides: { transcriptEnabled: true },
+    });
+    const traced = await adapter.recallWithTrace!(
+      "canonical-session",
+      "canonical attribution query",
+      1_000,
+    );
+
+    assert.ok("attribution" in traced);
+    assert.deepEqual(traced.attribution, {
+      sessionId: "canonical-session",
+      appliedCap: 2,
+      atCapMemoryIds: [secondAppliedWrite.id, firstAppliedWrite.id],
+      headroomMemoryIds: [headroomWrite.id],
+    });
+    assert.equal(
+      JSON.stringify(traced.attribution).includes(presentationWrite.id),
+      false,
+    );
+    assert.equal(JSON.stringify(traced.attribution).includes("docid"), false);
+  } finally {
+    Orchestrator.prototype.recallWithXrayCapture = originalCapture;
+    await adapter?.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+  }
+});
+
+test("recallWithTrace preserves successful recall when attribution reads fail", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-attribution-error-"));
+  const originalCapture = Orchestrator.prototype.recallWithXrayCapture;
+  const originalRead = StorageManager.prototype.readMemoryByPath;
+  Orchestrator.prototype.recallWithXrayCapture = async function patchedCapture(prompt) {
+    const result = recallXrayResultForTest("unreadable", "facts/unreadable.md");
+    return {
+      result: "recall survived attribution read",
+      snapshot: {
+        ...recallXraySnapshotForTest("attribution-error-snapshot", prompt),
+        appliedResultLimit: 1,
+        appliedResults: [result],
+      },
+      recallStartedAt: 1,
+    };
+  };
+  StorageManager.prototype.readMemoryByPath = async function failedRead() {
+    throw new Error("secure store locked");
+  };
+
+  let adapter: BenchMemoryAdapter | undefined;
+  try {
+    adapter = await createRemnicAdapter({
+      memoryDir,
+      configOverrides: { transcriptEnabled: true },
+    });
+    const traced = await adapter.recallWithTrace!(
+      "attribution-error-session",
+      "attribution error query",
+      1_000,
+    );
+
+    assert.match(traced.text, /recall survived attribution read/);
+    assert.equal("attribution" in traced, false);
+  } finally {
+    StorageManager.prototype.readMemoryByPath = originalRead;
+    Orchestrator.prototype.recallWithXrayCapture = originalCapture;
+    await adapter?.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+  }
+});
+
+test("captureAttributionWitness persists canonical store and oracle memory IDs", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-witness-"));
+  const storage = new StorageManager(memoryDir);
+  const matchingWrite = await storage.writeMemory("fact", "The user prefers jasmine tea.");
+  await storage.writeMemory("fact", "The user owns a red bicycle.");
+  const matchingMemory = (await storage.readAllMemories()).find(
+    (memory) => memory.frontmatter.id === matchingWrite.id,
+  );
+  assert.ok(matchingMemory);
+  const misleadingPath = path.join(path.dirname(matchingMemory.path), "qmd-docid.md");
+  await rename(matchingMemory.path, misleadingPath);
+
+  const originalSearch = Orchestrator.prototype.searchAcrossNamespaces;
+  Orchestrator.prototype.searchAcrossNamespaces = async function patchedSearch() {
+    return [{
+      docid: "qmd-docid",
+      path: `${this.config.qmdCollection}/${path.relative(this.config.memoryDir, misleadingPath).replaceAll("\\", "/")}`,
+      score: 1,
+      snippet: "The user prefers jasmine tea.",
+    }];
+  };
+  let adapter: BenchMemoryAdapter | undefined;
+  try {
+    adapter = await createRemnicAdapter({
+      memoryDir,
+      configOverrides: { qmdMaxResults: 37, transcriptEnabled: true },
+    });
+    assert.ok(adapter.captureAttributionWitness);
+    const retrievals = [{
+      sessionId: "witness-session",
+      appliedCap: 1,
+      atCapMemoryIds: [matchingWrite.id],
+      headroomMemoryIds: [],
+    }];
+    const witness = await adapter.captureAttributionWitness({
+      goldMemories: ["The user prefers jasmine tea."],
+      retrievals,
+    });
+
+    assert.ok(witness);
+    assert.equal(witness.schemaVersion, 1);
+    assert.match(witness.runtime.qmdCollection, /^remnic-bench-/);
+    assert.equal(witness.runtime.qmdIndex, witness.runtime.qmdCollection);
+    assert.equal(witness.runtime.qmdMaxResults, 37);
+    assert.deepEqual(witness.golds, [{
+      goldMemory: "The user prefers jasmine tea.",
+      storeMemoryIds: [matchingWrite.id],
+      oracleMemoryIds: [matchingWrite.id],
+    }]);
+    assert.deepEqual(witness.retrievals, retrievals);
+  } finally {
+    Orchestrator.prototype.searchAcrossNamespaces = originalSearch;
+    await adapter?.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+  }
+});
+
+test("captureAttributionWitness marks oracle evidence unavailable when QMD search is disabled", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-witness-disabled-qmd-"));
+  const originalSearch = Orchestrator.prototype.searchAcrossNamespaces;
+  let searchCalls = 0;
+  Orchestrator.prototype.searchAcrossNamespaces = async function patchedSearch() {
+    searchCalls += 1;
+    return [];
+  };
+  let adapter: BenchMemoryAdapter | undefined;
+  try {
+    adapter = await createRemnicAdapter({
+      memoryDir,
+      configOverrides: { qmdMaxResults: 0, transcriptEnabled: true },
+    });
+    assert.ok(adapter.captureAttributionWitness);
+    const witness = await adapter.captureAttributionWitness({
+      goldMemories: ["The user prefers jasmine tea."],
+      retrievals: [],
+    });
+
+    assert.equal(searchCalls, 0);
+    assert.equal(witness?.runtime.qmdMaxResults, 0);
+    assert.equal(witness?.golds[0]?.oracleMemoryIds, null);
+  } finally {
+    Orchestrator.prototype.searchAcrossNamespaces = originalSearch;
+    await adapter?.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 

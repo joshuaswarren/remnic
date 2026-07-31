@@ -10,6 +10,7 @@ import {
   type AttributionEnvironment,
   type AttributionReport,
 } from "./attribution.js";
+import type { TaskAttributionWitness } from "./types.js";
 
 test("lexicalSimilarity computes containment of gold in candidate", () => {
   const sim1 = lexicalSimilarity(
@@ -661,4 +662,160 @@ test("attribution redacts store errors from reports", async () => {
     },
   );
   assert.equal(result.stages.extraction.detail, "listMemories failed");
+});
+
+test("stored witness overrides live callbacks and classifies index_miss", async () => {
+  const calls = { listMemories: 0, oracleSearch: 0, recall: 0 };
+  const goldMemory = "Avery's favorite color is teal blue";
+  const attributionWitness: TaskAttributionWitness = {
+    schemaVersion: 1,
+    runtime: {
+      qmdCollection: "bench-runtime",
+      qmdIndex: "/tmp/bench-runtime.sqlite",
+      qmdMaxResults: 25,
+      attributionThreshold: 0.6,
+    },
+    golds: [{
+      goldMemory,
+      storeMemoryIds: ["mem-gold"],
+      oracleMemoryIds: [],
+    }],
+    retrievals: [{
+      sessionId: "session-index-miss",
+      appliedCap: 5,
+      atCapMemoryIds: [],
+      headroomMemoryIds: [],
+    }],
+  };
+  const task = {
+    taskId: "task-stored-index-witness",
+    question: "What is Avery's favorite color?",
+    scores: { overall: 0 },
+    attributionWitness,
+  };
+  const env: AttributionEnvironment = {
+    listMemories: async () => {
+      calls.listMemories++;
+      return [];
+    },
+    oracleSearch: async () => {
+      calls.oracleSearch++;
+      return [{ id: "mem-gold" }];
+    },
+    recall: async () => {
+      calls.recall++;
+      return [{ id: "mem-gold", content: goldMemory }];
+    },
+    recallLimit: 5,
+  };
+
+  const result = await attributeTask(task, env);
+
+  assert.equal(result?.overall.class, "index_miss");
+  assert.equal(result?.golds[0]?.stages.extraction.status, "pass");
+  assert.equal(result?.golds[0]?.stages.index.status, "fail");
+  assert.deepEqual(calls, { listMemories: 0, oracleSearch: 0, recall: 0 });
+
+  const mismatchedPolicy = await attributeTask(task, env, { threshold: 0.7 });
+  assert.equal(mismatchedPolicy?.overall.class, "unattributed");
+  assert.equal(mismatchedPolicy?.golds[0]?.stages.extraction.status, "unavailable");
+});
+
+test("stored headroom witness overrides live callbacks and classifies retrieval_miss(cap)", async () => {
+  const calls = { listMemories: 0, oracleSearch: 0, recall: 0 };
+  const goldMemory = "Avery's favorite color is teal blue";
+  const attributionWitness: TaskAttributionWitness = {
+    schemaVersion: 1,
+    runtime: {
+      qmdCollection: "bench-runtime",
+      qmdIndex: "/tmp/bench-runtime.sqlite",
+      qmdMaxResults: 25,
+      attributionThreshold: 0.6,
+    },
+    golds: [{
+      goldMemory,
+      storeMemoryIds: ["mem-gold"],
+      oracleMemoryIds: ["mem-gold"],
+    }],
+    retrievals: [{
+      sessionId: "session-cap-miss",
+      appliedCap: 1,
+      atCapMemoryIds: ["mem-distractor"],
+      headroomMemoryIds: ["mem-gold"],
+    }],
+  };
+  const task = {
+    taskId: "task-stored-cap-witness",
+    question: "What is Avery's favorite color?",
+    scores: { overall: 0 },
+    goldMemories: [goldMemory],
+    attributionWitness,
+  };
+  const env: AttributionEnvironment = {
+    listMemories: async () => {
+      calls.listMemories++;
+      return [];
+    },
+    oracleSearch: async () => {
+      calls.oracleSearch++;
+      return [];
+    },
+    recall: async () => {
+      calls.recall++;
+      return [{ id: "mem-gold", content: goldMemory }];
+    },
+    recallLimit: 5,
+  };
+
+  const result = await attributeTask(task, env);
+
+  assert.equal(result?.overall.class, "retrieval_miss");
+  assert.equal(result?.overall.retrievalStage, "cap");
+  assert.equal(result?.golds[0]?.stages.retrieval.status, "fail");
+  assert.match(result?.golds[0]?.stages.retrieval.detail ?? "", /headroom|rank 2|applied cap/i);
+  assert.deepEqual(calls, { listMemories: 0, oracleSearch: 0, recall: 0 });
+});
+
+test("stored headroom stays unavailable when another recall session is unobserved", async () => {
+  const goldMemory = "Avery's favorite color is teal blue";
+  const result = await attributeTask(
+    {
+      taskId: "task-partial-retrieval-witness",
+      question: "What is Avery's favorite color?",
+      scores: { overall: 0 },
+      goldMemories: [goldMemory],
+      attributionWitness: {
+        schemaVersion: 1,
+        runtime: {
+          qmdCollection: "bench-runtime",
+          qmdIndex: "/tmp/bench-runtime.sqlite",
+          qmdMaxResults: 25,
+          attributionThreshold: 0.6,
+        },
+        golds: [{
+          goldMemory,
+          storeMemoryIds: ["mem-gold"],
+          oracleMemoryIds: [],
+        }],
+        retrievals: [
+          {
+            sessionId: "session-cap-miss",
+            appliedCap: 1,
+            atCapMemoryIds: ["mem-distractor"],
+            headroomMemoryIds: ["mem-gold"],
+          },
+          {
+            sessionId: "session-unavailable",
+            appliedCap: null,
+            atCapMemoryIds: null,
+            headroomMemoryIds: null,
+          },
+        ],
+      },
+    },
+    { listMemories: async () => [], recallLimit: 5 },
+  );
+
+  assert.equal(result?.overall.class, "unattributed");
+  assert.equal(result?.golds[0]?.stages.retrieval.status, "unavailable");
 });

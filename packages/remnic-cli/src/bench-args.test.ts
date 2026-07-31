@@ -105,6 +105,29 @@ test("parseBenchArgs recognizes bench attribute action and requires --run", () =
   assert.equal(parsed.threshold, 0.2);
 });
 
+test("parseBenchArgs requires paired QMD fallback flags and forwards both", () => {
+  assert.throws(
+    () => parseBenchArgs(["attribute", "--run", "run-123", "--qmd", "/opt/qmd"]),
+    /--qmd.*--collection|--collection.*--qmd/,
+  );
+  assert.throws(
+    () => parseBenchArgs(["attribute", "--run", "run-123", "--collection", "bench-runtime"]),
+    /--qmd.*--collection|--collection.*--qmd/,
+  );
+
+  const parsed = parseBenchArgs([
+    "attribute",
+    "--run",
+    "run-123",
+    "--qmd",
+    "/opt/qmd",
+    "--collection",
+    "bench-runtime",
+  ]);
+  assert.equal(parsed.qmdPath, "/opt/qmd");
+  assert.equal(parsed.collection, "bench-runtime");
+});
+
 test("parseBenchArgs recognizes bench drift-gen action and subcommands", () => {
   const genDefault = parseBenchArgs([
     "drift-gen",

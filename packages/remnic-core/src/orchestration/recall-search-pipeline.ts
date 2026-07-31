@@ -27,6 +27,7 @@ import { log } from "../logger.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import { NegativeExampleStore } from "../negative.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
+import type { RecallRerankCoordinator, RecallResultPartitionSink } from "./recall-rerank-coordinator.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import { RelevanceStore } from "../relevance.js";
 import { RerankCache, rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
@@ -101,6 +102,7 @@ export interface RecallSearchPipelineDeps {
     recallNamespaces: string[],
   ): Promise<QueryAwarePrefilter>;
   readonly config: PluginConfig;
+  readonly recallRerankCoordinator: Pick<RecallRerankCoordinator, "diversifyRecallResultsWithHeadroom">;
   diversifyAndLimitRecallResults(
     sectionId: string,
     results: QmdSearchResult[],
@@ -732,6 +734,7 @@ export class RecallSearchPipelineCoordinator {
      * Unset by default so existing call sites are unaffected.
      */
     xrayPoolSizeSink?: { size: number };
+    resultPartitionSink?: RecallResultPartitionSink;
     /**
      * Issue #1577 — out-parameter that receives the TrustScore stage's
      * per-path trust map (admitted + quarantined) when the cold path runs
@@ -1079,10 +1082,6 @@ export class RecallSearchPipelineCoordinator {
       );
     }
 
-    // Trust-reweighting — must fire on the cold fallback path too, or the
-    // feature flag produces divergent behavior by retrieval path (rule 39).
-    // TrustScore subsumes the Memory Worth multiplier; run exactly one.
-    // Fail-open on lookup errors.
     if (caps.recallTrustScore && results.length > 0) {
       try {
         const trustOutcome = await this.deps.applyTrustScoreRerank(results, options.recallNamespaces, boostInput.memoryByPath);
@@ -1103,15 +1102,22 @@ export class RecallSearchPipelineCoordinator {
       }
     }
 
-    // Apply MMR before final truncation so the cold fallback path mirrors
-    // the diversification policy applied in the hot QMD/embedding/recent
-    // paths. Running MMR post-slice would be unable to promote diverse
-    // candidates sitting just below the cutoff.
     if (options.xrayPoolSizeSink) {
       options.xrayPoolSizeSink.size = Math.max(
         options.xrayPoolSizeSink.size,
         results.length,
       );
+    }
+    if (options.resultPartitionSink) {
+      const partition = this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+        "memories",
+        results,
+        options.recallResultLimit,
+        options.prompt,
+        caps,
+      );
+      options.resultPartitionSink.partition = partition;
+      return partition.appliedResults;
     }
     return this.deps.diversifyAndLimitRecallResults(
       "memories",

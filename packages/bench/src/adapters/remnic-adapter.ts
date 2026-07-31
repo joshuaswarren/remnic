@@ -36,7 +36,7 @@ import {
   StorageManager,
 } from "@remnic/core";
 import { withBenchCoreMemorySource } from "./with-bench-core-memory-source.js";
-
+import { captureRecallAttribution, captureTaskAttributionWitness } from "./attribution-witness.js";
 import type {
   EntityStructuredSection,
   EvidencePackSelectionReceipt,
@@ -51,6 +51,7 @@ import type {
   BenchPhaseControl,
   BenchJudge,
   BenchMemoryAdapter,
+  BenchRecallAttribution,
   BenchRecallOptions,
   BenchRecallSupportAssessment,
   BenchRecallSupportRequest,
@@ -1942,6 +1943,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         recallOptions?: BenchRecallOptions,
         control?: BenchPhaseControl,
         traceRecorder?: BenchRecallTraceRecorder,
+        attributionSink?: (attribution: BenchRecallAttribution | undefined) => void,
       ): Promise<string>;
     };
 
@@ -2094,6 +2096,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         recallOptions: BenchRecallOptions = {},
         control?: BenchPhaseControl,
         traceRecorder?: BenchRecallTraceRecorder,
+        attributionSink?: (attribution: BenchRecallAttribution | undefined) => void,
       ): Promise<string> {
         throwIfBenchPhaseAborted(control, "recall");
         const waitForRecall = <T>(promise: Promise<T>): Promise<T> =>
@@ -2298,8 +2301,17 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 control,
                 "recall",
                 { waitForCompletionOnAbort: true },
-              ).then((capture) => {
+              ).then(async (capture) => {
                 traceRecorder.recordCoreCapture(capture.snapshot);
+                attributionSink?.(
+                  capture.snapshot
+                    ? await captureRecallAttribution(
+                        state.orchestrator,
+                        sessionId,
+                        capture.snapshot,
+                      ).catch(() => undefined)
+                    : undefined,
+                );
                 return capture.result;
               })
             : await waitForRecall(
@@ -2716,6 +2728,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       ): Promise<BenchRecallWithTraceResult> {
         const budget = budgetChars ?? DEFAULT_BENCH_RECALL_BUDGET_CHARS;
         const traceRecorder = createBenchRecallTraceRecorder(Math.max(0, budget));
+        let attribution: BenchRecallAttribution | undefined;
         const text = await adapter[composeRecall](
           sessionId,
           query,
@@ -2723,8 +2736,25 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           recallOptions,
           control,
           traceRecorder,
+          (captured) => {
+            attribution = captured;
+          },
         );
-        return { text, trace: traceRecorder.finalize(text.length) };
+        return {
+          text,
+          trace: traceRecorder.finalize(text.length),
+          ...(attribution ? { attribution } : {}),
+        };
+      },
+
+      async captureAttributionWitness(request) {
+        return captureTaskAttributionWitness({
+          orchestrator: state.orchestrator,
+          qmdCollection: state.orchestrator.config.qmdCollection,
+          qmdIndex: state.qmdSandbox.indexName,
+          goldMemories: request.goldMemories,
+          retrievals: request.retrievals,
+        });
       },
 
       async assessRecallSupport(

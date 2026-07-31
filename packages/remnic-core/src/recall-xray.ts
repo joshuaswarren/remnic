@@ -256,6 +256,9 @@ export interface RecallXraySnapshot {
    */
   tierExplain: RecallTierExplain | null;
   results: RecallXrayResult[];
+  appliedResultLimit: number;
+  appliedResults: RecallXrayResult[];
+  headroomResults: RecallXrayResult[];
   filters: RecallFilterTrace[];
   /**
    * Character budget accounting for the final assembled recall payload.
@@ -282,6 +285,9 @@ export interface BuildXraySnapshotInput {
   query: string;
   tierExplain?: RecallTierExplain | null;
   results?: RecallXrayResult[];
+  appliedResultLimit?: number;
+  appliedResults?: RecallXrayResult[];
+  headroomResults?: RecallXrayResult[];
   filters?: RecallFilterTrace[];
   budget?: { chars?: number; used?: number };
   sessionKey?: string;
@@ -309,6 +315,12 @@ export function buildXraySnapshot(
 
   const results = Array.isArray(input.results)
     ? input.results.map(cloneResult)
+    : [];
+  const appliedResults = Array.isArray(input.appliedResults)
+    ? input.appliedResults.map(cloneResult)
+    : [];
+  const headroomResults = Array.isArray(input.headroomResults)
+    ? input.headroomResults.map(cloneResult)
     : [];
   const filters = Array.isArray(input.filters)
     ? input.filters.map(cloneFilter)
@@ -346,6 +358,9 @@ export function buildXraySnapshot(
     capturedAt: now(),
     tierExplain,
     results,
+    appliedResultLimit: nonNegativeInt(input.appliedResultLimit),
+    appliedResults,
+    headroomResults,
     filters,
     budget: { chars: budgetChars, used: budgetUsed },
     sessionKey: nonEmptyString(input.sessionKey),

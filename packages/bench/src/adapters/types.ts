@@ -2,6 +2,8 @@
  * Shared adapter contract for benchmarks running against Remnic memory systems.
  */
 
+import type { TaskAttributionWitness } from "../types.js";
+
 export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
@@ -165,6 +167,10 @@ export interface BenchMemoryAdapter {
     options?: BenchRecallOptions,
     control?: BenchPhaseControl,
   ): Promise<BenchRecallWithTraceResult>;
+  captureAttributionWitness?(request: {
+    goldMemories: string[];
+    retrievals: BenchAttributionRetrieval[];
+  }): Promise<TaskAttributionWitness | undefined>;
   /**
    * Optionally assess support using the exact, final recall context that will
    * be sent to the responder. Implementations may return `weak` only from
@@ -311,9 +317,28 @@ export interface BenchRecallTrace {
   };
 }
 
+export interface BenchRecallAttribution {
+  sessionId: string;
+  appliedCap: number;
+  atCapMemoryIds: string[];
+  headroomMemoryIds: string[];
+}
+
+export interface BenchUnavailableRecallAttribution {
+  sessionId: string;
+  appliedCap: null;
+  atCapMemoryIds: null;
+  headroomMemoryIds: null;
+}
+
+export type BenchAttributionRetrieval =
+  | BenchRecallAttribution
+  | BenchUnavailableRecallAttribution;
+
 export interface BenchRecallWithTraceResult {
   text: string;
   trace: BenchRecallTrace;
+  attribution?: BenchRecallAttribution;
 }
 
 // Legacy aliases preserved while the old eval adapters finish migrating into
