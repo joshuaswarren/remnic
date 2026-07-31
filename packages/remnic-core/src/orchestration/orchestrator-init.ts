@@ -20,12 +20,21 @@
 import { readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { SmartBuffer } from "../buffer.js";
-import { resolveIndexingCapabilities, resolveLocalLlmCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolveQmdCapabilities, resolveRecallAuxiliaryCapabilities, resolveUtilityLearningCapabilities } from "../capabilities.js";
+import {
+  resolveIndexingCapabilities,
+  resolveLocalLlmCapabilities,
+  resolveMemoryLifecycleCapabilities,
+  resolveNamespaceCapabilities,
+  resolveQmdCapabilities,
+  resolveRecallAuxiliaryCapabilities,
+  resolveUtilityLearningCapabilities,
+} from "../capabilities.js";
 import { CompoundingEngine } from "../compounding/engine.js";
 import type { ConversationIndexBackend } from "../conversation-index/backend.js";
 import type { CorrectionService } from "../correction/correction-service.js";
 import { EmbeddingFallback } from "../embedding-fallback.js";
 import { ContentHashIndex, StorageManager } from "../index.js";
+import { assertExternalWikiRootOutsideMemoryDirCanonical } from "../external-wiki-guard.js";
 import { log } from "../logger.js";
 import { migrateFromEngram } from "../migrate/from-engram.js";
 import { NamespaceCatalog } from "../namespaces/catalog.js";
@@ -69,10 +78,7 @@ export interface OrchestratorInitDeps {
   getMeetingsService(namespace?: string): Promise<MeetingsService>;
   readonly handleHistory: RecallHandleHistoryStore;
   readonly lastRecall: LastRecallStore;
-  maintenanceNamespaces(
-    jobName?: string,
-    budgetMode?: "cycle" | "unbounded",
-  ): Promise<string[]>;
+  maintenanceNamespaces(jobName?: string, budgetMode?: "cycle" | "unbounded"): Promise<string[]>;
   readonly maintenanceScheduler: MaintenanceScheduler;
   readonly namespaceCatalog: NamespaceCatalog;
   readonly namespaceSearchRouter: NamespaceSearchRouter;
@@ -97,9 +103,7 @@ export interface OrchestratorInitDeps {
 }
 
 export class OrchestratorInitCoordinator {
-  constructor(
-    private readonly deps: OrchestratorInitDeps,
-  ) {}
+  constructor(private readonly deps: OrchestratorInitDeps) {}
 
   async initialize(): Promise<void> {
     // Recreate the deferred-ready gate on every initialize() call.
@@ -118,6 +122,11 @@ export class OrchestratorInitCoordinator {
       });
       await this.deps.storage.loadAliases();
       await this.deps.storage.ensureDirectories();
+      await Promise.all(
+        this.deps.config.externalWikis.map((wiki) =>
+          assertExternalWikiRootOutsideMemoryDirCanonical(this.deps.config.memoryDir, wiki.rootDir)
+        )
+      );
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
         const namespaces = new Set<string>([
           this.deps.config.defaultNamespace,
@@ -152,16 +161,20 @@ export class OrchestratorInitCoordinator {
             for (const rec of await this.deps.namespaceCatalog.listNamespaces()) {
               correctionNamespaces.add(rec.namespace);
             }
-          } catch { /* best-effort */ }
+          } catch {
+            /* best-effort */
+          }
         }
-        const recovered = await this.deps.passiveCorrectionService().recoverStaleApplyingPlans(
-          [...correctionNamespaces],
-        );
+        const recovered = await this.deps
+          .passiveCorrectionService()
+          .recoverStaleApplyingPlans([...correctionNamespaces]);
         if (recovered > 0) {
           log.info(`correction: recovered ${recovered} stale applying plan(s) on startup`);
         }
       } catch (staleErr) {
-        log.debug(`correction: stale-plan recovery skipped: ${staleErr instanceof Error ? staleErr.message : String(staleErr)}`);
+        log.debug(
+          `correction: stale-plan recovery skipped: ${staleErr instanceof Error ? staleErr.message : String(staleErr)}`
+        );
       }
       await this.deps.relevance.load();
       await this.deps.negatives.load();
@@ -184,9 +197,7 @@ export class OrchestratorInitCoordinator {
       if (resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication) {
         try {
           this.deps.contentHashIndex = await this.deps.storage.getAuthoritativeFactHashIndex();
-          log.info(
-            `content-hash dedup: rebuilt authoritative index with ${this.deps.contentHashIndex.size} hashes`,
-          );
+          log.info(`content-hash dedup: rebuilt authoritative index with ${this.deps.contentHashIndex.size} hashes`);
         } catch (err) {
           // PR #2016: the locked corpus rebuild could not run at init (transient
           // cross-process contention). Pre-warm with the shared instance instead
@@ -196,7 +207,7 @@ export class OrchestratorInitCoordinator {
           this.deps.contentHashIndex = await this.deps.storage.getSharedFactHashIndex();
           log.warn(
             `content-hash dedup: authoritative rebuild deferred at init (${err instanceof Error ? err.message : String(err)}); ` +
-              `using the shared index, will retry the locked rebuild on next use`,
+              `using the shared index, will retry the locked rebuild on next use`
           );
         }
       }
@@ -214,9 +225,7 @@ export class OrchestratorInitCoordinator {
       try {
         await this.deps.buffer.load();
       } catch (bufErr) {
-        log.error(
-          `buffer.load() failed (init gate will still open): ${bufErr}`,
-        );
+        log.error(`buffer.load() failed (init gate will still open): ${bufErr}`);
         this.deps.buffer.resetToEmpty();
       }
       if (resolveRecallAuxiliaryCapabilities(this.deps.config).compactionReset) {
@@ -262,45 +271,36 @@ export class OrchestratorInitCoordinator {
               const collectionCheckAbort = new AbortController();
               const state = await qmdStartupCollectionCheckWithTimeout(
                 resolveNamespaceCapabilities(this.deps.config).namespaces
-                  ? this.deps.namespaceSearchRouter.ensureNamespaceCollection(
-                      namespace,
-                      { signal: collectionCheckAbort.signal },
-                    )
-                  : this.deps.qmd.ensureCollection(
-                      this.deps.config.memoryDir,
-                      this.deps.config.qmdCollection,
-                      { signal: collectionCheckAbort.signal },
-                    ),
+                  ? this.deps.namespaceSearchRouter.ensureNamespaceCollection(namespace, {
+                      signal: collectionCheckAbort.signal,
+                    })
+                  : this.deps.qmd.ensureCollection(this.deps.config.memoryDir, this.deps.config.qmdCollection, {
+                      signal: collectionCheckAbort.signal,
+                    }),
                 collectionCheckAbort,
-                namespace,
+                namespace
               );
               return { namespace, state };
-            }),
+            })
           );
           const defaultState =
-            states.find(
-              (entry) => entry.namespace === this.deps.config.defaultNamespace,
-            )?.state ?? "unknown";
+            states.find((entry) => entry.namespace === this.deps.config.defaultNamespace)?.state ?? "unknown";
           if (defaultState === "missing") {
             await this.deps.disposeSearchBackendIfNeeded();
             this.deps.qmd = new NoopSearchBackend();
             log.warn(
-              "Search collection missing for Remnic memory store; disabling search retrieval for this runtime (fallback retrieval remains enabled)",
+              "Search collection missing for Remnic memory store; disabling search retrieval for this runtime (fallback retrieval remains enabled)"
             );
           } else if (defaultState === "unknown") {
-            log.warn(
-              "Search collection check unavailable; keeping search retrieval enabled for fail-open behavior",
-            );
+            log.warn("Search collection check unavailable; keeping search retrieval enabled for fail-open behavior");
           } else if (defaultState === "skipped") {
-            log.debug(
-              "Search collection check skipped (remote or daemon-only mode)",
-            );
+            log.debug("Search collection check skipped (remote or daemon-only mode)");
           }
           for (const entry of states) {
             if (entry.namespace === this.deps.config.defaultNamespace) continue;
             if (entry.state === "missing") {
               log.warn(
-                `Search collection missing for namespace '${entry.namespace}'; namespace retrieval will fail open to non-search paths`,
+                `Search collection missing for namespace '${entry.namespace}'; namespace retrieval will fail open to non-search paths`
               );
             }
           }
@@ -338,7 +338,8 @@ export class OrchestratorInitCoordinator {
       const resolveDeferred = this.deps.resolveDeferredReady;
       this.deps.resolveDeferredReady = null;
       this.deps.deferredInitAbort = new AbortController();
-      this.deps.deferredInitialize(this.deps.deferredInitAbort.signal)
+      this.deps
+        .deferredInitialize(this.deps.deferredInitAbort.signal)
         .catch((err) => {
           log.error(`deferred initialization failed (non-fatal): ${err}`);
         })
@@ -383,10 +384,7 @@ export class OrchestratorInitCoordinator {
           // a dynamic namespace written before a daemon restart must be synced on
           // boot, not only by the debounced runQmdMaintenance() path. Same union +
           // catalog-read-failure fallback as runQmdMaintenance.
-          await this.deps.namespaceSearchRouter.updateNamespaces(
-            await this.deps.maintenanceNamespaces(),
-            { signal },
-          );
+          await this.deps.namespaceSearchRouter.updateNamespaces(await this.deps.maintenanceNamespaces(), { signal });
         } else {
           await this.deps.qmd.update({ signal });
         }
@@ -396,7 +394,7 @@ export class OrchestratorInitCoordinator {
         log.warn(`QMD startup sync failed (non-fatal): ${err}`);
         // deferredSyncSucceeded stays false — server retry will attempt sync
       }
-    } else if (!(this.deps.qmd.isAvailable())) {
+    } else if (!this.deps.qmd.isAvailable()) {
       // QMD not available at deferred init time — server retry will handle it
     } else {
       // QMD available but maintenance disabled — consider sync not needed
@@ -419,7 +417,7 @@ export class OrchestratorInitCoordinator {
           })
           .catch((err) => {
             log.debug(`QMD warmup search failed (non-fatal): ${err}`);
-          }),
+          })
       );
     }
     if (resolveMemoryLifecycleCapabilities(this.deps.config).embeddingFallback) {
@@ -427,13 +425,11 @@ export class OrchestratorInitCoordinator {
         this.deps.embeddingFallback
           .isAvailable()
           .then((ok) => {
-            log.info(
-              `Embedding fallback warmup: ${ok ? "available" : "unavailable (no provider)"}`,
-            );
+            log.info(`Embedding fallback warmup: ${ok ? "available" : "unavailable (no provider)"}`);
           })
           .catch((err) => {
             log.debug(`Embedding fallback warmup failed (non-fatal): ${err}`);
-          }),
+          })
       );
     }
     await Promise.all(warmupPromises);
@@ -453,11 +449,21 @@ export class OrchestratorInitCoordinator {
           } catch (err) {
             log.debug(`Knowledge Index warmup failed (non-fatal): ${err}`);
           }
-        })(),
+        })()
       );
     }
-    cacheWarmups.push(this.deps.storage.readAllMemories().then(() => {}).catch(() => {}));
-    cacheWarmups.push(this.deps.storage.readAllEntityFiles().then(() => {}).catch(() => {}));
+    cacheWarmups.push(
+      this.deps.storage
+        .readAllMemories()
+        .then(() => {})
+        .catch(() => {})
+    );
+    cacheWarmups.push(
+      this.deps.storage
+        .readAllEntityFiles()
+        .then(() => {})
+        .catch(() => {})
+    );
     await Promise.all(cacheWarmups);
     if (signal.aborted) return;
 
@@ -509,8 +515,7 @@ export class OrchestratorInitCoordinator {
     if (signal.aborted) return;
     if (lifecycleCaps.lifecyclePolicy && resolveQmdCapabilities(this.deps.config).qmdTierMigration) {
       try {
-        const { runFirstStartMigration } = await import("../maintenance/first-start-migration.js"
-        );
+        const { runFirstStartMigration } = await import("../maintenance/first-start-migration.js");
         const result = await runFirstStartMigration({
           storage: this.deps.storage,
           config: this.deps.config,
@@ -521,7 +526,7 @@ export class OrchestratorInitCoordinator {
         });
         if (!result.skipped) {
           log.info(
-            `first-start lifecycle migration: demoted ${result.demotedCount} of ${result.candidateCount} candidates (cap=${result.cappedAt})`,
+            `first-start lifecycle migration: demoted ${result.demotedCount} of ${result.candidateCount} candidates (cap=${result.cappedAt})`
           );
         } else {
           log.debug(`first-start lifecycle migration skipped: ${result.skipReason}`);
@@ -572,16 +577,14 @@ export class OrchestratorInitCoordinator {
               info: (message) => log.info(message),
               warn: (message) => log.warn(message),
             },
-          },
+          }
         );
         log.info(
-          `wearables auto-sync started: every ${this.deps.config.wearables.autoSyncIntervalMinutes}m over ${this.deps.config.wearables.autoSyncDays}d (deep ${this.deps.config.wearables.autoSyncDeepDays}d daily)`,
+          `wearables auto-sync started: every ${this.deps.config.wearables.autoSyncIntervalMinutes}m over ${this.deps.config.wearables.autoSyncDays}d (deep ${this.deps.config.wearables.autoSyncDeepDays}d daily)`
         );
       } catch (err) {
         const { displayErrorDetail } = await import("../runtime/better-sqlite.js");
-        log.warn(
-          `wearables auto-sync failed to start (non-fatal): ${displayErrorDetail(err)}`,
-        );
+        log.warn(`wearables auto-sync failed to start (non-fatal): ${displayErrorDetail(err)}`);
       }
     }
 
@@ -635,8 +638,10 @@ export class OrchestratorInitCoordinator {
         namespace,
         state: resolveNamespaceCapabilities(this.deps.config).namespaces
           ? await this.deps.namespaceSearchRouter.ensureNamespaceCollection(namespace, { signal })
-          : await this.deps.qmd.ensureCollection(this.deps.config.memoryDir, this.deps.config.qmdCollection, { signal }),
-      })),
+          : await this.deps.qmd.ensureCollection(this.deps.config.memoryDir, this.deps.config.qmdCollection, {
+              signal,
+            }),
+      }))
     );
 
     if (signal?.aborted) {
@@ -644,8 +649,7 @@ export class OrchestratorInitCoordinator {
       return false;
     }
 
-    const defaultState =
-      states.find((e) => e.namespace === this.deps.config.defaultNamespace)?.state ?? "unknown";
+    const defaultState = states.find((e) => e.namespace === this.deps.config.defaultNamespace)?.state ?? "unknown";
     if (defaultState === "missing") {
       // Reset the real backend's available flag before replacing it with noop.
       // probe() set available=true earlier in this call; without this reset,
@@ -670,9 +674,10 @@ export class OrchestratorInitCoordinator {
     // long-running `qmd update` process is killed promptly on shutdown.
     if (resolveQmdCapabilities(this.deps.config).qmdMaintenance) {
       try {
-        const failTsBefore = "lastUpdateFailedAtMs" in this.deps.qmd
-          ? (this.deps.qmd as any).lastUpdateFailedAtMs as number | null
-          : null;
+        const failTsBefore =
+          "lastUpdateFailedAtMs" in this.deps.qmd
+            ? ((this.deps.qmd as any).lastUpdateFailedAtMs as number | null)
+            : null;
         const hasRunTs = "lastUpdateRanAtMs" in this.deps.qmd;
         if ("resetUpdateThrottles" in this.deps.qmd) {
           (this.deps.qmd as any).resetUpdateThrottles();
@@ -680,10 +685,7 @@ export class OrchestratorInitCoordinator {
         log.info("startupSearchSync: updating index to match current disk state");
         let namespacesUpdated = 0;
         if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
-          namespacesUpdated = await this.deps.namespaceSearchRouter.updateNamespaces(
-            namespaces,
-            { signal },
-          );
+          namespacesUpdated = await this.deps.namespaceSearchRouter.updateNamespaces(namespaces, { signal });
         } else {
           await this.deps.qmd.update({ signal });
         }
@@ -691,22 +693,25 @@ export class OrchestratorInitCoordinator {
           log.debug("startupSearchSync: aborted after update");
           return false;
         }
-        const failTsAfter = "lastUpdateFailedAtMs" in this.deps.qmd
-          ? (this.deps.qmd as any).lastUpdateFailedAtMs as number | null
-          : null;
-        const runTsAfter = hasRunTs
-          ? (this.deps.qmd as any).lastUpdateRanAtMs as number | null
-          : null;
+        const failTsAfter =
+          "lastUpdateFailedAtMs" in this.deps.qmd
+            ? ((this.deps.qmd as any).lastUpdateFailedAtMs as number | null)
+            : null;
+        const runTsAfter = hasRunTs ? ((this.deps.qmd as any).lastUpdateRanAtMs as number | null) : null;
         if (failTsAfter !== null && failTsAfter !== failTsBefore) {
           log.warn("startupSearchSync: update silently failed (detected via fail timestamp)");
           return false;
         }
         if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
           if (namespacesUpdated === 0) {
-            log.warn("startupSearchSync: no namespace backends were eligible for update (all unavailable or collections missing)");
+            log.warn(
+              "startupSearchSync: no namespace backends were eligible for update (all unavailable or collections missing)"
+            );
             return false;
           }
-          log.info(`startupSearchSync: namespace updates succeeded (${namespacesUpdated}/${namespaces.length} namespaces updated)`);
+          log.info(
+            `startupSearchSync: namespace updates succeeded (${namespacesUpdated}/${namespaces.length} namespaces updated)`
+          );
         } else if (hasRunTs && runTsAfter === null) {
           log.warn("startupSearchSync: update was throttled/skipped (run timestamp is null after reset + update)");
           return false;
