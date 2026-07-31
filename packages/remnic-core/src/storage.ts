@@ -196,7 +196,11 @@ import {
   parseTombstoneBlockedOfflineSyncMemory,
   type TombstoneBlockedCaptureIndexOptions,
 } from "./storage/tombstone-blocked-capture-index.js";
-import { isQueuedReviewMemory, tombstoneBlocked } from "./storage/tombstone-blocked-capture-mutation.js";
+import {
+  buildCapturePathLockIdentity,
+  isQueuedReviewMemory,
+  tombstoneBlocked,
+} from "./storage/tombstone-blocked-capture-mutation.js";
 export { ContentHashIndex, FactHashIndexNotAuthoritativeError };
 export type { ContentHashIndexLockOptions };
 export {
@@ -4000,14 +4004,41 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       await this.writeTombstoneBlockedMemory(filePath, fileContent, fm, sanitized.text, async () => {
         this.invalidateAllMemoriesCache();
       });
+      if (refIds && typeof rawEntityRef === "string") {
+        const refBeforeRepair = fm.entityRef;
+        try {
+          await entityRefs.repairEntityRefAfterJournalMove({
+            stateDir: this.stateDir,
+            currentIds: () => this.currentHistoricalIds(),
+            idsAtResolve: refIds,
+            rawRef: rawEntityRef,
+            frontmatter: fm,
+            rewrite: async () => {
+              await applyTombstoneGate();
+              await this.writeTombstoneBlockedMemory(
+                filePath,
+                `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`,
+                fm,
+                sanitized.text,
+                async () => this.invalidateAllMemoriesCache()
+              );
+              this.invalidateAllMemoriesCache();
+            },
+          });
+        } catch (err) {
+          await unlink(filePath).catch(() => undefined);
+          this.invalidateAllMemoriesCache();
+          await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath);
+          throw err;
+        }
+        await this.entityRefRepair.syncProjection(id, refBeforeRepair, fm.entityRef);
+      }
       return null;
     };
-    const duplicateBlocked = tombstoneBlocked
-      ? await this.withTombstoneBlockedCaptureWriteLock(
-          persistFile,
-          buildExplicitCaptureDedupKey(sanitized.text, category, fm.sourceConnector)
-        )
-      : await persistFile();
+    const duplicateBlocked = await this.withTombstoneBlockedCaptureWriteLock(persistFile, [
+      buildCapturePathLockIdentity(filePath),
+      buildExplicitCaptureDedupKey(sanitized.text, category, fm.sourceConnector),
+    ]);
     if (duplicateBlocked) {
       return {
         id: duplicateBlocked.frontmatter.id,
@@ -4015,38 +4046,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         blockedBy: duplicateBlocked.frontmatter.blockedBy,
         duplicateOf: duplicateBlocked.frontmatter.id,
       };
-    }
-    if (refIds && typeof rawEntityRef === "string") {
-      const refBeforeRepair = fm.entityRef;
-      try {
-        await entityRefs.repairEntityRefAfterJournalMove({
-          stateDir: this.stateDir,
-          currentIds: () => this.currentHistoricalIds(),
-          idsAtResolve: refIds,
-          rawRef: rawEntityRef,
-          frontmatter: fm,
-          rewrite: async () => {
-            // Re-gate under the final ref, then rewrite THROUGH the blocked-
-            // capture surface so any verdict change keeps the index consistent.
-            await applyTombstoneGate();
-            await this.writeTombstoneBlockedMemory(
-              filePath,
-              `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`,
-              fm,
-              sanitized.text,
-              async () => this.invalidateAllMemoriesCache()
-            );
-            this.invalidateAllMemoriesCache();
-          },
-        });
-      } catch (err) {
-        // Remove the just-created file before propagating (§14): it would
-        // linger un-bumped/un-indexed and a retry would duplicate it.
-        await unlink(filePath).catch(() => undefined);
-        this.invalidateAllMemoriesCache();
-        throw err;
-      }
-      await this.entityRefRepair.syncProjection(id, refBeforeRepair, fm.entityRef);
     }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
     this.notifyMemoryWrite(filePath);
@@ -6943,23 +6942,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       sanitized.text,
       () => this.findExistingTombstoneBlockedMemory(sanitized.text, category, fm.sourceConnector),
       async () => {
+        if (refIds && typeof rawEntityRef === "string") {
+          await this.entityRefRepair.repair(filePath, fm, rawEntityRef, refIds, sanitized.text, {
+            regateFact: true,
+            ...(priorChunk ? { onFailRestore: priorChunk } : { onFailRemove: filePath }),
+          });
+        }
         // Keep the version-keyed hot-memories cache coherent with the new chunk
         // file (issue #1902) — same single-file patch path writeMemory uses.
         await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
         log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);
       }
     );
-    // Repair only when THIS chunk persisted: a tombstone-dedupe result
-    // returns an existing id without writing filePath, and an unconditional
-    // repair rewrite would create a stray second chunk from scratch. The
-    // rewrite RE-GATES under the final ref (Bugbot): a journal move into
-    // tombstone-blocked identity space must not leave a fact chunk active.
-    if (written === id && refIds && typeof rawEntityRef === "string") {
-      await this.entityRefRepair.repair(filePath, fm, rawEntityRef, refIds, sanitized.text, {
-        regateFact: true,
-        ...(priorChunk ? { onFailRestore: priorChunk } : { onFailRemove: filePath }),
-      });
-    }
     return written;
   }
 
