@@ -47,6 +47,8 @@ import {
 import { EntityCanonicalIdMigrationRunner } from "./storage/entity-canonical-id-migration-runner.js";
 import { rememberRawFrontmatter } from "./storage/memory-frontmatter-metadata.js";
 import { createMemoryEntityRefSerializer } from "./storage/memory-migration-serialization.js";
+import { readEntityAliasConfigSync } from "./storage/entity-alias-config.js";
+import { assertSafeEntityId } from "./storage/entity-id-safety.js";
 export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { getCategoryDir, categoryDirName } from "./utils/category-dir.js";
@@ -639,7 +641,7 @@ function parseReinforcementCountField(raw: string | undefined): number | undefin
 }
 
 export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter; content: string } | null {
-  const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/);
   if (!match) return null;
 
   const fmBlock = match[1];
@@ -3748,27 +3750,28 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   private loadAliasesSync(): void {
     const aliasPath = path.join(this.baseDir, "config", "aliases.json");
-    // Re-derive from the file on every call: a reload after the file was
-    // fixed, emptied, or removed must never leave a previous table active.
     this.userAliases = {};
+    const raw = readEntityAliasConfigSync(this.baseDir);
+    if (raw === undefined) return;
+    let parsed: unknown;
     try {
-      const raw = readFileSync(aliasPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        const cleaned: Record<string, string> = {};
-        for (const [key, value] of Object.entries(parsed)) {
-          if (typeof value === "string" && value.trim().length > 0) {
-            cleaned[key] = value;
-          }
-        }
-        this.userAliases = cleaned;
-        log.debug(`loaded ${Object.keys(cleaned).length} entity aliases from ${aliasPath}`);
-      } else {
-        log.warn(`ignoring ${aliasPath}: payload must be a JSON object mapping variant → canonical strings`);
-      }
+      parsed = JSON.parse(raw);
     } catch {
-      // No aliases file — that's fine, use built-in only
-      log.debug("no config/aliases.json found — using built-in aliases only");
+      log.debug("invalid config/aliases.json — using built-in aliases only");
+      return;
+    }
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      const cleaned: Record<string, string> = {};
+      for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value === "string" && value.trim().length > 0) {
+          assertSafeEntityId(value);
+          cleaned[key] = value;
+        }
+      }
+      this.userAliases = cleaned;
+      log.debug(`loaded ${Object.keys(cleaned).length} entity aliases from ${aliasPath}`);
+    } else {
+      log.warn(`ignoring ${aliasPath}: payload must be a JSON object mapping variant → canonical strings`);
     }
   }
   private async runLegacyEntityCanonicalIdMigration(): Promise<string | undefined> {
