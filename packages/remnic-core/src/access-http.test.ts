@@ -4297,3 +4297,47 @@ test("HTTP memory search binds a scoped token to one namespace instead of fannin
     await server.stop();
   }
 });
+
+test("HTTP memory search forwards a validated ranking mode and trims the namespace", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const service = {
+    configRef: { defaultNamespace: "generalist" },
+    memorySearch: async (request: Record<string, unknown>) => {
+      calls.push(request);
+      return { query: "q", results: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    principal: "reader",
+    authTokenEntriesGetter: () => [
+      { token: "scoped", capabilities: { version: 1, ops: ["memory_search"], namespaces: ["team"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const post = (body: unknown) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories/search`, {
+      method: "POST",
+      headers: { authorization: "Bearer scoped", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    assert.equal(
+      (await post({ query: "q", namespace: "  team  ", mode: "vector" })).status,
+      200,
+      "surrounding whitespace must not 403 a namespace the token allows",
+    );
+    assert.equal(calls[0]?.namespace, "team");
+    assert.equal(calls[0]?.mode, "vector", "the ranking mode reaches the service");
+    assert.equal(
+      (await post({ query: "q", namespace: "team", mode: "vsearch" })).status,
+      400,
+      "an unknown ranking mode is rejected, not silently ignored",
+    );
+    assert.equal(calls.length, 1);
+  } finally {
+    await server.stop();
+  }
+});

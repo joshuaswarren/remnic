@@ -4711,9 +4711,10 @@ export class EngramAccessService {
     namespace?: string;
     maxResults?: number;
     collection?: string;
+    mode?: "search" | "hybrid" | "bm25" | "vector";
     principal?: string;
   }): Promise<{ query: string; results: Array<{ path: string; score: number; snippet: string }>; count: number }> {
-    const { query, namespace, maxResults, principal } = request;
+    const { query, namespace, maxResults, mode, principal } = request;
     const collection = request.collection?.trim();
     if (request.collection !== undefined && !collection) {
       throw new EngramAccessInputError("collection must be a non-empty string");
@@ -4722,9 +4723,14 @@ export class EngramAccessService {
     let results: Array<{ path: string; score: number; snippet?: string }>;
     if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces) {
       this.resolveReadableNamespace(namespace, principal);
-      results = collection === "global"
-        ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
-        : await this.orchestrator.qmd.search(query, collection, maxResults);
+      // An explicit ranking mode routes through the namespace-aware search
+      // even on a flat corpus, because that is the only path that honors it;
+      // the legacy direct-QMD calls stay the default so nothing else moves.
+      results = mode
+        ? await this.orchestrator.searchAcrossNamespaces({ query, maxResults, mode })
+        : collection === "global"
+          ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
+          : await this.orchestrator.qmd.search(query, collection, maxResults);
     } else {
       const readableNamespaces = await this.resolveReadableNamespacesForSearch(namespace, principal);
       const namespaces = this.resolveMemorySearchNamespacesForCollection(
@@ -4739,6 +4745,7 @@ export class EngramAccessService {
         principal,
         requestedNamespace: namespace,
         collection,
+        mode,
         search: (params) => this.orchestrator.searchAcrossNamespaces(params),
       });
     }

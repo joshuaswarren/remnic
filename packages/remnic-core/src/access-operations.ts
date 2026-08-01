@@ -102,6 +102,10 @@ const memorySearchSchema = z.object({
   // 100 would reject existing clients that request larger result sets.
   maxResults: z.number().int().min(1).nullable().optional(),
   collection: z.string().trim().min(1).max(256).nullable().optional(),
+  // Ranking mode. Mirrors the in-process manager's override so a host that
+  // asks for vector or lexical ranking gets the same semantics whether it
+  // talks to an embedded orchestrator or a standalone daemon (issue #2120).
+  mode: z.enum(["search", "hybrid", "bm25", "vector"]).nullable().optional(),
 });
 
 export interface MemorySearchInput {
@@ -109,6 +113,7 @@ export interface MemorySearchInput {
   readonly namespace?: string | null;
   readonly maxResults?: number | null;
   readonly collection?: string | null;
+  readonly mode?: "search" | "hybrid" | "bm25" | "vector" | null;
 }
 
 export interface MemorySearchOutput {
@@ -129,6 +134,7 @@ export const memorySearchOperation = defineOperation<MemorySearchInput, MemorySe
       namespace: input.namespace ?? undefined,
       maxResults: input.maxResults ?? undefined,
       collection: input.collection ?? undefined,
+      mode: input.mode ?? undefined,
       principal: ctx.authenticatedPrincipal,
     });
     return { result };

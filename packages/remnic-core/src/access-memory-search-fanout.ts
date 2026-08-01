@@ -126,11 +126,12 @@ export async function runMemorySearchFanout<TResult>(options: {
   principal?: string;
   requestedNamespace?: string;
   collection?: string;
+  mode?: "search" | "hybrid" | "bm25" | "vector";
   search(params: {
     query: string;
     namespaces: string[];
     maxResults?: number;
-    mode: "search";
+    mode: "search" | "hybrid" | "bm25" | "vector";
     execution: SearchExecutionOptions;
   }): Promise<TResult[]>;
 }): Promise<TResult[]> {
@@ -153,7 +154,7 @@ export async function runMemorySearchFanout<TResult>(options: {
     query,
     namespaces,
     maxResults,
-    mode: "search",
+    mode: options.mode ?? "search",
     execution: {
       onDegradation: (degradation) => degradations.push(degradation),
     },

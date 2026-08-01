@@ -775,7 +775,13 @@ export class EngramAccessHttpServer {
         `namespace must be a string or null (got: ${typeof requested})`,
       );
     }
-    const namespace = this.resolveNamespace(req, requested ?? undefined);
+    // Trim BEFORE the allow-list gate: the operation schemas normalize
+    // `namespace` with `.trim()`, so checking the raw value would 403 a
+    // `" team "` that the MCP path accepts as `team` — the same envelope
+    // succeeding or failing on harmless whitespace. The trimmed value is what
+    // gets stamped, so the gate and the operation see one namespace.
+    const trimmed = typeof requested === "string" ? requested.trim() : undefined;
+    const namespace = this.resolveNamespace(req, trimmed || undefined);
     return { ...body, namespace };
   }
 
