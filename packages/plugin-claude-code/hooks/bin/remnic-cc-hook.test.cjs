@@ -216,6 +216,58 @@ test("recall body targets REMNIC_NAMESPACE when set, and omits namespace when un
   }
 });
 
+test("namespace targeting: ENGRAM_NAMESPACE fallback (recall) and observe body both honor it", async () => {
+  // ENGRAM_NAMESPACE is the fallback when REMNIC_NAMESPACE is unset → recall body carries it.
+  {
+    const home = mkHome();
+    const { server, port, calls } = await startServer((req, res) => {
+      if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+      if (req.url === "/engram/v1/recall") {
+        return res
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify({ context: "ctx", count: 1, mode: "auto" }));
+      }
+      res.writeHead(404).end();
+    });
+    try {
+      await runHook(
+        "session-start",
+        { session_id: "s1", cwd: home },
+        { port, home, env: { extra: { REMNIC_NAMESPACE: "", ENGRAM_NAMESPACE: "legacy-ns" } } },
+      );
+      const recall = calls.find((c) => c.url === "/engram/v1/recall");
+      assert.ok(recall, "recall was called");
+      assert.equal(recall.body.namespace, "legacy-ns");
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  // observe uses the same httpPost path, so its body carries the namespace too.
+  {
+    const home = mkHome();
+    const { server, port, calls } = await startServer((req, res) => res.writeHead(200).end("{}"));
+    try {
+      const tpath = transcript(home, [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "second" },
+      ]);
+      await runHook(
+        "__observe-worker__",
+        JSON.stringify({ session_id: "sObsNs", transcript_path: tpath }),
+        { port, home, env: { extra: { REMNIC_NAMESPACE: "team-shared", ENGRAM_NAMESPACE: "" } } },
+      );
+      const observe = calls.find((c) => c.url === "/engram/v1/observe");
+      assert.ok(observe, "observe was called");
+      assert.equal(observe.body.namespace, "team-shared");
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
+
 test("session-start: falls back to minimal mode when full recall fails", async () => {
   const home = mkHome();
   let recallHits = 0;
