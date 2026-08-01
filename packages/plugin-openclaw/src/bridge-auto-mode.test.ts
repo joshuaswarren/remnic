@@ -596,3 +596,87 @@ test("host and port come from ONE config file, never spliced across two", async 
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("the installed service's pinned config path outranks the gateway's cwd", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-unit-config-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-unit-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  // The unit pins the daemon to the home config; the gateway happens to start
+  // in a directory holding a different one. Trusting cwd would probe 4700 and
+  // stay embedded beside a daemon listening on 4600.
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    "[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4600 } }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4700 } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    assert.equal(detectDaemonBridgeMode({ memoryDir: MEMORY_DIR }).daemonPort, 4600);
+    // This process's own REMNIC_CONFIG_PATH is a deliberate instruction and
+    // still outranks the unit.
+    process.env.REMNIC_CONFIG_PATH = path.join(cwd, "remnic.config.json");
+    assert.equal(detectDaemonBridgeMode({ memoryDir: MEMORY_DIR }).daemonPort, 4700);
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a config whose server block is not an object is skipped, not adopted", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-bad-server-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "engram"), { recursive: true });
+  // The daemon's own loader rejects this file, so it is not the one it booted
+  // from; adopting its defaults would probe 4318 instead of the live 4700.
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: [1, 2, 3] }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "engram", "config.json"),
+    JSON.stringify({ server: { port: 4700 } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(home);
+    assert.equal(detectDaemonBridgeMode({ memoryDir: MEMORY_DIR }).daemonPort, 4700);
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await rm(home, { recursive: true, force: true });
+  }
+});

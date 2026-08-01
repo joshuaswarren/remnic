@@ -293,13 +293,62 @@ function readCompatEnv(primary: string, legacy: string): string | undefined {
  */
 function configPathCandidates(): string[] {
   const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
+  const servicePath = readServiceConfigPath();
   return [
     ...(envPath ? [path.resolve(expandTildePath(envPath))] : []),
+    ...(servicePath ? [servicePath] : []),
     path.join(process.cwd(), "remnic.config.json"),
     path.join(process.cwd(), "engram.config.json"),
     path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
     path.join(resolveHomeDir(), ".config", "engram", "config.json"),
   ];
+}
+
+/**
+ * The config path the INSTALLED daemon service is pinned to.
+ *
+ * The shipped systemd unit and launchd plist both set `REMNIC_CONFIG_PATH`
+ * explicitly, and that variable lives only in the daemon's environment. Two
+ * processes with different cwds can therefore never converge on the same file
+ * by matching candidate order alone: a gateway started in a directory that
+ * happens to hold a `remnic.config.json` would probe that endpoint, stay
+ * embedded, and stack an orchestrator on the daemon's corpus. Reading the unit
+ * asks the daemon which file it actually uses. Ranked below this process's own
+ * `REMNIC_CONFIG_PATH`, which is a deliberate operator instruction.
+ */
+function readServiceConfigPath(): string | undefined {
+  const homeDir = resolveHomeDir();
+  const unitPaths = [
+    ...[...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS].map((segments) =>
+      path.join(homeDir, ...segments),
+    ),
+    ...SYSTEMD_SYSTEM_SERVICE_PATHS,
+  ];
+  for (const unitPath of unitPaths) {
+    if (!fileExists(unitPath)) continue;
+    let unit: string;
+    try {
+      unit = fs.readFileSync(unitPath, "utf8");
+    } catch {
+      continue;
+    }
+    for (const name of ["REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH"]) {
+      // systemd: Environment=NAME=value  /  Environment="NAME=value"
+      const systemd = new RegExp(`^\\s*Environment=\\"?${name}=([^\\"\\n]+)\\"?\\s*$`, "m").exec(unit);
+      // launchd: <key>NAME</key><string>value</string>
+      const launchd = new RegExp(
+        `<key>${name}</key>\\s*<string>([^<]*)</string>`,
+      ).exec(unit);
+      const raw = systemd?.[1] ?? launchd?.[1];
+      if (raw === undefined || raw.trim() === "") continue;
+      // `%h` is systemd's home specifier; an installed plist carries a literal
+      // path, but expandTilde covers a hand-edited `~`.
+      const resolved = expandTildePath(raw.trim().replace(/%h/g, homeDir));
+      if (!path.isAbsolute(resolved)) continue;
+      return resolved;
+    }
+  }
+  return undefined;
 }
 
 function fileExists(filePath: string): boolean {
@@ -512,8 +561,13 @@ function readDaemonServerConfig(): { host?: string; port?: number } {
     if (!fileExists(candidate)) continue;
     try {
       const raw: unknown = JSON.parse(fs.readFileSync(candidate, "utf8"));
-      const server = (raw as { server?: unknown } | null)?.server;
-      if (typeof server !== "object" || server === null || Array.isArray(server)) return {};
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+      const server = (raw as { server?: unknown }).server;
+      if (server === undefined) return {};
+      // A `server` that is not a plain object is a file the daemon's own
+      // loader REJECTS, so it is not the file it booted from — keep scanning
+      // rather than silently adopting this file's defaults.
+      if (typeof server !== "object" || server === null || Array.isArray(server)) continue;
       const { host, port } = server as { host?: unknown; port?: unknown };
       return {
         ...(typeof host === "string" && host.trim() !== "" ? { host } : {}),
