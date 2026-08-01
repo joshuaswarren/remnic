@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.46.0] — 2026-08-01
+
 ### Added
 
 - Claude Code hooks honor `REMNIC_NAMESPACE` / `ENGRAM_NAMESPACE` to target a memory namespace on recall/observe. On the REST surface the namespace is read from the request body (not a header), so on a namespaced daemon the `claude-code` client id otherwise resolves to the adapter's own (empty) namespace and recall silently returns nothing. Opt-in — unset preserves existing behavior.
