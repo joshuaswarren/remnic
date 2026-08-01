@@ -8,8 +8,10 @@ All notable changes to this project will be documented in this file.
 
 - Release publishing now waits for the complete root test corpus, split into deterministic bounded shards against the exact event commit.
 - AMB bridge preflight accepts valid reset responses when package-manager diagnostics precede the JSONL payload.
-- External-wiki catalog links resolve consistently and the CLI uses one exported implementation with JSON and filter support.
-- Offline snapshot streams retain deletion metadata, scoped extraction health retains backlog counts, and repeated tier moves stay idempotent without dropping validated frontmatter.
+- External-wiki catalog links resolve consistently, and the CLI uses one exported implementation for JSON and text output.
+- External-wiki searches report degraded roots even when no hits remain.
+- Tier moves preserve concurrent disk updates, invalidate affected cold reads, and remain idempotent.
+- First-start migration counts only changed moves.
 
 ## [v9.45.4] — 2026-07-31
 
