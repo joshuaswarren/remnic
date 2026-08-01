@@ -1050,15 +1050,14 @@ export function maybeRegisterDelegateRuntime(
     return true;
   }
   // register() is synchronous, so the preflight uses the bridge's
-  // worker-backed sync health check. In `auto` mode the daemon has already
-  // answered a corpus-identity probe; this re-check keeps the explicit
-  // `delegate` path honest and costs one liveness request.
+  // worker-backed sync health check. `auto` already proved the daemon healthy
+  // as part of its corpus-identity probe, so re-checking would let one
+  // registration spend twice `bridgeHealthTimeoutMs` — which the config
+  // documents as the TOTAL preflight budget. Only the explicit `delegate`
+  // path, which has probed nothing yet, pays for the liveness request.
   if (
-    !deps.checkHealth(
-      bridge.daemonHost,
-      bridge.daemonPort,
-      bridgeHealthTimeoutMs,
-    )
+    !bridge.healthVerified &&
+    !deps.checkHealth(bridge.daemonHost, bridge.daemonPort, bridgeHealthTimeoutMs)
   ) {
     // Record the fallback so a later register() on the same api does not switch
     // to delegate and stack memory paths on top of the embedded hooks just bound.

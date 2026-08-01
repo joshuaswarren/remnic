@@ -370,3 +370,94 @@ test("auto stays embedded when either corpus identity is relative", async () => 
     await stub.close();
   }
 });
+
+test("auto rejects a DNS name that merely looks loopback", async () => {
+  const reasons: string[] = [];
+  const resolved = withDaemonEnv(4318, () => {
+    // `127.daemon.example` passes a naive prefix test but can resolve anywhere.
+    process.env.REMNIC_HOST = "127.daemon.example";
+    return resolveBridgeMode("auto", {
+      memoryDir: MEMORY_DIR,
+      timeoutMs: 1_500,
+      onSkip: (reason) => reasons.push(reason),
+    });
+  });
+  assert.equal(resolved.mode, "embedded");
+  assert.match(reasons.join("\n"), /not loopback/);
+});
+
+test("auto accepts every literal loopback spelling", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR });
+  try {
+    // The stub binds 127.0.0.1 only, so these two actually connect.
+    for (const host of ["127.0.0.1", "localhost"]) {
+      const resolved = withDaemonEnv(stub.port, () => {
+        process.env.REMNIC_HOST = host;
+        return resolveBridgeMode("auto", { memoryDir: MEMORY_DIR, timeoutMs: 5_000 });
+      });
+      assert.equal(resolved.mode, "delegate", host);
+    }
+    // The rest must clear the loopback GATE — they then fail liveness because
+    // nothing is listening there, which is a different (and correct) reason.
+    for (const host of ["127.1.2.3", "[::1]", "::1"]) {
+      const reasons: string[] = [];
+      const resolved = withDaemonEnv(stub.port, () => {
+        process.env.REMNIC_HOST = host;
+        return resolveBridgeMode("auto", {
+          memoryDir: MEMORY_DIR,
+          timeoutMs: 1_500,
+          onSkip: (reason) => reasons.push(reason),
+        });
+      });
+      assert.equal(resolved.mode, "embedded", host);
+      assert.doesNotMatch(reasons.join("\n"), /not loopback/, host);
+    }
+  } finally {
+    await stub.close();
+  }
+});
+
+test("auto reports an oversized daemon memoryDir as unknown, never truncated", async () => {
+  // The sync capture buffer is bounded; a value that does not fit must read as
+  // unknown, because a shortened path would look like a different corpus.
+  const huge = `/${"x".repeat(2_000)}`;
+  const stub = await startHealthStub({ ok: true, memoryDir: huge });
+  const reasons: string[] = [];
+  try {
+    const health = withDaemonEnv(stub.port, () =>
+      readDaemonMemoryDirSync("127.0.0.1", stub.port, 5_000),
+    );
+    assert.deepEqual(health, { healthy: true, memoryDir: undefined });
+    const resolved = withDaemonEnv(stub.port, () =>
+      resolveBridgeMode("auto", {
+        memoryDir: huge,
+        timeoutMs: 5_000,
+        onSkip: (reason) => reasons.push(reason),
+      }),
+    );
+    assert.equal(resolved.mode, "embedded");
+    assert.match(reasons.join("\n"), /did not report a memoryDir/);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("auto marks its resolution health-verified so the caller skips a second probe", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR });
+  try {
+    const auto = withDaemonEnv(stub.port, () =>
+      resolveBridgeMode("auto", { memoryDir: MEMORY_DIR, timeoutMs: 5_000 }),
+    );
+    assert.equal(auto.mode, "delegate");
+    assert.equal(auto.healthVerified, true);
+    const explicit = withDaemonEnv(stub.port, () => resolveBridgeMode("delegate"));
+    assert.equal(explicit.mode, "delegate");
+    assert.equal(
+      explicit.healthVerified,
+      undefined,
+      "explicit delegate has probed nothing, so the caller must still preflight",
+    );
+  } finally {
+    await stub.close();
+  }
+});

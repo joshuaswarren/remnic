@@ -22,6 +22,13 @@ export interface BridgeConfig {
   mode: BridgeMode;
   daemonHost: string;
   daemonPort: number;
+  /**
+   * True when this resolution already proved the daemon healthy. `auto` does,
+   * as part of its corpus-identity probe; explicit `delegate` does not. Lets
+   * the caller skip a second liveness request that would otherwise let a
+   * synchronous registration spend twice the configured preflight budget.
+   */
+  healthVerified?: boolean;
 }
 
 export type DaemonAuthTokenSource =
@@ -185,9 +192,11 @@ export function runHealthWorker(request: HealthRequest, data: HealthWorkerData):
                 if (typeof value === "string") {
                   const bytes = new TextEncoder().encode(value);
                   const capture = new Uint8Array(data.capture as SharedArrayBuffer);
-                  const length = Math.min(bytes.length, capture.length - 4);
-                  new DataView(data.capture as SharedArrayBuffer).setUint32(0, length);
-                  capture.set(bytes.subarray(0, length), 4);
+                  // Record the TRUE byte length even when it does not fit, so
+                  // the reader can tell "too long to carry" from a short value
+                  // and treat it as unknown instead of truncated.
+                  new DataView(data.capture as SharedArrayBuffer).setUint32(0, bytes.length);
+                  if (bytes.length <= capture.length - 4) capture.set(bytes, 4);
                 }
               } catch {
                 // A malformed body leaves the capture empty; the caller treats
@@ -404,13 +413,12 @@ function probeDaemonSync(options: {
     if (status !== 1) return { ok: false };
     if (!capture) return { ok: true };
     const length = new DataView(capture).getUint32(0);
-    return {
-      ok: true,
-      captured:
-        length > 0
-          ? new TextDecoder().decode(new Uint8Array(capture, 4, Math.min(length, capture.byteLength - 4)))
-          : undefined,
-    };
+    if (length === 0) return { ok: true };
+    // A value that did not fit is UNKNOWN, never a truncated path: a shortened
+    // memoryDir would read as a different corpus and start a second
+    // orchestrator beside the daemon on the very same files.
+    if (length > capture.byteLength - 4) return { ok: true };
+    return { ok: true, captured: new TextDecoder().decode(new Uint8Array(capture, 4, length)) };
   } catch {
     if (worker) void worker.terminate();
     return { ok: false };
@@ -454,14 +462,12 @@ export function readDaemonMemoryDirSync(
 }
 
 function isLoopbackDaemonHost(host: string): boolean {
-  const normalized = host.trim().toLowerCase();
-  return (
-    normalized === DEFAULT_HOST ||
-    normalized === "localhost" ||
-    normalized === "::1" ||
-    normalized === "[::1]" ||
-    normalized.startsWith("127.")
-  );
+  const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  if (normalized === "localhost" || normalized === "::1") return true;
+  // Literal IPv4 in 127.0.0.0/8 only. A prefix test would accept a DNS name
+  // like `127.daemon.example` that resolves anywhere, letting auto delegate
+  // remotely while the capability's reads stayed local.
+  return isIPv4(normalized) && normalized.split(".")[0] === "127";
 }
 
 function shouldProbeDaemonHealth(host: string): boolean {
@@ -574,7 +580,7 @@ export function detectDaemonBridgeMode(options: {
     );
     return embedded;
   }
-  return { mode: "delegate", daemonHost, daemonPort };
+  return { mode: "delegate", daemonHost, daemonPort, healthVerified: true };
 }
 
 /**
