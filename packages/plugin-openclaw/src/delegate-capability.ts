@@ -27,6 +27,7 @@ import {
   type DelegateDaemonTarget,
   daemonAuthHeaders,
   daemonUrl,
+  isLoopbackDaemonHost,
 } from "./bridge.js";
 import { buildMemoryFlushPlan, type MemoryFlushPlan } from "./memory-flush-plan.js";
 import type {
@@ -216,14 +217,21 @@ export function createDelegateMemoryCapability(
   // the SAME corpus this plugin is configured for. Until health confirms it,
   // and after any mismatch, the file-backed surfaces refuse rather than read a
   // different same-named local file. `undefined` = not yet confirmed.
-  let corpusShared: boolean | undefined;
+  // Locality is knowable without a probe, and it is decisive: canonicalizing
+  // two path strings ON THIS HOST proves nothing about a remote daemon that
+  // happens to use the same absolute pathname. Settle it up front so a remote
+  // target reports the accurate reason instead of "not confirmed yet".
+  const daemonIsLocal = isLoopbackDaemonHost(target.host);
+  let corpusShared: boolean | undefined = daemonIsLocal ? undefined : false;
   let reportedCorpusMismatch = false;
   const requireSharedCorpus = (surface: string): void => {
     if (corpusShared === true) return;
     const detail =
-      corpusShared === false
-        ? `daemon serves ${health.memoryDir ?? "an unknown memoryDir"}, plugin is configured for ${options.memoryDir}`
-        : "the daemon's corpus has not been confirmed yet";
+      corpusShared !== false
+        ? "the daemon's corpus has not been confirmed yet"
+        : daemonIsLocal
+          ? `daemon serves ${health.memoryDir ?? "an unknown memoryDir"}, plugin is configured for ${options.memoryDir}`
+          : `daemon at ${target.host} is not local, so its corpus is not this host's files`;
     throw new Error(`delegate ${surface} unavailable: ${detail}`);
   };
 
@@ -266,10 +274,15 @@ export function createDelegateMemoryCapability(
           health = readHealth(healthPayload);
           healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
           lastHealthFailure = undefined;
+          // Path identity is decided by canonicalizing two strings ON THIS
+          // HOST, so it proves nothing about a REMOTE daemon that happens to
+          // use the same absolute pathname. Explicit `delegate` may target a
+          // remote daemon; the file-backed surfaces may not follow it there.
           corpusShared =
+            daemonIsLocal &&
             health.memoryDir !== undefined &&
             daemonServesCorpus(options.memoryDir, health.memoryDir);
-          if (!corpusShared && !reportedCorpusMismatch) {
+          if (!corpusShared && daemonIsLocal && !reportedCorpusMismatch) {
             reportedCorpusMismatch = true;
             log.error(
               `[${serviceId}] delegate capability: the daemon does not serve this plugin's memoryDir (daemon: ${health.memoryDir ?? "unreported"}, plugin: ${options.memoryDir}) — file-backed reads and public artifacts are disabled; search still runs through the daemon`,

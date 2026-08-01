@@ -28,8 +28,13 @@ import { expandTildePath } from "@remnic/core";
  * CodeQL flags on uncontrolled data.
  */
 function trimTrailingSeparators(value: string): string {
+  // Never strip past the root. On Windows a corpus at `C:\\` would otherwise
+  // become `C:`, which node:path treats as DRIVE-RELATIVE — `path.relative`
+  // would then measure against the gateway's cwd and reject a daemon serving
+  // `C:\\namespaces\\<ns>`.
+  const floor = Math.max(1, path.parse(value).root.length);
   let end = value.length;
-  while (end > 1 && (value[end - 1] === "/" || value[end - 1] === "\\")) end -= 1;
+  while (end > floor && (value[end - 1] === "/" || value[end - 1] === "\\")) end -= 1;
   return value.slice(0, end);
 }
 

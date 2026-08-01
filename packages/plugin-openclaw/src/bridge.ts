@@ -340,6 +340,7 @@ export function checkDaemonHealthSync(
   }
 }
 
+
 function shouldProbeDaemonHealth(host: string): boolean {
   const normalized = host.trim().toLowerCase();
   return (

@@ -336,3 +336,11 @@ test("daemonServesCorpus resolves an aliased PARENT but rejects a symlinked root
   assert.equal(daemonServesCorpus(memoryDir, linkedRoot), false);
   await rm(root, { recursive: true, force: true });
 });
+
+test("daemonServesCorpus keeps a drive/filesystem root intact", async () => {
+  const { memoryDir } = await makeCorpus();
+  // Trailing separators are trimmed, but never past the root: on Windows a
+  // corpus at `C:\\` must not collapse to the drive-relative `C:`.
+  assert.equal(daemonServesCorpus(`${memoryDir}///`, memoryDir), true);
+  assert.equal(daemonServesCorpus(path.parse(memoryDir).root, path.parse(memoryDir).root), true);
+});

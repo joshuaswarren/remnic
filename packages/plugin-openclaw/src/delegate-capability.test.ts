@@ -706,3 +706,33 @@ test("delegate reads a hit from another namespace's storage directory", async ()
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("delegate refuses file-backed surfaces for a remote daemon with an identical path", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: healthyDaemon(memoryDir),
+    search: { results: [{ path: "facts/alice.md", score: 0.5, snippet: "hit" }] },
+  });
+  try {
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir, {
+        // Canonicalizing two strings on THIS host says nothing about a remote
+        // daemon that happens to use the same absolute pathname.
+        target: {
+          host: "10.0.0.9",
+          port: stub.port,
+          resolveAuthToken: () => ({ token: "t", source: "REMNIC_AUTH_TOKEN" }),
+        },
+      }),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /is not local/,
+    );
+    assert.deepEqual(await built.listArtifacts(), []);
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
