@@ -213,7 +213,7 @@ test("tier migration reruns are idempotent and do not duplicate files", async ()
       qmd: createQmdStub(logs),
       hotCollection: "openclaw-engram",
       coldCollection: "openclaw-engram-cold",
-      autoEmbed: false,
+      autoEmbed: true,
     });
 
     const first = await executor.migrateMemory({
@@ -222,6 +222,8 @@ test("tier migration reruns are idempotent and do not duplicate files", async ()
       toTier: "cold",
       reason: "first_move",
     });
+    logs.updates = [];
+    logs.embeds = [];
     const second = await executor.migrateMemory({
       memory: source,
       fromTier: "hot",
@@ -232,6 +234,8 @@ test("tier migration reruns are idempotent and do not duplicate files", async ()
     assert.equal(first.changed, true);
     assert.equal(second.changed, false);
     assert.equal(second.targetPath, first.targetPath);
+    assert.deepEqual(logs.updates, ["openclaw-engram-cold", "openclaw-engram"]);
+    assert.deepEqual(logs.embeds, ["openclaw-engram-cold", "openclaw-engram"]);
 
     const files = await listMemoryFiles(memoryDir, source.frontmatter.id);
     assert.equal(files.length, 1, `expected exactly one memory file after rerun, got: ${files.join(", ")}`);
