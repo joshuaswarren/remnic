@@ -35,7 +35,9 @@ import {
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
   type DaemonAuthToken,
+  type DelegateDaemonTarget,
   checkDaemonHealthSync,
+  daemonUrl,
   loadDaemonAuth,
   parseOpenClawBridgeConfig,
   resolveBridgeMode,
@@ -48,12 +50,10 @@ import {
   extractLastTurn,
   extractTextContent,
 } from "./transcript-turns.js";
-
-export interface DelegateDaemonTarget {
-  host: string;
-  port: number;
-  resolveAuthToken: () => DaemonAuthToken;
-}
+import {
+  type DelegateCapabilityApi,
+  registerDelegateMemoryCapability,
+} from "./delegate-capability.js";
 
 export interface DelegateRuntimeOptions {
   serviceId: string;
@@ -93,11 +93,25 @@ export interface DelegateRuntimeOptions {
   recallTimeoutMs: number;
   observeTimeoutMs: number;
   flushTimeoutMs: number;
+  /**
+   * Memory-slot capability inputs (issue #2120). The daemon-backed capability
+   * gives delegate mode the same host surface as embedded: prompt builder,
+   * memory runtime, flush plan, and public artifacts.
+   */
+  capability: {
+    memoryDir: string;
+    workspaceDir: string;
+    agentIds: string[];
+    extractionMaxTurnChars?: unknown;
+    flushModel?: string;
+    configuredSearchBackend: "qmd" | "builtin";
+    configuredQmdCommand: string;
+  };
   /** Injectable clock for capability-cache expiry tests and deterministic hosts. */
   now?: () => number;
 }
 
-export interface DelegateHookApi {
+export interface DelegateHookApi extends DelegateCapabilityApi {
   on(
     hook: string,
     handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => unknown,
@@ -107,7 +121,6 @@ export interface DelegateHookApi {
   // builder parameter is a wider SDK union — remains assignable.
   registerMemoryPromptSection?(builder: (params: { sessionKey?: string }) => string[] | null): void;
 }
-const MEMORY_CONTEXT_HEADER = "## Memory Context (Remnic)";
 const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
 
 const DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS = [
@@ -122,13 +135,6 @@ export interface DelegateAuthorizationPreflight {
   readonly state: "authorized" | "unauthorized" | "unavailable";
   readonly tokenSource: DaemonAuthToken["source"];
   readonly status?: 401 | 403;
-}
-
-function daemonUrl(target: DelegateDaemonTarget, pathname: string): string {
-  const host = target.host.includes(":") && !target.host.startsWith("[")
-    ? `[${target.host}]`
-    : target.host;
-  return `http://${host}:${target.port}${pathname}`;
 }
 
 const daemonAuthFailureLogKeys = new Set<string>();
@@ -444,12 +450,15 @@ export function registerDelegateRuntime(
     return;
   }
 
+  // Session-scoped cache of precomputed recall lines, mirroring the embedded
+  // pre-compute-then-consume contract: the recall hook fills it, the
+  // synchronous section builder consumes (and evicts) it, and the capability's
+  // prompt builder only peeks so the two cannot double-consume. Declared
+  // outside the injection gate so the capability can be registered either way.
+  const promptLinesBySession = new Map<string, string[]>();
   // Embedded zero-limit contract: recallBudgetChars === 0 disables injection.
-  if (options.allowPromptInjection && options.recallBudgetChars !== 0) {
-    // Session-scoped cache for the section-builder path, mirroring the
-    // embedded pre-compute-then-consume contract: the hook fills it, the
-    // synchronous builder consumes (and evicts) it.
-    const promptLinesBySession = new Map<string, string[]>();
+  const promptInjectionEnabled = options.allowPromptInjection && options.recallBudgetChars !== 0;
+  if (promptInjectionEnabled) {
     const useSectionBuilder = typeof api.registerMemoryPromptSection === "function";
 
     const recallHandler = async (
@@ -747,9 +756,27 @@ export function registerDelegateRuntime(
     api.on("session_end", flushEndedSession);
   }
 
+  registerDelegateMemoryCapability(api, {
+    serviceId: options.serviceId,
+    target,
+    namespace,
+    memoryDir: options.capability.memoryDir,
+    workspaceDir: options.capability.workspaceDir,
+    agentIds: options.capability.agentIds,
+    allowPromptInjection: promptInjectionEnabled,
+    peekPromptLines: (sessionKey) => promptLinesBySession.get(sessionKey) ?? null,
+    extractionMaxTurnChars: options.capability.extractionMaxTurnChars,
+    flushModel: options.capability.flushModel,
+    configuredSearchBackend: options.capability.configuredSearchBackend,
+    configuredQmdCommand: options.capability.configuredQmdCommand,
+    searchTimeoutMs: options.recallTimeoutMs,
+    healthTimeoutMs: options.recallTimeoutMs,
+    now: options.now,
+  });
+
   log.info(
     `[${options.serviceId}] bridge mode delegate: memory loop backed by daemon at ` +
-      `${target.host}:${target.port} (embedded orchestrator skipped; tools/CLI/surfaces stay daemon-side)`,
+      `${target.host}:${target.port} (embedded orchestrator skipped; tools/CLI stay daemon-side)`,
   );
 }
 
@@ -783,6 +810,12 @@ export interface MaybeRegisterDelegateOptions {
   projectTag?: string;
   /** Embedded parity: gate buffer flush on reset/session_end. */
   flushOnResetEnabled: boolean;
+  /**
+   * Memory-slot capability inputs (issue #2120) — forwarded verbatim to the
+   * daemon-backed capability so delegate mode keeps the host surface embedded
+   * mode provides.
+   */
+  capability: DelegateRuntimeOptions["capability"];
 }
 
 function activeDelegateAuthorizationOperations(
@@ -1082,6 +1115,7 @@ export function maybeRegisterDelegateRuntime(
     cwd: options.cwd,
     projectTag: options.projectTag,
     flushOnResetEnabled: options.flushOnResetEnabled,
+    capability: options.capability,
     recallTimeoutMs: 25_000,
     observeTimeoutMs: 120_000,
     flushTimeoutMs: 55_000,

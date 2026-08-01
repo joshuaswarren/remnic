@@ -21,6 +21,19 @@ import {
   createInMemorySessionNamespaceBindingStore,
 } from "@remnic/core/session-namespace-bindings";
 
+/**
+ * Capability inputs shared by every delegate registration in this file. The
+ * daemon-backed capability is exercised on its own in
+ * delegate-capability.test.ts; here it only needs to construct.
+ */
+const TEST_CAPABILITY: DelegateRuntimeOptions["capability"] = {
+  memoryDir: path.join(os.tmpdir(), "remnic-delegate-runtime-memory"),
+  workspaceDir: path.join(os.tmpdir(), "remnic-delegate-runtime-workspace"),
+  agentIds: ["generalist"],
+  configuredSearchBackend: "qmd",
+  configuredQmdCommand: "qmd",
+};
+
 type HookHandler = (
   event: Record<string, unknown>,
   ctx: Record<string, unknown>,
@@ -181,6 +194,7 @@ function optionsFor(port: number, overrides: Partial<DelegateRuntimeOptions> = {
     hookTimeoutMs: 5_000,
     shouldSkipRecall: () => false,
     flushOnResetEnabled: true,
+    capability: TEST_CAPABILITY,
     recallTimeoutMs: 5_000,
     observeTimeoutMs: 5_000,
     flushTimeoutMs: 5_000,
@@ -1142,6 +1156,7 @@ test("delegate reloads a persisted namespace binding after its daemon host confi
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     const firstApi = recordingApi();
     assert.equal(maybeRegisterDelegateRuntime(firstApi, common, { checkHealth: () => true }), true);
@@ -1250,6 +1265,7 @@ test("delegate ignores a corrupt legacy binding file when canonical scope is ava
           hookTimeoutMs: 5_000,
           shouldSkipRecall: () => false,
           flushOnResetEnabled: true,
+          capability: TEST_CAPABILITY,
         },
         { checkHealth: () => true },
       ),
@@ -1350,6 +1366,7 @@ test("delegate restores full canonical history during concurrent explicit legacy
           hookTimeoutMs: 5_000,
           shouldSkipRecall: () => false,
           flushOnResetEnabled: true,
+          capability: TEST_CAPABILITY,
         },
         { checkHealth: () => true },
       ),
@@ -1372,6 +1389,7 @@ test("delegate restores full canonical history during concurrent explicit legacy
           hookTimeoutMs: 5_000,
           shouldSkipRecall: () => false,
           flushOnResetEnabled: true,
+          capability: TEST_CAPABILITY,
         },
         { checkHealth: () => true },
       ),
@@ -1467,6 +1485,7 @@ test("delegate bounds completed legacy migration sessions and rechecks evicted k
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     const api = recordingApi();
     assert.equal(maybeRegisterDelegateRuntime(api, common, { checkHealth: () => true }), true);
@@ -1556,6 +1575,7 @@ test("delegate preserves legacy bindings while the legacy adapter is active", as
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     const legacyApi = recordingApi();
     const canonicalApi = recordingApi();
@@ -1967,6 +1987,7 @@ test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", as
         hookTimeoutMs: 5_000,
         shouldSkipRecall: () => false,
         flushOnResetEnabled: true,
+        capability: TEST_CAPABILITY,
       };
       const healthDeps = { checkHealth: () => true };
       const first = maybeRegisterDelegateRuntime(api, opts, healthDeps);
@@ -2138,6 +2159,7 @@ test("maybeRegister stays embedded after a daemon-down fallback (no stacking)", 
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     // First call: daemon down -> falls back to embedded.
     let first = maybeRegisterDelegateRuntime(api, opts, { checkHealth: () => false });
@@ -2182,6 +2204,7 @@ test("maybeRegister passes the configured timeout to the daemon health preflight
         hookTimeoutMs: 5_000,
         shouldSkipRecall: () => false,
         flushOnResetEnabled: true,
+        capability: TEST_CAPABILITY,
       },
       {
         checkHealth: (_host, _port, timeoutMs) => {
@@ -2226,6 +2249,7 @@ test("maybeRegister rejects an invalid delegate timeout and falls back to embedd
         hookTimeoutMs: 5_000,
         shouldSkipRecall: () => false,
         flushOnResetEnabled: true,
+        capability: TEST_CAPABILITY,
       },
       {
         checkHealth: () => {
@@ -2322,6 +2346,7 @@ test("maybeRegister: invalid bridgeMode logs and falls back to embedded (no thro
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     let handled = true;
     assert.doesNotThrow(() => {
@@ -2353,6 +2378,7 @@ test("maybeRegister: passive registration does not poison a later active one", (
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     const healthDeps = { checkHealth: () => true };
     assert.equal(maybeRegisterDelegateRuntime(api, opts, healthDeps), true, "passive handled");
@@ -2406,6 +2432,7 @@ test("maybeRegister: an embedded-mode registration blocks a later delegate flip 
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     const healthDeps = { checkHealth: () => true };
     assert.equal(maybeRegisterDelegateRuntime(api, opts, healthDeps), false, "embedded mode");
@@ -2667,6 +2694,7 @@ test("delegate activation warns each service once and keeps its memory hooks", a
     hookTimeoutMs: 5_000,
     shouldSkipRecall: () => false,
     flushOnResetEnabled: true,
+    capability: TEST_CAPABILITY,
   };
   let probeCalls = 0;
   const probedOperations: Array<readonly string[]> = [];
@@ -2725,6 +2753,7 @@ test("delegate authorization preflight probes only the operations enabled by con
     hookTimeoutMs: 5_000,
     shouldSkipRecall: () => false,
     flushOnResetEnabled: true,
+    capability: TEST_CAPABILITY,
   };
   try {
     for (const disabledRecall of [

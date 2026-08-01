@@ -36,6 +36,26 @@ export interface DaemonAuthToken {
   readonly source: DaemonAuthTokenSource;
 }
 
+/** Everything a delegate-mode request needs to reach the standalone daemon. */
+export interface DelegateDaemonTarget {
+  host: string;
+  port: number;
+  resolveAuthToken: () => DaemonAuthToken;
+}
+
+/** Base URL for a daemon route, bracketing a bare IPv6 literal host. */
+export function daemonUrl(target: DelegateDaemonTarget, pathname: string): string {
+  const host =
+    target.host.includes(":") && !target.host.startsWith("[") ? `[${target.host}]` : target.host;
+  return `http://${host}:${target.port}${pathname}`;
+}
+
+/** Bearer header for a daemon request; empty when no token is configured. */
+export function daemonAuthHeaders(target: DelegateDaemonTarget): Record<string, string> {
+  const auth = target.resolveAuthToken();
+  return auth.token ? { Authorization: `Bearer ${auth.token}` } : {};
+}
+
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4318;
 const LIVENESS_PATH = "/engram/v1/live";

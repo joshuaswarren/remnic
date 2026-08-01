@@ -81,6 +81,7 @@ import {
 } from "../packages/plugin-openclaw/src/transcript-turns.js";
 import {
   createMemoryReadScope,
+  isMemoryArtifactPath,
   isSessionsMemoryPath,
 } from "../packages/plugin-openclaw/src/memory-read-scope.js";
 import type {
@@ -89,6 +90,10 @@ import type {
   RuntimeSearchOptions,
   RuntimeSearchResult,
 } from "../packages/plugin-openclaw/src/memory-capability-types.js";
+import {
+  buildMemoryFlushPlan,
+  type MemoryFlushPlan,
+} from "../packages/plugin-openclaw/src/memory-flush-plan.js";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import { appendRecallAuditEntry, pruneRecallAuditEntries } from "@remnic/core/recall-audit";
 import { createActiveRecallEngine } from "@remnic/core/active-recall";
@@ -174,10 +179,6 @@ const NODE_FS_MODULE_ID = ["node", "fs"].join(":");
 const NODE_FS_PROMISES_MODULE_ID = ["node", "fs/promises"].join(":");
 const READ_FILE_SYNC_FIELD = ["read", "File", "Sync"].join("");
 const EXISTS_SYNC_FIELD = ["exists", "Sync"].join("");
-
-function isMemoryArtifactPath(p: string): boolean {
-  return /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(p);
-}
 
 function readTextFileNow(filePath: string): string {
   const nodeRequire = createRequire(import.meta.url);
@@ -1098,11 +1099,34 @@ function registerOpenClawHostEmbeddingProvider(params: {
   return unregister;
 }
 
-function getOpenClawRuntimeWorkspaceDir(api: OpenClawPluginApi): string | undefined {
-  const runtimeWorkspaceDir = (api as any).runtime?.agent?.workspaceDir;
-  return typeof runtimeWorkspaceDir === "string" && runtimeWorkspaceDir.length > 0
-    ? runtimeWorkspaceDir
+/**
+ * The registration-time runtime agent, narrowed from the host api without an
+ * `any` escape: older SDK shapes omit `runtime`, and every field below is
+ * `unknown` until its own check passes.
+ */
+function getOpenClawRuntimeAgent(api: OpenClawPluginApi): Record<string, unknown> | undefined {
+  if (!("runtime" in api)) return undefined;
+  const runtime: unknown = api.runtime;
+  if (typeof runtime !== "object" || runtime === null || !("agent" in runtime)) return undefined;
+  const agent: unknown = runtime.agent;
+  return typeof agent === "object" && agent !== null
+    ? (agent as Record<string, unknown>)
     : undefined;
+}
+
+function getOpenClawRuntimeWorkspaceDir(api: OpenClawPluginApi): string | undefined {
+  const workspaceDir = getOpenClawRuntimeAgent(api)?.workspaceDir;
+  return typeof workspaceDir === "string" && workspaceDir.length > 0 ? workspaceDir : undefined;
+}
+
+/**
+ * Agent id owning this registration. Each register() call is scoped to one
+ * agent, so the runtime's agent id is authoritative for this registry; older
+ * SDK shapes that expose none yield undefined and callers fall back.
+ */
+function getOpenClawRuntimeAgentId(api: OpenClawPluginApi): string | undefined {
+  const agentId = getOpenClawRuntimeAgent(api)?.id;
+  return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
 }
 
 function stableOpenClawConfigSignature(value: unknown, seen = new WeakSet<object>()): string {
@@ -1449,6 +1473,28 @@ const pluginDefinition = {
       shouldSkipRecall: (sk: string) => shouldSkipRecallForSession(sk, cfg),
       cwd: getOpenClawRuntimeWorkspaceDir(api),
       flushOnResetEnabled: cfg.flushOnResetEnabled,
+      // Memory-slot capability inputs. Mirrors the embedded derivation: the
+      // registration-time runtime agent owns this memory, and QMD is the
+      // backend only when it is both selected and enabled.
+      capability: {
+        memoryDir: cfg.memoryDir,
+        workspaceDir:
+          getOpenClawRuntimeWorkspaceDir(api) ?? cfg.workspaceDir ?? defaultWorkspaceDir(),
+        agentIds: [getOpenClawRuntimeAgentId(api) ?? "generalist"],
+        extractionMaxTurnChars: cfg.extractionMaxTurnChars,
+        flushModel:
+          typeof cfg.summaryModel === "string" && cfg.summaryModel.length > 0
+            ? cfg.summaryModel
+            : cfg.taskModelChain?.primary,
+        configuredSearchBackend:
+          (cfg.searchBackend ?? "qmd") === "qmd" && cfg.qmdEnabled !== false
+            ? "qmd"
+            : "builtin",
+        configuredQmdCommand:
+          typeof cfg.qmdPath === "string" && cfg.qmdPath.trim().length > 0
+            ? cfg.qmdPath.trim()
+            : "qmd",
+      },
     });
     if (delegateHandled) return;
 
@@ -3443,19 +3489,12 @@ const pluginDefinition = {
 
       // Derive the agent id owning this memory from the registration-time
       // runtime context. Each plugin register() call is scoped to one agent
-      // (see singleton guard comment above), so api.runtime?.agent?.id is
+      // (see singleton guard comment above), so the runtime agent id is
       // authoritative for this registry. Fall back to "generalist" only when
       // the runtime does not expose an agent id (older new-SDK shapes).
-      const runtimeAgent = (api as any).runtime?.agent;
-      const runtimeAgentId =
-        typeof runtimeAgent?.id === "string" && runtimeAgent.id.length > 0
-          ? runtimeAgent.id
-          : undefined;
-      const capabilityAgentIds = runtimeAgentId ? [runtimeAgentId] : ["generalist"];
+      const capabilityAgentIds = [getOpenClawRuntimeAgentId(api) ?? "generalist"];
       const capabilityWorkspaceDir =
-        (typeof runtimeAgent?.workspaceDir === "string" && runtimeAgent.workspaceDir.length > 0
-          ? runtimeAgent.workspaceDir
-          : undefined) ??
+        getOpenClawRuntimeWorkspaceDir(api) ??
         orchestrator.config.workspaceDir ??
         defaultWorkspaceDir();
       const remnicUsesQmd =
@@ -3672,31 +3711,17 @@ const pluginDefinition = {
         },
         async closeAllMemorySearchManagers() {},
       };
-      const remnicMemoryFlushPlanResolver = () => {
-        const maxTurnChars =
-          typeof cfg.extractionMaxTurnChars === "number" && Number.isFinite(cfg.extractionMaxTurnChars)
-            ? Math.max(1_000, Math.floor(cfg.extractionMaxTurnChars))
-            : 8_000;
-        // `summaryModel` already resolves explicit summary/base model → gateway
-        // task-chain primary → "" (gateway mode). Do NOT fall back to `cfg.model`
-        // here: it is direct-compatible and may be a bare id the Gateway can't
-        // route (issue #1469). Empty → omit so the Gateway default wins.
-        const flushModel =
-          typeof cfg.summaryModel === "string" && cfg.summaryModel.length > 0
-            ? cfg.summaryModel
-            : cfg.taskModelChain?.primary;
-        return {
-          softThresholdTokens: 24_000,
-          forceFlushTranscriptBytes: Math.max(16_384, maxTurnChars * 4),
-          reserveTokensFloor: 2_000,
-          ...(flushModel ? { model: flushModel } : {}),
-          prompt:
-            "Flush the recent OpenClaw transcript into Remnic memory by appending to the allowed flush-plan file only. Preserve durable user preferences, project facts, decisions, corrections, and commitments. Ignore runtime metadata, credentials, and transient command noise.",
-          systemPrompt:
-            "You are Remnic's memory flush planner. Read the transcript and append concise durable memory notes to the file the write tool allows. Do not create files, directories, or dated paths; use only the allowed flush-plan file. Ignore runtime metadata, credentials, transient command noise, and content that is not worth remembering.",
-          relativePath: ["state", "plugins", serviceId, "flush-plan.md"].join("/"),
-        };
-      };
+      const remnicMemoryFlushPlanResolver = (): MemoryFlushPlan =>
+        buildMemoryFlushPlan({
+          serviceId,
+          extractionMaxTurnChars: cfg.extractionMaxTurnChars,
+          // `summaryModel` already resolves explicit summary/base model →
+          // gateway task-chain primary → "" (gateway mode).
+          flushModel:
+            typeof cfg.summaryModel === "string" && cfg.summaryModel.length > 0
+              ? cfg.summaryModel
+              : cfg.taskModelChain?.primary,
+        });
 
       const memoryCapability: import("openclaw/plugin-sdk").MemoryPluginCapability = {
         // Include the promptBuilder so runtimes that treat unified capability

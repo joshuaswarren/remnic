@@ -64,6 +64,16 @@ export function isSessionsMemoryPath(relativePath: string): boolean {
 }
 
 /**
+ * Artifact-backed files are served only through the dedicated verbatim
+ * artifact path, so every generic memory reader must exclude them. Both bridge
+ * modes filter search results with this predicate; a mode that skipped it
+ * would bypass the isolation every other reader honors.
+ */
+export function isMemoryArtifactPath(candidate: string): boolean {
+  return /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(candidate);
+}
+
+/**
  * Containment predicate shared by every check below: `path.relative` yields
  * `""` for the root itself, a `..`-prefixed path for an escape, and an
  * absolute path when the two live on different Windows volumes.

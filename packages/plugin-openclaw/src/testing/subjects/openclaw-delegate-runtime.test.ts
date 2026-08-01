@@ -136,6 +136,13 @@ function optionsFor(port: number, namespaceBindings: SessionNamespaceBindingStor
     recallTimeoutMs: 5_000,
     observeTimeoutMs: 5_000,
     flushTimeoutMs: 5_000,
+    capability: {
+      memoryDir: path.join(os.tmpdir(), "remnic-delegate-matrix-memory"),
+      workspaceDir: path.join(os.tmpdir(), "remnic-delegate-matrix-workspace"),
+      agentIds: ["generalist"],
+      configuredSearchBackend: "qmd",
+      configuredQmdCommand: "qmd",
+    },
   };
 }
 
