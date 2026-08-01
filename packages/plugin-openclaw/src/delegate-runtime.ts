@@ -127,6 +127,11 @@ const DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS = [
   "recall",
   "observe",
   "lcm_compaction_flush",
+  // The daemon-backed memory-slot capability searches through
+  // /engram/v1/memories/search, which enforces its own `memory_search`
+  // operation. Omitting it here would let the preflight report a
+  // least-privilege token authorized while every capability search 403s.
+  "memory_search",
 ] as const;
 
 type DelegateAuthorizationOperation = (typeof DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS)[number];
@@ -760,6 +765,18 @@ export function registerDelegateRuntime(
     serviceId: options.serviceId,
     target,
     namespace,
+    // Capability searches scope through the SAME per-session binding history
+    // the hooks use (the non-explicit branch of sessionNamespaceFrom): the
+    // host hands the runtime a sessionKey but no event/ctx to read an explicit
+    // namespace from, so the remembered binding — else the registration-wide
+    // fallback — is the correct scope.
+    resolveSearchNamespace: async (sessionKey) => {
+      if (sessionKey) {
+        const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
+        if (remembered.length > 0) return remembered.at(-1) || undefined;
+      }
+      return namespace.trim() || undefined;
+    },
     memoryDir: options.capability.memoryDir,
     workspaceDir: options.capability.workspaceDir,
     agentIds: options.capability.agentIds,
@@ -821,9 +838,12 @@ export interface MaybeRegisterDelegateOptions {
 function activeDelegateAuthorizationOperations(
   options: MaybeRegisterDelegateOptions,
 ): readonly DelegateAuthorizationOperation[] {
+  // `recall` is exercised only when prompt injection is on; observe, flush,
+  // and the capability's memory_search always are. Filter by name rather than
+  // slicing so reordering the list cannot silently drop the wrong operation.
   return options.allowPromptInjection && options.recallBudgetChars !== 0
     ? DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS
-    : DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS.slice(1);
+    : DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS.filter((operation) => operation !== "recall");
 }
 const delegateNamespaceMigrationChains = new Map<string, Map<string, Promise<void>>>();
 const queueDelegateNamespaceMigration = <T>(

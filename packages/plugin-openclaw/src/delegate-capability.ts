@@ -38,7 +38,12 @@ import type {
   RuntimeSearchResult,
   RuntimeStatus,
 } from "./memory-capability-types.js";
-import { createMemoryReadScope, isMemoryArtifactPath } from "./memory-read-scope.js";
+import {
+  createMemoryReadScope,
+  isMemoryArtifactPath,
+  isSessionsMemoryPath,
+  sameMemoryCorpus,
+} from "./memory-read-scope.js";
 import { listRemnicPublicArtifacts } from "./public-artifacts.js";
 
 /** Health facts the runtime surfaces; everything else in the payload is ignored. */
@@ -59,8 +64,19 @@ export type DelegateCapabilityApi = {
 export type DelegateCapabilityOptions = {
   serviceId: string;
   target: DelegateDaemonTarget;
-  /** Session namespace forwarded on daemon calls ("" = daemon default). */
+  /**
+   * Registration-wide fallback namespace ("" = daemon default). Per-search
+   * scoping goes through `resolveSearchNamespace`.
+   */
   namespace: string;
+  /**
+   * Resolve the namespace for one search from the host-supplied session key,
+   * through the SAME per-session binding history the recall/observe/flush
+   * hooks use. Without this, a namespace-enabled deployment would search the
+   * daemon principal's whole readable set while every other delegate path
+   * stayed session-scoped.
+   */
+  resolveSearchNamespace: (sessionKey: string | undefined) => Promise<string | undefined>;
   memoryDir: string;
   workspaceDir: string;
   /** Agent ids this registration owns, for the public-artifact listing. */
@@ -151,6 +167,20 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
   };
   let healthExpiresAt = 0;
   let healthInFlight: Promise<void> | undefined;
+  // Local reads and artifact listing are only valid while the daemon serves
+  // the SAME corpus this plugin is configured for. Until health confirms it,
+  // and after any mismatch, the file-backed surfaces refuse rather than read a
+  // different same-named local file. `undefined` = not yet confirmed.
+  let corpusShared: boolean | undefined;
+  let reportedCorpusMismatch = false;
+  const requireSharedCorpus = (surface: string): void => {
+    if (corpusShared === true) return;
+    const detail =
+      corpusShared === false
+        ? `daemon serves ${health.memoryDir ?? "an unknown memoryDir"}, plugin is configured for ${options.memoryDir}`
+        : "the daemon's corpus has not been confirmed yet";
+    throw new Error(`delegate ${surface} unavailable: ${detail}`);
+  };
 
   // `status()` is synchronous in the host contract, so the async probe runs in
   // getMemorySearchManager (which IS async) and status() reads the snapshot.
@@ -172,6 +202,15 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
         if (healthPayload) {
           health = readHealth(healthPayload);
           healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
+          corpusShared =
+            health.memoryDir !== undefined &&
+            sameMemoryCorpus(options.memoryDir, health.memoryDir);
+          if (!corpusShared && !reportedCorpusMismatch) {
+            reportedCorpusMismatch = true;
+            log.error(
+              `[${serviceId}] delegate capability: the daemon does not serve this plugin's memoryDir (daemon: ${health.memoryDir ?? "unreported"}, plugin: ${options.memoryDir}) — file-backed reads and public artifacts are disabled; search still runs through the daemon`,
+            );
+          }
         }
       } catch (err) {
         // Keep the last known snapshot and retry on the next handout. Memory
@@ -188,7 +227,7 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
     query: string,
     opts?: RuntimeSearchOptions,
   ): Promise<RuntimeSearchResult[]> => {
-    const namespace = options.namespace.trim();
+    const namespace = await options.resolveSearchNamespace(opts?.sessionKey);
     const response = await fetch(daemonUrl(target, "/engram/v1/memories/search"), {
       method: "POST",
       headers: { ...daemonAuthHeaders(target), "Content-Type": "application/json" },
@@ -232,7 +271,7 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
         endLine: 1,
         score,
         snippet: typeof hit.snippet === "string" ? hit.snippet : "",
-        source: citation.includes("sessions/") ? "sessions" : "memory",
+        source: isSessionsMemoryPath(citation) ? "sessions" : "memory",
         citation,
       });
     }
@@ -240,6 +279,7 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
   };
 
   const readMemoryFile = async (params: RuntimeReadParams): Promise<RuntimeReadResult> => {
+    requireSharedCorpus("readFile");
     const requestedPath = readScope.normalizeWorkspacePath(params.relPath);
     const absolutePath = await readScope.resolveReadablePath(params.relPath);
     const allLines = (await readFile(absolutePath, "utf8")).split(/\r?\n/);
@@ -327,6 +367,11 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
       }),
     listArtifacts: async () => {
       try {
+        // The listing walks the LOCAL corpus, so confirm the daemon serves it
+        // before trusting those files. Health may not have been probed yet:
+        // this surface hangs off the capability object, not off a manager.
+        await refreshHealth();
+        requireSharedCorpus("publicArtifacts");
         return await listRemnicPublicArtifacts({
           memoryDir: options.memoryDir,
           workspaceDir: options.workspaceDir,

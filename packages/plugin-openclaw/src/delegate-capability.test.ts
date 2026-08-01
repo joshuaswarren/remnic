@@ -90,6 +90,7 @@ function optionsFor(
       resolveAuthToken: () => ({ token: "test-token", source: "REMNIC_AUTH_TOKEN" }),
     },
     namespace: "",
+    resolveSearchNamespace: async () => undefined,
     memoryDir,
     workspaceDir,
     agentIds: ["generalist"],
@@ -103,13 +104,16 @@ function optionsFor(
   };
 }
 
-const HEALTHY_DAEMON = {
-  ok: true,
-  memoryDir: "/daemon/memory",
-  searchBackend: "qmd",
-  qmdEnabled: true,
-  qmd: { enabled: true, active: true, degraded: false, debugStatus: "cli=true" },
-};
+/** A daemon serving the SAME corpus as the plugin under test. */
+function healthyDaemon(memoryDir: string): Record<string, unknown> {
+  return {
+    ok: true,
+    memoryDir,
+    searchBackend: "qmd",
+    qmdEnabled: true,
+    qmd: { enabled: true, active: true, degraded: false, debugStatus: "cli=true" },
+  };
+}
 
 test.before(() =>
   initLogger({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }, false),
@@ -119,7 +123,7 @@ test.after(() => resetLogger());
 test("delegate search maps daemon hits into runtime results", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
-    health: HEALTHY_DAEMON,
+    health: healthyDaemon(memoryDir),
     search: {
       query: "alice",
       count: 2,
@@ -165,7 +169,7 @@ test("delegate search maps daemon hits into runtime results", async () => {
 test("delegate search excludes artifact paths and honors minScore", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
-    health: HEALTHY_DAEMON,
+    health: healthyDaemon(memoryDir),
     search: {
       results: [
         { path: "artifacts/report.md", score: 0.99, snippet: "artifact" },
@@ -190,17 +194,71 @@ test("delegate search excludes artifact paths and honors minScore", async () => 
   }
 });
 
-test("delegate search forwards the configured namespace", async () => {
+test("delegate search scopes the namespace through the session resolver", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON, search: { results: [] } });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir), search: { results: [] } });
+  const seen: Array<string | undefined> = [];
   try {
     const built = createDelegateMemoryCapability(
-      optionsFor(stub.port, memoryDir, workspaceDir, { namespace: " team-a " }),
+      optionsFor(stub.port, memoryDir, workspaceDir, {
+        namespace: "fallback-ns",
+        resolveSearchNamespace: async (sessionKey) => {
+          seen.push(sessionKey);
+          return sessionKey === "s1" ? "team-a" : "fallback-ns";
+        },
+      }),
     );
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await manager?.search("q", { sessionKey: "s1" });
     await manager?.search("q");
-    const searchCall = stub.calls.find((call) => call.pathname.endsWith("/memories/search"));
-    assert.deepEqual(searchCall?.body, { query: "q", namespace: "team-a" });
+    const searches = stub.calls.filter((call) => call.pathname.endsWith("/memories/search"));
+    assert.deepEqual(searches[0]?.body, { query: "q", namespace: "team-a" });
+    assert.deepEqual(
+      searches[1]?.body,
+      { query: "q", namespace: "fallback-ns" },
+      "a search with no session key falls back to the registration-wide namespace",
+    );
+    assert.deepEqual(seen, ["s1", undefined], "the host session key reaches the resolver");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate refuses file-backed surfaces when the daemon serves another corpus", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: healthyDaemon(path.join(memoryDir, "..", "someone-elses-corpus")),
+    search: { results: [{ path: "facts/alice.md", score: 0.5, snippet: "hit" }] },
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /delegate readFile unavailable/,
+      "reading a same-named local file would serve the wrong corpus",
+    );
+    assert.deepEqual(await built.listArtifacts(), [], "artifact listing is disabled too");
+    const results = await manager?.search("alice");
+    assert.equal(results?.length, 1, "daemon-backed search still works");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate refuses file-backed surfaces until the corpus is confirmed", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({ healthStatus: 500, health: {} });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /delegate readFile unavailable/,
+      "an unconfirmed corpus fails closed rather than reading local files",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -209,7 +267,7 @@ test("delegate search forwards the configured namespace", async () => {
 
 test("delegate search surfaces a daemon failure instead of returning empty", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON, searchStatus: 503, search: {} });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir), searchStatus: 503, search: {} });
   try {
     const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -226,7 +284,7 @@ test("delegate search surfaces a daemon failure instead of returning empty", asy
 
 test("delegate readFile reads the shared corpus and paginates", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -244,7 +302,7 @@ test("delegate readFile reads the shared corpus and paginates", async () => {
 
 test("delegate readFile refuses paths outside the memory roots", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -260,13 +318,13 @@ test("delegate readFile refuses paths outside the memory roots", async () => {
 
 test("delegate status reflects the daemon health snapshot", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     const status = manager?.status();
     assert.equal(status?.backend, "qmd");
-    assert.equal(status?.dbPath, "/daemon/memory", "the daemon's memoryDir wins over the local one");
+    assert.equal(status?.dbPath, memoryDir);
     assert.deepEqual(status?.vector, { enabled: true, available: true });
     assert.equal(await manager?.probeVectorAvailability(), true);
     assert.deepEqual(await manager?.probeEmbeddingAvailability(), { ok: true });
@@ -284,6 +342,7 @@ test("delegate status reports a degraded daemon QMD as unavailable", async () =>
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: {
+      memoryDir,
       searchBackend: "qmd",
       qmdEnabled: true,
       qmd: { enabled: true, active: true, degraded: true, debugStatus: "collection missing" },
@@ -320,7 +379,7 @@ test("delegate status keeps the configured backend when the daemon health probe 
 
 test("delegate health is cached and refreshed on the injected clock", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   let clock = 1_000;
   try {
     const built = createDelegateMemoryCapability(
@@ -341,7 +400,7 @@ test("delegate health is cached and refreshed on the injected clock", async () =
 
 test("delegate runtime offers no sync — indexing stays the daemon's job", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -354,7 +413,7 @@ test("delegate runtime offers no sync — indexing stays the daemon's job", asyn
 
 test("delegate flush plan matches the embedded contract", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     const built = createDelegateMemoryCapability(
       optionsFor(stub.port, memoryDir, workspaceDir, {
@@ -374,7 +433,7 @@ test("delegate flush plan matches the embedded contract", async () => {
 
 test("delegate publicArtifacts lists the corpus and degrades to empty on failure", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const artifacts = await built.listArtifacts();
@@ -392,7 +451,7 @@ test("delegate publicArtifacts lists the corpus and degrades to empty on failure
 
 test("registerDelegateMemoryCapability wires the unified host surface", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     const registered: Record<string, unknown> = {};
     registerDelegateMemoryCapability(
@@ -436,7 +495,7 @@ test("registerDelegateMemoryCapability wires the unified host surface", async ()
 
 test("registerDelegateMemoryCapability omits promptBuilder when injection is disabled", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     let capability: Record<string, unknown> | undefined;
     registerDelegateMemoryCapability(
@@ -458,7 +517,7 @@ test("registerDelegateMemoryCapability omits promptBuilder when injection is dis
 
 test("registerDelegateMemoryCapability falls back to split host surfaces", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     const registered: Record<string, unknown> = {};
     registerDelegateMemoryCapability(
@@ -482,7 +541,7 @@ test("registerDelegateMemoryCapability falls back to split host surfaces", async
 
 test("registerDelegateMemoryCapability is a no-op on a host with no memory surface", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: HEALTHY_DAEMON });
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     assert.doesNotThrow(() =>
       registerDelegateMemoryCapability({}, optionsFor(stub.port, memoryDir, workspaceDir)),

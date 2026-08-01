@@ -13,8 +13,57 @@
  * already closed.
  */
 
+import { realpathSync } from "node:fs";
 import { realpath as fsRealpath } from "node:fs/promises";
 import path from "node:path";
+
+import { expandTildePath } from "@remnic/core";
+
+/**
+ * Strip trailing separators from an already-normalized path.
+ *
+ * A character loop rather than a `/[\\/]+$/` regex: the inputs are
+ * externally supplied (daemon health payloads, config files), and a
+ * quantified trailing-separator class is the polynomial-backtracking shape
+ * CodeQL flags on uncontrolled data.
+ */
+function trimTrailingSeparators(value: string): string {
+  let end = value.length;
+  while (end > 1 && (value[end - 1] === "/" || value[end - 1] === "\\")) end -= 1;
+  return value.slice(0, end);
+}
+
+/**
+ * Whether two `memoryDir` values name the same corpus.
+ *
+ * Lexical first (tilde-expanded, resolved, normalized, trailing separators
+ * trimmed), then a `realpath` comparison so two symlink spellings of one
+ * directory are recognized as identical — otherwise a co-located gateway and
+ * daemon on the same files would be judged different and both run, which is
+ * exactly the duplicate-orchestrator deployment this check exists to prevent.
+ *
+ * Fails CLOSED: a path that cannot be resolved is never a match.
+ */
+export function sameMemoryCorpus(
+  left: string,
+  right: string,
+  realpath: (target: string) => string = realpathSync,
+): boolean {
+  if (!left?.trim() || !right?.trim()) return false;
+  const lexical = (value: string): string =>
+    trimTrailingSeparators(path.normalize(path.resolve(expandTildePath(value.trim()))));
+  const leftLexical = lexical(left);
+  const rightLexical = lexical(right);
+  if (leftLexical === rightLexical) return true;
+  try {
+    return (
+      trimTrailingSeparators(path.normalize(realpath(leftLexical))) ===
+      trimTrailingSeparators(path.normalize(realpath(rightLexical)))
+    );
+  } catch {
+    return false;
+  }
+}
 
 export type MemoryReadScopeOptions = {
   /** Remnic memory root — the primary allowed read root. */

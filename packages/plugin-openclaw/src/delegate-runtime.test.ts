@@ -2603,7 +2603,7 @@ test("delegate authorization probe reports grant, rejection, and network failure
     assert.equal(req.method, "GET");
     assert.match(
       String(req.url),
-      /\/engram\/v1\/authorization\?op=recall&op=observe&op=lcm_compaction_flush&namespace=/,
+      /\/engram\/v1\/authorization\?op=recall&op=observe&op=lcm_compaction_flush&op=memory_search&namespace=/,
     );
     receivedAuthorization.push(req.headers.authorization);
     res.writeHead(responseStatus, { "content-type": "application/json" });
@@ -2731,8 +2731,8 @@ test("delegate activation warns each service once and keeps its memory hooks", a
   assert.equal(probeCalls, 2, "each service receives a preflight");
   assert.equal(warnings.length, 2);
   assert.deepEqual(probedOperations, [
-    ["recall", "observe", "lcm_compaction_flush"],
-    ["observe", "lcm_compaction_flush"],
+    ["recall", "observe", "lcm_compaction_flush", "memory_search"],
+    ["observe", "lcm_compaction_flush", "memory_search"],
   ]);
 });
 
@@ -2780,7 +2780,7 @@ test("delegate authorization preflight probes only the operations enabled by con
         true,
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.deepEqual(operations, ["observe", "lcm_compaction_flush"]);
+      assert.deepEqual(operations, ["observe", "lcm_compaction_flush", "memory_search"]);
     }
   } finally {
     if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
