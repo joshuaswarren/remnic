@@ -4,7 +4,7 @@
  * Pins the externally observable three-phase lifecycle contract of the
  * orchestrator BEFORE the #1526 decomposition:
  *
- *   1. Recall  (`before_agent_start` → `recall()`)
+ *   1. Recall  (`before_prompt_build` → `recall()`)
  *   2. Buffer  (`agent_end`          → `processTurn()`)
  *   3. Extract (periodic / forced    → `flushSession()` → `runExtraction`)
  *
@@ -185,7 +185,7 @@ function singleFactResult(content: string): ExtractionResult {
   } as ExtractionResult;
 }
 
-// ── 1. Recall (before_agent_start) ──────────────────────────────────────────
+// ── 1. Recall (before_prompt_build) ──────────────────────────────────────────
 
 test("recall() injects seeded on-disk memories into the returned context", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-char-recall-inject-"));

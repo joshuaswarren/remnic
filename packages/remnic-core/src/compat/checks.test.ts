@@ -154,7 +154,11 @@ test("memory prompt section registration must be on the plugin api object", asyn
 
   const hookCheck = checkById(checks, "hook-registration-core");
   assert.equal(hookCheck.level, "error");
-  assert.match(hookCheck.message, /before_prompt_build|before_agent_start/);
+  assert.match(hookCheck.message, /before_prompt_build/);
+  assert.doesNotMatch(
+    `${hookCheck.message} ${hookCheck.remediation ?? ""}`,
+    /before_agent_start/,
+  );
 });
 
 test("memory prompt section registration on api satisfies recall hook requirement", async () => {
@@ -171,6 +175,46 @@ test("memory prompt section registration on api satisfies recall hook requiremen
 
   const hookCheck = checkById(checks, "hook-registration-core");
   assert.equal(hookCheck.level, "ok");
+});
+
+test("memory prompt section remediation requests only missing required hooks", async () => {
+  const checks = await runFixture({
+    enginesNode: ">=22.12.0",
+    currentNodeVersion: "v22.12.0",
+    indexSource: [
+      "api.registerService({ start: async () => {} });",
+      "api.registerMemoryPromptSection(() => null);",
+      "registerCli(api, orchestrator);",
+    ].join("\n"),
+  });
+
+  const hookCheck = checkById(checks, "hook-registration-core");
+  assert.equal(hookCheck.level, "error");
+  assert.match(`${hookCheck.message} ${hookCheck.remediation ?? ""}`, /agent_end/);
+  assert.doesNotMatch(
+    `${hookCheck.message} ${hookCheck.remediation ?? ""}`,
+    /before_prompt_build|before_agent_start|gateway_start/,
+  );
+});
+
+test("memory prompt section remediation requests startup only when absent", async () => {
+  const checks = await runFixture({
+    enginesNode: ">=22.12.0",
+    currentNodeVersion: "v22.12.0",
+    indexSource: [
+      "api.on('agent_end', async () => {});",
+      "api.registerMemoryPromptSection(() => null);",
+      "registerCli(api, orchestrator);",
+    ].join("\n"),
+  });
+
+  const hookCheck = checkById(checks, "hook-registration-core");
+  assert.equal(hookCheck.level, "error");
+  assert.match(`${hookCheck.message} ${hookCheck.remediation ?? ""}`, /startup wiring/);
+  assert.doesNotMatch(
+    `${hookCheck.message} ${hookCheck.remediation ?? ""}`,
+    /before_prompt_build|before_agent_start/,
+  );
 });
 
 test("service start detection ignores nested start properties", async () => {

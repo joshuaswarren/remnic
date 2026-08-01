@@ -270,7 +270,7 @@ test("delegate recall degrades to no injection when the daemon fails", async () 
   registerDelegateRuntime(api, optionsFor(stub.port));
   const result = await invoke(
     api,
-    "before_agent_start",
+    "before_prompt_build",
     { prompt: "anything at all here" },
     { sessionKey: "session-b" },
   );
@@ -1908,7 +1908,7 @@ test("delegate recall registers with the configured hook timeout", async () => {
   const api = recordingApi();
   registerDelegateRuntime(api, optionsFor(1, { hookTimeoutMs: 1_234 }));
   assert.deepEqual(api.hookOpts.get("before_prompt_build"), { timeoutMs: 1_234 });
-  assert.deepEqual(api.hookOpts.get("before_agent_start"), { timeoutMs: 1_234 });
+  assert.equal(api.handlers.has("before_agent_start"), false);
 });
 
 test("delegate honors the zero-budget disable contract (no injection hooks)", () => {

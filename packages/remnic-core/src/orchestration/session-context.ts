@@ -306,7 +306,7 @@ export class SessionContextCoordinator {
    * Register a peer ID for a session so recall can inject the peer's
    * profile into context (issue #679 PR 3/5). Pass `null` to clear.
    *
-   * Connectors and the `before_agent_start` hook call this when the
+   * Connectors and the `before_prompt_build` hook call this when the
    * session's counter-party is known. The ID is validated against
    * `PEER_ID_PATTERN` before storing.
    *
