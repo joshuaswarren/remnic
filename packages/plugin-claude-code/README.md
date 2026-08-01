@@ -68,6 +68,38 @@ The plugin expects a Remnic daemon reachable at `http://localhost:4318/mcp` with
 
 Replace `{{REMNIC_TOKEN}}` with a token minted via `remnic token generate <connector-id>`.
 
+### Hook credentials
+
+The hook runner resolves its own bearer token independently of the MCP block
+above, in this order:
+
+1. `~/.remnic/tokens.json`, then legacy `~/.engram/tokens.json` — the
+   `claude-code` connector entry first, then `openclaw`.
+2. `OPENCLAW_REMNIC_ACCESS_TOKEN`, then `REMNIC_AUTH_TOKEN`.
+3. Legacy aliases: `OPENCLAW_ENGRAM_ACCESS_TOKEN`, then `ENGRAM_AUTH_TOKEN`.
+
+Current names outrank legacy ones, so a leftover pre-rename value cannot
+shadow the credential the daemon is actually running with. `REMNIC_AUTH_TOKEN`
+covers the standalone-server setup, which authenticates the daemon with that
+variable and never mints a connector token. Against an auth-gated daemon the
+hook needs one of these: every route, including `/engram/v1/health`, returns
+401 without a bearer, so an unauthenticated hook reports `daemon not running`
+and silently skips auto-recall and auto-observe.
+
+`REMNIC_HOOK_TOKEN` is not part of this chain — it is an internal channel the
+foreground hook uses to hand its already-resolved token to the detached
+observe worker, so the worker does not re-read the token store. Nothing in
+the foreground path reads it.
+
+### Namespace targeting
+
+`REMNIC_NAMESPACE`, then legacy `ENGRAM_NAMESPACE` — optional. When set, the
+hook adds the namespace to the **request body** of recall and observe (the
+REST surface reads it from the body, not a header). An explicit
+`body.namespace` already on the request wins. Unset → the daemon resolves the
+namespace for the `claude-code` client id, which on a namespaced daemon is the
+adapter's own empty namespace, so recall returns nothing.
+
 ## Agent note
 
 If you're an AI agent scaffolding a Claude Code integration: **do not** hand-edit hook scripts in a user's `~/.claude/` tree. The full setup has two components:

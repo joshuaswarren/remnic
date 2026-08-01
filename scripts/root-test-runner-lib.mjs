@@ -24,6 +24,10 @@ export const TEST_PATTERNS = [
   { id: "packages/*/src/**/*.test.tsx", base: "packages", packageSrc: true, recursive: true, suffix: ".test.tsx" },
   { id: "dashboard/lib/*.test.ts", base: "dashboard/lib", recursive: false, suffix: ".test.ts" },
   { id: "integrations/amb/*.test.mjs", base: "integrations/amb", recursive: false, suffix: ".test.mjs" },
+  // Hook runners ship as standalone CommonJS (no build step, spawned by the
+  // host), so their tests live beside them rather than under `<pkg>/src`.
+  // Without this entry they were never executed by any CI job.
+  { id: "packages/**/*.test.cjs", base: "packages", recursive: true, suffix: ".test.cjs" },
 ];
 
 /**
@@ -33,7 +37,11 @@ export const TEST_PATTERNS = [
  */
 export const TEST_PATTERN_GROUPS = Object.freeze({
   root: ["tests/**/*.test.ts", "tests/**/*.test.mjs"],
-  packages: ["packages/*/src/**/*.test.ts", "packages/*/src/**/*.test.tsx"],
+  packages: [
+    "packages/*/src/**/*.test.ts",
+    "packages/*/src/**/*.test.tsx",
+    "packages/**/*.test.cjs",
+  ],
   misc: ["dashboard/lib/*.test.ts", "integrations/amb/*.test.mjs"],
 });
 
