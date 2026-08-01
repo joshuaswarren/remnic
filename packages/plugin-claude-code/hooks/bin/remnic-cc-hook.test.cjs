@@ -664,6 +664,23 @@ test("hooks.json: every event uses cross-platform exec form with ${CLAUDE_PLUGIN
   }
 });
 
+test("plugin.json: manifest conforms to the Claude Code plugin schema (author is an object)", () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", ".claude-plugin", "plugin.json"), "utf8"),
+  );
+  // Claude Code's plugin-manifest validator rejects a string `author`
+  // ("Invalid input: expected object, received string"), which blocks
+  // installing this plugin from a Claude Code marketplace. `author` must be an
+  // object carrying at least a `name`.
+  assert.equal(typeof manifest.author, "object", "author must be an object, not a string");
+  assert.ok(manifest.author !== null && !Array.isArray(manifest.author), "author must be a plain object");
+  assert.equal(typeof manifest.author.name, "string", "author.name must be a string");
+  assert.ok(manifest.author.name.length > 0, "author.name must be non-empty");
+  // Sanity-check the other required identity fields while we're here.
+  assert.equal(typeof manifest.name, "string", "name must be a string");
+  assert.equal(typeof manifest.version, "string", "version must be a string");
+});
+
 test("runner source: payload fields never reach a shell — spawn uses fixed argv (#1518 guard shell interpolation)", () => {
   const src = fs.readFileSync(RUNNER, "utf8");
   // Every spawn/spawnSync must use a fixed literal argument array, never a

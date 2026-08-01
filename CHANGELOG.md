@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - Claude Code hook health probe now sends the configured bearer token, so a daemon with `REMNIC_AUTH_TOKEN` set is detected as healthy instead of being reported as "daemon not running" (which silently skipped auto-recall and auto-observe).
+- `@remnic/plugin-claude-code` manifest (`.claude-plugin/plugin.json`) now declares `author` as an object, so the plugin installs from a Claude Code marketplace. The string form was rejected by Claude Code's manifest validator (`author: expected object, received string`), which forced the npm-only manual-load path.
 - Extraction health no longer treats local filter skips as successful runs. Live empty runs record health only when later steps succeed.
 - Stats now add extraction counts from active namespaces. Scoped health keeps the backlog counts behind its status. Invalid calendar dates now fail metadata checks.
 - Entity migration now rejects symlinked alias configs and control characters in IDs. Reference rewrites preserve the original memory body bytes.
