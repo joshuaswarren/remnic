@@ -913,10 +913,20 @@ test("#2128: post-flush retained cleanup is best effort and receives lifecycle g
 test("#2128: post-flush retained cleanup stops on abort or deadline", async (t) => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   let cleanupStarted: (() => void) | undefined;
+  const cleanupCalls: Array<{
+    sessionKey: string;
+    ownerPrincipal: string | undefined;
+    options: { abortSignal?: AbortSignal; deadlineMs?: number } | undefined;
+  }> = [];
   Object.defineProperty(probe.orch, "buffer", {
     configurable: true,
     value: {
-      clearRetainedTurnsForSession: async () => {
+      clearRetainedTurnsForSession: async (
+        sessionKey: string,
+        ownerPrincipal?: string,
+        options?: { abortSignal?: AbortSignal; deadlineMs?: number },
+      ) => {
+        cleanupCalls.push({ sessionKey, ownerPrincipal, options });
         cleanupStarted?.();
         return new Promise<void>(() => {});
       },
@@ -940,6 +950,11 @@ test("#2128: post-flush retained cleanup stops on abort or deadline", async (t) 
       ]),
     /extraction force-flush aborted/,
   );
+  assert.deepEqual(cleanupCalls[0], {
+    sessionKey: "pi-geek:cleanup-abort",
+    ownerPrincipal: "pi-geek",
+    options: { abortSignal: abortController.signal, deadlineMs: undefined },
+  });
 
   const cleanupStartedPromise = new Promise<void>((resolve) => {
     cleanupStarted = resolve;
@@ -950,7 +965,17 @@ test("#2128: post-flush retained cleanup stops on abort or deadline", async (t) 
     authenticatedPrincipal: "pi-geek",
     deadlineMs: 5,
   });
-  await cleanupStartedPromise;
+  await Promise.race([
+    cleanupStartedPromise,
+    new Promise<never>((_resolve, reject) =>
+      setImmediate(() => reject(new Error("deadline cleanup did not start"))),
+    ),
+  ]);
+  assert.deepEqual(cleanupCalls[1], {
+    sessionKey: "pi-geek:cleanup-deadline",
+    ownerPrincipal: "pi-geek",
+    options: { abortSignal: undefined, deadlineMs: 5 },
+  });
   t.mock.timers.tick(5);
   await assert.rejects(
     deadlineFlush,
