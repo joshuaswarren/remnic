@@ -107,6 +107,7 @@ import {
   defaultNamespaceAtFlatRoot,
   mergeMemorySearchDefaultFallback,
   resolveMemorySearchDefaultFallback,
+  runFlatCorpusMemorySearch,
   runMemorySearchFanout,
 } from "./access-memory-search-fanout.js";
 import {
@@ -4723,30 +4724,23 @@ export class EngramAccessService {
     let results: Array<{ path: string; score: number; snippet?: string }>;
     if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces) {
       this.resolveReadableNamespace(namespace, principal);
-      // An explicit ranking mode routes through the namespace-aware search
-      // even on a flat corpus, because that is the only path that honors it;
-      // the legacy direct-QMD calls stay the default so nothing else moves.
-      results = mode
-        ? await this.orchestrator.searchAcrossNamespaces({ query, maxResults, mode })
-        : collection === "global"
-          ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
-          : await this.orchestrator.qmd.search(query, collection, maxResults);
+      const { qmd } = this.orchestrator;
+      results = await runFlatCorpusMemorySearch({
+        query, maxResults, collection, mode,
+        searchAcrossNamespaces: (p) => this.orchestrator.searchAcrossNamespaces(p),
+        searchGlobal: (q, limit) => qmd.searchGlobal(q, limit),
+        search: (q, coll, limit) => qmd.search(q, coll, limit),
+      });
     } else {
-      const readableNamespaces = await this.resolveReadableNamespacesForSearch(namespace, principal);
-      const namespaces = this.resolveMemorySearchNamespacesForCollection(
-        collection,
-        readableNamespaces,
-        namespace?.trim() ? undefined : principal,
-      );
       results = await runMemorySearchFanout({
-        query,
-        namespaces,
-        maxResults,
-        principal,
+        query, maxResults, principal, collection, mode,
         requestedNamespace: namespace,
-        collection,
-        mode,
-        search: (params) => this.orchestrator.searchAcrossNamespaces(params),
+        namespaces: this.resolveMemorySearchNamespacesForCollection(
+          collection,
+          await this.resolveReadableNamespacesForSearch(namespace, principal),
+          namespace?.trim() ? undefined : principal,
+        ),
+        search: (p) => this.orchestrator.searchAcrossNamespaces(p),
       });
     }
 

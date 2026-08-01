@@ -167,3 +167,30 @@ export async function runMemorySearchFanout<TResult>(options: {
   }
   return results;
 }
+
+/**
+ * Resolve results for a FLAT corpus (namespaces disabled).
+ *
+ * An explicit ranking mode routes through the namespace-aware search even
+ * here, because that is the only path honoring it; the legacy direct-QMD calls
+ * stay the default so nothing else moves.
+ */
+export async function runFlatCorpusMemorySearch<TResult>(options: {
+  query: string;
+  maxResults?: number;
+  collection?: string;
+  mode?: "search" | "hybrid" | "bm25" | "vector";
+  searchAcrossNamespaces(params: {
+    query: string;
+    maxResults?: number;
+    mode: "search" | "hybrid" | "bm25" | "vector";
+  }): Promise<TResult[]>;
+  searchGlobal(query: string, maxResults?: number): Promise<TResult[]>;
+  search(query: string, collection: string | undefined, maxResults?: number): Promise<TResult[]>;
+}): Promise<TResult[]> {
+  const { query, maxResults, collection, mode } = options;
+  if (mode) return options.searchAcrossNamespaces({ query, maxResults, mode });
+  return collection === "global"
+    ? options.searchGlobal(query, maxResults)
+    : options.search(query, collection, maxResults);
+}
