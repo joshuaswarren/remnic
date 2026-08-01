@@ -11,6 +11,7 @@ import {
   repairContentAfterJournalMove,
   requestEntityCanonicalIdReconcile,
 } from "../storage/entity-canonical-id-references.js";
+import { withRawEntityPageMutation } from "../storage/entity-canonical-id-lock.js";
 import {
   createVersion,
   type VersioningConfig,
@@ -422,6 +423,7 @@ export async function importCapsule(
   // between a legacy-preserving memory write and its colliding entity page,
   // canonicalizing the memory onto the wrong claimant irreversibly.
   let reconcileNeeded = false;
+  const applyRecords = async (): Promise<void> => {
   for (const rec of sortedRecords) {
     const targetRel = computeTargetPath(rec.path, mode, capsule.id);
     // Use rootReal (realpath-resolved) to stay consistent with phase 1's
@@ -536,6 +538,17 @@ export async function importCapsule(
   // disk; NOW the reconcile pass can settle collisions safely.
   if (reconcileNeeded) {
     await requestEntityCanonicalIdReconcile(journalStateDir);
+  }
+  };
+  const firstEntityId = capsuleEntityIds.values().next().value;
+  if (firstEntityId === undefined) {
+    await applyRecords();
+  } else {
+    await withRawEntityPageMutation(
+      rootReal,
+      path.join(rootReal, "entities", `${firstEntityId}.md`),
+      applyRecords,
+    );
   }
 
   // Sort skipped for stable output (see comment above).

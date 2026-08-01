@@ -60,7 +60,7 @@ observable risk, and the existing or planned regression test.
 
 **Path:** `buildEntityRecallSection()` in
 `packages/remnic-core/src/entity-retrieval.ts` is invoked from the orchestrator
-during `before_agent_start`. It produces the `## entity_answer_hints` block
+during `before_prompt_build`. It produces the `## entity_answer_hints` block
 appended to the recall payload.
 
 **Pipeline:**

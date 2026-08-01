@@ -18,6 +18,7 @@ import { defineOperation } from "./access-boundary.js";
 import { memoryStoreRequestSchema, type MemoryStoreRequest } from "./access-schema.js";
 import { EngramAccessInputError } from "./access-service.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
+import { externalWikiSearchOperation } from "./external-wiki-access.js";
 import type {
   EngramAccessMemoryResponse,
   EngramAccessWriteResponse,
@@ -688,6 +689,7 @@ import "./relay/mission-access.js";
 export const REGISTERED_OPERATIONS = [
   memoryGetOperation.spec.name,
   memorySearchOperation.spec.name,
+  externalWikiSearchOperation.spec.name,
   memoryStoreOperation.spec.name,
   codingDecisionOperation.spec.name,
   codingArchitectureOperation.spec.name,

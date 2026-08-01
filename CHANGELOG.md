@@ -12,6 +12,29 @@ All notable changes to this project will be documented in this file.
 
 - Claude Code hook health probe now sends the configured bearer token, so a daemon with `REMNIC_AUTH_TOKEN` set is detected as healthy instead of being reported as "daemon not running" (which silently skipped auto-recall and auto-observe).
 - `@remnic/plugin-claude-code` manifest (`.claude-plugin/plugin.json`) now declares `author` as an object, so the plugin installs from a Claude Code marketplace. The string form was rejected by Claude Code's manifest validator (`author: expected object, received string`), which forced the npm-only manual-load path.
+
+## [v9.46.0] — 2026-08-01
+
+### Fixed
+
+- OpenClaw prompt injection now uses only the supported `before_prompt_build` hook; obsolete prompt and heartbeat hook registrations are removed while `HEARTBEAT.md` processing remains supported.
+- ClawHub artifacts are validated as-built instead of rewriting scanner-visible filesystem and credential syntax.
+
+## [v9.45.5] — 2026-08-01
+
+### Fixed
+
+- Release publishing now waits for the complete root test corpus, split into deterministic bounded shards against the exact event commit.
+- AMB bridge preflight accepts valid reset responses when package-manager diagnostics precede the JSONL payload.
+- External-wiki catalog links resolve consistently, and the CLI uses one exported implementation for JSON and text output.
+- External-wiki searches report degraded roots even when no hits remain.
+- Tier moves preserve concurrent disk updates, invalidate affected cold reads, and remain idempotent.
+- First-start migration reconciles QMD after idempotent on-disk tier moves before writing its completion marker.
+
+## [v9.45.4] — 2026-07-31
+
+### Fixed
+
 - Extraction health no longer treats local filter skips as successful runs. Live empty runs record health only when later steps succeed.
 - Stats now add extraction counts from active namespaces. Scoped health keeps the backlog counts behind its status. Invalid calendar dates now fail metadata checks.
 - Entity migration now rejects symlinked alias configs and control characters in IDs. Reference rewrites preserve the original memory body bytes.

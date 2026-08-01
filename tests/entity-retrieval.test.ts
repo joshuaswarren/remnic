@@ -1,10 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { on, once } from "node:events";
+import { createInterface } from "node:readline";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { buildEntityRecallSection, entityIndexVersion, readRecentEntityTranscriptEntries } from "../src/entity-retrieval.js";
+import { containsPhrase } from "../packages/remnic-core/src/entity-retrieval-boundaries.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { StorageManager, normalizeEntityName } from "../src/storage.js";
 import { SecureStoreLockedError } from "../src/secure-store/index.js";
@@ -278,6 +282,75 @@ test("entity retrieval rejects Japanese name prefixes before kana words", async 
   assert.doesNotMatch(section!, /target: 山田 \(person\)|Short-314/);
 });
 
+test("entity retrieval rejects Japanese suffix aliases inside names while preserving particle matches", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-suffix");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const ruka = await writeEntity(
+    storage,
+    "Moonlight Person",
+    "person",
+    ["Moonlight Person has verification code Ruka-314."],
+    "Moonlight Person has verification code Ruka-314.",
+    ["るか"],
+  );
+  const haruka = await writeEntity(
+    storage,
+    "はるか",
+    "person",
+    ["はるか has verification code Haruka-271."],
+    "はるか has verification code Haruka-271.",
+  );
+  const rukako = await writeEntity(
+    storage,
+    "Beacon Person",
+    "person",
+    ["Beacon Person has verification code Rukako-161."],
+    "Beacon Person has verification code Rukako-161.",
+    ["るかこ"],
+  );
+  const harukako = await writeEntity(
+    storage,
+    "はるかこ",
+    "person",
+    ["はるかこ has verification code Harukako-141."],
+    "はるかこ has verification code Harukako-141.",
+  );
+  assert.notEqual(ruka, haruka);
+  assert.notEqual(rukako, harukako);
+  assert.equal(containsPhrase("「はるかこについて教えて」", "るかこ"), false);
+  assert.equal(containsPhrase("山田と、るかについて教えてください。", "るか"), true);
+
+  const particleMatch = await buildSection(config, storage, "山田と、るかについて教えてください。");
+  assert.ok(particleMatch);
+  assert.match(particleMatch!, /target: Moonlight Person \(person\)/);
+  assert.match(particleMatch!, /Ruka-314/);
+
+  const fullNameMatch = await buildSection(config, storage, "はるかについて教えてください。");
+  assert.ok(fullNameMatch);
+  assert.match(fullNameMatch!, /target: はるか \(person\)/);
+  assert.match(fullNameMatch!, /Haruka-271/);
+  assert.doesNotMatch(fullNameMatch!, /target: Moonlight Person \(person\)|Ruka-314/);
+
+  const quotedFullNameMatch = await buildSection(config, storage, "「はるかについて教えて」");
+  assert.ok(quotedFullNameMatch);
+  assert.match(quotedFullNameMatch!, /target: はるか \(person\)/);
+  assert.doesNotMatch(quotedFullNameMatch!, /target: Moonlight Person \(person\)|Ruka-314/);
+
+  const overlappingSegmentMatch = await buildSection(config, storage, "「はるかこについて教えて」");
+  assert.ok(overlappingSegmentMatch);
+  assert.match(overlappingSegmentMatch!, /target: はるかこ \(person\)/);
+  assert.match(overlappingSegmentMatch!, /Harukako-141/);
+  assert.doesNotMatch(
+    overlappingSegmentMatch!,
+    /target: (?:Moonlight|Beacon) Person \(person\)|Ruka-314|Rukako-161/,
+  );
+});
+
 test("entity retrieval resolves Korean grammatical particles after Unicode mentions", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-korean-names");
   t.after(async () => {
@@ -316,6 +389,37 @@ test("entity retrieval resolves Korean grammatical particles after Unicode menti
     confidence: 1,
   });
   assert.equal(await buildSection(config, storage, "김도나가 누구야?"), null);
+});
+
+test("entity retrieval rejects Korean suffix names preceded by particle-like syllables", async (t) => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-korean-suffix");
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const shortName = await writeEntity(
+    storage,
+    "민수",
+    "person",
+    ["민수 has verification code Minsu-314."],
+    "민수 has verification code Minsu-314.",
+  );
+  const fullName = await writeEntity(
+    storage,
+    "김가민수",
+    "person",
+    ["김가민수 has verification code Full-271."],
+    "김가민수 has verification code Full-271.",
+  );
+  assert.notEqual(shortName, fullName);
+
+  const section = await buildSection(config, storage, "김가민수는 누구야?");
+  assert.ok(section);
+  assert.match(section!, /target: 김가민수 \(person\)/);
+  assert.match(section!, /Full-271/);
+  assert.doesNotMatch(section!, /target: 민수 \(person\)|Minsu-314/);
 });
 
 test("entity retrieval applies Unicode boundaries to ASCII aliases", async (t) => {
@@ -808,6 +912,330 @@ test("entity retrieval reads entity hints from allowed secondary namespaces only
   assert.match(section!, /Shared Person is visible from the shared namespace/);
   assert.doesNotMatch(section!, /private namespace secret|private-only/);
 });
+
+test("entity retrieval preserves namespace precedence in the namespace index cache key", async (t) => {
+  const { memoryDir, workspaceDir, config } = await buildHarness("engram-entity-namespace-order-cache", {
+    namespacesEnabled: true,
+    defaultNamespace: "alice",
+    sharedNamespace: "shared",
+  });
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const aliceStorage = new StorageManager(path.join(memoryDir, "namespaces", "alice"), config.entitySchemas);
+  const sharedStorage = new StorageManager(path.join(memoryDir, "namespaces", "shared"), config.entitySchemas);
+  await Promise.all([aliceStorage.ensureDirectories(), sharedStorage.ensureDirectories()]);
+  await writeEntity(
+    aliceStorage,
+    "Order Person",
+    "person",
+    ["Alice namespace precedence marker Alice-314."],
+    "Alice namespace precedence marker Alice-314.",
+  );
+  await writeEntity(
+    sharedStorage,
+    "Order Person",
+    "person",
+    ["Shared namespace precedence marker Shared-271."],
+    "Shared namespace precedence marker Shared-271.",
+  );
+  const namespaceStorage = async (namespace: string) => {
+    if (namespace === "alice") return aliceStorage;
+    if (namespace === "shared") return sharedStorage;
+    throw new Error(`unexpected namespace ${namespace}`);
+  };
+  const baseOptions = {
+    config,
+    storage: aliceStorage,
+    namespaceStorage,
+    query: "Who is Order Person?",
+    recentTurns: 6,
+    maxHints: 2,
+    maxSupportingFacts: 6,
+    maxRelatedEntities: 3,
+    maxChars: 2400,
+    transcriptEntries: [],
+  };
+
+  const sharedWins = await buildEntityRecallSection({
+    ...baseOptions,
+    recallNamespaces: ["alice", "shared"],
+  });
+  assert.ok(sharedWins);
+  assert.match(sharedWins!, /Shared-271/);
+  assert.doesNotMatch(sharedWins!, /Alice-314/);
+
+  const aliceWins = await buildEntityRecallSection({
+    ...baseOptions,
+    recallNamespaces: ["shared", "alice"],
+  });
+  assert.ok(aliceWins);
+  assert.match(aliceWins!, /Alice-314/);
+  assert.doesNotMatch(aliceWins!, /Shared-271/);
+});
+
+test("entity retrieval refreshes a namespace negative cache after a relationship revision", async (t) => {
+  const { memoryDir, workspaceDir, config } = await buildHarness("engram-entity-namespace-relationship-cache", {
+    namespacesEnabled: true,
+    defaultNamespace: "alice",
+    sharedNamespace: "shared",
+  });
+  const aliceStorage = new StorageManager(path.join(memoryDir, "namespaces", "alice"), config.entitySchemas);
+  const sharedStorage = new StorageManager(path.join(memoryDir, "namespaces", "shared"), config.entitySchemas);
+  await Promise.all([aliceStorage.ensureDirectories(), sharedStorage.ensureDirectories()]);
+  const canonical = await aliceStorage.writeEntity("Casey Example", "person", []);
+  let entityReads = 0;
+  const originalAliceRead = aliceStorage.readAllEntityFiles.bind(aliceStorage);
+  const originalSharedRead = sharedStorage.readAllEntityFiles.bind(sharedStorage);
+  aliceStorage.readAllEntityFiles = async () => {
+    entityReads += 1;
+    return originalAliceRead();
+  };
+  sharedStorage.readAllEntityFiles = async () => {
+    entityReads += 1;
+    return originalSharedRead();
+  };
+  t.after(async () => {
+    aliceStorage.readAllEntityFiles = originalAliceRead;
+    sharedStorage.readAllEntityFiles = originalSharedRead;
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const options = {
+    config,
+    storage: aliceStorage,
+    namespaceStorage: async (namespace: string) => {
+      if (namespace === "alice") return aliceStorage;
+      if (namespace === "shared") return sharedStorage;
+      throw new Error(`unexpected namespace ${namespace}`);
+    },
+    recallNamespaces: ["alice", "shared"],
+    query: "Tell me about an unrelated ordinary turn.",
+    recentTurns: 6,
+    maxHints: 2,
+    maxSupportingFacts: 6,
+    maxRelatedEntities: 3,
+    maxChars: 2400,
+    transcriptEntries: [],
+  } satisfies Parameters<typeof buildEntityRecallSection>[0];
+
+  assert.equal(await buildEntityRecallSection(options), null);
+  assert.equal(entityReads, 2);
+  await aliceStorage.addEntityRelationship(canonical, {
+    target: "Rollback Project",
+    label: "supports",
+  });
+
+  const refreshed = await buildEntityRecallSection({
+    ...options,
+    query: "Who is Casey Example?",
+  });
+  assert.ok(refreshed);
+  assert.match(refreshed!, /related entities: Rollback Project/);
+  assert.equal(entityReads, 4);
+});
+
+test("entity retrieval refreshes a reader-process entity cache after a relationship revision", async (t) => {
+  const { memoryDir, workspaceDir, config } = await buildHarness(
+    "engram-entity-namespace-cross-process-relationship-cache",
+    {
+      namespacesEnabled: true,
+      defaultNamespace: "alice",
+      sharedNamespace: "shared",
+    },
+  );
+  const namespaceDir = path.join(memoryDir, "namespaces", "alice");
+  const writerStorage = new StorageManager(namespaceDir, config.entitySchemas);
+  await writerStorage.ensureDirectories();
+  const canonical = await writerStorage.writeEntity("Casey Example", "person", []);
+  const configModuleUrl = new URL("../src/config.js", import.meta.url).href;
+  const retrievalModuleUrl = new URL("../src/entity-retrieval.js", import.meta.url).href;
+  const storageModuleUrl = new URL("../src/storage.js", import.meta.url).href;
+  const childSource = `
+    import path from "node:path";
+    import { createInterface } from "node:readline";
+    import { parseConfig } from ${JSON.stringify(configModuleUrl)};
+    import { buildEntityRecallSection } from ${JSON.stringify(retrievalModuleUrl)};
+    import { StorageManager } from ${JSON.stringify(storageModuleUrl)};
+
+    const memoryDir = process.env.REMNIC_TEST_MEMORY_DIR;
+    const workspaceDir = process.env.REMNIC_TEST_WORKSPACE_DIR;
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir,
+      qmdEnabled: false,
+      sharedContextEnabled: false,
+      hourlySummariesEnabled: false,
+      transcriptEnabled: true,
+      namespacesEnabled: true,
+      defaultNamespace: "alice",
+      sharedNamespace: "shared",
+      nativeKnowledge: { enabled: false },
+    });
+    const storage = new StorageManager(
+      path.join(memoryDir, "namespaces", "alice"),
+      config.entitySchemas,
+    );
+    const input = createInterface({ input: process.stdin });
+    for await (const line of input) {
+      const message = JSON.parse(line);
+      if (message.type === "shutdown") break;
+      try {
+        const section = await buildEntityRecallSection({
+          config,
+          storage,
+          namespaceStorage: async () => storage,
+          recallNamespaces: ["alice"],
+          query: message.query,
+          recentTurns: 6,
+          maxHints: 2,
+          maxSupportingFacts: 6,
+          maxRelatedEntities: 3,
+          maxChars: 2400,
+          transcriptEntries: [],
+        });
+        process.stdout.write(JSON.stringify({ id: message.id, section }) + "\\n");
+      } catch (error) {
+        process.stdout.write(JSON.stringify({
+          id: message.id,
+          error: error instanceof Error ? error.stack : String(error),
+        }) + "\\n");
+      }
+    }
+  `;
+  const child = spawn(
+    process.execPath,
+    ["--import", import.meta.resolve("tsx"), "--input-type=module", "--eval", childSource],
+    {
+      env: {
+        ...process.env,
+        REMNIC_TEST_MEMORY_DIR: memoryDir,
+        REMNIC_TEST_WORKSPACE_DIR: workspaceDir,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  let childStderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    childStderr += chunk;
+  });
+  const outputLines = createInterface({ input: child.stdout });
+  const responses = on(outputLines, "line");
+  let requestId = 0;
+  const recallInChild = async (query: string): Promise<string | null> => {
+    const id = ++requestId;
+    child.stdin.write(`${JSON.stringify({ type: "recall", id, query })}\n`);
+    const response = await responses.next();
+    if (response.done) {
+      assert.fail(`reader process exited before replying: ${childStderr}`);
+    }
+    const reply = JSON.parse(String(response.value[0])) as {
+      id: number;
+      section?: string | null;
+      error?: string;
+    };
+    assert.equal(reply.id, id);
+    assert.equal(reply.error, undefined, reply.error);
+    return reply.section ?? null;
+  };
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit");
+      child.stdin.end(`${JSON.stringify({ type: "shutdown" })}\n`);
+      await exited;
+    }
+    outputLines.close();
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+
+  assert.equal(await recallInChild("Tell me about an unrelated ordinary turn."), null);
+  const memoryStatusBefore = writerStorage.getMemoryStatusVersion();
+  const entityMutationBefore = writerStorage.getEntityMutationVersion();
+  await writerStorage.addEntityRelationship(canonical, {
+    target: "Rollback Project",
+    label: "supports",
+  });
+  assert.equal(writerStorage.getMemoryStatusVersion(), memoryStatusBefore);
+  assert.notEqual(writerStorage.getEntityMutationVersion(), entityMutationBefore);
+
+  const refreshed = await recallInChild("Who is Casey Example?");
+  assert.ok(refreshed);
+  assert.match(refreshed, /related entities: Rollback Project/);
+});
+
+test("entity retrieval refreshes a namespace negative cache after an activity revision", async (t) => {
+  const { memoryDir, workspaceDir, config } = await buildHarness("engram-entity-namespace-activity-cache", {
+    namespacesEnabled: true,
+    defaultNamespace: "alice",
+    sharedNamespace: "shared",
+  });
+  const aliceStorage = new StorageManager(path.join(memoryDir, "namespaces", "alice"), config.entitySchemas);
+  const sharedStorage = new StorageManager(path.join(memoryDir, "namespaces", "shared"), config.entitySchemas);
+  await Promise.all([aliceStorage.ensureDirectories(), sharedStorage.ensureDirectories()]);
+  const canonical = await aliceStorage.writeEntity("Casey Example", "person", []);
+  let entityReads = 0;
+  const originalAliceRead = aliceStorage.readAllEntityFiles.bind(aliceStorage);
+  const originalSharedRead = sharedStorage.readAllEntityFiles.bind(sharedStorage);
+  aliceStorage.readAllEntityFiles = async () => {
+    entityReads += 1;
+    return originalAliceRead();
+  };
+  sharedStorage.readAllEntityFiles = async () => {
+    entityReads += 1;
+    return originalSharedRead();
+  };
+  t.after(async () => {
+    aliceStorage.readAllEntityFiles = originalAliceRead;
+    sharedStorage.readAllEntityFiles = originalSharedRead;
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const options = {
+    config,
+    storage: aliceStorage,
+    namespaceStorage: async (namespace: string) => {
+      if (namespace === "alice") return aliceStorage;
+      if (namespace === "shared") return sharedStorage;
+      throw new Error(`unexpected namespace ${namespace}`);
+    },
+    recallNamespaces: ["alice", "shared"],
+    query: "Tell me about an unrelated ordinary turn.",
+    recentTurns: 6,
+    maxHints: 2,
+    maxSupportingFacts: 6,
+    maxRelatedEntities: 3,
+    maxChars: 2400,
+    transcriptEntries: [],
+  } satisfies Parameters<typeof buildEntityRecallSection>[0];
+
+  assert.equal(await buildEntityRecallSection(options), null);
+  assert.equal(entityReads, 2);
+  await aliceStorage.addEntityActivity(canonical, {
+    date: "2026-07-30",
+    note: "Casey completed the rollback review.",
+  }, 10);
+
+  const refreshed = await buildEntityRecallSection({
+    ...options,
+    query: "What happened with Casey Example?",
+  });
+  assert.ok(refreshed);
+  assert.match(refreshed!, /Casey completed the rollback review/);
+  assert.equal(entityReads, 4);
+});
+
 test("entity retrieval caches namespace-scoped negative lookups by corpus version", async () => {
   const { memoryDir, config } = await buildHarness("engram-entity-namespace-negative-cache", {
     namespacesEnabled: true,
@@ -1730,6 +2158,68 @@ test("entity retrieval refreshes native mention aliases without rebuilding unrel
   assert.equal(unrelated, null);
   assert.equal(entityReadCalls, 0);
   assert.equal(memoryReadCalls, 0);
+});
+
+test("entity retrieval refreshes edited native knowledge in namespace mode", async (t) => {
+  const { memoryDir, workspaceDir, config } = await buildHarness("engram-entity-namespace-native-refresh", {
+    namespacesEnabled: true,
+    defaultNamespace: "alice",
+    sharedNamespace: "shared",
+    nativeKnowledge: {
+      enabled: true,
+      includeFiles: ["IDENTITY.md"],
+      maxChunkChars: 400,
+      maxResults: 5,
+      maxChars: 1600,
+      stateDir: "state/native-knowledge",
+      obsidianVaults: [],
+    },
+  });
+  t.after(async () => {
+    await Promise.all([
+      rm(memoryDir, { recursive: true, force: true }),
+      rm(workspaceDir, { recursive: true, force: true }),
+    ]);
+  });
+  const aliceStorage = new StorageManager(path.join(memoryDir, "namespaces", "alice"), config.entitySchemas);
+  const sharedStorage = new StorageManager(path.join(memoryDir, "namespaces", "shared"), config.entitySchemas);
+  await Promise.all([aliceStorage.ensureDirectories(), sharedStorage.ensureDirectories()]);
+  await writeFile(
+    path.join(workspaceDir, "IDENTITY.md"),
+    "# Launch Runbook\n\nThe current rollback approval code is Quartz-111.\n",
+    "utf-8",
+  );
+  const options = {
+    config,
+    storage: aliceStorage,
+    namespaceStorage: async (namespace: string) => {
+      if (namespace === "alice") return aliceStorage;
+      if (namespace === "shared") return sharedStorage;
+      throw new Error(`unexpected namespace ${namespace}`);
+    },
+    recallNamespaces: ["alice", "shared"],
+    query: "Tell me about Launch Runbook",
+    recentTurns: 6,
+    maxHints: 2,
+    maxSupportingFacts: 6,
+    maxRelatedEntities: 3,
+    maxChars: 2400,
+    transcriptEntries: [],
+  } satisfies Parameters<typeof buildEntityRecallSection>[0];
+
+  const initial = await buildEntityRecallSection(options);
+  assert.ok(initial);
+  assert.match(initial!, /Quartz-111/);
+  await writeFile(
+    path.join(workspaceDir, "IDENTITY.md"),
+    "# Launch Runbook\n\nThe current rollback approval code is Saffron-222.\n",
+    "utf-8",
+  );
+
+  const refreshed = await buildEntityRecallSection(options);
+  assert.ok(refreshed);
+  assert.match(refreshed!, /Saffron-222/);
+  assert.doesNotMatch(refreshed!, /Quartz-111/);
 });
 
 test("entity retrieval keeps multi-chunk native-only pseudo entries together", async () => {

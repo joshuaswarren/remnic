@@ -45,7 +45,7 @@ export interface SearchExecutionOptions {
 
 export function reportSearchDegradation(
   execution: SearchExecutionOptions | undefined,
-  degradation: SearchDegradation,
+  degradation: SearchDegradation
 ): void {
   try {
     execution?.onDegradation?.(degradation);
@@ -56,7 +56,7 @@ export function reportSearchDegradation(
 
 export function resolveEnsureCollectionArgs(
   collectionOrExecution?: string | SearchExecutionOptions,
-  execution?: SearchExecutionOptions,
+  execution?: SearchExecutionOptions
 ): { collection?: string; execution?: SearchExecutionOptions } {
   if (typeof collectionOrExecution === "string") {
     return { collection: collectionOrExecution, execution };
@@ -108,26 +108,26 @@ export interface SearchBackend {
     collection?: string,
     maxResults?: number,
     options?: SearchQueryOptions,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<SearchResult[]>;
   searchGlobal(query: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]>;
   bm25Search(
     query: string,
     collection?: string,
     maxResults?: number,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<SearchResult[]>;
   vectorSearch(
     query: string,
     collection?: string,
     maxResults?: number,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<SearchResult[]>;
   hybridSearch(
     query: string,
     collection?: string,
     maxResults?: number,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<SearchResult[]>;
 
   // ── Maintenance ──
@@ -178,21 +178,37 @@ export interface SearchBackend {
 
   // ── Collection management ──
   /**
+   * True only when the backend can bind, isolate, search, and delete collections
+   * outside Remnic's primary memory roots.
+   */
+  supportsAdditionalCollections?(): boolean;
+  /**
+   * Prevent a collection from participating in unscoped/global searches.
+   * Dedicated corpora must call this immediately after collection creation.
+   */
+  excludeCollectionFromGlobalSearch?(collection: string, execution?: SearchExecutionOptions): Promise<void>;
+  /** Remove a non-primary collection and its backend-owned index state. */
+  deleteCollection?(collection: string, execution?: SearchExecutionOptions): Promise<boolean>;
+  /** Canonical source root currently bound to a named collection. */
+  collectionRoot?(collection: string, execution?: SearchExecutionOptions): Promise<string | null>;
+  /** Collection-scoped status for observability surfaces. */
+  collectionStatus?(collection: string): Promise<Pick<SearchBackendStatus, "totalFiles">>;
+  /**
    * Optional non-mutating collection probe. Backends that can distinguish a
    * missing collection from a transient probe failure should implement this so
    * callers can avoid auto-creating collections in unsafe layouts.
    */
   checkCollection?(
     collectionOrExecution?: string | SearchExecutionOptions,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<"present" | "missing" | "unknown" | "skipped">;
   ensureCollection(
     memoryDir: string,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<"present" | "missing" | "unknown" | "skipped">;
   ensureCollection(
     memoryDir: string,
     collection?: string,
-    execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions
   ): Promise<"present" | "missing" | "unknown" | "skipped">;
 }

@@ -88,18 +88,16 @@ export class TierMigrationExecutor {
 
     await this.appendJournal(result);
 
-    if (result.changed) {
-      const destinationCollection = this.collectionForTier(toTier);
-      const sourceCollection = this.collectionForTier(fromTier);
-      await this.updateCollectionFromTierRoot(destinationCollection, toTier);
-      if (sourceCollection !== destinationCollection && this.qmd.updatesAllCollections?.() !== true) {
-        await this.updateCollectionFromTierRoot(sourceCollection, fromTier);
-      }
-      if (this.autoEmbed) {
-        await this.qmd.embedCollection(destinationCollection);
-        if (sourceCollection !== destinationCollection) {
-          await this.qmd.embedCollection(sourceCollection);
-        }
+    const destinationCollection = this.collectionForTier(toTier);
+    const sourceCollection = this.collectionForTier(fromTier);
+    await this.updateCollectionFromTierRoot(destinationCollection, toTier);
+    if (sourceCollection !== destinationCollection && this.qmd.updatesAllCollections?.() !== true) {
+      await this.updateCollectionFromTierRoot(sourceCollection, fromTier);
+    }
+    if (this.autoEmbed) {
+      await this.qmd.embedCollection(destinationCollection);
+      if (sourceCollection !== destinationCollection) {
+        await this.qmd.embedCollection(sourceCollection);
       }
     }
 

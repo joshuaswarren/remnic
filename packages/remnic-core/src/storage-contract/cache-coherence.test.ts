@@ -435,3 +435,102 @@ test("citation path lookup resolves collection-prefixed QMD paths", async () => 
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("memory snapshots ignore object key order", async () => {
+  const { createMemorySnapshot } = await import("../memory-snapshot.js");
+  type SnapshotInput = Parameters<typeof createMemorySnapshot>[0];
+  const first = {
+    content: "payload",
+    frontmatter: { z: 1, nested: { y: 2, x: 3 } },
+  } as unknown as SnapshotInput;
+  const second = {
+    frontmatter: { nested: { x: 3, y: 2 }, z: 1 },
+    content: "payload",
+  } as unknown as SnapshotInput;
+  assert.equal(createMemorySnapshot(first), createMemorySnapshot(second));
+});
+
+test("tier move: caller-only mutation is not persisted by moveMemoryToPath", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-caller-mut-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+
+    const { id } = await storage.writeMemory("fact", "original disk content");
+    const memories = await storage.readAllMemories();
+    const memory = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(memory, "memory must exist");
+
+    memory.content = "caller mutated unpersisted content";
+
+    const targetPath = storage.buildTierMemoryPath(memory, "cold");
+    await storage.moveMemoryToPath(memory, targetPath);
+
+    const onDisk = await readFile(targetPath, "utf8");
+    assert.ok(onDisk.includes("original disk content"), "Moved file on disk must retain original content");
+    assert.ok(!onDisk.includes("caller mutated unpersisted content"), "Moved file on disk must not carry caller's unpersisted content mutation");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("tier move: stale on-disk mutation fails snapshot check during move", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-stale-disk-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+
+    const { id } = await storage.writeMemory("fact", "unmodified content");
+    const memories = await storage.readAllMemories();
+    const memory = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(memory, "memory must exist");
+
+    const diskContent = await readFile(memory.path, "utf8");
+    await writeFile(memory.path, diskContent.replace("unmodified content", "external edit on disk"));
+
+    const targetPath = storage.buildTierMemoryPath(memory, "cold");
+    await assert.rejects(
+      async () => {
+        await storage.moveMemoryToPath(memory, targetPath);
+      },
+      (err: Error) => {
+        return err.message.includes("changed before its tier move");
+      }
+    );
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("tier move: cold-to-hot move invalidates cold cache and cannot remain in readAllColdMemories", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-cold-to-hot-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+
+    const { id } = await storage.writeMemory("fact", "demoted to cold then promoted");
+    const memories = await storage.readAllMemories();
+    const memory = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(memory, "memory must exist");
+
+    const { targetPath: coldPath } = await storage.migrateMemoryToTier(memory, "cold");
+
+    const coldMemories = await storage.readAllColdMemories();
+    const coldMem = coldMemories.find((m) => m.frontmatter.id === id);
+    assert.ok(coldMem, "memory must be present in cold tier read");
+
+    const { changed } = await storage.migrateMemoryToTier(coldMem, "hot");
+    assert.equal(changed, true, "migration from cold to hot must succeed");
+
+    const coldMemoriesAfter = await storage.readAllColdMemories();
+    const foundInCold = coldMemoriesAfter.some((m) => m.frontmatter.id === id);
+    assert.equal(foundInCold, false, "promoted memory must not remain in readAllColdMemories cache");
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

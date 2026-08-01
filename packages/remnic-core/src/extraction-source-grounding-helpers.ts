@@ -10,7 +10,7 @@ export function isInterrogativeSourceSentence(sentence: string): boolean {
     || hasEmbeddedQuestion
     || (
       !normalized.includes(":")
-      && /^(?:suppose|assuming|assume|maybe|perhaps|hypothetically|if|whether|imagine|imagining|presume|presuming|supposing|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who)\b/iu.test(
+      && /^(?:suppose|assuming|assume|maybe|perhaps|hypothetically|if|whether|imagine|imagining|presume|presuming|supposing|is|are|am|was|were|do|does|did|can|could|will|would|should|has|have|had|what|which|when|where|why|how|who|whom)\b/iu.test(
         normalized,
       )
     );
@@ -171,6 +171,7 @@ export const GROUNDING_STOPWORDS: Record<string, true> = {
   where: true,
   which: true,
   who: true,
+  whom: true,
   will: true,
   with: true,
   would: true,
@@ -342,26 +343,56 @@ export function groundingLexemes(text: string): GroundingLexeme[] {
     const previousToken = tokens[index - 1];
     const followsAuxiliary = previousToken !== undefined
       && GROUNDING_AUXILIARY_TOKENS.has(previousToken);
-    const capitalized = /^\p{Lu}/u.test(rawTokens[index] ?? "");
-    return followsAuxiliary || (
-      !capitalized
+    let previousMeaningfulIndex = index - 1;
+    while (
+      previousMeaningfulIndex >= 0
+      && !GROUNDING_COPULAR_FORMS.has(tokens[previousMeaningfulIndex] ?? "")
       && (
-        GROUNDING_COMMON_VERB_FORMS[token] === true
-        || token.endsWith("ed")
-        || token.endsWith("ing")
+        GROUNDING_STOPWORDS[tokens[previousMeaningfulIndex] ?? ""] === true
+        || (tokens[previousMeaningfulIndex] ?? "").endsWith("ly")
       )
+    ) {
+      previousMeaningfulIndex -= 1;
+    }
+    const followsCopularAuxiliary = GROUNDING_COPULAR_FORMS.has(
+      tokens[previousMeaningfulIndex] ?? "",
     );
+    const capitalized = /^\p{Lu}/u.test(rawTokens[index] ?? "");
+    const terminalSInflection = index > 0
+      && token.endsWith("s")
+      && !token.endsWith("ss")
+      && !GROUNDING_AUXILIARY_TOKENS.has(token);
+    const capitalizedSubjectHasLaterPredicate = index === 0
+      && tokens.some((laterToken, laterIndex) =>
+        laterIndex > 0
+        && !/^\p{Lu}/u.test(rawTokens[laterIndex] ?? "")
+        && (
+          GROUNDING_AUXILIARY_TOKENS.has(laterToken)
+          || GROUNDING_COMMON_VERB_FORMS[laterToken] === true
+          || laterToken.endsWith("ed")
+          || laterToken.endsWith("ing")
+        ));
+    if (capitalized && (index !== 0 || capitalizedSubjectHasLaterPredicate)) return false;
+    if (followsCopularAuxiliary && terminalSInflection) return false;
+    return GROUNDING_COMMON_VERB_FORMS[token] === true
+      || token.endsWith("ed")
+      || token.endsWith("ing")
+      || (followsAuxiliary && !followsCopularAuxiliary)
+      || terminalSInflection;
   });
   if (predicateIndex === -1) {
-    predicateIndex = tokens.findIndex((token, index) =>
-      index > 0
-      && !/^\p{Lu}/u.test(rawTokens[index] ?? "")
-      && token.endsWith("s")
-      && !token.endsWith("ss"));
-  }
-  if (predicateIndex === -1) {
     const leadingSubjectLength = rawTokens.findIndex((rawToken) => !/^\p{Lu}/u.test(rawToken));
-    if (leadingSubjectLength > 0) predicateIndex = leadingSubjectLength;
+    if (leadingSubjectLength > 0) {
+      predicateIndex = tokens.findIndex((token, index) =>
+        index >= leadingSubjectLength
+        && (
+          GROUNDING_AUXILIARY_TOKENS.has(token)
+          || (
+            GROUNDING_STOPWORDS[token] !== true
+            && !/^\p{Lu}/u.test(rawTokens[index] ?? "")
+          )
+        ));
+    }
   }
   return rawTokens.map((rawToken, index) => {
     const token = tokens[index]!;

@@ -42,7 +42,7 @@ test("QmdClient.update() passes collection flag to qmd subprocess", async () => 
   // update() should route through collection-aware update path
   assert.match(
     qmdSource,
-    /async update\(execution\?: SearchExecutionOptions\): Promise<void>\s*\{\s*await this\.runUpdateForCollection\(\s*this\.collection,\s*\{\s*perCollectionThrottle:\s*false\s*\},\s*execution\?\.signal,\s*\);/s,
+    /async update\(execution\?: SearchExecutionOptions\): Promise<void>\s*\{\s*await this\.runUpdateForCollection\(\s*this\.collection,\s*\{\s*perCollectionThrottle:\s*false\s*\},\s*execution\?\.signal,?\s*\);/s,
     "update() should route through runUpdateForCollection(this.collection)",
   );
 

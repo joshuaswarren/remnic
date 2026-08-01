@@ -2,11 +2,12 @@
  * @remnic/bench — CLI Wiring for Benchmark Failure Attribution (Issue #1954)
  */
 
+import { QmdClient } from "@remnic/core";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   attributeRun,
-  lexicalSimilarity,
+  isTaskFailed,
   renderAttributionReportTable,
   serializeAttributionReport,
   type AttributionEnvironment,
@@ -118,10 +119,66 @@ export async function scanMemoryDir(dirPath: string): Promise<AttributionMemory[
   return memories;
 }
 
+async function resolveQmdMemory(
+  memoryDir: string,
+  collection: string,
+  resultPath: string,
+): Promise<AttributionMemory | null> {
+  const root = path.resolve(memoryDir);
+  const candidates = new Set<string>();
+  const addCandidate = (candidate: string): void => {
+    const resolved = path.resolve(candidate);
+    const relative = path.relative(root, resolved);
+    if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+      candidates.add(resolved);
+    }
+  };
+  const addRelative = (relativePath: string): void => {
+    const normalized = relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!normalized) return;
+    addCandidate(path.join(root, normalized));
+    if (/^\d{4}-\d{2}-\d{2}\//.test(normalized)) {
+      addCandidate(path.join(root, "facts", normalized));
+    }
+  };
+
+  if (path.isAbsolute(resultPath)) {
+    addCandidate(resultPath);
+  } else {
+    addRelative(resultPath);
+    const normalized = resultPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (normalized.startsWith(`${collection}/`)) {
+      addRelative(normalized.slice(collection.length + 1));
+    }
+  }
+
+  let resolvedMemory: AttributionMemory | null = null;
+  for (const candidate of candidates) {
+    try {
+      const stats = await lstat(candidate);
+      if (!stats.isFile() || stats.isSymbolicLink()) continue;
+      const parsed = parseFrontmatter(await readFile(candidate, "utf8"));
+      if (!parsed.id || parsed.id.trim().length === 0) {
+        throw new Error("QMD result has no canonical frontmatter id");
+      }
+      const memory = { id: parsed.id, content: parsed.body.trim() };
+      if (resolvedMemory && resolvedMemory.id !== memory.id) {
+        throw new Error("QMD result path resolves to more than one canonical memory id");
+      }
+      resolvedMemory = memory;
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("QMD result")) throw error;
+    }
+  }
+  return resolvedMemory;
+}
+
 export async function runAttributeCliCommand(options: {
   runRef: string;
   resultsDir: string;
   memoryDir?: string;
+  qmdPath?: string;
+  collection?: string;
   threshold?: number;
   json?: boolean;
 }): Promise<{ exitCode: number; output: string }> {
@@ -142,6 +199,13 @@ export async function runAttributeCliCommand(options: {
       output: `Error: failed to load benchmark result for run "${options.runRef}": file unreadable or invalid\n`,
     };
   }
+  if (Boolean(options.qmdPath) !== Boolean(options.collection)) {
+    return {
+      exitCode: 1,
+      output: "Error: --qmd <path> and --collection <name> must be provided together.\n",
+    };
+  }
+
 
   let memorySnapshot: AttributionMemory[] | undefined;
   const listMemoriesFn = async (): Promise<AttributionMemory[]> => {
@@ -164,22 +228,70 @@ export async function runAttributeCliCommand(options: {
 
   const recallLimitRaw = result.config?.remnicConfig?.recallLimit;
   const recallLimit = typeof recallLimitRaw === "number" && recallLimitRaw > 0 ? recallLimitRaw : 10;
-  const rankMemories = async (query: string, limit: number): Promise<AttributionMemory[]> =>
-    (await listMemoriesFn())
-      .map((memory) => ({ memory, score: lexicalSimilarity(query, memory.content) }))
-      .filter(({ score }) => score > 0)
-      .sort((a, b) => b.score - a.score || a.memory.id.localeCompare(b.memory.id))
-      .slice(0, limit)
-      .map(({ memory }) => memory);
+  const needsLegacyFallback = result.results.tasks.some((task) =>
+    task.attributionWitness === undefined &&
+    isTaskFailed(task) &&
+    Array.isArray(task.goldMemories) &&
+    task.goldMemories.length > 0 &&
+    !(task.details?.benchmarkFailure && typeof task.details.benchmarkFailure === "object")
+  );
+  if (needsLegacyFallback && options.qmdPath && !options.memoryDir) {
+    return {
+      exitCode: 1,
+      output: "Error: explicit legacy QMD fallback requires --memory-dir <path>.\n",
+    };
+  }
 
   const env: AttributionEnvironment = {
     listMemories: listMemoriesFn,
-    oracleSearch: async (query, limit) => (await rankMemories(query, limit)).map(({ id }) => ({ id })),
-    recall: rankMemories,
     recallLimit,
   };
+  let qmdClient: QmdClient | undefined;
+  if (needsLegacyFallback && options.qmdPath && options.collection && options.memoryDir) {
+    qmdClient = new QmdClient(options.collection, recallLimit, {
+      qmdPath: options.qmdPath,
+      qmdStrictPath: true,
+    });
+    const qmdAvailable = await qmdClient.probe().catch(() => false);
+    const search = async (query: string, limit: number): Promise<AttributionMemory[]> => {
+      if (!qmdAvailable) {
+        throw new Error("QMD unavailable");
+      }
+      const degradations: unknown[] = [];
+      const results = await qmdClient!.search(
+        query,
+        options.collection,
+        limit,
+        undefined,
+        { onDegradation: (degradation) => degradations.push(degradation) },
+      );
+      if (degradations.length > 0) {
+        throw new Error("QMD search degraded");
+      }
+      const memories: AttributionMemory[] = [];
+      const seenIds = new Set<string>();
+      for (const resultItem of results) {
+        const memory = await resolveQmdMemory(options.memoryDir!, options.collection!, resultItem.path);
+        if (!memory) {
+          throw new Error("QMD result canonical identity unavailable");
+        }
+        if (!seenIds.has(memory.id)) {
+          seenIds.add(memory.id);
+          memories.push(memory);
+        }
+      }
+      return memories;
+    };
+    env.oracleSearch = async (query, limit) => (await search(query, limit)).map(({ id }) => ({ id }));
+    env.recall = search;
+  }
 
-  const report = await attributeRun(result, env, { threshold: options.threshold });
+  let report;
+  try {
+    report = await attributeRun(result, env, { threshold: options.threshold });
+  } finally {
+    await qmdClient?.dispose();
+  }
 
   const output = options.json
     ? serializeAttributionReport(report)

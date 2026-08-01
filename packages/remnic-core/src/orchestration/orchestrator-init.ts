@@ -26,6 +26,7 @@ import type { ConversationIndexBackend } from "../conversation-index/backend.js"
 import type { CorrectionService } from "../correction/correction-service.js";
 import { EmbeddingFallback } from "../embedding-fallback.js";
 import { ContentHashIndex, StorageManager } from "../index.js";
+import { assertExternalWikiRootOutsideMemoryDirCanonical } from "../external-wiki-guard.js";
 import { log } from "../logger.js";
 import { migrateFromEngram } from "../migrate/from-engram.js";
 import { NamespaceCatalog } from "../namespaces/catalog.js";
@@ -118,6 +119,14 @@ export class OrchestratorInitCoordinator {
       });
       await this.deps.storage.loadAliases();
       await this.deps.storage.ensureDirectories();
+      await Promise.all(
+        this.deps.config.externalWikis.map((wiki) =>
+          assertExternalWikiRootOutsideMemoryDirCanonical(
+            this.deps.config.memoryDir,
+            wiki.rootDir,
+          ),
+        ),
+      );
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
         const namespaces = new Set<string>([
           this.deps.config.defaultNamespace,

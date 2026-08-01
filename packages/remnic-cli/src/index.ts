@@ -165,16 +165,15 @@ import {
   evaluateActionConfidence,
   renderActionConfidenceText,
   expandTildePath,
-  // capsule fork — issue #676 PR 4/6
   forkCapsule,
   readForkLineage,
-  // wearable transcript sources (Limitless / Bee / Omi)
   runWearablesCliCommand,
   OPERATION_NAMES,
   validateCapabilitiesForMint,
 } from "@remnic/core";
 import { resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
 import { runMeetingsBinaryCommand } from "./commands/meetings.js";
+import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
@@ -373,8 +372,6 @@ registerPublisher("hermes", () => new HermesMemoryExtensionPublisher());
 registerPublisher("pi", () => new LazyPluginPiPublisher("pi", (mod) => mod.PiMemoryExtensionPublisher));
 registerPublisher("omp", () => new LazyPluginPiPublisher("omp", (mod) => mod.OmpMemoryExtensionPublisher));
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
 type CommandName =
   | "init"
   | "migrate"
@@ -410,6 +407,7 @@ type CommandName =
   | "xray"
   | "wearables"
   | "meetings"
+  | "external-wiki"
   | "capsule"
   | "offline"
   | "capture"
@@ -10450,7 +10448,7 @@ async function cmdSpace(action: string, rest: string[], json: boolean): Promise<
       console.error("Usage: remnic space push <source> <target>");
       process.exit(1);
     }
-    const result = pushToSpace(sourceId, targetId, { force: rest.includes("--force") });
+    const result = await pushToSpace(sourceId, targetId, { force: rest.includes("--force") });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -10465,7 +10463,7 @@ async function cmdSpace(action: string, rest: string[], json: boolean): Promise<
       console.error("Usage: remnic space pull <source> <target>");
       process.exit(1);
     }
-    const result = pullFromSpace(sourceId, targetId, { force: rest.includes("--force") });
+    const result = await pullFromSpace(sourceId, targetId, { force: rest.includes("--force") });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -10489,7 +10487,7 @@ async function cmdSpace(action: string, rest: string[], json: boolean): Promise<
       console.error("Usage: remnic space promote <source> <target>");
       process.exit(1);
     }
-    const result = promoteSpace(sourceId, targetId, {
+    const result = await promoteSpace(sourceId, targetId, {
       force: rest.includes("--force"),
       forceOverwrite: rest.includes("--force-overwrite"),
     });
@@ -13223,13 +13221,12 @@ Other:
       break;
     }
 
+    case "external-wiki": {
+      await runExternalWikiBinaryCommand(rest);
+      break;
+    }
+
     case "import": {
-      // Infrastructure-only in slice 1 (#568). The optional adapter packages
-      // (@remnic/import-chatgpt/claude/gemini/mem0/supermemory) land in
-      // follow-up slices and
-      // are loaded via computed-specifier dynamic import — running
-      // `remnic import --adapter chatgpt` today surfaces a clean install
-      // hint rather than MODULE_NOT_FOUND.
       if (rest.includes("--help") || rest.includes("-h") || rest.length === 0) {
         console.log(IMPORT_USAGE);
         break;
@@ -13474,6 +13471,7 @@ Usage:
     Retrospective meetings: list stored records, show one by id, or build
     (detect + fuse + store) a day's meetings from ingested audio + screen
     activity. Run "remnic meetings help" for details.
+  remnic external-wiki search <query...> [--wiki-id <id>] [--limit <1-20>] [--max-chars-per-hit <100-8000>] [--json]
 
   remnic doctor                Run diagnostics
   remnic config                Show current config

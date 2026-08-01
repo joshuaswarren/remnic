@@ -160,6 +160,36 @@ Access-layer safety notes:
 
 See [Search Backends](search-backends.md) for detailed configuration and comparison.
 
+## External compiled wikis
+
+`externalWikis` registers read-only compiled knowledge trees for explicit,
+on-demand search. Configuring a root does not add its files to memory storage,
+QMD, hot facts, or default recall. See [External wiki search](external-wikis.md).
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `externalWikis` | `[]` | Configured external wiki roots. |
+| `externalWikis[].id` | required | Stable lowercase id matching `[a-z0-9][a-z0-9_-]{0,63}`. |
+| `externalWikis[].rootDir` | required | Absolute path or `~/` path outside `memoryDir`. |
+| `externalWikis[].enabled` | `true` | Include this root in explicit external wiki searches. |
+| `externalWikis[].label` | unset | Optional display label. |
+| `externalWikis[].pagesDir` | `"wiki"` | Root-relative directory containing markdown concept pages. |
+| `externalWikis[].indexFile` | `"INDEX.md"` | Root-relative catalog file. |
+| `externalWikis[].indexInQmd` | `false` | Reserved dedicated-index flag; filesystem search remains available. |
+| `externalWikis[].includeInDefaultRecall` | `false` | Must remain `false`; `true` is rejected. |
+
+```json
+{
+  "externalWikis": [
+    {
+      "id": "engineering",
+      "rootDir": "/srv/knowledge/engineering",
+      "label": "Engineering knowledge"
+    }
+  ]
+}
+```
+
 ## Retrieval & Recall Budget
 
 | Setting | Default | Description |
@@ -171,6 +201,8 @@ See [Search Backends](search-backends.md) for detailed configuration and compari
 | `recallSingleFlightEnabled` | `true` | Coalesce identical concurrent recalls for the same principal into a single in-flight execution (issue #1906); each caller still receives its own cloned response. Set `false` to restore per-request execution. |
 | `qmdEnabled` | `true` | Use QMD for hybrid search |
 | `qmdCollection` | `openclaw-engram` | QMD collection name |
+| `externalWikis` | `[]` | External compiled-wiki roots for on-demand search. Each item requires `id` and an absolute or `~/` `rootDir`; optional fields are `enabled`, `label`, `pagesDir`, `indexFile`, `indexInQmd`, and the false-only `includeInDefaultRecall` guard. |
+| `wikiMergeIntoRecall` | `false` | Reserved guard for external compiled wikis. `true` is rejected; use on-demand wiki search instead. |
 | `qmdMaxResults` | `8` | Final result cap after over-scanning and ranking (fetch size may be larger) |
 | `qmdColdTierEnabled` | `false` | Query a secondary cold QMD collection after hot recall misses; generic recall never reads archive records |
 | `qmdColdCollection` | `openclaw-engram-cold` | QMD collection name used for cold-tier recall |
@@ -1273,6 +1305,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `memoryOsPreset` | (unset) | `balanced` |
 | `qmdEnabled` | `true` | `true` |
 | `qmdCollection` | `openclaw-engram` | `openclaw-engram` |
+| `wikiMergeIntoRecall` | `false` | `false` (the only supported value) |
 | `qmdMaxResults` | `8` | `8` |
 | `qmdColdTierEnabled` | `false` | `false` unless you are actively tiering hot/cold QMD collections |
 | `qmdColdCollection` | `openclaw-engram-cold` | `openclaw-engram-cold` |

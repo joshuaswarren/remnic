@@ -4,6 +4,7 @@ import type { ActivityConfig } from "./activity/types.js";
 import type { WearablesConfig } from "./wearables/types.js";
 import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
 import type { ReplicaPeersConfig } from "./replica-peers-config.js";
+import type { ExternalWikiRoot } from "./external-wiki-config.js";
 
 import type { BufferTurnOwner } from "./buffer-turn-helpers.js";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
@@ -733,6 +734,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   memoryOsPreset?: MemoryOsPresetName;
   qmdEnabled: boolean;
   qmdCollection: string;
+  wikiMergeIntoRecall: boolean;
   qmdMaxResults: number;
   qmdEmbeddingBacklogThreshold: number;
   qmdColdTierEnabled?: boolean;
@@ -751,11 +753,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   qmdChunkStrategy: "auto" | "regex";
   qmdCandidateLimit?: number;
   qmdQueryRerankEnabled: boolean;
-  // Daemon search plan; "hybrid" (default) = lex+vec+hyde. Issue #1335.
   qmdSearchStrategy: "hybrid" | "lex-vec" | "lex";
-  // Subprocess fallback command; "query" (default) keeps LLM expansion. Issue #1335.
   qmdSubprocessStrategy: "query" | "search";
-  // Per-call daemon search timeout in ms; default 8000. Issue #1335.
   qmdDaemonTimeoutMs: number;
   qmdIndexName?: string;
   qmdForceCpu: boolean;
@@ -785,6 +784,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   /** Optional absolute path to qmd binary. If unset, PATH/fallback discovery is used. */
   qmdPath?: string;
   memoryDir: string;
+  externalWikis: ExternalWikiRoot[];
   debug: boolean;
   identityEnabled: boolean;
   identityContinuityEnabled: boolean;

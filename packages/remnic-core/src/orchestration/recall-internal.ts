@@ -96,7 +96,14 @@ import {
 } from "../orchestrator.js";
 import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
 import type { RecallSectionBuckets } from "./recall-section-coordinator.js";
+import {
+  reconcileRecallResultPartition,
+  type RecallResultPartition,
+  type RecallResultPartitionSink,
+} from "./recall-rerank-coordinator.js";
 import type { RecallInternalDeps } from "./recall-internal-deps.js";
+import { resolveCompositeProfileStorage } from "./recall-profile-storage.js";
+
 export class RecallInternalCoordinator {
   constructor(
     private readonly deps: RecallInternalDeps,
@@ -280,6 +287,7 @@ export class RecallInternalCoordinator {
     // sites) updates the same counter; the X-ray capture block
     // reads this as the cold-fallback pool.
     const xrayColdPoolSink = { size: 0 };
+    let selectedResultPartition: RecallResultPartition | null = null;
     let identityInjectionModeUsed: IdentityInjectionMode | "none" = "none";
     let identityInjectedChars = 0;
     let identityInjectionTruncated = false;
@@ -567,6 +575,7 @@ export class RecallInternalCoordinator {
             query: retrievalQuery,
             tierExplain: null,
             results: [],
+            appliedResultLimit: recallResultLimit,
             filters: [
               {
                 name: "planner-mode",
@@ -678,154 +687,10 @@ export class RecallInternalCoordinator {
     const profileStorages = await Promise.all(
       profileStorageNamespaces.map((namespace) => this.deps.storageRouter.storageFor(namespace)),
     );
-    const emptyProfileStorage = new Proxy(
-      { dir: path.join(this.deps.config.memoryDir, ".empty-scope-profile") } as any,
-      {
-        get(target, prop: string | symbol) {
-          if (prop in target) return target[prop];
-          if (prop === "readProfile") return async () => "";
-          if (
-            prop === "readQuestions" ||
-            prop === "listEntityNames" ||
-            prop === "readContinuityIncidents"
-          )
-            return async () => [];
-          if (
-            prop === "readIdentityAnchor" ||
-            prop === "readIdentityImprovementLoops"
-          )
-            return async () => "";
-          if (prop === "readEntity" || prop === "readMemoryByPath")
-            return async () => null;
-          return async () => [];
-        },
-      },
-    );
-    const profileStorage =
-      profileStorages.length <= 1
-        ? profileStorages[0] ?? emptyProfileStorage
-        : new Proxy(profileStorages[0] as any, {
-            get(target, prop: string | symbol) {
-              if (prop === "readProfile") {
-                return async () => {
-                  for (const storage of profileStorages) {
-                    const profile = await storage.readProfile();
-                    if (profile.trim().length > 0) return profile;
-                  }
-                  return "";
-                };
-              }
-              if (prop === "readQuestions") {
-                return async (...args: any[]) => {
-                  const merged: any[] = [];
-                  const seen = new Set<string>();
-                  const priorityOf = (question: any): number => {
-                    const priority = Number(question?.priority ?? 0);
-                    return Number.isFinite(priority) ? priority : 0;
-                  };
-                  for (const storage of profileStorages) {
-                    const questions = await (storage.readQuestions as any)(...args);
-                    for (const question of questions) {
-                      const key = typeof question === "string" ? question : JSON.stringify(question);
-                      if (seen.has(key)) continue;
-                      seen.add(key);
-                      merged.push(question);
-                    }
-                  }
-                  return merged.sort(
-                    (left, right) =>
-                      priorityOf(right) - priorityOf(left) ||
-                      String(left?.id ?? "").localeCompare(String(right?.id ?? "")),
-                  );
-                };
-              }
-              if (prop === "readIdentityAnchor") {
-                return async () => {
-                  for (const storage of profileStorages) {
-                    const anchor = (await storage.readIdentityAnchor()) ?? "";
-                    if (anchor.trim().length > 0) return anchor;
-                  }
-                  return "";
-                };
-              }
-              if (prop === "readIdentityImprovementLoops") {
-                return async () => {
-                  const sections: string[] = [];
-                  const seen = new Set<string>();
-                  for (const storage of profileStorages) {
-                    const loops = ((await storage.readIdentityImprovementLoops()) ?? "").trim();
-                    if (!loops || seen.has(loops)) continue;
-                    seen.add(loops);
-                    sections.push(loops);
-                  }
-                  return sections.join("\n\n");
-                };
-              }
-              if (prop === "readContinuityIncidents") {
-                return async (...args: any[]) => {
-                  const limit = typeof args[0] === "number" && Number.isFinite(args[0]) ? Math.max(0, args[0]) : undefined;
-                  const incidents: any[] = [];
-                  const seen = new Set<string>();
-                  const incidentTime = (incident: any): number => {
-                    const raw = incident?.updatedAt ?? incident?.openedAt ?? incident?.createdAt;
-                    const parsed = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
-                    return Number.isFinite(parsed) ? parsed : 0;
-                  };
-                  for (const storage of profileStorages) {
-                    for (const incident of await (storage.readContinuityIncidents as any)(...args)) {
-                      const key = JSON.stringify(incident);
-                      if (seen.has(key)) continue;
-                      seen.add(key);
-                      incidents.push(incident);
-                    }
-                  }
-                  incidents.sort(
-                    (left, right) =>
-                      incidentTime(right) - incidentTime(left) ||
-                      String(left?.id ?? "").localeCompare(String(right?.id ?? "")),
-                  );
-                  return limit === undefined ? incidents : incidents.slice(0, limit);
-                };
-              }
-              if (prop === "listEntityNames") {
-                return async (...args: any[]) => {
-                  const names = new Set<string>();
-                  for (const storage of profileStorages) {
-                    for (const name of await (storage.listEntityNames as any)(...args)) names.add(name);
-                  }
-                  return [...names];
-                };
-              }
-              if (prop === "readEntity" || prop === "readMemoryByPath") {
-                return async (...args: any[]) => {
-                  for (const storage of profileStorages) {
-                    const value = await (storage as any)[prop](...args);
-                    if (value) return value;
-                  }
-                  return null;
-                };
-              }
-              if (prop === "readAllMemories") {
-                return async (...args: any[]) => {
-                  const memories: any[] = [];
-                  const seen = new Set<string>();
-                  for (const storage of profileStorages) {
-                    for (const memory of await (storage.readAllMemories as any)(...args)) {
-                      const key = String(memory?.path ?? memory?.frontmatter?.id ?? JSON.stringify(memory));
-                      if (seen.has(key)) continue;
-                      seen.add(key);
-                      memories.push(memory);
-                    }
-                  }
-                  return memories;
-                };
-              }
-              return target[prop];
-            },
-          });
-    const profileStorageDirs = Array.from(
-      new Set(profileStorages.map((storage) => storage.dir).filter((dir): dir is string => typeof dir === "string" && dir.length > 0)),
-    );
+    const { profileStorage, profileStorageDirs } = resolveCompositeProfileStorage({
+      profileStorages,
+      memoryDir: this.deps.config.memoryDir,
+    });
 
     // --- Phase 1: Launch ALL independent data fetches in parallel ---
     throwIfRecallAborted(options.abortSignal);
@@ -4102,13 +3967,25 @@ export class RecallInternalCoordinator {
       // Diversify via MMR over the full candidate pool *before* truncating to
       // the final recall limit. Running MMR after the slice would be unable
       // to promote diverse candidates sitting just below the cutoff.
-      memoryResults = this.deps.diversifyAndLimitRecallResults(
-        "memories",
-        memoryResults,
-        recallResultLimit,
-        retrievalQuery,
-        caps,
-      );
+      const hotQmdPartition =
+        options.xrayCapture === true
+          ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+              "memories",
+              memoryResults,
+              recallResultLimit,
+              retrievalQuery,
+              caps,
+            )
+          : null;
+      memoryResults = hotQmdPartition
+        ? [...hotQmdPartition.appliedResults]
+        : this.deps.diversifyAndLimitRecallResults(
+            "memories",
+            memoryResults,
+            recallResultLimit,
+            retrievalQuery,
+            caps,
+          );
       // E-Mem-inspired memory reconstruction: fill gaps for referenced entities
       if (resolveRecallEnhancementCapabilities(this.deps.config).memoryReconstruction && memoryResults.length > 0) {
         try {
@@ -4160,6 +4037,7 @@ export class RecallInternalCoordinator {
         }
         recallSource = "hot_qmd";
         recalledMemoryCount = memoryResults.length;
+        selectedResultPartition = hotQmdPartition;
         this.deps.publishRecallResults({
           title: "Relevant Memories",
           results: memoryResults,
@@ -4217,16 +4095,29 @@ export class RecallInternalCoordinator {
               xrayBranchPoolSize.hot_embedding,
               boostedScoped.length,
             );
-            return this.deps.diversifyAndLimitRecallResults(
-              "memories",
-              boostedScoped,
-              recallResultLimit,
-              retrievalQuery,
-              caps,
-            );
+            return boostedScoped;
           },
           [] as QmdSearchResult[],
         );
+        const embeddingPartition =
+          options.xrayCapture === true
+            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                "memories",
+                scoped,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+              )
+            : null;
+        scoped =
+          embeddingPartition?.appliedResults ??
+          this.deps.diversifyAndLimitRecallResults(
+            "memories",
+            scoped,
+            recallResultLimit,
+            retrievalQuery,
+            caps,
+          );
         // Issue #1577 — apply TrustScore on the embedding-fallback path so the
         // feature gate is consistent across ALL recall paths (rule 41 parity).
         {
@@ -4270,6 +4161,7 @@ export class RecallInternalCoordinator {
           }
           recallSource = "hot_embedding";
           recalledMemoryCount = scoped.length;
+          selectedResultPartition = reconcileRecallResultPartition(embeddingPartition, scoped);
           this.deps.publishRecallResults({
             title: "Relevant Memories",
             results: scoped,
@@ -4288,6 +4180,8 @@ export class RecallInternalCoordinator {
             .filter(Boolean);
           xrayRecalledResults = scoped;
         } else {
+          const coldPartitionSink: RecallResultPartitionSink | undefined =
+            options.xrayCapture === true ? { partition: null } : undefined;
           const longTerm = await this.deps.applyColdFallbackPipeline({
             prompt: retrievalQuery,
             recallNamespaces,
@@ -4301,6 +4195,7 @@ export class RecallInternalCoordinator {
               backendDegradations.push(degradation);
             },
             xrayPoolSizeSink: xrayColdPoolSink,
+            resultPartitionSink: coldPartitionSink,
             trustByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
@@ -4320,6 +4215,7 @@ export class RecallInternalCoordinator {
             }
             recallSource = "cold_fallback";
             recalledMemoryCount = longTerm.length;
+            selectedResultPartition = coldPartitionSink?.partition ?? null;
             this.deps.publishRecallResults({
               title: "Long-Term Memories (Fallback)",
               results: longTerm,
@@ -4413,16 +4309,29 @@ export class RecallInternalCoordinator {
               xrayBranchPoolSize.hot_embedding,
               boostedScoped.length,
             );
-            return this.deps.diversifyAndLimitRecallResults(
-              "memories",
-              boostedScoped,
-              recallResultLimit,
-              retrievalQuery,
-              caps,
-            );
+            return boostedScoped;
           },
           [] as QmdSearchResult[],
         );
+        const embeddingPartition =
+          options.xrayCapture === true
+            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                "memories",
+                scoped,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+              )
+            : null;
+        scoped =
+          embeddingPartition?.appliedResults ??
+          this.deps.diversifyAndLimitRecallResults(
+            "memories",
+            scoped,
+            recallResultLimit,
+            retrievalQuery,
+            caps,
+          );
         // Issue #1577 — apply TrustScore on the embedding-fallback path so the
         // feature gate is consistent across ALL recall paths (rule 41 parity).
         {
@@ -4463,6 +4372,7 @@ export class RecallInternalCoordinator {
         }
         recallSource = "hot_embedding";
         recalledMemoryCount = scoped.length;
+        selectedResultPartition = reconcileRecallResultPartition(embeddingPartition, scoped);
         this.deps.publishRecallResults({
           title: "Relevant Memories",
           results: scoped,
@@ -4549,6 +4459,8 @@ export class RecallInternalCoordinator {
             queryAwarePrefilter.candidatePaths &&
             queryAwareScopedMemories.length === 0
           ) {
+            const coldPartitionSink: RecallResultPartitionSink | undefined =
+              options.xrayCapture === true ? { partition: null } : undefined;
             const longTerm = await this.deps.applyColdFallbackPipeline({
               prompt: retrievalQuery,
               recallNamespaces,
@@ -4562,6 +4474,7 @@ export class RecallInternalCoordinator {
                 backendDegradations.push(degradation);
               },
               xrayPoolSizeSink: xrayColdPoolSink,
+              resultPartitionSink: coldPartitionSink,
               trustByPathSink,
               deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
               asOfMs,
@@ -4573,6 +4486,7 @@ export class RecallInternalCoordinator {
             if (longTerm.length > 0) {
               recallSource = "cold_fallback";
               recalledMemoryCount = longTerm.length;
+              selectedResultPartition = coldPartitionSink?.partition ?? null;
               this.deps.publishRecallResults({
                 title: "Long-Term Memories (Fallback)",
                 results: longTerm,
@@ -4629,16 +4543,29 @@ export class RecallInternalCoordinator {
                   xrayBranchPoolSize.recent_scan,
                   boostedRecent.length,
                 );
-                return this.deps.diversifyAndLimitRecallResults(
-                  "memories",
-                  boostedRecent,
-                  recallResultLimit,
-                  retrievalQuery,
-                  caps,
-                );
+                return boostedRecent;
               },
               [] as QmdSearchResult[],
             );
+            const recentPartition =
+              options.xrayCapture === true
+                ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                    "memories",
+                    recent,
+                    recallResultLimit,
+                    retrievalQuery,
+                    caps,
+                  )
+                : null;
+            recent =
+              recentPartition?.appliedResults ??
+              this.deps.diversifyAndLimitRecallResults(
+                "memories",
+                recent,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+              );
             // Issue #1577 — apply TrustScore on the recent-scan path so the
             // feature gate is consistent across ALL recall paths (rule 41).
             {
@@ -4685,6 +4612,7 @@ export class RecallInternalCoordinator {
               }
               recallSource = "recent_scan";
               recalledMemoryCount = recent.length;
+              selectedResultPartition = reconcileRecallResultPartition(recentPartition, recent);
               this.deps.publishRecallResults({
                 title: "Recent Memories",
                 results: recent,
@@ -4703,6 +4631,8 @@ export class RecallInternalCoordinator {
                 .filter(Boolean);
               xrayRecalledResults = recent;
             } else {
+              const coldPartitionSink: RecallResultPartitionSink | undefined =
+                options.xrayCapture === true ? { partition: null } : undefined;
               const longTerm = await this.deps.applyColdFallbackPipeline({
                 prompt: retrievalQuery,
                 recallNamespaces,
@@ -4716,6 +4646,7 @@ export class RecallInternalCoordinator {
                   backendDegradations.push(degradation);
                 },
                 xrayPoolSizeSink: xrayColdPoolSink,
+                resultPartitionSink: coldPartitionSink,
                 trustByPathSink,
                 deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                 asOfMs,
@@ -4734,6 +4665,7 @@ export class RecallInternalCoordinator {
                 }
                 recallSource = "cold_fallback";
                 recalledMemoryCount = longTerm.length;
+                selectedResultPartition = coldPartitionSink?.partition ?? null;
                 this.deps.publishRecallResults({
                   title: "Long-Term Memories (Fallback)",
                   results: longTerm,
@@ -4755,6 +4687,8 @@ export class RecallInternalCoordinator {
             }
           }
         } else {
+          const coldPartitionSink: RecallResultPartitionSink | undefined =
+            options.xrayCapture === true ? { partition: null } : undefined;
           const longTerm = await this.deps.applyColdFallbackPipeline({
             prompt: retrievalQuery,
             recallNamespaces,
@@ -4768,6 +4702,7 @@ export class RecallInternalCoordinator {
               backendDegradations.push(degradation);
             },
             xrayPoolSizeSink: xrayColdPoolSink,
+            resultPartitionSink: coldPartitionSink,
             trustByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
@@ -4785,6 +4720,7 @@ export class RecallInternalCoordinator {
             }
             recallSource = "cold_fallback";
             recalledMemoryCount = longTerm.length;
+            selectedResultPartition = coldPartitionSink?.partition ?? null;
             this.deps.publishRecallResults({
               title: "Long-Term Memories (Fallback)",
               results: longTerm,
@@ -5027,6 +4963,31 @@ export class RecallInternalCoordinator {
     ) {
       try {
         const servedBy = mapRecallSourceToXrayServedBy(recallSource);
+        const toPartitionXrayResult = (
+          candidate: QmdSearchResult,
+        ): RecallXrayResult => {
+          const scoreDecomposition: RecallXrayScoreDecomposition = {
+            final: candidate.score,
+          };
+          if (
+            candidate.explain?.reinforcementBoost !== undefined &&
+            candidate.explain.reinforcementBoost > 0
+          ) {
+            scoreDecomposition.reinforcementBoost =
+              candidate.explain.reinforcementBoost;
+          }
+          return {
+            memoryId: candidate.docid,
+            path: candidate.path,
+            servedBy,
+            scoreDecomposition,
+            admittedBy: [],
+          };
+        };
+        const appliedResults =
+          selectedResultPartition?.appliedResults.map(toPartitionXrayResult) ?? [];
+        const headroomResults =
+          selectedResultPartition?.headroomResults.map(toPartitionXrayResult) ?? [];
         // Derive xray results from `recalledMemoryPaths` as the single
         // source of truth — `recalledMemoryIds` and `recalledMemoryPaths`
         // are built with two independent filters upstream
@@ -5187,6 +5148,9 @@ export class RecallInternalCoordinator {
           query: retrievalQuery,
           tierExplain: null,
           results: [...results, ...lcmStructuredXrayResults],
+          appliedResultLimit: recallResultLimit,
+          appliedResults,
+          headroomResults,
           filters,
           budget: {
             chars: this.deps.getRecallBudgetChars(options.budgetCharsOverride),

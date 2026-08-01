@@ -61,6 +61,7 @@ async function writeFact(
   memoryDir: string,
   body: string,
   extraFrontmatterLines: string[] = [],
+  updatedAt = new Date().toISOString(),
 ): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
   const id = `fact-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -69,7 +70,7 @@ async function writeFact(
     `id: ${id}`,
     "category: fact",
     `created: ${new Date().toISOString()}`,
-    `updated: ${new Date().toISOString()}`,
+    `updated: ${updatedAt}`,
     "source: extraction",
     "confidence: 0.8",
     "confidenceTier: high",
@@ -151,6 +152,79 @@ test("TrustScore quarantine excludes a contradicted memory from injection but su
     assert.ok(
       typeof quarantined!.trust!.quarantineReason === "string" && quarantined!.trust!.quarantineReason.length > 0,
       "quarantined result carries a human-readable reason",
+    );
+    assert.ok(
+      snapshot!.appliedResults.some((result) => result.memoryId === goodId),
+      "the applied witness includes the memory that reached published recall",
+    );
+    assert.equal(
+      snapshot!.appliedResults.some((result) => result.memoryId === badId),
+      false,
+      "the applied witness excludes a candidate removed before the result-limit partition",
+    );
+    assert.equal(
+      snapshot!.headroomResults.some((result) => result.memoryId === badId),
+      false,
+      "the headroom witness excludes quarantined candidates",
+    );
+  } finally {
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("X-ray capture preserves recent-scan serving while recording post-trust applied and pre-trust headroom", async () => {
+  const { orchestrator, memoryDir } = await makeOrchestrator({
+    qmdMaxResults: 2,
+  });
+  const now = Date.now();
+  try {
+    const tailId = await writeFact(
+      memoryDir,
+      "Parity recall token: stable tail candidate.",
+      ["mw_success: 5", "mw_fail: 0"],
+      new Date(now - 3_000).toISOString(),
+    );
+    const quarantinedId = await writeFact(
+      memoryDir,
+      "Parity recall token: contradicted applied candidate.",
+      ['faithfulness: {"verdict":"contradicted"}'],
+      new Date(now - 2_000).toISOString(),
+    );
+    const servedId = await writeFact(
+      memoryDir,
+      "Parity recall token: verified served candidate.",
+      ["mw_success: 5", "mw_fail: 0"],
+      new Date(now - 1_000).toISOString(),
+    );
+
+    const withoutCapture = await orchestrator.recall(
+      "parity recall token",
+      "sess-trust-parity",
+      { mode: "full" },
+    );
+    const withCapture = await orchestrator.recall(
+      "parity recall token",
+      "sess-trust-parity",
+      { mode: "full", xrayCapture: true },
+    );
+    const snapshot = orchestrator.getLastXraySnapshot();
+
+    assert.equal(withCapture, withoutCapture);
+    assert.match(withCapture, /verified served candidate/);
+    assert.doesNotMatch(withCapture, /contradicted applied candidate|stable tail candidate/);
+    assert.ok(snapshot);
+    assert.deepEqual(
+      snapshot.appliedResults.map((result) => result.memoryId),
+      [servedId],
+    );
+    assert.deepEqual(
+      snapshot.headroomResults.map((result) => result.memoryId),
+      [tailId],
+    );
+    assert.equal(
+      snapshot.appliedResults.some((result) => result.memoryId === quarantinedId),
+      false,
     );
   } finally {
     await orchestrator.destroy();

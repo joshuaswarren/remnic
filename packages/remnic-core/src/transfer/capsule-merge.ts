@@ -10,6 +10,7 @@ import {
   repairContentAfterJournalMove,
   requestEntityCanonicalIdReconcile,
 } from "../storage/entity-canonical-id-references.js";
+import { withRawEntityPageMutation } from "../storage/entity-canonical-id-lock.js";
 import {
   createVersion,
   type VersioningConfig,
@@ -440,6 +441,7 @@ export async function mergeCapsule(
     a.path.localeCompare(b.path),
   );
 
+  const applyRecords = async (): Promise<void> => {
   for (const rec of sortedRecords) {
     const targetAbs = path.join(rootReal, fromPosixRelPath(rec.path));
     const entry = manifestIndex.get(rec.path)!; // validated above
@@ -530,6 +532,17 @@ export async function mergeCapsule(
   // disk; NOW the reconcile pass can settle collisions safely.
   if (reconcileNeeded) {
     await requestEntityCanonicalIdReconcile(journalStateDir);
+  }
+  };
+  const firstEntityId = capsuleEntityIds.values().next().value;
+  if (firstEntityId === undefined) {
+    await applyRecords();
+  } else {
+    await withRawEntityPageMutation(
+      rootReal,
+      path.join(rootReal, "entities", `${firstEntityId}.md`),
+      applyRecords,
+    );
   }
 
   // Sort output lists for determinism.

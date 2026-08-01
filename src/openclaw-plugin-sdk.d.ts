@@ -27,10 +27,6 @@ declare module "openclaw/plugin-sdk" {
     messages?: Array<Record<string, unknown>>;
   }
 
-  export interface PluginHookBeforeAgentStartEvent {
-    prompt?: string;
-    messages?: Array<Record<string, unknown>>;
-  }
 
   export interface PluginHookAgentEndEvent {
     messages?: Array<Record<string, unknown>>;
@@ -219,7 +215,6 @@ declare module "openclaw/plugin-sdk" {
     | "gateway_stop"
     | "before_model_resolve"
     | "before_prompt_build"
-    | "before_agent_start"
     | "agent_end"
     | "before_compaction"
     | "after_compaction"

@@ -44,6 +44,9 @@ function snapshotWithSourceSpan(): RecallXraySnapshot {
     snapshotId: "22222222-2222-2222-2222-222222222222",
     tierExplain: null,
     results: [resultWithSourceSpan()],
+    appliedResultLimit: 0,
+    appliedResults: [],
+    headroomResults: [],
     filters: [{ name: "recall-result-limit", considered: 1, admitted: 1 }],
     budget: { chars: 4096, used: 100 },
   };

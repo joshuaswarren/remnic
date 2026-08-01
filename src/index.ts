@@ -1998,7 +1998,7 @@ const pluginDefinition = {
 
     if (!passiveMode) {
     // ========================================================================
-    // HOOK: before_prompt_build / before_agent_start — Inject memory context
+    // HOOK: before_prompt_build — Inject memory context
     // ========================================================================
     // When registerMemoryPromptSection is available (preferred path), skip the
     // recall hook entirely to avoid dual memory injection.
@@ -2834,10 +2834,10 @@ const pluginDefinition = {
     }
 
     async function recallHookHandler(
-      hookLabel: string,
       event: Record<string, unknown>,
       ctx: Record<string, unknown>,
     ) {
+      const hookLabel = "before_prompt_build";
       // Prefer event.prompt; fall back to extracting the last user message
       // from event.messages (before_prompt_build may only provide messages).
       let prompt = event.prompt as string | undefined;
@@ -2869,7 +2869,6 @@ const pluginDefinition = {
         codexCompactionModeLogged = true;
       }
       if (
-        hookLabel === "before_prompt_build" &&
         cfg.codexCompat.enabled !== false &&
         sessionIdentity.codexThreadBound &&
         sessionIdentity.providerThreadId &&
@@ -2989,16 +2988,9 @@ const pluginDefinition = {
           summary: null,
         });
         const verbosePrompt = verboseLines.join("\n").replace(/\n$/, "");
-        if (hookLabel === "before_prompt_build") {
-          return useMemoryPromptSection
-            ? { memoryLines: verboseLines }
-            : { prependSystemContext: verbosePrompt, memoryLines: verboseLines };
-        }
-        return {
-          prependSystemContext: verbosePrompt,
-          prependContext: verbosePrompt,
-          memoryLines: verboseLines,
-        };
+        return useMemoryPromptSection
+          ? { memoryLines: verboseLines }
+          : { prependSystemContext: verbosePrompt, memoryLines: verboseLines };
       }
 
       try {
@@ -3026,16 +3018,9 @@ const pluginDefinition = {
             : [];
           const mergedLines = [...verboseLines, ...heartbeatLines];
           const heartbeatPrompt = mergedLines.join("\n").replace(/\n$/, "");
-          if (hookLabel === "before_prompt_build") {
-            return useMemoryPromptSection
-              ? { memoryLines: mergedLines }
-              : { prependSystemContext: heartbeatPrompt, memoryLines: mergedLines };
-          }
-          return {
-            prependSystemContext: heartbeatPrompt,
-            prependContext: heartbeatPrompt,
-            memoryLines: mergedLines,
-          };
+          return useMemoryPromptSection
+            ? { memoryLines: mergedLines }
+            : { prependSystemContext: heartbeatPrompt, memoryLines: mergedLines };
         }
 
         if (orchestrator.config.compactionResetEnabled) {
@@ -3161,16 +3146,9 @@ const pluginDefinition = {
             });
           }
           if (mergedLines.length === 0) return;
-          if (hookLabel === "before_prompt_build") {
-            return useMemoryPromptSection
-              ? { memoryLines: mergedLines }
-              : { prependSystemContext: auxiliaryPrompt, memoryLines: mergedLines };
-          }
-          return {
-            prependSystemContext: auxiliaryPrompt,
-            prependContext: auxiliaryPrompt,
-            memoryLines: mergedLines,
-          };
+          return useMemoryPromptSection
+            ? { memoryLines: mergedLines }
+            : { prependSystemContext: auxiliaryPrompt, memoryLines: mergedLines };
         }
 
         const memoryContext = renderMemoryContext(recallComposition);
@@ -3238,21 +3216,8 @@ const pluginDefinition = {
         log.debug(
             `${hookLabel}: returning memory context with ${trimmed.length} chars`,
         );
-        // New SDK (before_prompt_build): only prependSystemContext — gateway
-        // applies both fields separately, so returning both would duplicate.
-        // Legacy (before_agent_start): return both for backward compat with
-        // older gateways that may consume either field.
-        if (hookLabel === "before_prompt_build") {
-          return promptWithVerbose
-            ? { prependSystemContext: promptWithVerbose, memoryLines }
-            : { memoryLines };
-        }
         return promptWithVerbose
-          ? {
-              prependSystemContext: promptWithVerbose,
-              prependContext: promptWithVerbose,
-              memoryLines,
-            }
+          ? { prependSystemContext: promptWithVerbose, memoryLines }
           : { memoryLines };
       } catch (err) {
         log.error("recall failed", err);
@@ -3273,20 +3238,15 @@ const pluginDefinition = {
     // `hooks.allowPromptInjection=false`, the capability registration below
     // already omits `promptBuilder`, so we also MUST NOT register the recall
     // hook here: otherwise `recallHookHandler` would still return
-    // `prependSystemContext`, silently bypassing the policy on capability-only
-    // SDKs (and on legacy SDKs too).
+    // `prependSystemContext`, silently bypassing the policy on
+    // capability-only SDKs.
     if (!useMemoryPromptSection && promptInjectionAllowed) {
-      // When registerMemoryCapability is available but registerMemoryPromptSection
-      // is not (capability-only SDK), we need a hybrid approach: continue using
-      // the hook for backward compat, but also populate cachedMemoryBySession so
-      // the capability's promptBuilder can return recall context for runtimes
-      // that treat the capability as the authoritative source.
+      // Capability-only SDKs need the hook path to populate
+      // cachedMemoryBySession for the capability promptBuilder.
       //
       // NOTE: needsCacheFallback only applies to the before_prompt_build path.
-      // `sdkCaps.hasRegisterMemoryCapability` implies `sdkCaps.hasBeforePromptBuild`
-      // (see hasNewHookSystem in sdk-compat.ts), so the legacy before_agent_start
-      // branch can never observe a capability-enabled runtime and therefore
-      // does not populate the cache.
+      // Capability-only SDKs still use before_prompt_build to populate the
+      // promptBuilder cache when the section-builder surface is absent.
       const needsCacheFallback =
         sdkCaps.hasRegisterMemoryCapability &&
         typeof (api as any).registerMemoryCapability === "function";
@@ -3323,7 +3283,7 @@ const pluginDefinition = {
                   null,
                 );
               }
-              const result = await recallHookHandler("before_prompt_build", event, ctx);
+              const result = await recallHookHandler(event, ctx);
               // Populate cache for capability promptBuilder fallback using the
               // same structured line format as the registerMemoryPromptSection path.
               if (needsCacheFallback && result?.memoryLines) {
@@ -3345,27 +3305,6 @@ const pluginDefinition = {
             { timeoutMs: cfg.initGateTimeoutMs },
           );
         })(api as unknown as HookApiWithOptions);
-      } else {
-        // Legacy SDK path — literal string for compat checker detection.
-        // Capability-only runtimes cannot reach this branch (they land on
-        // before_prompt_build above), so cache fallback logic is omitted here.
-        api.on(
-          "before_agent_start",
-          async (
-            event: Record<string, unknown>,
-            ctx: Record<string, unknown>,
-          ) => {
-            const result = await recallHookHandler("before_agent_start", event, ctx);
-            // Strip the internal `memoryLines` field before returning to the
-            // gateway — it's a closure-private carrier for cache population
-            // and is not part of the hook contract.
-            if (result && "memoryLines" in result) {
-              const { memoryLines: _ml, ...gatewayResult } = result;
-              return Object.keys(gatewayResult).length > 0 ? gatewayResult : undefined;
-            }
-            return result;
-          },
-        );
       }
     }
 
@@ -3421,7 +3360,7 @@ const pluginDefinition = {
           const sessionKey = (ctx?.sessionKey as string) ?? "default";
           const sessionIdentity = resolveSessionIdentity(sessionKey, event, ctx);
           cachePromptMemoryLines(sessionKey, sessionIdentity.providerThreadId, null);
-          const result = await recallHookHandler("before_prompt_build", event, ctx);
+          const result = await recallHookHandler(event, ctx);
           if (result?.memoryLines) {
             cachePromptMemoryLines(
               sessionKey,
@@ -4937,76 +4876,6 @@ const pluginDefinition = {
           );
         },
       );
-    } else if (!passiveMode) {
-      // Legacy runtime: restore heartbeat observer for sessionObserverEnabled.
-      // On new SDK, session_start/session_end hooks replace this.
-      // Two paths: registerHook for runtimes that emit event-style heartbeats,
-      // and api.on("agent_heartbeat") for pre-2026.1.29 runtimes that emit typed hooks.
-      const runtimeApi = api as any;
-      runtimeApi.registerHook?.(
-        ["agent_heartbeat", "agent:heartbeat"],
-        (event: any) => {
-          if (orchestrator.config.sessionObserverEnabled !== true) return;
-          const sessionKey =
-            (event?.context?.sessionKey as string) ?? "default";
-          const rememberedThreadId = resolveStoredCodexThreadId(sessionKey);
-          const bufferKey = resolveExtractionBufferKey(
-            sessionKey,
-            rememberedThreadId && cfg.codexCompat.threadIdBufferKeying !== false
-              ? codexLogicalSessionKey(rememberedThreadId)
-              : sessionKey,
-          );
-          void orchestrator
-            .observeSessionHeartbeat(sessionKey, { bufferKey })
-            .catch((err: unknown) => {
-              log.debug(`agent_heartbeat observer failed: ${err}`);
-            });
-        },
-        {
-          name: "engram_agent_heartbeat_legacy",
-          description:
-            "Observe legacy heartbeat events for session observation.",
-        },
-      );
-
-      // Typed api.on path for pre-2026.1.29 builds that route heartbeat through the hook system.
-      const runtimeVersion =
-        runtimeApi.runtime?.version ||
-        readEnvVar("OPENCLAW_SERVICE_VERSION") ||
-        "unknown";
-      void import("./legacy-hook-compat.js")
-        .then(({ shouldRegisterTypedAgentHeartbeat }) => {
-          if (shouldRegisterTypedAgentHeartbeat(runtimeVersion)) {
-            (api.on as any)(
-              "agent_heartbeat",
-              (
-                _event: Record<string, unknown>,
-                ctx: Record<string, unknown>,
-              ) => {
-                if (orchestrator.config.sessionObserverEnabled !== true) return;
-                const sessionKey = (ctx?.sessionKey as string) ?? "default";
-                const rememberedThreadId = resolveStoredCodexThreadId(sessionKey);
-                const bufferKey = resolveExtractionBufferKey(
-                  sessionKey,
-                  rememberedThreadId && cfg.codexCompat.threadIdBufferKeying !== false
-                    ? codexLogicalSessionKey(rememberedThreadId)
-                    : sessionKey,
-                );
-                void orchestrator
-                  .observeSessionHeartbeat(sessionKey, { bufferKey })
-                  .catch((err: unknown) => {
-                    log.debug(`agent_heartbeat typed observer failed: ${err}`);
-                  });
-              },
-            );
-            log.info(
-              `registered typed agent_heartbeat hook for OpenClaw ${runtimeVersion}`,
-            );
-          }
-        })
-        .catch(() => {
-          // legacy-hook-compat import failed — skip typed registration
-        });
     }
 
     }

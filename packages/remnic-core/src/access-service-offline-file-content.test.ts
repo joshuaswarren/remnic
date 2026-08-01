@@ -9,6 +9,50 @@ import { OFFLINE_SYNC_CHANGESET_FORMAT, OFFLINE_SYNC_MAX_MTIME_MS } from "./offl
 import { isEncryptedFile } from "./secure-store/index.js";
 import { ContentHashIndex } from "./storage/content-hash-index.js";
 import { StorageManager } from "./storage.js";
+import { withEntityCanonicalMutationLock } from "./storage/entity-canonical-id-lock.js";
+
+class RawEntityMutationProbeStorage extends StorageManager {
+  readonly probeEntitiesDir: string;
+  writeEntered = false;
+  deleteEntered = false;
+
+  constructor(memoryDir: string) {
+    super(memoryDir);
+    this.probeEntitiesDir = path.join(memoryDir, "entities");
+  }
+
+  override async readMemoryByPath(filePath: string) {
+    if (path.dirname(filePath) === this.probeEntitiesDir) return null;
+    return super.readMemoryByPath(filePath);
+  }
+
+  protected override tombstoneBlockedCaptureIndexOptions() {
+    const options = super.tombstoneBlockedCaptureIndexOptions();
+    return {
+      ...options,
+      parseMemory: (filePath: string, content: Buffer) =>
+        path.dirname(filePath) === this.probeEntitiesDir
+          ? null
+          : options.parseMemory?.(filePath, content) ?? null,
+    };
+  }
+
+  protected override async writeManagedStorageFile(
+    filePath: string,
+    write: () => Promise<void>,
+  ): Promise<void> {
+    this.writeEntered = true;
+    await super.writeManagedStorageFile(filePath, write);
+  }
+
+  protected override async deleteManagedStorageFile(
+    filePath: string,
+    deletionMtimeMs?: number | null,
+  ): Promise<boolean> {
+    this.deleteEntered = true;
+    return super.deleteManagedStorageFile(filePath, deletionMtimeMs);
+  }
+}
 
 function createOfflineService(): EngramAccessService {
   return new EngramAccessService({
@@ -332,4 +376,63 @@ test("offline convergence completion refreshes authorized namespaces as one batc
 
   assert.deepEqual(result, { namespaces: ["global"], refreshed: true });
   assert.deepEqual(refreshed, [["global"]]);
+});
+
+test("offline raw entity writes wait for the canonical mutation lock", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-entity-write-lock-"));
+  let writePromise: Promise<void> | undefined;
+  try {
+    await new StorageManager(root).ensureDirectories();
+    const storage = new RawEntityMutationProbeStorage(root);
+    const target = path.join(root, "entities", "project-replicated.md");
+    const content = Buffer.from(
+      "---\nid: project-replicated\n---\n\n# Replicated\n\n**Type:** project\n\nReplicated bytes.\n",
+      "utf8",
+    );
+
+    await withEntityCanonicalMutationLock(path.join(root, "state"), async () => {
+      writePromise = storage.writeOfflineSyncFile(target, content);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        storage.writeEntered,
+        false,
+        "the raw entity write must not enter its managed-file mutation while the canonical lock is held",
+      );
+    });
+
+    assert.ok(writePromise);
+    await writePromise;
+    assert.deepEqual(await readFile(target), content);
+  } finally {
+    await writePromise?.catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline raw entity deletes wait for the canonical mutation lock", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-entity-delete-lock-"));
+  let deletePromise: Promise<void> | undefined;
+  try {
+    await new StorageManager(root).ensureDirectories();
+    const target = path.join(root, "entities", "project-replicated.md");
+    await writeFile(target, "# Replicated\n", "utf8");
+    const storage = new RawEntityMutationProbeStorage(root);
+
+    await withEntityCanonicalMutationLock(path.join(root, "state"), async () => {
+      deletePromise = storage.deleteOfflineSyncFile(target, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        storage.deleteEntered,
+        false,
+        "the raw entity delete must not enter its managed-file mutation while the canonical lock is held",
+      );
+    });
+
+    assert.ok(deletePromise);
+    await deletePromise;
+    await assert.rejects(() => readFile(target));
+  } finally {
+    await deletePromise?.catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
 });

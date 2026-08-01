@@ -19,13 +19,17 @@ import type { MemoryFile } from "../src/types.js";
 function fakeSnapshot(
   overrides: Partial<RecallXraySnapshot> = {},
 ): RecallXraySnapshot {
+  const results = overrides.results ?? [];
   return {
     schemaVersion: "1",
     query: "q",
     snapshotId: "snap-1",
     capturedAt: 1_700_000_000_000,
     tierExplain: null,
-    results: [],
+    results,
+    appliedResultLimit: results.length,
+    appliedResults: results,
+    headroomResults: [],
     filters: [],
     budget: { chars: 4096, used: 0 },
     ...overrides,

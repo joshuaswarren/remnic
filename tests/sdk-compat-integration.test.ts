@@ -6,7 +6,7 @@
  *
  * - New SDK api: gets before_prompt_build, session/tool/llm/subagent hooks,
  *   registerMemoryPromptSection, and service registration.
- * - Legacy SDK api: gets before_agent_start and core hooks only.
+ * - Unsupported SDK api: keeps only non-prompt lifecycle hooks.
  * - Non-runtime registration modes: skip all registration entirely.
  */
 import test from "node:test";
@@ -271,7 +271,7 @@ test("new SDK api gets all new hooks + memory section", async () => {
       "before_prompt_build should register Remnic's init-gate timeout with OpenClaw",
     );
 
-    // before_agent_start should NOT be registered (legacy path)
+    // The removed legacy hook must not be registered.
     assert.ok(
       !api._registeredHooks.includes("before_agent_start"),
       "before_agent_start should NOT be registered on new SDK",
@@ -652,27 +652,26 @@ test("new SDK registerCommand is deduped across multi-registry registration", as
 });
 
 // ============================================================================
-// Test 2: Legacy SDK api gets legacy hooks only
+// Test 2: Unsupported legacy SDK APIs keep only non-prompt lifecycle hooks
 // ============================================================================
-test("legacy SDK api gets legacy hooks only", async () => {
+test("unsupported legacy SDK api does not register removed prompt hooks", async () => {
   resetGlobals();
   const previousDisableMigration = disableRegisterMigrationForTest();
   try {
     const { default: plugin } = await import("../src/index.js");
 
     const api = buildLegacySdkApi("legacy-sdk-test");
-    plugin.register(api as any);
+    plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
 
-    // before_agent_start should be registered (legacy path)
-    assert.ok(
+    assert.equal(
       api._registeredHooks.includes("before_agent_start"),
-      `expected before_agent_start in hooks, got: ${api._registeredHooks.join(", ")}`,
+      false,
+      "the supported host floor must not retain the removed before_agent_start hook",
     );
-
-    // before_prompt_build should NOT be registered (new SDK path)
-    assert.ok(
-      !api._registeredHooks.includes("before_prompt_build"),
-      "before_prompt_build should NOT be registered on legacy SDK",
+    assert.equal(
+      api._registeredHooks.includes("before_prompt_build"),
+      false,
+      "an unsupported SDK without before_prompt_build capability must not register a prompt hook",
     );
 
     assert.ok(
@@ -900,9 +899,8 @@ test("capability-only SDK with allowPromptInjection=false skips recall hook regi
     api.registerMemoryCapability = (spec: any) => {
       api._registeredMemoryCapability = spec;
     };
-    // Policy disables prompt injection — the plugin must NOT register the
-    // recall hook (before_prompt_build for new SDK / before_agent_start for
-    // legacy) because the hook handler would otherwise still emit
+    // Policy disables prompt injection, so the plugin must not register the
+    // before_prompt_build recall hook. Otherwise the handler could still emit
     // `prependSystemContext` and silently bypass the policy.
     api.config = {
       plugins: {

@@ -12,6 +12,8 @@ import { expandTilde } from "./path-utils.js";
 export interface BenchResearchArgs {
   runRef?: string;
   memoryDir?: string;
+  qmdPath?: string;
+  collection?: string;
   users?: number;
   epochs?: number;
   seed?: number;
@@ -51,6 +53,14 @@ export function parseBenchResearchArgs(
   }
 
   const memoryDirRaw = readBenchOptionValue(args, "--memory-dir");
+  const qmdPathRaw = readBenchOptionValue(args, "--qmd");
+  const collection = readBenchOptionValue(args, "--collection");
+  if (action === "attribute" && Boolean(qmdPathRaw) !== Boolean(collection)) {
+    throw new Error("ERROR: --qmd <path> and --collection <name> must be provided together.");
+  }
+  if (collection !== undefined && collection.trim().length === 0) {
+    throw new Error("ERROR: --collection requires a non-empty value.");
+  }
 
   let seed: number | undefined;
   let out: string | undefined;
@@ -83,6 +93,8 @@ export function parseBenchResearchArgs(
   return {
     runRef,
     memoryDir: memoryDirRaw ? path.resolve(expandTilde(memoryDirRaw)) : undefined,
+    qmdPath: qmdPathRaw ? path.resolve(expandTilde(qmdPathRaw)) : undefined,
+    collection,
     users: readPositiveInteger(args, "--users"),
     epochs,
     seed,

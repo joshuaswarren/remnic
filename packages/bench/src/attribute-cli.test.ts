@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { unlinkSync } from "node:fs";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -15,7 +15,7 @@ import {
   type AttributionEnvironment,
   type AttributionMemory,
 } from "./attribution.js";
-import type { BenchmarkResult } from "./types.js";
+import type { BenchmarkResult, TaskAttributionWitness } from "./types.js";
 
 const GOLD_STATEMENTS = [
   "Avery Quill prefers Earl Grey tea with lemon",
@@ -39,6 +39,42 @@ const GOLD_STATEMENTS = [
   "Avery Quill harvests organic lavender flowers",
   "Avery Quill observes distant stellar galaxies",
 ];
+
+function makeAttributionResult(
+  id: string,
+  task: BenchmarkResult["results"]["tasks"][number],
+): BenchmarkResult {
+  return {
+    meta: {
+      id,
+      benchmark: "locomo",
+      benchmarkTier: "remnic",
+      version: "1.0.0",
+      remnicVersion: "9.35.3",
+      gitSha: "abc1234",
+      timestamp: "2026-07-30T12:00:00Z",
+      mode: "full",
+      runCount: 1,
+      seeds: [42],
+    },
+    config: {
+      systemProvider: null,
+      judgeProvider: null,
+      adapterMode: "real",
+      remnicConfig: { recallLimit: 1 },
+    },
+    cost: {
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedCostUsd: 0,
+      totalLatencyMs: 0,
+      meanQueryLatencyMs: 0,
+    },
+    results: { tasks: [task], aggregates: {} },
+    environment: { os: "linux", nodeVersion: process.version },
+  };
+}
 
 test("acceptance scenario: 20-fact seeded corpus failure attribution (>= 90% accuracy)", async () => {
   const tmpDir = await mkdtemp(path.join(tmpdir(), "bench-attr-test-"));
@@ -464,6 +500,186 @@ test("nested dir named meetings under a namespace is scanned while root-level me
     assert.strictEqual(memories[0].id, "mem-nested");
     assert.strictEqual(memories[0].content, "Nested meeting memory content");
   } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("default CLI consumes a stored witness without invoking QMD", async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), "bench-cli-witness-"));
+  const originalPath = process.env.PATH;
+  const originalMarker = process.env.QMD_ATTRIBUTION_MARKER;
+  try {
+    const resultsDir = path.join(tmpDir, "results");
+    await mkdir(resultsDir, { recursive: true });
+    const markerPath = path.join(tmpDir, "qmd-invoked");
+    await writeFile(
+      path.join(tmpDir, "qmd"),
+      '#!/bin/sh\nprintf invoked > "$QMD_ATTRIBUTION_MARKER"\nprintf "[]\\n"\n',
+      { mode: 0o700 },
+    );
+    process.env.PATH = `${tmpDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.QMD_ATTRIBUTION_MARKER = markerPath;
+
+    const goldMemory = "Avery Quill prefers Earl Grey tea with lemon";
+    const attributionWitness: TaskAttributionWitness = {
+      schemaVersion: 1,
+      runtime: {
+        qmdCollection: "destroyed-bench-sandbox",
+        qmdIndex: "/tmp/destroyed-bench-sandbox.sqlite",
+        qmdMaxResults: 25,
+        attributionThreshold: 0.6,
+      },
+      golds: [{
+        goldMemory,
+        storeMemoryIds: ["mem-gold"],
+        oracleMemoryIds: [],
+      }],
+      retrievals: [{
+        sessionId: "session-index-miss",
+        appliedCap: 1,
+        atCapMemoryIds: [],
+        headroomMemoryIds: [],
+      }],
+    };
+    const result = makeAttributionResult("run-stored-witness", {
+      taskId: "task-stored-witness",
+      question: "What tea does Avery prefer?",
+      expected: "Earl Grey",
+      actual: "Green tea",
+      scores: { overall: 0 },
+      latencyMs: 0,
+      tokens: { input: 0, output: 0 },
+      attributionWitness,
+    });
+    await writeFile(
+      path.join(resultsDir, "run-stored-witness.json"),
+      JSON.stringify(result),
+      "utf8",
+    );
+
+    const cliResult = await runAttributeCliCommand({
+      runRef: "run-stored-witness",
+      resultsDir,
+      json: true,
+    });
+
+    await assert.rejects(readFile(markerPath, "utf8"), /ENOENT/);
+    assert.equal(cliResult.exitCode, 0);
+    const report = JSON.parse(cliResult.output);
+    assert.equal(report.items[0]?.overall.class, "index_miss");
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalMarker === undefined) delete process.env.QMD_ATTRIBUTION_MARKER;
+    else process.env.QMD_ATTRIBUTION_MARKER = originalMarker;
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI without a witness leaves index and retrieval unavailable instead of replaying lexically", async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), "bench-cli-no-witness-"));
+  try {
+    const resultsDir = path.join(tmpDir, "results");
+    const memoryDir = path.join(tmpDir, "memories");
+    await mkdir(resultsDir, { recursive: true });
+    await mkdir(memoryDir, { recursive: true });
+    const goldMemory = "Avery Quill prefers Earl Grey tea with lemon";
+    await writeFile(
+      path.join(memoryDir, "gold.md"),
+      `---\nid: mem-gold\n---\n${goldMemory}\n`,
+      "utf8",
+    );
+    const result = makeAttributionResult("run-no-witness-no-replay", {
+      taskId: "task-no-witness",
+      question: "What tea does Avery prefer?",
+      expected: "Earl Grey",
+      actual: "Green tea",
+      scores: { overall: 0 },
+      latencyMs: 0,
+      tokens: { input: 0, output: 0 },
+      goldMemories: [goldMemory],
+    });
+    await writeFile(
+      path.join(resultsDir, "run-no-witness-no-replay.json"),
+      JSON.stringify(result),
+      "utf8",
+    );
+
+    const cliResult = await runAttributeCliCommand({
+      runRef: "run-no-witness-no-replay",
+      resultsDir,
+      memoryDir,
+      json: true,
+    });
+
+    assert.equal(cliResult.exitCode, 0);
+    const item = JSON.parse(cliResult.output).items[0];
+    assert.equal(item.overall.class, "unattributed");
+    assert.equal(item.golds[0].stages.extraction.status, "pass");
+    assert.equal(item.golds[0].stages.index.status, "unavailable");
+    assert.equal(item.golds[0].stages.retrieval.status, "unavailable");
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("explicit legacy QMD fallback never substitutes a PATH binary", async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), "bench-cli-strict-qmd-"));
+  const originalPath = process.env.PATH;
+  const originalMarker = process.env.QMD_ATTRIBUTION_MARKER;
+  try {
+    const resultsDir = path.join(tmpDir, "results");
+    const memoryDir = path.join(tmpDir, "memories");
+    const markerPath = path.join(tmpDir, "path-qmd-invoked");
+    await mkdir(resultsDir, { recursive: true });
+    await mkdir(memoryDir, { recursive: true });
+    await writeFile(
+      path.join(tmpDir, "qmd"),
+      '#!/bin/sh\nprintf invoked > "$QMD_ATTRIBUTION_MARKER"\nprintf "qmd 2.5.3\\n"\n',
+      { mode: 0o700 },
+    );
+    process.env.PATH = `${tmpDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.QMD_ATTRIBUTION_MARKER = markerPath;
+
+    const goldMemory = "Avery Quill prefers Earl Grey tea with lemon";
+    await writeFile(
+      path.join(memoryDir, "gold.md"),
+      `---\nid: mem-gold\n---\n${goldMemory}\n`,
+      "utf8",
+    );
+    const result = makeAttributionResult("run-strict-qmd", {
+      taskId: "task-strict-qmd",
+      question: "What tea does Avery prefer?",
+      expected: "Earl Grey",
+      actual: "Green tea",
+      scores: { overall: 0 },
+      latencyMs: 0,
+      tokens: { input: 0, output: 0 },
+      goldMemories: [goldMemory],
+    });
+    await writeFile(
+      path.join(resultsDir, "run-strict-qmd.json"),
+      JSON.stringify(result),
+      "utf8",
+    );
+
+    const cliResult = await runAttributeCliCommand({
+      runRef: "run-strict-qmd",
+      resultsDir,
+      memoryDir,
+      qmdPath: path.join(tmpDir, "missing-explicit-qmd"),
+      collection: "bench-explicit-fallback",
+      json: true,
+    });
+
+    await assert.rejects(readFile(markerPath, "utf8"), /ENOENT/);
+    assert.equal(cliResult.exitCode, 0);
+    assert.equal(JSON.parse(cliResult.output).items[0].overall.class, "unattributed");
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalMarker === undefined) delete process.env.QMD_ATTRIBUTION_MARKER;
+    else process.env.QMD_ATTRIBUTION_MARKER = originalMarker;
     await rm(tmpDir, { recursive: true, force: true });
   }
 });

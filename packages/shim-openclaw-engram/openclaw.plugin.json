@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.45.3",
+  "version": "9.46.0",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -4164,6 +4164,14 @@
         "default": "openclaw-engram",
         "description": "QMD collection name"
       },
+      "wikiMergeIntoRecall": {
+        "type": "boolean",
+        "enum": [
+          false
+        ],
+        "default": false,
+        "description": "Reserved safety gate. External wiki collections remain on-demand only; true is not supported."
+      },
       "qmdDaemonEnabled": {
         "type": "boolean",
         "default": true,
@@ -6273,6 +6281,57 @@
         "type": "string",
         "description": "Override workspace directory path"
       },
+      "externalWikis": {
+        "type": "array",
+        "default": [],
+        "description": "External compiled-wiki roots available only to dedicated on-demand search.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "description": "Stable wiki identifier."
+            },
+            "rootDir": {
+              "type": "string",
+              "description": "Absolute path or ~/ path to the external wiki root."
+            },
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "label": {
+              "type": "string"
+            },
+            "pagesDir": {
+              "type": "string",
+              "default": "wiki",
+              "description": "Wiki-root-relative concept-page directory."
+            },
+            "indexFile": {
+              "type": "string",
+              "default": "INDEX.md",
+              "description": "Wiki-root-relative catalog path."
+            },
+            "indexInQmd": {
+              "type": "boolean",
+              "default": false,
+              "description": "Index the corpus in its dedicated external-wiki collection."
+            },
+            "includeInDefaultRecall": {
+              "type": "boolean",
+              "default": false,
+              "description": "Reserved safety guard. Remnic rejects true."
+            }
+          },
+          "required": [
+            "id",
+            "rootDir"
+          ]
+        }
+      },
       "extractionBreakerAuthCooldownMs": {
         "type": "number",
         "default": 1800000,
@@ -6438,6 +6497,11 @@
       "label": "QMD Collection",
       "advanced": true,
       "placeholder": "openclaw-engram"
+    },
+    "wikiMergeIntoRecall": {
+      "label": "Merge External Wikis Into Recall",
+      "advanced": true,
+      "help": "Reserved safety gate. External wiki collections remain on-demand only; true is not supported."
     },
     "qmdMaxResults": {
       "label": "QMD Max Results",

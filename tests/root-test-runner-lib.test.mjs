@@ -14,6 +14,7 @@ import {
   partitionNativeDependent,
   probeBetterSqlite3,
   selectTestPatterns,
+  selectTestShard,
 } from "../scripts/root-test-runner-lib.mjs";
 
 function makeTree() {
@@ -192,18 +193,39 @@ test("selectTestPatterns rejects unknown group names", () => {
   assert.throws(() => selectTestPatterns("root"), /must be an array/);
 });
 
-test("parseRunnerArgs parses repeatable --group and dedupes", () => {
-  assert.deepEqual(parseRunnerArgs([]), { groups: [] });
-  assert.deepEqual(parseRunnerArgs(["--group", "root"]), { groups: ["root"] });
+test("parseRunnerArgs parses repeatable groups and one shard", () => {
+  assert.deepEqual(parseRunnerArgs([]), { groups: [], shard: null });
+  assert.deepEqual(parseRunnerArgs(["--group", "root"]), { groups: ["root"], shard: null });
   assert.deepEqual(
-    parseRunnerArgs(["--group", "root", "--group", "misc", "--group", "root"]),
-    { groups: ["root", "misc"] },
+    parseRunnerArgs(["--group", "root", "--shard", "2/3", "--group", "misc", "--group", "root"]),
+    { groups: ["root", "misc"], shard: { index: 2, total: 3 } },
   );
 });
 
-test("parseRunnerArgs rejects unknown arguments and missing values", () => {
-  assert.throws(() => parseRunnerArgs(["--shard"]), /Unknown argument "--shard"/);
+test("parseRunnerArgs rejects unknown, missing, duplicate, and malformed arguments", () => {
   assert.throws(() => parseRunnerArgs(["root"]), /Unknown argument "root"/);
   assert.throws(() => parseRunnerArgs(["--group"]), /requires a group name/);
   assert.throws(() => parseRunnerArgs(["--group", "--group"]), /requires a group name/);
+  assert.throws(() => parseRunnerArgs(["--shard"]), /requires an index\/total argument/);
+  assert.throws(() => parseRunnerArgs(["--shard", "0/2"]), /must satisfy 1 <= index <= total/);
+  assert.throws(() => parseRunnerArgs(["--shard", "3/2"]), /must satisfy 1 <= index <= total/);
+  assert.throws(() => parseRunnerArgs(["--shard", "1/0"]), /must satisfy 1 <= index <= total/);
+  assert.throws(() => parseRunnerArgs(["--shard", "one/two"]), /must use index\/total/);
+  assert.throws(() => parseRunnerArgs(["--shard", "1/2", "--shard", "2/2"]), /may be provided only once/);
+});
+
+test("selectTestShard deterministically partitions every file exactly once", () => {
+  const files = ["e.test.ts", "a.test.ts", "d.test.ts", "b.test.ts", "c.test.ts"];
+  assert.deepEqual(selectTestShard(files, { index: 1, total: 2 }), [
+    "a.test.ts",
+    "c.test.ts",
+    "e.test.ts",
+  ]);
+  assert.deepEqual(selectTestShard(files, { index: 2, total: 2 }), ["b.test.ts", "d.test.ts"]);
+});
+
+test("selectTestShard rejects vacuous and invalid selections", () => {
+  assert.throws(() => selectTestShard(["one"], { index: 1, total: 2 }), /would create an empty shard/);
+  assert.throws(() => selectTestShard([], { index: 1, total: 1 }), /requires at least one file/);
+  assert.throws(() => selectTestShard(["one"], { index: 0, total: 1 }), /invalid shard/);
 });

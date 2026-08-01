@@ -22,6 +22,7 @@ import {
   repairContentAfterJournalMoveSync,
   requestEntityCanonicalIdReconcileSync,
 } from "../storage/entity-canonical-id-references.js";
+import { withRawEntityPageMutation } from "../storage/entity-canonical-id-lock.js";
 
 // Write-boundary journal cache for promoted copies (issue #2213).
 const historicalIdCache = new HistoricalEntityCanonicalIdCache();
@@ -637,11 +638,11 @@ export function switchSpace(spaceId: string, baseDir?: string): SpaceSwitchResul
 
 // ── Push / Pull ─────────────────────────────────────────────────────────────
 
-export function pushToSpace(
+export async function pushToSpace(
   sourceSpaceId: string,
   targetSpaceId: string,
   options?: { memoryIds?: string[]; force?: boolean; baseDir?: string }
-): SpacePushResult {
+): Promise<SpacePushResult> {
   const startTime = Date.now();
   const manifest = loadManifest(options?.baseDir);
 
@@ -651,7 +652,7 @@ export function pushToSpace(
   if (!source) throw new Error(`Source space "${sourceSpaceId}" not found`);
   if (!target) throw new Error(`Target space "${targetSpaceId}" not found`);
 
-  const result = copyMemories(source.memoryDir, target.memoryDir, {
+  const result = await copyMemories(source.memoryDir, target.memoryDir, {
     filterIds: options?.memoryIds,
     force: options?.force,
   });
@@ -675,11 +676,11 @@ export function pushToSpace(
   };
 }
 
-export function pullFromSpace(
+export async function pullFromSpace(
   sourceSpaceId: string,
   targetSpaceId: string,
   options?: { memoryIds?: string[]; force?: boolean; baseDir?: string }
-): SpacePullResult {
+): Promise<SpacePullResult> {
   const startTime = Date.now();
   const manifest = loadManifest(options?.baseDir);
 
@@ -689,7 +690,7 @@ export function pullFromSpace(
   if (!source) throw new Error(`Source space "${sourceSpaceId}" not found`);
   if (!target) throw new Error(`Target space "${targetSpaceId}" not found`);
 
-  const result = copyMemories(source.memoryDir, target.memoryDir, {
+  const result = await copyMemories(source.memoryDir, target.memoryDir, {
     filterIds: options?.memoryIds,
     force: options?.force,
   });
@@ -744,11 +745,11 @@ export function shareSpace(spaceId: string, members: string[], baseDir?: string)
 
 // ── Promote ──────────────────────────────────────────────────────────────────
 
-export function promoteSpace(
+export async function promoteSpace(
   sourceSpaceId: string,
   targetSpaceId: string,
   options?: { memoryIds?: string[]; force?: boolean; forceOverwrite?: boolean; baseDir?: string }
-): SpacePromoteResult {
+): Promise<SpacePromoteResult> {
   const startTime = Date.now();
   const manifest = loadManifest(options?.baseDir);
 
@@ -765,7 +766,7 @@ export function promoteSpace(
     }
   }
 
-  const result = copyMemories(source.memoryDir, target.memoryDir, {
+  const result = await copyMemories(source.memoryDir, target.memoryDir, {
     filterIds: options?.memoryIds,
     force: options?.forceOverwrite !== undefined ? options.forceOverwrite : (options?.force ?? false),
   });
@@ -791,11 +792,11 @@ export function promoteSpace(
 
 // ── Merge ────────────────────────────────────────────────────────────────────
 
-export function mergeSpaces(
+export async function mergeSpaces(
   sourceSpaceId: string,
   targetSpaceId: string,
   options?: { force?: boolean; baseDir?: string }
-): MergeResult {
+): Promise<MergeResult> {
   const startTime = Date.now();
   const manifest = loadManifest(options?.baseDir);
 
@@ -805,7 +806,7 @@ export function mergeSpaces(
   if (!source) throw new Error(`Source space "${sourceSpaceId}" not found`);
   if (!target) throw new Error(`Target space "${targetSpaceId}" not found`);
 
-  const result = copyMemories(source.memoryDir, target.memoryDir, {
+  const result = await copyMemories(source.memoryDir, target.memoryDir, {
     force: options?.force,
   });
 
@@ -855,15 +856,13 @@ interface CopyOptions {
   force?: boolean;
 }
 
-function copyMemories(
+type CopyResult = { merged: number; conflicts: ConflictEntry[]; skipped: number };
+
+async function copyMemories(
   sourceDir: string,
   targetDir: string,
   options?: CopyOptions
-): { merged: number; conflicts: ConflictEntry[]; skipped: number } {
-  let merged = 0;
-  const conflicts: ConflictEntry[] = [];
-  let skipped = 0;
-
+): Promise<CopyResult> {
   if (!fs.existsSync(sourceDir)) {
     return { merged: 0, conflicts: [], skipped: 0 };
   }
@@ -891,6 +890,33 @@ function copyMemories(
       })
       .map((p) => path.basename(p, ".md")),
   );
+  const firstEntityId = sourceEntityIds.values().next().value;
+  if (firstEntityId === undefined) {
+    return copyPreparedMemories(sourceFiles, sourceRoot, targetRoot, sourceEntityIds, options);
+  }
+  return withRawEntityPageMutation(
+    targetRoot,
+    path.join(targetRoot, "entities", `${firstEntityId}.md`),
+    async () => copyPreparedMemories(
+      sourceFiles,
+      sourceRoot,
+      targetRoot,
+      sourceEntityIds,
+      options,
+    ),
+  );
+}
+
+function copyPreparedMemories(
+  sourceFiles: string[],
+  sourceRoot: string,
+  targetRoot: string,
+  sourceEntityIds: ReadonlySet<string>,
+  options?: CopyOptions,
+): CopyResult {
+  let merged = 0;
+  const conflicts: ConflictEntry[] = [];
+  let skipped = 0;
   // The reconcile marker is published ONCE, after every record landed
   // (Codex P1, round 21): a per-record marker could be consumed by a peer
   // between a legacy-preserving memory write and its colliding entity page,

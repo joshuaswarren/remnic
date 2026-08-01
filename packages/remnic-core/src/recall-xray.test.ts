@@ -19,6 +19,16 @@ function idGen(): () => string {
   return () => `snap-${++n}`;
 }
 
+function xrayResult(memoryId: string): RecallXrayResult {
+  return {
+    memoryId,
+    path: `/notes/${memoryId}.md`,
+    servedBy: "hybrid",
+    admittedBy: [`rank:${memoryId}`],
+    scoreDecomposition: { final: 0.5 },
+  };
+}
+
 // ─── isRecallXrayServedBy ─────────────────────────────────────────────────
 
 test("isRecallXrayServedBy accepts every documented value", () => {
@@ -49,7 +59,9 @@ test("buildXraySnapshot fills defaults for empty input", () => {
   assert.equal(snapshot.capturedAt, 1_700_000_000_000);
   assert.equal(snapshot.tierExplain, null);
   assert.deepEqual(snapshot.results, []);
-  assert.deepEqual(snapshot.filters, []);
+  assert.equal(snapshot.appliedResultLimit, 0);
+  assert.deepEqual(snapshot.appliedResults, []);
+  assert.deepEqual(snapshot.headroomResults, []);
   assert.deepEqual(snapshot.budget, { chars: 0, used: 0 });
   assert.equal(snapshot.sessionKey, undefined);
   assert.equal(snapshot.namespace, undefined);
@@ -452,6 +464,81 @@ test("buildXraySnapshot shallow-copies results so caller mutation does not leak 
   });
   result.admittedBy.push("beta");
   assert.deepEqual(snapshot.results[0]!.admittedBy, ["alpha"]);
+});
+
+test("buildXraySnapshot keeps ordered applied and headroom results separate from presentation results", () => {
+  const presentationResults = [xrayResult("presentation")];
+  const appliedResults = [xrayResult("applied-1"), xrayResult("applied-2")];
+  const headroomResults = [xrayResult("headroom-1"), xrayResult("headroom-2")];
+  const snapshot = buildXraySnapshot({
+    query: "q",
+    results: presentationResults,
+    appliedResultLimit: 2,
+    appliedResults,
+    headroomResults,
+    now: fixedNow,
+    snapshotIdGenerator: idGen(),
+  });
+
+  presentationResults[0]!.admittedBy.push("mutated");
+  appliedResults[0]!.admittedBy.push("mutated");
+  headroomResults[0]!.admittedBy.push("mutated");
+  appliedResults.reverse();
+  headroomResults.reverse();
+
+  assert.equal(snapshot.appliedResultLimit, 2);
+  assert.deepEqual(snapshot.results.map((result) => result.memoryId), ["presentation"]);
+  assert.deepEqual(snapshot.appliedResults.map((result) => result.memoryId), [
+    "applied-1",
+    "applied-2",
+  ]);
+  assert.deepEqual(snapshot.headroomResults.map((result) => result.memoryId), [
+    "headroom-1",
+    "headroom-2",
+  ]);
+  assert.deepEqual(snapshot.appliedResults[0]!.admittedBy, ["rank:applied-1"]);
+  assert.deepEqual(snapshot.headroomResults[0]!.admittedBy, ["rank:headroom-1"]);
+});
+
+test("buildXraySnapshot normalizes invalid and fractional applied result limits", () => {
+  for (const [value, expected] of [
+    [-1, 0],
+    [Number.NaN, 0],
+    [Number.POSITIVE_INFINITY, 0],
+    [2.9, 2],
+  ] as const) {
+    const snapshot = buildXraySnapshot({
+      query: "q",
+      appliedResultLimit: value,
+      now: fixedNow,
+      snapshotIdGenerator: idGen(),
+    });
+    assert.equal(snapshot.appliedResultLimit, expected);
+  }
+});
+
+test("buildXraySnapshot validates applied and headroom candidates like presentation results", () => {
+  const invalid = { ...xrayResult("invalid"), servedBy: "unknown-tier" as never };
+  assert.throws(
+    () =>
+      buildXraySnapshot({
+        query: "q",
+        appliedResults: [invalid],
+        now: fixedNow,
+        snapshotIdGenerator: idGen(),
+      }),
+    /servedBy must be one of/,
+  );
+  assert.throws(
+    () =>
+      buildXraySnapshot({
+        query: "q",
+        headroomResults: [invalid],
+        now: fixedNow,
+        snapshotIdGenerator: idGen(),
+      }),
+    /servedBy must be one of/,
+  );
 });
 
 // ─── RecallXrayBuilder ────────────────────────────────────────────────────

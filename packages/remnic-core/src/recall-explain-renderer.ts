@@ -302,6 +302,9 @@ export function toRecallXraySnapshotFromLegacy(
     // behavior of the non-markdown surfaces.
     tierExplain: normalizeTierExplain(snapshot.tierExplain) ?? null,
     results,
+    appliedResultLimit: 0,
+    appliedResults: [],
+    headroomResults: [],
     filters,
     budget: { chars: 0, used: 0 },
     // Sanitize legacy session metadata at the adapter boundary so a

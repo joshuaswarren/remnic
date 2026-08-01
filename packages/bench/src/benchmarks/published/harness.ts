@@ -26,7 +26,13 @@
 
 import { createHash, randomUUID } from "node:crypto";
 
-import type { BenchRecallSupportAssessment, BenchRecallSupportStatus, BenchResponder, Message } from "../../adapters/types.js";
+import type {
+  BenchAttributionRetrieval,
+  BenchRecallSupportAssessment,
+  BenchRecallSupportStatus,
+  BenchResponder,
+  Message,
+} from "../../adapters/types.js";
 import {
   answerBenchmarkQuestion,
   buildStrictBenchmarkQuestion,
@@ -56,6 +62,7 @@ import type {
   PairedAnswerReplayEntry,
   ResolvedRunBenchmarkOptions,
   TaskResult,
+  TaskAttributionWitness,
 } from "../../types.js";
 
 /**
@@ -370,6 +377,10 @@ function appendCompletedTask(
   ctx.options.onTaskComplete?.(task, tasks.length, ctx.totalCount);
 }
 
+interface TrialAttributionCapture {
+  witness?: TaskAttributionWitness;
+}
+
 async function executeTrialWithFailure(
   ctx: HarnessContext,
   trial: HarnessTrial,
@@ -378,8 +389,15 @@ async function executeTrialWithFailure(
   pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>
 ): Promise<TaskResult> {
   const trialId = trial.taskId ?? trial.question.slice(0, 60);
+  const attributionCapture: TrialAttributionCapture = {};
   try {
-    return await executeTrial(ctx, trial, answerSupportGate, pendingPairedAnswerReplays);
+    return await executeTrial(
+      ctx,
+      trial,
+      answerSupportGate,
+      pendingPairedAnswerReplays,
+      attributionCapture,
+    );
   } catch (err) {
     const blocked = findBenchmarkRunBlockedError(err);
     if (blocked) {
@@ -396,6 +414,9 @@ async function executeTrialWithFailure(
       latencyMs: 0,
       tokens: { input: 0, output: 0 },
       ...(trial.goldMemories ? { goldMemories: trial.goldMemories } : {}),
+      ...(attributionCapture.witness
+        ? { attributionWitness: attributionCapture.witness }
+        : {}),
       details: {
         // Preserve the trial's category so a failed trial is still attributed
         // to its per-category bucket (computeCategoryAggregates), keeping the
@@ -585,14 +606,46 @@ async function executeTrial(
   ctx: HarnessContext,
   trial: HarnessTrial,
   answerSupportGate: boolean,
-  pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>
+  pendingPairedAnswerReplays: Map<TaskResult, PendingPairedAnswerReplay>,
+  attributionCapture: TrialAttributionCapture,
 ): Promise<TaskResult> {
   const { result: recallResult, durationMs } = await timed(async () => {
     const recallBudget = benchmarkRecallBudgetForSessionCount(trial.recallSessionIds.length);
+    const witnessEnabled =
+      (trial.goldMemories?.length ?? 0) > 0 &&
+      typeof ctx.options.system.recallWithTrace === "function" &&
+      typeof ctx.options.system.captureAttributionWitness === "function";
     const recalledSessions = await Promise.all(
-      trial.recallSessionIds.map((sessionId) => ctx.options.system.recall(sessionId, trial.question, recallBudget))
+      trial.recallSessionIds.map(async (sessionId) => {
+        if (!witnessEnabled) {
+          return {
+            text: await ctx.options.system.recall(sessionId, trial.question, recallBudget),
+          };
+        }
+        const traced = await ctx.options.system.recallWithTrace!(
+          sessionId,
+          trial.question,
+          recallBudget,
+        );
+        const attribution: BenchAttributionRetrieval = traced.attribution ?? {
+          sessionId,
+          appliedCap: null,
+          atCapMemoryIds: null,
+          headroomMemoryIds: null,
+        };
+        return { text: traced.text, attribution };
+      }),
     );
-    const rawRecalledText = recalledSessions.filter(Boolean).join("\n\n");
+    if (witnessEnabled) {
+      attributionCapture.witness = await ctx.options.system.captureAttributionWitness!({
+        goldMemories: trial.goldMemories!,
+        retrievals: recalledSessions.map((session) => session.attribution!),
+      }).catch(() => undefined);
+    }
+    const rawRecalledText = recalledSessions
+      .map((session) => session.text)
+      .filter(Boolean)
+      .join("\n\n");
     const recalledText = trial.recallTextTransform
       ? trial.recallTextTransform({
           question: trial.question,
@@ -750,6 +803,9 @@ async function executeTrial(
       output: answered.tokens.output + judgeResult.tokens.output,
     },
     ...(trial.goldMemories ? { goldMemories: trial.goldMemories } : {}),
+    ...(attributionCapture.witness
+      ? { attributionWitness: attributionCapture.witness }
+      : {}),
     details,
   };
   if (answerReplayKey && currentProfile === "baseline" && answered.fallbackReason === undefined) {

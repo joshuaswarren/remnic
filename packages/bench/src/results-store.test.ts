@@ -97,6 +97,135 @@ test("loadBenchmarkResult rejects task result with invalid goldMemories shape", 
   }
 });
 
+test("loadBenchmarkResult preserves a valid versioned attribution witness", async () => {
+  const result = validResult();
+  const witness = validAttributionWitness();
+  const task = result.results.tasks[0] as unknown as Record<string, unknown>;
+  task.attributionWitness = witness;
+
+  await withResultFile(result, async (filePath) => {
+    const loaded = await loadBenchmarkResult(filePath);
+    const loadedTask = loaded.results.tasks[0];
+    assert.ok(loadedTask && "attributionWitness" in loadedTask);
+    assert.deepEqual(loadedTask.attributionWitness, witness);
+  });
+});
+
+test("loadBenchmarkResult accepts retrieval evidence beyond the QMD-only limit", async () => {
+  const result = validResult();
+  const witness = validAttributionWitness();
+  const task = result.results.tasks[0] as unknown as Record<string, unknown>;
+  task.attributionWitness = {
+    ...witness,
+    runtime: { ...witness.runtime, qmdMaxResults: 0 },
+  };
+
+  await withResultFile(result, async (filePath) => {
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.ok(loaded.results.tasks[0]?.attributionWitness);
+  });
+});
+
+test("loadBenchmarkResult rejects malformed persisted attribution witnesses", async () => {
+  const valid = validAttributionWitness();
+  const malformedWitnesses: unknown[] = [
+    { ...valid, schemaVersion: 2 },
+    {
+      ...valid,
+      runtime: { ...valid.runtime, qmdMaxResults: "ten" },
+    },
+    {
+      ...valid,
+      golds: [{
+        goldMemory: "Gold fact",
+        storeMemoryIds: [17],
+        oracleMemoryIds: ["fact-gold"],
+      }],
+    },
+    {
+      ...valid,
+      golds: [{
+        goldMemory: "Gold fact",
+        storeMemoryIds: ["fact-gold"],
+        oracleMemoryIds: "fact-gold",
+      }],
+    },
+    {
+      ...valid,
+      retrievals: [{
+        sessionId: "session-1",
+        appliedCap: -1,
+        atCapMemoryIds: [],
+        headroomMemoryIds: [],
+      }],
+    },
+    {
+      ...valid,
+      retrievals: [{
+        sessionId: "session-1",
+        appliedCap: 1,
+        atCapMemoryIds: ["fact-gold", "fact-extra"],
+        headroomMemoryIds: [],
+      }],
+    },
+    {
+      ...valid,
+      retrievals: [{
+        sessionId: "session-1",
+        appliedCap: 2,
+        atCapMemoryIds: ["fact-first"],
+        headroomMemoryIds: ["fact-gold"],
+      }],
+    },
+    {
+      ...valid,
+      retrievals: [{
+        sessionId: "session-1",
+        appliedCap: 2,
+        atCapMemoryIds: ["fact-first"],
+        headroomMemoryIds: null,
+      }],
+    },
+    { ...valid, retrievals: "not-an-array" },
+  ];
+
+  for (const malformedWitness of malformedWitnesses) {
+    const result = validResult();
+    const task = result.results.tasks[0] as unknown as Record<string, unknown>;
+    task.attributionWitness = malformedWitness;
+    await withResultFile(result, async (filePath) => {
+      await assert.rejects(
+        () => loadBenchmarkResult(filePath),
+        /Invalid benchmark result file/,
+      );
+    });
+  }
+});
+
+
+function validAttributionWitness() {
+  return {
+    schemaVersion: 1 as const,
+    runtime: {
+      qmdCollection: "remnic-bench-hot",
+      qmdIndex: "remnic-bench-index",
+      qmdMaxResults: 25,
+      attributionThreshold: 0.6,
+    },
+    golds: [{
+      goldMemory: "Gold fact",
+      storeMemoryIds: ["fact-gold"],
+      oracleMemoryIds: ["fact-gold", "fact-support"],
+    }],
+    retrievals: [{
+      sessionId: "session-1",
+      appliedCap: 1,
+      atCapMemoryIds: ["fact-gold"],
+      headroomMemoryIds: ["fact-support"],
+    }],
+  };
+}
+
 async function withResultFile(
   payload: unknown,
   callback: (filePath: string) => Promise<void>,

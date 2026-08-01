@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readFile,
   rm,
+  rename,
   stat,
   symlink,
   writeFile,
@@ -23,7 +24,10 @@ import {
 } from "@remnic/core";
 import type { RecallXraySnapshot } from "@remnic/core";
 import { LcmEngine } from "@remnic/core/lcm";
+import type { BenchMemoryAdapter } from "./types.js";
+import { withEntityCanonicalMutationLock } from "../../../remnic-core/src/storage/entity-canonical-id-lock.js";
 
+import { captureRecallAttribution } from "./attribution-witness.js";
 import {
   buildBenchAdapterConfig,
   buildBenchBaselineRemnicConfig,
@@ -93,8 +97,39 @@ function recallXraySnapshotForTest(
     capturedAt: 123,
     tierExplain: null,
     results: [],
+    appliedResultLimit: 0,
+    appliedResults: [],
+    headroomResults: [],
     filters: [],
     budget: { chars: 100, used: 10 },
+  };
+}
+
+test("captureRecallAttribution preserves complete zero-cap empty evidence", async () => {
+  const attribution = await captureRecallAttribution(
+    {} as Orchestrator,
+    "zero-cap-session",
+    recallXraySnapshotForTest("zero-cap-snapshot", "zero cap"),
+  );
+
+  assert.deepEqual(attribution, {
+    sessionId: "zero-cap-session",
+    appliedCap: 0,
+    atCapMemoryIds: [],
+    headroomMemoryIds: [],
+  });
+});
+
+function recallXrayResultForTest(
+  memoryId: string,
+  memoryPath: string,
+): RecallXraySnapshot["results"][number] {
+  return {
+    memoryId,
+    path: memoryPath,
+    servedBy: "hybrid",
+    scoreDecomposition: { final: 1 },
+    admittedBy: [],
   };
 }
 
@@ -214,6 +249,220 @@ test("recallWithTrace preserves recall text and emits content-free row lineage",
     }
   } finally {
     await adapter.destroy();
+  }
+});
+
+test("recallWithTrace attributes the applied cap and headroom with canonical frontmatter IDs", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-attribution-"));
+  const storage = new StorageManager(memoryDir);
+  const presentationWrite = await storage.writeMemory("fact", "Presentation-only fact");
+  const firstAppliedWrite = await storage.writeMemory("fact", "First applied fact");
+  const secondAppliedWrite = await storage.writeMemory("fact", "Second applied fact");
+  const headroomWrite = await storage.writeMemory("fact", "Headroom fact");
+  const stored = await storage.readAllMemories();
+  const misleadingPaths = new Map<string, string>();
+  for (const [memoryId, misleadingName] of [
+    [presentationWrite.id, "presentation-docid.md"],
+    [firstAppliedWrite.id, "first-applied-docid.md"],
+    [secondAppliedWrite.id, "second-applied-docid.md"],
+    [headroomWrite.id, "headroom-docid.md"],
+  ] as const) {
+    const memory = stored.find((candidate) => candidate.frontmatter.id === memoryId);
+    assert.ok(memory);
+    const misleadingPath = path.join(path.dirname(memory.path), misleadingName);
+    await rename(memory.path, misleadingPath);
+    misleadingPaths.set(memoryId, misleadingPath);
+  }
+
+  const originalCapture = Orchestrator.prototype.recallWithXrayCapture;
+  Orchestrator.prototype.recallWithXrayCapture = async function patchedCapture(prompt) {
+    const presentation = recallXrayResultForTest(
+      "presentation-docid",
+      misleadingPaths.get(presentationWrite.id)!,
+    );
+    const firstApplied = recallXrayResultForTest(
+      "first-applied-docid",
+      misleadingPaths.get(firstAppliedWrite.id)!,
+    );
+    const secondApplied = recallXrayResultForTest(
+      "second-applied-docid",
+      misleadingPaths.get(secondAppliedWrite.id)!,
+    );
+    const headroom = recallXrayResultForTest(
+      "headroom-docid",
+      misleadingPaths.get(headroomWrite.id)!,
+    );
+    const snapshot = {
+      ...recallXraySnapshotForTest("attribution-snapshot", prompt),
+      results: [presentation],
+      appliedResultLimit: 2,
+      appliedResults: [secondApplied, firstApplied],
+      headroomResults: [headroom],
+    } as unknown as RecallXraySnapshot;
+    return {
+      result: "canonical attribution recall",
+      snapshot,
+      recallStartedAt: 1,
+    };
+  };
+
+  let adapter: Awaited<ReturnType<typeof createRemnicAdapter>> | undefined;
+  try {
+    adapter = await createRemnicAdapter({
+      memoryDir,
+      configOverrides: { transcriptEnabled: true },
+    });
+    const traced = await adapter.recallWithTrace!(
+      "canonical-session",
+      "canonical attribution query",
+      1_000,
+    );
+
+    assert.ok("attribution" in traced);
+    assert.deepEqual(traced.attribution, {
+      sessionId: "canonical-session",
+      appliedCap: 2,
+      atCapMemoryIds: [secondAppliedWrite.id, firstAppliedWrite.id],
+      headroomMemoryIds: [headroomWrite.id],
+    });
+    assert.equal(
+      JSON.stringify(traced.attribution).includes(presentationWrite.id),
+      false,
+    );
+    assert.equal(JSON.stringify(traced.attribution).includes("docid"), false);
+  } finally {
+    Orchestrator.prototype.recallWithXrayCapture = originalCapture;
+    await adapter?.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+  }
+});
+
+test("recallWithTrace preserves successful recall when attribution reads fail", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-attribution-error-"));
+  const originalCapture = Orchestrator.prototype.recallWithXrayCapture;
+  const originalRead = StorageManager.prototype.readMemoryByPath;
+  Orchestrator.prototype.recallWithXrayCapture = async function patchedCapture(prompt) {
+    const result = recallXrayResultForTest("unreadable", "facts/unreadable.md");
+    return {
+      result: "recall survived attribution read",
+      snapshot: {
+        ...recallXraySnapshotForTest("attribution-error-snapshot", prompt),
+        appliedResultLimit: 1,
+        appliedResults: [result],
+      },
+      recallStartedAt: 1,
+    };
+  };
+  StorageManager.prototype.readMemoryByPath = async function failedRead() {
+    throw new Error("secure store locked");
+  };
+
+  let adapter: BenchMemoryAdapter | undefined;
+  try {
+    adapter = await createRemnicAdapter({
+      memoryDir,
+      configOverrides: { transcriptEnabled: true },
+    });
+    const traced = await adapter.recallWithTrace!(
+      "attribution-error-session",
+      "attribution error query",
+      1_000,
+    );
+
+    assert.match(traced.text, /recall survived attribution read/);
+    assert.equal("attribution" in traced, false);
+  } finally {
+    StorageManager.prototype.readMemoryByPath = originalRead;
+    Orchestrator.prototype.recallWithXrayCapture = originalCapture;
+    await adapter?.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+  }
+});
+
+test("captureAttributionWitness persists canonical store and oracle memory IDs", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-witness-"));
+  const storage = new StorageManager(memoryDir);
+  const matchingWrite = await storage.writeMemory("fact", "The user prefers jasmine tea.");
+  await storage.writeMemory("fact", "The user owns a red bicycle.");
+  const matchingMemory = (await storage.readAllMemories()).find(
+    (memory) => memory.frontmatter.id === matchingWrite.id,
+  );
+  assert.ok(matchingMemory);
+  const misleadingPath = path.join(path.dirname(matchingMemory.path), "qmd-docid.md");
+  await rename(matchingMemory.path, misleadingPath);
+
+  const originalSearch = Orchestrator.prototype.searchAcrossNamespaces;
+  Orchestrator.prototype.searchAcrossNamespaces = async function patchedSearch() {
+    return [{
+      docid: "qmd-docid",
+      path: `${this.config.qmdCollection}/${path.relative(this.config.memoryDir, misleadingPath).replaceAll("\\", "/")}`,
+      score: 1,
+      snippet: "The user prefers jasmine tea.",
+    }];
+  };
+  let adapter: BenchMemoryAdapter | undefined;
+  try {
+    adapter = await createRemnicAdapter({
+      memoryDir,
+      configOverrides: { qmdMaxResults: 37, transcriptEnabled: true },
+    });
+    assert.ok(adapter.captureAttributionWitness);
+    const retrievals = [{
+      sessionId: "witness-session",
+      appliedCap: 1,
+      atCapMemoryIds: [matchingWrite.id],
+      headroomMemoryIds: [],
+    }];
+    const witness = await adapter.captureAttributionWitness({
+      goldMemories: ["The user prefers jasmine tea."],
+      retrievals,
+    });
+
+    assert.ok(witness);
+    assert.equal(witness.schemaVersion, 1);
+    assert.match(witness.runtime.qmdCollection, /^remnic-bench-/);
+    assert.equal(witness.runtime.qmdIndex, witness.runtime.qmdCollection);
+    assert.equal(witness.runtime.qmdMaxResults, 37);
+    assert.deepEqual(witness.golds, [{
+      goldMemory: "The user prefers jasmine tea.",
+      storeMemoryIds: [matchingWrite.id],
+      oracleMemoryIds: [matchingWrite.id],
+    }]);
+    assert.deepEqual(witness.retrievals, retrievals);
+  } finally {
+    Orchestrator.prototype.searchAcrossNamespaces = originalSearch;
+    await adapter?.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+  }
+});
+
+test("captureAttributionWitness marks oracle evidence unavailable when QMD search is disabled", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-witness-disabled-qmd-"));
+  const originalSearch = Orchestrator.prototype.searchAcrossNamespaces;
+  let searchCalls = 0;
+  Orchestrator.prototype.searchAcrossNamespaces = async function patchedSearch() {
+    searchCalls += 1;
+    return [];
+  };
+  let adapter: BenchMemoryAdapter | undefined;
+  try {
+    adapter = await createRemnicAdapter({
+      memoryDir,
+      configOverrides: { qmdMaxResults: 0, transcriptEnabled: true },
+    });
+    assert.ok(adapter.captureAttributionWitness);
+    const witness = await adapter.captureAttributionWitness({
+      goldMemories: ["The user prefers jasmine tea."],
+      retrievals: [],
+    });
+
+    assert.equal(searchCalls, 0);
+    assert.equal(witness?.runtime.qmdMaxResults, 0);
+    assert.equal(witness?.golds[0]?.oracleMemoryIds, null);
+  } finally {
+    Orchestrator.prototype.searchAcrossNamespaces = originalSearch;
+    await adapter?.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1737,6 +1986,145 @@ test("direct adapter session reset clears caller-owned entity timeline state", a
   } finally {
     await adapter.destroy();
     await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+  }
+});
+
+test("direct adapter session entity cleanup waits for the canonical mutation lock", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-entity-lock-"));
+  const resetSession = "owned-entity-lock-reset-session";
+  const controlMemoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-entity-control-"));
+  const controlSession = "owned-entity-lock-control-session";
+  const otherSession = "owned-entity-lock-other-session";
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    configOverrides: {
+      entityRetrievalEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+  const controlAdapter = await createRemnicAdapter({
+    memoryDir: controlMemoryDir,
+    configOverrides: {
+      entityRetrievalEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+  const storage = new StorageManager(memoryDir);
+  const sharedEntityName = await storage.writeEntity(
+    "Shared Lock Entity",
+    "project",
+    ["Remember the locked reset code is marigold-31."],
+    { source: "extraction", sessionKey: resetSession },
+  );
+  await storage.writeEntity(
+    "Shared Lock Entity",
+    "project",
+    ["Remember the preserved lock code is willow-42."],
+    { source: "extraction", sessionKey: otherSession },
+  );
+  const resetOnlyEntityName = await storage.writeEntity(
+    "Reset Only Lock Entity",
+    "project",
+    ["Remember the locked delete code is spruce-53."],
+    { source: "extraction", sessionKey: resetSession },
+  );
+  const sharedEntityPath = path.join(memoryDir, "entities", `${sharedEntityName}.md`);
+  const resetOnlyEntityPath = path.join(memoryDir, "entities", `${resetOnlyEntityName}.md`);
+  const sharedEntityBeforeReset = await readFile(sharedEntityPath, "utf8");
+  const resetOnlyEntityBeforeReset = await readFile(resetOnlyEntityPath, "utf8");
+  const cleanupReady = createDeferredForTest();
+  const cleanupCanContinue = createDeferredForTest();
+  let sharedEntityWriteEntered = false;
+  let resetPromise: Promise<void> | undefined;
+
+  type EntityCleanupProbeStorage = StorageManager & {
+    writeStorageSecureFile(
+      filePath: string,
+      content: string | Buffer,
+      forceEncrypt?: boolean,
+    ): Promise<void>;
+  };
+  const storagePrototype = StorageManager.prototype as EntityCleanupProbeStorage;
+  const originalReadAllColdMemories = storagePrototype.readAllColdMemories;
+  const originalListEntityNames = storagePrototype.listEntityNames;
+  const originalReadEntity = storagePrototype.readEntity;
+  const originalWriteStorageSecureFile = storagePrototype.writeStorageSecureFile;
+  let prototypesRestored = false;
+  const restoreStoragePrototype = (): void => {
+    if (prototypesRestored) return;
+    prototypesRestored = true;
+    storagePrototype.readAllColdMemories = originalReadAllColdMemories;
+    storagePrototype.listEntityNames = originalListEntityNames;
+    storagePrototype.readEntity = originalReadEntity;
+    storagePrototype.writeStorageSecureFile = originalWriteStorageSecureFile;
+  };
+
+  storagePrototype.readAllColdMemories = async function patchedReadAllColdMemories() {
+    if (this.dir !== memoryDir) {
+      return originalReadAllColdMemories.call(this);
+    }
+    cleanupReady.resolve();
+    await cleanupCanContinue.promise;
+    return [];
+  };
+  storagePrototype.listEntityNames = async function patchedListEntityNames() {
+    if (this.dir !== memoryDir) {
+      return originalListEntityNames.call(this);
+    }
+    return [sharedEntityName, resetOnlyEntityName];
+  };
+  storagePrototype.readEntity = async function patchedReadEntity(entityName: string) {
+    if (this.dir !== memoryDir) {
+      return originalReadEntity.call(this, entityName);
+    }
+    if (entityName === sharedEntityName) return sharedEntityBeforeReset;
+    if (entityName === resetOnlyEntityName) return resetOnlyEntityBeforeReset;
+    return originalReadEntity.call(this, entityName);
+  };
+  storagePrototype.writeStorageSecureFile = function patchedWriteStorageSecureFile(
+    filePath: string,
+    content: string | Buffer,
+    forceEncrypt = false,
+  ): Promise<void> {
+    if (this.dir === memoryDir && filePath === sharedEntityPath) {
+      sharedEntityWriteEntered = true;
+    }
+    return originalWriteStorageSecureFile.call(this, filePath, content, forceEncrypt);
+  };
+
+  try {
+    resetPromise = adapter.reset?.(resetSession);
+    assert.ok(resetPromise);
+    await cleanupReady.promise;
+
+    await withEntityCanonicalMutationLock(path.join(memoryDir, "state"), async () => {
+      cleanupCanContinue.resolve();
+      const controlReset = controlAdapter.reset?.(controlSession);
+      assert.ok(controlReset);
+      await controlReset;
+      assert.equal(
+        sharedEntityWriteEntered,
+        false,
+        "session cleanup must not enter its entity rewrite while the canonical lock is held",
+      );
+      assert.equal(await readFile(sharedEntityPath, "utf8"), sharedEntityBeforeReset);
+      assert.equal(await readFile(resetOnlyEntityPath, "utf8"), resetOnlyEntityBeforeReset);
+    });
+
+    await resetPromise;
+    restoreStoragePrototype();
+    const sharedEntityAfterReset = await storage.readEntity(sharedEntityName);
+    assert.doesNotMatch(sharedEntityAfterReset, /marigold-31/);
+    assert.match(sharedEntityAfterReset, /willow-42/);
+    await assertPathMissingForTest(resetOnlyEntityPath);
+  } finally {
+    cleanupCanContinue.resolve();
+    await resetPromise?.catch(() => undefined);
+    restoreStoragePrototype();
+    await adapter.destroy();
+    await controlAdapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+    await rm(controlMemoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 

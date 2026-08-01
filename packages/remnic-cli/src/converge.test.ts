@@ -167,7 +167,10 @@ test("remnic converge plan: validates a namespace present only in provided base 
   ]);
 
   await assert.rejects(
-    computeConvergePlan({ baseFilesByNamespace: baseMap }),
+    computeConvergePlan({
+      baseFilesByNamespace: baseMap,
+      localFilesByNamespace: new Map(),
+    }),
     /aliasing paths/,
   );
 });

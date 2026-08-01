@@ -62,6 +62,7 @@ export async function respondOfflineSnapshotStream(
     createdAt: snapshot.createdAt,
     sourceId: snapshot.sourceId,
     includeTranscripts: snapshot.includeTranscripts,
+    deletions: snapshot.deletions,
   }, snapshot.files, requestId);
 }
 

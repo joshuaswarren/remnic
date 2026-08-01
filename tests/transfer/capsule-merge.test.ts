@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -14,9 +15,15 @@ import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 
 import { exportCapsule } from "../../packages/remnic-core/src/transfer/capsule-export.js";
-import { mergeCapsule } from "../../packages/remnic-core/src/transfer/capsule-merge.js";
+import {
+  mergeCapsule,
+  type MergeCapsuleResult,
+} from "../../packages/remnic-core/src/transfer/capsule-merge.js";
 import { listVersions } from "../../packages/remnic-core/src/page-versioning.js";
 import { sha256String } from "../../packages/remnic-core/src/transfer/fs-utils.js";
+import {
+  withEntityCanonicalMutationLock,
+} from "../../packages/remnic-core/src/storage/entity-canonical-id-lock.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -800,4 +807,69 @@ test("merge canonicalizes a legacy entityRef and re-merge stays identical-skip",
     second.skipped.map((s) => s.reason),
     ["identical"],
   );
+});
+
+test("entity page merges wait for the target canonical mutation lock", async () => {
+  const entityRel = "entities/capsule-merge-lock-target.md";
+  const originalEntity = "original merge entity bytes\n";
+  const mergedEntity = "merged entity bytes\n";
+  const sourceRoot = await makeMemoryDir([{ rel: entityRel, content: mergedEntity }]);
+  const exported = await exportCapsule({
+    name: "entity-lock-merge",
+    root: sourceRoot,
+    pluginVersion: "9.9.9",
+    now: Date.parse("2026-04-26T00:00:00.000Z"),
+  });
+  const targetRoot = await makeTargetDir([{ rel: entityRel, content: originalEntity }]);
+  const controlRoot = await makeTargetDir([{ rel: entityRel, content: originalEntity }]);
+  const entityPath = path.join(targetRoot, entityRel);
+  let mergePromise: Promise<MergeCapsuleResult> | undefined;
+
+  try {
+    await mkdir(path.join(targetRoot, "state"), { recursive: true });
+    let mergeFinished = false;
+
+    await withEntityCanonicalMutationLock(path.join(targetRoot, "state"), async () => {
+      mergePromise = mergeCapsule({
+        sourceArchive: exported.archivePath,
+        targetRoot,
+        conflictMode: "prefer-source",
+      });
+      void mergePromise.then(
+        () => {
+          mergeFinished = true;
+        },
+        () => undefined,
+      );
+
+      const controlResult = await mergeCapsule({
+        sourceArchive: exported.archivePath,
+        targetRoot: controlRoot,
+        conflictMode: "prefer-source",
+      });
+      assert.equal(controlResult.merged.length, 1);
+      assert.equal(
+        mergeFinished,
+        false,
+        "the target merge must not finish while its entity mutation lock is held",
+      );
+      assert.equal(
+        await readFile(entityPath, "utf-8"),
+        originalEntity,
+        "the target entity write must not enter while its canonical mutation lock is held",
+      );
+    });
+
+    assert.ok(mergePromise);
+    const result = await mergePromise;
+    assert.equal(result.merged.length, 1);
+    assert.equal(await readFile(entityPath, "utf-8"), mergedEntity);
+  } finally {
+    await mergePromise?.catch(() => undefined);
+    await Promise.all([
+      rm(sourceRoot, { recursive: true, force: true }),
+      rm(targetRoot, { recursive: true, force: true }),
+      rm(controlRoot, { recursive: true, force: true }),
+    ]);
+  }
 });

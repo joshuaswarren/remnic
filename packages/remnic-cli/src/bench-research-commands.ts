@@ -36,6 +36,8 @@ export async function runBenchResearchCommand(
           parsed.resultsDir ??
           path.join(resolveHomeDir(), ".remnic", "bench", "results"),
         memoryDir: parsed.memoryDir,
+        qmdPath: parsed.qmdPath,
+        collection: parsed.collection,
         threshold: parsed.threshold,
         json: parsed.json,
       }),

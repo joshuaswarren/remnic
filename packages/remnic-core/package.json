@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.45.3",
+  "version": "9.46.0",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -1304,16 +1304,6 @@
       "types": "./dist/lcm/tools.d.ts",
       "remnic-source": "./src/lcm/tools.ts",
       "import": "./dist/lcm/tools.js"
-    },
-    "./legacy-hook-compat": {
-      "types": "./dist/legacy-hook-compat.d.ts",
-      "remnic-source": "./src/legacy-hook-compat.ts",
-      "import": "./dist/legacy-hook-compat.js"
-    },
-    "./legacy-hook-compat.js": {
-      "types": "./dist/legacy-hook-compat.d.ts",
-      "remnic-source": "./src/legacy-hook-compat.ts",
-      "import": "./dist/legacy-hook-compat.js"
     },
     "./lifecycle": {
       "types": "./dist/lifecycle.d.ts",
@@ -3113,7 +3103,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.45.3"
+    "@remnic/coding-graph": "^9.46.0"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

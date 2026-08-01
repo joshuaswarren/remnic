@@ -2,12 +2,12 @@
 
 ## Overview
 
-Retrieval runs before each agent session (`before_agent_start` hook). It injects relevant memories and profile context into the system prompt.
+Retrieval runs before prompt construction (`before_prompt_build` hook). It injects relevant memories and profile context into the system prompt.
 
 ## Pipeline Stages
 
-```
-before_agent_start
+```text
+before_prompt_build
        │
        ▼
 ┌─────────────────────────────────┐

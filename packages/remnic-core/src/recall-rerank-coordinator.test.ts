@@ -283,6 +283,67 @@ test("zero-semantics: both flags off → stage returns inputs unchanged with zer
   assert.equal(directReads, 0, "no direct reads when disabled");
 });
 
+test("post-MMR partition exposes ordered headroom without changing admitted results", () => {
+  const config = parseConfig({
+    recallMmrEnabled: true,
+    recallMmrLambda: 0.3,
+    recallMmrTopN: 40,
+  });
+  const corpus = makeFakes([]);
+  const coordinator = new RecallRerankCoordinator({
+    getConfig: () => config,
+    getStorage: corpus.getStorage,
+    readQmdResultMemory: async () => null,
+  });
+  const candidates: QmdSearchResult[] = [
+    { docid: "a1", path: "p/a1", snippet: "alpha fact one", score: 0.99 },
+    { docid: "a2", path: "p/a2", snippet: "alpha fact two", score: 0.98 },
+    { docid: "a3", path: "p/a3", snippet: "alpha fact three", score: 0.97 },
+    { docid: "a4", path: "p/a4", snippet: "alpha fact four", score: 0.96 },
+    { docid: "a5", path: "p/a5", snippet: "alpha fact five", score: 0.95 },
+    {
+      docid: "d1",
+      path: "p/d1",
+      snippet: "orthogonal concept rocket fuel chemistry",
+      score: 0.94,
+    },
+  ];
+
+  const partition = coordinator.diversifyRecallResultsWithHeadroom(
+    "memories",
+    candidates,
+    2,
+    "alpha rocket chemistry",
+  );
+  const admitted = coordinator.diversifyAndLimitRecallResults(
+    "memories",
+    candidates,
+    2,
+    "alpha rocket chemistry",
+  );
+
+  assert.deepEqual(
+    partition.appliedResults.map((candidate) => candidate.docid),
+    ["a1", "d1"],
+    "the applied partition is the same post-MMR top slice",
+  );
+  assert.deepEqual(
+    partition.headroomResults.map((candidate) => candidate.docid),
+    ["a2", "a3", "a4", "a5"],
+    "headroom preserves the post-MMR order immediately beyond the applied cap",
+  );
+  assert.deepEqual(
+    partition.appliedResults,
+    admitted,
+    "headroom capture does not change admitted results",
+  );
+  assert.deepEqual(
+    candidates.map((candidate) => candidate.docid),
+    ["a1", "a2", "a3", "a4", "a5", "d1"],
+    "partitioning does not mutate the fetched candidate pool",
+  );
+});
+
 /**
  * Write a fact into the default-namespace storage dir (mirrors the
  * trust-score-recall-paths helper) so recall's recent-memory-scan branch has

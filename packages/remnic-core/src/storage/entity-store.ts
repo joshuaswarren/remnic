@@ -58,6 +58,7 @@ export interface EntityStoreDeps {
   currentHistoricalIds(): Readonly<Record<string, string>>;
   findMatchingEntity(proposedName: string, type: string): Promise<string | null>;
   getEntityCacheSecureStoreKey(): string;
+  getEntityMutationVersion(): number;
   getMemoryStatusVersion(): number;
   invalidateKnowledgeIndexCache(): void;
   knowledgeIndexCache: { result: string; builtAt: number } | null;
@@ -483,8 +484,11 @@ export class EntityStore {
    */
   async readAllEntityFiles(): Promise<EntityFile[]> {
     const currentVersion = this.deps.getMemoryStatusVersion();
-    const schemaCacheKey = buildEntitySchemaCacheKey(this.deps.entitySchemas);
-    const cacheKey = `${this.deps.getEntityCacheSecureStoreKey()}\u0000${schemaCacheKey}`;
+    const cacheKey = [
+      this.deps.getEntityCacheSecureStoreKey(),
+      buildEntitySchemaCacheKey(this.deps.entitySchemas),
+      this.deps.getEntityMutationVersion(),
+    ].join("\u0000");
     const cached = getCachedEntities(this.deps.baseDir, currentVersion, cacheKey);
     if (cached) return cached;
 
