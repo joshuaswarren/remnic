@@ -102,6 +102,7 @@ import {
   type RecallResultPartitionSink,
 } from "./recall-rerank-coordinator.js";
 import type { RecallInternalDeps } from "./recall-internal-deps.js";
+import { resolveCompositeProfileStorage } from "./recall-profile-storage.js";
 
 export class RecallInternalCoordinator {
   constructor(
@@ -686,154 +687,10 @@ export class RecallInternalCoordinator {
     const profileStorages = await Promise.all(
       profileStorageNamespaces.map((namespace) => this.deps.storageRouter.storageFor(namespace)),
     );
-    const emptyProfileStorage = new Proxy(
-      { dir: path.join(this.deps.config.memoryDir, ".empty-scope-profile") } as any,
-      {
-        get(target, prop: string | symbol) {
-          if (prop in target) return target[prop];
-          if (prop === "readProfile") return async () => "";
-          if (
-            prop === "readQuestions" ||
-            prop === "listEntityNames" ||
-            prop === "readContinuityIncidents"
-          )
-            return async () => [];
-          if (
-            prop === "readIdentityAnchor" ||
-            prop === "readIdentityImprovementLoops"
-          )
-            return async () => "";
-          if (prop === "readEntity" || prop === "readMemoryByPath")
-            return async () => null;
-          return async () => [];
-        },
-      },
-    );
-    const profileStorage =
-      profileStorages.length <= 1
-        ? profileStorages[0] ?? emptyProfileStorage
-        : new Proxy(profileStorages[0] as any, {
-            get(target, prop: string | symbol) {
-              if (prop === "readProfile") {
-                return async () => {
-                  for (const storage of profileStorages) {
-                    const profile = await storage.readProfile();
-                    if (profile.trim().length > 0) return profile;
-                  }
-                  return "";
-                };
-              }
-              if (prop === "readQuestions") {
-                return async (...args: any[]) => {
-                  const merged: any[] = [];
-                  const seen = new Set<string>();
-                  const priorityOf = (question: any): number => {
-                    const priority = Number(question?.priority ?? 0);
-                    return Number.isFinite(priority) ? priority : 0;
-                  };
-                  for (const storage of profileStorages) {
-                    const questions = await (storage.readQuestions as any)(...args);
-                    for (const question of questions) {
-                      const key = typeof question === "string" ? question : JSON.stringify(question);
-                      if (seen.has(key)) continue;
-                      seen.add(key);
-                      merged.push(question);
-                    }
-                  }
-                  return merged.sort(
-                    (left, right) =>
-                      priorityOf(right) - priorityOf(left) ||
-                      String(left?.id ?? "").localeCompare(String(right?.id ?? "")),
-                  );
-                };
-              }
-              if (prop === "readIdentityAnchor") {
-                return async () => {
-                  for (const storage of profileStorages) {
-                    const anchor = (await storage.readIdentityAnchor()) ?? "";
-                    if (anchor.trim().length > 0) return anchor;
-                  }
-                  return "";
-                };
-              }
-              if (prop === "readIdentityImprovementLoops") {
-                return async () => {
-                  const sections: string[] = [];
-                  const seen = new Set<string>();
-                  for (const storage of profileStorages) {
-                    const loops = ((await storage.readIdentityImprovementLoops()) ?? "").trim();
-                    if (!loops || seen.has(loops)) continue;
-                    seen.add(loops);
-                    sections.push(loops);
-                  }
-                  return sections.join("\n\n");
-                };
-              }
-              if (prop === "readContinuityIncidents") {
-                return async (...args: any[]) => {
-                  const limit = typeof args[0] === "number" && Number.isFinite(args[0]) ? Math.max(0, args[0]) : undefined;
-                  const incidents: any[] = [];
-                  const seen = new Set<string>();
-                  const incidentTime = (incident: any): number => {
-                    const raw = incident?.updatedAt ?? incident?.openedAt ?? incident?.createdAt;
-                    const parsed = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
-                    return Number.isFinite(parsed) ? parsed : 0;
-                  };
-                  for (const storage of profileStorages) {
-                    for (const incident of await (storage.readContinuityIncidents as any)(...args)) {
-                      const key = JSON.stringify(incident);
-                      if (seen.has(key)) continue;
-                      seen.add(key);
-                      incidents.push(incident);
-                    }
-                  }
-                  incidents.sort(
-                    (left, right) =>
-                      incidentTime(right) - incidentTime(left) ||
-                      String(left?.id ?? "").localeCompare(String(right?.id ?? "")),
-                  );
-                  return limit === undefined ? incidents : incidents.slice(0, limit);
-                };
-              }
-              if (prop === "listEntityNames") {
-                return async (...args: any[]) => {
-                  const names = new Set<string>();
-                  for (const storage of profileStorages) {
-                    for (const name of await (storage.listEntityNames as any)(...args)) names.add(name);
-                  }
-                  return [...names];
-                };
-              }
-              if (prop === "readEntity" || prop === "readMemoryByPath") {
-                return async (...args: any[]) => {
-                  for (const storage of profileStorages) {
-                    const value = await (storage as any)[prop](...args);
-                    if (value) return value;
-                  }
-                  return null;
-                };
-              }
-              if (prop === "readAllMemories") {
-                return async (...args: any[]) => {
-                  const memories: any[] = [];
-                  const seen = new Set<string>();
-                  for (const storage of profileStorages) {
-                    for (const memory of await (storage.readAllMemories as any)(...args)) {
-                      const key = String(memory?.path ?? memory?.frontmatter?.id ?? JSON.stringify(memory));
-                      if (seen.has(key)) continue;
-                      seen.add(key);
-                      memories.push(memory);
-                    }
-                  }
-                  return memories;
-                };
-              }
-              return target[prop];
-            },
-          });
-    const profileStorageDirs = Array.from(
-      new Set(profileStorages.map((storage) => storage.dir).filter((dir): dir is string => typeof dir === "string" && dir.length > 0)),
-    );
+    const { profileStorage, profileStorageDirs } = resolveCompositeProfileStorage({
+      profileStorages,
+      memoryDir: this.deps.config.memoryDir,
+    });
 
     // --- Phase 1: Launch ALL independent data fetches in parallel ---
     throwIfRecallAborted(options.abortSignal);
