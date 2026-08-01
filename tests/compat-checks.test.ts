@@ -34,7 +34,7 @@ test("compat checks report ok for valid fixture", async () => {
       },
     }),
     indexTs: [
-      'api.on("before_agent_start", async () => {});',
+      'api.on("before_prompt_build", async () => {});',
       'api.on("agent_end", async () => {});',
       "registerCli(api as unknown as Foo, orchestrator);",
       "api.registerService({ id: \"openclaw-engram\", start: async () => {}, stop: () => {} });",
@@ -86,7 +86,7 @@ test("compat checks fail when package.json is missing", async () => {
     pluginJson: JSON.stringify({ id: "openclaw-engram", kind: "memory" }),
     indexTs: [
       'api.on("gateway_start", async () => {});',
-      'api.on("before_agent_start", async () => {});',
+      'api.on("before_prompt_build", async () => {});',
       'api.on("agent_end", async () => {});',
     ].join("\n"),
   });
@@ -108,7 +108,7 @@ test("compat checks treat empty manifest and package files as invalid", async ()
     packageJson: "",
     indexTs: [
       'api.on("gateway_start", async () => {});',
-      'api.on("before_agent_start", async () => {});',
+      'api.on("before_prompt_build", async () => {});',
       'api.on("agent_end", async () => {});',
       "registerCli(api, orchestrator);",
     ].join("\n"),
@@ -137,7 +137,7 @@ test("compat checks ignore commented hook/startup/cli snippets", async () => {
       },
     }),
     indexTs: [
-      '// api.on("before_agent_start", async () => {});',
+      '// api.on("before_prompt_build", async () => {});',
       '/* api.on("agent_end", async () => {}); */',
       '// api.registerService({ start: async () => {}, stop: () => {} });',
       'const sample = "registerCli(api, orchestrator)";',
@@ -166,8 +166,8 @@ test("compat checks support method-style service start and enforce api.on bounda
       },
     }),
     indexTs: [
-      'myapi.on("before_agent_start", async () => {});',
-      'api.on("before_agent_start", async () => {});',
+      'myapi.on("before_prompt_build", async () => {});',
+      'api.on("before_prompt_build", async () => {});',
       'api.on("agent_end", async () => {});',
       "registerCli(api as unknown as Foo, orchestrator);",
       "api.registerService({ id: \"openclaw-engram\", async start() {}, stop() {} });",
@@ -183,7 +183,7 @@ test("compat checks support method-style service start and enforce api.on bounda
   assert.equal(byId.get("hook-registration-core")?.level, "ok");
 });
 
-test("compat checks accept before_prompt_build as alternative to before_agent_start", async () => {
+test("compat checks accept before_prompt_build", async () => {
   const repoRoot = await mkdtemp(path.join(os.tmpdir(), "engram-compat-new-hooks-"));
   await writeRepoFixture(repoRoot, {
     pluginJson: JSON.stringify({ id: "openclaw-engram", kind: "memory" }),
@@ -213,7 +213,7 @@ test("compat checks accept before_prompt_build as alternative to before_agent_st
   assert.equal(byId.get("hook-registration-core")?.level, "ok");
 });
 
-test("compat checks report error when neither before_prompt_build nor before_agent_start is registered", async () => {
+test("compat checks report error when before_prompt_build is not registered", async () => {
   const repoRoot = await mkdtemp(path.join(os.tmpdir(), "engram-compat-no-recall-hook-"));
   await writeRepoFixture(repoRoot, {
     pluginJson: JSON.stringify({ id: "openclaw-engram", kind: "memory" }),

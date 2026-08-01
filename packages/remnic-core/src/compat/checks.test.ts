@@ -154,7 +154,7 @@ test("memory prompt section registration must be on the plugin api object", asyn
 
   const hookCheck = checkById(checks, "hook-registration-core");
   assert.equal(hookCheck.level, "error");
-  assert.match(hookCheck.message, /before_prompt_build|before_agent_start/);
+  assert.match(hookCheck.message, /before_prompt_build/);
 });
 
 test("memory prompt section registration on api satisfies recall hook requirement", async () => {

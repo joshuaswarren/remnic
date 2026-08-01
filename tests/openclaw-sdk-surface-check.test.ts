@@ -259,7 +259,6 @@ const expectedHooks = [
   "before_agent_finalize",
   "before_agent_reply",
   "before_agent_run",
-  "before_agent_start",
   "before_compaction",
   "before_dispatch",
   "before_install",
@@ -330,7 +329,6 @@ export type HookName =
   | "before_agent_finalize"
   | "before_agent_reply"
   | "before_agent_run"
-  | "before_agent_start"
   | "before_compaction"
   | "before_dispatch"
   | "before_install"

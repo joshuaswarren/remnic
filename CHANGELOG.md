@@ -13,7 +13,9 @@ All notable changes to this project will be documented in this file.
 - External-wiki catalog links resolve consistently, and the CLI uses one exported implementation for JSON and text output.
 - External-wiki searches report degraded roots even when no hits remain.
 - Tier moves preserve concurrent disk updates, invalidate affected cold reads, and remain idempotent.
-- First-start migration counts only changed moves.
+- First-start migration reconciles QMD after idempotent on-disk tier moves before writing its completion marker.
+- OpenClaw prompt injection now uses only the supported `before_prompt_build` hook; obsolete heartbeat and legacy prompt-hook compatibility paths are removed.
+- ClawHub artifacts are validated as-built instead of rewriting scanner-visible filesystem and credential syntax.
 
 ## [v9.45.4] — 2026-07-31
 

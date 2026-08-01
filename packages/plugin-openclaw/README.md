@@ -116,7 +116,7 @@ runs from real runtime and OpenClaw chain runs.
 This plugin hooks into the OpenClaw gateway lifecycle:
 
 - **`gateway_start`** -- initializes the Remnic memory engine
-- **`before_agent_start`** / **`before_prompt_build`** -- adds relevant memories to the agent context through OpenClaw's memory context builders
+- **`before_prompt_build`** -- adds relevant memories to the agent context through OpenClaw's memory context builders
 - **`agent_end`** -- buffers the conversation turn for extraction
 - **`before_compaction`** / **`after_compaction`** -- saves checkpoints and triggers session reset on context compaction
 - **`before_reset`** -- bounded flush of the in-flight buffer before OpenClaw discards a session
@@ -348,8 +348,7 @@ Remnic supports the following OpenClaw memory integration points:
 
 | Feature | Status | Since |
 |---------|--------|-------|
-| `before_agent_start` hook (legacy) | Supported | 2025.x |
-| `before_prompt_build` hook (new SDK) | Supported | 2026.3.22 |
+| `before_prompt_build` hook | Supported | 2026.3.22 |
 | `registerMemoryPromptSection()` (structured builder) | Supported | 2026.3.22 |
 | `registerMemoryCapability()` (unified capability) | Supported | 2026.4.5 |
 | `registerMemoryRuntime()` (split runtime surface) | Supported | 2026.4.x |

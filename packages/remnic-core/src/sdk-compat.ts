@@ -64,10 +64,8 @@ export function detectSdkCapabilities(api: Record<string, unknown>): SdkCapabili
   //   - registerMemoryCapability   (capability-based SDKs, ≥2026.4.5; the
   //     deprecated registerMemoryPromptSection may be absent)
   //   - registrationMode           (explicit registration lifecycle signal)
-  // Just having runtime.version is NOT sufficient — some legacy builds
-  // expose it. Omitting registerMemoryCapability here would cause the
-  // legacy before_agent_start hook to be registered on new SDKs that only
-  // expose registerMemoryCapability, silently breaking memory injection.
+  // Runtime version alone is not authoritative because some transitional
+  // builds expose it without the modern prompt-hook surfaces.
   const hasNewHookSystem =
     hasRegisterMemoryPromptSection || hasRegisterMemoryCapability || hasRegistrationMode;
 

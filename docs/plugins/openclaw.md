@@ -161,7 +161,7 @@ path.
 
 OpenClaw runtime surfaces currently wired by the plugin:
 
-- `before_prompt_build` / `before_agent_start` for memory injection
+- `before_prompt_build` for memory injection
 - `agent_end` for buffered extraction
 - `before_compaction` / `after_compaction` for checkpoint and reset flows
 - `before_reset` for reset-time bounded buffer flush and session cleanup
