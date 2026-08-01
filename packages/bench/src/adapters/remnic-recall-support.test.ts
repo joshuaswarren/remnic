@@ -6,13 +6,26 @@ import {
   createRemnicAdapter,
   shouldIncludeCoreRecallForReplay,
 } from "./remnic-adapter.ts";
+import {
+  resolveAnswerSupportMinCoverage,
+  resolveSkipExtractionLcmFirst,
+} from "./remnic-recall-support.ts";
 
 test("exact-context support distinguishes empty, weak, supported, and unavailable", () => {
   const request = {
     query: "Which city did Maya move to after college?",
     sessionIds: ["session-1"],
   };
-  assert.equal(assessRemnicRecallSupport({ ...request, recalledText: "" }).status, "empty");
+  assert.deepEqual(
+    assessRemnicRecallSupport({ ...request, recalledText: "" }),
+    {
+      status: "empty",
+      reason: "exact responder context is empty",
+      evidenceCount: 0,
+      maxScore: 0,
+      supportThreshold: 0.34,
+    },
+  );
 
   const unrelated = assessRemnicRecallSupport({
     ...request,
@@ -106,4 +119,26 @@ test("Remnic adapter validates support and skip-extraction policy config", async
     () => createRemnicAdapter({ configOverrides: { skipExtractionLcmFirst: "sometimes" } }),
     /skipExtractionLcmFirst/,
   );
+});
+
+test("support policy resolvers reject invalid coverage types and parse false strings", () => {
+  for (const answerSupportMinCoverage of [
+    true,
+    [0.5],
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    -0.1,
+    1.1,
+    "",
+  ]) {
+    assert.throws(
+      () => resolveAnswerSupportMinCoverage({ answerSupportMinCoverage }),
+      /answerSupportMinCoverage/,
+    );
+  }
+
+  assert.equal(resolveAnswerSupportMinCoverage({ answerSupportMinCoverage: "0.5" }), 0.5);
+  for (const skipExtractionLcmFirst of ["false", "0", "no", "off"]) {
+    assert.equal(resolveSkipExtractionLcmFirst({ skipExtractionLcmFirst }), false);
+  }
 });

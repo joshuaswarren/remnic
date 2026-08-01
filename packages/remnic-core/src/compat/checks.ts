@@ -721,12 +721,19 @@ export async function runCompatChecks(options: CompatCheckOptions): Promise<Comp
       if (!hasGatewayStartHook && !hasServiceStart) {
         missingParts.push("startup wiring: gateway_start hook or api.registerService({ start })");
       }
+      const remediationParts: string[] = [];
+      if (missingRequiredHooks.length > 0) {
+        remediationParts.push(`registers ${missingRequiredHooks.join(", ")}`);
+      }
+      if (!hasGatewayStartHook && !hasServiceStart) {
+        remediationParts.push("registers gateway_start or api.registerService({ start })");
+      }
       checks.push({
         id: "hook-registration-core",
         title: "Core hook registration",
         level: "error",
         message: `Missing expected registration(s): ${missingParts.join("; ")}`,
-        remediation: "Ensure src/index.ts registers before_prompt_build and agent_end, plus either gateway_start or api.registerService({ start }).",
+        remediation: `Ensure src/index.ts ${remediationParts.join(" and ")}.`,
       });
     }
 

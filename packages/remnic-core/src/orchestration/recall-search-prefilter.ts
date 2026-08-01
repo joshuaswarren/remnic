@@ -1,8 +1,8 @@
 import path from "node:path";
 import { resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities } from "../capabilities.js";
 import type { EmbeddingFallback } from "../embedding-fallback.js";
-import { StorageManager } from "../index.js";
-import { NamespaceStorageRouter } from "../namespaces/storage.js";
+import type { StorageManager } from "../index.js";
+import type { NamespaceStorageRouter } from "../namespaces/storage.js";
 import {
   computeArtifactCandidateFetchLimit,
   throwIfRecallAborted,

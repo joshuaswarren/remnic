@@ -13,7 +13,10 @@ const ANSWER_SUPPORT_STOP_WORDS = new Set([
 export function resolveAnswerSupportMinCoverage(config: Record<string, unknown> | undefined): number {
   const raw = config?.answerSupportMinCoverage;
   if (raw === undefined) return DEFAULT_ANSWER_SUPPORT_MIN_COVERAGE;
-  const parsed = typeof raw === "number" ? raw : Number(raw);
+  if (typeof raw !== "number" && typeof raw !== "string") {
+    throw new Error("answerSupportMinCoverage must be a finite number greater than 0 and at most 1.");
+  }
+  const parsed = typeof raw === "number" ? raw : Number(raw.trim());
   if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
     throw new Error("answerSupportMinCoverage must be a finite number greater than 0 and at most 1.");
   }
@@ -80,7 +83,13 @@ export function assessRemnicRecallSupport(
   supportThreshold = DEFAULT_ANSWER_SUPPORT_MIN_COVERAGE,
 ): BenchRecallSupportAssessment {
   if (request.recalledText.trim().length === 0) {
-    return { status: "empty", reason: "exact responder context is empty", evidenceCount: 0 };
+    return {
+      status: "empty",
+      reason: "exact responder context is empty",
+      evidenceCount: 0,
+      maxScore: 0,
+      supportThreshold,
+    };
   }
   const queryTerms = supportTerms(request.query);
   if (queryTerms.length < 2) {

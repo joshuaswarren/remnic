@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- OpenClaw prompt injection now uses only the supported `before_prompt_build` hook; obsolete heartbeat and legacy prompt-hook compatibility paths are removed.
+- OpenClaw prompt injection now uses only the supported `before_prompt_build` hook; obsolete prompt and heartbeat hook registrations are removed while `HEARTBEAT.md` processing remains supported.
 - ClawHub artifacts are validated as-built instead of rewriting scanner-visible filesystem and credential syntax.
 
 ## [v9.45.5] — 2026-08-01

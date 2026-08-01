@@ -6,7 +6,7 @@ Retrieval runs before prompt construction (`before_prompt_build` hook). It injec
 
 ## Pipeline Stages
 
-```
+```text
 before_prompt_build
        │
        ▼
