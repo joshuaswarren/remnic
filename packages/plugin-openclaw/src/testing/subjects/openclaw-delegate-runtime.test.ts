@@ -68,6 +68,9 @@ async function startDaemonStub(): Promise<DaemonStub> {
       const response =
         req.url === "/engram/v1/recall"
           ? { context: "remembered" }
+          // A real daemon always reports its namespace posture on health.
+          : req.url === "/engram/v1/health"
+            ? { ok: true, namespacesEnabled: false }
           : req.url === "/engram/v1/capabilities"
             ? { lcmCompactionFlushBatch: true }
             : requestedNamespaces !== undefined

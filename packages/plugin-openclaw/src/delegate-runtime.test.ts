@@ -103,7 +103,14 @@ async function startDaemonStub(
           ? options.capabilityResponses?.[capabilityResponseIndex++]
           : undefined;
       const responsePromise =
-        pathname === "/engram/v1/capabilities" && capabilityResponse !== undefined
+        // A real daemon always answers health with its namespace posture; the
+        // capability refuses to scope a request without it.
+        pathname === "/engram/v1/health"
+          ? Promise.resolve({
+              status: 200,
+              body: { ok: true, memoryDir: TEST_CAPABILITY.memoryDir, namespacesEnabled: false },
+            })
+          : pathname === "/engram/v1/capabilities" && capabilityResponse !== undefined
           ? Promise.resolve(capabilityResponse)
           : pathname === "/engram/v1/capabilities" && options.batchFlush !== false
             ? Promise.resolve({ status: 200, body: { lcmCompactionFlushBatch: true } })
@@ -2459,6 +2466,10 @@ test("delegate runtime reloads a rotated daemon token without re-registering hoo
       receivedAuthorization.push(req.headers.authorization);
     }
     res.setHeader("content-type", "application/json");
+    if (String(req.url).startsWith("/engram/v1/health")) {
+      res.end(JSON.stringify({ ok: true, namespacesEnabled: false }));
+      return;
+    }
     if (req.headers.authorization !== "Bearer accepted-token") {
       res.writeHead(401);
       res.end(JSON.stringify({ error: "unauthorized" }));
@@ -2530,6 +2541,13 @@ test("delegate daemon auth failures log one sanitized error per route and status
   const paths: string[] = [];
   const server = http.createServer((req, res) => {
     paths.push(req.url ?? "");
+    // Health stays readable: this test is about the MEMORY routes rejecting a
+    // token, and the capability needs a namespace posture to scope with.
+    if (String(req.url).startsWith("/engram/v1/health")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, namespacesEnabled: false }));
+      return;
+    }
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "unauthorized" }));
   });
@@ -2588,20 +2606,15 @@ test("delegate daemon auth failures log one sanitized error per route and status
       "/engram/v1/observe",
       "/engram/v1/lcm/compaction/flush",
     ]));
-    assert.equal(errors.length, 4, "each route/status pair emits one error");
-    assert.deepEqual(
-      warnings.filter((message) => !message.includes("health probe failed")),
-      [],
-      "auth failures replace generic degradation warnings on the memory routes",
-    );
-    assert.equal(
-      warnings.filter((message) => message.includes("health probe failed")).length,
-      2,
-      "a persistently failing health probe warns once per registration, not once per hook",
-    );
-    assert.equal(errors.filter((message) => message.includes("(401;")).length, 1);
-    assert.equal(errors.filter((message) => message.includes("(403;")).length, 3);
-    for (const message of errors) {
+    // This test is about the AUTHORIZATION log; the capability separately
+    // reports that the stub daemon serves no confirmable corpus, which is
+    // correct and covered in delegate-capability.test.ts.
+    const authErrors = errors.filter((message) => message.includes("authorization failed"));
+    assert.equal(authErrors.length, 4, "each route/status pair emits one error");
+    assert.deepEqual(warnings, [], "auth failures replace generic degradation warnings");
+    assert.equal(authErrors.filter((message) => message.includes("(401;")).length, 1);
+    assert.equal(authErrors.filter((message) => message.includes("(403;")).length, 3);
+    for (const message of authErrors) {
       assert.match(message, /token source: OPENCLAW_REMNIC_ACCESS_TOKEN/);
       assert.doesNotMatch(message, /test-token/);
     }

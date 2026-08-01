@@ -109,6 +109,7 @@ function healthyDaemon(memoryDir: string): Record<string, unknown> {
   return {
     ok: true,
     memoryDir,
+    namespacesEnabled: false,
     searchBackend: "qmd",
     qmdEnabled: true,
     qmd: { enabled: true, active: true, degraded: false, debugStatus: "cli=true" },
@@ -343,6 +344,7 @@ test("delegate status reports a degraded daemon QMD as unavailable", async () =>
   const stub = await startDaemonStub({
     health: {
       memoryDir,
+      namespacesEnabled: false,
       searchBackend: "qmd",
       qmdEnabled: true,
       qmd: { enabled: true, active: true, degraded: true, debugStatus: "collection missing" },

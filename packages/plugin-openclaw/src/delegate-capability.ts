@@ -53,8 +53,13 @@ type DaemonMemoryHealth = {
   memoryDir?: string;
   /** The daemon's configured default namespace, "" on a flat corpus. */
   defaultNamespace?: string;
-  /** Whether the daemon partitions storage by namespace at all. */
-  namespacesEnabled: boolean;
+  /**
+   * Whether the daemon partitions storage by namespace. `undefined` when the
+   * payload never said — a malformed or truncated health response must not
+   * read as "flat corpus", which would silently disable the fail-closed
+   * namespace rule for a partitioned deployment.
+   */
+  namespacesEnabled?: boolean;
   searchBackend: "qmd" | "builtin";
   qmdEnabled: boolean;
   qmdAvailable: boolean;
@@ -138,7 +143,8 @@ function readHealth(payload: Record<string, unknown>): DaemonMemoryHealth {
     memoryDir: typeof payload.memoryDir === "string" ? payload.memoryDir : undefined,
     defaultNamespace:
       typeof payload.defaultNamespace === "string" ? payload.defaultNamespace : undefined,
-    namespacesEnabled: payload.namespacesEnabled === true,
+    namespacesEnabled:
+      typeof payload.namespacesEnabled === "boolean" ? payload.namespacesEnabled : undefined,
     searchBackend,
     qmdEnabled,
     // `active && !degraded` is the daemon's own "search will actually answer"
@@ -205,7 +211,6 @@ export function createDelegateMemoryCapability(
   // outage before the first probe answers; the daemon's health overwrites it.
   let health: DaemonMemoryHealth = {
     memoryDir: options.memoryDir,
-    namespacesEnabled: false,
     searchBackend: options.configuredSearchBackend,
     qmdEnabled: options.configuredSearchBackend === "qmd",
     qmdAvailable: options.configuredSearchBackend === "qmd",
@@ -245,7 +250,10 @@ export function createDelegateMemoryCapability(
    */
   const requireScopedNamespace = (explicit?: string): string | undefined => {
     const namespace = explicit ?? health.defaultNamespace;
-    if (namespace === undefined && health.namespacesEnabled) {
+    // `false` is the only value that makes an absent namespace safe. `true`
+    // and `undefined` (never reported, or a probe that failed) both mean the
+    // scope cannot be proven, so both refuse.
+    if (namespace === undefined && health.namespacesEnabled !== false) {
       throw new Error(
         "delegate request unavailable: the daemon's default namespace is unknown, so the session scope cannot be resolved",
       );
