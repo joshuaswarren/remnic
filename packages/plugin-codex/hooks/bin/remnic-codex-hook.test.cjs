@@ -1165,10 +1165,39 @@ test("token resolution: OPENCLAW_REMNIC_ACCESS_TOKEN outranks REMNIC_AUTH_TOKEN"
       { session_id: "sPrec", cwd: home },
       { port, home, env: { token: "connector-tok", extra: { REMNIC_AUTH_TOKEN: "operator-secret" } } },
     );
-    // Mirrors loadDaemonAuth() in @remnic/plugin-openclaw: connector-scoped
-    // names win, so adding the canonical pair cannot change an install that
-    // already worked.
+    // Both are current names; the connector-scoped one stays first, so an
+    // install that already worked keeps its existing credential.
     assert.equal(seen.health, "Bearer connector-tok");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("token resolution: REMNIC_AUTH_TOKEN outranks the legacy OPENCLAW_ENGRAM_ACCESS_TOKEN", async () => {
+  const home = mkHome();
+  const { server, port, seen } = await authServer();
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "sLegacyPrec", cwd: home },
+      {
+        port,
+        home,
+        env: {
+          token: null,
+          extra: {
+            OPENCLAW_ENGRAM_ACCESS_TOKEN: "stale-legacy-tok",
+            REMNIC_AUTH_TOKEN: "operator-secret",
+          },
+        },
+      },
+    );
+    // Primary-before-legacy (AGENTS.md §9). A migrated deployment often still
+    // exports the pre-rename alias; if that stale value outranked the token
+    // the daemon actually runs with, the probe would 401 and land back on
+    // "daemon not running".
+    assert.equal(seen.health, "Bearer operator-secret");
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });

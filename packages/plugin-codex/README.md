@@ -112,11 +112,13 @@ The bearer token is resolved in this order:
 1. The per-plugin token store — `remnic connectors install codex-cli` writes
    `~/.remnic/tokens.json`; legacy `~/.engram/tokens.json` is read as a
    fallback.
-2. `OPENCLAW_REMNIC_ACCESS_TOKEN`, then `OPENCLAW_ENGRAM_ACCESS_TOKEN`.
-3. `REMNIC_AUTH_TOKEN`, then legacy `ENGRAM_AUTH_TOKEN`.
+2. `OPENCLAW_REMNIC_ACCESS_TOKEN`, then `REMNIC_AUTH_TOKEN`.
+3. Legacy aliases: `OPENCLAW_ENGRAM_ACCESS_TOKEN`, then `ENGRAM_AUTH_TOKEN`.
 
-Step 3 covers the standalone-server setup, which authenticates the daemon with
-`REMNIC_AUTH_TOKEN` and never mints a connector token. Against an auth-gated
+Current names outrank legacy ones, so a leftover pre-rename value cannot
+shadow the credential the daemon is actually running with. `REMNIC_AUTH_TOKEN`
+covers the standalone-server setup, which authenticates the daemon with that
+variable and never mints a connector token. Against an auth-gated
 daemon the hook needs one of these: every route, including
 `/engram/v1/health`, returns 401 without a bearer, so an unauthenticated hook
 reports `daemon not running` and silently skips auto-recall and auto-observe.

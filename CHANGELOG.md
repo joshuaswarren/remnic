@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- Codex hook health probe now sends the configured bearer token, so an auth-gated daemon is detected as healthy instead of being reported as "daemon not running" (which silently skipped auto-recall and auto-observe). Token resolution also accepts the canonical `REMNIC_AUTH_TOKEN` / `ENGRAM_AUTH_TOKEN` names alongside the connector-scoped `OPENCLAW_*_ACCESS_TOKEN` pair, matching `loadDaemonAuth()` in `@remnic/plugin-openclaw`. Without them the documented standalone-server setup — which authenticates the daemon with `REMNIC_AUTH_TOKEN` and never mints a connector token — left the hook with no credential to send.
+- Codex hook health probe now sends the configured bearer token, so an auth-gated daemon is detected as healthy instead of being reported as "daemon not running" (which silently skipped auto-recall and auto-observe). Token resolution also accepts the canonical `REMNIC_AUTH_TOKEN` / `ENGRAM_AUTH_TOKEN` names alongside the connector-scoped `OPENCLAW_*_ACCESS_TOKEN` pair, ordered primary-before-legacy so a leftover pre-rename value cannot shadow the credential the daemon is running with. Without them the documented standalone-server setup — which authenticates the daemon with `REMNIC_AUTH_TOKEN` and never mints a connector token — left the hook with no credential to send.
 
 ## [v9.46.0] — 2026-08-01
 
