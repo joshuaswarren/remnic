@@ -30,6 +30,8 @@ function makeTree() {
   write("packages/core/src/deep/d.test.tsx");
   write("dashboard/lib/e.test.ts");
   write("integrations/amb/f.test.mjs");
+  // Hook runners are CommonJS and live outside `<pkg>/src`.
+  write("packages/plugin-x/hooks/bin/g.test.cjs");
   // Distractors that must NOT match.
   write("tests/not-a-test.ts");
   write("packages/core/lib/outside-src.test.ts");
@@ -47,6 +49,7 @@ test("expandTestPatterns matches every pattern shape and nothing else", () => {
       "integrations/amb/f.test.mjs",
       "packages/core/src/c.test.ts",
       "packages/core/src/deep/d.test.tsx",
+      "packages/plugin-x/hooks/bin/g.test.cjs",
       "tests/a.test.ts",
       "tests/nested/b.test.mjs",
     ]);
@@ -174,7 +177,7 @@ test("selectTestPatterns filters to the requested groups only", () => {
   const selected = selectTestPatterns(["packages"]);
   assert.deepEqual(
     selected.map((pattern) => pattern.id),
-    ["packages/*/src/**/*.test.ts", "packages/*/src/**/*.test.tsx"],
+    ["packages/*/src/**/*.test.ts", "packages/*/src/**/*.test.tsx", "packages/**/*.test.cjs"],
   );
   const combined = selectTestPatterns(["root", "misc"]);
   assert.deepEqual(

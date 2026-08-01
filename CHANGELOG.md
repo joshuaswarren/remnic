@@ -10,7 +10,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- Claude Code hook health probe now sends the configured bearer token, so a daemon with `REMNIC_AUTH_TOKEN` set is detected as healthy instead of being reported as "daemon not running" (which silently skipped auto-recall and auto-observe).
+- Claude Code hook health probe now sends the configured bearer token, so a daemon with `REMNIC_AUTH_TOKEN` set is detected as healthy instead of being reported as "daemon not running" (which silently skipped auto-recall and auto-observe). Token resolution accepts the canonical `REMNIC_AUTH_TOKEN` / `ENGRAM_AUTH_TOKEN` names alongside the connector-scoped `OPENCLAW_*_ACCESS_TOKEN` pair, matching `loadDaemonAuth()` in `@remnic/plugin-openclaw`. Without them the documented standalone-server setup — which authenticates the daemon with `REMNIC_AUTH_TOKEN` and never mints a connector token — left the hook with no credential to send.
+- Hook-runner CommonJS test suites (`packages/**/*.test.cjs`) are now discovered by the root test runner. They live beside the standalone runners rather than under `<pkg>/src`, so no CI job had ever executed them.
 - `@remnic/plugin-claude-code` manifest (`.claude-plugin/plugin.json`) now declares `author` as an object, so the plugin installs from a Claude Code marketplace. The string form was rejected by Claude Code's manifest validator (`author: expected object, received string`), which forced the npm-only manual-load path.
 
 ## [v9.46.0] — 2026-08-01

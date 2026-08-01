@@ -169,6 +169,13 @@ function onPath(bin) {
 }
 
 // ── token resolution (per-plugin token store, then env) ────────────────────
+// Env precedence mirrors loadDaemonAuth() in @remnic/plugin-openclaw: the
+// connector-scoped OPENCLAW_* names first, then the canonical daemon
+// credential REMNIC_AUTH_TOKEN and its legacy ENGRAM_AUTH_TOKEN alias. The
+// canonical pair matters because the documented standalone-server setup
+// authenticates the daemon with REMNIC_AUTH_TOKEN alone and never mints a
+// connector token — without it the health probe 401s and the hook wrongly
+// reports "daemon not running", silently skipping recall/observe.
 function resolveToken() {
   for (const file of [
     path.join(HOME, ".remnic", "tokens.json"),
@@ -193,6 +200,8 @@ function resolveToken() {
   return (
     process.env.OPENCLAW_REMNIC_ACCESS_TOKEN ||
     process.env.OPENCLAW_ENGRAM_ACCESS_TOKEN ||
+    process.env.REMNIC_AUTH_TOKEN ||
+    process.env.ENGRAM_AUTH_TOKEN ||
     ""
   );
 }

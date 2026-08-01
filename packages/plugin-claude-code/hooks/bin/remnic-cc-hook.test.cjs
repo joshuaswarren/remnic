@@ -62,14 +62,17 @@ function runHook(event, input, { port, home, env = {} } = {}) {
         XDG_STATE_HOME: path.join(home, "state"),
         REMNIC_HOST: "127.0.0.1",
         REMNIC_PORT: String(port),
-        // Default to an env token unless a test overrides it. When a test
-        // asks for "no token", explicitly clear BOTH legacy env vars so a
-        // value inherited from the parent shell (e.g.
-        // OPENCLAW_ENGRAM_ACCESS_TOKEN in a developer's environment) cannot
-        // leak through `...process.env` and make the no-token path take a
-        // token (#1518 test isolation).
+        // Default to an env token unless a test overrides it. Every env name
+        // resolveToken() consults is pinned here — including the canonical
+        // REMNIC_AUTH_TOKEN / ENGRAM_AUTH_TOKEN pair — so a value inherited
+        // from the parent shell (a developer or CI runner that authenticates
+        // a local daemon) cannot leak through `...process.env` and make the
+        // no-token path take a token (#1518 test isolation). Tests that want
+        // a specific name set it through `env.extra`, which is spread last.
         OPENCLAW_REMNIC_ACCESS_TOKEN: env.token === null ? "" : env.token || "test-token",
-        OPENCLAW_ENGRAM_ACCESS_TOKEN: env.token === null ? "" : "",
+        OPENCLAW_ENGRAM_ACCESS_TOKEN: "",
+        REMNIC_AUTH_TOKEN: "",
+        ENGRAM_AUTH_TOKEN: "",
         ...env.extra,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -603,6 +606,93 @@ test("token resolution: legacy ~/.engram/tokens.json is the read fallback", asyn
     );
     const recall = calls.find((c) => c.url === "/engram/v1/recall");
     assert.ok(recall, "recall was called using the legacy engram token store");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// The documented standalone-server setup (docs/guides/standalone-server.md,
+// README) authenticates the daemon with REMNIC_AUTH_TOKEN and never mints a
+// connector token, so nothing lands in ~/.remnic/tokens.json and none of the
+// OPENCLAW_* names are set. Before the canonical pair was added to
+// resolveToken(), that shape sent an unauthenticated health probe, took a 401,
+// and reported "daemon not running" — silently skipping recall and observe.
+function authEnvServer() {
+  const seen = { health: "unset", recall: "unset" };
+  return startServer((req, res) => {
+    if (req.url === "/engram/v1/health") {
+      seen.health = req.headers.authorization || null;
+      return res.writeHead(200).end("ok");
+    }
+    if (req.url === "/engram/v1/recall") {
+      seen.recall = req.headers.authorization || null;
+      return res
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({ context: "ctx", count: 1, mode: "auto" }));
+    }
+    res.writeHead(404).end();
+  }).then((started) => ({ ...started, seen }));
+}
+
+for (const name of ["REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN"]) {
+  test(`token resolution: ${name} authenticates health and recall (no token store)`, async () => {
+    const home = mkHome();
+    const { server, port, seen } = await authEnvServer();
+    try {
+      const res = await runHook(
+        "session-start",
+        { session_id: "sEnv", cwd: home },
+        { port, home, env: { token: null, extra: { [name]: "operator-secret" } } },
+      );
+      assert.equal(seen.health, "Bearer operator-secret");
+      assert.equal(seen.recall, "Bearer operator-secret");
+      assert.doesNotMatch(
+        res.json.hookSpecificOutput.additionalContext,
+        /daemon not running/,
+        "an authenticated daemon must not be reported as down",
+      );
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+}
+
+test("token resolution: OPENCLAW_REMNIC_ACCESS_TOKEN outranks REMNIC_AUTH_TOKEN", async () => {
+  const home = mkHome();
+  const { server, port, seen } = await authEnvServer();
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "sPrec", cwd: home },
+      { port, home, env: { token: "connector-tok", extra: { REMNIC_AUTH_TOKEN: "operator-secret" } } },
+    );
+    // Mirrors loadDaemonAuth() in @remnic/plugin-openclaw: connector-scoped
+    // names win, so adding the canonical pair cannot change an install that
+    // already worked.
+    assert.equal(seen.health, "Bearer connector-tok");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("token resolution: tokens.json still outranks REMNIC_AUTH_TOKEN", async () => {
+  const home = mkHome();
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, ".remnic", "tokens.json"),
+    JSON.stringify({ tokens: [{ connector: "claude-code", token: "cc-tok" }] }),
+  );
+  const { server, port, seen } = await authEnvServer();
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "sStore", cwd: home },
+      { port, home, env: { token: null, extra: { REMNIC_AUTH_TOKEN: "operator-secret" } } },
+    );
+    assert.equal(seen.health, "Bearer cc-tok");
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });

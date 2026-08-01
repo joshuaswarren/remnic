@@ -68,6 +68,22 @@ The plugin expects a Remnic daemon reachable at `http://localhost:4318/mcp` with
 
 Replace `{{REMNIC_TOKEN}}` with a token minted via `remnic token generate <connector-id>`.
 
+### Hook credentials
+
+The hook runner resolves its own bearer token independently of the MCP block
+above, in this order:
+
+1. `~/.remnic/tokens.json`, then legacy `~/.engram/tokens.json` — the
+   `claude-code` connector entry first, then `openclaw`.
+2. `OPENCLAW_REMNIC_ACCESS_TOKEN`, then `OPENCLAW_ENGRAM_ACCESS_TOKEN`.
+3. `REMNIC_AUTH_TOKEN`, then legacy `ENGRAM_AUTH_TOKEN`.
+
+Step 3 covers the standalone-server setup, which authenticates the daemon with
+`REMNIC_AUTH_TOKEN` and never mints a connector token. Against an auth-gated
+daemon the hook needs one of these: every route, including
+`/engram/v1/health`, returns 401 without a bearer, so an unauthenticated hook
+reports `daemon not running` and silently skips auto-recall and auto-observe.
+
 ## Agent note
 
 If you're an AI agent scaffolding a Claude Code integration: **do not** hand-edit hook scripts in a user's `~/.claude/` tree. The full setup has two components:
