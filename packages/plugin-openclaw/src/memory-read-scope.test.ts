@@ -257,12 +257,25 @@ test("daemonServesCorpus accepts the namespace-resolved storage dir under the co
   const { memoryDir } = await makeCorpus();
   // GET /engram/v1/health reports storage.dir, which is <root>/namespaces/<ns>
   // once the default namespace migrates out of the flat root.
+  const namespaceDir = path.join(memoryDir, "namespaces", "generalist");
+  await mkdir(namespaceDir, { recursive: true });
   assert.equal(daemonServesCorpus(memoryDir, memoryDir), true);
-  assert.equal(
-    daemonServesCorpus(memoryDir, path.join(memoryDir, "namespaces", "generalist")),
-    true,
-  );
+  assert.equal(daemonServesCorpus(memoryDir, namespaceDir), true);
   assert.equal(daemonServesCorpus(memoryDir, `${memoryDir}/`), true);
+});
+
+test("daemonServesCorpus rejects a directory that does not exist or escapes by symlink", async () => {
+  const { memoryDir, outsideDir } = await makeCorpus();
+  assert.equal(
+    daemonServesCorpus(memoryDir, path.join(memoryDir, "namespaces", "never-created")),
+    false,
+    "an unresolvable daemon directory is not a corpus",
+  );
+  // Lexically contained, but a component resolves outside the root: accepting
+  // it would hand local reads a different corpus than the daemon serves.
+  const escape = path.join(memoryDir, "escape");
+  await symlink(outsideDir, escape);
+  assert.equal(daemonServesCorpus(memoryDir, escape), false);
 });
 
 test("daemonServesCorpus rejects a foreign, relative, or blank corpus", async () => {

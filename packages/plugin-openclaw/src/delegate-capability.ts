@@ -39,6 +39,7 @@ import type {
   RuntimeStatus,
 } from "./memory-capability-types.js";
 import {
+  type MemoryReadScope,
   createMemoryReadScope,
   isMemoryArtifactPath,
   isSessionsMemoryPath,
@@ -152,10 +153,23 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
 } {
   const { target, serviceId } = options;
   const now = options.now ?? Date.now;
-  const readScope = createMemoryReadScope({
-    memoryDir: options.memoryDir,
-    workspaceDir: options.workspaceDir,
-  });
+  // The read scope and the artifact listing are rooted on the directory the
+  // DAEMON reports, not the plugin's configured corpus root. Health returns the
+  // namespace-resolved storage dir, so scanning the root instead would miss the
+  // active namespace's files while publishing flat-root files for the wrong
+  // scope. `daemonServesCorpus` has already proved that directory belongs to
+  // the configured corpus, so the root remains the trust anchor.
+  let daemonScope: { dir: string; scope: MemoryReadScope } | undefined;
+  const sharedScope = (): MemoryReadScope => {
+    const dir = health.memoryDir ?? options.memoryDir;
+    if (daemonScope?.dir !== dir) {
+      daemonScope = {
+        dir,
+        scope: createMemoryReadScope({ memoryDir: dir, workspaceDir: options.workspaceDir }),
+      };
+    }
+    return daemonScope.scope;
+  };
 
   // Seeded from the plugin's own config so `status()` never reports a false
   // outage before the first probe answers; the daemon's health overwrites it.
@@ -230,12 +244,10 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
     const namespace = await options.resolveSearchNamespace(opts?.sessionKey);
     // Mirror the embedded manager: "vsearch" is vector ranking, "query" is the
     // ordinary search plan, anything else is the backend default.
-    const searchMode =
-      opts?.qmdSearchModeOverride === "vsearch"
-        ? "vector"
-        : opts?.qmdSearchModeOverride === "query"
-          ? "search"
-          : undefined;
+    // Embedded defaults to "search" when the host passes no override, and an
+    // omitted mode sends a flat corpus down the legacy direct-QMD path — a
+    // different ranking for the same request. Always send one.
+    const searchMode = opts?.qmdSearchModeOverride === "vsearch" ? "vector" : "search";
     const response = await fetch(daemonUrl(target, "/engram/v1/memories/search"), {
       method: "POST",
       headers: { ...daemonAuthHeaders(target), "Content-Type": "application/json" },
@@ -244,7 +256,7 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
         ...(typeof opts?.maxResults === "number" ? { maxResults: opts.maxResults } : {}),
         // Same override mapping the embedded manager applies, so a host asking
         // for vector or lexical ranking gets the same semantics in either mode.
-        ...(searchMode ? { mode: searchMode } : {}),
+        mode: searchMode,
         ...(namespace ? { namespace } : {}),
       }),
       signal: AbortSignal.timeout(options.searchTimeoutMs),
@@ -271,11 +283,11 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
       ) {
         continue;
       }
-      const citation = readScope.relativizeToMemoryRoot(rawPath);
+      const citation = sharedScope().relativizeToMemoryRoot(rawPath);
       results.push({
         // Absolute, so a follow-up readFile is unambiguous when the same
         // relative path exists under more than one allowed root.
-        path: readScope.absolutize(rawPath),
+        path: sharedScope().absolutize(rawPath),
         // The daemon's ranked search returns whole-memory hits with no line
         // span; the embedded runtime reports the same 1..1 default.
         startLine: 1,
@@ -291,8 +303,8 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
 
   const readMemoryFile = async (params: RuntimeReadParams): Promise<RuntimeReadResult> => {
     requireSharedCorpus("readFile");
-    const requestedPath = readScope.normalizeWorkspacePath(params.relPath);
-    const absolutePath = await readScope.resolveReadablePath(params.relPath);
+    const requestedPath = sharedScope().normalizeWorkspacePath(params.relPath);
+    const absolutePath = await sharedScope().resolveReadablePath(params.relPath);
     const allLines = (await readFile(absolutePath, "utf8")).split(/\r?\n/);
     const from = typeof params.from === "number" ? Math.max(1, Math.floor(params.from)) : 1;
     const lines =
@@ -384,7 +396,7 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
         await refreshHealth();
         requireSharedCorpus("publicArtifacts");
         return await listRemnicPublicArtifacts({
-          memoryDir: options.memoryDir,
+          memoryDir: health.memoryDir ?? options.memoryDir,
           workspaceDir: options.workspaceDir,
           agentIds: options.agentIds,
         });

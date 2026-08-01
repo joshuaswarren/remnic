@@ -159,7 +159,7 @@ test("delegate search maps daemon hits into runtime results", async () => {
       },
     ]);
     const searchCall = stub.calls.find((call) => call.pathname.endsWith("/memories/search"));
-    assert.deepEqual(searchCall?.body, { query: "alice", maxResults: 5 });
+    assert.deepEqual(searchCall?.body, { query: "alice", maxResults: 5, mode: "search" });
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -212,10 +212,10 @@ test("delegate search scopes the namespace through the session resolver", async 
     await manager?.search("q", { sessionKey: "s1" });
     await manager?.search("q");
     const searches = stub.calls.filter((call) => call.pathname.endsWith("/memories/search"));
-    assert.deepEqual(searches[0]?.body, { query: "q", namespace: "team-a" });
+    assert.deepEqual(searches[0]?.body, { query: "q", mode: "search", namespace: "team-a" });
     assert.deepEqual(
       searches[1]?.body,
-      { query: "q", namespace: "fallback-ns" },
+      { query: "q", mode: "search", namespace: "fallback-ns" },
       "a search with no session key falls back to the registration-wide namespace",
     );
     assert.deepEqual(seen, ["s1", undefined], "the host session key reaches the resolver");
@@ -561,9 +561,10 @@ test("registerDelegateMemoryCapability is a no-op on a host with no memory surfa
 test("delegate accepts a daemon serving a namespace under the corpus root", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
   // Health reports the namespace-RESOLVED storage dir, not the corpus root.
-  const stub = await startDaemonStub({
-    health: healthyDaemon(path.join(memoryDir, "namespaces", "generalist")),
-  });
+  const namespaceDir = path.join(memoryDir, "namespaces", "generalist");
+  await mkdir(path.join(namespaceDir, "facts"), { recursive: true });
+  await writeFile(path.join(namespaceDir, "facts", "alice.md"), "one\ntwo\n");
+  const stub = await startDaemonStub({ health: healthyDaemon(namespaceDir) });
   try {
     const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -590,8 +591,37 @@ test("delegate search forwards the host's ranking override", async () => {
       .map((call) => (call.body as { mode?: unknown }).mode);
     assert.deepEqual(
       searches,
-      ["vector", "search", undefined],
-      "vsearch is vector ranking, query is the search plan, absent keeps the backend default",
+      ["vector", "search", "search"],
+      "vsearch is vector ranking; everything else is the embedded default, never omitted",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate roots reads and artifacts on the daemon's namespace directory", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const namespaceDir = path.join(memoryDir, "namespaces", "generalist");
+  await mkdir(path.join(namespaceDir, "facts"), { recursive: true });
+  await writeFile(path.join(namespaceDir, "facts", "scoped.md"), "namespace fact\n");
+  const stub = await startDaemonStub({ health: healthyDaemon(namespaceDir) });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    // The daemon's hits are relative to ITS storage dir, so the read scope must
+    // be rooted there, not on the configured corpus root.
+    const page = await manager?.readFile({ relPath: "facts/scoped.md" });
+    assert.equal(page?.text.trim(), "namespace fact");
+    const artifacts = (await built.listArtifacts()) as Array<{ absolutePath?: string }>;
+    assert.ok(
+      artifacts.some((entry) => entry.absolutePath?.startsWith(namespaceDir)),
+      "the active namespace's artifacts are listed",
+    );
+    assert.equal(
+      artifacts.some((entry) => entry.absolutePath === path.join(memoryDir, "facts", "alice.md")),
+      false,
+      "flat-root files outside the active namespace are not published for it",
     );
   } finally {
     await stub.close();

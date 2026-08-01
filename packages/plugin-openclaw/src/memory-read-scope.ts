@@ -64,15 +64,14 @@ export function daemonServesCorpus(
   const expandedRoot = expandTildePath(corpusRoot.trim());
   const expandedDaemon = expandTildePath(daemonMemoryDir.trim());
   if (!path.isAbsolute(expandedRoot) || !path.isAbsolute(expandedDaemon)) return false;
-  const lexical = (value: string): string =>
-    trimTrailingSeparators(path.normalize(path.resolve(value)));
-  const rootLexical = lexical(expandedRoot);
-  const daemonLexical = lexical(expandedDaemon);
-  if (isContained(rootLexical, daemonLexical)) return true;
+  // Canonicalize BOTH sides FIRST. A lexical accept would admit a path that
+  // merely looks contained while one of its components symlinks to another
+  // corpus — precisely the escape this gate exists to stop. Both must resolve:
+  // an unresolvable path (missing directory, broken link) is never a match.
   try {
     return isContained(
-      trimTrailingSeparators(path.normalize(realpath(rootLexical))),
-      trimTrailingSeparators(path.normalize(realpath(daemonLexical))),
+      trimTrailingSeparators(path.normalize(realpath(path.resolve(expandedRoot)))),
+      trimTrailingSeparators(path.normalize(realpath(path.resolve(expandedDaemon)))),
     );
   } catch {
     return false;
