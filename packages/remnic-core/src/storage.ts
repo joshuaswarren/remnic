@@ -1779,6 +1779,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
   private artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null = null;
   private projectionLedgerLagManager = new ProjectionLedgerLagManager();
+  private static readonly loadedMemorySnapshots = new WeakMap<MemoryFile, string>();
   static readonly KNOWLEDGE_INDEX_CACHE_TTL_MS = 600_000; // 10 minutes (entity mutations invalidate)
   /** Read by storage/memory-read-store.ts (decomposition). */
   static readonly ARTIFACT_INDEX_CACHE_TTL_MS = 60_000; // 1 minute
@@ -4504,13 +4505,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return lineCount > threshold;
   }
 
+  private rememberMemorySnapshot<T extends MemoryFile | null>(memory: T): T {
+    if (memory !== null && !StorageManager.loadedMemorySnapshots.has(memory)) {
+      StorageManager.loadedMemorySnapshots.set(memory, JSON.stringify([memory.frontmatter, memory.content]));
+    }
+    return memory;
+  }
+
+  private rememberMemorySnapshots(memories: MemoryFile[]): MemoryFile[] {
+    for (const memory of memories) this.rememberMemorySnapshot(memory);
+    return memories;
+  }
+
   async readAllMemories(): Promise<MemoryFile[]> {
-    // Version-keyed hot-memories cache (issue #1902): once populated, serve the
-    // full parsed corpus from memory within a version epoch. getCachedMemories
-    // returns null when the sentinel is 0 (fresh/test dirs) or the stored
-    // version differs from the current on-disk sentinel (a peer or local write
-    // bumped it), so a stale entry is never served — the miss falls through to
-    // a fresh disk scan below.
     if (this.hotMemoriesCacheEnabled) {
       const cached = getCachedMemories(
         this.baseDir,
@@ -4518,13 +4525,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         this.hotCacheKeyId(),
         this.hotCacheTtlMs()
       );
-      // Null-check, not truthiness (kilo WARNING): getCachedMemories returns []
-      // for a cached EMPTY corpus, which is falsy — a truthiness guard would
-      // force a full disk scan on every read of an empty/near-empty store.
-      if (cached !== null) return cached;
+      if (cached !== null) return this.rememberMemorySnapshots(cached);
     }
-    // Deduplicate concurrent reads for the same directory so multiple
-    // callers in the same recall share one disk scan.
     // Snapshot the secure-store key identity ONCE (issue #1902, Codex Medium):
     // hotCacheKeyId() can change mid-scan if setSecureStoreKey(null/other) runs
     // during the await. Recomputing it at publish time would store K-decrypted
@@ -4534,13 +4536,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // key change can't orphan the slot registered under the old identity.
     const keyId = this.hotCacheKeyId();
     const inFlight = getInFlightRead(this.baseDir, keyId);
-    if (inFlight) return inFlight;
+    if (inFlight) return this.rememberMemorySnapshots(await inFlight);
 
     const readPromise = (async (): Promise<MemoryFile[]> => {
-      // Capture the version BEFORE the scan and store under it. If a concurrent
-      // bump (peer or local write) lands during the scan, the stored entry's
-      // version is older than the sentinel, so the next getCachedMemories()
-      // rejects it (version mismatch → rescan) — correct, never stale.
       const version = this.getMemoryCorpusVersion();
       const memories = await this._readAllMemoriesFromDisk();
       // Publish only if neither the corpus version NOR the key identity changed
@@ -4554,11 +4552,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     })();
     setInFlightRead(this.baseDir, keyId, readPromise);
     try {
-      return await readPromise;
+      return this.rememberMemorySnapshots(await readPromise);
     } finally {
-      // Only delete if we still own the slot for our snapshot key identity —
-      // invalidateAllMemoriesCache() may have already cleared it and a new read
-      // may have claimed it (the expected-promise guard enforces owner-only).
       deleteInFlightRead(this.baseDir, keyId, readPromise);
     }
   }
@@ -4993,7 +4988,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   async readAllColdMemories(): Promise<MemoryFile[]> {
-    return this.memoryReadStore.readAllColdMemories();
+    return this.rememberMemorySnapshots(await this.memoryReadStore.readAllColdMemories());
   }
 
   /**
@@ -5045,11 +5040,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     };
 
     await readDir(root);
-    return memories;
+    return this.rememberMemorySnapshots(memories);
   }
 
   async readMemoryByPath(filePath: string): Promise<MemoryFile | null> {
-    return this.memoryReadStore.readMemoryByPath(filePath);
+    return this.rememberMemorySnapshot(await this.memoryReadStore.readMemoryByPath(filePath));
   }
 
   private resolveTierRootDir(tier: "hot" | "cold"): string {
@@ -5077,12 +5072,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // corrections/ is flat (no date subdir); preserved across tier moves.
       return path.join(root, "corrections", `${memory.frontmatter.id}.md`);
     }
-    // Every other category — decisions/, preferences/, reasoning-traces/, ...
-    // plus the facts/ fallback for fact/entity/unknown — resolves through the
-    // shared categoryDirName() chokepoint so tier moves land in the SAME dir the
-    // writer used, instead of funneling non-{correction,procedure,reasoning_trace}
-    // categories into facts/ (issue #564 PR 3 preserved reasoning-traces/; #1546
-    // generalizes it to every category dir).
     const dir = categoryDirName(memory.frontmatter.category);
     return path.join(root, dir, this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
   }
@@ -5146,7 +5135,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           if (current === null && destination?.frontmatter.id === memory.frontmatter.id) return false;
           throw new Error(`memory ${memory.frontmatter.id} changed before its tier move`);
         }
-        if (current.frontmatter.updated !== memory.frontmatter.updated) {
+        const callerSnapshot = StorageManager.loadedMemorySnapshots.get(memory);
+        const currentSnapshot = JSON.stringify([current.frontmatter, current.content]);
+        if (
+          callerSnapshot === undefined
+            ? current.frontmatter.updated !== memory.frontmatter.updated
+            : currentSnapshot !== callerSnapshot
+        ) {
           throw new Error(`memory ${memory.frontmatter.id} changed before its tier move`);
         }
         const coordinate =
@@ -5204,8 +5199,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const changed = await this.moveMemoryToPath(memory, targetPath);
     if (!changed) return { changed: false, targetPath };
     this.invalidateAllMemoriesCache();
-    // If moving to cold, also invalidate the cold-scan cache so the next
-    // readAllColdMemories() call sees the newly-demoted file (Finding UOGi fix).
     if (targetTier === "cold") {
       this.invalidateColdMemoriesCache();
     }

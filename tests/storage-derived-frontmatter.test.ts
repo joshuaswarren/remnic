@@ -121,8 +121,7 @@ test("StorageManager rejects a tier move from a stale caller snapshot", async ()
     const stale = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === id);
     assert.ok(stale);
 
-    const newerUpdated = new Date(Date.parse(stale.frontmatter.updated) + 1_000).toISOString();
-    await storage.writeMemoryFrontmatter(stale, { tags: ["concurrent-update"], updated: newerUpdated });
+    await storage.writeMemoryFrontmatter(stale, { tags: ["concurrent-update"] });
     const targetPath = path.join(dir, "facts", "2026-04-19", `${id}.md`);
 
     await assert.rejects(
