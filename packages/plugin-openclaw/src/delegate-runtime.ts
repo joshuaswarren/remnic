@@ -309,11 +309,17 @@ function cwdFrom(
   return fallback;
 }
 
-function withNamespace(
+async function withNamespace(
   namespace: string | undefined,
   body: Record<string, unknown>,
-): Record<string, unknown> {
-  return namespace ? { ...body, namespace } : body;
+  daemonDefaultNamespace: () => Promise<string | undefined>,
+): Promise<Record<string, unknown>> {
+  // An ABSENT namespace is a principal-wide fan-out to the daemon, not "the
+  // default scope", so fall back to the daemon's concrete default exactly as
+  // the memory-slot search does. Otherwise prompt recall would range wider
+  // than tool search on the same session.
+  const scoped = namespace || (await daemonDefaultNamespace());
+  return scoped === undefined ? body : { ...body, namespace: scoped };
 }
 
 interface ExplicitSessionNamespace {
@@ -472,6 +478,43 @@ export function registerDelegateRuntime(
   const useCapabilityBuilder =
     !useSectionBuilder && typeof api.registerMemoryCapability === "function";
   const cachePromptLines = useSectionBuilder || useCapabilityBuilder;
+
+  const capability = registerDelegateMemoryCapability(api, {
+    serviceId: options.serviceId,
+    target,
+    namespace,
+    // Capability searches scope through the SAME per-session binding history
+    // the hooks use (the non-explicit branch of sessionNamespaceFrom): the
+    // host hands the runtime a sessionKey but no event/ctx to read an explicit
+    // namespace from, so the remembered binding — else the registration-wide
+    // fallback — is the correct scope.
+    resolveSearchNamespace: async (sessionKey) => {
+      if (sessionKey) {
+        const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
+        if (remembered.length > 0) return remembered.at(-1) || undefined;
+      }
+      return namespace.trim() || undefined;
+    },
+    memoryDir: options.capability.memoryDir,
+    workspaceDir: options.capability.workspaceDir,
+    agentIds: options.capability.agentIds,
+    allowPromptInjection: promptInjectionEnabled,
+    // The section builder owns the destructive read when it exists; otherwise
+    // the capability builder IS the sole consumer and must evict, or a stale
+    // section would be re-injected on the next turn.
+    readPromptLines: (sessionKey) => {
+      const lines = promptLinesBySession.get(sessionKey) ?? null;
+      if (!useSectionBuilder) promptLinesBySession.delete(sessionKey);
+      return lines;
+    },
+    extractionMaxTurnChars: options.capability.extractionMaxTurnChars,
+    flushModel: options.capability.flushModel,
+    configuredSearchBackend: options.capability.configuredSearchBackend,
+    configuredQmdCommand: options.capability.configuredQmdCommand,
+    searchTimeoutMs: options.recallTimeoutMs,
+    healthTimeoutMs: options.recallTimeoutMs,
+    now: options.now,
+  });
   if (promptInjectionEnabled) {
 
     const recallHandler = async (
@@ -509,13 +552,17 @@ export function registerDelegateRuntime(
           target,
           options.serviceId,
           "/engram/v1/recall",
-          withNamespace(scopedNamespace, {
-            query,
-            sessionKey,
-            mode: "auto",
-            ...(cwd ? { cwd } : {}),
-            ...(options.projectTag ? { projectTag: options.projectTag } : {}),
-          }),
+          await withNamespace(
+            scopedNamespace,
+            {
+              query,
+              sessionKey,
+              mode: "auto",
+              ...(cwd ? { cwd } : {}),
+              ...(options.projectTag ? { projectTag: options.projectTag } : {}),
+            },
+            capability.daemonDefaultNamespace,
+          ),
           options.recallTimeoutMs,
         );
         const rawContext = response?.context;
@@ -606,12 +653,16 @@ export function registerDelegateRuntime(
         target,
         options.serviceId,
         "/engram/v1/observe",
-        withNamespace(scopedNamespace, {
-          sessionKey,
-          messages: turn,
-          ...(cwd ? { cwd } : {}),
-          ...(options.projectTag ? { projectTag: options.projectTag } : {}),
-        }),
+        await withNamespace(
+          scopedNamespace,
+          {
+            sessionKey,
+            messages: turn,
+            ...(cwd ? { cwd } : {}),
+            ...(options.projectTag ? { projectTag: options.projectTag } : {}),
+          },
+          capability.daemonDefaultNamespace,
+        ),
         options.observeTimeoutMs,
       );
     } catch (err) {
@@ -689,12 +740,12 @@ export function registerDelegateRuntime(
         namespace,
         namespaceBindings,
       );
-      const flushNamespace = (sessionNamespace: string | undefined) =>
+      const flushNamespace = async (sessionNamespace: string | undefined) =>
         postJson(
           target,
           options.serviceId,
           "/engram/v1/lcm/compaction/flush",
-          withNamespace(sessionNamespace, { sessionKey }),
+          await withNamespace(sessionNamespace, { sessionKey }, capability.daemonDefaultNamespace),
           remainingTimeout(),
         );
       const flushIndividually = async (): Promise<boolean> => {
@@ -768,42 +819,6 @@ export function registerDelegateRuntime(
     api.on("session_end", flushEndedSession);
   }
 
-  registerDelegateMemoryCapability(api, {
-    serviceId: options.serviceId,
-    target,
-    namespace,
-    // Capability searches scope through the SAME per-session binding history
-    // the hooks use (the non-explicit branch of sessionNamespaceFrom): the
-    // host hands the runtime a sessionKey but no event/ctx to read an explicit
-    // namespace from, so the remembered binding — else the registration-wide
-    // fallback — is the correct scope.
-    resolveSearchNamespace: async (sessionKey) => {
-      if (sessionKey) {
-        const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
-        if (remembered.length > 0) return remembered.at(-1) || undefined;
-      }
-      return namespace.trim() || undefined;
-    },
-    memoryDir: options.capability.memoryDir,
-    workspaceDir: options.capability.workspaceDir,
-    agentIds: options.capability.agentIds,
-    allowPromptInjection: promptInjectionEnabled,
-    // The section builder owns the destructive read when it exists; otherwise
-    // the capability builder IS the sole consumer and must evict, or a stale
-    // section would be re-injected on the next turn.
-    readPromptLines: (sessionKey) => {
-      const lines = promptLinesBySession.get(sessionKey) ?? null;
-      if (!useSectionBuilder) promptLinesBySession.delete(sessionKey);
-      return lines;
-    },
-    extractionMaxTurnChars: options.capability.extractionMaxTurnChars,
-    flushModel: options.capability.flushModel,
-    configuredSearchBackend: options.capability.configuredSearchBackend,
-    configuredQmdCommand: options.capability.configuredQmdCommand,
-    searchTimeoutMs: options.recallTimeoutMs,
-    healthTimeoutMs: options.recallTimeoutMs,
-    now: options.now,
-  });
 
   log.info(
     `[${options.serviceId}] bridge mode delegate: memory loop backed by daemon at ` +

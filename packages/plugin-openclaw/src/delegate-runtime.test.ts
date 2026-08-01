@@ -2453,7 +2453,11 @@ test("delegate runtime reloads a rotated daemon token without re-registering hoo
   let currentToken = "expired-token";
   const receivedAuthorization: Array<string | undefined> = [];
   const server = http.createServer((req, res) => {
-    receivedAuthorization.push(req.headers.authorization);
+    // The capability's health probe rides the same server; this test is about
+    // the RECALL route's token, so record only that one.
+    if (String(req.url).startsWith("/engram/v1/recall")) {
+      receivedAuthorization.push(req.headers.authorization);
+    }
     res.setHeader("content-type", "application/json");
     if (req.headers.authorization !== "Bearer accepted-token") {
       res.writeHead(401);
@@ -2577,12 +2581,24 @@ test("delegate daemon auth failures log one sanitized error per route and status
     await invoke(api, "before_compaction", {}, { sessionKey: "auth" });
 
     assert.deepEqual(new Set(paths), new Set([
+      // The capability probes health to resolve the daemon's default namespace
+      // before each scoped write; it is not one of the auth-logged routes.
+      "/engram/v1/health",
       "/engram/v1/recall",
       "/engram/v1/observe",
       "/engram/v1/lcm/compaction/flush",
     ]));
     assert.equal(errors.length, 4, "each route/status pair emits one error");
-    assert.equal(warnings.length, 0, "auth failures replace generic degradation warnings");
+    assert.deepEqual(
+      warnings.filter((message) => !message.includes("health probe failed")),
+      [],
+      "auth failures replace generic degradation warnings on the memory routes",
+    );
+    assert.equal(
+      warnings.filter((message) => message.includes("health probe failed")).length,
+      2,
+      "a persistently failing health probe warns once per registration, not once per hook",
+    );
     assert.equal(errors.filter((message) => message.includes("(401;")).length, 1);
     assert.equal(errors.filter((message) => message.includes("(403;")).length, 3);
     for (const message of errors) {

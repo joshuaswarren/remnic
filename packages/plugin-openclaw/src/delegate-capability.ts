@@ -52,6 +52,8 @@ type DaemonMemoryHealth = {
   memoryDir?: string;
   /** The daemon's configured default namespace, "" on a flat corpus. */
   defaultNamespace?: string;
+  /** Whether the daemon partitions storage by namespace at all. */
+  namespacesEnabled: boolean;
   searchBackend: "qmd" | "builtin";
   qmdEnabled: boolean;
   qmdAvailable: boolean;
@@ -110,6 +112,9 @@ export type DelegateCapabilityOptions = {
 };
 
 const HEALTH_CACHE_TTL_MS = 30_000;
+// A failing probe backs off instead of retrying on every hook, so a daemon
+// that is down or rejecting the token cannot turn each turn into a request.
+const HEALTH_FAILURE_BACKOFF_MS = 5_000;
 
 /**
  * Narrow an unvalidated JSON value to a readable record. A type guard rather
@@ -132,6 +137,7 @@ function readHealth(payload: Record<string, unknown>): DaemonMemoryHealth {
     memoryDir: typeof payload.memoryDir === "string" ? payload.memoryDir : undefined,
     defaultNamespace:
       typeof payload.defaultNamespace === "string" ? payload.defaultNamespace : undefined,
+    namespacesEnabled: payload.namespacesEnabled === true,
     searchBackend,
     qmdEnabled,
     // `active && !degraded` is the daemon's own "search will actually answer"
@@ -149,12 +155,18 @@ function readHealth(payload: Record<string, unknown>): DaemonMemoryHealth {
  * Build the delegate-backed capability pieces. Exported for tests and for
  * `registerDelegateMemoryCapability`, which wires them into the host.
  */
-export function createDelegateMemoryCapability(options: DelegateCapabilityOptions): {
+export type DelegateMemoryCapability = {
+  /** The daemon's default namespace, for callers that must scope concretely. */
+  daemonDefaultNamespace: () => Promise<string | undefined>;
   runtime: RemnicCapabilityRuntime;
   flushPlanResolver: () => MemoryFlushPlan;
   listArtifacts: () => Promise<unknown[]>;
   promptBuilder: (params: { sessionKey?: string }) => string[] | null;
-} {
+};
+
+export function createDelegateMemoryCapability(
+  options: DelegateCapabilityOptions,
+): DelegateMemoryCapability {
   const { target, serviceId } = options;
   const now = options.now ?? Date.now;
   // The read scope and the artifact listing are rooted on the directory the
@@ -188,12 +200,14 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
   // outage before the first probe answers; the daemon's health overwrites it.
   let health: DaemonMemoryHealth = {
     memoryDir: options.memoryDir,
+    namespacesEnabled: false,
     searchBackend: options.configuredSearchBackend,
     qmdEnabled: options.configuredSearchBackend === "qmd",
     qmdAvailable: options.configuredSearchBackend === "qmd",
   };
   let healthExpiresAt = 0;
   let healthInFlight: Promise<void> | undefined;
+  let lastHealthFailure: string | undefined;
   // Local reads and artifact listing are only valid while the daemon serves
   // the SAME corpus this plugin is configured for. Until health confirms it,
   // and after any mismatch, the file-backed surfaces refuse rather than read a
@@ -229,6 +243,7 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
         if (healthPayload) {
           health = readHealth(healthPayload);
           healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
+          lastHealthFailure = undefined;
           corpusShared =
             health.memoryDir !== undefined &&
             daemonServesCorpus(options.memoryDir, health.memoryDir);
@@ -240,9 +255,14 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
           }
         }
       } catch (err) {
-        // Keep the last known snapshot and retry on the next handout. Memory
-        // must never break the turn.
-        log.warn(`[${serviceId}] delegate capability health probe failed: ${String(err)}`);
+        // Keep the last known snapshot and retry after a backoff. Memory must
+        // never break the turn, and a persistent failure must not log per hook.
+        healthExpiresAt = now() + HEALTH_FAILURE_BACKOFF_MS;
+        const message = `[${serviceId}] delegate capability health probe failed: ${String(err)}`;
+        if (message !== lastHealthFailure) {
+          lastHealthFailure = message;
+          log.warn(message);
+        }
       } finally {
         healthInFlight = undefined;
       }
@@ -263,6 +283,17 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
     // health reports so a default-scoped session cannot see other namespaces.
     const resolved = await options.resolveSearchNamespace(opts?.sessionKey);
     const namespace = resolved ?? health.defaultNamespace;
+    // refreshHealth deliberately swallows probe failures, so a transient or
+    // legacy health response can leave BOTH values undefined. On a
+    // namespace-partitioned daemon an absent namespace means "fan out across
+    // everything the principal can read", which is outside the session's
+    // scope — refuse instead of widening it. A flat corpus has nothing to
+    // widen to, so it proceeds.
+    if (namespace === undefined && health.namespacesEnabled) {
+      throw new Error(
+        "delegate search unavailable: the daemon's default namespace is unknown, so the session scope cannot be resolved",
+      );
+    }
     // Mirror the embedded manager: "vsearch" is vector ranking, "query" is the
     // ordinary search plan, anything else is the backend default.
     // Embedded defaults to "search" when the host passes no override, and an
@@ -287,9 +318,15 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
       throw new Error(`daemon /engram/v1/memories/search responded ${response.status}`);
     }
     const payload: unknown = await response.json();
-    const results: RuntimeSearchResult[] = [];
     const body = asRecord(payload);
-    const rawResults = Array.isArray(body?.results) ? body.results : [];
+    if (!Array.isArray(body?.results)) {
+      // A 200 with no usable `results` is a protocol or version failure.
+      // Returning [] would make it indistinguishable from a valid empty
+      // search and quietly report that no memories exist (AGENTS.md #22).
+      throw new Error("daemon /engram/v1/memories/search returned a malformed envelope");
+    }
+    const results: RuntimeSearchResult[] = [];
+    const rawResults = body.results;
     for (const [index, raw] of rawResults.entries()) {
       const hit = asRecord(raw);
       if (!hit) continue;
@@ -391,6 +428,10 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
   };
 
   return {
+    daemonDefaultNamespace: async (): Promise<string | undefined> => {
+      await refreshHealth();
+      return health.defaultNamespace;
+    },
     runtime: {
       async getMemorySearchManager() {
         await refreshHealth();
@@ -440,7 +481,10 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
 export function registerDelegateMemoryCapability(
   api: DelegateCapabilityApi,
   options: DelegateCapabilityOptions,
-): void {
+): DelegateMemoryCapability {
+  // Always BUILT, even when the host registers none of it: the caller reuses
+  // `daemonDefaultNamespace` so the hook paths scope exactly like search.
+  const built = createDelegateMemoryCapability(options);
   const hasUnified = typeof api.registerMemoryCapability === "function";
   const hasRuntime = typeof api.registerMemoryRuntime === "function";
   const hasFlushPlan = typeof api.registerMemoryFlushPlan === "function";
@@ -448,10 +492,9 @@ export function registerDelegateMemoryCapability(
     log.debug(
       `[${options.serviceId}] delegate: host exposes no memory capability surface — nothing to register`,
     );
-    return;
+    return built;
   }
 
-  const built = createDelegateMemoryCapability(options);
   if (hasUnified) {
     api.registerMemoryCapability?.({
       ...(options.allowPromptInjection ? { promptBuilder: built.promptBuilder } : {}),
@@ -470,4 +513,5 @@ export function registerDelegateMemoryCapability(
     ? " and promptBuilder"
     : " (promptBuilder omitted — injection disabled by policy)";
   log.info(`[${options.serviceId}] delegate: registered daemon-backed ${surface}${builder}`);
+  return built;
 }
