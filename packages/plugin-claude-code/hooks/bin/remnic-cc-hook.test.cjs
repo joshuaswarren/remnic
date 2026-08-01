@@ -62,14 +62,20 @@ function runHook(event, input, { port, home, env = {} } = {}) {
         XDG_STATE_HOME: path.join(home, "state"),
         REMNIC_HOST: "127.0.0.1",
         REMNIC_PORT: String(port),
-        // Default to an env token unless a test overrides it. When a test
-        // asks for "no token", explicitly clear BOTH legacy env vars so a
-        // value inherited from the parent shell (e.g.
-        // OPENCLAW_ENGRAM_ACCESS_TOKEN in a developer's environment) cannot
-        // leak through `...process.env` and make the no-token path take a
-        // token (#1518 test isolation).
+        // Default to an env token unless a test overrides it. Every env name
+        // resolveToken() consults is pinned here — including the canonical
+        // REMNIC_AUTH_TOKEN / ENGRAM_AUTH_TOKEN pair — so a value inherited
+        // from the parent shell (a developer or CI runner that authenticates
+        // a local daemon) cannot leak through `...process.env` and make the
+        // no-token path take a token (#1518 test isolation). Tests that want
+        // a specific name set it through `env.extra`, which is spread last.
         OPENCLAW_REMNIC_ACCESS_TOKEN: env.token === null ? "" : env.token || "test-token",
-        OPENCLAW_ENGRAM_ACCESS_TOKEN: env.token === null ? "" : "",
+        OPENCLAW_ENGRAM_ACCESS_TOKEN: "",
+        REMNIC_AUTH_TOKEN: "",
+        ENGRAM_AUTH_TOKEN: "",
+        // Internal worker-propagation channel, not a user credential. Pinned
+        // so an inherited value cannot reach the detached observe worker.
+        REMNIC_HOOK_TOKEN: "",
         ...env.extra,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -132,6 +138,139 @@ test("session-start: healthy server returns recall context with codingContext cl
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-start: health probe carries the bearer token (auth-gated daemons)", async () => {
+  const home = mkHome();
+  let healthAuth = "unset";
+  const { server, port } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/health") {
+      healthAuth = req.headers.authorization || null;
+      return res.writeHead(200).end("ok");
+    }
+    if (req.url === "/engram/v1/recall") {
+      return res
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({ context: "ctx", count: 1, mode: "auto" }));
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    await runHook("session-start", { session_id: "s1", cwd: home }, { port, home });
+    // Without this header an auth-gated daemon 401s the probe and the hook
+    // reports "daemon not running", silently skipping recall/observe.
+    assert.equal(healthAuth, "Bearer test-token");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("recall body targets REMNIC_NAMESPACE when set, and omits namespace when unset", async () => {
+  const mk = () =>
+    startServer((req, res) => {
+      if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+      if (req.url === "/engram/v1/recall") {
+        return res
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify({ context: "ctx", count: 1, mode: "auto" }));
+      }
+      res.writeHead(404).end();
+    });
+
+  // set → namespace travels in the request body (REST reads it from the body,
+  // not a header; the "claude-code" client id otherwise resolves to the
+  // adapter's own empty namespace and recall returns nothing).
+  {
+    const home = mkHome();
+    const { server, port, calls } = await mk();
+    try {
+      await runHook(
+        "session-start",
+        { session_id: "s1", cwd: home },
+        { port, home, env: { extra: { REMNIC_NAMESPACE: "team-shared" } } },
+      );
+      const recall = calls.find((c) => c.url === "/engram/v1/recall");
+      assert.ok(recall, "recall was called");
+      assert.equal(recall.body.namespace, "team-shared");
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  // unset → opt-in no-op, no namespace field (behaviour unchanged for existing users).
+  // Explicitly clear both env vars so a value inherited from the developer's
+  // shell (`...process.env`) can't leak in and make this path look "set".
+  {
+    const home = mkHome();
+    const { server, port, calls } = await mk();
+    try {
+      await runHook(
+        "session-start",
+        { session_id: "s1", cwd: home },
+        { port, home, env: { extra: { REMNIC_NAMESPACE: "", ENGRAM_NAMESPACE: "" } } },
+      );
+      const recall = calls.find((c) => c.url === "/engram/v1/recall");
+      assert.ok(recall, "recall was called");
+      assert.equal("namespace" in recall.body, false);
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
+
+test("namespace targeting: ENGRAM_NAMESPACE fallback (recall) and observe body both honor it", async () => {
+  // ENGRAM_NAMESPACE is the fallback when REMNIC_NAMESPACE is unset → recall body carries it.
+  {
+    const home = mkHome();
+    const { server, port, calls } = await startServer((req, res) => {
+      if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+      if (req.url === "/engram/v1/recall") {
+        return res
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify({ context: "ctx", count: 1, mode: "auto" }));
+      }
+      res.writeHead(404).end();
+    });
+    try {
+      await runHook(
+        "session-start",
+        { session_id: "s1", cwd: home },
+        { port, home, env: { extra: { REMNIC_NAMESPACE: "", ENGRAM_NAMESPACE: "legacy-ns" } } },
+      );
+      const recall = calls.find((c) => c.url === "/engram/v1/recall");
+      assert.ok(recall, "recall was called");
+      assert.equal(recall.body.namespace, "legacy-ns");
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  // observe uses the same httpPost path, so its body carries the namespace too.
+  {
+    const home = mkHome();
+    const { server, port, calls } = await startServer((req, res) => res.writeHead(200).end("{}"));
+    try {
+      const tpath = transcript(home, [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "second" },
+      ]);
+      await runHook(
+        "__observe-worker__",
+        JSON.stringify({ session_id: "sObsNs", transcript_path: tpath }),
+        { port, home, env: { extra: { REMNIC_NAMESPACE: "team-shared", ENGRAM_NAMESPACE: "" } } },
+      );
+      const observe = calls.find((c) => c.url === "/engram/v1/observe");
+      assert.ok(observe, "observe was called");
+      assert.equal(observe.body.namespace, "team-shared");
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   }
 });
 
@@ -476,6 +615,122 @@ test("token resolution: legacy ~/.engram/tokens.json is the read fallback", asyn
   }
 });
 
+// The documented standalone-server setup (docs/guides/standalone-server.md,
+// README) authenticates the daemon with REMNIC_AUTH_TOKEN and never mints a
+// connector token, so nothing lands in ~/.remnic/tokens.json and none of the
+// OPENCLAW_* names are set. Before the canonical pair was added to
+// resolveToken(), that shape sent an unauthenticated health probe, took a 401,
+// and reported "daemon not running" — silently skipping recall and observe.
+function authEnvServer() {
+  const seen = { health: "unset", recall: "unset" };
+  return startServer((req, res) => {
+    if (req.url === "/engram/v1/health") {
+      seen.health = req.headers.authorization || null;
+      return res.writeHead(200).end("ok");
+    }
+    if (req.url === "/engram/v1/recall") {
+      seen.recall = req.headers.authorization || null;
+      return res
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({ context: "ctx", count: 1, mode: "auto" }));
+    }
+    res.writeHead(404).end();
+  }).then((started) => ({ ...started, seen }));
+}
+
+for (const name of ["REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN"]) {
+  test(`token resolution: ${name} authenticates health and recall (no token store)`, async () => {
+    const home = mkHome();
+    const { server, port, seen } = await authEnvServer();
+    try {
+      const res = await runHook(
+        "session-start",
+        { session_id: "sEnv", cwd: home },
+        { port, home, env: { token: null, extra: { [name]: "operator-secret" } } },
+      );
+      assert.equal(seen.health, "Bearer operator-secret");
+      assert.equal(seen.recall, "Bearer operator-secret");
+      assert.doesNotMatch(
+        res.json.hookSpecificOutput.additionalContext,
+        /daemon not running/,
+        "an authenticated daemon must not be reported as down",
+      );
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+}
+
+test("token resolution: OPENCLAW_REMNIC_ACCESS_TOKEN outranks REMNIC_AUTH_TOKEN", async () => {
+  const home = mkHome();
+  const { server, port, seen } = await authEnvServer();
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "sPrec", cwd: home },
+      { port, home, env: { token: "connector-tok", extra: { REMNIC_AUTH_TOKEN: "operator-secret" } } },
+    );
+    // Both are current names; the connector-scoped one stays first, so an
+    // install that already worked keeps its existing credential.
+    assert.equal(seen.health, "Bearer connector-tok");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("token resolution: REMNIC_AUTH_TOKEN outranks the legacy OPENCLAW_ENGRAM_ACCESS_TOKEN", async () => {
+  const home = mkHome();
+  const { server, port, seen } = await authEnvServer();
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "sLegacyPrec", cwd: home },
+      {
+        port,
+        home,
+        env: {
+          token: null,
+          extra: {
+            OPENCLAW_ENGRAM_ACCESS_TOKEN: "stale-legacy-tok",
+            REMNIC_AUTH_TOKEN: "operator-secret",
+          },
+        },
+      },
+    );
+    // Primary-before-legacy (AGENTS.md §9). A migrated deployment often still
+    // exports the pre-rename alias; if that stale value outranked the token
+    // the daemon actually runs with, the probe would 401 and land back on
+    // "daemon not running".
+    assert.equal(seen.health, "Bearer operator-secret");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("token resolution: tokens.json still outranks REMNIC_AUTH_TOKEN", async () => {
+  const home = mkHome();
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, ".remnic", "tokens.json"),
+    JSON.stringify({ tokens: [{ connector: "claude-code", token: "cc-tok" }] }),
+  );
+  const { server, port, seen } = await authEnvServer();
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "sStore", cwd: home },
+      { port, home, env: { token: null, extra: { REMNIC_AUTH_TOKEN: "operator-secret" } } },
+    );
+    assert.equal(seen.health, "Bearer cc-tok");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 // ── hooks.json Windows parity ─────────────────────────────────────────────
 
 test("hooks.json: every event uses cross-platform exec form with ${CLAUDE_PLUGIN_ROOT} (#1518)", () => {
@@ -531,6 +786,23 @@ test("hooks.json: every event uses cross-platform exec form with ${CLAUDE_PLUGIN
   }
 });
 
+test("plugin.json: manifest conforms to the Claude Code plugin schema (author is an object)", () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", ".claude-plugin", "plugin.json"), "utf8"),
+  );
+  // Claude Code's plugin-manifest validator rejects a string `author`
+  // ("Invalid input: expected object, received string"), which blocks
+  // installing this plugin from a Claude Code marketplace. `author` must be an
+  // object carrying at least a `name`.
+  assert.equal(typeof manifest.author, "object", "author must be an object, not a string");
+  assert.ok(manifest.author !== null && !Array.isArray(manifest.author), "author must be a plain object");
+  assert.equal(typeof manifest.author.name, "string", "author.name must be a string");
+  assert.ok(manifest.author.name.length > 0, "author.name must be non-empty");
+  // Sanity-check the other required identity fields while we're here.
+  assert.equal(typeof manifest.name, "string", "name must be a string");
+  assert.equal(typeof manifest.version, "string", "version must be a string");
+});
+
 test("runner source: payload fields never reach a shell — spawn uses fixed argv (#1518 guard shell interpolation)", () => {
   const src = fs.readFileSync(RUNNER, "utf8");
   // Every spawn/spawnSync must use a fixed literal argument array, never a
@@ -578,4 +850,50 @@ test("runner source: path inputs are type-validated before use (#1518 validate p
     /const transcriptPath = input\.transcript_path \|\| ""/,
     "transcript_path must be defaulted to empty string",
   );
+});
+
+test("token resolution: REMNIC_AUTH_TOKEN outranks ENGRAM_AUTH_TOKEN when both are set", async () => {
+  const home = mkHome();
+  const { server, port, seen } = await authEnvServer();
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "sBothCanonical", cwd: home },
+      {
+        port,
+        home,
+        env: {
+          token: null,
+          extra: { REMNIC_AUTH_TOKEN: "current-tok", ENGRAM_AUTH_TOKEN: "legacy-tok" },
+        },
+      },
+    );
+    assert.equal(seen.health, "Bearer current-tok");
+    assert.equal(seen.recall, "Bearer current-tok");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("health probe uses the same bearer as the operation it gates", async () => {
+  const home = mkHome();
+  const { server, port, seen } = await authEnvServer();
+  try {
+    // REMNIC_HOOK_TOKEN is the detached observe worker's internal propagation
+    // channel; the foreground handlers never read it. If the probe consulted
+    // it, an inherited value would authenticate health with one bearer while
+    // recall sent another — a false "healthy" followed by a 401, or the
+    // reverse. Probe and operation must carry one snapshot.
+    await runHook(
+      "session-start",
+      { session_id: "sSnapshot", cwd: home },
+      { port, home, env: { extra: { REMNIC_HOOK_TOKEN: "inherited-worker-tok" } } },
+    );
+    assert.equal(seen.health, "Bearer test-token");
+    assert.equal(seen.recall, seen.health);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

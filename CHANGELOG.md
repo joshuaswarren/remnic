@@ -4,10 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Claude Code hooks honor `REMNIC_NAMESPACE` / `ENGRAM_NAMESPACE` to target a memory namespace on recall/observe. On the REST surface the namespace is read from the request body (not a header), so on a namespaced daemon the `claude-code` client id otherwise resolves to the adapter's own (empty) namespace and recall silently returns nothing. Opt-in — unset preserves existing behavior.
+
 ### Fixed
 
-- Codex hook health probe now authenticates with the caller's already-resolved token instead of re-resolving its own. Re-resolution could pick up a rotated `tokens.json` — or an inherited `REMNIC_HOOK_TOKEN`, which the foreground handlers never read — and green-light a probe whose subsequent recall then 401s.
+- Claude Code hook health probe now sends the configured bearer token, so a daemon with `REMNIC_AUTH_TOKEN` set is detected as healthy instead of being reported as "daemon not running" (which silently skipped auto-recall and auto-observe). Token resolution accepts the canonical `REMNIC_AUTH_TOKEN` / `ENGRAM_AUTH_TOKEN` names alongside the connector-scoped `OPENCLAW_*_ACCESS_TOKEN` pair, ordered primary-before-legacy so a leftover pre-rename value cannot shadow the credential the daemon is running with. Without the canonical names the documented standalone-server setup — which authenticates the daemon with `REMNIC_AUTH_TOKEN` and never mints a connector token — left the hook with no credential to send.
+- Claude Code hook health probe now authenticates with the caller's already-resolved token instead of re-resolving its own. Re-resolution could pick up a rotated `tokens.json` — or an inherited `REMNIC_HOOK_TOKEN`, which the foreground handlers never read — and green-light a probe whose subsequent recall then 401s.
 - Codex hook health probe now sends the configured bearer token, so an auth-gated daemon is detected as healthy instead of being reported as "daemon not running" (which silently skipped auto-recall and auto-observe). Token resolution also accepts the canonical `REMNIC_AUTH_TOKEN` / `ENGRAM_AUTH_TOKEN` names alongside the connector-scoped `OPENCLAW_*_ACCESS_TOKEN` pair, ordered primary-before-legacy so a leftover pre-rename value cannot shadow the credential the daemon is running with. Without them the documented standalone-server setup — which authenticates the daemon with `REMNIC_AUTH_TOKEN` and never mints a connector token — left the hook with no credential to send.
+- Codex hook health probe now authenticates with the caller's already-resolved token instead of re-resolving its own. Re-resolution could pick up a rotated `tokens.json` — or an inherited `REMNIC_HOOK_TOKEN`, which the foreground handlers never read — and green-light a probe whose subsequent recall then 401s.
+- Hook-runner CommonJS test suites (`packages/**/*.test.cjs`) are now discovered by the root test runner. They live beside the standalone runners rather than under `<pkg>/src`, so no CI job had ever executed them.
+- `@remnic/plugin-claude-code` manifest (`.claude-plugin/plugin.json`) now declares `author` as an object, so the plugin installs from a Claude Code marketplace. The string form was rejected by Claude Code's manifest validator (`author: expected object, received string`), which forced the npm-only manual-load path.
 
 ## [v9.46.0] — 2026-08-01
 

@@ -169,6 +169,15 @@ function onPath(bin) {
 }
 
 // ── token resolution (per-plugin token store, then env) ────────────────────
+// Env precedence is primary-before-legacy per AGENTS.md §9: the two current
+// names (OPENCLAW_REMNIC_ACCESS_TOKEN, REMNIC_AUTH_TOKEN) before the two
+// legacy aliases (OPENCLAW_ENGRAM_ACCESS_TOKEN, ENGRAM_AUTH_TOKEN), so a
+// stale leftover from a pre-rename install cannot outrank the credential the
+// daemon is actually running with. REMNIC_AUTH_TOKEN matters because the
+// documented standalone-server setup authenticates the daemon with it alone
+// and never mints a connector token — without it the health probe 401s and
+// the hook wrongly reports "daemon not running", silently skipping
+// recall/observe.
 function resolveToken() {
   for (const file of [
     path.join(HOME, ".remnic", "tokens.json"),
@@ -192,7 +201,9 @@ function resolveToken() {
   }
   return (
     process.env.OPENCLAW_REMNIC_ACCESS_TOKEN ||
+    process.env.REMNIC_AUTH_TOKEN ||
     process.env.OPENCLAW_ENGRAM_ACCESS_TOKEN ||
+    process.env.ENGRAM_AUTH_TOKEN ||
     ""
   );
 }
@@ -203,7 +214,19 @@ function httpPost(urlPath, token, bodyObj, timeoutMs) {
   return new Promise((resolve) => {
     let data;
     try {
-      data = Buffer.from(JSON.stringify(bodyObj), "utf8");
+      // Namespace targeting for namespaced daemons: when REMNIC_NAMESPACE (or
+      // ENGRAM_NAMESPACE) is set, include it in the request body. On the REST
+      // surface the namespace is read from the body, not a header, and the
+      // "claude-code" client id otherwise resolves to the adapter's own
+      // (empty) namespace — so recall/observe silently return nothing. Opt-in:
+      // when the env var is unset this is a no-op and behaviour is unchanged.
+      // An explicit bodyObj.namespace still takes precedence.
+      const ns = process.env.REMNIC_NAMESPACE || process.env.ENGRAM_NAMESPACE;
+      const outBody =
+        ns && bodyObj && typeof bodyObj === "object" && !Array.isArray(bodyObj)
+          ? { namespace: ns, ...bodyObj }
+          : bodyObj;
+      data = Buffer.from(JSON.stringify(outBody), "utf8");
     } catch {
       resolve({ ok: false, status: 0, body: "" });
       return;
@@ -246,10 +269,27 @@ function httpPost(urlPath, token, bodyObj, timeoutMs) {
   });
 }
 
-function httpHealthy(timeoutMs) {
+// `token` is the caller's already-resolved credential, NOT a second
+// resolveToken() call: the probe must authenticate with the exact bearer the
+// operation it gates will send. Re-resolving could pick up a rotated
+// tokens.json (or an inherited REMNIC_HOOK_TOKEN the foreground handlers
+// ignore) and green-light a probe whose recall then 401s.
+//
+// When the daemon has an auth token configured (REMNIC_AUTH_TOKEN), every
+// route — including /engram/v1/health — returns 401 to unauthenticated
+// requests, so an unauthenticated probe makes the hook wrongly report
+// "daemon not running" and skip recall/observe. Unauthenticated daemons
+// ignore the header.
+function httpHealthy(timeoutMs, token) {
   return new Promise((resolve) => {
     const req = http.request(
-      { host: HOST, port: PORT, path: "/engram/v1/health", method: "GET" },
+      {
+        host: HOST,
+        port: PORT,
+        path: "/engram/v1/health",
+        method: "GET",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      },
       (res) => {
         res.resume();
         resolve(res.statusCode >= 200 && res.statusCode < 300);
@@ -551,7 +591,7 @@ async function handleSessionStart(input, token, log) {
   log(`session=${sessionId} project=${projectName} coding-context=${codingContext ? "yes" : ""}`);
 
   // Health check — start daemon if not running.
-  if (!(await httpHealthy(2000))) {
+  if (!(await httpHealthy(2000, token))) {
     log("daemon not responding, attempting start...");
     // Try `remnic` first, fall through to legacy `engram` when only the older
     // CLI is on PATH. spawn() emits ENOENT *asynchronously* via 'error', so we
@@ -575,7 +615,7 @@ async function handleSessionStart(input, token, log) {
       }
     }
     await new Promise((r) => setTimeout(r, 2000));
-    if (!(await httpHealthy(2000))) {
+    if (!(await httpHealthy(2000, token))) {
       log("daemon still not responding after start attempt");
       emit({
         continue: true,
