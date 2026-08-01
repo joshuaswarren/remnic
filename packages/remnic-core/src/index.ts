@@ -9,11 +9,6 @@
  * This package has ZERO OpenClaw imports — it can be consumed by
  * any host adapter (CLI, HTTP server, MCP server, etc.).
  *
- * Usage:
- *   import { Orchestrator, parseConfig } from "@remnic/core";
- *   const config = parseConfig({ memoryDir: "/tmp/mem" });
- *   const orch = new Orchestrator(config);
- *   await orch.initialize();
  */
 
 // ---------------------------------------------------------------------------

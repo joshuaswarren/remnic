@@ -1,4 +1,8 @@
-import { type ExternalWikiRoot, searchExternalWikis } from "./external-wiki-search.js";
+import {
+  type ExternalWikiRoot,
+  type ExternalWikiSearchResult,
+  searchExternalWikis,
+} from "./external-wiki-search.js";
 
 interface ExternalWikiCliIo {
   readonly stdout: { write(chunk: string): unknown };
@@ -13,28 +17,25 @@ export async function runExternalWikiCliCommand(
   args: readonly string[],
   io: ExternalWikiCliIo
 ): Promise<number> {
-  if (args.length === 0 || args[0] === "help" || args[0] === "--help" || args[0] === "-h") {
+  if (args[0] === "help" || args[0] === "--help" || args[0] === "-h") {
     io.stdout.write(USAGE);
     return 0;
   }
-  if (args[0] !== "search") {
-    io.stderr.write(`external-wiki: unknown command '${args[0]}'\n${USAGE}`);
-    return 2;
-  }
+  const searchArgs = args[0] === "search" ? args.slice(1) : args;
 
   let limit: number | undefined;
   let wikiId: string | undefined;
   let maxCharsPerHit: number | undefined;
   let json = false;
   const queryParts: string[] = [];
-  for (let index = 1; index < args.length; index += 1) {
-    const argument = args[index];
+  for (let index = 0; index < searchArgs.length; index += 1) {
+    const argument = searchArgs[index];
     if (argument === "--json") {
       json = true;
       continue;
     }
     if (argument === "--limit" || argument === "--wiki-id" || argument === "--max-chars-per-hit") {
-      const value = args[index + 1];
+      const value = searchArgs[index + 1];
       if (value === undefined || value.startsWith("--")) {
         io.stderr.write(`external-wiki: ${argument} requires a value\n`);
         return 2;
@@ -68,25 +69,36 @@ export async function runExternalWikiCliCommand(
 
   const query = queryParts.join(" ").trim();
   if (query.length === 0) {
-    io.stderr.write(`external-wiki: query is required\n${USAGE}`);
-    return 2;
+    io.stderr.write("external-wiki: provide a search query\n");
+    return 1;
+  }
+  const enabled = roots.filter((root) => root.enabled !== false);
+  if (enabled.length === 0) {
+    io.stderr.write("external-wiki: no enabled wiki roots configured\n");
+    return 1;
   }
 
-  const result = await searchExternalWikis(roots, { query, limit, wikiId, maxCharsPerHit });
+  let result: ExternalWikiSearchResult;
+  try {
+    result = await searchExternalWikis(enabled, { query, limit, wikiId, maxCharsPerHit });
+  } catch (error) {
+    io.stderr.write(`external-wiki: ${error instanceof Error ? error.message : "search failed"}\n`);
+    return 1;
+  }
   if (json) {
     io.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return 0;
   }
 
-  io.stdout.write(`External wiki results for "${result.query}" (${result.count})\n`);
+  if (result.hits.length === 0) {
+    io.stdout.write("No results.\n");
+    return 0;
+  }
   for (const hit of result.hits) {
-    const citation = hit.citations[0];
-    const location = citation ? `${citation.path}:${citation.lineStart}-${citation.lineEnd}` : hit.path;
-    io.stdout.write(`${hit.rank}. [${hit.wikiId}] ${hit.title} (${location})\n`);
-    io.stdout.write(`   ${hit.snippet.replace(/\s+/g, " ").trim()}\n`);
+    io.stdout.write(`[${hit.wikiId}] ${hit.path} (score ${hit.score})\n${hit.snippet}\n\n`);
   }
   if (result.degradedWikiIds.length > 0) {
-    io.stderr.write(`external-wiki: degraded roots: ${result.degradedWikiIds.join(", ")}\n`);
+    io.stderr.write(`Warning: degraded roots: ${result.degradedWikiIds.join(", ")}\n`);
   }
   return 0;
 }
