@@ -234,3 +234,17 @@ test("isSessionsMemoryPath classifies session transcripts on either separator", 
     assert.equal(isSessionsMemoryPath(relative), false, relative);
   }
 });
+
+test("resolveReadablePath rejects a missing path as a domain error", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const scope = createMemoryReadScope({ memoryDir, workspaceDir });
+  // The host SDK boundary is untyped, so undefined can arrive despite the
+  // signature; node:path would otherwise raise a bare TypeError.
+  for (const bad of [undefined, null, "", 42]) {
+    await assert.rejects(
+      () => scope.resolveReadablePath(bad as unknown as string),
+      /memory read rejected \(missing path\)/,
+      String(bad),
+    );
+  }
+});

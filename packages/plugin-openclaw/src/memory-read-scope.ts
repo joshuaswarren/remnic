@@ -147,6 +147,12 @@ export function createMemoryReadScope(options: MemoryReadScopeOptions): MemoryRe
       return normalizeWorkspacePath(rawPath);
     },
     async resolveReadablePath(requestedPath: string): Promise<string> {
+      // The host SDK calls this across an untyped boundary, so a missing or
+      // non-string path can arrive despite the signature. Reject it as a
+      // domain error rather than letting node:path raise a raw TypeError.
+      if (typeof requestedPath !== "string" || requestedPath.length === 0) {
+        throw new Error("memory read rejected (missing path)");
+      }
       // Search results return paths relative to memoryDir (e.g.
       // "facts/alice.md"), not the workspace root. Try each allowed root and
       // take the first whose realpath lands inside the allowlist, so a hit can
