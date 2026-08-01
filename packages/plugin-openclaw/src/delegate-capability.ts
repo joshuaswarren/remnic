@@ -169,7 +169,16 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
     if (daemonScope?.dir !== dir) {
       daemonScope = {
         dir,
-        scope: createMemoryReadScope({ memoryDir: dir, workspaceDir: options.workspaceDir }),
+        scope: createMemoryReadScope({
+          // The daemon's own directory comes first, so a relative hit resolves
+          // in the frame the daemon returned it in...
+          memoryDir: dir,
+          workspaceDir: options.workspaceDir,
+          // ...and the corpus ROOT stays readable, so a session bound to a
+          // NON-default namespace can still open the absolute hits its own
+          // search returns from `<root>/namespaces/<other>`.
+          additionalRoots: [options.memoryDir],
+        }),
       };
     }
     return daemonScope.scope;

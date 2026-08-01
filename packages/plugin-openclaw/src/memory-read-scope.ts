@@ -90,6 +90,12 @@ export type MemoryReadScopeOptions = {
   memoryDir: string;
   /** Agent workspace root. `<workspaceDir>/memory` becomes a second root. */
   workspaceDir: string;
+  /**
+   * Extra allowed roots, appended after the two above and searched in order.
+   * Delegate mode uses this to keep the corpus ROOT readable while resolving
+   * relative hits against the namespace directory the daemon reports first.
+   */
+  additionalRoots?: readonly string[];
   /** Canonicalizer seam. Defaults to `fs.promises.realpath`; tests inject. */
   realpath?: (filePath: string) => Promise<string>;
 }
@@ -162,6 +168,7 @@ export function createMemoryReadScope(options: MemoryReadScopeOptions): MemoryRe
   const allowedRoots = [
     memoryDir,
     workspaceDir ? path.join(workspaceDir, "memory") : undefined,
+    ...(options.additionalRoots ?? []),
   ].filter((root): root is string => typeof root === "string" && root.length > 0);
 
   // Init-time canonicalization tolerates realpath failure: the roots may not

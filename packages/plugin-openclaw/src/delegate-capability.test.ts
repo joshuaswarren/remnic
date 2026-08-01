@@ -674,3 +674,35 @@ test("delegate search returns empty for a zero result budget without calling the
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("delegate reads a hit from another namespace's storage directory", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const defaultDir = path.join(memoryDir, "namespaces", "generalist");
+  const otherDir = path.join(memoryDir, "namespaces", "team-a");
+  await mkdir(defaultDir, { recursive: true });
+  await mkdir(path.join(otherDir, "facts"), { recursive: true });
+  await writeFile(path.join(otherDir, "facts", "scoped.md"), "team-a fact\n");
+  // Health answers for the DEFAULT namespace, but a session bound to team-a
+  // gets hits under team-a's directory; the host must be able to open them.
+  const stub = await startDaemonStub({
+    health: healthyDaemon(defaultDir),
+    search: {
+      results: [{ path: path.join(otherDir, "facts", "scoped.md"), score: 0.9, snippet: "hit" }],
+    },
+  });
+  try {
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir, {
+        resolveSearchNamespace: async () => "team-a",
+      }),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const [hit] = (await manager?.search("q")) ?? [];
+    assert.ok(hit, "the daemon returned a hit");
+    const page = await manager?.readFile({ relPath: hit.path });
+    assert.equal(page?.text.trim(), "team-a fact", "the host can open its own search hit");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
