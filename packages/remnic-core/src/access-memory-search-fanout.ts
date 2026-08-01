@@ -1,5 +1,6 @@
 import { canReadNamespace, defaultNamespaceForPrincipal } from "./namespaces/principal.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
+import { EngramAccessInputError } from "./access-errors.js";
 import { log } from "./logger.js";
 import type { SearchDegradation, SearchExecutionOptions } from "./search/port.js";
 import type { PluginConfig } from "./types.js";
@@ -189,7 +190,18 @@ export async function runFlatCorpusMemorySearch<TResult>(options: {
   search(query: string, collection: string | undefined, maxResults?: number): Promise<TResult[]>;
 }): Promise<TResult[]> {
   const { query, maxResults, collection, mode } = options;
-  if (mode) return options.searchAcrossNamespaces({ query, maxResults, mode });
+  if (mode) {
+    // The mode-aware backend has no collection selector on a flat corpus, so
+    // honoring the mode would silently search the default collection instead
+    // of the requested one. Reject the combination rather than return
+    // unrelated results (AGENTS.md pattern 39).
+    if (collection) {
+      throw new EngramAccessInputError(
+        `mode is not supported together with collection on a flat corpus (got collection: ${collection})`,
+      );
+    }
+    return options.searchAcrossNamespaces({ query, maxResults, mode });
+  }
   return collection === "global"
     ? options.searchGlobal(query, maxResults)
     : options.search(query, collection, maxResults);
