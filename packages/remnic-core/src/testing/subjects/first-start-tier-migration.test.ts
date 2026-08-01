@@ -50,7 +50,7 @@ const subject: LifecycleSubject<FirstStartTierMigrationState> = {
         qmdTierDemotionMinAgeDays: 1,
         qmdTierDemotionValueThreshold: 0.99,
       });
-      return { dir, id, storage, config };
+      return { dir, id, storage: new StorageManager(dir), config };
     } catch (error) {
       await cleanupDir(dir);
       throw error;
