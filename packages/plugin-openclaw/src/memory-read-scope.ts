@@ -13,7 +13,7 @@
  * already closed.
  */
 
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { realpath as fsRealpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -31,6 +31,16 @@ function trimTrailingSeparators(value: string): string {
   let end = value.length;
   while (end > 1 && (value[end - 1] === "/" || value[end - 1] === "\\")) end -= 1;
   return value.slice(0, end);
+}
+
+function defaultIsSymlink(target: string): boolean {
+  try {
+    return lstatSync(target).isSymbolicLink();
+  } catch {
+    // A missing path is rejected by the canonicalization below; report it as
+    // "not a symlink" so the failure surfaces there with the right reason.
+    return false;
+  }
 }
 
 /** The only descendant layout that still names the configured corpus. */
@@ -65,11 +75,18 @@ export function daemonServesCorpus(
   corpusRoot: string,
   daemonMemoryDir: string,
   realpath: (target: string) => string = realpathSync,
+  isSymlink: (target: string) => boolean = defaultIsSymlink,
 ): boolean {
   if (!corpusRoot?.trim() || !daemonMemoryDir?.trim()) return false;
   const expandedRoot = expandTildePath(corpusRoot.trim());
   const expandedDaemon = expandTildePath(daemonMemoryDir.trim());
   if (!path.isAbsolute(expandedRoot) || !path.isAbsolute(expandedDaemon)) return false;
+  // A root that is ITSELF a symlink is a mutable trust anchor: realpath would
+  // erase that fact, and retargeting the link after validation would silently
+  // move the directory treated as the corpus. Reject it outright.
+  if (isSymlink(path.resolve(expandedRoot)) || isSymlink(path.resolve(expandedDaemon))) {
+    return false;
+  }
   let canonicalRoot: string;
   let canonicalDaemon: string;
   try {

@@ -19,13 +19,14 @@ import { log } from "@remnic/core/logger";
 export async function withNamespace(
   namespace: string | undefined,
   body: Record<string, unknown>,
-  daemonDefaultNamespace: () => Promise<string | undefined>,
+  resolveScopedNamespace: (explicit?: string) => Promise<string | undefined>,
 ): Promise<Record<string, unknown>> {
   // An ABSENT namespace is a principal-wide fan-out to the daemon, not "the
-  // default scope", so fall back to the daemon's concrete default exactly as
-  // the memory-slot search does. Otherwise prompt recall would range wider
-  // than tool search on the same session.
-  const scoped = namespace || (await daemonDefaultNamespace());
+  // default scope". The shared resolver applies the daemon's concrete default
+  // and REFUSES when even that is unknown on a namespace-partitioned daemon —
+  // the same rule the memory-slot search follows, so prompt recall can never
+  // range wider than tool search on the same session.
+  const scoped = await resolveScopedNamespace(namespace || undefined);
   return scoped === undefined ? body : { ...body, namespace: scoped };
 }
 

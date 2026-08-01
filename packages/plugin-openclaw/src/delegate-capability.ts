@@ -156,8 +156,12 @@ function readHealth(payload: Record<string, unknown>): DaemonMemoryHealth {
  * `registerDelegateMemoryCapability`, which wires them into the host.
  */
 export type DelegateMemoryCapability = {
-  /** The daemon's default namespace, for callers that must scope concretely. */
-  daemonDefaultNamespace: () => Promise<string | undefined>;
+  /**
+   * Apply the daemon's default to an unresolved namespace and refuse when even
+   * that is unknown on a namespace-partitioned daemon. Shared with the hook
+   * paths so prompt recall cannot fan wider than tool search.
+   */
+  resolveScopedNamespace: (explicit?: string) => Promise<string | undefined>;
   runtime: RemnicCapabilityRuntime;
   flushPlanResolver: () => MemoryFlushPlan;
   listArtifacts: () => Promise<unknown[]>;
@@ -223,6 +227,24 @@ export function createDelegateMemoryCapability(
     throw new Error(`delegate ${surface} unavailable: ${detail}`);
   };
 
+  /**
+   * refreshHealth deliberately swallows probe failures, so a transient or
+   * legacy response can leave both the caller's namespace and the daemon
+   * default undefined. On a namespace-partitioned daemon an absent namespace
+   * means "fan out across everything the principal can read", which is outside
+   * the session's scope — refuse instead of widening it. A flat corpus has
+   * nothing to widen to, so it proceeds unscoped.
+   */
+  const requireScopedNamespace = (explicit?: string): string | undefined => {
+    const namespace = explicit ?? health.defaultNamespace;
+    if (namespace === undefined && health.namespacesEnabled) {
+      throw new Error(
+        "delegate request unavailable: the daemon's default namespace is unknown, so the session scope cannot be resolved",
+      );
+    }
+    return namespace;
+  };
+
   // `status()` is synchronous in the host contract, so the async probe runs in
   // getMemorySearchManager (which IS async) and status() reads the snapshot.
   const refreshHealth = async (): Promise<void> => {
@@ -281,19 +303,9 @@ export function createDelegateMemoryCapability(
     // An empty namespace means "the daemon's default", but the daemon reads an
     // ABSENT namespace as a principal-wide fan-out. Send the concrete default
     // health reports so a default-scoped session cannot see other namespaces.
-    const resolved = await options.resolveSearchNamespace(opts?.sessionKey);
-    const namespace = resolved ?? health.defaultNamespace;
-    // refreshHealth deliberately swallows probe failures, so a transient or
-    // legacy health response can leave BOTH values undefined. On a
-    // namespace-partitioned daemon an absent namespace means "fan out across
-    // everything the principal can read", which is outside the session's
-    // scope — refuse instead of widening it. A flat corpus has nothing to
-    // widen to, so it proceeds.
-    if (namespace === undefined && health.namespacesEnabled) {
-      throw new Error(
-        "delegate search unavailable: the daemon's default namespace is unknown, so the session scope cannot be resolved",
-      );
-    }
+    const namespace = requireScopedNamespace(
+      await options.resolveSearchNamespace(opts?.sessionKey),
+    );
     // Mirror the embedded manager: "vsearch" is vector ranking, "query" is the
     // ordinary search plan, anything else is the backend default.
     // Embedded defaults to "search" when the host passes no override, and an
@@ -428,9 +440,9 @@ export function createDelegateMemoryCapability(
   };
 
   return {
-    daemonDefaultNamespace: async (): Promise<string | undefined> => {
+    resolveScopedNamespace: async (explicit?: string): Promise<string | undefined> => {
       await refreshHealth();
-      return health.defaultNamespace;
+      return requireScopedNamespace(explicit);
     },
     runtime: {
       async getMemorySearchManager() {

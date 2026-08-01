@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -311,10 +311,28 @@ test("daemonServesCorpus rejects a foreign, relative, or blank corpus", async ()
   assert.equal(daemonServesCorpus(memoryDir, "   "), false);
 });
 
-test("daemonServesCorpus resolves symlinked spellings of one corpus", async () => {
-  const { memoryDir } = await makeCorpus();
-  const link = path.join(path.dirname(memoryDir), "linked-memory");
-  await symlink(memoryDir, link);
-  assert.equal(daemonServesCorpus(link, memoryDir), true);
-  assert.equal(daemonServesCorpus(memoryDir, link), true);
+test("daemonServesCorpus resolves an aliased PARENT but rejects a symlinked root", async () => {
+  // A dedicated root: the alias must live INSIDE the fixture, not in the
+  // shared temp directory where parallel runs would collide.
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-corpus-alias-")));
+  const holder = path.join(root, "holder");
+  const memoryDir = path.join(holder, "memory");
+  await mkdir(memoryDir, { recursive: true });
+
+  // An aliased ancestor is the ordinary case (think /var vs /private/var): the
+  // two spellings name one directory, and splitting them would start a second
+  // orchestrator beside the daemon on the same files.
+  const aliasedHolder = path.join(root, "aliased-holder");
+  await symlink(holder, aliasedHolder);
+  const viaAlias = path.join(aliasedHolder, "memory");
+  assert.equal(daemonServesCorpus(memoryDir, viaAlias), true);
+  assert.equal(daemonServesCorpus(viaAlias, memoryDir), true);
+
+  // The ROOT itself being a link is different: it is a mutable trust anchor,
+  // and retargeting it after validation would move the corpus underneath us.
+  const linkedRoot = path.join(root, "linked-memory");
+  await symlink(memoryDir, linkedRoot);
+  assert.equal(daemonServesCorpus(linkedRoot, memoryDir), false);
+  assert.equal(daemonServesCorpus(memoryDir, linkedRoot), false);
+  await rm(root, { recursive: true, force: true });
 });

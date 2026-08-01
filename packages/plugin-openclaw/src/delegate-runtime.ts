@@ -454,7 +454,7 @@ export function registerDelegateRuntime(
               ...(cwd ? { cwd } : {}),
               ...(options.projectTag ? { projectTag: options.projectTag } : {}),
             },
-            capability.daemonDefaultNamespace,
+            capability.resolveScopedNamespace,
           ),
           options.recallTimeoutMs,
         );
@@ -554,7 +554,7 @@ export function registerDelegateRuntime(
             ...(cwd ? { cwd } : {}),
             ...(options.projectTag ? { projectTag: options.projectTag } : {}),
           },
-          capability.daemonDefaultNamespace,
+          capability.resolveScopedNamespace,
         ),
         options.observeTimeoutMs,
       );
@@ -638,7 +638,7 @@ export function registerDelegateRuntime(
           target,
           options.serviceId,
           "/engram/v1/lcm/compaction/flush",
-          await withNamespace(sessionNamespace, { sessionKey }, capability.daemonDefaultNamespace),
+          await withNamespace(sessionNamespace, { sessionKey }, capability.resolveScopedNamespace),
           remainingTimeout(),
         );
       const flushIndividually = async (): Promise<boolean> => {
