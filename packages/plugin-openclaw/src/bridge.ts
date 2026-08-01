@@ -270,14 +270,21 @@ function readCompatEnv(primary: string, legacy: string): string | undefined {
   return readEnv(primary) ?? readEnv(legacy);
 }
 
+/**
+ * Config discovery, in the SAME order the standalone server uses
+ * (`resolveConfigPath` in packages/remnic-server/src/index.ts): explicit env
+ * override, then cwd, then home. Probing a different file than the running
+ * daemon booted from would read a different host/port — and under `auto` that
+ * means starting a second orchestrator over the daemon's own corpus.
+ */
 function configPathCandidates(): string[] {
   const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
   return [
     ...(envPath ? [path.resolve(expandTildePath(envPath))] : []),
-    path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
-    path.join(resolveHomeDir(), ".config", "engram", "config.json"),
     path.join(process.cwd(), "remnic.config.json"),
     path.join(process.cwd(), "engram.config.json"),
+    path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
+    path.join(resolveHomeDir(), ".config", "engram", "config.json"),
   ];
 }
 
