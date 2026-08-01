@@ -1000,13 +1000,20 @@ export class EngramAccessHttpServer {
       // effective-namespace allow-list gate as every other namespace-scoped
       // route (issue #1850 finding 2); the authenticated principal — never a
       // client-supplied value — then scopes the readable namespace fan-out.
-      const output = (await operation.run(
-        this.gatedBodyNamespace(req, await this.readJsonBody(req)),
-        {
-          service: this.service,
-          authenticatedPrincipal: this.resolveRequestPrincipal(req),
-        },
-      )) as { result: unknown };
+      const body = this.gatedBodyNamespace(req, await this.readJsonBody(req));
+      // memory_search is a FAN-OUT: an absent namespace searches everything
+      // the principal can read. A namespace-scoped bearer may read fewer
+      // namespaces than its principal, so leaving it absent would return
+      // results the token was never authorized for. The allow-list gate above
+      // already proved the server default is permitted for such a token, so
+      // binding the effective namespace explicitly is both safe and closed.
+      if (body.namespace === undefined && tokenCapabilityStore.getStore()?.namespaces !== undefined) {
+        body.namespace = this.service.configRef?.defaultNamespace ?? "";
+      }
+      const output = (await operation.run(body, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      })) as { result: unknown };
       this.respondJson(res, 200, output.result);
       return;
     }

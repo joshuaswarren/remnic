@@ -4241,6 +4241,58 @@ test("HTTP memory search enforces token op and namespace allow-lists", async () 
     assert.equal(calls.length, 0, "no denied request may reach the service");
     assert.equal((await post("reader", { query: "q", namespace: "team" })).status, 200);
     assert.equal(calls.length, 1);
+    assert.equal(
+      (calls[0] as { namespace?: unknown }).namespace,
+      "team",
+      "the gated namespace reaches the service",
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP memory search binds a scoped token to one namespace instead of fanning out", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const service = {
+    configRef: { defaultNamespace: "generalist" },
+    memorySearch: async (request: Record<string, unknown>) => {
+      calls.push(request);
+      return { query: "q", results: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    principal: "reader",
+    authTokenEntriesGetter: () => [
+      {
+        token: "scoped",
+        capabilities: { version: 1, ops: ["memory_search"], namespaces: ["generalist"] },
+      },
+      { token: "unrestricted", capabilities: { version: 1, ops: ["memory_search"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const post = (token: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories/search`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ query: "q" }),
+    });
+  try {
+    assert.equal((await post("scoped")).status, 200);
+    assert.equal(
+      calls[0]?.namespace,
+      "generalist",
+      "an omitted namespace on a scoped token binds to the allowed effective namespace",
+    );
+    assert.equal((await post("unrestricted")).status, 200);
+    assert.equal(
+      calls[1]?.namespace,
+      undefined,
+      "an unrestricted token keeps the principal-wide fan-out",
+    );
   } finally {
     await server.stop();
   }
