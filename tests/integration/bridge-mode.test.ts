@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { Worker } from "node:worker_threads";
 
@@ -31,8 +31,12 @@ const ROOT = path.resolve(__dirname, "../..");
 const PROBE_BUDGET_MS = 2_500;
 const STALLED_DETAILED_HEALTH_MS = 3_000;
 // The auto detector requires the daemon to report the SAME memoryDir, so the
-// stubs below and every detect call agree on one corpus path.
-const DETECT_MEMORY_DIR = path.join(os.tmpdir(), "bridge-detect-corpus");
+// stubs below and every detect call agree on one corpus path. It must EXIST:
+// containment is decided on canonical paths, so an unresolvable directory is
+// never a match.
+const DETECT_MEMORY_DIR = await realpath(
+  await mkdtemp(path.join(os.tmpdir(), "bridge-detect-corpus-")),
+);
 const HEALTH_SERVER_WORKER_SOURCE = `
 import { createServer } from "node:http";
 import { workerData } from "node:worker_threads";

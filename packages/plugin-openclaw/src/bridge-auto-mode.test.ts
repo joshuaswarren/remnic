@@ -78,7 +78,9 @@ function withDaemonEnv<T>(port: number | undefined, run: () => T): T {
   }
 }
 
-const MEMORY_DIR = path.join(os.tmpdir(), "remnic-auto-mode", "memory");
+// A REAL directory: the corpus gate canonicalizes both sides, so a path that
+// does not exist can never match (fail closed on symlink escapes).
+const MEMORY_DIR = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-auto-mode-")));
 
 test("readDaemonMemoryDirSync captures the daemon's memoryDir from health", async () => {
   const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" });
@@ -153,7 +155,7 @@ test("auto tolerates trailing-slash and relative-segment spelling of one corpus"
   try {
     const resolved = withDaemonEnv(stub.port, () =>
       resolveBridgeMode("auto", {
-        memoryDir: path.join(MEMORY_DIR, "..", "memory"),
+        memoryDir: path.join(MEMORY_DIR, "..", path.basename(MEMORY_DIR)),
         timeoutMs: 5_000,
       }),
     );
@@ -335,10 +337,9 @@ test("detectDaemonBridgeMode is the auto probe and ignores explicit env modes", 
 test("auto delegates to a daemon serving a namespace under the corpus root", async () => {
   // Health reports the namespace-RESOLVED storage dir, so a migrated default
   // namespace must not read as a foreign corpus.
-  const stub = await startHealthStub({
-    ok: true,
-    memoryDir: path.join(MEMORY_DIR, "namespaces", "generalist"),
-  });
+  const namespaceDir = path.join(MEMORY_DIR, "namespaces", "generalist");
+  await mkdir(namespaceDir, { recursive: true });
+  const stub = await startHealthStub({ ok: true, memoryDir: namespaceDir });
   try {
     const resolved = withDaemonEnv(stub.port, () =>
       resolveBridgeMode("auto", { memoryDir: MEMORY_DIR, timeoutMs: 5_000 }),
