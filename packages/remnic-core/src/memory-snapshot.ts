@@ -1,4 +1,4 @@
-import type { MemoryFile } from "../types.js";
+import type { MemoryFile } from "./types.js";
 
 function sortSnapshotObject(_key: string, candidate: unknown): unknown {
   if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
