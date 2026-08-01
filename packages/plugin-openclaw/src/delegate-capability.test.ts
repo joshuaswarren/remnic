@@ -738,3 +738,20 @@ test("delegate refuses file-backed surfaces for a remote daemon with an identica
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("delegate readFile refuses artifact paths", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "artifacts/report.md" }) ?? Promise.resolve(),
+      /artifact path/,
+      "search filters artifacts; the read path must not be a way around that",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

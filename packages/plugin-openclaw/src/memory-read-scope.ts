@@ -287,6 +287,13 @@ export function createMemoryReadScope(options: MemoryReadScopeOptions): MemoryRe
       if (!canonicalPath.toLowerCase().endsWith(".md")) {
         throw new Error(`memory read restricted to .md files: ${requestedPath}`);
       }
+      // Artifact isolation is a contract, not a search-ranking detail: generic
+      // memory readers must never open artifact files, which are served only
+      // through the dedicated verbatim path. Checked on the CANONICAL path so
+      // a symlink alias cannot route around it.
+      if (isMemoryArtifactPath(canonicalPath) || isMemoryArtifactPath(requestedPath)) {
+        throw new Error(`memory read excluded (artifact path): ${requestedPath}`);
+      }
       return canonicalPath;
     },
   };

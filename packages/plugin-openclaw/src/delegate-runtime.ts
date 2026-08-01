@@ -662,7 +662,14 @@ export function registerDelegateRuntime(
             "/engram/v1/lcm/compaction/flush",
             {
               sessionKey,
-              namespaces: namespaces.map((sessionNamespace) => sessionNamespace ?? ""),
+              // Each entry goes through the SAME resolver as the singular
+              // flush and every other delegate call, so a batch cannot widen
+              // scope where a one-at-a-time flush would refuse.
+              namespaces: await Promise.all(
+                namespaces.map(async (sessionNamespace) =>
+                  (await capability.resolveScopedNamespace(sessionNamespace || undefined)) ?? "",
+                ),
+              ),
             },
             remainingTimeout(),
           );

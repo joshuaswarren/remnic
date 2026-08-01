@@ -22,10 +22,12 @@ async function makeCorpus(): Promise<{
   const workspaceDir = path.join(root, "workspace");
   const outsideDir = path.join(root, "outside");
   await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+  await mkdir(path.join(memoryDir, "artifacts"), { recursive: true });
   await mkdir(path.join(workspaceDir, "memory"), { recursive: true });
   await mkdir(outsideDir, { recursive: true });
   await writeFile(path.join(memoryDir, "facts", "alice.md"), "# alice\nline two\n");
   await writeFile(path.join(memoryDir, "index.json"), "{}\n");
+  await writeFile(path.join(memoryDir, "artifacts", "report.md"), "# artifact\n");
   await writeFile(path.join(workspaceDir, "memory", "notes.md"), "# notes\n");
   await writeFile(path.join(outsideDir, "secret.md"), "# secret\n");
   return { memoryDir, workspaceDir, outsideDir };
@@ -343,4 +345,31 @@ test("daemonServesCorpus keeps a drive/filesystem root intact", async () => {
   // corpus at `C:\\` must not collapse to the drive-relative `C:`.
   assert.equal(daemonServesCorpus(`${memoryDir}///`, memoryDir), true);
   assert.equal(daemonServesCorpus(path.parse(memoryDir).root, path.parse(memoryDir).root), true);
+});
+
+test("resolveReadablePath refuses artifact files even when contained and markdown", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const scope = createMemoryReadScope({ memoryDir, workspaceDir });
+  // Artifacts are served only through the dedicated verbatim path; a generic
+  // memory reader must never open them, however the caller spells the path.
+  await assert.rejects(
+    () => scope.resolveReadablePath("artifacts/report.md"),
+    /memory read excluded \(artifact path\)/,
+  );
+  await assert.rejects(
+    () => scope.resolveReadablePath(path.join(memoryDir, "artifacts", "report.md")),
+    /memory read excluded \(artifact path\)/,
+  );
+  // A symlink alias outside artifacts/ must not route around the exclusion.
+  const alias = path.join(memoryDir, "facts", "alias.md");
+  await symlink(path.join(memoryDir, "artifacts", "report.md"), alias);
+  await assert.rejects(
+    () => scope.resolveReadablePath("facts/alias.md"),
+    /memory read excluded \(artifact path\)/,
+  );
+  // Non-artifact reads are unaffected.
+  assert.equal(
+    await scope.resolveReadablePath("facts/alice.md"),
+    path.join(memoryDir, "facts", "alice.md"),
+  );
 });
