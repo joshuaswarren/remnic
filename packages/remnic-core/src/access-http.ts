@@ -758,15 +758,24 @@ export class EngramAccessHttpServer {
    * routes, otherwise a scoped bearer can scope its call to another tenant
    * by setting `body.namespace` (issue #1850 finding 2). Throws 403 for a
    * scoped token whose allow-list does not cover the effective namespace.
+   *
+   * A `namespace` that is neither a string nor `null` is REJECTED here rather
+   * than coerced to `undefined`: silently reinterpreting it would default the
+   * request to the principal's namespace set and answer 200, hiding the
+   * caller's mistake behind a plausible result (AGENTS.md pattern 39). `null`
+   * and an absent field keep their documented "no explicit namespace" meaning.
    */
   private gatedBodyNamespace(
     req: IncomingMessage,
     body: Record<string, unknown>,
   ): Record<string, unknown> {
-    const namespace = this.resolveNamespace(
-      req,
-      typeof body.namespace === "string" ? body.namespace : undefined,
-    );
+    const requested = body.namespace;
+    if (requested !== undefined && requested !== null && typeof requested !== "string") {
+      throw new EngramAccessInputError(
+        `namespace must be a string or null (got: ${typeof requested})`,
+      );
+    }
+    const namespace = this.resolveNamespace(req, requested ?? undefined);
     return { ...body, namespace };
   }
 

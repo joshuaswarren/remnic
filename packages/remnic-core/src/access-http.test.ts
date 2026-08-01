@@ -4177,7 +4177,20 @@ test("HTTP memory search rejects an invalid body before service dispatch", async
     assert.equal((await post({ query: "   " })).status, 400, "blank query is rejected");
     assert.equal((await post({})).status, 400, "a missing query is rejected");
     assert.equal((await post({ query: "ok", maxResults: 0 })).status, 400, "maxResults must be >= 1");
+    assert.equal(
+      (await post({ query: "ok", namespace: 123 })).status,
+      400,
+      "a non-string namespace is rejected, not silently defaulted to the principal's scope",
+    );
+    assert.equal((await post({ query: "ok", namespace: ["a"] })).status, 400);
+    assert.equal((await post({ query: "ok", namespace: {} })).status, 400);
     assert.equal(calls.length, 0, "no invalid request may reach the service");
+    assert.equal(
+      (await post({ query: "ok", namespace: null })).status,
+      200,
+      "an explicit null keeps its documented no-namespace meaning",
+    );
+    assert.equal(calls.length, 1);
   } finally {
     await server.stop();
   }
