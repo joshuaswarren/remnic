@@ -75,14 +75,25 @@ above, in this order:
 
 1. `~/.remnic/tokens.json`, then legacy `~/.engram/tokens.json` — the
    `claude-code` connector entry first, then `openclaw`.
-2. `OPENCLAW_REMNIC_ACCESS_TOKEN`, then `OPENCLAW_ENGRAM_ACCESS_TOKEN`.
-3. `REMNIC_AUTH_TOKEN`, then legacy `ENGRAM_AUTH_TOKEN`.
+2. `OPENCLAW_REMNIC_ACCESS_TOKEN`, then `REMNIC_AUTH_TOKEN`.
+3. Legacy aliases: `OPENCLAW_ENGRAM_ACCESS_TOKEN`, then `ENGRAM_AUTH_TOKEN`.
 
-Step 3 covers the standalone-server setup, which authenticates the daemon with
-`REMNIC_AUTH_TOKEN` and never mints a connector token. Against an auth-gated
-daemon the hook needs one of these: every route, including
-`/engram/v1/health`, returns 401 without a bearer, so an unauthenticated hook
-reports `daemon not running` and silently skips auto-recall and auto-observe.
+Current names outrank legacy ones, so a leftover pre-rename value cannot
+shadow the credential the daemon is actually running with. `REMNIC_AUTH_TOKEN`
+covers the standalone-server setup, which authenticates the daemon with that
+variable and never mints a connector token. Against an auth-gated daemon the
+hook needs one of these: every route, including `/engram/v1/health`, returns
+401 without a bearer, so an unauthenticated hook reports `daemon not running`
+and silently skips auto-recall and auto-observe.
+
+### Namespace targeting
+
+`REMNIC_NAMESPACE`, then legacy `ENGRAM_NAMESPACE` — optional. When set, the
+hook adds the namespace to the **request body** of recall and observe (the
+REST surface reads it from the body, not a header). An explicit
+`body.namespace` already on the request wins. Unset → the daemon resolves the
+namespace for the `claude-code` client id, which on a namespaced daemon is the
+adapter's own empty namespace, so recall returns nothing.
 
 ## Agent note
 
