@@ -76,15 +76,21 @@ daemon and stay embedded everywhere else. It is not the default: silently
 flipping a co-located deployment to delegate on a restart would change memory
 behavior without anyone asking for it.
 
-Both gates must pass before `auto` delegates:
+All three gates must pass before `auto` delegates:
 
-1. **Liveness.** A daemon PID file, an installed launchd/systemd unit (user or
+1. **Same host.** The daemon endpoint must be loopback. A matching absolute
+   `memoryDir` string proves nothing across machines, and delegate mode's
+   local-corpus reads only hold on one host. Explicit `delegate` may still
+   target a remote daemon; `auto` may not.
+2. **Liveness.** A daemon PID file, an installed launchd/systemd unit (user or
    system), or a loopback endpoint is only a hint — PIDs go stale and get
    reused — so the configured endpoint must actually answer.
-2. **Corpus identity.** The daemon must report the same `memoryDir`. Delegating
-   to a daemon serving a different corpus would silently redirect every recall
-   and write, so an unknown `memoryDir` (older daemon, or a token without
-   health access) counts as a mismatch and stays embedded.
+3. **Corpus identity.** The daemon must report the same `memoryDir`, compared
+   after tilde expansion and `realpath` so two symlink spellings of one
+   directory match. Delegating to a daemon serving a different corpus would
+   silently redirect every recall and write, so an unknown `memoryDir` (older
+   daemon, or a token without health access) counts as a mismatch and stays
+   embedded.
 
 In delegate mode the daemon endpoint comes from the Remnic config's
 `server.host`/`server.port` or the corresponding env vars (default

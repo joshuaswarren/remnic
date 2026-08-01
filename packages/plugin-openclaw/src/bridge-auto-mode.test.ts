@@ -7,6 +7,7 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -261,6 +262,57 @@ test("resolveBridgeMode rejects unknown values and names auto in the error", () 
       /Invalid REMNIC_BRIDGE_MODE env override/,
     );
   });
+});
+
+test("auto refuses a non-loopback daemon endpoint", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR });
+  const reasons: string[] = [];
+  try {
+    const prior = process.env.REMNIC_HOST;
+    withDaemonEnv(stub.port, () => {
+      // A matching absolute memoryDir proves nothing across machines, and the
+      // capability's local corpus reads only hold on one host.
+      process.env.REMNIC_HOST = "10.0.0.9";
+      const resolved = resolveBridgeMode("auto", {
+        memoryDir: MEMORY_DIR,
+        timeoutMs: 1_500,
+        onSkip: (reason) => reasons.push(reason),
+      });
+      assert.equal(resolved.mode, "embedded");
+      assert.match(reasons.join("\n"), /not loopback/);
+    });
+    assert.equal(process.env.REMNIC_HOST, prior);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("auto matches a symlinked spelling of one corpus", async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-auto-link-")));
+  const real = path.join(root, "real-memory");
+  const link = path.join(root, "linked-memory");
+  await mkdir(real, { recursive: true });
+  await symlink(real, link);
+  const stub = await startHealthStub({ ok: true, memoryDir: real });
+  const reasons: string[] = [];
+  try {
+    const resolved = withDaemonEnv(stub.port, () =>
+      resolveBridgeMode("auto", {
+        memoryDir: link,
+        timeoutMs: 5_000,
+        onSkip: (reason) => reasons.push(reason),
+      }),
+    );
+    assert.equal(
+      resolved.mode,
+      "delegate",
+      "two spellings of one directory must not start a second orchestrator beside the daemon",
+    );
+    assert.deepEqual(reasons, []);
+  } finally {
+    await stub.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("detectDaemonBridgeMode is the auto probe and ignores explicit env modes", async () => {

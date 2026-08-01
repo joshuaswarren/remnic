@@ -14,6 +14,8 @@ import { isIPv4 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { expandTildePath } from "@remnic/core";
 
+import { sameMemoryCorpus } from "./memory-read-scope.js";
+
 export type BridgeMode = "embedded" | "delegate";
 
 export interface BridgeConfig {
@@ -451,15 +453,19 @@ export function readDaemonMemoryDirSync(
   return { healthy: probe.ok, memoryDir: probe.captured };
 }
 
-function shouldProbeDaemonHealth(host: string): boolean {
+function isLoopbackDaemonHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();
   return (
     normalized === DEFAULT_HOST ||
     normalized === "localhost" ||
     normalized === "::1" ||
     normalized === "[::1]" ||
-    isDaemonServiceConfigured()
+    normalized.startsWith("127.")
   );
+}
+
+function shouldProbeDaemonHealth(host: string): boolean {
+  return isLoopbackDaemonHost(host) || isDaemonServiceConfigured();
 }
 
 /**
@@ -536,6 +542,17 @@ export function detectDaemonBridgeMode(options: {
   const daemonPort = readDaemonPort();
   const embedded: BridgeConfig = { mode: "embedded", daemonHost, daemonPort };
 
+  // Auto is SAME-HOST detection. A matching absolute memoryDir string proves
+  // nothing across machines — an unrelated remote daemon using the same
+  // conventional path would silently capture every recall and write — and the
+  // premise that the plugin may read the corpus locally only holds on one
+  // host. Explicit `delegate` may still target a remote daemon; `auto` may not.
+  if (!isLoopbackDaemonHost(daemonHost)) {
+    options.onSkip?.(
+      `daemon endpoint ${daemonHost}:${daemonPort} is not loopback; auto only delegates to a same-host daemon`,
+    );
+    return embedded;
+  }
   if (!isDaemonRunning() && !shouldProbeDaemonHealth(daemonHost)) {
     options.onSkip?.("no daemon PID, service unit, or local endpoint to probe");
     return embedded;
@@ -558,19 +575,6 @@ export function detectDaemonBridgeMode(options: {
     return embedded;
   }
   return { mode: "delegate", daemonHost, daemonPort };
-}
-
-/**
- * Whether two memoryDir values name the same corpus. Both sides are
- * tilde-expanded and resolved; symlinks are NOT followed, because a mismatch
- * must fail closed and a realpath here would need I/O on a path that may not
- * exist yet.
- */
-function sameMemoryCorpus(pluginMemoryDir: string, daemonMemoryDir: string): boolean {
-  const normalize = (value: string): string =>
-    path.normalize(path.resolve(expandTildePath(value.trim()))).replace(/[\\/]+$/, "");
-  if (!pluginMemoryDir.trim() || !daemonMemoryDir.trim()) return false;
-  return normalize(pluginMemoryDir) === normalize(daemonMemoryDir);
 }
 
 /**

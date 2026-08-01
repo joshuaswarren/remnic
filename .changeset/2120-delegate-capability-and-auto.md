@@ -1,5 +1,5 @@
 ---
-"@remnic/plugin-openclaw": minor
+"@remnic/plugin-openclaw": major
 "@remnic/core": minor
 ---
 
