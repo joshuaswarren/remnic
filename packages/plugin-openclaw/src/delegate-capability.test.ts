@@ -23,6 +23,8 @@ type DaemonStub = {
 
 type StubRoutes = {
   health?: unknown;
+  /** A literal response body, for shapes `JSON.stringify` would normalize. */
+  healthRaw?: string;
   healthStatus?: number;
   search?: unknown;
   searchStatus?: number;
@@ -39,8 +41,14 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
       calls.push({ pathname, body: raw ? JSON.parse(raw) : undefined });
       const isSearch = pathname.endsWith("/memories/search");
       const status = isSearch ? (routes.searchStatus ?? 200) : (routes.healthStatus ?? 200);
-      const payload = isSearch ? routes.search : routes.health;
       res.writeHead(status, { "content-type": "application/json" });
+      if (!isSearch && routes.healthRaw !== undefined) {
+        // A literal body, so a test can send a 200 that is valid JSON but not
+        // a record — the shape `?? {}` would otherwise paper over.
+        res.end(routes.healthRaw);
+        return;
+      }
+      const payload = isSearch ? routes.search : routes.health;
       res.end(JSON.stringify(payload ?? {}));
     });
   });
@@ -160,7 +168,10 @@ test("delegate search maps daemon hits into runtime results", async () => {
       },
     ]);
     const searchCall = stub.calls.find((call) => call.pathname.endsWith("/memories/search"));
-    assert.deepEqual(searchCall?.body, { query: "alice", maxResults: 5, mode: "search" });
+    // Headroom: artifacts and sub-minScore hits are dropped on this side, so
+    // the daemon is asked for more than the caller's budget and the cap lands
+    // on the FILTERED list.
+    assert.deepEqual(searchCall?.body, { query: "alice", maxResults: 15, mode: "search" });
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -749,6 +760,71 @@ test("delegate readFile refuses artifact paths", async () => {
       () => manager?.readFile({ relPath: "artifacts/report.md" }) ?? Promise.resolve(),
       /artifact path/,
       "search filters artifacts; the read path must not be a way around that",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate search caps AFTER dropping artifacts, not before", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // Every one of the top-ranked hits is an artifact. Capping first would
+  // return an empty page even though valid memories rank right behind them.
+  const stub = await startDaemonStub({
+    health: healthyDaemon(memoryDir),
+    search: {
+      query: "q",
+      count: 5,
+      results: [
+        { path: "artifacts/a1.md", score: 0.99, snippet: "artifact" },
+        { path: "artifacts/a2.md", score: 0.98, snippet: "artifact" },
+        { path: "facts/one.md", score: 0.5, snippet: "one" },
+        { path: "facts/two.md", score: 0.4, snippet: "two" },
+        { path: "facts/three.md", score: 0.3, snippet: "three" },
+      ],
+    },
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const results = (await manager?.search("q", { maxResults: 2 })) ?? [];
+    assert.deepEqual(
+      results.map((hit) => hit.citation),
+      [path.join("facts", "one.md"), path.join("facts", "two.md")],
+      "a full page of real memories, and never more than the budget",
+    );
+    const searchCall = stub.calls.find((call) => call.pathname.includes("/memories/search"));
+    assert.equal(
+      (searchCall?.body as { maxResults?: number } | undefined)?.maxResults,
+      6,
+      "asks the daemon for headroom",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate health backs off on a 200 with a malformed body", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // A persistently malformed 200 must not turn every later refresh into an
+  // immediate re-fetch; it backs off exactly like a transport failure.
+  const stub = await startDaemonStub({ healthRaw: "null" });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    // Every entry point that consults health goes through the same refresh, so
+    // three back-to-back handouts would mean three probes with no backoff.
+    await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const healthCalls = stub.calls.filter((call) => call.pathname.includes("/health"));
+    assert.equal(healthCalls.length, 1, "later handouts reuse the backoff, they do not re-probe");
+    // And the malformed payload never becomes a corpus claim.
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /has not been confirmed/,
     );
   } finally {
     await stub.close();

@@ -655,22 +655,21 @@ export function registerDelegateRuntime(
           const response = await flushNamespace(namespaces[0]);
           return response !== null && response.flushed === true;
         }
+        // Each entry goes through the SAME resolver as the singular flush and
+        // every other delegate call, so a batch cannot widen scope where a
+        // one-at-a-time flush would refuse. The RESOLVED list is what the
+        // daemon echoes, so it is also what the response is validated against.
+        const requestNamespaces = await Promise.all(
+          namespaces.map(async (sessionNamespace) =>
+            (await capability.resolveScopedNamespace(sessionNamespace || undefined)) ?? "",
+          ),
+        );
         try {
           const response = await postJson(
             target,
             options.serviceId,
             "/engram/v1/lcm/compaction/flush",
-            {
-              sessionKey,
-              // Each entry goes through the SAME resolver as the singular
-              // flush and every other delegate call, so a batch cannot widen
-              // scope where a one-at-a-time flush would refuse.
-              namespaces: await Promise.all(
-                namespaces.map(async (sessionNamespace) =>
-                  (await capability.resolveScopedNamespace(sessionNamespace || undefined)) ?? "",
-                ),
-              ),
-            },
+            { sessionKey, namespaces: requestNamespaces },
             remainingTimeout(),
           );
           if (response === null) {
@@ -682,12 +681,11 @@ export function registerDelegateRuntime(
           const isBatchResponse =
             Array.isArray(responseNamespaces) &&
             Array.isArray(responseResults) &&
-            responseNamespaces.length === namespaces.length &&
+            responseNamespaces.length === requestNamespaces.length &&
             responseNamespaces.every(
-              (responseNamespace, index) =>
-                responseNamespace === (namespaces[index] ?? ""),
+              (responseNamespace, index) => responseNamespace === requestNamespaces[index],
             ) &&
-            responseResults.length === namespaces.length;
+            responseResults.length === requestNamespaces.length;
           if (!isBatchResponse) {
             invalidateCachedBatchFlushSupport();
             return flushIndividually();

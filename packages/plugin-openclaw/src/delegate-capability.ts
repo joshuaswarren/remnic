@@ -118,6 +118,13 @@ export type DelegateCapabilityOptions = {
 };
 
 const HEALTH_CACHE_TTL_MS = 30_000;
+/**
+ * Candidate headroom for the delegate search: this side drops artifact paths
+ * and sub-`minScore` hits after the daemon ranks, so the request asks for more
+ * than the caller's budget and the cap is applied to the filtered list.
+ */
+const SEARCH_HEADROOM_FACTOR = 3;
+const SEARCH_HEADROOM_CEILING = 200;
 // A failing probe backs off instead of retrying on every hook, so a daemon
 // that is down or rejecting the token cannot turn each turn into a request.
 const HEALTH_FAILURE_BACKOFF_MS = 5_000;
@@ -278,7 +285,13 @@ export function createDelegateMemoryCapability(
         }
         const payload: unknown = await response.json();
         const healthPayload = asRecord(payload);
-        if (healthPayload) {
+        if (!healthPayload) {
+          // A 200 carrying a non-record body is a protocol failure, not a
+          // success: without a backoff every later refresh would re-fetch
+          // immediately and hammer a persistently malformed daemon.
+          throw new Error("daemon /engram/v1/health returned a malformed envelope");
+        }
+        {
           health = readHealth(healthPayload);
           healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
           lastHealthFailure = undefined;
@@ -321,6 +334,19 @@ export function createDelegateMemoryCapability(
     // the daemon schema's `maxResults >= 1` and turn a valid no-results request
     // into a 400 purely by switching bridge mode.
     if (opts?.maxResults === 0) return [];
+    // Cap-after-filter (AGENTS.md retrieval contract): artifact paths and
+    // minScore are dropped on this side, so asking the daemon for exactly
+    // `maxResults` would let a few artifact hits shrink — or empty — a page
+    // that has valid lower-ranked memories behind it. Ask for headroom, then
+    // cap the FILTERED list.
+    const requestedResults =
+      typeof opts?.maxResults === "number" && Number.isFinite(opts.maxResults)
+        ? Math.max(1, Math.floor(opts.maxResults))
+        : undefined;
+    const candidateResults =
+      requestedResults === undefined
+        ? undefined
+        : Math.min(SEARCH_HEADROOM_CEILING, requestedResults * SEARCH_HEADROOM_FACTOR);
     // An empty namespace means "the daemon's default", but the daemon reads an
     // ABSENT namespace as a principal-wide fan-out. Send the concrete default
     // health reports so a default-scoped session cannot see other namespaces.
@@ -338,7 +364,7 @@ export function createDelegateMemoryCapability(
       headers: { ...daemonAuthHeaders(target), "Content-Type": "application/json" },
       body: JSON.stringify({
         query,
-        ...(typeof opts?.maxResults === "number" ? { maxResults: opts.maxResults } : {}),
+        ...(candidateResults === undefined ? {} : { maxResults: candidateResults }),
         // Same override mapping the embedded manager applies, so a host asking
         // for vector or lexical ranking gets the same semantics in either mode.
         mode: searchMode,
@@ -388,6 +414,7 @@ export function createDelegateMemoryCapability(
         source: isSessionsMemoryPath(citation) ? "sessions" : "memory",
         citation,
       });
+      if (requestedResults !== undefined && results.length >= requestedResults) break;
     }
     return results;
   };
