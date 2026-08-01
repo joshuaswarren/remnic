@@ -80,17 +80,23 @@ All three gates must pass before `auto` delegates:
 
 1. **Same host.** The daemon endpoint must be loopback. A matching absolute
    `memoryDir` string proves nothing across machines, and delegate mode's
-   local-corpus reads only hold on one host. Explicit `delegate` may still
-   target a remote daemon; `auto` may not.
+   local-corpus reads only hold on one host. A wildcard bind (`0.0.0.0`, `::`)
+   names every interface on *this* host, so it counts as same-host and is
+   dialed through the matching loopback. Explicit `delegate` may still target a
+   remote daemon; `auto` may not, and a remote daemon never enables the
+   file-backed surfaces (reads, public artifacts) even in explicit mode.
 2. **Liveness.** A daemon PID file, an installed launchd/systemd unit (user or
    system), or a loopback endpoint is only a hint — PIDs go stale and get
    reused — so the configured endpoint must actually answer.
-3. **Corpus identity.** The daemon must report the same `memoryDir`, compared
-   after tilde expansion and `realpath` so two symlink spellings of one
-   directory match. Delegating to a daemon serving a different corpus would
-   silently redirect every recall and write, so an unknown `memoryDir` (older
-   daemon, or a token without health access) counts as a mismatch and stays
-   embedded.
+3. **Corpus identity.** The daemon must report either the configured
+   `memoryDir` itself or one namespace directory beneath it
+   (`<root>/namespaces/<ns>`) — health returns the namespace-resolved storage
+   directory. Both sides are tilde-expanded and canonicalized before the shape
+   is judged, so an aliased ancestor (`/var` vs `/private/var`) matches while a
+   component symlinking out of the corpus does not. A root that is itself a
+   symlink is rejected: it is a mutable trust anchor. An unknown `memoryDir`
+   (older daemon, or a token without health access) counts as a mismatch and
+   stays embedded.
 
 In delegate mode the daemon endpoint comes from the Remnic config's
 `server.host`/`server.port` or the corresponding env vars (default

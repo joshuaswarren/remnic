@@ -462,3 +462,29 @@ test("auto marks its resolution health-verified so the caller skips a second pro
     await stub.close();
   }
 });
+
+test("auto treats a wildcard daemon bind as same-host", async () => {
+  // `server.host: "0.0.0.0"` is the documented daemon bind; classifying it as
+  // remote would leave auto embedded beside a same-host daemon on one corpus.
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR });
+  try {
+    for (const bind of ["0.0.0.0", "::"]) {
+      const reasons: string[] = [];
+      const resolved = withDaemonEnv(stub.port, () => {
+        process.env.REMNIC_HOST = bind;
+        return resolveBridgeMode("auto", {
+          memoryDir: MEMORY_DIR,
+          timeoutMs: 5_000,
+          onSkip: (reason) => reasons.push(reason),
+        });
+      });
+      assert.doesNotMatch(reasons.join("\n"), /not loopback/, bind);
+      if (bind === "0.0.0.0") {
+        assert.equal(resolved.mode, "delegate", bind);
+        assert.equal(resolved.daemonHost, "127.0.0.1", "dialed through loopback, not the wildcard");
+      }
+    }
+  } finally {
+    await stub.close();
+  }
+});
