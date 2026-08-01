@@ -7,13 +7,18 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
 
-import { detectDaemonBridgeMode, readDaemonMemoryDirSync, resolveBridgeMode } from "./bridge.js";
+import {
+  checkDaemonHealthSync,
+  detectDaemonBridgeMode,
+  readDaemonMemoryDirSync,
+  resolveBridgeMode,
+} from "./bridge.js";
 
 type HealthStub = {
   port: number;
@@ -26,9 +31,15 @@ type HealthStub = {
 const STUB_SOURCE = `
 import http from "node:http";
 import { parentPort, workerData } from "node:worker_threads";
+let served = 0;
 const server = http.createServer((req, res) => {
-  res.writeHead(workerData.status, { "content-type": "application/json" });
-  res.end(workerData.body);
+  served += 1;
+  // \`warmupResponses\`: answer 503 (readiness gate closed) that many times
+  // before switching to the real body, the way a daemon that is listening but
+  // still warming up behaves.
+  const warming = served <= (workerData.warmupResponses ?? 0);
+  res.writeHead(warming ? 503 : workerData.status, { "content-type": "application/json" });
+  res.end(warming ? JSON.stringify({ ok: false, ready: false }) : workerData.body);
 });
 server.listen(0, "127.0.0.1", () => {
   parentPort.postMessage({ port: server.address().port });
@@ -38,12 +49,20 @@ parentPort.on("message", (message) => {
 });
 `;
 
-async function startHealthStub(body: unknown, status = 200): Promise<HealthStub> {
+async function startHealthStub(
+  body: unknown,
+  status = 200,
+  warmupResponses = 0,
+): Promise<HealthStub> {
   const worker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(STUB_SOURCE)}`),
     {
       type: "module",
-      workerData: { status, body: typeof body === "string" ? body : JSON.stringify(body) },
+      workerData: {
+        status,
+        warmupResponses,
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      },
     } as ConstructorParameters<typeof Worker>[1] & { type: "module" },
   );
   const ready = Promise.withResolvers<number>();
@@ -496,5 +515,84 @@ test("auto treats a wildcard daemon bind as same-host", async () => {
     }
   } finally {
     await stub.close();
+  }
+});
+
+test("a daemon still warming up is waited out, not classified as absent", async () => {
+  // Listening, but the readiness gate is closed for the first few probes -
+  // exactly what OpenClaw sees when the gateway and the service start
+  // together. Giving up here would boot a second orchestrator on its corpus.
+  const stub = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" },
+    200,
+    3,
+  );
+  try {
+    const health = withDaemonEnv(stub.port, () =>
+      readDaemonMemoryDirSync("127.0.0.1", stub.port, 5_000),
+    );
+    assert.deepEqual(health, { healthy: true, memoryDir: MEMORY_DIR });
+  } finally {
+    await stub.close();
+  }
+});
+
+test("a daemon that never opens its readiness gate stays unhealthy", async () => {
+  // The retry is bounded by the SAME preflight deadline: a permanently
+  // unready daemon must not hold registration open past its budget.
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR }, 200, 1_000);
+  const started = Date.now();
+  try {
+    const healthy = withDaemonEnv(stub.port, () =>
+      checkDaemonHealthSync("127.0.0.1", stub.port, 1_200),
+    );
+    assert.equal(healthy, false);
+    assert.ok(Date.now() - started < 4_000, "gives up inside the deadline");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("host and port come from ONE config file, never spliced across two", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-split-config-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-split-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  // The cwd file wins as a WHOLE, the way the standalone server selects it.
+  // Splicing would produce 127.0.0.9:4999 - an endpoint in no file at all.
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { host: "127.0.0.9" } }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { host: "127.0.0.5", port: 4999 } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    // No REMNIC_HOST/PORT: the config files are the only endpoint source here.
+    const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+    for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+    let bridge;
+    try {
+      bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR });
+    } finally {
+      for (const [key, value] of priorEnv) {
+        if (value === undefined) Reflect.deleteProperty(process.env, key);
+        else process.env[key] = value;
+      }
+    }
+    assert.equal(bridge.daemonHost, "127.0.0.9", "the selected file's host");
+    assert.equal(bridge.daemonPort, 4318, "and its DEFAULT port, not the other file's");
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
   }
 });

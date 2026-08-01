@@ -140,6 +140,9 @@ type HealthRequest = (
 ) => HealthWorkerRequest;
 
 export function runHealthWorker(request: HealthRequest, data: HealthWorkerData): void {
+  // Inlined rather than closed over: the worker runs this function's SOURCE,
+  // so it can reference nothing from this module.
+  const READINESS_RETRY_MS = 250;
   const view = new Int32Array(data.state);
   let completed = false;
 
@@ -211,6 +214,17 @@ export function runHealthWorker(request: HealthRequest, data: HealthWorkerData):
             finish(true);
           } else if (statusCode === 404 && fallbackPath) {
             probe(fallbackPath, null);
+          } else if (statusCode === 503) {
+            // The daemon is listening but its readiness gate is still closed
+            // (deferred warmup). When the gateway and the service start
+            // together this is a matter of seconds - treating it as "no
+            // daemon" would start a second orchestrator on its corpus. Retry
+            // within the SAME preflight deadline the caller already budgeted.
+            if (Date.now() + READINESS_RETRY_MS >= data.deadline) {
+              finish(false);
+              return;
+            }
+            setTimeout(() => probe(pathname, fallbackPath), READINESS_RETRY_MS);
           } else {
             finish(false);
           }
@@ -482,22 +496,44 @@ function readDaemonHost(): string {
   return loopbackForWildcardBind(resolved) ?? resolved;
 }
 
+/**
+ * The `server` block of the ONE config file the daemon would have booted from.
+ *
+ * The standalone server selects a single file (`resolveConfigPath`) and takes
+ * every field from it, defaulting whatever that file omits. Scanning the whole
+ * candidate list per field would synthesize an endpoint that exists in no
+ * file — a cwd config's host with a home config's port — and `auto` would then
+ * probe a port nothing is listening on and start a second orchestrator beside
+ * the running daemon. A malformed selected file yields no fields, exactly as
+ * it yields the daemon nothing.
+ */
+function readDaemonServerConfig(): { host?: string; port?: number } {
+  for (const candidate of configPathCandidates()) {
+    if (!fileExists(candidate)) continue;
+    try {
+      const raw: unknown = JSON.parse(fs.readFileSync(candidate, "utf8"));
+      const server = (raw as { server?: unknown } | null)?.server;
+      if (typeof server !== "object" || server === null || Array.isArray(server)) return {};
+      const { host, port } = server as { host?: unknown; port?: unknown };
+      return {
+        ...(typeof host === "string" && host.trim() !== "" ? { host } : {}),
+        ...(coerceDaemonPort(port) === undefined ? {} : { port: coerceDaemonPort(port) }),
+      };
+    } catch {
+      // Unparseable: it names no endpoint at all, so it is not the file the
+      // daemon booted from. Continue - but note this is the ONLY reason to
+      // look further; a file that parses supplies every field or defaults it.
+      continue;
+    }
+  }
+  return {};
+}
+
 function readConfiguredDaemonHost(): string {
   const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
   if (envHost !== undefined && envHost.trim() !== "") return normalizeDaemonHost(envHost);
-  for (const p of configPathCandidates()) {
-    if (!fs.existsSync(p)) continue;
-    try {
-      const raw = JSON.parse(fs.readFileSync(p, "utf8"));
-      const configHost = raw.server?.host;
-      if (typeof configHost === "string" && configHost.trim() !== "") {
-        return normalizeDaemonHost(configHost);
-      }
-    } catch {
-      // Ignore malformed config files and continue to the next candidate.
-    }
-  }
-  return DEFAULT_HOST;
+  const configHost = readDaemonServerConfig().host;
+  return configHost === undefined ? DEFAULT_HOST : normalizeDaemonHost(configHost);
 }
 
 /**
@@ -506,18 +542,7 @@ function readConfiguredDaemonHost(): string {
 function readDaemonPort(): number {
   const envPort = coerceDaemonPort(readCompatEnv("REMNIC_PORT", "ENGRAM_PORT"));
   if (envPort !== undefined) return envPort;
-
-  for (const p of configPathCandidates()) {
-    if (!fs.existsSync(p)) continue;
-    try {
-      const raw = JSON.parse(fs.readFileSync(p, "utf8"));
-      const configPort = coerceDaemonPort(raw.server?.port);
-      if (configPort !== undefined) return configPort;
-    } catch {
-      // Ignore malformed config files and continue to the next candidate.
-    }
-  }
-  return DEFAULT_PORT;
+  return readDaemonServerConfig().port ?? DEFAULT_PORT;
 }
 
 /** What a caller may ask for; `auto` defers to same-host daemon detection. */
