@@ -73,6 +73,9 @@ function runHook(event, input, { port, home, env = {} } = {}) {
         OPENCLAW_ENGRAM_ACCESS_TOKEN: "",
         REMNIC_AUTH_TOKEN: "",
         ENGRAM_AUTH_TOKEN: "",
+        // Internal worker-propagation channel, not a user credential. Pinned
+        // so an inherited value cannot reach the detached observe worker.
+        REMNIC_HOOK_TOKEN: "",
         ...env.extra,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -847,4 +850,50 @@ test("runner source: path inputs are type-validated before use (#1518 validate p
     /const transcriptPath = input\.transcript_path \|\| ""/,
     "transcript_path must be defaulted to empty string",
   );
+});
+
+test("token resolution: REMNIC_AUTH_TOKEN outranks ENGRAM_AUTH_TOKEN when both are set", async () => {
+  const home = mkHome();
+  const { server, port, seen } = await authEnvServer();
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "sBothCanonical", cwd: home },
+      {
+        port,
+        home,
+        env: {
+          token: null,
+          extra: { REMNIC_AUTH_TOKEN: "current-tok", ENGRAM_AUTH_TOKEN: "legacy-tok" },
+        },
+      },
+    );
+    assert.equal(seen.health, "Bearer current-tok");
+    assert.equal(seen.recall, "Bearer current-tok");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("health probe uses the same bearer as the operation it gates", async () => {
+  const home = mkHome();
+  const { server, port, seen } = await authEnvServer();
+  try {
+    // REMNIC_HOOK_TOKEN is the detached observe worker's internal propagation
+    // channel; the foreground handlers never read it. If the probe consulted
+    // it, an inherited value would authenticate health with one bearer while
+    // recall sent another — a false "healthy" followed by a 401, or the
+    // reverse. Probe and operation must carry one snapshot.
+    await runHook(
+      "session-start",
+      { session_id: "sSnapshot", cwd: home },
+      { port, home, env: { extra: { REMNIC_HOOK_TOKEN: "inherited-worker-tok" } } },
+    );
+    assert.equal(seen.health, "Bearer test-token");
+    assert.equal(seen.recall, seen.health);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

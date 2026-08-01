@@ -86,6 +86,11 @@ hook needs one of these: every route, including `/engram/v1/health`, returns
 401 without a bearer, so an unauthenticated hook reports `daemon not running`
 and silently skips auto-recall and auto-observe.
 
+`REMNIC_HOOK_TOKEN` is not part of this chain — it is an internal channel the
+foreground hook uses to hand its already-resolved token to the detached
+observe worker, so the worker does not re-read the token store. Nothing in
+the foreground path reads it.
+
 ### Namespace targeting
 
 `REMNIC_NAMESPACE`, then legacy `ENGRAM_NAMESPACE` — optional. When set, the
