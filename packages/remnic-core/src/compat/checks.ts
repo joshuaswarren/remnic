@@ -4,8 +4,7 @@ import type { CompatCheckOptions, CompatCheckResult, CompatReport, CompatRunner 
 import { compareVersions } from "../version-utils.js";
 import { launchProcess } from "../runtime/child-process.js";
 
-const REQUIRED_HOOKS_LEGACY = ["before_agent_start", "agent_end"];
-const REQUIRED_HOOKS_NEW = ["before_prompt_build", "agent_end"];
+const REQUIRED_HOOKS = ["before_prompt_build", "agent_end"];
 const OPENCLAW_REMNIC_PLUGIN_ID = "openclaw-remnic";
 const OPENCLAW_REMNIC_LEGACY_PLUGIN_ID = "openclaw-engram";
 
@@ -698,22 +697,16 @@ export async function runCompatChecks(options: CompatCheckOptions): Promise<Comp
     const indexRaw = await readFile(indexPath, "utf-8");
     const structuralSource = stripCommentsAndStrings(indexRaw);
     const hooks = parseHookRegistrations(indexRaw);
-    const missingLegacy = REQUIRED_HOOKS_LEGACY.filter((hook) => !hooks.has(hook));
-    const missingNew = REQUIRED_HOOKS_NEW.filter((hook) => !hooks.has(hook));
+    const missingHooks = REQUIRED_HOOKS.filter((hook) => !hooks.has(hook));
     // registerMemoryPromptSection is a valid alternative to the recall hook only
     // when it is registered on the OpenClaw plugin API object.
     const hasMemoryPromptSection = hasMemoryPromptSectionRegistration(structuralSource);
-    const missingLegacyAdj = hasMemoryPromptSection
-      ? missingLegacy.filter((h) => h !== "before_agent_start")
-      : missingLegacy;
-    const missingNewAdj = hasMemoryPromptSection
-      ? missingNew.filter((h) => h !== "before_prompt_build")
-      : missingNew;
-    // Accept whichever hook set has fewer missing entries
-    const missingHooks = missingNewAdj.length <= missingLegacyAdj.length ? missingNewAdj : missingLegacyAdj;
+    const missingRequiredHooks = hasMemoryPromptSection
+      ? missingHooks.filter((hook) => hook !== "before_prompt_build")
+      : missingHooks;
     const hasGatewayStartHook = hooks.has("gateway_start");
     const hasServiceStart = hasServiceStartRegistration(structuralSource);
-    if (missingHooks.length === 0 && (hasGatewayStartHook || hasServiceStart)) {
+    if (missingRequiredHooks.length === 0 && (hasGatewayStartHook || hasServiceStart)) {
       checks.push({
         id: "hook-registration-core",
         title: "Core hook registration",
@@ -722,8 +715,8 @@ export async function runCompatChecks(options: CompatCheckOptions): Promise<Comp
       });
     } else {
       const missingParts: string[] = [];
-      if (missingHooks.length > 0) {
-        missingParts.push(`hooks: ${missingHooks.join(", ")}`);
+      if (missingRequiredHooks.length > 0) {
+        missingParts.push(`hooks: ${missingRequiredHooks.join(", ")}`);
       }
       if (!hasGatewayStartHook && !hasServiceStart) {
         missingParts.push("startup wiring: gateway_start hook or api.registerService({ start })");
@@ -733,7 +726,7 @@ export async function runCompatChecks(options: CompatCheckOptions): Promise<Comp
         title: "Core hook registration",
         level: "error",
         message: `Missing expected registration(s): ${missingParts.join("; ")}`,
-        remediation: "Ensure src/index.ts registers before_prompt_build (or before_agent_start) and agent_end, plus either gateway_start or api.registerService({ start }).",
+        remediation: "Ensure src/index.ts registers before_prompt_build and agent_end, plus either gateway_start or api.registerService({ start }).",
       });
     }
 

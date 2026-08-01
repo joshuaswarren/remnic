@@ -176,7 +176,7 @@ High-confidence memories in decision/correction/principle/commitment categories 
 
 ```typescript
 api.registerService({ start })  // Initialize orchestrator and storage (service lifecycle)
-api.on("before_agent_start")    // Inject memory context into system prompt
+api.on("before_prompt_build")   // Inject memory context into system prompt
 api.on("agent_end")             // Buffer the completed turn
 api.registerTool()              // memory_search, memory_store, etc.
 api.registerCommand()           // CLI: openclaw engram <command>

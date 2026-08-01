@@ -26,7 +26,7 @@ async function writeHealthyFixture(baseDir: string): Promise<void> {
   await writeFile(
     path.join(baseDir, "src", "index.ts"),
     [
-      'api.on("before_agent_start", async () => {});',
+      'api.on("before_prompt_build", async () => {});',
       'api.on("agent_end", async () => {});',
       "registerCli(api as unknown as Foo, orchestrator);",
       "api.registerService({ id: \"openclaw-engram\", start: async () => {}, stop: () => {} });",

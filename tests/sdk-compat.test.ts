@@ -241,9 +241,8 @@ test("registerMemoryCapability alone implies isNewSdk", () => {
 test("registerMemoryCapability without registerMemoryPromptSection still routes to new hook system", () => {
   // New SDK (>=2026.4.5) exposes registerMemoryCapability but drops the
   // deprecated registerMemoryPromptSection. hasNewHookSystem must still be
-  // true so index.ts registers before_prompt_build instead of the legacy
-  // before_agent_start hook. Otherwise cachedMemoryBySession never gets
-  // populated on the new SDK and memory injection silently breaks.
+  // true so index.ts registers before_prompt_build and populates
+  // cachedMemoryBySession on capability-only SDKs.
   const api: Record<string, unknown> = {
     on: () => {},
     registerMemoryCapability: () => {},

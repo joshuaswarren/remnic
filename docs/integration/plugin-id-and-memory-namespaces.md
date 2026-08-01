@@ -25,7 +25,7 @@ plugins.slots.memory === <plugin id>
 
 If this condition is not met for a given plugin, OpenClaw skips calling `register(api)` entirely. As a result:
 - `gateway_start` never fires
-- `before_agent_start` never fires
+- `before_prompt_build` never fires
 - `agent_end` never fires
 - No memory is stored or recalled
 

@@ -6,8 +6,7 @@
  * daemon's HTTP API — the same surface the Claude Code / Codex hooks and the
  * pi extension already use:
  *
- *   - memory injection    → POST /engram/v1/recall (before_prompt_build or
- *                           legacy before_agent_start)
+ *   - memory injection    → POST /engram/v1/recall (before_prompt_build)
  *   - turn capture        → POST /engram/v1/observe (agent_end, last turn)
  *   - compaction/reset    → POST /engram/v1/lcm/compaction/flush
  *
@@ -454,7 +453,6 @@ export function registerDelegateRuntime(
     const useSectionBuilder = typeof api.registerMemoryPromptSection === "function";
 
     const recallHandler = async (
-      hook: "before_prompt_build" | "before_agent_start",
       event: Record<string, unknown>,
       ctx: Record<string, unknown>,
     ): Promise<Record<string, unknown> | undefined> => {
@@ -515,28 +513,15 @@ export function registerDelegateRuntime(
           promptLinesBySession.set(sessionKey, rendered.lines);
           return undefined;
         }
-        // Embedded parity: before_prompt_build consumes ONLY
-        // prependSystemContext (returning both keys could double-inject on
-        // hosts that honor both); the legacy before_agent_start path returns
-        // the dual-field shape.
-        return hook === "before_prompt_build"
-          ? { prependSystemContext: prompt }
-          : { prependSystemContext: prompt, prependContext: prompt };
+        return { prependSystemContext: prompt };
       } catch (err) {
         log.warn(`delegate recall failed: ${String(err)}`);
         return undefined;
       }
     };
-    // Register on the modern hook AND the legacy hook: gateways emit one or
-    // the other, never both, so dual registration cannot double-inject.
     api.on(
       "before_prompt_build",
-      (event, ctx) => recallHandler("before_prompt_build", event, ctx),
-      { timeoutMs: options.hookTimeoutMs },
-    );
-    api.on(
-      "before_agent_start",
-      (event, ctx) => recallHandler("before_agent_start", event, ctx),
+      (event, ctx) => recallHandler(event, ctx),
       { timeoutMs: options.hookTimeoutMs },
     );
     if (useSectionBuilder && api.registerMemoryPromptSection) {

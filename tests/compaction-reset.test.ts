@@ -205,7 +205,7 @@ test("workspace override Map cleanup runs even when feature is disabled", () => 
   const overrides = new Map<string, string>();
   const compactionResetEnabled = false;
 
-  // Simulate before_agent_start setting override
+  // Simulate the prompt hook setting the override
   overrides.set("session-x", "/workspace/agent-x");
 
   // Simulate recall — always clean up, regardless of feature flag

@@ -1148,7 +1148,7 @@ With Engram:
 ```
 
 The plugin:
-1. **Injects memory** - On `before_agent_start`, searches for relevant memories and adds to system prompt
+1. **Injects memory** - On `before_prompt_build`, searches for relevant memories and adds to the system prompt
 2. **Buffers turns** - On `agent_end`, captures the user/assistant exchange
 3. **Extracts facts** - Uses GPT-5.2 to extract facts, entities, and profile updates
 4. **Stores memories** - Persists to markdown files with YAML frontmatter
@@ -1496,18 +1496,18 @@ api.on("gateway_start", async () => {
 });
 ```
 
-### before_agent_start
+### before_prompt_build
 
-Inject memory context into agent's system prompt.
+Inject memory context into the agent's system prompt.
 
 ```typescript
-api.on("before_agent_start", async (event, ctx) => {
+api.on("before_prompt_build", async (event, ctx) => {
   const prompt = event.prompt;
   const context = await orchestrator.recall(prompt);
 
   if (context) {
     return {
-      systemPrompt: `## Memory Context (Engram)\n\n${context}`
+      prependSystemContext: `## Memory Context (Remnic)\n\n${context}`
     };
   }
 });
@@ -1965,7 +1965,7 @@ packages/remnic-core/src/
 ### Integration Points
 
 - `api.on("gateway_start")` — initialize orchestrator
-- `api.on("before_agent_start")` — inject memory context
+- `api.on("before_prompt_build")` — inject memory context
 - `api.on("agent_end")` — buffer turn for extraction
 - `api.registerTool()` — memory search, stats, etc.
 - `api.registerCommand()` — CLI interface

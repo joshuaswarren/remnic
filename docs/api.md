@@ -770,5 +770,5 @@ The v1 API is stable. Breaking changes will use a new path prefix (e.g., `/engra
 | Hook | When it fires | What Engram does |
 |------|--------------|-----------------|
 | `gateway_start` | Gateway process starts | Initialize storage, probe QMD, load buffer |
-| `before_agent_start` | Before each agent session | Recall relevant memories, inject into system prompt |
+| `before_prompt_build` | Before prompt construction | Recall relevant memories, inject into system prompt |
 | `agent_end` | After each agent turn | Buffer the turn, maybe trigger extraction |

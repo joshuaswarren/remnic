@@ -656,7 +656,7 @@ export class Orchestrator {
 
   /**
    * Per-session workspace selections keyed by sessionKey.
-   * Set by the before_agent_start hook so recall() uses the correct
+   * Set by the before_prompt_build hook so recall() uses the correct
    * agent workspace for BOOT.md injection. Cleared after each recall.
    * Using a Map prevents concurrent sessions from overwriting each other.
    */

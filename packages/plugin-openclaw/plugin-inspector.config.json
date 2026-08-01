@@ -15,7 +15,6 @@
     "expect": {
       "hooks": [
         "before_prompt_build",
-        "before_agent_start",
         "agent_end",
         "before_compaction",
         "after_compaction",
