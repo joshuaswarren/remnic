@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createMemoryReadScope } from "./memory-read-scope.js";
+import { createMemoryReadScope, isSessionsMemoryPath } from "./memory-read-scope.js";
 
 async function makeCorpus(): Promise<{
   memoryDir: string;
@@ -214,4 +214,23 @@ test("the injected canonicalizer is used for both roots and reads", async () => 
     seen.includes(path.join(memoryDir, "facts", "alice.md")),
     "read canonicalization goes through the seam",
   );
+});
+
+test("isSessionsMemoryPath classifies session transcripts on either separator", () => {
+  for (const relative of [
+    "sessions/2026-01-01.md",
+    "sessions\\2026-01-01.md",
+    path.join("nested", "sessions", "a.md"),
+    "Sessions/a.md",
+  ]) {
+    assert.equal(isSessionsMemoryPath(relative), true, relative);
+  }
+  for (const relative of [
+    "facts/alice.md",
+    "sessions.md",
+    "my-sessions/a.md",
+    path.join("facts", "sessions-notes.md"),
+  ]) {
+    assert.equal(isSessionsMemoryPath(relative), false, relative);
+  }
 });

@@ -53,6 +53,17 @@ export type MemoryReadScope = {
 }
 
 /**
+ * Whether a memory-root-relative path lives under a session transcript
+ * directory, which the host runtime reports as a distinct search `source`.
+ *
+ * `relativizeToMemoryRoot` emits platform separators, so a literal
+ * `includes("sessions/")` silently classifies every Windows hit as `memory`.
+ */
+export function isSessionsMemoryPath(relativePath: string): boolean {
+  return /(?:^|[\\/])sessions[\\/]/i.test(relativePath);
+}
+
+/**
  * Containment predicate shared by every check below: `path.relative` yields
  * `""` for the root itself, a `..`-prefixed path for an escape, and an
  * absolute path when the two live on different Windows volumes.

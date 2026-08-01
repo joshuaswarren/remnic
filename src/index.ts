@@ -79,7 +79,10 @@ import {
   extractLastTurn,
   extractTextContent,
 } from "../packages/plugin-openclaw/src/transcript-turns.js";
-import { createMemoryReadScope } from "../packages/plugin-openclaw/src/memory-read-scope.js";
+import {
+  createMemoryReadScope,
+  isSessionsMemoryPath,
+} from "../packages/plugin-openclaw/src/memory-read-scope.js";
 import type {
   RemnicCapabilityRuntime,
   RuntimeReadParams,
@@ -3559,7 +3562,7 @@ const pluginDefinition = {
                         : typeof candidate.text === "string"
                           ? candidate.text
                           : "",
-                    source: normalizedPath.includes("sessions/") ? "sessions" : "memory",
+                    source: isSessionsMemoryPath(normalizedPath) ? "sessions" : "memory",
                     citation: normalizedPath,
                   };
                 })
