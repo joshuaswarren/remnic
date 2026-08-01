@@ -220,6 +220,12 @@ function onPath(bin) {
 }
 
 // ── token resolution (per-plugin token store, then env) ────────────────────
+// Env precedence mirrors loadDaemonAuth() in @remnic/plugin-openclaw: the
+// connector-scoped OPENCLAW_* names first, then the canonical daemon
+// credential REMNIC_AUTH_TOKEN and its legacy ENGRAM_AUTH_TOKEN alias. The
+// canonical pair matters because the documented standalone-server setup
+// authenticates the daemon with REMNIC_AUTH_TOKEN alone and never mints a
+// connector token.
 function resolveToken() {
   for (const file of [
     path.join(HOME, ".remnic", "tokens.json"),
@@ -246,6 +252,8 @@ function resolveToken() {
   return (
     process.env.OPENCLAW_REMNIC_ACCESS_TOKEN ||
     process.env.OPENCLAW_ENGRAM_ACCESS_TOKEN ||
+    process.env.REMNIC_AUTH_TOKEN ||
+    process.env.ENGRAM_AUTH_TOKEN ||
     ""
   );
 }
@@ -336,6 +344,12 @@ function httpPost(urlPath, token, bodyObj, timeoutMs) {
 
 function httpHealthy(timeoutMs) {
   if (DAEMON_URL === null) return Promise.resolve(false);
+  // When the daemon has an auth token configured, every route — including
+  // /engram/v1/health — returns 401 to unauthenticated requests, so an
+  // unauthenticated probe makes the hook wrongly report "daemon not running"
+  // and skip recall/observe. Send the same bearer token the observe/flush
+  // POSTs use. Unauthenticated daemons ignore the header.
+  const token = process.env.REMNIC_HOOK_TOKEN || resolveToken();
   const transport = DAEMON_URL.protocol === "https:" ? https : http;
   return new Promise((resolve) => {
     const req = transport.request(
@@ -345,6 +359,7 @@ function httpHealthy(timeoutMs) {
         port: DAEMON_URL.port || (DAEMON_URL.protocol === "https:" ? 443 : 80),
         path: DAEMON_BASE_PATH + "/engram/v1/health",
         method: "GET",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       },
       (res) => {
         res.resume();

@@ -48,12 +48,12 @@ function mkHome() {
 // stays free to answer the runner's requests while it runs.
 function runHook(event, input, { port, home, env = {} } = {}) {
   return new Promise((resolve) => {
-    // When a test asks for "no token" (env.token === null) we must clear BOTH
-    // token env vars — the runner's resolveToken() falls through from
-    // OPENCLAW_REMNIC_ACCESS_TOKEN to OPENCLAW_ENGRAM_ACCESS_TOKEN, and the
-    // parent process (a real dev shell) often has the latter set, which
-    // previously leaked through `...process.env` and made the no-token
-    // assertions fail outside CI (#1571 test-harness hygiene).
+    // Every env name resolveToken() consults is pinned below — including the
+    // canonical REMNIC_AUTH_TOKEN / ENGRAM_AUTH_TOKEN pair — so a value from
+    // the parent process (a real dev shell, or CI authenticating a local
+    // daemon) cannot leak through `...process.env` and make the no-token
+    // assertions fail outside CI (#1571 test-harness hygiene). Tests that want
+    // a specific name set it via env.extra, which spreads last.
     const noToken = env.token === null;
     const child = spawn(process.execPath, [RUNNER, event], {
       env: {
@@ -65,7 +65,9 @@ function runHook(event, input, { port, home, env = {} } = {}) {
         REMNIC_PORT: String(port),
         REMNIC_CODEX_MATERIALIZE: "0",
         OPENCLAW_REMNIC_ACCESS_TOKEN: noToken ? "" : env.token || "test-token",
-        OPENCLAW_ENGRAM_ACCESS_TOKEN: noToken ? "" : "",
+        OPENCLAW_ENGRAM_ACCESS_TOKEN: "",
+        REMNIC_AUTH_TOKEN: "",
+        ENGRAM_AUTH_TOKEN: "",
         // Clear daemon URL env so a developer shell with REMNIC_DAEMON_URL set
         // can't route tests away from the mock server. Tests that WANT a daemon
         // URL override it via env.extra (which spreads last).
@@ -1087,6 +1089,107 @@ test("pre-compact: REMNIC_PRECOMPACT_LOCK_RETRIES=0 still takes a FREE lock (doe
     // Lock was FREE → acquired on the single attempt → drain + flush ran.
     assert.ok(calls.some((c) => c.url === "/engram/v1/lcm/compaction/flush"), "flush ran (free lock taken despite 0 retries)");
     assert.ok(calls.some((c) => c.url === "/engram/v1/observe"), "tail drain ran (free lock taken despite 0 retries)");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ── daemon auth: health probe + canonical env credentials ──────────────────
+// An auth-gated daemon 401s EVERY route, including /engram/v1/health. An
+// unauthenticated probe therefore makes the hook report "daemon not running"
+// and skip recall/observe entirely. The credential itself has to be findable:
+// the documented standalone-server setup authenticates the daemon with
+// REMNIC_AUTH_TOKEN and never mints a connector token, so resolveToken() must
+// accept the canonical names as well as the connector-scoped OPENCLAW_* pair.
+
+function authServer() {
+  const seen = { health: "unset", recall: "unset" };
+  return startServer((req, res) => {
+    if (req.url === "/engram/v1/health") {
+      seen.health = req.headers.authorization || null;
+      return res.writeHead(200).end("ok");
+    }
+    if (req.url === "/engram/v1/recall") {
+      seen.recall = req.headers.authorization || null;
+      return res
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({ context: "ctx", count: 1, mode: "auto" }));
+    }
+    res.writeHead(404).end();
+  }).then((started) => ({ ...started, seen }));
+}
+
+test("session-start: health probe carries the bearer token (auth-gated daemons)", async () => {
+  const home = mkHome();
+  const { server, port, seen } = await authServer();
+  try {
+    await runHook("session-start", { session_id: "sAuth", cwd: home }, { port, home });
+    assert.equal(seen.health, "Bearer test-token");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+for (const name of ["REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN"]) {
+  test(`token resolution: ${name} authenticates health and recall (no token store)`, async () => {
+    const home = mkHome();
+    const { server, port, seen } = await authServer();
+    try {
+      const res = await runHook(
+        "session-start",
+        { session_id: "sEnv", cwd: home },
+        { port, home, env: { token: null, extra: { [name]: "operator-secret" } } },
+      );
+      assert.equal(seen.health, "Bearer operator-secret");
+      assert.equal(seen.recall, "Bearer operator-secret");
+      assert.doesNotMatch(
+        res.json.hookSpecificOutput.additionalContext,
+        /daemon not running/,
+        "an authenticated daemon must not be reported as down",
+      );
+    } finally {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+}
+
+test("token resolution: OPENCLAW_REMNIC_ACCESS_TOKEN outranks REMNIC_AUTH_TOKEN", async () => {
+  const home = mkHome();
+  const { server, port, seen } = await authServer();
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "sPrec", cwd: home },
+      { port, home, env: { token: "connector-tok", extra: { REMNIC_AUTH_TOKEN: "operator-secret" } } },
+    );
+    // Mirrors loadDaemonAuth() in @remnic/plugin-openclaw: connector-scoped
+    // names win, so adding the canonical pair cannot change an install that
+    // already worked.
+    assert.equal(seen.health, "Bearer connector-tok");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("token resolution: tokens.json still outranks REMNIC_AUTH_TOKEN", async () => {
+  const home = mkHome();
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, ".remnic", "tokens.json"),
+    JSON.stringify({ tokens: [{ connector: "codex-cli", token: "codex-tok" }] }),
+  );
+  const { server, port, seen } = await authServer();
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "sStore", cwd: home },
+      { port, home, env: { token: null, extra: { REMNIC_AUTH_TOKEN: "operator-secret" } } },
+    );
+    assert.equal(seen.health, "Bearer codex-tok");
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });

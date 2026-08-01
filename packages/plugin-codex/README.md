@@ -107,9 +107,19 @@ export REMNIC_DAEMON_URL="http://macstudio.tail-XXXX.ts.net:4318"
   namespace to the compaction flush (parity with `@remnic/plugin-pi`'s
   `config.namespace`). Unset → the daemon resolves the default namespace.
 
-The bearer token still comes from the per-plugin token store
-(`remnic connectors install codex-cli` writes `~/.remnic/tokens.json`) or the
-`OPENCLAW_REMNIC_ACCESS_TOKEN` / `OPENCLAW_ENGRAM_ACCESS_TOKEN` env vars.
+The bearer token is resolved in this order:
+
+1. The per-plugin token store — `remnic connectors install codex-cli` writes
+   `~/.remnic/tokens.json`; legacy `~/.engram/tokens.json` is read as a
+   fallback.
+2. `OPENCLAW_REMNIC_ACCESS_TOKEN`, then `OPENCLAW_ENGRAM_ACCESS_TOKEN`.
+3. `REMNIC_AUTH_TOKEN`, then legacy `ENGRAM_AUTH_TOKEN`.
+
+Step 3 covers the standalone-server setup, which authenticates the daemon with
+`REMNIC_AUTH_TOKEN` and never mints a connector token. Against an auth-gated
+daemon the hook needs one of these: every route, including
+`/engram/v1/health`, returns 401 without a bearer, so an unauthenticated hook
+reports `daemon not running` and silently skips auto-recall and auto-observe.
 
 ## Hook trust (one-time review)
 
