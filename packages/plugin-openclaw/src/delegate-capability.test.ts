@@ -575,3 +575,26 @@ test("delegate accepts a daemon serving a namespace under the corpus root", asyn
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("delegate search forwards the host's ranking override", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir), search: { results: [] } });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await manager?.search("q", { qmdSearchModeOverride: "vsearch" });
+    await manager?.search("q", { qmdSearchModeOverride: "query" });
+    await manager?.search("q");
+    const searches = stub.calls
+      .filter((call) => call.pathname.endsWith("/memories/search"))
+      .map((call) => (call.body as { mode?: unknown }).mode);
+    assert.deepEqual(
+      searches,
+      ["vector", "search", undefined],
+      "vsearch is vector ranking, query is the search plan, absent keeps the backend default",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

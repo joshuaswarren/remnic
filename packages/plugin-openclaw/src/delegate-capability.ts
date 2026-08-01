@@ -228,12 +228,23 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
     opts?: RuntimeSearchOptions,
   ): Promise<RuntimeSearchResult[]> => {
     const namespace = await options.resolveSearchNamespace(opts?.sessionKey);
+    // Mirror the embedded manager: "vsearch" is vector ranking, "query" is the
+    // ordinary search plan, anything else is the backend default.
+    const searchMode =
+      opts?.qmdSearchModeOverride === "vsearch"
+        ? "vector"
+        : opts?.qmdSearchModeOverride === "query"
+          ? "search"
+          : undefined;
     const response = await fetch(daemonUrl(target, "/engram/v1/memories/search"), {
       method: "POST",
       headers: { ...daemonAuthHeaders(target), "Content-Type": "application/json" },
       body: JSON.stringify({
         query,
         ...(typeof opts?.maxResults === "number" ? { maxResults: opts.maxResults } : {}),
+        // Same override mapping the embedded manager applies, so a host asking
+        // for vector or lexical ranking gets the same semantics in either mode.
+        ...(searchMode ? { mode: searchMode } : {}),
         ...(namespace ? { namespace } : {}),
       }),
       signal: AbortSignal.timeout(options.searchTimeoutMs),
