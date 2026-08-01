@@ -278,6 +278,23 @@ test("daemonServesCorpus rejects a directory that does not exist or escapes by s
   assert.equal(daemonServesCorpus(memoryDir, escape), false);
 });
 
+test("daemonServesCorpus rejects any descendant that is not a namespace directory", async () => {
+  const { memoryDir } = await makeCorpus();
+  // A daemon independently configured for a nested corpus is NOT this corpus;
+  // accepting it would silently redirect every recall and write into it.
+  const nested = path.join(memoryDir, "archive");
+  const deep = path.join(memoryDir, "namespaces", "team", "extra");
+  await mkdir(nested, { recursive: true });
+  await mkdir(deep, { recursive: true });
+  assert.equal(daemonServesCorpus(memoryDir, nested), false);
+  assert.equal(daemonServesCorpus(memoryDir, deep), false, "only one level under namespaces/");
+  assert.equal(
+    daemonServesCorpus(memoryDir, path.join(memoryDir, "namespaces")),
+    false,
+    "the namespaces container itself is not a namespace corpus",
+  );
+});
+
 test("daemonServesCorpus rejects a foreign, relative, or blank corpus", async () => {
   const { memoryDir, outsideDir } = await makeCorpus();
   assert.equal(daemonServesCorpus(memoryDir, outsideDir), false);

@@ -628,3 +628,49 @@ test("delegate roots reads and artifacts on the daemon's namespace directory", a
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("delegate search sends the daemon's default namespace, never an absent one", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), defaultNamespace: "generalist" },
+    search: { results: [] },
+  });
+  try {
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir, {
+        // A session bound to the default namespace is stored as "", which the
+        // runtime resolver collapses to undefined.
+        resolveSearchNamespace: async () => undefined,
+      }),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await manager?.search("q");
+    const body = stub.calls.find((call) => call.pathname.endsWith("/memories/search"))?.body;
+    assert.deepEqual(
+      body,
+      { query: "q", mode: "search", namespace: "generalist" },
+      "an absent namespace would be a principal-wide fan-out, not the default scope",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate search returns empty for a zero result budget without calling the daemon", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir), search: { results: [] } });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    assert.deepEqual(await manager?.search("q", { maxResults: 0 }), []);
+    assert.equal(
+      stub.calls.some((call) => call.pathname.endsWith("/memories/search")),
+      false,
+      "the daemon schema requires maxResults >= 1, so forwarding 0 would 400 a valid request",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

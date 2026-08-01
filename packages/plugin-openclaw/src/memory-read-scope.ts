@@ -33,25 +33,31 @@ function trimTrailingSeparators(value: string): string {
   return value.slice(0, end);
 }
 
+/** The only descendant layout that still names the configured corpus. */
+const NAMESPACE_STORAGE_SEGMENT = "namespaces";
+
 /**
- * Whether a daemon's reported memory directory belongs to the corpus this
- * plugin is configured for.
+ * Whether a daemon's reported memory directory names the corpus this plugin
+ * is configured for.
  *
- * Deliberately asymmetric and containment-based. `GET /engram/v1/health`
- * reports the NAMESPACE-RESOLVED storage directory, so a deployment whose
- * default namespace has migrated out of the flat root answers
- * `<corpusRoot>/namespaces/<token>` while the plugin is configured with
- * `<corpusRoot>`. Requiring equality would mark that healthy co-located daemon
- * foreign and disable every file-backed surface.
+ * Accepts exactly two shapes: the root itself, or one namespace storage
+ * directory beneath it (`<corpusRoot>/namespaces/<namespace>`).
+ * `GET /engram/v1/health` reports the NAMESPACE-RESOLVED storage directory, so
+ * a deployment whose default namespace has migrated out of the flat root
+ * answers the second shape and requiring equality would mark a healthy
+ * co-located daemon foreign. Any OTHER descendant — say a daemon independently
+ * configured for `<corpusRoot>/archive` — is a different corpus, and accepting
+ * it would silently redirect every recall and write into it.
  *
  * Both sides must be ABSOLUTE. A relative `memoryDir` names a different
  * directory in each process's working directory, so resolving both against the
  * gateway's cwd would manufacture a match between two distinct corpora.
  *
- * Compared lexically first, then by `realpath`, so two symlink spellings of
- * one directory match — otherwise a co-located gateway and daemon on the same
- * files would be judged different and both run, exactly the
- * duplicate-orchestrator deployment this check exists to prevent.
+ * Both sides are canonicalized BEFORE the shape is judged, so two symlink
+ * spellings of one directory match — otherwise a co-located gateway and daemon
+ * on the same files would be judged different and both run, exactly the
+ * duplicate-orchestrator deployment this check exists to prevent — and a
+ * component symlinking out of the corpus cannot masquerade as contained.
  *
  * Fails CLOSED: relative, blank, or unresolvable paths are never a match.
  */
@@ -64,18 +70,19 @@ export function daemonServesCorpus(
   const expandedRoot = expandTildePath(corpusRoot.trim());
   const expandedDaemon = expandTildePath(daemonMemoryDir.trim());
   if (!path.isAbsolute(expandedRoot) || !path.isAbsolute(expandedDaemon)) return false;
-  // Canonicalize BOTH sides FIRST. A lexical accept would admit a path that
-  // merely looks contained while one of its components symlinks to another
-  // corpus — precisely the escape this gate exists to stop. Both must resolve:
-  // an unresolvable path (missing directory, broken link) is never a match.
+  let canonicalRoot: string;
+  let canonicalDaemon: string;
   try {
-    return isContained(
-      trimTrailingSeparators(path.normalize(realpath(path.resolve(expandedRoot)))),
-      trimTrailingSeparators(path.normalize(realpath(path.resolve(expandedDaemon)))),
-    );
+    canonicalRoot = trimTrailingSeparators(path.normalize(realpath(path.resolve(expandedRoot))));
+    canonicalDaemon = trimTrailingSeparators(path.normalize(realpath(path.resolve(expandedDaemon))));
   } catch {
     return false;
   }
+  if (canonicalRoot === canonicalDaemon) return true;
+  const relative = path.relative(canonicalRoot, canonicalDaemon);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  const segments = relative.split(path.sep).filter((segment) => segment.length > 0);
+  return segments.length === 2 && segments[0] === NAMESPACE_STORAGE_SEGMENT;
 }
 
 export type MemoryReadScopeOptions = {

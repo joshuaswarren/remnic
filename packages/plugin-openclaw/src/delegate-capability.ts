@@ -50,6 +50,8 @@ import { listRemnicPublicArtifacts } from "./public-artifacts.js";
 /** Health facts the runtime surfaces; everything else in the payload is ignored. */
 type DaemonMemoryHealth = {
   memoryDir?: string;
+  /** The daemon's configured default namespace, "" on a flat corpus. */
+  defaultNamespace?: string;
   searchBackend: "qmd" | "builtin";
   qmdEnabled: boolean;
   qmdAvailable: boolean;
@@ -128,6 +130,8 @@ function readHealth(payload: Record<string, unknown>): DaemonMemoryHealth {
   const qmdEnabled = searchBackend === "qmd" && payload.qmdEnabled !== false;
   return {
     memoryDir: typeof payload.memoryDir === "string" ? payload.memoryDir : undefined,
+    defaultNamespace:
+      typeof payload.defaultNamespace === "string" ? payload.defaultNamespace : undefined,
     searchBackend,
     qmdEnabled,
     // `active && !degraded` is the daemon's own "search will actually answer"
@@ -241,7 +245,15 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
     query: string,
     opts?: RuntimeSearchOptions,
   ): Promise<RuntimeSearchResult[]> => {
-    const namespace = await options.resolveSearchNamespace(opts?.sessionKey);
+    // Embedded returns an empty set for a zero budget; forwarding 0 would hit
+    // the daemon schema's `maxResults >= 1` and turn a valid no-results request
+    // into a 400 purely by switching bridge mode.
+    if (opts?.maxResults === 0) return [];
+    // An empty namespace means "the daemon's default", but the daemon reads an
+    // ABSENT namespace as a principal-wide fan-out. Send the concrete default
+    // health reports so a default-scoped session cannot see other namespaces.
+    const resolved = await options.resolveSearchNamespace(opts?.sessionKey);
+    const namespace = resolved ?? health.defaultNamespace;
     // Mirror the embedded manager: "vsearch" is vector ranking, "query" is the
     // ordinary search plan, anything else is the backend default.
     // Embedded defaults to "search" when the host passes no override, and an
@@ -257,7 +269,7 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
         // Same override mapping the embedded manager applies, so a host asking
         // for vector or lexical ranking gets the same semantics in either mode.
         mode: searchMode,
-        ...(namespace ? { namespace } : {}),
+        ...(namespace === undefined ? {} : { namespace }),
       }),
       signal: AbortSignal.timeout(options.searchTimeoutMs),
     });
