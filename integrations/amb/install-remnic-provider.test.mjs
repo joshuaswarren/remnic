@@ -439,7 +439,7 @@ test("check-remnic-run accepts the Codex CLI iteration profile", requireCodexCli
       REMNIC_AMB_PRESERVE_RUNTIME_DEFAULTS: "false",
     });
 
-    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /Codex CLI BEAM iteration preflight passed/);
   } finally {
     await rm(ambDir, { recursive: true, force: true });

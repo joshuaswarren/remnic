@@ -257,7 +257,7 @@ test("external wiki search fails open to filesystem candidates when a dedicated 
   }
 });
 
-test("external wiki CLI searches multi-word queries and renders cited JSON or text", async () => {
+test("external wiki CLI preserves text contracts and supports cited JSON", async () => {
   const root = await createWiki("cli", {
     "INDEX.md": "- [[wiki/agents|Agent Planning]] - planner fan-out with citations\n",
     "wiki/agents.md": "# Agent Planning\n\nPlanner fan-out uses cited retrieval evidence.\n",
@@ -286,7 +286,7 @@ test("external wiki CLI searches multi-word queries and renders cited JSON or te
       stderr: { write: () => undefined },
     });
     assert.equal(textCode, 0);
-    assert.match(textOutput.join(""), /\[cli\] Agent Planning \(wiki\/agents\.md:\d+-\d+\)/);
+    assert.match(textOutput.join(""), /\[cli\] wiki\/agents\.md \(score [\d.]+\)/);
 
     const invalidErrors: string[] = [];
     const invalidCode = await runExternalWikiCliCommand([root], ["search", "--limit", "0", "query"], {
@@ -295,6 +295,72 @@ test("external wiki CLI searches multi-word queries and renders cited JSON or te
     });
     assert.equal(invalidCode, 2);
     assert.match(invalidErrors.join(""), /--limit must be an integer from 1 to 20/);
+
+    const noQueryErrors: string[] = [];
+    const noQueryCode = await runExternalWikiCliCommand([root], ["search"], {
+      stdout: { write: () => undefined },
+      stderr: { write: (chunk) => noQueryErrors.push(chunk) },
+    });
+    assert.equal(noQueryCode, 1);
+    assert.equal(noQueryErrors.join(""), "external-wiki: provide a search query\n");
+
+    const disabledErrors: string[] = [];
+    const disabledCode = await runExternalWikiCliCommand([{ ...root, enabled: false }], ["search", "planner"], {
+      stdout: { write: () => undefined },
+      stderr: { write: (chunk) => disabledErrors.push(chunk) },
+    });
+    assert.equal(disabledCode, 1);
+    assert.equal(disabledErrors.join(""), "external-wiki: no enabled wiki roots configured\n");
+
+    const emptyOutput: string[] = [];
+    const emptyCode = await runExternalWikiCliCommand([root], ["search", "unmatched-token"], {
+      stdout: { write: (chunk) => emptyOutput.push(chunk) },
+      stderr: { write: () => undefined },
+    });
+    assert.equal(emptyCode, 0);
+    assert.equal(emptyOutput.join(""), "No results.\n");
+
+    const searchErrors: string[] = [];
+    const searchErrorCode = await runExternalWikiCliCommand([root], ["search", "planner", "--wiki-id", "missing"], {
+      stdout: { write: () => undefined },
+      stderr: { write: (chunk) => searchErrors.push(chunk) },
+    });
+    assert.equal(searchErrorCode, 1);
+    assert.equal(searchErrors.join(""), "external-wiki: unknown external wiki: missing\n");
+
+    const legacyOutput: string[] = [];
+    const legacyCode = await runExternalWikiCliCommand([root], ["planner", "fan-out"], {
+      stdout: { write: (chunk) => legacyOutput.push(chunk) },
+      stderr: { write: () => undefined },
+    });
+    assert.equal(legacyCode, 0);
+    assert.match(legacyOutput.join(""), /^\[cli\] wiki\/agents\.md \(score [\d.]+\)/);
+
+    const degradedErrors: string[] = [];
+    const degradedCode = await runExternalWikiCliCommand(
+      [root, { ...root, id: "broken", rootDir: path.join(root.rootDir, "missing") }],
+      ["search", "planner"],
+      {
+        stdout: { write: () => undefined },
+        stderr: { write: (chunk) => degradedErrors.push(chunk) },
+      }
+    );
+    assert.equal(degradedCode, 0);
+    assert.equal(degradedErrors.join(""), "Warning: degraded roots: broken\n");
+
+    const allDegradedOutput: string[] = [];
+    const allDegradedErrors: string[] = [];
+    const allDegradedCode = await runExternalWikiCliCommand(
+      [{ ...root, id: "broken", rootDir: path.join(root.rootDir, "missing") }],
+      ["search", "planner"],
+      {
+        stdout: { write: (chunk) => allDegradedOutput.push(chunk) },
+        stderr: { write: (chunk) => allDegradedErrors.push(chunk) },
+      }
+    );
+    assert.equal(allDegradedCode, 0);
+    assert.equal(allDegradedOutput.join(""), "No results.\n");
+    assert.equal(allDegradedErrors.join(""), "Warning: degraded roots: broken\n");
   } finally {
     await removeWikis([root]);
   }

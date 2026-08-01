@@ -324,6 +324,40 @@ test("ChatGPT Apps inspector dispatches canonical alias through X-ray and action
   );
 });
 
+test("ChatGPT Apps inspector omits sourceConnector when absent and propagates it when present", async () => {
+  const captureAbsent: Capture = { recalls: [], xrays: [], actionRequests: [] };
+  const serverA = new EngramMcpServer(fakeService(captureAbsent), { principal: "user-a" });
+  await serverA.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: REMNIC_CHATGPT_MEMORY_INSPECTOR_CANONICAL_TOOL,
+      arguments: { query: "preferences", sessionKey: "sess-1", namespace: "work" },
+    },
+  });
+  const absentXray = captureAbsent.xrays[0];
+  assert.ok(absentXray, "inspector must issue an X-ray request");
+  assert.ok(!("sourceConnector" in absentXray), "absent connector must not create an explicit undefined key");
+
+  const capturePresent: Capture = { recalls: [], xrays: [], actionRequests: [] };
+  const serverB = new EngramMcpServer(fakeService(capturePresent), { principal: "user-a" });
+  await serverB.handleRequest(
+    {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: REMNIC_CHATGPT_MEMORY_INSPECTOR_CANONICAL_TOOL,
+        arguments: { query: "preferences", sessionKey: "sess-2", namespace: "work" },
+      },
+    },
+    { sourceConnector: "chatgpt" },
+  );
+  assert.equal(capturePresent.xrays[0]?.sourceConnector, "chatgpt",
+    "present connector must propagate to the X-ray request");
+});
+
 test("ChatGPT Apps inspector uses internal session metadata for sessionless authenticated calls", async () => {
   const capture: Capture = { recalls: [], xrays: [], actionRequests: [] };
   const server = new EngramMcpServer(fakeService(capture), { principal: "user-a" });

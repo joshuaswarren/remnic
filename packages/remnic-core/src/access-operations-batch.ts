@@ -163,7 +163,7 @@ defineOperation({ name: "chatgpt_memory_inspector", description: "Memory inspect
     if (input.currentContextScopes !== undefined) ii.currentContextScopes = input.currentContextScopes as string[];
     if (input.allowUnverifiedPreview !== undefined) ii.allowUnverifiedPreview = input.allowUnverifiedPreview as boolean;
     const rsk = ii.sessionKey ?? (ctx.authenticatedPrincipal ? "remnic:chatgpt-memory-inspector:" + randomUUID() : undefined);
-    const xr = await ctx.service.recallXray({ query: ii.query, sessionKey: rsk, namespace: ii.namespace, currentContextScopes: ii.currentContextScopes, authenticatedPrincipal: ctx.authenticatedPrincipal, sourceConnector: ctx.sourceConnector, mode: "full", disclosure: "chunk", includeRecall: true, ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) });
+    const xr = await ctx.service.recallXray({ query: ii.query, sessionKey: rsk, namespace: ii.namespace, currentContextScopes: ii.currentContextScopes, authenticatedPrincipal: ctx.authenticatedPrincipal, ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}), mode: "full", disclosure: "chunk", includeRecall: true, ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) });
     const x = xr.snapshotFound === true ? (xr.snapshot ?? null) : null;
     const r = xr.recall ?? { query: ii.query, namespace: ii.namespace ?? x?.namespace ?? "global", context: "", count: 0, memoryIds: [], results: [], fallbackUsed: false, sourcesUsed: [], disclosure: "chunk" as const };
     const ac = await ctx.service.actionConfidence(buildChatGptMemoryInspectorActionRequest(ii, r, x));

@@ -31,7 +31,7 @@ async function withMemoryDir(run: (dir: string) => Promise<void>): Promise<void>
   try {
     await run(dir);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 }
 
@@ -2532,7 +2532,7 @@ test("chunked offline sync scans oversized frontmatter before locking its identi
       semanticThreshold: 0.9,
       namespace: "default",
     });
-    const content = `Oversized frontmatter sync ${"x".repeat(900_000)}`;
+    const content = "Oversized frontmatter sync";
     const tombstoneId = await storage.appendTombstone({
       reason: "correction",
       createdBy: "user_correction",
@@ -2548,7 +2548,7 @@ test("chunked offline sync scans oversized frontmatter before locking its identi
     const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
     assert.ok(memory);
 
-    const largeTags = Array.from({ length: 22_000 }, (_, index) => `"tag-${index}"`).join(", ");
+    const largeTags = Array.from({ length: 100_000 }, (_, index) => `"tag-${index}"`).join(", ");
     const updatedFile = [
       "---",
       `id: ${memory.frontmatter.id}`,
@@ -2567,6 +2567,10 @@ test("chunked offline sync scans oversized frontmatter before locking its identi
       content,
       "",
     ].join("\n");
+    assert.ok(
+      updatedFile.indexOf("\n---\n") > 1_048_576,
+      "the streamed body delimiter must appear after the chunk buffer limit",
+    );
     const chunks = (async function* (): AsyncIterable<Buffer> {
       for (let offset = 0; offset < updatedFile.length; offset += 32 * 1024) {
         yield Buffer.from(updatedFile.slice(offset, offset + 32 * 1024), "utf8");
@@ -2651,7 +2655,7 @@ test("chunked offline sync encrypts oversized staging files when secure storage 
       semanticThreshold: 0.9,
       namespace: "default",
     });
-    const content = `Oversized encrypted staging content ${"x".repeat(1_048_576)}`;
+    const content = "Oversized encrypted staging content";
     const tombstoneId = await storage.appendTombstone({
       reason: "correction",
       createdBy: "user_correction",
@@ -2666,6 +2670,7 @@ test("chunked offline sync encrypts oversized staging files when secure storage 
     assert.equal(result.tombstoneBlocked, true);
     const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === result.id);
     assert.ok(memory);
+    const largeTags = Array.from({ length: 100_000 }, (_, index) => `"tag-${index}"`).join(", ");
 
     const incomingFile = [
       "---",
@@ -2676,7 +2681,7 @@ test("chunked offline sync encrypts oversized staging files when secure storage 
       `source: ${memory.frontmatter.source}`,
       `confidence: ${memory.frontmatter.confidence}`,
       `confidenceTier: ${memory.frontmatter.confidenceTier}`,
-      "tags: []",
+      `tags: [${largeTags}]`,
       "sourceConnector: provider-a",
       "status: pending_review",
       `blockedBy: ${memory.frontmatter.blockedBy}`,
@@ -2685,6 +2690,7 @@ test("chunked offline sync encrypts oversized staging files when secure storage 
       content,
       "",
     ].join("\n");
+    assert.ok(incomingFile.length > 1_048_576, "the encrypted staging fixture must exceed the chunk buffer limit");
     const chunks = (async function* (): AsyncIterable<Buffer> {
       for (let offset = 0; offset < incomingFile.length; offset += 32 * 1024) {
         yield Buffer.from(incomingFile.slice(offset, offset + 32 * 1024), "utf8");
@@ -2960,7 +2966,8 @@ test("large blocked offline sync streams through bounded staging and deduplicate
       semanticThreshold: 0.9,
       namespace: "default",
     });
-    const largeContent = "large stream duplicate ".repeat(60_000);
+    const largeContent = "large stream duplicate";
+    const largeTags = Array.from({ length: 100_000 }, (_, index) => `"tag-${index}"`).join(", ");
     const tombstoneId = await storage.appendTombstone({
       reason: "correction",
       createdBy: "user_correction",
@@ -2983,7 +2990,7 @@ test("large blocked offline sync streams through bounded staging and deduplicate
         "source: offline-sync",
         "confidence: 0.8",
         "confidenceTier: implied",
-        "tags: []",
+        `tags: [${largeTags}]`,
         "sourceConnector: provider-a",
         "status: pending_review",
         `blockedBy: ${tombstoneId}`,

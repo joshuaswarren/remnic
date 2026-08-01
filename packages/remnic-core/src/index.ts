@@ -9,11 +9,6 @@
  * This package has ZERO OpenClaw imports — it can be consumed by
  * any host adapter (CLI, HTTP server, MCP server, etc.).
  *
- * Usage:
- *   import { Orchestrator, parseConfig } from "@remnic/core";
- *   const config = parseConfig({ memoryDir: "/tmp/mem" });
- *   const orch = new Orchestrator(config);
- *   await orch.initialize();
  */
 
 // ---------------------------------------------------------------------------
@@ -29,6 +24,7 @@ export { resolvePluginEntry, type PluginEntryResolverOptions } from "./plugin-en
 export { parseConfig, isOpenaiApiKeyDisabled, resolveEnvVars } from "./config.js";
 export { resolveRemnicConfigRecord } from "./config-record.js";
 export * from "./external-wiki.js";
+export * from "./external-wiki-cli.js";
 export {
   parseFlexibleIsoTimestamp,
   parseIsoOffsetTimestamp,

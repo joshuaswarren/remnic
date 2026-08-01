@@ -508,6 +508,7 @@ test("MCP server advertises tools and dispatches recall", async () => {
     "engram.compounding_promote_candidate",
     "engram.compression_guidelines_optimize",
     "engram.compression_guidelines_activate",
+    "engram.external_wiki_search",
     "engram.memory_search",
     "engram.memory_profile",
     "engram.memory_entities_list",

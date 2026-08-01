@@ -278,7 +278,7 @@ export async function runFirstStartMigration(
         qmd,
         hotCollection: options.hotCollection ?? config.qmdCollection ?? "openclaw-engram",
         coldCollection: options.coldCollection ?? config.qmdColdCollection ?? "openclaw-engram-cold",
-    })
+      })
     : null;
   const coldCollection = options.coldCollection ?? config.qmdColdCollection ?? "openclaw-engram-cold";
 
@@ -287,17 +287,17 @@ export async function runFirstStartMigration(
       return abortedResult(candidateCount, demotedCount, failureCount);
     }
     try {
-      if (executor) {
-        await executor.migrateMemory({
-          memory,
-          fromTier: "hot",
-          toTier: "cold",
-          reason: "first-start-lifecycle-migration",
-        });
-      } else {
-        await storage.migrateMemoryToTier(memory, "cold");
+      const result = executor
+        ? await executor.migrateMemory({
+            memory,
+            fromTier: "hot",
+            toTier: "cold",
+            reason: "first-start-lifecycle-migration",
+          })
+        : await storage.migrateMemoryToTier(memory, "cold");
+      if (result.changed) {
+        demotedCount += 1;
       }
-      demotedCount += 1;
     } catch {
       const targetPath = storage.buildTierMemoryPath(memory, "cold");
       const [targetExists, sourceExists] = await Promise.all([

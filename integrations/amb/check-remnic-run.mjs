@@ -94,19 +94,21 @@ function checkBridgeStarts(bridgePath, remnicRepoPath) {
     };
   }
 
-  const line = result.stdout.trim().split(/\r?\n/).find((entry) => entry.trim());
-  if (!line) {
+  const lines = result.stdout.trim().split(/\r?\n/).filter((entry) => entry.trim());
+  if (lines.length === 0) {
     return { ok: false, detail: "bridge produced no JSONL response" };
   }
 
-  try {
-    const response = JSON.parse(line);
-    return response.ok === true
-      ? { ok: true, detail: "bridge reset request returned ok=true" }
-      : { ok: false, detail: response.error || "bridge returned ok=false" };
-  } catch (error) {
-    return { ok: false, detail: `invalid bridge JSON response: ${error.message}` };
+  for (const line of lines) {
+    try {
+      const response = JSON.parse(line);
+      if (response?.id !== 1 || typeof response.ok !== "boolean") continue;
+      return response.ok === true
+        ? { ok: true, detail: "bridge reset request returned ok=true" }
+        : { ok: false, detail: response.error || "bridge returned ok=false" };
+    } catch {}
   }
+  return { ok: false, detail: `bridge produced no reset response: ${JSON.stringify(lines[0])}` };
 }
 
 function envValue(name) {

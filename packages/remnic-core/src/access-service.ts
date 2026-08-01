@@ -2386,7 +2386,9 @@ export class EngramAccessService {
       } else if (extraction.degradedReason?.includes("buffer unreadable")) {
         scopedDegradedReason = "daemon extraction pipeline degraded; extraction buffer unreadable";
       } else {
-        scopedDegradedReason = "daemon extraction pipeline degraded; backlog pending extraction";
+        scopedDegradedReason =
+          `${extraction.bufferedSessionCount} buffered session(s), ` +
+          `${extraction.pendingTurnCount} turn(s) pending extraction`;
       }
     }
     const visibleExtraction =
@@ -2394,9 +2396,6 @@ export class EngramAccessService {
         ? {
             ...extraction,
             lastExtractionAt: null,
-            bufferedSessionCount: 0,
-            pendingTurnCount: 0,
-            oldestBufferedTurnAgeMs: null,
             degradedReason: scopedDegradedReason,
           }
         : extraction;

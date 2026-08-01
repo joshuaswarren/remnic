@@ -62,14 +62,34 @@ export function selectTestPatterns(groupNames, patterns = TEST_PATTERNS) {
   }
   return selected;
 }
+export function selectTestShard(files, shard) {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error("selectTestShard requires at least one file");
+  }
+  const { index, total } = shard ?? {};
+  if (
+    !Number.isSafeInteger(index) ||
+    !Number.isSafeInteger(total) ||
+    index < 1 ||
+    total < 1 ||
+    index > total
+  ) {
+    throw new Error(`selectTestShard received invalid shard ${String(index)}/${String(total)}`);
+  }
+  if (total > files.length) {
+    throw new Error(`selectTestShard ${index}/${total} would create an empty shard for ${files.length} file(s)`);
+  }
+  return [...files].sort().filter((_, fileIndex) => fileIndex % total === index - 1);
+}
+
 
 /**
- * Parse root-test-runner CLI arguments. Only `--group <name>` (repeatable)
- * is accepted; anything else is an error — invalid input is rejected, not
- * silently reinterpreted as "run everything".
+ * Parse root-test-runner CLI arguments. `--group <name>` is repeatable;
+ * `--shard <index>/<total>` is optional and may appear once.
  */
 export function parseRunnerArgs(argv) {
   const groups = [];
+  let shard = null;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--group") {
@@ -81,9 +101,38 @@ export function parseRunnerArgs(argv) {
       index += 1;
       continue;
     }
-    throw new Error(`Unknown argument "${arg}". Usage: run-root-tests.mjs [--group <name>]...`);
+    if (arg === "--shard") {
+      if (shard !== null) {
+        throw new Error("--shard may be provided only once");
+      }
+      const value = argv[index + 1];
+      if (typeof value !== "string" || value.startsWith("--")) {
+        throw new Error("--shard requires an index/total argument");
+      }
+      const match = /^(\d+)\/(\d+)$/.exec(value);
+      if (!match) {
+        throw new Error("--shard must use index/total with integer values");
+      }
+      const shardIndex = Number(match[1]);
+      const shardTotal = Number(match[2]);
+      if (
+        !Number.isSafeInteger(shardIndex) ||
+        !Number.isSafeInteger(shardTotal) ||
+        shardIndex < 1 ||
+        shardTotal < 1 ||
+        shardIndex > shardTotal
+      ) {
+        throw new Error("--shard must satisfy 1 <= index <= total");
+      }
+      shard = { index: shardIndex, total: shardTotal };
+      index += 1;
+      continue;
+    }
+    throw new Error(
+      `Unknown argument "${arg}". Usage: run-root-tests.mjs [--group <name>]... [--shard <index>/<total>]`,
+    );
   }
-  return { groups };
+  return { groups, shard };
 }
 
 const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
