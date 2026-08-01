@@ -1,8 +1,4 @@
-import {
-  type ExternalWikiRoot,
-  type ExternalWikiSearchResult,
-  searchExternalWikis,
-} from "./external-wiki-search.js";
+import { type ExternalWikiRoot, type ExternalWikiSearchResult, searchExternalWikis } from "./external-wiki-search.js";
 
 interface ExternalWikiCliIo {
   readonly stdout: { write(chunk: string): unknown };
@@ -90,15 +86,15 @@ export async function runExternalWikiCliCommand(
     return 0;
   }
 
+  if (result.degradedWikiIds.length > 0) {
+    io.stderr.write(`Warning: degraded roots: ${result.degradedWikiIds.join(", ")}\n`);
+  }
   if (result.hits.length === 0) {
     io.stdout.write("No results.\n");
     return 0;
   }
   for (const hit of result.hits) {
     io.stdout.write(`[${hit.wikiId}] ${hit.path} (score ${hit.score})\n${hit.snippet}\n\n`);
-  }
-  if (result.degradedWikiIds.length > 0) {
-    io.stderr.write(`Warning: degraded roots: ${result.degradedWikiIds.join(", ")}\n`);
   }
   return 0;
 }

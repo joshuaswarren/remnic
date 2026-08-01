@@ -347,6 +347,20 @@ test("external wiki CLI preserves text contracts and supports cited JSON", async
     );
     assert.equal(degradedCode, 0);
     assert.equal(degradedErrors.join(""), "Warning: degraded roots: broken\n");
+
+    const allDegradedOutput: string[] = [];
+    const allDegradedErrors: string[] = [];
+    const allDegradedCode = await runExternalWikiCliCommand(
+      [{ ...root, id: "broken", rootDir: path.join(root.rootDir, "missing") }],
+      ["search", "planner"],
+      {
+        stdout: { write: (chunk) => allDegradedOutput.push(chunk) },
+        stderr: { write: (chunk) => allDegradedErrors.push(chunk) },
+      }
+    );
+    assert.equal(allDegradedCode, 0);
+    assert.equal(allDegradedOutput.join(""), "No results.\n");
+    assert.equal(allDegradedErrors.join(""), "Warning: degraded roots: broken\n");
   } finally {
     await removeWikis([root]);
   }
