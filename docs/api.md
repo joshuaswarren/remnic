@@ -31,6 +31,7 @@ Two infrastructure routes carry no request envelope and sit outside the op-gated
 
 - `POST /engram/v1/memories` — explicit memory write path
 - `GET /engram/v1/memories` — browse memories with query/status/category filters
+- `POST /engram/v1/memories/search` — ranked semantic search over memories (the QMD-backed `memory_search` surface; `GET /engram/v1/memories` is a substring browse)
 - `GET /engram/v1/memories/:id` — fetch one memory
 - `GET /engram/v1/memories/:id/timeline` — fetch one memory's lifecycle timeline
 - `POST /engram/v1/suggestions` — queue review-first memory suggestions

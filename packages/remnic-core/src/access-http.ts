@@ -972,6 +972,35 @@ export class EngramAccessHttpServer {
       this.respondJson(res, 200, output.result);
       return;
     }
+    if (
+      req.method === "POST" &&
+      (pathname === "/engram/v1/memories/search" ||
+        pathname === "/remnic/v1/memories/search")
+    ) {
+      // Semantic memory search over HTTP. `GET /engram/v1/memories` is a
+      // substring browse; this is the QMD-backed ranked search the MCP
+      // `memory_search` tool already exposes, reachable by HTTP-only clients.
+      this.enforceTokenOp("memory_search"); // boundary dispatch (issue #1525)
+      const operation = getOperation("memory_search");
+      if (!operation) {
+        throw new EngramAccessInputError(
+          "access-boundary: operation not registered: memory_search",
+        );
+      }
+      // The body `namespace` is user-controlled, so it must pass the same
+      // effective-namespace allow-list gate as every other namespace-scoped
+      // route (issue #1850 finding 2); the authenticated principal — never a
+      // client-supplied value — then scopes the readable namespace fan-out.
+      const output = (await operation.run(
+        this.gatedBodyNamespace(req, await this.readJsonBody(req)),
+        {
+          service: this.service,
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        },
+      )) as { result: unknown };
+      this.respondJson(res, 200, output.result);
+      return;
+    }
 
     if (req.method === "POST" && pathname === "/engram/v1/recall") {
       this.enforceTokenOp("recall"); // boundary dispatch (issue #1525)

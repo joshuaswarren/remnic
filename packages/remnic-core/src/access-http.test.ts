@@ -4091,3 +4091,163 @@ test("HTTP external wiki search aliases return the same cited result", async () 
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("HTTP memory search aliases dispatch the boundary operation identically", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const service = {
+    memorySearch: async (request: Record<string, unknown>) => {
+      calls.push(request);
+      return {
+        query: request.query,
+        results: [{ path: "facts/alice.md", score: 0.71, snippet: "alice prefers dark mode" }],
+        count: 1,
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "operator",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    let canonicalBody: unknown;
+    for (const prefix of ["engram", "remnic"]) {
+      const response = await fetch(`http://127.0.0.1:${status.port}/${prefix}/v1/memories/search`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ query: "dark mode", maxResults: 3 }),
+      });
+      assert.equal(response.status, 200);
+      const body: unknown = await response.json();
+      if (canonicalBody === undefined) canonicalBody = body;
+      else assert.deepEqual(body, canonicalBody, "both prefixes must return one shape");
+    }
+    assert.deepEqual(canonicalBody, {
+      query: "dark mode",
+      results: [{ path: "facts/alice.md", score: 0.71, snippet: "alice prefers dark mode" }],
+      count: 1,
+    });
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.equal(call.query, "dark mode");
+      assert.equal(call.maxResults, 3);
+      assert.equal(
+        call.principal,
+        "operator",
+        "the authenticated principal — not a client field — scopes the search",
+      );
+    }
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP memory search rejects an invalid body before service dispatch", async () => {
+  const calls: unknown[] = [];
+  const service = {
+    memorySearch: async (request: unknown) => {
+      calls.push(request);
+      return { query: "", results: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const post = (body: unknown) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories/search`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  try {
+    assert.equal((await post({ query: "   " })).status, 400, "blank query is rejected");
+    assert.equal((await post({})).status, 400, "a missing query is rejected");
+    assert.equal((await post({ query: "ok", maxResults: 0 })).status, 400, "maxResults must be >= 1");
+    assert.equal(calls.length, 0, "no invalid request may reach the service");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP memory search enforces token op and namespace allow-lists", async () => {
+  const calls: unknown[] = [];
+  const service = {
+    memorySearch: async (request: unknown) => {
+      calls.push(request);
+      return { query: "q", results: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    principal: "reader",
+    authTokenEntriesGetter: () => [
+      { token: "wrong-op", capabilities: { version: 1, ops: ["recall"] } },
+      {
+        token: "wrong-namespace",
+        capabilities: { version: 1, ops: ["memory_search"], namespaces: ["other"] },
+      },
+      {
+        token: "reader",
+        capabilities: { version: 1, ops: ["memory_search"], namespaces: ["team"] },
+      },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const post = (token: string, body: unknown) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories/search`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  try {
+    assert.equal((await post("wrong-op", { query: "q", namespace: "team" })).status, 403);
+    assert.equal(
+      (await post("wrong-namespace", { query: "q", namespace: "team" })).status,
+      403,
+      "a body namespace outside the token allow-list must fail closed",
+    );
+    assert.equal(calls.length, 0, "no denied request may reach the service");
+    assert.equal((await post("reader", { query: "q", namespace: "team" })).status, 200);
+    assert.equal(calls.length, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP capabilities advertise the memories search route", async () => {
+  const server = new EngramAccessHttpServer({
+    service: {} as unknown as EngramAccessService,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/capabilities`, {
+      headers: { authorization: "Bearer test-token" },
+    });
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as Record<string, unknown>;
+    assert.equal(body.memoriesSearch, true);
+  } finally {
+    await server.stop();
+  }
+});
