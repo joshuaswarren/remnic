@@ -289,28 +289,38 @@ test("auto refuses a non-loopback daemon endpoint", async () => {
   }
 });
 
-test("auto matches a symlinked spelling of one corpus", async () => {
+test("auto matches an aliased parent but refuses a symlinked corpus root", async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-auto-link-")));
-  const real = path.join(root, "real-memory");
-  const link = path.join(root, "linked-memory");
+  const holder = path.join(root, "holder");
+  const real = path.join(holder, "real-memory");
   await mkdir(real, { recursive: true });
-  await symlink(real, link);
+  const aliasedHolder = path.join(root, "aliased-holder");
+  await symlink(holder, aliasedHolder);
   const stub = await startHealthStub({ ok: true, memoryDir: real });
-  const reasons: string[] = [];
   try {
-    const resolved = withDaemonEnv(stub.port, () =>
-      resolveBridgeMode("auto", {
-        memoryDir: link,
-        timeoutMs: 5_000,
-        onSkip: (reason) => reasons.push(reason),
-      }),
-    );
+    const reasons: string[] = [];
     assert.equal(
-      resolved.mode,
+      withDaemonEnv(stub.port, () =>
+        resolveBridgeMode("auto", {
+          memoryDir: path.join(aliasedHolder, "real-memory"),
+          timeoutMs: 5_000,
+          onSkip: (reason) => reasons.push(reason),
+        }),
+      ).mode,
       "delegate",
       "two spellings of one directory must not start a second orchestrator beside the daemon",
     );
     assert.deepEqual(reasons, []);
+
+    // A corpus root that is ITSELF a link is a mutable trust anchor.
+    const linkedRoot = path.join(root, "linked-memory");
+    await symlink(real, linkedRoot);
+    assert.equal(
+      withDaemonEnv(stub.port, () =>
+        resolveBridgeMode("auto", { memoryDir: linkedRoot, timeoutMs: 5_000 }),
+      ).mode,
+      "embedded",
+    );
   } finally {
     await stub.close();
     await rm(root, { recursive: true, force: true });

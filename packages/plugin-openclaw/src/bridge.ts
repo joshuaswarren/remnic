@@ -461,14 +461,6 @@ export function readDaemonMemoryDirSync(
   return { healthy: probe.ok, memoryDir: probe.captured };
 }
 
-function isLoopbackDaemonHost(host: string): boolean {
-  const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
-  if (normalized === "localhost" || normalized === "::1") return true;
-  // Literal IPv4 in 127.0.0.0/8 only. A prefix test would accept a DNS name
-  // like `127.daemon.example` that resolves anywhere, letting auto delegate
-  // remotely while the capability's reads stayed local.
-  return isIPv4(normalized) && normalized.split(".")[0] === "127";
-}
 
 function shouldProbeDaemonHealth(host: string): boolean {
   return isLoopbackDaemonHost(host) || isDaemonServiceConfigured();

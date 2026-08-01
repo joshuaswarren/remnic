@@ -1005,6 +1005,18 @@ export function maybeRegisterDelegateRuntime(
   options: MaybeRegisterDelegateOptions,
   deps: MaybeRegisterDelegateDeps = { checkHealth: checkDaemonHealthSync },
 ): boolean {
+  // BEFORE any health-dependent resolution: if this service already has
+  // delegate hooks on this api, they are still attached (OpenClaw exposes no
+  // unregister). Re-probing could resolve `embedded` on a transient daemon
+  // failure, and returning false would then stack embedded hooks on top of
+  // the live delegate ones — two memory paths over one corpus.
+  const boundServices = delegateHookApiServices.get(api);
+  if (boundServices?.has(options.serviceId)) {
+    log.debug(
+      `delegate register: ${options.serviceId} already has hooks bound on this api — skipping duplicate registration`,
+    );
+    return true;
+  }
   let bridge: BridgeConfig;
   let bridgeHealthTimeoutMs: number;
   try {
@@ -1041,13 +1053,6 @@ export function maybeRegisterDelegateRuntime(
     // SAME api stays embedded instead of stacking both memory paths.
     if (!options.passive) delegateEmbeddedFallbackApis.add(api);
     return false;
-  }
-  const boundServices = delegateHookApiServices.get(api);
-  if (boundServices?.has(options.serviceId)) {
-    log.debug(
-      `delegate register: ${options.serviceId} already has hooks bound on this api — skipping duplicate registration`,
-    );
-    return true;
   }
   // register() is synchronous, so the preflight uses the bridge's
   // worker-backed sync health check. `auto` already proved the daemon healthy
