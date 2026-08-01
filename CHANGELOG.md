@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.46.0] — 2026-08-01
+
 ### Fixed
 
 - OpenClaw prompt injection now uses only the supported `before_prompt_build` hook; obsolete prompt and heartbeat hook registrations are removed while `HEARTBEAT.md` processing remains supported.
