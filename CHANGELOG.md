@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.45.5] — 2026-08-01
+
 ### Fixed
 
 - Release publishing now waits for the complete root test corpus, split into deterministic bounded shards against the exact event commit.
