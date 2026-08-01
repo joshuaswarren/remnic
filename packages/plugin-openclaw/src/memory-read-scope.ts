@@ -34,31 +34,45 @@ function trimTrailingSeparators(value: string): string {
 }
 
 /**
- * Whether two `memoryDir` values name the same corpus.
+ * Whether a daemon's reported memory directory belongs to the corpus this
+ * plugin is configured for.
  *
- * Lexical first (tilde-expanded, resolved, normalized, trailing separators
- * trimmed), then a `realpath` comparison so two symlink spellings of one
- * directory are recognized as identical — otherwise a co-located gateway and
- * daemon on the same files would be judged different and both run, which is
- * exactly the duplicate-orchestrator deployment this check exists to prevent.
+ * Deliberately asymmetric and containment-based. `GET /engram/v1/health`
+ * reports the NAMESPACE-RESOLVED storage directory, so a deployment whose
+ * default namespace has migrated out of the flat root answers
+ * `<corpusRoot>/namespaces/<token>` while the plugin is configured with
+ * `<corpusRoot>`. Requiring equality would mark that healthy co-located daemon
+ * foreign and disable every file-backed surface.
  *
- * Fails CLOSED: a path that cannot be resolved is never a match.
+ * Both sides must be ABSOLUTE. A relative `memoryDir` names a different
+ * directory in each process's working directory, so resolving both against the
+ * gateway's cwd would manufacture a match between two distinct corpora.
+ *
+ * Compared lexically first, then by `realpath`, so two symlink spellings of
+ * one directory match — otherwise a co-located gateway and daemon on the same
+ * files would be judged different and both run, exactly the
+ * duplicate-orchestrator deployment this check exists to prevent.
+ *
+ * Fails CLOSED: relative, blank, or unresolvable paths are never a match.
  */
-export function sameMemoryCorpus(
-  left: string,
-  right: string,
+export function daemonServesCorpus(
+  corpusRoot: string,
+  daemonMemoryDir: string,
   realpath: (target: string) => string = realpathSync,
 ): boolean {
-  if (!left?.trim() || !right?.trim()) return false;
+  if (!corpusRoot?.trim() || !daemonMemoryDir?.trim()) return false;
+  const expandedRoot = expandTildePath(corpusRoot.trim());
+  const expandedDaemon = expandTildePath(daemonMemoryDir.trim());
+  if (!path.isAbsolute(expandedRoot) || !path.isAbsolute(expandedDaemon)) return false;
   const lexical = (value: string): string =>
-    trimTrailingSeparators(path.normalize(path.resolve(expandTildePath(value.trim()))));
-  const leftLexical = lexical(left);
-  const rightLexical = lexical(right);
-  if (leftLexical === rightLexical) return true;
+    trimTrailingSeparators(path.normalize(path.resolve(value)));
+  const rootLexical = lexical(expandedRoot);
+  const daemonLexical = lexical(expandedDaemon);
+  if (isContained(rootLexical, daemonLexical)) return true;
   try {
-    return (
-      trimTrailingSeparators(path.normalize(realpath(leftLexical))) ===
-      trimTrailingSeparators(path.normalize(realpath(rightLexical)))
+    return isContained(
+      trimTrailingSeparators(path.normalize(realpath(rootLexical))),
+      trimTrailingSeparators(path.normalize(realpath(daemonLexical))),
     );
   } catch {
     return false;

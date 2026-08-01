@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createMemoryReadScope, isSessionsMemoryPath } from "./memory-read-scope.js";
+import {
+  createMemoryReadScope,
+  daemonServesCorpus,
+  isSessionsMemoryPath,
+} from "./memory-read-scope.js";
 
 async function makeCorpus(): Promise<{
   memoryDir: string;
@@ -247,4 +251,40 @@ test("resolveReadablePath rejects a missing path as a domain error", async () =>
       String(bad),
     );
   }
+});
+
+test("daemonServesCorpus accepts the namespace-resolved storage dir under the corpus root", async () => {
+  const { memoryDir } = await makeCorpus();
+  // GET /engram/v1/health reports storage.dir, which is <root>/namespaces/<ns>
+  // once the default namespace migrates out of the flat root.
+  assert.equal(daemonServesCorpus(memoryDir, memoryDir), true);
+  assert.equal(
+    daemonServesCorpus(memoryDir, path.join(memoryDir, "namespaces", "generalist")),
+    true,
+  );
+  assert.equal(daemonServesCorpus(memoryDir, `${memoryDir}/`), true);
+});
+
+test("daemonServesCorpus rejects a foreign, relative, or blank corpus", async () => {
+  const { memoryDir, outsideDir } = await makeCorpus();
+  assert.equal(daemonServesCorpus(memoryDir, outsideDir), false);
+  assert.equal(
+    daemonServesCorpus(memoryDir, path.dirname(memoryDir)),
+    false,
+    "the daemon serving a PARENT of the corpus root is not the same corpus",
+  );
+  // A relative path names a different directory in each process's cwd, so
+  // resolving both here would manufacture a match between distinct corpora.
+  assert.equal(daemonServesCorpus("./memory", "./memory"), false);
+  assert.equal(daemonServesCorpus(memoryDir, "./memory"), false);
+  assert.equal(daemonServesCorpus("", memoryDir), false);
+  assert.equal(daemonServesCorpus(memoryDir, "   "), false);
+});
+
+test("daemonServesCorpus resolves symlinked spellings of one corpus", async () => {
+  const { memoryDir } = await makeCorpus();
+  const link = path.join(path.dirname(memoryDir), "linked-memory");
+  await symlink(memoryDir, link);
+  assert.equal(daemonServesCorpus(link, memoryDir), true);
+  assert.equal(daemonServesCorpus(memoryDir, link), true);
 });

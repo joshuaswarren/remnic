@@ -95,7 +95,7 @@ function optionsFor(
     workspaceDir,
     agentIds: ["generalist"],
     allowPromptInjection: true,
-    peekPromptLines: () => null,
+    readPromptLines: () => null,
     configuredSearchBackend: "qmd",
     configuredQmdCommand: "qmd",
     searchTimeoutMs: 5_000,
@@ -454,6 +454,7 @@ test("registerDelegateMemoryCapability wires the unified host surface", async ()
   const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     const registered: Record<string, unknown> = {};
+    const seenSessionKeys: string[] = [];
     registerDelegateMemoryCapability(
       {
         registerMemoryCapability: (capability) => {
@@ -467,7 +468,10 @@ test("registerDelegateMemoryCapability wires the unified host surface", async ()
         },
       },
       optionsFor(stub.port, memoryDir, workspaceDir, {
-        peekPromptLines: (sessionKey) => (sessionKey === "s1" ? ["## Memory", "line"] : null),
+        readPromptLines: (sessionKey) => {
+          seenSessionKeys.push(sessionKey);
+          return sessionKey === "s1" ? ["## Memory", "line"] : null;
+        },
       }),
     );
     const capability = registered.capability as Record<string, unknown>;
@@ -482,11 +486,12 @@ test("registerDelegateMemoryCapability wires the unified host surface", async ()
     const promptBuilder = capability.promptBuilder as (p: { sessionKey?: string }) => string[] | null;
     assert.deepEqual(promptBuilder({ sessionKey: "s1" }), ["## Memory", "line"]);
     assert.deepEqual(
-      promptBuilder({ sessionKey: "s1" }),
-      ["## Memory", "line"],
-      "the capability builder only peeks — the section builder owns the destructive read",
+      seenSessionKeys,
+      ["s1"],
+      "the host session key reaches the seam, which owns peek-vs-consume",
     );
-    assert.equal(promptBuilder({}), null);
+    assert.equal(promptBuilder({}), null, "a missing session key reads the default bucket");
+    assert.deepEqual(seenSessionKeys, ["s1", "default"]);
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -547,6 +552,24 @@ test("registerDelegateMemoryCapability is a no-op on a host with no memory surfa
       registerDelegateMemoryCapability({}, optionsFor(stub.port, memoryDir, workspaceDir)),
     );
     assert.equal(stub.calls.length, 0, "nothing is probed when nothing can be registered");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate accepts a daemon serving a namespace under the corpus root", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // Health reports the namespace-RESOLVED storage dir, not the corpus root.
+  const stub = await startDaemonStub({
+    health: healthyDaemon(path.join(memoryDir, "namespaces", "generalist")),
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const page = await manager?.readFile({ relPath: "facts/alice.md" });
+    assert.equal(page?.text.startsWith("one"), true, "a migrated default namespace is not foreign");
+    assert.ok((await built.listArtifacts()).length > 0);
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });

@@ -463,8 +463,16 @@ export function registerDelegateRuntime(
   const promptLinesBySession = new Map<string, string[]>();
   // Embedded zero-limit contract: recallBudgetChars === 0 disables injection.
   const promptInjectionEnabled = options.allowPromptInjection && options.recallBudgetChars !== 0;
+  const useSectionBuilder = typeof api.registerMemoryPromptSection === "function";
+  // A host with no section builder but a unified memory capability injects
+  // through the capability's promptBuilder, which reads the same cache. Only
+  // when NEITHER exists does the hook return the injection fields itself —
+  // otherwise the capability builder would always see an empty cache while the
+  // hook injected separately (or, worse, both would inject).
+  const useCapabilityBuilder =
+    !useSectionBuilder && typeof api.registerMemoryCapability === "function";
+  const cachePromptLines = useSectionBuilder || useCapabilityBuilder;
   if (promptInjectionEnabled) {
-    const useSectionBuilder = typeof api.registerMemoryPromptSection === "function";
 
     const recallHandler = async (
       event: Record<string, unknown>,
@@ -473,7 +481,7 @@ export function registerDelegateRuntime(
       const query = recallQueryFrom(event);
       if (query.trim().length < 5) return undefined;
       const sessionKey = sessionKeyFrom(event, ctx);
-      if (useSectionBuilder) promptLinesBySession.delete(sessionKey);
+      if (cachePromptLines) promptLinesBySession.delete(sessionKey);
       try {
         if (options.shouldSkipRecall(sessionKey)) {
           log.debug(`delegate recall skipped: cron policy excludes ${sessionKey}`);
@@ -520,10 +528,9 @@ export function registerDelegateRuntime(
         });
         if (!rendered) return undefined;
         const prompt = rendered.prompt;
-        if (useSectionBuilder) {
-          // Section-builder hosts inject through the registered builder; the
-          // hook only pre-computes. Returning injection fields here too would
-          // double-inject.
+        if (cachePromptLines) {
+          // A registered builder injects; the hook only pre-computes.
+          // Returning injection fields here too would double-inject.
           promptLinesBySession.set(sessionKey, rendered.lines);
           return undefined;
         }
@@ -781,7 +788,14 @@ export function registerDelegateRuntime(
     workspaceDir: options.capability.workspaceDir,
     agentIds: options.capability.agentIds,
     allowPromptInjection: promptInjectionEnabled,
-    peekPromptLines: (sessionKey) => promptLinesBySession.get(sessionKey) ?? null,
+    // The section builder owns the destructive read when it exists; otherwise
+    // the capability builder IS the sole consumer and must evict, or a stale
+    // section would be re-injected on the next turn.
+    readPromptLines: (sessionKey) => {
+      const lines = promptLinesBySession.get(sessionKey) ?? null;
+      if (!useSectionBuilder) promptLinesBySession.delete(sessionKey);
+      return lines;
+    },
     extractionMaxTurnChars: options.capability.extractionMaxTurnChars,
     flushModel: options.capability.flushModel,
     configuredSearchBackend: options.capability.configuredSearchBackend,

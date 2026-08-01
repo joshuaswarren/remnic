@@ -42,7 +42,7 @@ import {
   createMemoryReadScope,
   isMemoryArtifactPath,
   isSessionsMemoryPath,
-  sameMemoryCorpus,
+  daemonServesCorpus,
 } from "./memory-read-scope.js";
 import { listRemnicPublicArtifacts } from "./public-artifacts.js";
 
@@ -88,11 +88,11 @@ export type DelegateCapabilityOptions = {
    */
   allowPromptInjection: boolean;
   /**
-   * Non-destructive peek at the recall lines the delegate hook precomputed for
-   * a session. The registered prompt *section* builder owns the destructive
-   * read; the capability builder must not consume the same lines twice.
+   * Read the recall lines the delegate hook precomputed for a session. The
+   * caller decides destructiveness: it peeks when a prompt *section* builder
+   * owns eviction, and consumes when this capability is the sole consumer.
    */
-  peekPromptLines: (sessionKey: string) => string[] | null;
+  readPromptLines: (sessionKey: string) => string[] | null;
   /** Flush-plan sizing input (`extractionMaxTurnChars`). */
   extractionMaxTurnChars?: unknown;
   /** Flush-plan model (`summaryModel` or the task chain primary). */
@@ -204,7 +204,7 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
           healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
           corpusShared =
             health.memoryDir !== undefined &&
-            sameMemoryCorpus(options.memoryDir, health.memoryDir);
+            daemonServesCorpus(options.memoryDir, health.memoryDir);
           if (!corpusShared && !reportedCorpusMismatch) {
             reportedCorpusMismatch = true;
             log.error(
@@ -383,7 +383,7 @@ export function createDelegateMemoryCapability(options: DelegateCapabilityOption
       }
     },
     promptBuilder: (params: { sessionKey?: string }) =>
-      options.peekPromptLines(params?.sessionKey ?? "default"),
+      options.readPromptLines(params?.sessionKey ?? "default"),
   };
 }
 
