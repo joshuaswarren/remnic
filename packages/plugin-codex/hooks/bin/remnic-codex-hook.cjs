@@ -343,14 +343,18 @@ function httpPost(urlPath, token, bodyObj, timeoutMs) {
   });
 }
 
-function httpHealthy(timeoutMs) {
+// `token` is the caller's already-resolved credential, NOT a second
+// resolveToken() call: the probe must authenticate with the exact bearer the
+// operation it gates will send. Re-resolving could pick up a rotated
+// tokens.json (or an inherited REMNIC_HOOK_TOKEN the foreground handlers
+// ignore) and green-light a probe whose recall then 401s.
+//
+// When the daemon has an auth token configured, every route — including
+// /engram/v1/health — returns 401 to unauthenticated requests, so an
+// unauthenticated probe makes the hook wrongly report "daemon not running"
+// and skip recall/observe. Unauthenticated daemons ignore the header.
+function httpHealthy(timeoutMs, token) {
   if (DAEMON_URL === null) return Promise.resolve(false);
-  // When the daemon has an auth token configured, every route — including
-  // /engram/v1/health — returns 401 to unauthenticated requests, so an
-  // unauthenticated probe makes the hook wrongly report "daemon not running"
-  // and skip recall/observe. Send the same bearer token the observe/flush
-  // POSTs use. Unauthenticated daemons ignore the header.
-  const token = process.env.REMNIC_HOOK_TOKEN || resolveToken();
   const transport = DAEMON_URL.protocol === "https:" ? https : http;
   return new Promise((resolve) => {
     const req = transport.request(
@@ -674,7 +678,7 @@ async function handleSessionStart(input, token, log) {
   log(`session=${sessionId} project=${projectName} coding-context=${codingContext ? "yes" : ""}`);
 
   // Health check — start daemon if not running.
-  if (!(await httpHealthy(2000))) {
+  if (!(await httpHealthy(2000, token))) {
     log("daemon not responding, attempting start...");
     // Try `remnic` first, fall through to legacy `engram` when only the older
     // CLI is on PATH. spawn() emits ENOENT *asynchronously* via 'error', so we
@@ -699,7 +703,7 @@ async function handleSessionStart(input, token, log) {
       }
     }
     await new Promise((r) => setTimeout(r, 2000));
-    if (!(await httpHealthy(2000))) {
+    if (!(await httpHealthy(2000, token))) {
       log("daemon still not responding after start attempt");
       emit({
         continue: true,
