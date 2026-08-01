@@ -336,8 +336,9 @@ test("ChatGPT Apps inspector omits sourceConnector when absent and propagates it
       arguments: { query: "preferences", sessionKey: "sess-1", namespace: "work" },
     },
   });
-  assert.ok(!("sourceConnector" in (captureAbsent.xrays[0] ?? {})),
-    "absent connector must not create an explicit undefined key");
+  const absentXray = captureAbsent.xrays[0];
+  assert.ok(absentXray, "inspector must issue an X-ray request");
+  assert.ok(!("sourceConnector" in absentXray), "absent connector must not create an explicit undefined key");
 
   const capturePresent: Capture = { recalls: [], xrays: [], actionRequests: [] };
   const serverB = new EngramMcpServer(fakeService(capturePresent), { principal: "user-a" });
