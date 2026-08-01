@@ -1856,7 +1856,7 @@ test("loadDaemonAuth reports the variable it actually used", () => {
     });
   }
 });
-test("resolveBridgeMode is explicit-only: config delegate activates, absence stays embedded", () => {
+test("resolveBridgeMode: explicit values win, absence stays embedded", () => {
   const priorEnv = process.env.REMNIC_BRIDGE_MODE;
   Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
   try {

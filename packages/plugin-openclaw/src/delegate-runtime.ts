@@ -39,6 +39,7 @@ import {
 } from "./delegate-namespaces.js";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
+  type BridgeConfig,
   type DaemonAuthToken,
   type DelegateDaemonTarget,
   checkDaemonHealthSync,
@@ -1004,14 +1005,25 @@ export function maybeRegisterDelegateRuntime(
   options: MaybeRegisterDelegateOptions,
   deps: MaybeRegisterDelegateDeps = { checkHealth: checkDaemonHealthSync },
 ): boolean {
-  let bridge: ReturnType<typeof resolveBridgeMode>;
+  let bridge: BridgeConfig;
+  let bridgeHealthTimeoutMs: number;
   try {
-    bridge = resolveBridgeMode(options.configBridgeMode);
+    // Parsed BEFORE mode resolution: `auto` probes the daemon inside
+    // resolveBridgeMode and must honor the configured timeout.
+    bridgeHealthTimeoutMs = parseOpenClawBridgeConfig({
+      bridgeHealthTimeoutMs: options.bridgeHealthTimeoutMs,
+    }).healthTimeoutMs;
+    bridge = resolveBridgeMode(options.configBridgeMode, {
+      memoryDir: options.memoryDir,
+      timeoutMs: bridgeHealthTimeoutMs,
+      onSkip: (reason) =>
+        log.info(`[${options.serviceId}] bridge mode auto: staying embedded — ${reason}`),
+    });
   } catch (err) {
-    // An invalid bridgeMode (config typo or bad env override) must not abort
-    // the whole plugin registration — reject LOUDLY, then run embedded so the
-    // deployment keeps its memory loop (AGENTS.md §4: side effects must not
-    // crash the main flow).
+    // An invalid bridgeMode or health timeout (config typo or bad env
+    // override) must not abort the whole plugin registration — reject LOUDLY,
+    // then run embedded so the deployment keeps its memory loop (AGENTS.md §4:
+    // side effects must not crash the main flow).
     log.error(`${String(err)} — falling back to the embedded runtime`);
     delegateEmbeddedFallbackApis.add(api);
     return false;
@@ -1037,18 +1049,10 @@ export function maybeRegisterDelegateRuntime(
     );
     return true;
   }
-  let bridgeHealthTimeoutMs: number;
-  try {
-    bridgeHealthTimeoutMs = parseOpenClawBridgeConfig({
-      bridgeHealthTimeoutMs: options.bridgeHealthTimeoutMs,
-    }).healthTimeoutMs;
-  } catch (err) {
-    log.error(`${String(err)} — falling back to the embedded runtime`);
-    delegateEmbeddedFallbackApis.add(api);
-    return false;
-  }
   // register() is synchronous, so the preflight uses the bridge's
-  // worker-backed sync health check (the same probe detectBridgeMode uses).
+  // worker-backed sync health check. In `auto` mode the daemon has already
+  // answered a corpus-identity probe; this re-check keeps the explicit
+  // `delegate` path honest and costs one liveness request.
   if (
     !deps.checkHealth(
       bridge.daemonHost,

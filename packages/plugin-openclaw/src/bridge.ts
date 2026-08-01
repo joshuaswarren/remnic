@@ -96,11 +96,20 @@ interface HealthWorkerData {
   path: string;
   fallbackPath: string | null;
   token: string;
+  /**
+   * When present, a 200 response body is parsed as JSON and the string value
+   * at `captureField` is written here UTF-8 encoded, length-prefixed in the
+   * first 4 bytes. Absent for plain liveness probes, which never read a body.
+   */
+  capture?: SharedArrayBuffer;
+  captureField?: string;
 }
 
 interface HealthWorkerResponse {
   statusCode?: number;
   resume(): void;
+  setEncoding?(encoding: string): void;
+  on?(event: "data" | "end", handler: (chunk?: string) => void): void;
 }
 
 interface HealthWorkerRequest {
@@ -154,6 +163,38 @@ export function runHealthWorker(request: HealthRequest, data: HealthWorkerData):
         (res) => {
           responseReceived = true;
           const statusCode = res.statusCode;
+          if (statusCode === 200 && data.capture && data.captureField && res.on) {
+            // Only the capture probe reads a body; every other caller resumes
+            // the stream immediately so the socket is freed.
+            let body = "";
+            res.setEncoding?.("utf8");
+            res.on("data", (chunk) => {
+              // Bound the buffered body: a runaway response must not grow the
+              // worker's heap while the caller blocks on Atomics.wait.
+              if (body.length < 65_536) body += chunk ?? "";
+            });
+            res.on("end", () => {
+              try {
+                const parsed: unknown = JSON.parse(body);
+                const value =
+                  typeof parsed === "object" && parsed !== null
+                    ? (parsed as Record<string, unknown>)[data.captureField as string]
+                    : undefined;
+                if (typeof value === "string") {
+                  const bytes = new TextEncoder().encode(value);
+                  const capture = new Uint8Array(data.capture as SharedArrayBuffer);
+                  const length = Math.min(bytes.length, capture.length - 4);
+                  new DataView(data.capture as SharedArrayBuffer).setUint32(0, length);
+                  capture.set(bytes.subarray(0, length), 4);
+                }
+              } catch {
+                // A malformed body leaves the capture empty; the caller treats
+                // an empty capture as "unknown", never as a match.
+              }
+              finish(true);
+            });
+            return;
+          }
           res.resume();
           if (statusCode === 200) {
             finish(true);
@@ -191,9 +232,18 @@ const LAUNCHD_SERVICE_PATHS = [
   ["Library", "LaunchAgents", "ai.remnic.server.plist"],
   ["Library", "LaunchAgents", "ai.engram.daemon.plist"],
 ] as const;
-const SYSTEMD_SERVICE_PATHS = [
+const SYSTEMD_USER_SERVICE_PATHS = [
   [".config", "systemd", "user", "remnic.service"],
   [".config", "systemd", "user", "engram.service"],
+] as const;
+// A packaged fleet install commonly runs the daemon as a SYSTEM unit rather
+// than a per-user one, so a home-relative scan alone misses it and auto mode
+// would never probe (issue #2120).
+const SYSTEMD_SYSTEM_SERVICE_PATHS = [
+  "/etc/systemd/system/remnic.service",
+  "/etc/systemd/system/engram.service",
+  "/lib/systemd/system/remnic.service",
+  "/usr/lib/systemd/system/remnic.service",
 ] as const;
 
 function readEnv(name: string): string | undefined {
@@ -252,10 +302,10 @@ function isDaemonRunning(): boolean {
 
 function isDaemonServiceConfigured(): boolean {
   const homeDir = resolveHomeDir();
-  for (const segments of [...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_SERVICE_PATHS]) {
+  for (const segments of [...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS]) {
     if (fileExists(path.join(homeDir, ...segments))) return true;
   }
-  return false;
+  return SYSTEMD_SYSTEM_SERVICE_PATHS.some((unitPath) => fileExists(unitPath));
 }
 
 /**
@@ -303,29 +353,45 @@ function coerceDaemonPort(value: unknown): number | undefined {
     : undefined;
 }
 
-export function checkDaemonHealthSync(
-  host: string,
-  port: number,
-  timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
-): boolean {
-  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return false;
+const DAEMON_CAPTURE_BYTES = 1_024;
+
+/**
+ * Run one blocking daemon probe on a worker thread. `register()` is
+ * synchronous, so this is the only way to consult the daemon before deciding
+ * how to register. When `captureField` is set, the probe targets the detailed
+ * health route and returns that field's string value from the response body.
+ */
+function probeDaemonSync(options: {
+  host: string;
+  port: number;
+  timeoutMs: number;
+  path: string;
+  fallbackPath: string | null;
+  captureField?: string;
+}): { ok: boolean; captured?: string } {
+  const { host, port, timeoutMs } = options;
+  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return { ok: false };
   const deadline = Date.now() + timeoutMs;
 
   let worker: Worker | undefined;
   try {
     const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
     const view = new Int32Array(state);
+    const capture = options.captureField
+      ? new SharedArrayBuffer(DAEMON_CAPTURE_BYTES)
+      : undefined;
     const workerUrl = new URL(`data:text/javascript,${encodeURIComponent(HEALTH_WORKER_SOURCE)}`);
     const workerOptions: WorkerOptions & { type: "module" } = {
       type: "module",
       workerData: {
         host,
         port,
-        path: LIVENESS_PATH,
-        fallbackPath: LEGACY_HEALTH_PATH,
+        path: options.path,
+        fallbackPath: options.fallbackPath,
         token: loadDaemonAuth().token,
         deadline,
         state,
+        ...(capture ? { capture, captureField: options.captureField } : {}),
       },
     };
     worker = new Worker(workerUrl, workerOptions);
@@ -333,13 +399,57 @@ export function checkDaemonHealthSync(
     Atomics.wait(view, 0, 0, Math.max(0, deadline - Date.now()));
     const status = Atomics.load(view, 0);
     if (status === 0) void worker.terminate();
-    return status === 1;
+    if (status !== 1) return { ok: false };
+    if (!capture) return { ok: true };
+    const length = new DataView(capture).getUint32(0);
+    return {
+      ok: true,
+      captured:
+        length > 0
+          ? new TextDecoder().decode(new Uint8Array(capture, 4, Math.min(length, capture.byteLength - 4)))
+          : undefined,
+    };
   } catch {
     if (worker) void worker.terminate();
-    return false;
+    return { ok: false };
   }
 }
 
+export function checkDaemonHealthSync(
+  host: string,
+  port: number,
+  timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
+): boolean {
+  return probeDaemonSync({
+    host,
+    port,
+    timeoutMs,
+    path: LIVENESS_PATH,
+    fallbackPath: LEGACY_HEALTH_PATH,
+  }).ok;
+}
+
+/**
+ * Read the memoryDir a healthy daemon is serving. Returns `undefined` for the
+ * directory when the daemon answers but does not report one (an older build,
+ * or a token without health access), which callers must treat as "unknown" —
+ * never as a match.
+ */
+export function readDaemonMemoryDirSync(
+  host: string,
+  port: number,
+  timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
+): { healthy: boolean; memoryDir?: string } {
+  const probe = probeDaemonSync({
+    host,
+    port,
+    timeoutMs,
+    path: LEGACY_HEALTH_PATH,
+    fallbackPath: null,
+    captureField: "memoryDir",
+  });
+  return { healthy: probe.ok, memoryDir: probe.captured };
+}
 
 function shouldProbeDaemonHealth(host: string): boolean {
   const normalized = host.trim().toLowerCase();
@@ -399,90 +509,117 @@ function readDaemonPort(): number {
   return DEFAULT_PORT;
 }
 
+/** What a caller may ask for; `auto` defers to same-host daemon detection. */
+export type BridgeModeRequest = BridgeMode | "auto";
+
 /**
- * Determine bridge mode:
- * - If REMNIC_BRIDGE_MODE env is set, use that.
- * - If a daemon is already running, use delegate mode.
- * - Otherwise, use embedded mode.
+ * Same-host daemon detection for `bridgeMode: "auto"` (issue #2120).
+ *
+ * Explicit overrides are the CALLER's job — `resolveBridgeMode` consults this
+ * only after env and config both say `auto`. Two gates must pass before an
+ * auto deployment delegates:
+ *
+ *   1. Liveness — a PID file or a local/service-configured endpoint is only a
+ *      hint (PIDs go stale and get reused), so the endpoint must answer.
+ *   2. Corpus identity — the daemon must report the SAME memoryDir the plugin
+ *      is configured for. Delegating to a daemon serving a different corpus
+ *      would silently redirect every recall and write; an unknown memoryDir
+ *      (older daemon, or a token without health access) is not a match.
  */
-export function detectBridgeMode(): BridgeConfig {
-  const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
-
-  if (envMode === "delegate") {
-    return {
-      mode: "delegate",
-      daemonHost: readDaemonHost(),
-      daemonPort: readDaemonPort(),
-    };
-  }
-
-  if (envMode === "embedded") {
-    return {
-      mode: "embedded",
-      daemonHost: DEFAULT_HOST,
-      daemonPort: readDaemonPort(),
-    };
-  }
-
+export function detectDaemonBridgeMode(options: {
+  /** The plugin's configured memoryDir, used for the corpus-identity gate. */
+  memoryDir: string;
+  timeoutMs?: number;
+  onSkip?: (reason: string) => void;
+}): BridgeConfig {
   const daemonHost = readDaemonHost();
   const daemonPort = readDaemonPort();
+  const embedded: BridgeConfig = { mode: "embedded", daemonHost, daemonPort };
 
-  const hasDaemonPidHint = isDaemonRunning();
-
-  // Auto-detect: PID files are only hints, because PIDs can be stale or reused.
-  // Delegate only after the configured Remnic endpoint proves it is healthy.
-  if (
-    (hasDaemonPidHint || shouldProbeDaemonHealth(daemonHost)) &&
-    checkDaemonHealthSync(daemonHost, daemonPort)
-  ) {
-    return {
-      mode: "delegate",
-      daemonHost,
-      daemonPort,
-    };
+  if (!isDaemonRunning() && !shouldProbeDaemonHealth(daemonHost)) {
+    options.onSkip?.("no daemon PID, service unit, or local endpoint to probe");
+    return embedded;
   }
-
-  return {
-    mode: "embedded",
-    daemonHost: DEFAULT_HOST,
-    daemonPort,
-  };
+  const health = readDaemonMemoryDirSync(daemonHost, daemonPort, options.timeoutMs);
+  if (!health.healthy) {
+    options.onSkip?.(`no healthy daemon at ${daemonHost}:${daemonPort}`);
+    return embedded;
+  }
+  if (health.memoryDir === undefined) {
+    options.onSkip?.(
+      `daemon at ${daemonHost}:${daemonPort} did not report a memoryDir, so its corpus cannot be confirmed`,
+    );
+    return embedded;
+  }
+  if (!sameMemoryCorpus(options.memoryDir, health.memoryDir)) {
+    options.onSkip?.(
+      `daemon at ${daemonHost}:${daemonPort} serves a different memoryDir than this plugin`,
+    );
+    return embedded;
+  }
+  return { mode: "delegate", daemonHost, daemonPort };
 }
+
+/**
+ * Whether two memoryDir values name the same corpus. Both sides are
+ * tilde-expanded and resolved; symlinks are NOT followed, because a mismatch
+ * must fail closed and a realpath here would need I/O on a path that may not
+ * exist yet.
+ */
+function sameMemoryCorpus(pluginMemoryDir: string, daemonMemoryDir: string): boolean {
+  const normalize = (value: string): string =>
+    path.normalize(path.resolve(expandTildePath(value.trim()))).replace(/[\\/]+$/, "");
+  if (!pluginMemoryDir.trim() || !daemonMemoryDir.trim()) return false;
+  return normalize(pluginMemoryDir) === normalize(daemonMemoryDir);
+}
+
 /**
  * Resolve the bridge mode for the plugin runtime (issue #2120).
  *
- * Unlike `detectBridgeMode`, this resolver is EXPLICIT-ONLY: delegate mode
- * activates solely via `REMNIC_BRIDGE_MODE=delegate` (or the legacy env) or
- * the plugin config's `bridgeMode: "delegate"`. The auto-detection branch of
- * `detectBridgeMode` is intentionally not consulted — auto-flipping existing
- * co-located deployments (embedded plugin beside a same-host daemon) to
- * delegate on a restart would be a silent behavior change. Revisit once
- * delegate mode has production mileage.
+ * Precedence is env override > plugin config > `embedded`. `auto` is the only
+ * value that consults detection: it exists so a fleet can ship ONE config that
+ * delegates on hosts running a same-corpus daemon and stays embedded
+ * everywhere else. `embedded` remains the default precisely because
+ * auto-flipping a co-located deployment on restart would be a silent behavior
+ * change; `auto` makes that flip an explicit opt-in.
  */
-export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
+export function resolveBridgeMode(
+  configBridgeMode: string,
+  options: { memoryDir?: string; timeoutMs?: number; onSkip?: (reason: string) => void } = {},
+): BridgeConfig {
   const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
-  let mode: BridgeMode;
-  if (envMode === "delegate" || envMode === "embedded") {
-    mode = envMode;
-  } else if (envMode !== undefined && envMode !== "") {
-    throw new Error(
-      `Invalid REMNIC_BRIDGE_MODE env override: ${envMode} (expected "embedded" or "delegate")`,
-    );
-  } else if (
-    configBridgeMode === undefined ||
-    configBridgeMode === "" ||
-    configBridgeMode === "embedded"
-  ) {
-    mode = "embedded";
-  } else if (configBridgeMode === "delegate") {
-    mode = "delegate";
+  const isRequest = (value: string): value is BridgeModeRequest =>
+    value === "embedded" || value === "delegate" || value === "auto";
+  let requested: BridgeModeRequest;
+  if (envMode !== undefined && envMode !== "") {
+    if (!isRequest(envMode)) {
+      throw new Error(
+        `Invalid REMNIC_BRIDGE_MODE env override: ${envMode} (expected "embedded", "delegate", or "auto")`,
+      );
+    }
+    requested = envMode;
+  } else if (configBridgeMode === undefined || configBridgeMode === "") {
+    requested = "embedded";
+  } else if (isRequest(configBridgeMode)) {
+    requested = configBridgeMode;
   } else {
     throw new Error(
-      `Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded" or "delegate")`,
+      `Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded", "delegate", or "auto")`,
     );
   }
+  if (requested === "auto") {
+    const memoryDir = options.memoryDir ?? "";
+    if (!memoryDir.trim()) {
+      throw new Error('bridgeMode "auto" requires a configured memoryDir to verify the daemon corpus');
+    }
+    return detectDaemonBridgeMode({
+      memoryDir,
+      timeoutMs: options.timeoutMs,
+      onSkip: options.onSkip,
+    });
+  }
   return {
-    mode,
+    mode: requested,
     daemonHost: readDaemonHost(),
     daemonPort: readDaemonPort(),
   };

@@ -1,0 +1,281 @@
+/**
+ * `bridgeMode: "auto"` — same-host daemon detection (issue #2120).
+ *
+ * These tests drive the REAL worker-backed sync probe against a local stub, so
+ * they cover the whole path `resolveBridgeMode("auto")` takes at gateway
+ * registration: env/config precedence, liveness, and the corpus-identity gate.
+ */
+
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { Worker } from "node:worker_threads";
+
+import { detectDaemonBridgeMode, readDaemonMemoryDirSync, resolveBridgeMode } from "./bridge.js";
+
+type HealthStub = {
+  port: number;
+  close: () => Promise<void>;
+};
+
+// The sync probe blocks the calling thread on Atomics.wait, so a stub on the
+// main event loop could never accept its connection. The stub therefore runs
+// on its own worker thread, whose loop keeps turning while we block.
+const STUB_SOURCE = `
+import http from "node:http";
+import { parentPort, workerData } from "node:worker_threads";
+const server = http.createServer((req, res) => {
+  res.writeHead(workerData.status, { "content-type": "application/json" });
+  res.end(workerData.body);
+});
+server.listen(0, "127.0.0.1", () => {
+  parentPort.postMessage({ port: server.address().port });
+});
+parentPort.on("message", (message) => {
+  if (message === "close") server.close(() => process.exit(0));
+});
+`;
+
+async function startHealthStub(body: unknown, status = 200): Promise<HealthStub> {
+  const worker = new Worker(
+    new URL(`data:text/javascript,${encodeURIComponent(STUB_SOURCE)}`),
+    {
+      type: "module",
+      workerData: { status, body: typeof body === "string" ? body : JSON.stringify(body) },
+    } as ConstructorParameters<typeof Worker>[1] & { type: "module" },
+  );
+  const ready = Promise.withResolvers<number>();
+  worker.on("message", (message: { port: number }) => ready.resolve(message.port));
+  worker.on("error", ready.reject);
+  const port = await ready.promise;
+  return {
+    port,
+    close: async () => {
+      worker.postMessage("close");
+      await worker.terminate();
+    },
+  };
+}
+
+const ENV_KEYS = ["REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE", "REMNIC_HOST", "REMNIC_PORT"] as const;
+
+function withDaemonEnv<T>(port: number | undefined, run: () => T): T {
+  const prior = new Map<string, string | undefined>();
+  for (const key of ENV_KEYS) prior.set(key, process.env[key]);
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  process.env.REMNIC_HOST = "127.0.0.1";
+  if (port !== undefined) process.env.REMNIC_PORT = String(port);
+  try {
+    return run();
+  } finally {
+    for (const key of ENV_KEYS) {
+      const value = prior.get(key);
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+  }
+}
+
+const MEMORY_DIR = path.join(os.tmpdir(), "remnic-auto-mode", "memory");
+
+test("readDaemonMemoryDirSync captures the daemon's memoryDir from health", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" });
+  try {
+    const health = withDaemonEnv(stub.port, () =>
+      readDaemonMemoryDirSync("127.0.0.1", stub.port, 5_000),
+    );
+    assert.deepEqual(health, { healthy: true, memoryDir: MEMORY_DIR });
+  } finally {
+    await stub.close();
+  }
+});
+
+test("readDaemonMemoryDirSync reports healthy-but-unknown when memoryDir is absent", async () => {
+  const stub = await startHealthStub({ ok: true });
+  try {
+    const health = readDaemonMemoryDirSync("127.0.0.1", stub.port, 5_000);
+    assert.deepEqual(health, { healthy: true, memoryDir: undefined });
+  } finally {
+    await stub.close();
+  }
+});
+
+test("readDaemonMemoryDirSync survives a malformed health body", async () => {
+  const stub = await startHealthStub("{not json");
+  try {
+    const health = readDaemonMemoryDirSync("127.0.0.1", stub.port, 5_000);
+    assert.deepEqual(health, { healthy: true, memoryDir: undefined });
+  } finally {
+    await stub.close();
+  }
+});
+
+test("readDaemonMemoryDirSync reports unhealthy for a non-200 daemon", async () => {
+  const stub = await startHealthStub({ error: "unauthorized" }, 401);
+  try {
+    assert.deepEqual(readDaemonMemoryDirSync("127.0.0.1", stub.port, 5_000), {
+      healthy: false,
+      memoryDir: undefined,
+    });
+  } finally {
+    await stub.close();
+  }
+});
+
+test("readDaemonMemoryDirSync rejects an unroutable port without probing", () => {
+  assert.deepEqual(readDaemonMemoryDirSync("127.0.0.1", 0, 500), {
+    healthy: false,
+    memoryDir: undefined,
+  });
+  assert.deepEqual(readDaemonMemoryDirSync("", 4318, 500), {
+    healthy: false,
+    memoryDir: undefined,
+  });
+});
+
+test("auto delegates when the daemon serves the same corpus", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR });
+  try {
+    const resolved = withDaemonEnv(stub.port, () =>
+      resolveBridgeMode("auto", { memoryDir: MEMORY_DIR, timeoutMs: 5_000 }),
+    );
+    assert.equal(resolved.mode, "delegate");
+    assert.equal(resolved.daemonPort, stub.port);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("auto tolerates trailing-slash and relative-segment spelling of one corpus", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: `${MEMORY_DIR}/` });
+  try {
+    const resolved = withDaemonEnv(stub.port, () =>
+      resolveBridgeMode("auto", {
+        memoryDir: path.join(MEMORY_DIR, "..", "memory"),
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(resolved.mode, "delegate");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("auto stays embedded when the daemon serves a different corpus", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: path.join(os.tmpdir(), "other-corpus") });
+  const reasons: string[] = [];
+  try {
+    const resolved = withDaemonEnv(stub.port, () =>
+      resolveBridgeMode("auto", {
+        memoryDir: MEMORY_DIR,
+        timeoutMs: 5_000,
+        onSkip: (reason) => reasons.push(reason),
+      }),
+    );
+    assert.equal(resolved.mode, "embedded");
+    assert.match(reasons.join("\n"), /different memoryDir/);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("auto stays embedded when the daemon does not report a memoryDir", async () => {
+  const stub = await startHealthStub({ ok: true });
+  const reasons: string[] = [];
+  try {
+    const resolved = withDaemonEnv(stub.port, () =>
+      resolveBridgeMode("auto", {
+        memoryDir: MEMORY_DIR,
+        timeoutMs: 5_000,
+        onSkip: (reason) => reasons.push(reason),
+      }),
+    );
+    assert.equal(
+      resolved.mode,
+      "embedded",
+      "an unconfirmable corpus must fail closed, never assume a match",
+    );
+    assert.match(reasons.join("\n"), /did not report a memoryDir/);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("auto stays embedded when no daemon answers", () => {
+  const reasons: string[] = [];
+  // Port 1 is reserved and never listening on a normal host.
+  const resolved = withDaemonEnv(1, () =>
+    resolveBridgeMode("auto", {
+      memoryDir: MEMORY_DIR,
+      timeoutMs: 1_500,
+      onSkip: (reason) => reasons.push(reason),
+    }),
+  );
+  assert.equal(resolved.mode, "embedded");
+  assert.match(reasons.join("\n"), /no healthy daemon/);
+});
+
+test("an explicit env override outranks auto in both directions", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR });
+  try {
+    withDaemonEnv(stub.port, () => {
+      process.env.REMNIC_BRIDGE_MODE = "embedded";
+      assert.equal(
+        resolveBridgeMode("auto", { memoryDir: MEMORY_DIR, timeoutMs: 5_000 }).mode,
+        "embedded",
+        "env embedded wins even though the daemon would qualify",
+      );
+      process.env.REMNIC_BRIDGE_MODE = "auto";
+      assert.equal(
+        resolveBridgeMode("embedded", { memoryDir: MEMORY_DIR, timeoutMs: 5_000 }).mode,
+        "delegate",
+        "env auto detects even though config says embedded",
+      );
+    });
+  } finally {
+    await stub.close();
+  }
+});
+
+test("auto requires a memoryDir to verify against", () => {
+  withDaemonEnv(undefined, () => {
+    assert.throws(
+      () => resolveBridgeMode("auto", { timeoutMs: 500 }),
+      /requires a configured memoryDir/,
+    );
+    assert.throws(
+      () => resolveBridgeMode("auto", { memoryDir: "   ", timeoutMs: 500 }),
+      /requires a configured memoryDir/,
+    );
+  });
+});
+
+test("resolveBridgeMode rejects unknown values and names auto in the error", () => {
+  withDaemonEnv(undefined, () => {
+    assert.throws(() => resolveBridgeMode("daemon"), /expected "embedded", "delegate", or "auto"/);
+    assert.throws(() => resolveBridgeMode("AUTO"), /Invalid bridgeMode/);
+    process.env.REMNIC_BRIDGE_MODE = "daemon";
+    assert.throws(
+      () => resolveBridgeMode("embedded"),
+      /Invalid REMNIC_BRIDGE_MODE env override/,
+    );
+  });
+});
+
+test("detectDaemonBridgeMode is the auto probe and ignores explicit env modes", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR });
+  try {
+    withDaemonEnv(stub.port, () => {
+      // The caller owns explicit overrides; the detector answers only
+      // "is a healthy same-corpus daemon here?".
+      process.env.REMNIC_BRIDGE_MODE = "embedded";
+      assert.equal(
+        detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 5_000 }).mode,
+        "delegate",
+      );
+    });
+  } finally {
+    await stub.close();
+  }
+});

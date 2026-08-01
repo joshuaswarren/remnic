@@ -60,40 +60,59 @@ EMO daemon (:4318)          ← standalone process
 
 ## Configuration
 
-Bridge mode is not a config-file key. The OpenClaw plugin resolves it at gateway
-startup (`detectBridgeMode()` in `packages/plugin-openclaw/src/bridge.ts`):
+Bridge mode is the plugin config key `bridgeMode`, and the
+`REMNIC_BRIDGE_MODE` environment variable (legacy `ENGRAM_BRIDGE_MODE` also
+works) overrides it. `resolveBridgeMode()` in
+`packages/plugin-openclaw/src/bridge.ts` owns the precedence:
 
-1. If the `REMNIC_BRIDGE_MODE` environment variable is set (`embedded` or
-   `delegate`; legacy `ENGRAM_BRIDGE_MODE` also works), that wins.
-2. Otherwise, if a daemon is already listening on the configured port, the
-   bridge auto-detects **delegate** mode.
-3. Otherwise it runs **embedded**.
+| Value | Behavior |
+|---|---|
+| `embedded` (default) | Boot the in-process orchestrator. |
+| `delegate` | Skip the orchestrator and back the memory loop and memory-slot capability with the daemon. A failed daemon preflight logs an error and falls back to `embedded`. |
+| `auto` | Delegate **only** when a healthy same-host daemon reports the same `memoryDir` this plugin is configured for; stay embedded otherwise, with the reason logged. |
 
-In delegate mode the daemon endpoint comes from `REMNIC_HOST` (default
-`127.0.0.1`) and the daemon port env (legacy `ENGRAM_*` equivalents accepted).
+`auto` exists so one shared fleet config can delegate on the hosts that run a
+daemon and stay embedded everywhere else. It is not the default: silently
+flipping a co-located deployment to delegate on a restart would change memory
+behavior without anyone asking for it.
+
+Both gates must pass before `auto` delegates:
+
+1. **Liveness.** A daemon PID file, an installed launchd/systemd unit (user or
+   system), or a loopback endpoint is only a hint — PIDs go stale and get
+   reused — so the configured endpoint must actually answer.
+2. **Corpus identity.** The daemon must report the same `memoryDir`. Delegating
+   to a daemon serving a different corpus would silently redirect every recall
+   and write, so an unknown `memoryDir` (older daemon, or a token without
+   health access) counts as a mismatch and stays embedded.
+
+In delegate mode the daemon endpoint comes from the Remnic config's
+`server.host`/`server.port` or the corresponding env vars (default
+`127.0.0.1:4318`).
 
 ## Switching modes
 
 ```bash
-# Switch to delegate mode: start a daemon, then restart the gateway —
-# auto-detection picks delegate when the daemon is reachable.
+# Delegate on this host only:
+#   openclaw.json → plugins.entries["openclaw-remnic"].config.bridgeMode = "delegate"
+# Or, for a shared fleet config that adapts per host:
+#   ... .config.bridgeMode = "auto"
+
 remnic daemon install
 launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 
-# Or pin the mode explicitly in the gateway's environment:
+# Pin a single gateway without touching config:
 #   REMNIC_BRIDGE_MODE=delegate
 
-# Switch back to embedded: stop the daemon (or pin REMNIC_BRIDGE_MODE=embedded),
-# then restart the gateway.
+# Back to embedded: set bridgeMode to "embedded" (or pin the env var), then
+# restart the gateway. Under "auto", stopping the daemon is enough.
 remnic daemon stop
 launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 ```
 
-## Port Conflict Prevention
+## Running both on one host
 
-If OEO is in embedded mode and an EMO daemon is already running on `:4318`:
-1. OEO detects the conflict on startup
-2. OEO automatically switches to delegate mode for this session
-3. A warning is logged: "EMO daemon already running on :4318, switching to delegate mode"
-
-This prevents two instances competing for the same port.
+An embedded gateway beside a daemon on the same `memoryDir` means two
+orchestrators over one corpus: duplicate maintenance crons, two QMD writers,
+doubled extraction load, and SQLite contention. That is the deployment
+`delegate` and `auto` exist to fix — prefer one of them over running both.

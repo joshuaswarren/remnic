@@ -30,14 +30,17 @@ const ROOT = path.resolve(__dirname, "../..");
 // lever available is a wide margin between the two constants below.
 const PROBE_BUDGET_MS = 2_500;
 const STALLED_DETAILED_HEALTH_MS = 3_000;
+// The auto detector requires the daemon to report the SAME memoryDir, so the
+// stubs below and every detect call agree on one corpus path.
+const DETECT_MEMORY_DIR = path.join(os.tmpdir(), "bridge-detect-corpus");
 const HEALTH_SERVER_WORKER_SOURCE = `
 import { createServer } from "node:http";
 import { workerData } from "node:worker_threads";
 
 const view = new Int32Array(workerData.state);
 const server = createServer((_req, res) => {
-  res.writeHead(200);
-  res.end();
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ ok: true, memoryDir: workerData.memoryDir }));
 });
 
 server.listen(0, "127.0.0.1", () => {
@@ -84,7 +87,7 @@ setInterval(() => {}, 1000);
 // Bridge mode detection — packages/plugin-openclaw/src/bridge.ts
 // ---------------------------------------------------------------------------
 
-test("detectBridgeMode defaults to embedded when no daemon running", async (t) => {
+test("detectDaemonBridgeMode defaults to embedded when no daemon running", async (t) => {
   const previousHome = process.env.HOME;
   const previousPath = process.env.PATH;
   const previousPort = process.env.REMNIC_PORT;
@@ -105,29 +108,12 @@ test("detectBridgeMode defaults to embedded when no daemon running", async (t) =
     else process.env.REMNIC_PORT = previousPort;
   });
 
-  const { detectBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-  const config = detectBridgeMode();
+  const { detectDaemonBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+  const config = detectDaemonBridgeMode({ memoryDir: DETECT_MEMORY_DIR });
   // Without a daemon running, should default to embedded
   assert.equal(config.mode, "embedded");
   assert.equal(config.daemonHost, "127.0.0.1");
   assert.ok(config.daemonPort > 0);
-});
-
-test("detectBridgeMode respects ENGRAM_BRIDGE_MODE=delegate", async () => {
-  process.env.ENGRAM_BRIDGE_MODE = "delegate";
-  // Re-import to pick up env change
-  const bridgeMod = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-  const config = bridgeMod.detectBridgeMode();
-  assert.equal(config.mode, "delegate");
-  delete process.env.ENGRAM_BRIDGE_MODE;
-});
-
-test("detectBridgeMode respects ENGRAM_BRIDGE_MODE=embedded", async () => {
-  process.env.ENGRAM_BRIDGE_MODE = "embedded";
-  const bridgeMod = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-  const config = bridgeMod.detectBridgeMode();
-  assert.equal(config.mode, "embedded");
-  delete process.env.ENGRAM_BRIDGE_MODE;
 });
 
 test("checkDaemonHealth returns false when nothing is listening", async () => {
@@ -349,7 +335,7 @@ test("checkDaemonHealth falls back to legacy token file when remnic tokens are m
   }
 });
 
-test("detectBridgeMode reads legacy config port when remnic config is malformed", async () => {
+test("detectDaemonBridgeMode reads legacy config port when remnic config is malformed", async () => {
   const previousHome = process.env.HOME;
   const previousMode = process.env.REMNIC_BRIDGE_MODE;
   const previousLegacyMode = process.env.ENGRAM_BRIDGE_MODE;
@@ -371,8 +357,8 @@ test("detectBridgeMode reads legacy config port when remnic config is malformed"
     process.env.REMNIC_BRIDGE_MODE = "delegate";
     delete process.env.ENGRAM_BRIDGE_MODE;
 
-    const { detectBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    const config = detectBridgeMode();
+    const { detectDaemonBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    const config = detectDaemonBridgeMode({ memoryDir: DETECT_MEMORY_DIR });
     assert.equal(config.daemonPort, 4815);
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
@@ -384,7 +370,7 @@ test("detectBridgeMode reads legacy config port when remnic config is malformed"
   }
 });
 
-test("detectBridgeMode expands tilde-prefixed REMNIC_CONFIG_PATH", async () => {
+test("detectDaemonBridgeMode expands tilde-prefixed REMNIC_CONFIG_PATH", async () => {
   const previousHome = process.env.HOME;
   const previousMode = process.env.REMNIC_BRIDGE_MODE;
   const previousLegacyMode = process.env.ENGRAM_BRIDGE_MODE;
@@ -411,8 +397,8 @@ test("detectBridgeMode expands tilde-prefixed REMNIC_CONFIG_PATH", async () => {
     delete process.env.ENGRAM_PORT;
     delete process.env.ENGRAM_CONFIG_PATH;
 
-    const { detectBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    const config = detectBridgeMode();
+    const { detectDaemonBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    const config = detectDaemonBridgeMode({ memoryDir: DETECT_MEMORY_DIR });
     assert.equal(config.daemonPort, 4815);
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
@@ -432,7 +418,7 @@ test("detectBridgeMode expands tilde-prefixed REMNIC_CONFIG_PATH", async () => {
   }
 });
 
-test("detectBridgeMode does not delegate solely because a Remnic daemon pid file is live", async () => {
+test("detectDaemonBridgeMode does not delegate solely because a Remnic daemon pid file is live", async () => {
   const previousHome = process.env.HOME, previousPort = process.env.REMNIC_PORT;
   const previousMode = process.env.REMNIC_BRIDGE_MODE;
   const previousLegacyMode = process.env.ENGRAM_BRIDGE_MODE;
@@ -447,8 +433,8 @@ test("detectBridgeMode does not delegate solely because a Remnic daemon pid file
     delete process.env.REMNIC_BRIDGE_MODE;
     delete process.env.ENGRAM_BRIDGE_MODE;
 
-    const { detectBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    const config = detectBridgeMode();
+    const { detectDaemonBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    const config = detectDaemonBridgeMode({ memoryDir: DETECT_MEMORY_DIR });
     assert.equal(config.mode, "embedded");
   } finally {
     if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
@@ -460,7 +446,7 @@ test("detectBridgeMode does not delegate solely because a Remnic daemon pid file
   }
 });
 
-test("detectBridgeMode delegates when daemon service is installed and healthy without a pid file", async () => {
+test("detectDaemonBridgeMode delegates when daemon service is installed and healthy without a pid file", async () => {
   const previousHome = process.env.HOME;
   const previousPort = process.env.REMNIC_PORT;
   const previousMode = process.env.REMNIC_BRIDGE_MODE;
@@ -475,7 +461,7 @@ test("detectBridgeMode delegates when daemon service is installed and healthy wi
   const view = new Int32Array(state);
   const serverWorker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { workerData: { state } },
+    { workerData: { state, memoryDir: DETECT_MEMORY_DIR } },
   );
   Atomics.wait(view, 0, 0, 1000);
   const port = Atomics.load(view, 1);
@@ -487,8 +473,8 @@ test("detectBridgeMode delegates when daemon service is installed and healthy wi
     delete process.env.REMNIC_BRIDGE_MODE;
     delete process.env.ENGRAM_BRIDGE_MODE;
 
-    const { detectBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    const config = detectBridgeMode();
+    const { detectDaemonBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    const config = detectDaemonBridgeMode({ memoryDir: DETECT_MEMORY_DIR });
     assert.equal(config.mode, "delegate");
   } finally {
     await serverWorker.terminate();
@@ -503,7 +489,7 @@ test("detectBridgeMode delegates when daemon service is installed and healthy wi
   }
 });
 
-test("detectBridgeMode delegates when legacy ai.remnic.server launchd service is healthy", async () => {
+test("detectDaemonBridgeMode delegates when legacy ai.remnic.server launchd service is healthy", async () => {
   const previousHome = process.env.HOME;
   const previousPort = process.env.REMNIC_PORT;
   const previousMode = process.env.REMNIC_BRIDGE_MODE;
@@ -518,7 +504,7 @@ test("detectBridgeMode delegates when legacy ai.remnic.server launchd service is
   const view = new Int32Array(state);
   const serverWorker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { workerData: { state } },
+    { workerData: { state, memoryDir: DETECT_MEMORY_DIR } },
   );
   Atomics.wait(view, 0, 0, 1000);
   const port = Atomics.load(view, 1);
@@ -530,8 +516,8 @@ test("detectBridgeMode delegates when legacy ai.remnic.server launchd service is
     delete process.env.REMNIC_BRIDGE_MODE;
     delete process.env.ENGRAM_BRIDGE_MODE;
 
-    const { detectBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    const config = detectBridgeMode();
+    const { detectDaemonBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    const config = detectDaemonBridgeMode({ memoryDir: DETECT_MEMORY_DIR });
     assert.equal(config.mode, "delegate");
   } finally {
     await serverWorker.terminate();
@@ -546,7 +532,7 @@ test("detectBridgeMode delegates when legacy ai.remnic.server launchd service is
   }
 });
 
-test("detectBridgeMode delegates to a reachable local daemon without service metadata", async () => {
+test("detectDaemonBridgeMode delegates to a reachable local daemon without service metadata", async () => {
   const previousHome = process.env.HOME;
   const previousPort = process.env.REMNIC_PORT;
   const previousMode = process.env.REMNIC_BRIDGE_MODE;
@@ -557,7 +543,7 @@ test("detectBridgeMode delegates to a reachable local daemon without service met
   const view = new Int32Array(state);
   const serverWorker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { workerData: { state } },
+    { workerData: { state, memoryDir: DETECT_MEMORY_DIR } },
   );
   Atomics.wait(view, 0, 0, 1000);
   const port = Atomics.load(view, 1);
@@ -569,8 +555,8 @@ test("detectBridgeMode delegates to a reachable local daemon without service met
     delete process.env.REMNIC_BRIDGE_MODE;
     delete process.env.ENGRAM_BRIDGE_MODE;
 
-    const { detectBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    const config = detectBridgeMode();
+    const { detectDaemonBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    const config = detectDaemonBridgeMode({ memoryDir: DETECT_MEMORY_DIR });
     assert.equal(config.mode, "delegate");
   } finally {
     await serverWorker.terminate();
@@ -585,7 +571,7 @@ test("detectBridgeMode delegates to a reachable local daemon without service met
   }
 });
 
-test("detectBridgeMode coerces string config port before service health probing", async () => {
+test("detectDaemonBridgeMode coerces string config port before service health probing", async () => {
   const previousHome = process.env.HOME;
   const previousPort = process.env.REMNIC_PORT;
   const previousMode = process.env.REMNIC_BRIDGE_MODE;
@@ -602,7 +588,7 @@ test("detectBridgeMode coerces string config port before service health probing"
   const view = new Int32Array(state);
   const serverWorker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { workerData: { state } },
+    { workerData: { state, memoryDir: DETECT_MEMORY_DIR } },
   );
   Atomics.wait(view, 0, 0, 1000);
   const port = Atomics.load(view, 1);
@@ -620,8 +606,8 @@ test("detectBridgeMode coerces string config port before service health probing"
     delete process.env.REMNIC_BRIDGE_MODE;
     delete process.env.ENGRAM_BRIDGE_MODE;
 
-    const { detectBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    const config = detectBridgeMode();
+    const { detectDaemonBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    const config = detectDaemonBridgeMode({ memoryDir: DETECT_MEMORY_DIR });
     assert.equal(config.mode, "delegate");
     assert.equal(config.daemonPort, port);
   } finally {
@@ -637,7 +623,7 @@ test("detectBridgeMode coerces string config port before service health probing"
   }
 });
 
-test("detectBridgeMode does not delegate for an installed but stopped daemon service", async () => {
+test("detectDaemonBridgeMode does not delegate for an installed but stopped daemon service", async () => {
   const previousHome = process.env.HOME;
   const previousPort = process.env.REMNIC_PORT;
   const previousMode = process.env.REMNIC_BRIDGE_MODE;
@@ -654,8 +640,8 @@ test("detectBridgeMode does not delegate for an installed but stopped daemon ser
     delete process.env.REMNIC_BRIDGE_MODE;
     delete process.env.ENGRAM_BRIDGE_MODE;
 
-    const { detectBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    const config = detectBridgeMode();
+    const { detectDaemonBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    const config = detectDaemonBridgeMode({ memoryDir: DETECT_MEMORY_DIR });
     assert.equal(config.mode, "embedded");
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
