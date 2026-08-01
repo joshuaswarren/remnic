@@ -96,12 +96,7 @@ test("StorageManager round-trips derived_from entries whose paths contain commas
       'facts/weird "name".md:5', // quote inside path
       "facts/normal.md:0",
     ];
-    const targetPath = path.join(dir, "facts", "2026-04-19", `${id}.md`);
-    const mutated = {
-      ...memory,
-      frontmatter: { ...memory.frontmatter, derived_from: pathyEntries },
-    };
-    await storage.moveMemoryToPath(mutated, targetPath);
+    await storage.writeMemoryFrontmatter(memory, { derived_from: pathyEntries });
 
     const reread = await storage.readAllMemories();
     const back = reread.find((m) => m.frontmatter.id === id);
@@ -360,8 +355,6 @@ test("StorageManager rejects malformed derived_from on write", async () => {
     const memory = all.find((m) => m.frontmatter.id === id);
     assert.ok(memory);
 
-    const targetPath = path.join(dir, "facts", "2026-04-19", `${id}.md`);
-
     // Each case is a distinct malformed `derived_from` value that the
     // serializer must reject.  Tests cover: missing version, non-numeric
     // version, empty string, and non-array shape.
@@ -372,27 +365,19 @@ test("StorageManager rejects malformed derived_from on write", async () => {
       ["facts/a.md:-1"], // negative version
     ];
     for (const bad of badEntries) {
-      const mutated = {
-        ...memory,
-        frontmatter: { ...memory.frontmatter, derived_from: bad as string[] },
-      };
       await assert.rejects(
-        () => storage.moveMemoryToPath(mutated, targetPath),
+        () => storage.writeMemoryFrontmatter(memory, { derived_from: bad as string[] }),
         /invalid derived_from entry/,
         `should reject malformed derived_from ${JSON.stringify(bad)}`,
       );
     }
 
     // Non-array shape is rejected with a different error message.
-    const nonArray = {
-      ...memory,
-      frontmatter: {
-        ...memory.frontmatter,
-        derived_from: "facts/a.md:2" as unknown as string[],
-      },
-    };
     await assert.rejects(
-      () => storage.moveMemoryToPath(nonArray, targetPath),
+      () =>
+        storage.writeMemoryFrontmatter(memory, {
+          derived_from: "facts/a.md:2" as unknown as string[],
+        }),
       /derived_from must be an array/,
       "should reject non-array derived_from",
     );
@@ -412,17 +397,11 @@ test("StorageManager rejects unknown derived_via on write", async () => {
     const memory = all.find((m) => m.frontmatter.id === id);
     assert.ok(memory);
 
-    const targetPath = path.join(dir, "facts", "2026-04-19", `${id}.md`);
-    const mutated = {
-      ...memory,
-      frontmatter: {
-        ...memory.frontmatter,
-        derived_via: "annihilate" as unknown as "split" | "merge" | "update",
-      },
-    };
-
     await assert.rejects(
-      () => storage.moveMemoryToPath(mutated, targetPath),
+      () =>
+        storage.writeMemoryFrontmatter(memory, {
+          derived_via: "annihilate" as unknown as "split" | "merge" | "update",
+        }),
       /invalid derived_via/,
       "should reject unknown derived_via",
     );

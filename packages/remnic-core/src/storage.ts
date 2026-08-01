@@ -18,6 +18,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
 import path from "node:path";
 import { log } from "./logger.js";
+import { createMemorySnapshot } from "./storage/canonical-snapshot.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
 import { renderProfileWithLastUpdated } from "./storage/profile-header.js";
@@ -4507,7 +4508,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   private rememberMemorySnapshot<T extends MemoryFile | null>(memory: T): T {
     if (memory !== null && !StorageManager.loadedMemorySnapshots.has(memory)) {
-      StorageManager.loadedMemorySnapshots.set(memory, JSON.stringify([memory.frontmatter, memory.content]));
+      StorageManager.loadedMemorySnapshots.set(memory, createMemorySnapshot(memory));
     }
     return memory;
   }
@@ -5127,7 +5128,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     this.notifyCatalogWrite();
   }
   async moveMemoryToPath(memory: MemoryFile, targetPath: string): Promise<boolean> {
-    return this.withTombstoneBlockedMemoryPathLock(
+    const changed = await this.withTombstoneBlockedMemoryPathLock(
       memory.path,
       async (current) => {
         const destination = await this.readMemoryByPath(targetPath);
@@ -5136,7 +5137,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           throw new Error(`memory ${memory.frontmatter.id} changed before its tier move`);
         }
         const callerSnapshot = StorageManager.loadedMemorySnapshots.get(memory);
-        const currentSnapshot = JSON.stringify([current.frontmatter, current.content]);
+        const currentSnapshot = createMemorySnapshot(current);
         if (
           callerSnapshot === undefined
             ? current.frontmatter.updated !== memory.frontmatter.updated
@@ -5151,26 +5152,26 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           isQueuedReviewMemory(destination);
         const index = this.getTombstoneBlockedCaptureIndex();
         const marker = coordinate ? await index.prepareWrite() : undefined;
+        const projectedPath = toMemoryPathRel(this.baseDir, targetPath);
         let durable = false;
         try {
           if (destination?.frontmatter.id === current.frontmatter.id) {
             await this.deleteManagedStorageFile(current.path);
             durable = true;
             this.invalidateAllMemoriesCache();
-            updateProjectedMemoryPath(this.baseDir, current.frontmatter.id, toMemoryPathRel(this.baseDir, targetPath));
+            updateProjectedMemoryPath(this.baseDir, current.frontmatter.id, projectedPath);
           } else {
-            await this.writeMemoryFileAtomic(targetPath, memory);
+            await this.writeMemoryFileAtomic(targetPath, current);
+            if (memory.frontmatter.entityRef !== current.frontmatter.entityRef) {
+              memory.frontmatter.entityRef = current.frontmatter.entityRef;
+            }
             durable = true;
             const sourcePath = path.resolve(current.path);
             const destPath = path.resolve(targetPath);
             if (sourcePath !== destPath) {
               await this.deleteManagedStorageFile(current.path);
               this.invalidateAllMemoriesCache();
-              updateProjectedMemoryPath(
-                this.baseDir,
-                current.frontmatter.id,
-                toMemoryPathRel(this.baseDir, targetPath)
-              );
+              updateProjectedMemoryPath(this.baseDir, current.frontmatter.id, projectedPath);
             }
           }
           if (marker !== undefined) await this.rebuildTombstoneBlockedCaptureAfterInvalidation(marker);
@@ -5183,6 +5184,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       },
       [targetPath]
     );
+    if (this.isColdOrArchiveTierPath(memory.path) || this.isColdOrArchiveTierPath(targetPath)) {
+      this.invalidateColdMemoriesCache();
+    }
+    return changed;
   }
 
   async migrateMemoryToTier(
@@ -5195,13 +5200,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (sourcePath === destPath) {
       return { changed: false, targetPath };
     }
-
     const changed = await this.moveMemoryToPath(memory, targetPath);
     if (!changed) return { changed: false, targetPath };
-    this.invalidateAllMemoriesCache();
-    if (targetTier === "cold") {
-      this.invalidateColdMemoriesCache();
-    }
     this.bumpMemoryStatusVersion();
     return { changed, targetPath };
   }
