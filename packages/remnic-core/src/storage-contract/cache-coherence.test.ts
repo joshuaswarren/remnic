@@ -436,7 +436,7 @@ test("citation path lookup resolves collection-prefixed QMD paths", async () => 
   }
 });
 test("memory snapshots ignore object key order", async () => {
-  const { createMemorySnapshot } = await import("../storage/canonical-snapshot.js");
+  const { createMemorySnapshot } = await import("../memory-snapshot.js");
   type SnapshotInput = Parameters<typeof createMemorySnapshot>[0];
   const first = {
     content: "payload",

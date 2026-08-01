@@ -18,7 +18,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
 import path from "node:path";
 import { log } from "./logger.js";
-import { createMemorySnapshot } from "./storage/canonical-snapshot.js";
+import { createMemorySnapshot } from "./memory-snapshot.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
 import { renderProfileWithLastUpdated } from "./storage/profile-header.js";
