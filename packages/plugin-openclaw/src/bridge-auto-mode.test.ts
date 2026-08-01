@@ -331,3 +331,42 @@ test("detectDaemonBridgeMode is the auto probe and ignores explicit env modes", 
     await stub.close();
   }
 });
+
+test("auto delegates to a daemon serving a namespace under the corpus root", async () => {
+  // Health reports the namespace-RESOLVED storage dir, so a migrated default
+  // namespace must not read as a foreign corpus.
+  const stub = await startHealthStub({
+    ok: true,
+    memoryDir: path.join(MEMORY_DIR, "namespaces", "generalist"),
+  });
+  try {
+    const resolved = withDaemonEnv(stub.port, () =>
+      resolveBridgeMode("auto", { memoryDir: MEMORY_DIR, timeoutMs: 5_000 }),
+    );
+    assert.equal(resolved.mode, "delegate");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("auto stays embedded when either corpus identity is relative", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: "./memory" });
+  const reasons: string[] = [];
+  try {
+    const resolved = withDaemonEnv(stub.port, () =>
+      resolveBridgeMode("auto", {
+        memoryDir: MEMORY_DIR,
+        timeoutMs: 5_000,
+        onSkip: (reason) => reasons.push(reason),
+      }),
+    );
+    assert.equal(
+      resolved.mode,
+      "embedded",
+      "a relative daemon path resolves against a different cwd, so it proves nothing",
+    );
+    assert.match(reasons.join("\n"), /different memoryDir/);
+  } finally {
+    await stub.close();
+  }
+});

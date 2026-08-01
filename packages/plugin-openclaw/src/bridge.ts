@@ -14,7 +14,7 @@ import { isIPv4 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { expandTildePath } from "@remnic/core";
 
-import { sameMemoryCorpus } from "./memory-read-scope.js";
+import { daemonServesCorpus } from "./memory-read-scope.js";
 
 export type BridgeMode = "embedded" | "delegate";
 
@@ -568,7 +568,7 @@ export function detectDaemonBridgeMode(options: {
     );
     return embedded;
   }
-  if (!sameMemoryCorpus(options.memoryDir, health.memoryDir)) {
+  if (!daemonServesCorpus(options.memoryDir, health.memoryDir)) {
     options.onSkip?.(
       `daemon at ${daemonHost}:${daemonPort} serves a different memoryDir than this plugin`,
     );
