@@ -122,6 +122,18 @@ test("Remnic adapter validates support and skip-extraction policy config", async
 });
 
 test("support policy resolvers reject invalid coverage types and parse false strings", () => {
+  assert.equal(resolveAnswerSupportMinCoverage(undefined), 0.34);
+  assert.equal(resolveSkipExtractionLcmFirst(undefined), true);
+  assert.throws(
+    () => resolveAnswerSupportMinCoverage({ answerSupportMinCoverage: null }),
+    /answerSupportMinCoverage/,
+  );
+  assert.throws(
+    () => resolveSkipExtractionLcmFirst({ skipExtractionLcmFirst: null }),
+    /skipExtractionLcmFirst/,
+  );
+  assert.equal(resolveAnswerSupportMinCoverage({ answerSupportMinCoverage: 1 }), 1);
+
   for (const answerSupportMinCoverage of [
     true,
     [0.5],

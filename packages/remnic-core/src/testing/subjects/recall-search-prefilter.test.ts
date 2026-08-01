@@ -83,7 +83,7 @@ const subject: LifecycleSubject<RecallSearchPrefilterState> = {
     await writeFile(
       path.join(stateDir, "index_time.json"),
       JSON.stringify({
-        version: 1,
+        version: 2,
         dates: {
           "2026-07-31": ["facts/a.md"],
         },
@@ -304,6 +304,11 @@ const subject: LifecycleSubject<RecallSearchPrefilterState> = {
       state.prefilterResult.temporalFromDate,
       "2026-07-31",
       "must combine temporal and tag prefilter inputs"
+    );
+    assert.deepEqual(
+      state.prefilterResult.candidatePaths,
+      new Set(["facts/a.md"]),
+      "must intersect temporal and tag candidates"
     );
     assert.deepEqual(state.scopedNamespacesSeen, ["default"], "must scope query-aware paths to the recall namespaces");
 
