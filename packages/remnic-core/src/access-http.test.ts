@@ -3830,6 +3830,7 @@ test("HTTP capabilities explicitly advertise receiver convergence finalization",
     assert.deepEqual(await response.json(), {
       lcmCompactionFlushBatch: true,
       offlineSyncConvergenceComplete: true,
+      memoriesSearch: true,
     });
   } finally {
     await server.stop();
@@ -4227,26 +4228,6 @@ test("HTTP memory search enforces token op and namespace allow-lists", async () 
     assert.equal(calls.length, 0, "no denied request may reach the service");
     assert.equal((await post("reader", { query: "q", namespace: "team" })).status, 200);
     assert.equal(calls.length, 1);
-  } finally {
-    await server.stop();
-  }
-});
-
-test("HTTP capabilities advertise the memories search route", async () => {
-  const server = new EngramAccessHttpServer({
-    service: {} as unknown as EngramAccessService,
-    port: 0,
-    authToken: "test-token",
-    adminConsoleEnabled: false,
-  });
-  const status = await server.start();
-  try {
-    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/capabilities`, {
-      headers: { authorization: "Bearer test-token" },
-    });
-    assert.equal(response.status, 200);
-    const body = (await response.json()) as Record<string, unknown>;
-    assert.equal(body.memoriesSearch, true);
   } finally {
     await server.stop();
   }
