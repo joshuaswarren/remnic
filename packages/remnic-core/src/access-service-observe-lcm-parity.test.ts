@@ -910,19 +910,18 @@ test("#2128: post-flush retained cleanup is best effort and receives lifecycle g
   }]);
 });
 
-test("#2128: post-flush retained cleanup stops on abort or deadline", async () => {
+test("#2128: post-flush retained cleanup stops on abort or deadline", async (t) => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
-  (probe.orch as unknown as {
-    buffer: {
-      clearRetainedTurnsForSession(
-        sessionKey: string,
-        ownerPrincipal?: string,
-        options?: { abortSignal?: AbortSignal; deadlineMs?: number },
-      ): Promise<void>;
-    };
-  }).buffer = {
-    clearRetainedTurnsForSession: async () => new Promise<void>(() => {}),
-  };
+  let cleanupStarted: (() => void) | undefined;
+  Object.defineProperty(probe.orch, "buffer", {
+    configurable: true,
+    value: {
+      clearRetainedTurnsForSession: async () => {
+        cleanupStarted?.();
+        return new Promise<void>(() => {});
+      },
+    },
+  });
   const service = new EngramAccessService(probe.orch);
   const abortController = new AbortController();
   setTimeout(() => abortController.abort(), 5).unref();
@@ -942,18 +941,19 @@ test("#2128: post-flush retained cleanup stops on abort or deadline", async () =
     /extraction force-flush aborted/,
   );
 
+  const cleanupStartedPromise = new Promise<void>((resolve) => {
+    cleanupStarted = resolve;
+  });
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  const deadlineFlush = service.extractionForceFlush({
+    sessionKey: "pi-geek:cleanup-deadline",
+    authenticatedPrincipal: "pi-geek",
+    deadlineMs: 5,
+  });
+  await cleanupStartedPromise;
+  t.mock.timers.tick(5);
   await assert.rejects(
-    () =>
-      Promise.race([
-        service.extractionForceFlush({
-          sessionKey: "pi-geek:cleanup-deadline",
-          authenticatedPrincipal: "pi-geek",
-          deadlineMs: Date.now() + 5,
-        }),
-        new Promise<never>((_resolve, reject) =>
-          setTimeout(() => reject(new Error("deadline cleanup test timed out")), 100),
-        ),
-      ]),
+    deadlineFlush,
     /replay extraction deadline exceeded \(retained_turn_cleanup\)/,
   );
 });
