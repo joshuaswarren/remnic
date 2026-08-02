@@ -109,21 +109,49 @@ export function isSearchExcludedPath(
   policy: GenericRecallPathPolicy = {},
   source: GenericRecallPathSource = "filesystem",
 ): boolean {
+  if (isExternalWikiQmdPath(filePath, source)) return true;
   // A QMD transport hands back collection-qualified paths
-  // (`qmd://<collection>/activity/<date>.md`, or `<collection>/activity/…`).
-  // The activity predicate is ROOT-AWARE — it matches only the top-level
+  // (`qmd://<collection>/activity/<date>.md`, or `<collection>/activity/…`),
+  // and the collection is not always one this policy knows: a caller may name
+  // a custom one, and global search spans every collection. The activity
+  // predicate is ROOT-AWARE — it matches only the top-level
   // `activity/<date>.md` so a nested ordinary memory stays recallable — so an
-  // un-stripped collection prefix reads as a nested path and the digest would
-  // be served. Strip the prefix the same way the archive check does.
-  const relative = path.isAbsolute(filePath)
-    ? filePath
-    : stripQmdCollectionPrefix(filePath, policy, source);
-  return (
-    isExternalWikiQmdPath(filePath, source) ||
-    isArtifactMemoryPath(relative) ||
-    isActivityDigestPath(relative, policy.memoryDir) ||
-    isMeetingRecordPath(relative)
-  );
+  // un-stripped prefix reads as a nested path and the digest would be served.
+  //
+  // Both spellings are therefore tested. Widening is safe in this direction
+  // and only here: a leading segment is dropped ONLY to re-test the dedicated
+  // surface shapes, never to decide anything else, and a segment that names a
+  // memory CATEGORY (`facts/proj/activity/…`) is never treated as a
+  // collection, so ordinary nested memories stay searchable.
+  for (const candidate of collectionSpellings(filePath, policy, source)) {
+    if (
+      isArtifactMemoryPath(candidate) ||
+      isActivityDigestPath(candidate, policy.memoryDir) ||
+      isMeetingRecordPath(candidate)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** A path as given, plus its form with a leading COLLECTION segment removed. */
+function collectionSpellings(
+  filePath: string,
+  policy: GenericRecallPathPolicy,
+  source: GenericRecallPathSource,
+): string[] {
+  if (path.isAbsolute(filePath)) return [filePath];
+  const stripped = stripQmdCollectionPrefix(filePath, policy, source);
+  const spellings = [stripped];
+  const slashIndex = stripped.indexOf("/");
+  if (slashIndex <= 0 || slashIndex >= stripped.length - 1) return spellings;
+  const prefix = stripped.slice(0, slashIndex);
+  if (Object.hasOwn(CATEGORY_MEMORY_ROOTS, prefix) || Object.hasOwn(RESERVED_ARCHIVE_ROOTS, prefix)) {
+    return spellings;
+  }
+  spellings.push(stripped.slice(slashIndex + 1));
+  return spellings;
 }
 
 export function isGenericRecallExcludedPath(

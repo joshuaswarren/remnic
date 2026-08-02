@@ -4626,10 +4626,22 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
   ]) {
     assert.equal(isSearchExcludedPath(excluded, policy, "qmd"), true, excluded);
   }
+  // A collection this policy does NOT know — a caller-named custom one, or
+  // any collection global search spans — is covered too.
+  for (const excluded of [
+    "custom/activity/2026-08-02.md",
+    "qmd://custom/activity/2026-08-02.md",
+    "custom/artifacts/report.md",
+  ]) {
+    assert.equal(isSearchExcludedPath(excluded, policy, "qmd"), true, excluded);
+  }
   // A nested ordinary memory that merely looks like a digest stays searchable,
-  // and so does an archived one.
+  // including under a custom collection, and so does an archived one. A
+  // leading segment naming a memory CATEGORY is never read as a collection.
   for (const kept of [
     "qmd://memories/facts/proj/activity/2026-08-02.md",
+    "custom/facts/proj/activity/2026-08-02.md",
+    "facts/activity/2026-08-02.md",
     "memories/archive/2026-01/fact-1.md",
   ]) {
     assert.equal(isSearchExcludedPath(kept, policy, "qmd"), false, kept);
