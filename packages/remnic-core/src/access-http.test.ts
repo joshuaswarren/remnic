@@ -4341,3 +4341,52 @@ test("HTTP memory search forwards a validated ranking mode and trims the namespa
     await server.stop();
   }
 });
+
+test("HTTP memory search excludes artifacts and tops up to a full page", async () => {
+  // Artifacts rank above real memories. Filtering after the cap would return a
+  // thin page; the search must keep asking until the budget is met.
+  const seen: number[] = [];
+  const corpus = [
+    { path: "artifacts/a1.md", score: 0.99, snippet: "artifact" },
+    { path: "artifacts/a2.md", score: 0.98, snippet: "artifact" },
+    { path: "artifacts/a3.md", score: 0.97, snippet: "artifact" },
+    { path: "facts/one.md", score: 0.5, snippet: "one" },
+    { path: "facts/two.md", score: 0.4, snippet: "two" },
+  ];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 2,
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      return corpus.slice(0, limit);
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(
+    results.map((hit) => hit.path),
+    ["facts/one.md", "facts/two.md"],
+    "a full page of real memories",
+  );
+  assert.deepEqual(seen, [2, 4, 8], "doubles the candidate request until the budget is met");
+});
+
+test("HTTP memory search stops topping up when the corpus is exhausted", async () => {
+  const seen: number[] = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 5,
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      return [{ path: "facts/only.md", score: 0.5, snippet: "only" }];
+    },
+    namespaced: async () => [],
+  });
+  assert.equal(results.length, 1);
+  assert.deepEqual(seen, [5], "a short page means there is nothing left to fetch");
+});

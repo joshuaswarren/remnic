@@ -206,3 +206,69 @@ export async function runFlatCorpusMemorySearch<TResult>(options: {
     ? options.searchGlobal(query, maxResults)
     : options.search(query, collection, maxResults);
 }
+
+/**
+ * Candidate top-up rounds for a generic memory search: artifacts are filtered
+ * out AFTER the backend ranks, so a page short of the caller's budget re-asks
+ * with a doubled limit rather than returning a thin page while valid memories
+ * sit just behind the excluded ones.
+ */
+const MEMORY_SEARCH_TOPUP_ROUNDS = 4;
+
+/**
+ * Run a ranked memory search and apply the generic-recall path exclusions
+ * BEFORE the user-facing cap.
+ *
+ * Artifact isolation is a retrieval contract, not a ranking preference:
+ * artifacts flow only through the dedicated verbatim path. Filtering after the
+ * backend's own cap would let a handful of top-ranked artifacts shrink - or
+ * empty - a page that has valid memories right behind them, so the search runs
+ * with candidate headroom and tops up until the post-filter budget is met or
+ * the corpus is exhausted.
+ */
+export async function searchWithGenericExclusion<TResult extends { path: string }>(options: {
+  budget: number;
+  search(limit: number): Promise<TResult[]>;
+  isExcluded(memoryPath: string): boolean;
+}): Promise<TResult[]> {
+  const { budget } = options;
+  if (budget <= 0) return [];
+  let results: TResult[] = [];
+  let limit = budget;
+  for (let round = 0; round < MEMORY_SEARCH_TOPUP_ROUNDS; round += 1) {
+    const raw = await options.search(limit);
+    results = raw.filter((hit) => !options.isExcluded(hit.path));
+    // Enough after filtering, or the backend has nothing left to give.
+    if (results.length >= budget || raw.length < limit) break;
+    limit *= 2;
+  }
+  return results.slice(0, budget);
+}
+
+/**
+ * The whole ranked memory-search path behind `POST /engram/v1/memories/search`
+ * and the `memory_search` tool: pick the flat-corpus or namespace-aware
+ * backend, then apply generic-recall exclusions before the caller's cap.
+ */
+export async function runScopedMemorySearch(options: {
+  query: string;
+  budget: number;
+  collection?: string;
+  mode?: "search" | "hybrid" | "bm25" | "vector";
+  namespacesEnabled: boolean;
+  isExcluded(memoryPath: string): boolean;
+  flatCorpus(limit: number): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+  namespaced(limit: number): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+}): Promise<Array<{ path: string; score: number; snippet: string }>> {
+  const results = await searchWithGenericExclusion({
+    budget: options.budget,
+    isExcluded: options.isExcluded,
+    search: (limit) =>
+      options.namespacesEnabled ? options.namespaced(limit) : options.flatCorpus(limit),
+  });
+  return results.map((hit) => ({
+    path: hit.path,
+    score: hit.score,
+    snippet: (hit.snippet ?? "").slice(0, 800),
+  }));
+}
