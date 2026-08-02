@@ -319,21 +319,25 @@ export function createDelegateMemoryCapability(
    * enforces it. A daemon that cannot answer the probe (older build) is
    * treated as before: unproven, not refused.
    */
-  // A separate flag, not `??=` on the verdict: an "unknown" answer is a real
-  // outcome, and re-probing it on every search would put a request in front of
-  // each one against an older daemon.
+  // Keyed by namespace AND token: daemon requests resolve credentials
+  // dynamically, so caching a refusal against the namespace alone would keep
+  // rejecting unbound searches locally after an operator swapped in a token
+  // that IS authorized — recall and observe would recover, search would not.
+  // A map (not `??=`) because "unknown" is a real verdict: re-probing it would
+  // put a request in front of every search against an older daemon.
   const substitutedNamespaceVerdicts = new Map<string, boolean | undefined>();
   const resolveScopedNamespaceChecked = async (explicit?: string): Promise<string | undefined> => {
     const namespace = requireScopedNamespace(explicit);
     if (explicit !== undefined || namespace === undefined) return namespace;
     if (options.verifyNamespaceAuthorization === undefined) return namespace;
-    if (!substitutedNamespaceVerdicts.has(namespace)) {
+    const verdictKey = `${target.resolveAuthToken().token}\u0000${namespace}`;
+    if (!substitutedNamespaceVerdicts.has(verdictKey)) {
       substitutedNamespaceVerdicts.set(
-        namespace,
+        verdictKey,
         await options.verifyNamespaceAuthorization(namespace),
       );
     }
-    if (substitutedNamespaceVerdicts.get(namespace) === false) {
+    if (substitutedNamespaceVerdicts.get(verdictKey) === false) {
       throw new Error(
         `delegate request unavailable: this session has no namespace binding and the daemon's default (${namespace}) is not authorized for the delegate token — bind the session explicitly or configure the namespace this deployment should use`,
       );

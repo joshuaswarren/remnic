@@ -1062,3 +1062,34 @@ test("delegate does not second-guess an explicit namespace", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("swapping in an authorized token recovers unbound delegate search", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // Daemon requests resolve credentials dynamically. Caching a refusal against
+  // the namespace alone would keep rejecting search locally after an operator
+  // replaced an under-scoped token, while recall and observe recovered.
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+    search: { query: "q", count: 0, results: [] },
+  });
+  try {
+    let token = "under-scoped";
+    const base = optionsFor(stub.port, memoryDir, workspaceDir);
+    const built = createDelegateMemoryCapability({
+      ...base,
+      target: { ...base.target, resolveAuthToken: () => ({ token, source: "REMNIC_AUTH_TOKEN" }) },
+      resolveSearchNamespace: async () => undefined,
+      verifyNamespaceAuthorization: async () => token === "authorized",
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.search("q") ?? Promise.resolve(),
+      /is not authorized for the delegate token/,
+    );
+    token = "authorized";
+    assert.deepEqual(await manager?.search("q"), [], "the new token is re-probed, not refused from cache");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
