@@ -1871,3 +1871,23 @@ test("memorySearch rejects mode+collection on a flat corpus even at a zero budge
     );
   }
 });
+
+test("a configured qmdMaxResults of 0 does not turn ranked search into an empty page", async () => {
+  // `0` disables the CAP, not the search: recall applies the value only when
+  // it is finite and positive, and this route used to pass an unset limit
+  // through. Nullish-coalescing alone skipped the backend entirely.
+  const { service } = makeServiceWithConfig({
+    ...makeConfig(),
+    qmdMaxResults: 0,
+  } as unknown as PluginConfig);
+  let searchCalls = 0;
+  (service as unknown as {
+    orchestrator: { searchAcrossNamespaces(params: unknown): Promise<unknown[]> };
+  }).orchestrator.searchAcrossNamespaces = async () => {
+    searchCalls += 1;
+    return [{ path: "facts/a.md", score: 0.9, snippet: "a" }];
+  };
+  const result = await service.memorySearch({ query: "anything", principal: "operator-x" });
+  assert.ok(searchCalls > 0, "the backend is consulted");
+  assert.ok(result.count > 0, "and its hits are returned");
+});
