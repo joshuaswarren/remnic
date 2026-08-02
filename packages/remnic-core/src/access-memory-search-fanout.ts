@@ -208,12 +208,15 @@ export async function runFlatCorpusMemorySearch<TResult>(options: {
 }
 
 /**
- * Candidate top-up rounds for a generic memory search: artifacts are filtered
- * out AFTER the backend ranks, so a page short of the caller's budget re-asks
- * with a doubled limit rather than returning a thin page while valid memories
- * sit just behind the excluded ones.
+ * Ceiling on how many candidates one generic memory search will ask the
+ * backend for.
+ *
+ * This is a backend-safety bound, NOT a stand-in for corpus exhaustion: the
+ * loop keeps doubling while the backend still returns full pages, so a long
+ * run of excluded artifacts cannot make it give up early and report a thin
+ * page. Only a short page (nothing left) or a satisfied budget ends it sooner.
  */
-const MEMORY_SEARCH_TOPUP_ROUNDS = 4;
+const MEMORY_SEARCH_CANDIDATE_CEILING = 1_000;
 
 /**
  * Run a ranked memory search and apply the generic-recall path exclusions
@@ -241,7 +244,7 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
   if (budget <= 0) return [];
   let results: TResult[] = [];
   let limit: number | undefined = options.sendInitialLimit ? budget : undefined;
-  for (let round = 0; round < MEMORY_SEARCH_TOPUP_ROUNDS; round += 1) {
+  for (;;) {
     const raw = await options.search(limit);
     results = raw.filter((hit) => !options.isExcluded(hit.path));
     if (results.length >= budget) break;
@@ -251,7 +254,8 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
     // A short page means the corpus is exhausted - asking for more is wasted
     // work that returns the same rows.
     if (raw.length === 0 || raw.length < served) break;
-    limit = served * 2;
+    if (served >= MEMORY_SEARCH_CANDIDATE_CEILING) break;
+    limit = Math.min(served * 2, MEMORY_SEARCH_CANDIDATE_CEILING);
   }
   return results.slice(0, budget);
 }

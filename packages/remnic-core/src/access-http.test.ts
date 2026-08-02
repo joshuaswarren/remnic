@@ -4423,3 +4423,59 @@ test("HTTP memory search omits maxResults when the caller named no budget", asyn
     "facts/three.md",
   ]);
 });
+
+test("HTTP memory search keeps topping up past four excluded pages", async () => {
+  // Eight pages of artifacts ahead of the real memories: a fixed round count
+  // would give up and report a thin page while valid hits sit right behind.
+  const corpus = [
+    ...Array.from({ length: 40 }, (_, index) => ({
+      path: `artifacts/a${index}.md`,
+      score: 1 - index / 100,
+      snippet: "artifact",
+    })),
+    { path: "facts/one.md", score: 0.1, snippet: "one" },
+    { path: "facts/two.md", score: 0.09, snippet: "two" },
+  ];
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 2,
+    sendInitialLimit: true,
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      return corpus.slice(0, limit);
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(seen, [2, 4, 8, 16, 32, 64], "doubles past four rounds until the budget is met");
+  assert.deepEqual(results.map((hit) => hit.path), ["facts/one.md", "facts/two.md"]);
+});
+
+test("HTTP memory search stops at the candidate ceiling", async () => {
+  // A backend that always returns a full page of excluded hits must not be
+  // asked for an unbounded number of candidates.
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 1,
+    sendInitialLimit: true,
+    namespacesEnabled: false,
+    isExcluded: () => true,
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      return Array.from({ length: limit ?? 0 }, (_, index) => ({
+        path: `artifacts/a${index}.md`,
+        score: 0.5,
+        snippet: "artifact",
+      }));
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(results, []);
+  assert.equal(seen.at(-1), 1_000, "the last request lands exactly on the ceiling");
+  assert.ok(seen.length < 20, "and the loop terminates");
+});
