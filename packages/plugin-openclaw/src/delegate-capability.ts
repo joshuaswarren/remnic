@@ -262,6 +262,12 @@ export function createDelegateMemoryCapability(
     // namespace fails closed.
   };
   let healthExpiresAt = 0;
+  // Whether the live `healthExpiresAt` window came from a FAILURE. A
+  // revalidating caller bypasses a successful posture cache, but must honor a
+  // failure backoff: the posture is already unknown, so another immediate
+  // probe cannot prove anything and would spend the hook budget on a daemon
+  // that is down.
+  let healthCacheIsFailure = false;
   let healthInFlight: Promise<void> | undefined;
   let lastHealthFailure: string | undefined;
   // Local reads and artifact listing are only valid while the daemon serves
@@ -413,7 +419,10 @@ export function createDelegateMemoryCapability(
         `delegate request rejected (timeoutMs must be a finite integer): ${String(timeoutMs)}`,
       );
     }
-    if (!revalidate && now() < healthExpiresAt) return true;
+    if (now() < healthExpiresAt) {
+      if (healthCacheIsFailure) return false;
+      if (!revalidate) return true;
+    }
     // A caller inside a shared deadline (the lifecycle flushes) passes what is
     // LEFT of it. Zero or less means the budget is already spent: starting a
     // fresh probe here would overrun the hook and get it abandoned before the
@@ -478,6 +487,7 @@ export function createDelegateMemoryCapability(
         // one because an UNSCOPED request revalidates unconditionally rather
         // than trusting any cache window.
         healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
+        healthCacheIsFailure = false;
         lastHealthFailure = undefined;
         // Path identity is decided by canonicalizing two strings ON THIS
         // HOST, so it proves nothing about a REMOTE daemon that happens to
@@ -515,6 +525,7 @@ export function createDelegateMemoryCapability(
         };
         corpusShared = daemonIsLocal ? undefined : false;
         healthExpiresAt = now() + HEALTH_FAILURE_BACKOFF_MS;
+        healthCacheIsFailure = true;
         const message = `[${serviceId}] delegate capability health probe failed: ${String(err)}`;
         if (message !== lastHealthFailure) {
           lastHealthFailure = message;
@@ -532,19 +543,16 @@ export function createDelegateMemoryCapability(
     query: string,
     opts?: RuntimeSearchOptions,
   ): Promise<RuntimeSearchResult[]> => {
-    // Embedded returns an empty set for a zero budget; forwarding 0 would hit
-    // the daemon schema's `maxResults >= 1` and turn a valid no-results request
-    // into a 400 purely by switching bridge mode.
-    if (opts?.maxResults === 0) return [];
     if (opts?.minScore !== undefined && !Number.isFinite(opts.minScore)) {
       throw new Error(
         `delegate search rejected (minScore must be a finite number): ${String(opts.minScore)}`,
       );
     }
-    // Beyond the exact-zero short circuit, an out-of-range budget is a caller
-    // bug, not something to reinterpret: coercing a negative to 1, truncating
-    // a fraction, or dropping a non-finite value to the daemon default all
-    // return a valid-looking page for a budget nobody asked for.
+    // An out-of-range budget is a caller bug, not something to reinterpret:
+    // coercing a negative to 1, truncating a fraction, or dropping a
+    // non-finite value to the daemon default all return a valid-looking page
+    // for a budget nobody asked for. Zero is the one accepted edge, handled
+    // below once the request has been authorized.
     if (
       opts?.maxResults !== undefined &&
       (!Number.isInteger(opts.maxResults) || opts.maxResults < 0)
@@ -570,6 +578,12 @@ export function createDelegateMemoryCapability(
     const namespace = await resolveScopedNamespaceChecked(searchScope, undefined, scopeIsFresh, [
       "memory_search",
     ]);
+    // Embedded returns an empty set for a zero budget, and forwarding 0 would
+    // hit the daemon schema's `maxResults >= 1` — a 400 purely from switching
+    // bridge mode. The short circuit lands HERE, after scope and authorization
+    // resolution: shrinking the requested count must never be a way to get a
+    // successful answer for a namespace the session may not read.
+    if (opts?.maxResults === 0) return [];
     // Mirror the embedded manager: "vsearch" is vector ranking, "query" is the
     // ordinary search plan, anything else is the backend default.
     // Embedded defaults to "search" when the host passes no override, and an

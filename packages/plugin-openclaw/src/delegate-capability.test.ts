@@ -1601,3 +1601,60 @@ test("an invalid caller budget is rejected at the boundary", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("a health-failure backoff is honored even by an unscoped request", async () => {
+  // The posture is already unknown during the backoff, so an immediate second
+  // probe cannot prove anything — it would just spend the hook budget on a
+  // daemon that is down, once per recall/search/observe.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({ healthStatus: 500, health: {} });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const probes = (): number =>
+      stub.calls.filter((call) => call.pathname.includes("/health")).length;
+    await assert.rejects(
+      () => manager?.search("q") ?? Promise.resolve(),
+      /could not be confirmed/,
+      "an unproven posture fails closed for an unscoped search",
+    );
+    const afterFirst = probes();
+    assert.ok(afterFirst >= 1, "the first unscoped request probes");
+    await assert.rejects(() => manager?.search("q") ?? Promise.resolve(), /could not be confirmed/);
+    await assert.rejects(() => manager?.search("q") ?? Promise.resolve(), /could not be confirmed/);
+    assert.equal(probes(), afterFirst, "the failure backoff suppressed the repeat probes");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a zero-budget search is authorized before it answers empty", async () => {
+  // Shrinking the requested count must not be a way to get a successful
+  // answer for a namespace the session may not read.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "team" },
+    search: { query: "q", count: 0, results: [] },
+  });
+  try {
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      verifyNamespaceAuthorization: async () => false,
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.search("q", { maxResults: 0 }) ?? Promise.resolve(),
+      /not authorized/,
+      "a zero budget still runs the authorization gate",
+    );
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/memories/search")).length,
+      0,
+      "and still makes no backend call",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
