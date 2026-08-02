@@ -4726,6 +4726,7 @@ export class EngramAccessService {
     const results = await runScopedMemorySearch({
       query, collection, mode,
       budget: maxResults ?? this.orchestrator.config.qmdMaxResults ?? 10,
+      sendInitialLimit: maxResults !== undefined,
       namespacesEnabled: resolveNamespaceCapabilities(this.orchestrator.config).namespaces,
       isExcluded: (memoryPath) =>
         isGenericRecallExcludedPath(memoryPath, this.orchestrator.config, "qmd"),

@@ -4357,10 +4357,11 @@ test("HTTP memory search excludes artifacts and tops up to a full page", async (
   const results = await runScopedMemorySearch({
     query: "q",
     budget: 2,
+    sendInitialLimit: true,
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
     flatCorpus: async (limit) => {
-      seen.push(limit);
+      seen.push(limit ?? -1);
       return corpus.slice(0, limit);
     },
     namespaced: async () => [],
@@ -4379,14 +4380,46 @@ test("HTTP memory search stops topping up when the corpus is exhausted", async (
   const results = await runScopedMemorySearch({
     query: "q",
     budget: 5,
+    sendInitialLimit: true,
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
     flatCorpus: async (limit) => {
-      seen.push(limit);
+      seen.push(limit ?? -1);
       return [{ path: "facts/only.md", score: 0.5, snippet: "only" }];
     },
     namespaced: async () => [],
   });
   assert.equal(results.length, 1);
   assert.deepEqual(seen, [5], "a short page means there is nothing left to fetch");
+});
+
+test("HTTP memory search omits maxResults when the caller named no budget", async () => {
+  // The wire stays exactly as it was for the default request: the backend's
+  // own page size, not a resolved number. Top-up rounds are explicit.
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 3,
+    sendInitialLimit: false,
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      const corpus = [
+        { path: "artifacts/a1.md", score: 0.9, snippet: "artifact" },
+        { path: "facts/one.md", score: 0.5, snippet: "one" },
+        { path: "facts/two.md", score: 0.4, snippet: "two" },
+        { path: "facts/three.md", score: 0.3, snippet: "three" },
+      ];
+      return limit === undefined ? corpus.slice(0, 3) : corpus.slice(0, limit);
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(seen, [undefined, 6], "first request carries no cap, the top-up does");
+  assert.deepEqual(results.map((hit) => hit.path), [
+    "facts/one.md",
+    "facts/two.md",
+    "facts/three.md",
+  ]);
 });

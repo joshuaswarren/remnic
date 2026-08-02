@@ -228,19 +228,30 @@ const MEMORY_SEARCH_TOPUP_ROUNDS = 4;
  */
 export async function searchWithGenericExclusion<TResult extends { path: string }>(options: {
   budget: number;
-  search(limit: number): Promise<TResult[]>;
+  /**
+   * `false` omits `maxResults` on the FIRST request, so a caller that named no
+   * budget keeps the backend's own page size on the wire; the resolved budget
+   * is still what the filtered page is measured against.
+   */
+  sendInitialLimit: boolean;
+  search(limit: number | undefined): Promise<TResult[]>;
   isExcluded(memoryPath: string): boolean;
 }): Promise<TResult[]> {
   const { budget } = options;
   if (budget <= 0) return [];
   let results: TResult[] = [];
-  let limit = budget;
+  let limit: number | undefined = options.sendInitialLimit ? budget : undefined;
   for (let round = 0; round < MEMORY_SEARCH_TOPUP_ROUNDS; round += 1) {
     const raw = await options.search(limit);
     results = raw.filter((hit) => !options.isExcluded(hit.path));
-    // Enough after filtering, or the backend has nothing left to give.
-    if (results.length >= budget || raw.length < limit) break;
-    limit *= 2;
+    if (results.length >= budget) break;
+    // What the backend actually served this round: its own page size when we
+    // named no limit.
+    const served = limit ?? raw.length;
+    // A short page means the corpus is exhausted - asking for more is wasted
+    // work that returns the same rows.
+    if (raw.length === 0 || raw.length < served) break;
+    limit = served * 2;
   }
   return results.slice(0, budget);
 }
@@ -253,15 +264,22 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
 export async function runScopedMemorySearch(options: {
   query: string;
   budget: number;
+  /** `false` when the caller named no `maxResults`; see the helper below. */
+  sendInitialLimit: boolean;
   collection?: string;
   mode?: "search" | "hybrid" | "bm25" | "vector";
   namespacesEnabled: boolean;
   isExcluded(memoryPath: string): boolean;
-  flatCorpus(limit: number): Promise<Array<{ path: string; score: number; snippet?: string }>>;
-  namespaced(limit: number): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+  flatCorpus(
+    limit: number | undefined,
+  ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+  namespaced(
+    limit: number | undefined,
+  ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
 }): Promise<Array<{ path: string; score: number; snippet: string }>> {
   const results = await searchWithGenericExclusion({
     budget: options.budget,
+    sendInitialLimit: options.sendInitialLimit,
     isExcluded: options.isExcluded,
     search: (limit) =>
       options.namespacesEnabled ? options.namespaced(limit) : options.flatCorpus(limit),
