@@ -146,10 +146,20 @@ A global write rate-limit exists (`WRITE_RATE_LIMIT_WINDOW_MS = 60_000`,
 `WRITE_RATE_LIMIT_MAX_REQUESTS = 30` at `access-http.ts:59-60`). It applies
 only to write routes and is global (not per-principal). Read routes —
 including `/engram/v1/recall`, `GET /engram/v1/memories` (list/browse),
+`POST /engram/v1/memories/search` (and its `/remnic/v1/...` alias),
 `GET /engram/v1/entities`, `POST /engram/v1/lcm/search`, and
-`GET /engram/v1/review-queue` — have no rate limit. Note: there is no
-`/engram/v1/memory/search` HTTP route; the `memory_search` capability is only
-exposed via the MCP tool surface (`access-mcp.ts`).
+`GET /engram/v1/review-queue` — have no rate limit.
+
+`POST /engram/v1/memories/search` is the ranked `memory_search` capability over
+HTTP. It is authenticated and namespace-scoped on the same boundary as every
+other read route: the operation gate rejects an unauthorized `memory_search`,
+and the namespace is resolved from the authenticated principal — never from a
+client-supplied value — so an absent `namespace` fans out only across
+namespaces that principal may read. Because it is a read route it inherits the
+gap above: **no rate limit**, so it is an extraction vector for any holder of a
+read-capable token and belongs in extraction and read-rate-limit testing
+alongside `/engram/v1/recall`. The same capability remains available through
+the MCP tool surface (`access-mcp.ts`).
 
 ### 4.3 CLI access
 `remnic query` (standalone recall) and the hosted `openclaw engram recall` /
