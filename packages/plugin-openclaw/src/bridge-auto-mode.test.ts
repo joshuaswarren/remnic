@@ -34,6 +34,9 @@ import http from "node:http";
 import { parentPort, workerData } from "node:worker_threads";
 let served = 0;
 const server = http.createServer((req, res) => {
+  // \`hang\`: accept the connection and never answer, so the probe must burn its
+  // whole timeout - the only way to observe a shared preflight deadline.
+  if (workerData.hang) return;
   served += 1;
   // \`warmupResponses\`: answer 503 (readiness gate closed) that many times
   // before switching to the real body, the way a daemon that is listening but
@@ -54,6 +57,7 @@ async function startHealthStub(
   body: unknown,
   status = 200,
   warmupResponses = 0,
+  hang = false,
 ): Promise<HealthStub> {
   const worker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(STUB_SOURCE)}`),
@@ -62,6 +66,7 @@ async function startHealthStub(
       workerData: {
         status,
         warmupResponses,
+        hang,
         body: typeof body === "string" ? body : JSON.stringify(body),
       },
     } as ConstructorParameters<typeof Worker>[1] & { type: "module" },
@@ -762,4 +767,97 @@ test("a system unit's %h is not expanded with the gateway's home", () => {
     "/Users/x/.config/remnic/config.json",
     "launchd plists carry literal paths",
   );
+});
+
+test("auto still probes the documented default when no config file exists", async () => {
+  // No env override and no config file anywhere: explicit `delegate` dials
+  // 127.0.0.1:4318, so auto must too rather than probing nothing and staying
+  // embedded beside a same-corpus daemon on defaults.
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-no-config-"));
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  const probed: string[] = [];
+  try {
+    process.env.HOME = home;
+    process.chdir(home);
+    const bridge = detectDaemonBridgeMode({
+      memoryDir: MEMORY_DIR,
+      timeoutMs: 1_000,
+      onSkip: (reason) => probed.push(reason),
+    });
+    assert.equal(bridge.daemonHost, "127.0.0.1");
+    assert.equal(bridge.daemonPort, 4318);
+    assert.ok(
+      probed.some((reason) => reason.includes("127.0.0.1:4318")),
+      `the default endpoint was actually probed: ${JSON.stringify(probed)}`,
+    );
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("auto spends ONE preflight budget across every candidate endpoint", async () => {
+  // Three endpoints that ACCEPT and never answer: without a shared deadline
+  // each burns the full timeout and synchronous registration stalls for a
+  // multiple of the documented budget.
+  const stubs = await Promise.all([
+    startHealthStub({}, 200, 0, true),
+    startHealthStub({}, 200, 0, true),
+    startHealthStub({}, 200, 0, true),
+  ]);
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-budget-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-budget-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "engram"), { recursive: true });
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: stubs[0]?.port } }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: stubs[1]?.port } }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "engram", "config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: stubs[2]?.port } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  const started = Date.now();
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 1_200 });
+    assert.equal(bridge.mode, "embedded");
+    const elapsed = Date.now() - started;
+    assert.ok(
+      elapsed < 1_200 * 2,
+      `three hanging candidates must share one 1200ms budget, took ${elapsed}ms`,
+    );
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await Promise.all(stubs.map((stub) => stub.close()));
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
 });

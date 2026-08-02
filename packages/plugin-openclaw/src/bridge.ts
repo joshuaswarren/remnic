@@ -649,6 +649,11 @@ function daemonEndpointCandidates(): Array<{ host: string; port: number }> {
     const server = readServerBlock(candidate);
     if (server !== undefined) add(server.host, server.port);
   }
+  // The documented default, LAST. A daemon on 127.0.0.1:4318 with no config
+  // file at all is the out-of-the-box shape, and explicit `delegate` dials it;
+  // `auto` must not miss it and stay embedded on the same corpus. `add`
+  // dedupes, so this is a no-op whenever a candidate already named it.
+  add(undefined, undefined);
   return candidates;
 }
 
@@ -701,6 +706,12 @@ export function detectDaemonBridgeMode(options: {
     daemonPort: primary.port,
   };
 
+  // `bridgeHealthTimeoutMs` is documented as the TOTAL preflight budget, and
+  // registration is synchronous — probing several stale endpoints for the full
+  // budget each would hold gateway startup for a multiple of it. Every probe
+  // shares one deadline.
+  const totalTimeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
+  const deadline = Date.now() + totalTimeoutMs;
   for (const { host: daemonHost, port: daemonPort } of endpoints) {
     // Auto is SAME-HOST detection. A matching absolute memoryDir string proves
     // nothing across machines — an unrelated remote daemon using the same
@@ -717,7 +728,14 @@ export function detectDaemonBridgeMode(options: {
       options.onSkip?.("no daemon PID, service unit, or local endpoint to probe");
       continue;
     }
-    const health = readDaemonMemoryDirSync(daemonHost, daemonPort, options.timeoutMs);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      options.onSkip?.(
+        `preflight budget of ${totalTimeoutMs}ms is spent; ${daemonHost}:${daemonPort} was not probed`,
+      );
+      break;
+    }
+    const health = readDaemonMemoryDirSync(daemonHost, daemonPort, remainingMs);
     if (!health.healthy) {
       options.onSkip?.(`no healthy daemon at ${daemonHost}:${daemonPort}`);
       continue;
