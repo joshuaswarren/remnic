@@ -118,6 +118,7 @@ function optionsFor(
     allowPromptInjection: true,
     readPromptLines: () => null,
     configuredSearchBackend: "qmd",
+    configuredNamespacesEnabled: false,
     configuredQmdCommand: "qmd",
     searchTimeoutMs: 5_000,
     healthTimeoutMs: 5_000,
@@ -912,6 +913,9 @@ test("delegate file surfaces refuse a namespace-partitioned daemon", async () =>
   // without a namespace, so on a partitioned daemon there is nothing to
   // authorize the local walk against. A per-registration fallback would open
   // one namespace's disk for sessions bound to another.
+  // `undefined` from the daemon now falls back to the plugin's own posture, so
+  // the unreported case is paired with a partitioned config - "nobody says it
+  // is flat" must still fail closed.
   for (const namespacesEnabled of [true, undefined]) {
     const stub = await startDaemonStub({
       health: { ...healthyDaemon(memoryDir), namespacesEnabled, defaultNamespace: "default" },
@@ -920,6 +924,7 @@ test("delegate file surfaces refuse a namespace-partitioned daemon", async () =>
     try {
       const built = createDelegateMemoryCapability({
         ...optionsFor(stub.port, memoryDir, workspaceDir),
+        configuredNamespacesEnabled: true,
         resolveSearchNamespace: async (sessionKey) => (sessionKey === "s2" ? "team-a" : "default"),
       });
       const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -1088,6 +1093,52 @@ test("swapping in an authorized token recovers unbound delegate search", async (
     );
     token = "authorized";
     assert.deepEqual(await manager?.search("q"), [], "the new token is re-probed, not refused from cache");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a single-corpus plugin config searches before the first health probe", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // The daemon never reports a namespace posture (older build), and the plugin
+  // itself is configured flat. Refusing here would break search on a
+  // single-corpus deployment for a fact the plugin already knows.
+  const stub = await startDaemonStub({
+    health: { ok: true, memoryDir },
+    search: { query: "q", count: 0, results: [] },
+  });
+  try {
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      configuredNamespacesEnabled: false,
+      resolveSearchNamespace: async () => undefined,
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    assert.deepEqual(await manager?.search("q"), []);
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a partitioned plugin config still fails closed before the first probe", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ok: true, memoryDir },
+    search: { query: "q", count: 0, results: [] },
+  });
+  try {
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      configuredNamespacesEnabled: true,
+      resolveSearchNamespace: async () => undefined,
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.search("q") ?? Promise.resolve(),
+      /default namespace is unknown/,
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });

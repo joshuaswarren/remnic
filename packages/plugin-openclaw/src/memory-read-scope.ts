@@ -293,7 +293,8 @@ export function createMemoryReadScope(options: MemoryReadScopeOptions): MemoryRe
         throw new Error(`memory read rejected (path unresolvable): ${requestedPath}`);
       }
       const canonicalRoots = await canonicalRootsPromise;
-      if (!canonicalRoots.some((root) => isContained(root, canonicalPath))) {
+      const containingRoot = canonicalRoots.find((root) => isContained(root, canonicalPath));
+      if (containingRoot === undefined) {
         throw new Error(`memory read outside allowed roots: ${requestedPath}`);
       }
       if (!canonicalPath.toLowerCase().endsWith(".md")) {
@@ -301,9 +302,23 @@ export function createMemoryReadScope(options: MemoryReadScopeOptions): MemoryRe
       }
       // Artifact isolation is a contract, not a search-ranking detail: generic
       // memory readers must never open artifact files, which are served only
-      // through the dedicated verbatim path. Checked on the CANONICAL path so
-      // a symlink alias cannot route around it.
-      if (isMemoryArtifactPath(canonicalPath) || isMemoryArtifactPath(requestedPath)) {
+      // through the dedicated verbatim path.
+      //
+      // Judged ROOT-RELATIVE, on the canonical path so a symlink alias cannot
+      // route around it. An absolute test would match any corpus that merely
+      // LIVES under a directory named `artifacts` (`/srv/artifacts/remnic`)
+      // and reject every ordinary read in it.
+      const rootRelative = path.relative(containingRoot, canonicalPath);
+      if (rootRelative.startsWith("..") || path.isAbsolute(rootRelative)) {
+        // Containment already passed, so this is unreachable in practice; a
+        // path that escapes on the second look is refused rather than trusted.
+        throw new Error(`memory read outside allowed roots: ${requestedPath}`);
+      }
+      // The raw request is judged only when it is RELATIVE — it is then
+      // already corpus-relative by construction. An absolute request would
+      // reintroduce the ancestor-directory false positive this fix removes.
+      const rawIsArtifact = !path.isAbsolute(requestedPath) && isMemoryArtifactPath(requestedPath);
+      if (isMemoryArtifactPath(rootRelative) || rawIsArtifact) {
         throw new Error(`memory read excluded (artifact path): ${requestedPath}`);
       }
       return canonicalPath;

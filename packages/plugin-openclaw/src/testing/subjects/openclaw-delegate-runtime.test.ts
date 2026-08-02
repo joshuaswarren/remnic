@@ -144,6 +144,7 @@ function optionsFor(port: number, namespaceBindings: SessionNamespaceBindingStor
       workspaceDir: path.join(os.tmpdir(), "remnic-delegate-matrix-workspace"),
       agentIds: ["generalist"],
       configuredSearchBackend: "qmd",
+      configuredNamespacesEnabled: false,
       configuredQmdCommand: "qmd",
     },
   };

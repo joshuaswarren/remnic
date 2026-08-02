@@ -31,6 +31,7 @@ const TEST_CAPABILITY: DelegateRuntimeOptions["capability"] = {
   workspaceDir: path.join(os.tmpdir(), "remnic-delegate-runtime-workspace"),
   agentIds: ["generalist"],
   configuredSearchBackend: "qmd",
+  configuredNamespacesEnabled: false,
   configuredQmdCommand: "qmd",
 };
 

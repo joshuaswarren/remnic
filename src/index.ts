@@ -1490,6 +1490,9 @@ const pluginDefinition = {
           (cfg.searchBackend ?? "qmd") === "qmd" && cfg.qmdEnabled !== false
             ? "qmd"
             : "builtin",
+        // Only an explicit `false` means a single corpus; anything else -
+        // including an unset legacy config - stays fail-closed.
+        configuredNamespacesEnabled: cfg.namespacesEnabled !== false,
         configuredQmdCommand:
           typeof cfg.qmdPath === "string" && cfg.qmdPath.trim().length > 0
             ? cfg.qmdPath.trim()

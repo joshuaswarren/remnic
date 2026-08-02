@@ -110,6 +110,8 @@ export interface DelegateRuntimeOptions {
     extractionMaxTurnChars?: unknown;
     flushModel?: string;
     configuredSearchBackend: "qmd" | "builtin";
+    /** Seeds the capability's health snapshot; see DelegateCapabilityOptions. */
+    configuredNamespacesEnabled: boolean;
     configuredQmdCommand: string;
   };
   /** Injectable clock for capability-cache expiry tests and deterministic hosts. */
@@ -409,6 +411,7 @@ export function registerDelegateRuntime(
     extractionMaxTurnChars: options.capability.extractionMaxTurnChars,
     flushModel: options.capability.flushModel,
     configuredSearchBackend: options.capability.configuredSearchBackend,
+    configuredNamespacesEnabled: options.capability.configuredNamespacesEnabled,
     configuredQmdCommand: options.capability.configuredQmdCommand,
     searchTimeoutMs: options.recallTimeoutMs,
     healthTimeoutMs: options.recallTimeoutMs,

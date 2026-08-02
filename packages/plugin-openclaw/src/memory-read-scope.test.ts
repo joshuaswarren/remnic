@@ -373,3 +373,40 @@ test("resolveReadablePath refuses artifact files even when contained and markdow
     path.join(memoryDir, "facts", "alice.md"),
   );
 });
+
+test("an `artifacts` ancestor of the corpus does not poison every read", async () => {
+  // A corpus at /srv/artifacts/remnic is ordinary. Judging the ABSOLUTE path
+  // would reject every markdown file in it.
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-artifacts-ancestor-")));
+  const memoryDir = path.join(root, "artifacts", "remnic");
+  const workspaceDir = path.join(root, "workspace");
+  await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+  await mkdir(path.join(memoryDir, "artifacts"), { recursive: true });
+  await mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+  await writeFile(path.join(memoryDir, "facts", "a.md"), "# a\n");
+  await writeFile(path.join(memoryDir, "artifacts", "report.md"), "# artifact\n");
+  const scope = createMemoryReadScope({ memoryDir, workspaceDir });
+  try {
+    assert.equal(
+      await scope.resolveReadablePath("facts/a.md"),
+      path.join(memoryDir, "facts", "a.md"),
+      "an ordinary read under an artifacts-named ancestor still resolves",
+    );
+    assert.equal(
+      await scope.resolveReadablePath(path.join(memoryDir, "facts", "a.md")),
+      path.join(memoryDir, "facts", "a.md"),
+      "including when the caller passes the absolute path a search returned",
+    );
+    // The corpus's OWN artifacts directory is still excluded.
+    await assert.rejects(
+      () => scope.resolveReadablePath("artifacts/report.md"),
+      /memory read excluded \(artifact path\)/,
+    );
+    await assert.rejects(
+      () => scope.resolveReadablePath(path.join(memoryDir, "artifacts", "report.md")),
+      /memory read excluded \(artifact path\)/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

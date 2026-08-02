@@ -117,6 +117,12 @@ export type DelegateCapabilityOptions = {
   flushModel?: string;
   /** Fallback backend facts used until the first health probe answers. */
   configuredSearchBackend: "qmd" | "builtin";
+  /**
+   * The plugin's own `namespacesEnabled`, used to SEED the health snapshot so
+   * a single-corpus deployment is not refused before the first probe answers
+   * (or while one is failing). The daemon's own report overwrites it.
+   */
+  configuredNamespacesEnabled: boolean;
   configuredQmdCommand: string;
   searchTimeoutMs: number;
   healthTimeoutMs: number;
@@ -134,7 +140,13 @@ const HEALTH_CACHE_TTL_MS = 30_000;
  * limit, NOT a stand-in for corpus exhaustion: only a short page or a
  * satisfied budget ends the loop sooner.
  */
-const SEARCH_CANDIDATE_CEILING = 1_000;
+const SEARCH_CANDIDATE_FLOOR = 1_000;
+
+/** Always ABOVE the caller's budget, or one filtered hit could never be
+ * replaced on a large request. Mirrors the core search helper. */
+function searchCandidateCeiling(budget: number): number {
+  return Math.max(SEARCH_CANDIDATE_FLOOR, budget * 4);
+}
 // A failing probe backs off instead of retrying on every hook, so a daemon
 // that is down or rejecting the token cannot turn each turn into a request.
 const HEALTH_FAILURE_BACKOFF_MS = 5_000;
@@ -236,6 +248,10 @@ export function createDelegateMemoryCapability(
     searchBackend: options.configuredSearchBackend,
     qmdEnabled: options.configuredSearchBackend === "qmd",
     qmdAvailable: options.configuredSearchBackend === "qmd",
+    // Same field the daemon reports and `requireScopedNamespace` reads. A
+    // partitioned plugin config seeds `true`, which is the fail-closed value:
+    // only an explicit `false` makes an absent namespace safe.
+    namespacesEnabled: options.configuredNamespacesEnabled,
   };
   let healthExpiresAt = 0;
   let healthInFlight: Promise<void> | undefined;
@@ -368,7 +384,15 @@ export function createDelegateMemoryCapability(
           // immediately and hammer a persistently malformed daemon.
           throw new Error("daemon /engram/v1/health returned a malformed envelope");
         }
-        health = readHealth(healthPayload);
+        const reported = readHealth(healthPayload);
+        health = {
+          ...reported,
+          // A daemon that does not report a posture (older build, or a token
+          // without health access) must not ERASE what the plugin already
+          // knows about its own deployment. Anything the daemon does report
+          // wins.
+          namespacesEnabled: reported.namespacesEnabled ?? options.configuredNamespacesEnabled,
+        };
         healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
         lastHealthFailure = undefined;
         // Path identity is decided by canonicalizing two strings ON THIS
@@ -518,8 +542,9 @@ export function createDelegateMemoryCapability(
       // nothing left, so asking again just replays the same rows.
       const served = limit ?? rawResults.length;
       if (rawResults.length === 0 || rawResults.length < served) break;
-      if (served >= SEARCH_CANDIDATE_CEILING) break;
-      limit = Math.min(served * 2, SEARCH_CANDIDATE_CEILING);
+      const ceiling = searchCandidateCeiling(budget);
+      if (served >= ceiling) break;
+      limit = Math.min(served * 2, ceiling);
     }
     return kept.slice(0, budget);
   };
