@@ -197,7 +197,7 @@ export type DelegateMemoryCapability = {
    * that is unknown on a namespace-partitioned daemon. Shared with the hook
    * paths so prompt recall cannot fan wider than tool search.
    */
-  resolveScopedNamespace: (explicit?: string) => Promise<string | undefined>;
+  resolveScopedNamespace: (explicit?: string, timeoutMs?: number) => Promise<string | undefined>;
   runtime: RemnicCapabilityRuntime;
   flushPlanResolver: () => MemoryFlushPlan;
   listArtifacts: () => Promise<unknown[]>;
@@ -342,7 +342,10 @@ export function createDelegateMemoryCapability(
   // A map (not `??=`) because "unknown" is a real verdict: re-probing it would
   // put a request in front of every search against an older daemon.
   const substitutedNamespaceVerdicts = new Map<string, boolean | undefined>();
-  const resolveScopedNamespaceChecked = async (explicit?: string): Promise<string | undefined> => {
+  const resolveScopedNamespaceChecked = async (
+    explicit?: string,
+    timeoutMs?: number,
+  ): Promise<string | undefined> => {
     const namespace = requireScopedNamespace(explicit);
     if (explicit !== undefined || namespace === undefined) return namespace;
     if (options.verifyNamespaceAuthorization === undefined) return namespace;
@@ -363,14 +366,23 @@ export function createDelegateMemoryCapability(
 
   // `status()` is synchronous in the host contract, so the async probe runs in
   // getMemorySearchManager (which IS async) and status() reads the snapshot.
-  const refreshHealth = async (): Promise<void> => {
+  const refreshHealth = async (timeoutMs?: number): Promise<void> => {
     if (now() < healthExpiresAt) return;
+    // A caller inside a shared deadline (the lifecycle flushes) passes what is
+    // LEFT of it. Zero or less means the budget is already spent: starting a
+    // fresh probe here would overrun the hook and get it abandoned before the
+    // buffer drains, so the last known snapshot answers instead.
+    if (timeoutMs !== undefined && timeoutMs <= 0) return;
     if (healthInFlight !== undefined) return healthInFlight;
     healthInFlight = (async () => {
       try {
         const response = await fetch(daemonUrl(target, "/engram/v1/health"), {
           headers: daemonAuthHeaders(target),
-          signal: AbortSignal.timeout(options.healthTimeoutMs),
+          signal: AbortSignal.timeout(
+            timeoutMs === undefined
+              ? options.healthTimeoutMs
+              : Math.min(options.healthTimeoutMs, timeoutMs),
+          ),
         });
         if (!response.ok) {
           await response.body?.cancel();
@@ -384,19 +396,16 @@ export function createDelegateMemoryCapability(
           // immediately and hammer a persistently malformed daemon.
           throw new Error("daemon /engram/v1/health returned a malformed envelope");
         }
-        const reported = readHealth(healthPayload);
-        health = {
-          ...reported,
-          // A daemon that does not report a posture (older build, or a token
-          // without health access) must not ERASE what the plugin already
-          // knows about its own deployment. Anything the daemon does report
-          // wins.
-          namespacesEnabled: reported.namespacesEnabled ?? options.configuredNamespacesEnabled,
-          // Same reason: a 200 that omits `memoryDir` (older build, or a token
-          // without health access) must not ERASE the configured path and
-          // leave `corpusShared` false beside a co-located corpus.
-          memoryDir: reported.memoryDir ?? health.memoryDir,
-        };
+        // VERBATIM. The seeded snapshot covers the window before any probe
+        // answers and the window where one is failing, but a daemon that
+        // ANSWERED and stayed silent about its posture is genuinely unknown -
+        // and the plugin's config describes its OWN deployment, not the
+        // daemon's. Substituting it here would let a flat plugin config mark a
+        // partitioned daemon `false`, permitting an absent namespace and
+        // fanning `/memories/search` across everything the token can read. The
+        // same substitution for `memoryDir` would compare the plugin's path to
+        // itself and enable file-backed reads with no proof at all.
+        health = readHealth(healthPayload);
         healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
         lastHealthFailure = undefined;
         // Path identity is decided by canonicalizing two strings ON THIS
@@ -437,6 +446,18 @@ export function createDelegateMemoryCapability(
     // the daemon schema's `maxResults >= 1` and turn a valid no-results request
     // into a 400 purely by switching bridge mode.
     if (opts?.maxResults === 0) return [];
+    // Beyond the exact-zero short circuit, an out-of-range budget is a caller
+    // bug, not something to reinterpret: coercing a negative to 1, truncating
+    // a fraction, or dropping a non-finite value to the daemon default all
+    // return a valid-looking page for a budget nobody asked for.
+    if (
+      opts?.maxResults !== undefined &&
+      (!Number.isInteger(opts.maxResults) || opts.maxResults < 0)
+    ) {
+      throw new Error(
+        `delegate search rejected (maxResults must be a non-negative integer): ${String(opts.maxResults)}`,
+      );
+    }
     // A cached manager can outlive the probe that handed it out. Without this,
     // a single transient health failure sticks a namespace refusal on every
     // later search while recall/observe recover on their next scoped call.
@@ -445,10 +466,7 @@ export function createDelegateMemoryCapability(
     // minScore are dropped on this side, so asking the daemon for exactly
     // `maxResults` would let a few excluded hits shrink — or empty — a page
     // that has valid lower-ranked memories behind it.
-    const requestedResults =
-      typeof opts?.maxResults === "number" && Number.isFinite(opts.maxResults)
-        ? Math.max(1, Math.floor(opts.maxResults))
-        : undefined;
+    const requestedResults = typeof opts?.maxResults === "number" ? opts.maxResults : undefined;
     // An empty namespace means "the daemon's default", but the daemon reads an
     // ABSENT namespace as a principal-wide fan-out. Send the concrete default
     // health reports so a default-scoped session cannot see other namespaces.
@@ -640,9 +658,12 @@ export function createDelegateMemoryCapability(
   };
 
   return {
-    resolveScopedNamespace: async (explicit?: string): Promise<string | undefined> => {
-      await refreshHealth();
-      return await resolveScopedNamespaceChecked(explicit);
+    resolveScopedNamespace: async (
+      explicit?: string,
+      timeoutMs?: number,
+    ): Promise<string | undefined> => {
+      await refreshHealth(timeoutMs);
+      return await resolveScopedNamespaceChecked(explicit, timeoutMs);
     },
     runtime: {
       async getMemorySearchManager() {

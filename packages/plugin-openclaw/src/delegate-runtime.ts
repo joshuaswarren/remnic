@@ -651,7 +651,11 @@ export function registerDelegateRuntime(
           target,
           options.serviceId,
           "/engram/v1/lcm/compaction/flush",
-          await withNamespace(sessionNamespace, { sessionKey }, capability.resolveScopedNamespace),
+          await withNamespace(sessionNamespace, { sessionKey }, (explicit) =>
+            // Inside the flush's SHARED deadline: a health probe started here
+            // with its own full timeout would overrun the hook.
+            capability.resolveScopedNamespace(explicit, remainingTimeout()),
+          ),
           remainingTimeout(),
         );
       const flushIndividually = async (): Promise<boolean> => {
@@ -674,7 +678,10 @@ export function registerDelegateRuntime(
         // daemon echoes, so it is also what the response is validated against.
         const requestNamespaces = await Promise.all(
           namespaces.map(async (sessionNamespace) =>
-            (await capability.resolveScopedNamespace(sessionNamespace || undefined)) ?? "",
+            (await capability.resolveScopedNamespace(
+              sessionNamespace || undefined,
+              remainingTimeout(),
+            )) ?? "",
           ),
         );
         try {

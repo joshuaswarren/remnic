@@ -1099,11 +1099,29 @@ test("swapping in an authorized token recovers unbound delegate search", async (
   }
 });
 
-test("a single-corpus plugin config searches before the first health probe", async () => {
+test("a single-corpus plugin config resolves scope while the probe is failing", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // The daemon never reports a namespace posture (older build), and the plugin
-  // itself is configured flat. Refusing here would break search on a
-  // single-corpus deployment for a fact the plugin already knows.
+  // No daemon answers at all, so the seeded snapshot is all there is. A flat
+  // deployment must still resolve its scope rather than refusing every call
+  // for the duration of an outage.
+  const built = createDelegateMemoryCapability({
+    ...optionsFor(1, memoryDir, workspaceDir),
+    configuredNamespacesEnabled: false,
+    resolveSearchNamespace: async () => undefined,
+  });
+  try {
+    assert.equal(await built.resolveScopedNamespace(undefined), undefined);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a daemon that ANSWERS without a posture is unknown, not flat", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // The plugin config describes the PLUGIN's deployment. A partitioned daemon
+  // on a legacy build would otherwise be marked flat by a flat plugin config,
+  // permitting an absent namespace and fanning search across everything the
+  // token can read.
   const stub = await startDaemonStub({
     health: { ok: true, memoryDir },
     search: { query: "q", count: 0, results: [] },
@@ -1115,7 +1133,10 @@ test("a single-corpus plugin config searches before the first health probe", asy
       resolveSearchNamespace: async () => undefined,
     });
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
-    assert.deepEqual(await manager?.search("q"), []);
+    await assert.rejects(
+      () => manager?.search("q") ?? Promise.resolve(),
+      /default namespace is unknown/,
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -1145,19 +1166,25 @@ test("a partitioned plugin config still fails closed before the first probe", as
   }
 });
 
-test("a health 200 without memoryDir keeps the configured corpus", async () => {
+test("a health 200 without memoryDir leaves the corpus unconfirmed", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // An older daemon (or a token without health access) reports no memoryDir.
-  // Erasing the seed would leave corpusShared false beside a co-located
-  // corpus and silently disable readFile and public artifacts.
+  // An unknown memoryDir is NEVER a match. Substituting the plugin's own path
+  // would compare it to itself and enable file-backed reads with no proof the
+  // daemon serves that corpus at all.
   const stub = await startDaemonStub({
     health: { ok: true, namespacesEnabled: false },
+    search: { query: "q", count: 0, results: [] },
   });
   try {
     const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
-    const read = await manager?.readFile({ relPath: "facts/alice.md" });
-    assert.equal(read?.path, path.join("facts", "alice.md"), "the read is served, not refused");
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /daemon serves an unknown memoryDir/,
+      "file-backed reads stay disabled until the daemon names its corpus",
+    );
+    // Search is unaffected - it runs through the daemon, which enforces.
+    assert.ok(Array.isArray(await manager?.search("q")));
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -1225,5 +1252,56 @@ test("delegate search keeps hits when the corpus sits under an `artifacts` ances
   } finally {
     await stub.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("delegate search rejects an out-of-range maxResults instead of coercing it", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+    search: { query: "q", count: 0, results: [] },
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    for (const maxResults of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await assert.rejects(
+        () => manager?.search("q", { maxResults }) ?? Promise.resolve(),
+        /maxResults must be a non-negative integer/,
+        `maxResults: ${String(maxResults)} must be rejected`,
+      );
+    }
+    // The exact-zero short circuit and ordinary budgets are unchanged.
+    assert.deepEqual(await manager?.search("q", { maxResults: 0 }), []);
+    assert.deepEqual(await manager?.search("q", { maxResults: 3 }), []);
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a spent caller budget skips the health probe instead of overrunning it", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // The lifecycle flushes share one deadline. Starting a fresh probe with its
+  // own full timeout would overrun the hook and get it abandoned before the
+  // buffer drains.
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    // Budget already spent: answer from the seeded snapshot, probe nothing.
+    assert.equal(await built.resolveScopedNamespace(undefined, 0), undefined);
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/health")).length,
+      0,
+      "no probe is started once the shared deadline is gone",
+    );
+    // A real budget still probes.
+    await built.resolveScopedNamespace(undefined, 5_000);
+    assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 1);
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
