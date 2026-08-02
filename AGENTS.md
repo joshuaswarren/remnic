@@ -75,6 +75,65 @@ OpenClaw `2026.4.1`.
   `docs/plugins/openclaw.md`, `packages/plugin-openclaw/README.md`, `llms.txt`,
   and the relevant package metadata tests.
 
+## Tangible Progress and Scope Discipline (All Agents)
+
+The purpose of this project is working, shippable software delivered
+accretively. Process exists to serve that outcome; it must never become the
+product. Remnic has no ticket tracker of record and no evidence-packet
+workflow, so the currency here is a durable receipt: a merged PR, a passing
+test run, a command output, a linked issue. No receipt, no credit.
+
+- **No process porn.** Ledgers, dashboards, meta-reports, and process
+  documents are not progress. A process artifact may exist only when it gates
+  a named capability, or when this repo already mandates it. The mandated set
+  is exempt by definition and is never yours to skip or delete: the Cleaner PR
+  Workflow gates, `npm run preflight:quick`, `npm run test:entity-hardening`,
+  the required CI checks, and the Review Prevention Checklist below. What this
+  bans is self-referential paperwork invented outside that set. Choosing
+  process artifacts because they are easy and low-risk is reward hacking.
+- **Honesty is absolute.** Never fake a test, present a fixture or mock as
+  live proof, weaken an assertion to make it pass, hard-code a success path,
+  or close work that is not done. Never claim a command ran without its
+  output. A false close is reopened on the record.
+- **Refusal is not delivery.** A correctly typed refusal beats a fabricated
+  result and is worth far less than the real capability. Implementing only the
+  refusal path never closes a feature issue. Mark refusal-only states
+  explicitly, with a follow-up issue, so they read as unfinished rather than
+  as shipped.
+- **Meta-work is the most seductive work available.** Designing governance
+  feels like the highest-leverage thing you could be doing, reviewing
+  governance feels rigorous, and both extend forever. Capability improves the
+  justification, not the work, so expect this failure mode most strongly when
+  the assignment is itself about process, standards, or quality. The same pull
+  shows up in code as gold plating: an abstraction for a second caller that
+  does not exist, a config knob nobody asked for, a retry wrapper around a
+  call that does not fail, a refactor sitting next to the actual change. Build
+  what was asked, at the size asked. A defect you find mid-task is still yours
+  to fix; an unrequested improvement is not — file it as an issue and move on.
+- **Bound the machinery, then freeze it.** Validators, linters, scaffolds,
+  harnesses, and helper scripts obey the same law as any other process
+  artifact. Each must gate a named deliverable, and "good enough to keep the
+  work honest" is the bar: schema checks, cycle detection, overlap detection,
+  baseline drift. Reach that bar and freeze. Rigor you decide to defer is
+  recorded as explicit debt — a named list of unimplemented checks, or an
+  issue — never built preemptively against a future you are imagining. Keep
+  every check that has caught a real defect; kill the tranches that only
+  deepen the apparatus.
+- **The deliverable outranks the apparatus.** Shipping the real feature always
+  outranks perfecting the thing that would verify it. Machinery can be
+  reconciled afterwards, as a derivative of what shipped; what ships never
+  waits on machinery completeness.
+- **Watch the ratio in your own turns.** If your recent activity is mostly
+  plans, schema debates, review letters, and status prose while the count of
+  shipped units has not moved, you are the one who needs the redirect, and it
+  is due mid-task rather than in a retrospective. Apply to yourself the
+  threshold you would apply to a subagent you were supervising. Investigation
+  that has stopped changing your plan is finished investigation: take the
+  boring default, leave a receipt, and go build.
+
+These rules bind human-directed sessions, delegated subagents, and scheduled
+or otherwise autonomous agent runs alike.
+
 ## Cleaner PR Workflow (Mandatory)
 
 These rules are the default workflow for all agents and contributors.
