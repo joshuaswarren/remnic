@@ -73,7 +73,11 @@ function readUnitEnv(
   // launchd: <key>NAME</key><string>value</string>
   const launchd = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
   const raw = (systemd?.[1] ?? launchd?.[1])?.trim();
-  if (raw === undefined || raw === "") return undefined;
+  if (raw === undefined) return undefined;
+  // An EMPTY assignment is present-but-blank. The server reads it as set, so
+  // it overrides nothing but also stops the legacy variable from applying;
+  // returning `undefined` here would let a stale `ENGRAM_*` win instead.
+  if (raw === "") return "";
   if (!scope.userScoped && raw.includes("%")) return undefined;
   return raw.replace(/%h/g, scope.homeDir);
 }
@@ -185,20 +189,20 @@ export function resolveUnitEndpoint(
   // and they win over both its config file and its environment, so a unit that
   // launches it that way is the only place the endpoint is written down.
   const cli = readUnitCliOverrides(unit, scope);
-  const host =
-    cli.host ?? readUnitEnv(unit, "REMNIC_HOST", scope) ?? readUnitEnv(unit, "ENGRAM_HOST", scope);
-  const port =
-    cli.port ??
-    coercePort(
-      readUnitEnv(unit, "REMNIC_PORT", scope) ?? readUnitEnv(unit, "ENGRAM_PORT", scope),
-    );
+  // `??` on the PRIMARY spelling only when it is absent entirely — a blank
+  // primary shadows the legacy one exactly as it does for the server.
+  const envOverride = (primary: string, legacy: string): string | undefined => {
+    const value = readUnitEnv(unit, primary, scope);
+    if (value !== undefined) return value === "" ? undefined : value;
+    const legacyValue = readUnitEnv(unit, legacy, scope);
+    return legacyValue === "" ? undefined : legacyValue;
+  };
+  const host = cli.host ?? envOverride("REMNIC_HOST", "ENGRAM_HOST");
+  const port = cli.port ?? coercePort(envOverride("REMNIC_PORT", "ENGRAM_PORT"));
   // The server merges REMNIC_AUTH_TOKEN over `server.authToken` the same way
   // it merges host and port, so a unit that sets it is the only place the
   // gateway can learn the live credential.
-  const authToken =
-    cli.authToken ??
-    readUnitEnv(unit, "REMNIC_AUTH_TOKEN", scope) ??
-    readUnitEnv(unit, "ENGRAM_AUTH_TOKEN", scope);
+  const authToken = cli.authToken ?? envOverride("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN");
   const configFromCli =
     cli.configPath === undefined ? {} : { configPath: cli.configPath };
   return {
@@ -216,6 +220,8 @@ function resolveUnitConfigPathInner(
 ): { configPath?: string } {
   for (const name of ["REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH"]) {
     const raw = readUnitEnv(unit, name, scope);
+    // A blank primary shadows the legacy spelling, same as the endpoint vars.
+    if (raw === "") return {};
     if (raw === undefined) continue;
     const resolved = expandTildePath(raw);
     if (!path.isAbsolute(resolved)) continue;

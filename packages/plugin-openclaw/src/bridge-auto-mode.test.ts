@@ -1535,3 +1535,123 @@ test("explicit delegate binds its credential to the config it took the endpoint 
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("a blank primary assignment shadows its legacy spelling", () => {
+  // The server reads `REMNIC_PORT=` as SET, so it overrides nothing but also
+  // stops a stale ENGRAM_PORT from applying. Treating blank as absent would
+  // make auto probe the legacy endpoint the daemon is not using.
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nEnvironment=REMNIC_PORT=\nEnvironment=ENGRAM_PORT=4840\n", {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).port,
+    undefined,
+  );
+  // Absent primary still falls through to the legacy spelling.
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nEnvironment=ENGRAM_PORT=4840\n", {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).port,
+    4840,
+  );
+});
+
+test("a skipped remote candidate does not shrink the live daemon's probe budget", async () => {
+  // A non-loopback unit endpoint costs no time, so it must not sit in the
+  // divisor: a warming daemon behind it would otherwise get a fraction of the
+  // budget and be misread as absent.
+  const warming = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" },
+    200,
+    6,
+  );
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-skip-divisor-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-skip-divisor-cwd-"));
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    "[Service]\nExecStart=/opt/remnic-server --host 10.0.0.9 --port 4841\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: warming.port } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 4_000 });
+    assert.equal(bridge.mode, "delegate", "the warming daemon was waited out");
+    assert.equal(bridge.daemonPort, warming.port);
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await warming.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a rejected gateway token falls back to the endpoint's own config token", async () => {
+  // A system daemon under another account accepts only its config's static
+  // token; the gateway's token store holds an unrelated one that 401s.
+  const stub = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" },
+    200,
+    0,
+    false,
+    "config-token",
+  );
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-token-fallback-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".remnic"), { recursive: true });
+  // The gateway-global store outranks the config inside loadDaemonAuth.
+  await writeFile(
+    path.join(home, ".remnic", "tokens.json"),
+    JSON.stringify({ tokens: [{ connector: "openclaw", token: "remnic_gateway_token" }] }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({
+      server: { host: "127.0.0.1", port: stub.port, authToken: "config-token" },
+    }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(home);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 6_000 });
+    assert.equal(bridge.mode, "delegate", "the bound config credential was retried");
+    assert.equal(
+      bridge.daemonAuthTokenOverride,
+      "config-token",
+      "and delegate requests keep using the one that worked",
+    );
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await stub.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});

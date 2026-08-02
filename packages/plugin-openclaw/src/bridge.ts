@@ -38,6 +38,11 @@ interface DaemonEndpointCandidate {
    * keep using the token the probe authenticated with.
    */
   authTokenOverride?: string;
+  /**
+   * The credential written in this candidate's own config file, retried when
+   * the primary (gateway token store) one is rejected.
+   */
+  fallbackToken?: string;
 }
 
 export interface BridgeConfig {
@@ -661,7 +666,9 @@ function readDaemonServerConfig(): { host?: string; port?: number } {
  * one the daemon could have booted from (missing, unparseable, or carrying a
  * `server` its own loader rejects).
  */
-function readServerBlock(candidate: string): { host?: string; port?: number } | undefined {
+function readServerBlock(
+  candidate: string,
+): { host?: string; port?: number; authToken?: string } | undefined {
   if (!fileExists(candidate)) return undefined;
   let raw: unknown;
   try {
@@ -678,9 +685,11 @@ function readServerBlock(candidate: string): { host?: string; port?: number } | 
   if (typeof server !== "object" || server === null || Array.isArray(server)) return undefined;
   const { host, port } = server as { host?: unknown; port?: unknown };
   const parsedPort = coerceDaemonPort(port);
+  const { authToken } = server as { authToken?: unknown };
   return {
     ...(typeof host === "string" && host.trim() !== "" ? { host } : {}),
     ...(parsedPort === undefined ? {} : { port: parsedPort }),
+    ...(typeof authToken === "string" && authToken.length > 0 ? { authToken } : {}),
   };
 }
 
@@ -718,6 +727,14 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
     // different `server.authToken` values. Dropping the later one would send
     // the stale token, take a 401, and never retry with the live credential.
     const token = authTokenOverride ?? loadDaemonAuth(configPath).token;
+    // The gateway-global token store outranks a config file inside
+    // `loadDaemonAuth`, which is right for a co-installed daemon but wrong for
+    // one running under another account with a static `server.authToken`: the
+    // store's unrelated token 401s and the bound credential is never tried.
+    // Keep it as an explicit alternative so the probe can fall back to it.
+    const configToken = configPath === undefined ? undefined : readServerBlock(configPath)?.authToken;
+    const fallbackToken =
+      configToken !== undefined && configToken !== token ? configToken : undefined;
     if (candidates.some((c) => c.host === dialHost && c.port === dialPort && c.token === token)) {
       return;
     }
@@ -727,6 +744,7 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
       configPath,
       token,
       ...(authTokenOverride === undefined ? {} : { authTokenOverride }),
+      ...(fallbackToken === undefined ? {} : { fallbackToken }),
     });
   };
   // An env override alone, so a specified environment is dialed first even
@@ -827,23 +845,37 @@ export function detectDaemonBridgeMode(options: {
   // shares one deadline.
   const totalTimeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
   const deadline = Date.now() + totalTimeoutMs;
-  let probed = 0;
-  for (const { host: daemonHost, port: daemonPort, configPath, authTokenOverride } of endpoints) {
+  // Partition BEFORE budgeting. A candidate rejected for being non-loopback,
+  // or for having no liveness hint, costs no time at all — leaving it in the
+  // divisor would shrink the share for the real probes behind it, and a
+  // warming daemon could be misread as absent well inside the total budget.
+  const probeable: DaemonEndpointCandidate[] = [];
+  for (const candidate of endpoints) {
     // Auto is SAME-HOST detection. A matching absolute memoryDir string proves
     // nothing across machines — an unrelated remote daemon using the same
     // conventional path would silently capture every recall and write — and the
     // premise that the plugin may read the corpus locally only holds on one
     // host. Explicit `delegate` may still target a remote daemon; `auto` may not.
-    if (!isLoopbackDaemonHost(daemonHost)) {
+    if (!isLoopbackDaemonHost(candidate.host)) {
       options.onSkip?.(
-        `daemon endpoint ${daemonHost}:${daemonPort} is not loopback; auto only delegates to a same-host daemon`,
+        `daemon endpoint ${candidate.host}:${candidate.port} is not loopback; auto only delegates to a same-host daemon`,
       );
       continue;
     }
-    if (!isDaemonRunning() && !shouldProbeDaemonHealth(daemonHost)) {
+    if (!isDaemonRunning() && !shouldProbeDaemonHealth(candidate.host)) {
       options.onSkip?.("no daemon PID, service unit, or local endpoint to probe");
       continue;
     }
+    probeable.push(candidate);
+  }
+  let probed = 0;
+  for (const {
+    host: daemonHost,
+    port: daemonPort,
+    configPath,
+    authTokenOverride,
+    fallbackToken,
+  } of probeable) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       options.onSkip?.(
@@ -857,16 +889,30 @@ export function detectDaemonBridgeMode(options: {
     // otherwise eat the entire preflight and the live daemon behind it would
     // never be dialed. The share is over the endpoints still unprobed, so the
     // last candidate can still use everything that remains.
-    const remainingCandidates = endpoints.length - probed;
-    const perCandidateMs = Math.max(1, Math.ceil(remainingMs / Math.max(1, remainingCandidates)));
+    const perCandidateMs = Math.max(
+      1,
+      Math.ceil(remainingMs / Math.max(1, probeable.length - probed)),
+    );
     probed += 1;
-    const health = readDaemonMemoryDirSync(
+    const probeBudget = Math.min(remainingMs, perCandidateMs);
+    let usedToken = authTokenOverride;
+    let health = readDaemonMemoryDirSync(
       daemonHost,
       daemonPort,
-      Math.min(remainingMs, perCandidateMs),
+      probeBudget,
       configPath,
-      authTokenOverride,
+      usedToken,
     );
+    if (!health.healthy && fallbackToken !== undefined) {
+      // The first attempt used the gateway's token store; this endpoint's own
+      // config names a different credential, which is the one a daemon running
+      // under another account would accept.
+      const retryMs = Math.min(deadline - Date.now(), perCandidateMs);
+      if (retryMs > 0) {
+        usedToken = fallbackToken;
+        health = readDaemonMemoryDirSync(daemonHost, daemonPort, retryMs, configPath, usedToken);
+      }
+    }
     if (!health.healthy) {
       options.onSkip?.(`no healthy daemon at ${daemonHost}:${daemonPort}`);
       continue;
@@ -889,7 +935,7 @@ export function detectDaemonBridgeMode(options: {
       daemonPort,
       healthVerified: true,
       ...(configPath === undefined ? {} : { daemonConfigPath: configPath }),
-      ...(authTokenOverride === undefined ? {} : { daemonAuthTokenOverride: authTokenOverride }),
+      ...(usedToken === undefined ? {} : { daemonAuthTokenOverride: usedToken }),
     };
   }
   return embedded;
