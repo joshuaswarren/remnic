@@ -147,8 +147,9 @@ the work is judged against.
   defects for about two rounds. After that they generate adversarial cases
   against the previous round's fix, which is unbounded by construction — a
   reviewer will always find one more hypothetical. **From round three on, only
-  these are actionable:** a correctness, security, or data-integrity defect in
-  shipped behavior; a failing *required* check; a factual claim that is wrong
+  these are actionable:** a correctness, security, or data-integrity defect
+  in the behavior this change ships, whether already deployed or still in
+  the PR; a failing *required* check; a factual claim that is wrong
   against the tree; or a rule this repo mandates that the PR actually
   violates. Everything else — style, hypothetical mutations of code or
   wording nobody would write, further tightening of a check that already fails
