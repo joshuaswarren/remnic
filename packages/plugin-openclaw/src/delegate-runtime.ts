@@ -396,11 +396,14 @@ export function registerDelegateRuntime(
     },
     // The daemon's own namespace-aware probe, so a substituted default is
     // proven usable before the first search rather than 403-ing on it.
-    verifyNamespaceAuthorization: async (candidate, timeoutMs) => {
+    verifyNamespaceAuthorization: async (candidate, timeoutMs, operations) => {
       const probe = await probeDelegateAuthorization(
         target,
         candidate,
-        ["memory_search"],
+        // What the caller is about to do. A token that grants recall/observe/
+        // flush but not memory_search must not have those rejected locally.
+        (operations as readonly DelegateAuthorizationOperation[] | undefined) ??
+          DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS,
         timeoutMs,
       );
       return probe.state === "unavailable" ? undefined : probe.state === "authorized";
@@ -439,6 +442,11 @@ export function registerDelegateRuntime(
       // inject the PREVIOUS query's memory into this prompt.
       if (cachePromptLines) promptLinesBySession.delete(sessionKey);
       if (query.trim().length < 5) return undefined;
+      // The host abandons this hook at `hookTimeoutMs`, so namespace
+      // resolution and the recall POST share ONE deadline rather than each
+      // taking its own full timeout and together overrunning it.
+      const promptDeadline = Date.now() + Math.min(options.hookTimeoutMs, options.recallTimeoutMs);
+      const promptRemaining = (): number => promptDeadline - Date.now();
       try {
         if (options.shouldSkipRecall(sessionKey)) {
           log.debug(`delegate recall skipped: cron policy excludes ${sessionKey}`);
@@ -475,9 +483,13 @@ export function registerDelegateRuntime(
               ...(cwd ? { cwd } : {}),
               ...(options.projectTag ? { projectTag: options.projectTag } : {}),
             },
-            capability.resolveScopedNamespace,
+            // ONE deadline for the whole hook: health resolution followed by
+            // a full-timeout recall could otherwise run past `hookTimeoutMs`
+            // and have the host abandon it with nothing injected.
+            (explicit) =>
+              capability.resolveScopedNamespace(explicit, promptRemaining(), ["recall"]),
           ),
-          options.recallTimeoutMs,
+          Math.max(1, promptRemaining()),
         );
         const rawContext = response?.context;
         if (typeof rawContext !== "string" || rawContext.trim().length === 0) {
@@ -555,6 +567,9 @@ export function registerDelegateRuntime(
       );
     if (turn.length === 0) return;
     try {
+      const observeDeadline =
+        Date.now() + Math.min(options.hookTimeoutMs, options.observeTimeoutMs);
+      const observeRemaining = (): number => observeDeadline - Date.now();
       const cwd = cwdFrom(event, ctx, options.cwd);
       const scopedNamespace = await sessionNamespaceFrom(
         sessionKey,
@@ -575,9 +590,10 @@ export function registerDelegateRuntime(
             ...(cwd ? { cwd } : {}),
             ...(options.projectTag ? { projectTag: options.projectTag } : {}),
           },
-          capability.resolveScopedNamespace,
+          (explicit) =>
+            capability.resolveScopedNamespace(explicit, observeRemaining(), ["observe"]),
         ),
-        options.observeTimeoutMs,
+        Math.max(1, observeRemaining()),
       );
     } catch (err) {
       log.warn(`delegate observe failed: ${String(err)}`);
@@ -666,7 +682,9 @@ export function registerDelegateRuntime(
           await withNamespace(sessionNamespace, { sessionKey }, (explicit) =>
             // Inside the flush's SHARED deadline: a health probe started here
             // with its own full timeout would overrun the hook.
-            capability.resolveScopedNamespace(explicit, remainingBudget()),
+            capability.resolveScopedNamespace(explicit, remainingBudget(), [
+              "lcm_compaction_flush",
+            ]),
           ),
           remainingTimeout(),
         );
@@ -690,10 +708,9 @@ export function registerDelegateRuntime(
         // daemon echoes, so it is also what the response is validated against.
         const requestNamespaces = await Promise.all(
           namespaces.map(async (sessionNamespace) =>
-            (await capability.resolveScopedNamespace(
-              sessionNamespace || undefined,
-              remainingBudget(),
-            )) ?? "",
+            (await capability.resolveScopedNamespace(sessionNamespace || undefined, remainingBudget(), [
+              "lcm_compaction_flush",
+            ])) ?? "",
           ),
         );
         try {

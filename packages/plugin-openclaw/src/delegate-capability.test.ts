@@ -1500,3 +1500,96 @@ test("delegate search rejects a malformed score and an invalid minScore", async 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("a cached flat posture expires far sooner than the rest of the snapshot", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // A flat posture is the one value that licenses an UNSCOPED request, so a
+  // daemon repartitioning mid-TTL would turn it into a fan-out.
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+  });
+  try {
+    let clock = 1_000;
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      resolveSearchNamespace: async () => undefined,
+      now: () => clock,
+    });
+    await built.resolveScopedNamespace(undefined);
+    const afterFirst = stub.calls.filter((call) => call.pathname.includes("/health")).length;
+    assert.equal(afterFirst, 1);
+    // Still inside the FLAT window: no re-probe.
+    clock += 4_000;
+    await built.resolveScopedNamespace(undefined);
+    assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 1);
+    // Past it, but well inside the ordinary 30s snapshot TTL: re-probed.
+    clock += 2_000;
+    await built.resolveScopedNamespace(undefined);
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/health")).length,
+      2,
+      "the licensing value is re-confirmed long before the rest of the snapshot",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("the authorization probe names the operation the caller is performing", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // A token may grant recall/observe/flush but not memory_search. Probing a
+  // hard-coded operation would reject those locally before their own route
+  // could authorize them.
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+    search: { query: "q", count: 0, results: [] },
+  });
+  try {
+    const asked: Array<readonly string[] | undefined> = [];
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      resolveSearchNamespace: async () => undefined,
+      verifyNamespaceAuthorization: async (_ns, _timeout, operations) => {
+        asked.push(operations);
+        // Only memory_search is denied for this token.
+        return !(operations ?? []).includes("memory_search");
+      },
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.search("q") ?? Promise.resolve(),
+      /is not authorized for the delegate token/,
+      "search names memory_search and is correctly refused",
+    );
+    // A flush-scoped resolution names its own operation and is allowed.
+    assert.equal(
+      await built.resolveScopedNamespace(undefined, undefined, ["lcm_compaction_flush"]),
+      "default",
+    );
+    assert.deepEqual(asked, [["memory_search"], ["lcm_compaction_flush"]]);
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an invalid caller budget is rejected at the boundary", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    for (const timeoutMs of [Number.NaN, Number.POSITIVE_INFINITY, 12.5]) {
+      await assert.rejects(
+        () => built.resolveScopedNamespace(undefined, timeoutMs),
+        /timeoutMs must be a finite integer/,
+        `timeoutMs: ${String(timeoutMs)} must be rejected`,
+      );
+    }
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

@@ -94,9 +94,16 @@ export type DelegateCapabilityOptions = {
    * token gets an actionable refusal instead of a 403 on its first search.
    * `undefined` means the daemon could not answer - unproven, not refused.
    */
+  /**
+   * `operations` names what the CALLER is about to do. A token may grant
+   * recall, observe, and flush but not `memory_search`; probing a hard-coded
+   * operation would reject those otherwise-authorized calls locally, before
+   * their own daemon route could authorize them.
+   */
   verifyNamespaceAuthorization?: (
     namespace: string,
     timeoutMs?: number,
+    operations?: readonly string[],
   ) => Promise<boolean | undefined>;
   memoryDir: string;
   workspaceDir: string;
@@ -128,6 +135,13 @@ export type DelegateCapabilityOptions = {
 };
 
 const HEALTH_CACHE_TTL_MS = 30_000;
+/**
+ * A cached `namespacesEnabled: false` is the one value that LICENSES an
+ * unscoped request, so it is the one a daemon repartitioning mid-TTL turns
+ * into a principal-wide fan-out. It expires far sooner than the rest of the
+ * snapshot; everything else is merely informational.
+ */
+const FLAT_POSTURE_CACHE_TTL_MS = 5_000;
 /**
  * Ceiling on how many candidates one delegate search will ask the daemon for.
  *
@@ -194,7 +208,11 @@ export type DelegateMemoryCapability = {
    * that is unknown on a namespace-partitioned daemon. Shared with the hook
    * paths so prompt recall cannot fan wider than tool search.
    */
-  resolveScopedNamespace: (explicit?: string, timeoutMs?: number) => Promise<string | undefined>;
+  resolveScopedNamespace: (
+    explicit?: string,
+    timeoutMs?: number,
+    operations?: readonly string[],
+  ) => Promise<string | undefined>;
   runtime: RemnicCapabilityRuntime;
   flushPlanResolver: () => MemoryFlushPlan;
   listArtifacts: () => Promise<unknown[]>;
@@ -343,6 +361,7 @@ export function createDelegateMemoryCapability(
     explicit?: string,
     timeoutMs?: number,
     healthIsFresh = true,
+    operations?: readonly string[],
   ): Promise<string | undefined> => {
     // An unconfirmed snapshot cannot license an ABSENT namespace: the daemon
     // may have restarted partitioned since it was taken, and the flush would
@@ -356,7 +375,7 @@ export function createDelegateMemoryCapability(
     const namespace = requireScopedNamespace(explicit);
     if (explicit !== undefined || namespace === undefined) return namespace;
     if (options.verifyNamespaceAuthorization === undefined) return namespace;
-    const verdictKey = `${target.resolveAuthToken().token}\u0000${namespace}`;
+    const verdictKey = `${target.resolveAuthToken().token}\u0000${(operations ?? []).join(",")}\u0000${namespace}`;
     if (!substitutedNamespaceVerdicts.has(verdictKey)) {
       // Inside a shared deadline this must not start its own fixed-timeout
       // request: a flush that already spent most of its budget on capability
@@ -364,7 +383,7 @@ export function createDelegateMemoryCapability(
       if (timeoutMs !== undefined && timeoutMs <= 0) return namespace;
       substitutedNamespaceVerdicts.set(
         verdictKey,
-        await options.verifyNamespaceAuthorization(namespace, timeoutMs),
+        await options.verifyNamespaceAuthorization(namespace, timeoutMs, operations),
       );
     }
     if (substitutedNamespaceVerdicts.get(verdictKey) === false) {
@@ -383,6 +402,14 @@ export function createDelegateMemoryCapability(
    * values on hand are stale — safety facts read from them are unproven.
    */
   const refreshHealth = async (timeoutMs?: number): Promise<boolean> => {
+    // `NaN` would slip past every `<= 0` comparison and reach
+    // `AbortSignal.timeout` as an invalid duration; a fraction would be
+    // silently truncated. Both are caller bugs across an untyped boundary.
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || !Number.isFinite(timeoutMs))) {
+      throw new Error(
+        `delegate request rejected (timeoutMs must be a finite integer): ${String(timeoutMs)}`,
+      );
+    }
     if (now() < healthExpiresAt) return true;
     // A caller inside a shared deadline (the lifecycle flushes) passes what is
     // LEFT of it. Zero or less means the budget is already spent: starting a
@@ -444,7 +471,11 @@ export function createDelegateMemoryCapability(
         // same substitution for `memoryDir` would compare the plugin's path to
         // itself and enable file-backed reads with no proof at all.
         health = readHealth(healthPayload);
-        healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
+        healthExpiresAt =
+          now() +
+          (health.namespacesEnabled === false
+            ? FLAT_POSTURE_CACHE_TTL_MS
+            : HEALTH_CACHE_TTL_MS);
         lastHealthFailure = undefined;
         // Path identity is decided by canonicalizing two strings ON THIS
         // HOST, so it proves nothing about a REMOTE daemon that happens to
@@ -534,6 +565,9 @@ export function createDelegateMemoryCapability(
     // health reports so a default-scoped session cannot see other namespaces.
     const namespace = await resolveScopedNamespaceChecked(
       await options.resolveSearchNamespace(opts?.sessionKey),
+      undefined,
+      true,
+      ["memory_search"],
     );
     // Mirror the embedded manager: "vsearch" is vector ranking, "query" is the
     // ordinary search plan, anything else is the backend default.
@@ -727,9 +761,10 @@ export function createDelegateMemoryCapability(
     resolveScopedNamespace: async (
       explicit?: string,
       timeoutMs?: number,
+      operations?: readonly string[],
     ): Promise<string | undefined> => {
       const fresh = await refreshHealth(timeoutMs);
-      return await resolveScopedNamespaceChecked(explicit, timeoutMs, fresh);
+      return await resolveScopedNamespaceChecked(explicit, timeoutMs, fresh, operations);
     },
     runtime: {
       async getMemorySearchManager() {
