@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 import { initLogger, resetLogger } from "@remnic/core/logger";
 
 import {
@@ -2850,11 +2851,13 @@ test("a short query evicts the previous turn's cached recall", async () => {
   }
 });
 
-test("an invalid health timeout on an EMBEDDED deployment does not poison the api", async () => {
+test("an invalid health timeout still records the embedded bind it causes", async () => {
   // The timeout is parsed before mode resolution, so a bad value throws even
-  // when the deployment never wanted delegate. Marking the api as a fallback
-  // would then block a later delegate registration on the same gateway api
-  // once the value is fixed.
+  // when the deployment never wanted delegate. Whatever it MEANT, returning
+  // false has the caller bind the embedded runtime on this api, and OpenClaw
+  // exposes no unregister — so a later delegate registration on the same api
+  // would add delegate hooks BESIDE the attached embedded ones and run two
+  // memory paths over one corpus.
   const stub = await startDaemonStub(() => ({ context: "ctx" }));
   const priorMode = process.env.REMNIC_BRIDGE_MODE;
   const priorHost = process.env.REMNIC_HOST;
@@ -2894,7 +2897,40 @@ test("an invalid health timeout on an EMBEDDED deployment does not poison the ap
       { ...common, configBridgeMode: "delegate" },
       { checkHealth: () => true },
     );
-    assert.equal(good, true, "the earlier embedded-only failure did not poison the api");
+    assert.equal(
+      good,
+      false,
+      "the api is irrevocably embedded, so delegate must not stack on top of it",
+    );
+    assert.ok(
+      api.handlers.has("before_prompt_build") === false,
+      "and no delegate hook was bound beside the embedded runtime",
+    );
+
+    // A PASSIVE registration binds nothing, so it records nothing.
+    const passiveApi = recordingApi();
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        passiveApi,
+        {
+          ...common,
+          passive: true,
+          configBridgeMode: "embedded",
+          bridgeHealthTimeoutMs: "not-a-number",
+        },
+        { checkHealth: () => true },
+      ),
+      false,
+    );
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        passiveApi,
+        { ...common, configBridgeMode: "delegate" },
+        { checkHealth: () => true },
+      ),
+      true,
+      "a passive failure left the api free to take delegate later",
+    );
     await rm(memoryDir, { recursive: true, force: true });
   } finally {
     if (priorMode === undefined) delete process.env.REMNIC_BRIDGE_MODE;
@@ -3022,6 +3058,134 @@ test("an api that already fell back skips the endpoint walk entirely", async () 
     else process.env.REMNIC_HOST = priorHost;
     if (priorPort === undefined) delete process.env.REMNIC_PORT;
     else process.env.REMNIC_PORT = priorPort;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+const HEALTH_WORKER_STUB = `
+import http from "node:http";
+import { parentPort, workerData } from "node:worker_threads";
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ ok: true, namespacesEnabled: false, memoryDir: workerData.memoryDir }));
+});
+server.listen(workerData.port ?? 0, "127.0.0.1", () => {
+  parentPort.postMessage({ port: server.address().port });
+});
+parentPort.on("message", () => server.close(() => process.exit(0)));
+`;
+
+test("a rotated UNIT credential reaches delegate routes without a gateway restart", async () => {
+  // End-to-end counterpart to the config-token rotation above: the credential
+  // detection authenticated with must not be frozen just because it came from
+  // the unit rather than a config file.
+  //
+  // Detection is SYNCHRONOUS (`Atomics.wait`), so its health probe cannot be
+  // answered by a server on this thread — a worker serves it, then hands the
+  // port to an in-process server for the async recall routes.
+  const memoryDir = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-unit-rot-mem-")));
+  const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(HEALTH_WORKER_STUB)}`), {
+    type: "module",
+    workerData: { memoryDir },
+  } as ConstructorParameters<typeof Worker>[1] & { type: "module" });
+  const ready = Promise.withResolvers<number>();
+  worker.on("message", (message: { port: number }) => ready.resolve(message.port));
+  worker.on("error", ready.reject);
+  const port = await ready.promise;
+
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-unit-rot-home-"));
+  const unitDir = path.join(home, ".config", "systemd", "user");
+  await mkdir(unitDir, { recursive: true });
+  const unitPath = path.join(unitDir, "remnic.service");
+  const writeUnitToken = async (token: string): Promise<void> => {
+    await writeFile(
+      unitPath,
+      [
+        "[Service]",
+        "Environment=REMNIC_HOST=127.0.0.1",
+        `Environment=REMNIC_PORT=${port}`,
+        `Environment=REMNIC_AUTH_TOKEN=${token}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+  };
+  await writeUnitToken("unit-token-v1");
+
+  const priorHome = process.env.HOME;
+  const priorEnv = new Map(
+    ["REMNIC_BRIDGE_MODE", "REMNIC_HOST", "REMNIC_PORT"].map((key) => [key, process.env[key]]),
+  );
+  let server: http.Server | undefined;
+  try {
+    process.env.HOME = home;
+    for (const key of priorEnv.keys()) Reflect.deleteProperty(process.env, key);
+    const api = recordingApi();
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        api,
+        {
+          serviceId: "unit-rotation",
+          configBridgeMode: "auto",
+          passive: false,
+          allowPromptInjection: true,
+          gateHeartbeatTurns: false,
+          recallBudgetChars: 8_000,
+          memoryDir,
+          sessionTogglesEnabled: false,
+          respectBundledActiveMemoryToggle: false,
+          cleanUserMessage: (text: string) => text,
+          hookTimeoutMs: 5_000,
+          shouldSkipRecall: () => false,
+          flushOnResetEnabled: true,
+          capability: TEST_CAPABILITY,
+        },
+        { checkHealth: () => true },
+      ),
+      true,
+      "auto delegated to the same-corpus daemon the unit names",
+    );
+
+    // Hand the port to a server on this thread, which the async routes reach.
+    worker.postMessage("close");
+    await new Promise<void>((resolve) => worker.once("exit", () => resolve()));
+    const recallAuthorization: Array<string | undefined> = [];
+    server = http.createServer((req, res) => {
+      const pathname = String(req.url);
+      res.setHeader("content-type", "application/json");
+      if (pathname.startsWith("/engram/v1/recall")) {
+        recallAuthorization.push(req.headers.authorization);
+        res.end(JSON.stringify({ context: "delegated context" }));
+        return;
+      }
+      res.end(JSON.stringify({ ok: true, namespacesEnabled: false, memoryDir }));
+    });
+    const listening = Promise.withResolvers<void>();
+    server.once("error", listening.reject);
+    server.listen(port, "127.0.0.1", listening.resolve);
+    await listening.promise;
+
+    await invoke(api, "before_prompt_build", { prompt: "what did we decide?" }, { sessionKey: "s" });
+    // The administrator rotates the unit's credential and restarts the daemon.
+    await writeUnitToken("unit-token-v2");
+    await invoke(api, "before_prompt_build", { prompt: "what did we decide?" }, { sessionKey: "s" });
+
+    assert.deepEqual(recallAuthorization, ["Bearer unit-token-v1", "Bearer unit-token-v2"]);
+  } finally {
+    if (priorHome === undefined) Reflect.deleteProperty(process.env, "HOME");
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await worker.terminate();
+    const listener = server;
+    if (listener !== undefined) {
+      await new Promise<void>((resolve, reject) =>
+        listener.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+    await rm(home, { recursive: true, force: true });
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

@@ -51,15 +51,13 @@ import {
   sessionNamespaceFrom,
   withNamespace,
 } from "./delegate-namespaces.js";
+import { daemonTargetFor } from "./delegate-daemon-target.js";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
   type BridgeConfig,
-  type DaemonAuthToken,
   type DelegateDaemonTarget,
   checkDaemonHealthSync,
   daemonUrl,
-  loadDaemonAuth,
-  readDaemonConfigAuthToken,
   parseOpenClawBridgeConfig,
   resolveBridgeMode,
   requestedDelegate,
@@ -1003,17 +1001,21 @@ export function maybeRegisterDelegateRuntime(
     // then run embedded so the deployment keeps its memory loop (AGENTS.md §4:
     // side effects must not crash the main flow).
     //
-    // The api is marked as a fallback ONLY when delegate was actually being
-    // attempted. An `embedded` deployment that merely carries a bad timeout
-    // has nothing to fall back FROM, and marking it would block a later
-    // delegate registration on the same gateway api once the value is fixed.
     const wantedDelegate = requestedDelegate(options.configBridgeMode);
     log.error(
       wantedDelegate
         ? `${String(err)} — falling back to the embedded runtime`
         : `${String(err)} — the deployment is embedded, so this only affects delegate mode`,
     );
-    if (wantedDelegate) delegateEmbeddedFallbackApis.add(api);
+    // Returning `false` has the caller bind the embedded runtime on this api,
+    // and OpenClaw exposes no unregister — so the api is irrevocably embedded
+    // whatever the deployment MEANT. Recording that is what stops a later
+    // register() (value corrected, or bridgeMode flipped to delegate) from
+    // adding delegate hooks beside the ones already attached and running two
+    // memory paths over one corpus. A PASSIVE registration binds nothing, so
+    // it has nothing to record — the same rule the healthy-embedded path
+    // below already follows.
+    if (!options.passive) delegateEmbeddedFallbackApis.add(api);
     return false;
   }
   if (bridge.mode !== "delegate") {
@@ -1107,29 +1109,7 @@ export function maybeRegisterDelegateRuntime(
         },
       )
     : null;
-  const target: DelegateDaemonTarget = {
-    host: bridge.daemonHost,
-    port: bridge.daemonPort,
-    // Bound to the config the resolved endpoint came from, so a deployment
-    // with two configs sends each daemon its OWN token instead of whichever
-    // one discovery happened to read first.
-    resolveAuthToken: () => {
-      // A unit-supplied credential exists nowhere else, so it is used as-is.
-      if (bridge.daemonAuthTokenOverride !== undefined) {
-        return { token: bridge.daemonAuthTokenOverride, source: "daemon configuration" };
-      }
-      // A config-supplied one is RE-READ every request: freezing the value
-      // detection succeeded with would 401 every route after a rotation until
-      // the gateway restarted.
-      if (bridge.daemonAuthPrefersConfig && bridge.daemonConfigPath !== undefined) {
-        const configToken = readDaemonConfigAuthToken(bridge.daemonConfigPath);
-        if (configToken !== undefined) {
-          return { token: configToken, source: "daemon configuration" };
-        }
-      }
-      return loadDaemonAuth(bridge.daemonConfigPath);
-    },
-  };
+  const target = daemonTargetFor(bridge);
   registerDelegateRuntime(api, {
     serviceId: options.serviceId,
     target,

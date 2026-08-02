@@ -20,6 +20,22 @@ import {
   type HealthWorkerData,
 } from "./bridge-health-worker.js";
 import { resolveSystemUnitSources, resolveUnitEndpoint } from "./bridge-service-units.js";
+import {
+  isDaemonServiceConfigured,
+  readServiceEndpoints,
+  readUnitAuthToken,
+  SYSTEMD_SYSTEM_UNIT_DIRS,
+  type DaemonUnitSource,
+} from "./bridge-unit-discovery.js";
+// Re-exported so `bridge.js` stays the single import surface for consumers of
+// daemon endpoint facts, however the discovery is split internally.
+export {
+  isDaemonServiceConfigured,
+  readServiceEndpoints,
+  readUnitAuthToken,
+  SYSTEMD_SYSTEM_UNIT_DIRS,
+  type DaemonUnitSource,
+} from "./bridge-unit-discovery.js";
 
 export { runHealthWorker } from "./bridge-health-worker.js";
 import { daemonServesCorpus } from "./memory-read-scope.js";
@@ -49,6 +65,8 @@ interface DaemonEndpointCandidate {
    * keep using the token the probe authenticated with.
    */
   authTokenOverride?: string;
+  /** The unit that supplied `authTokenOverride`, so it can be re-read. */
+  authTokenUnit?: DaemonUnitSource;
   /**
    * The credential written in this candidate's own config file, retried when
    * the primary (gateway token store) one is rejected.
@@ -83,6 +101,13 @@ export interface BridgeConfig {
    * token is re-read rather than frozen at detection time.
    */
   daemonAuthTokenOverride?: string;
+  /**
+   * The unit `daemonAuthTokenOverride` came from. Delegate requests re-read it
+   * per request, so rotating the token in the unit (or its drop-in, or its
+   * `EnvironmentFile=`) and restarting the daemon does not 401 every route
+   * until the gateway restarts too.
+   */
+  daemonAuthUnit?: DaemonUnitSource;
   /**
    * The probe authenticated with `daemonConfigPath`'s own `server.authToken`
    * rather than the gateway token store. Delegate requests must make the same
@@ -174,37 +199,6 @@ export function parseOpenClawBridgeConfig(
   };
 }
 
-const LAUNCHD_SERVICE_PATHS = [
-  ["Library", "LaunchAgents", "ai.remnic.daemon.plist"],
-  ["Library", "LaunchAgents", "ai.remnic.server.plist"],
-  ["Library", "LaunchAgents", "ai.engram.daemon.plist"],
-] as const;
-const SYSTEMD_USER_SERVICE_PATHS = [
-  [".config", "systemd", "user", "remnic.service"],
-  [".config", "systemd", "user", "engram.service"],
-] as const;
-// A packaged fleet install commonly runs the daemon as a SYSTEM unit rather
-// than a per-user one, so a home-relative scan alone misses it and auto mode
-// would never probe (issue #2120).
-// systemd's unit load path for SYSTEM units, in ASCENDING precedence. The base
-// unit is the highest-precedence file that exists; drop-ins are collected from
-// every directory, because `systemctl edit` writes its override under `/etc`
-// even when the packaged unit lives under `/usr/lib`.
-// The system unit search path from systemd.unit(5), in ASCENDING precedence.
-// `systemd-analyze unit-paths` on a current release lists all of these; the
-// `/usr/local` pair in particular is where a locally built daemon lands, and
-// skipping it left `auto` unable to see a running same-corpus service.
-// `/lib/...` is the merged-/usr symlink of `/usr/lib/...` on most systems and
-// is kept for distributions where it is not.
-export const SYSTEMD_SYSTEM_UNIT_DIRS = [
-  "/usr/lib/systemd/system",
-  "/lib/systemd/system",
-  "/usr/local/lib/systemd/system",
-  "/run/systemd/system",
-  "/etc/systemd/system",
-] as const;
-const SYSTEMD_SYSTEM_UNIT_NAMES = ["remnic.service", "engram.service"] as const;
-
 function readEnv(name: string): string | undefined {
   const env = (globalThis.process as { env?: Record<string, string | undefined> } | undefined)?.["env"];
   return env?.[name];
@@ -250,106 +244,6 @@ function configPathCandidates(): string[] {
  * `REMNIC_CONFIG_PATH`, which is a deliberate operator instruction.
  */
 
-/**
- * Drop-in fragments for a unit, in systemd's own lexical order.
- *
- * Appended AFTER the base so a later assignment wins, which matches how
- * systemd merges them for the directives read here (`Environment=`,
- * `ExecStart=`, `WorkingDirectory=`) — the parsers already take the last
- * occurrence. A drop-in that RESETS a directive (`Environment=` with no
- * value, `ExecStart=` empty) lands as a blank assignment, which the parsers
- * already treat as present-but-empty.
- */
-function readUnitDropIns(dropInDirs: readonly string[]): string[] {
-  // A drop-in NAME is applied once: when the same filename exists in several
-  // load-path directories, the highest-precedence copy replaces the others
-  // rather than adding a second fragment. `dropInDirs` is in ascending
-  // precedence, so a later directory simply overwrites the entry.
-  const byName = new Map<string, string>();
-  for (const dropInDir of dropInDirs) {
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(dropInDir);
-    } catch {
-      continue;
-    }
-    for (const entry of entries.filter((name) => name.endsWith(".conf"))) {
-      try {
-        byName.set(entry, fs.readFileSync(path.join(dropInDir, entry), "utf8"));
-      } catch {
-        // An unreadable fragment contributes nothing; the base still applies.
-      }
-    }
-  }
-  // `readdir` order is not guaranteed; systemd applies drop-ins by sorted name.
-  return [...byName.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, body]) => body);
-}
-
-/** Every installed unit's endpoint hints, in discovery order. */
-function readServiceEndpoints(): Array<{
-  configPath?: string;
-  host?: string;
-  port?: number;
-  authToken?: string;
-}> {
-  const homeDir = resolveHomeDir();
-  const unitPaths: Array<{
-    unitPath: string;
-    dropInDirs: readonly string[];
-    userScoped: boolean;
-  }> = [
-    ...[...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS].map((segments) => {
-      const unitPath = path.join(homeDir, ...segments);
-      return { unitPath, dropInDirs: [`${unitPath}.d`], userScoped: true };
-    }),
-    // For a SYSTEM unit the base file and its overrides can live in different
-    // load-path directories: a packaged unit under `/usr/lib` customized by
-    // `systemctl edit`, which writes `/etc/systemd/system/<unit>.d/*.conf`.
-    ...resolveSystemUnitSources(SYSTEMD_SYSTEM_UNIT_DIRS, SYSTEMD_SYSTEM_UNIT_NAMES, fileExists).map(
-      (source) => ({ ...source, userScoped: false }),
-    ),
-  ];
-  // EVERY distinct unit, not the first: canonical and legacy units coexist
-  // during migration, and the inactive one can sort first. Stopping there
-  // would hide the running daemon's endpoint from the candidate walk.
-  const endpoints: Array<{
-    configPath?: string;
-    host?: string;
-    port?: number;
-    authToken?: string;
-  }> = [];
-  for (const { unitPath, dropInDirs, userScoped } of unitPaths) {
-    if (!fileExists(unitPath)) continue;
-    let unit: string;
-    try {
-      unit = fs.readFileSync(unitPath, "utf8");
-    } catch {
-      continue;
-    }
-    // `systemctl edit` puts overrides in `<unit>.d/*.conf`, and the EFFECTIVE
-    // configuration is the base plus those drop-ins. Reading only the base
-    // would probe a stale endpoint on any unit an administrator customized.
-    unit = [unit, ...readUnitDropIns(dropInDirs)].join("\n");
-    const resolved = resolveUnitEndpoint(unit, { userScoped, homeDir });
-    if (
-      resolved.configPath === undefined &&
-      resolved.host === undefined &&
-      resolved.port === undefined &&
-      resolved.authToken === undefined
-    ) {
-      continue;
-    }
-    const seen = endpoints.some(
-      (entry) =>
-        entry.configPath === resolved.configPath &&
-        entry.host === resolved.host &&
-        entry.port === resolved.port &&
-        entry.authToken === resolved.authToken,
-    );
-    if (!seen) endpoints.push(resolved);
-  }
-  return endpoints;
-}
 
 function fileExists(filePath: string): boolean {
   try {
@@ -379,16 +273,6 @@ function isDaemonRunning(): boolean {
     }
   }
   return false;
-}
-
-function isDaemonServiceConfigured(): boolean {
-  const homeDir = resolveHomeDir();
-  for (const segments of [...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS]) {
-    if (fileExists(path.join(homeDir, ...segments))) return true;
-  }
-  return SYSTEMD_SYSTEM_UNIT_DIRS.some((dir) =>
-    SYSTEMD_SYSTEM_UNIT_NAMES.some((name) => fileExists(path.join(dir, name))),
-  );
 }
 
 /**
@@ -667,6 +551,7 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
     port: number | undefined,
     configPath?: string,
     authTokenOverride?: string,
+    authTokenUnit?: DaemonUnitSource,
   ): void => {
     const resolvedHost = normalizeDaemonHost(
       envHost !== undefined && envHost.trim() !== "" ? envHost : (host ?? DEFAULT_HOST),
@@ -707,6 +592,7 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
       configPath,
       token,
       ...(authTokenOverride === undefined ? {} : { authTokenOverride }),
+      ...(authTokenUnit === undefined ? {} : { authTokenUnit }),
       ...(fallbackToken === undefined ? {} : { fallbackToken }),
     });
   };
@@ -734,7 +620,13 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
   // candidate is probed, so a stale one costs one failed probe.
   for (const unit of readServiceEndpoints()) {
     const server = unit.configPath === undefined ? {} : (readServerBlock(unit.configPath) ?? {});
-    add(unit.host ?? server.host, unit.port ?? server.port, unit.configPath, unit.authToken);
+    add(
+      unit.host ?? server.host,
+      unit.port ?? server.port,
+      unit.configPath,
+      unit.authToken,
+      unit.authTokenUnit,
+    );
   }
   for (const candidate of configOrder) {
     if (candidate === envConfigPath) continue;
@@ -800,6 +692,7 @@ export function detectDaemonBridgeMode(options: {
     ...(primary.authTokenOverride === undefined
       ? {}
       : { daemonAuthTokenOverride: primary.authTokenOverride }),
+    ...(primary.authTokenUnit === undefined ? {} : { daemonAuthUnit: primary.authTokenUnit }),
   };
 
   // `bridgeHealthTimeoutMs` is documented as the TOTAL preflight budget, and
@@ -842,6 +735,7 @@ export function detectDaemonBridgeMode(options: {
     port: daemonPort,
     configPath,
     authTokenOverride,
+    authTokenUnit,
     fallbackToken,
   } of probeable) {
     const remainingMs = deadline - Date.now();
@@ -912,7 +806,13 @@ export function detectDaemonBridgeMode(options: {
       // A unit-supplied credential has no other source, so it is carried by
       // value; a config-supplied one is re-read from its file per request.
       ...(usedToken !== undefined && usedToken === authTokenOverride
-        ? { daemonAuthTokenOverride: usedToken }
+        ? {
+            daemonAuthTokenOverride: usedToken,
+            // The unit rides along so the credential can be re-read per
+            // request; the frozen value stays as the fallback for a unit that
+            // later becomes unreadable.
+            ...(authTokenUnit === undefined ? {} : { daemonAuthUnit: authTokenUnit }),
+          }
         : {}),
       ...(usedToken !== undefined && usedToken === fallbackToken
         ? { daemonAuthPrefersConfig: true }

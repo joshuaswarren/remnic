@@ -23,6 +23,7 @@ import {
   readDaemonMemoryDirSync,
   resolveBridgeMode,
   resolveUnitConfigPath,
+  readUnitAuthToken,
   resolveSystemUnitSources,
   SYSTEMD_SYSTEM_UNIT_DIRS,
   resolveUnitEndpoint,
@@ -2366,4 +2367,50 @@ test("the system unit search path is the one systemd documents", () => {
       "/etc/systemd/system",
     ],
   );
+});
+
+test("a unit credential is re-read after a rotation, like a config one", async () => {
+  // An administrator who rotates the token in the unit and restarts the
+  // daemon would otherwise 401 every delegated route until the GATEWAY also
+  // restarted, because the value detection succeeded with was frozen.
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-unit-rotate-"));
+  const unitDir = path.join(home, ".config", "systemd", "user");
+  await mkdir(unitDir, { recursive: true });
+  const unitPath = path.join(unitDir, "remnic.service");
+  const writeToken = async (token: string): Promise<void> => {
+    await writeFile(
+      unitPath,
+      ["[Service]", "Environment=REMNIC_HOST=127.0.0.1", `Environment=REMNIC_AUTH_TOKEN=${token}`, ""].join(
+        "\n",
+      ),
+      "utf8",
+    );
+  };
+  await writeToken("first-token");
+  const source = { unitPath, dropInDirs: [`${unitPath}.d`], userScoped: true };
+  const priorHome = process.env.HOME;
+  try {
+    process.env.HOME = home;
+    assert.equal(readUnitAuthToken(source), "first-token");
+    await writeToken("rotated-token");
+    assert.equal(readUnitAuthToken(source), "rotated-token", "the rotation is picked up");
+
+    // A drop-in rotation counts too, and outranks the base unit.
+    await mkdir(`${unitPath}.d`, { recursive: true });
+    await writeFile(
+      path.join(`${unitPath}.d`, "override.conf"),
+      "[Service]\nEnvironment=REMNIC_AUTH_TOKEN=dropin-token\n",
+      "utf8",
+    );
+    assert.equal(readUnitAuthToken(source), "dropin-token");
+
+    // A unit that becomes unreadable reports nothing, so the caller can keep
+    // the last value that actually authenticated instead of sending none.
+    await rm(unitPath, { force: true });
+    assert.equal(readUnitAuthToken(source), undefined);
+  } finally {
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    await rm(home, { recursive: true, force: true });
+  }
 });
