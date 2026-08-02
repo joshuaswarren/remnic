@@ -190,9 +190,16 @@ const SYSTEMD_USER_SERVICE_PATHS = [
 // unit is the highest-precedence file that exists; drop-ins are collected from
 // every directory, because `systemctl edit` writes its override under `/etc`
 // even when the packaged unit lives under `/usr/lib`.
-const SYSTEMD_SYSTEM_UNIT_DIRS = [
+// The system unit search path from systemd.unit(5), in ASCENDING precedence.
+// `systemd-analyze unit-paths` on a current release lists all of these; the
+// `/usr/local` pair in particular is where a locally built daemon lands, and
+// skipping it left `auto` unable to see a running same-corpus service.
+// `/lib/...` is the merged-/usr symlink of `/usr/lib/...` on most systems and
+// is kept for distributions where it is not.
+export const SYSTEMD_SYSTEM_UNIT_DIRS = [
   "/usr/lib/systemd/system",
   "/lib/systemd/system",
+  "/usr/local/lib/systemd/system",
   "/run/systemd/system",
   "/etc/systemd/system",
 ] as const;

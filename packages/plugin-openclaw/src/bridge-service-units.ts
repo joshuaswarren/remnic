@@ -55,6 +55,33 @@ export function resolveUnitConfigPath(
  * unknowable for a system one.
  */
 /**
+ * Physical lines joined into LOGICAL ones, the way systemd.syntax specifies:
+ * a trailing backslash continues the directive on the next line, and the
+ * backslash-newline is replaced by a space. Parsing physical lines would drop
+ * a wrapped `--port`, `--config`, or credential — values the daemon receives
+ * but detection would not see.
+ */
+function foldContinuationLines(unit: string): string[] {
+  const logical: string[] = [];
+  let pending: string | undefined;
+  for (const raw of unit.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    // An ODD number of trailing backslashes continues; an even count is an
+    // escaped backslash that ends the line.
+    const trailing = /(\\*)$/.exec(line)?.[1]?.length ?? 0;
+    const continues = trailing % 2 === 1;
+    const body = continues ? line.slice(0, -1) : line;
+    pending = pending === undefined ? body : `${pending} ${body.trim()}`;
+    if (continues) continue;
+    logical.push(pending);
+    pending = undefined;
+  }
+  // A file ending mid-continuation still contributes what it had.
+  if (pending !== undefined) logical.push(pending);
+  return logical;
+}
+
+/**
  * The EFFECTIVE value of every systemd directive this module reads, after
  * drop-in merging.
  *
@@ -75,7 +102,7 @@ function readEffectiveDirectives(unit: string): {
   const envFiles: string[] = [];
   const execStart: string[] = [];
   let workingDirectory: string | undefined;
-  for (const line of unit.split("\n")) {
+  for (const line of foldContinuationLines(unit)) {
     const directive =
       /^\s*(Environment|EnvironmentFile|ExecStart|WorkingDirectory)=(.*)$/.exec(line);
     if (directive === null) continue;

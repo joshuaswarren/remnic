@@ -24,6 +24,7 @@ import {
   resolveBridgeMode,
   resolveUnitConfigPath,
   resolveSystemUnitSources,
+  SYSTEMD_SYSTEM_UNIT_DIRS,
   resolveUnitEndpoint,
 } from "./bridge.js";
 
@@ -2149,7 +2150,8 @@ test("a vendor unit picks up the administrator's /etc drop-in", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-loadpath-"));
   const vendor = path.join(root, "usr", "lib", "systemd", "system");
   const admin = path.join(root, "etc", "systemd", "system");
-  const dirs = [vendor, path.join(root, "run", "systemd", "system"), admin];
+  const local = path.join(root, "usr", "local", "lib", "systemd", "system");
+  const dirs = [vendor, local, path.join(root, "run", "systemd", "system"), admin];
   try {
     await mkdir(path.join(admin, "remnic.service.d"), { recursive: true });
     await mkdir(vendor, { recursive: true });
@@ -2169,7 +2171,16 @@ test("a vendor unit picks up the administrator's /etc drop-in", async () => {
       "every load path is searched for drop-ins, not just the base unit's own",
     );
 
-    // `/etc` masks `/usr/lib` when BOTH carry the unit.
+    // A locally built daemon installs under `/usr/local/lib`, which outranks
+    // the vendor copy — skipping that directory hid the running service.
+    await mkdir(local, { recursive: true });
+    await writeFile(path.join(local, "remnic.service"), "[Service]\n", "utf8");
+    assert.equal(
+      resolveSystemUnitSources(dirs, ["remnic.service"])[0]?.unitPath,
+      path.join(local, "remnic.service"),
+    );
+
+    // `/etc` masks everything below it when BOTH carry the unit.
     await writeFile(path.join(admin, "remnic.service"), "[Service]\n", "utf8");
     assert.equal(
       resolveSystemUnitSources(dirs, ["remnic.service"])[0]?.unitPath,
@@ -2299,5 +2310,60 @@ test("EnvironmentFile assignments reach the endpoint, overriding inline ones", (
   assert.deepEqual(
     resolveUnitEndpoint("[Service]\nEnvironmentFile=%h/env\n", scope, read),
     {},
+  );
+});
+
+test("a wrapped directive is folded before parsing, as systemd folds it", () => {
+  // systemd.syntax: a trailing backslash continues the directive and the
+  // backslash-newline becomes a space. Parsing physical lines drops the
+  // wrapped flags — values the daemon receives but detection would not see.
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      [
+        "[Service]",
+        "ExecStart=/opt/remnic-server \\",
+        "  --host 127.0.0.1 \\",
+        "  --port 4813 \\",
+        "  --auth-token wrapped-token",
+      ].join("\n"),
+      { userScoped: false, homeDir: "/home/gw" },
+    ),
+    { host: "127.0.0.1", port: 4813, authToken: "wrapped-token" },
+  );
+  // A wrapped `Environment=` carries its assignments too.
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      ["[Service]", 'Environment="REMNIC_HOST=127.0.0.1" \\', '  "REMNIC_PORT=4900"'].join("\n"),
+      { userScoped: false, homeDir: "/home/gw" },
+    ),
+    { host: "127.0.0.1", port: 4900 },
+  );
+  // An EVEN run of trailing backslashes is an escaped backslash, not a
+  // continuation, so the next line stays its own directive.
+  assert.equal(
+    resolveUnitEndpoint(
+      ["[Service]", "Environment=REMNIC_HOST=127.0.0.1\\\\", "Environment=REMNIC_PORT=4813"].join(
+        "\n",
+      ),
+      { userScoped: false, homeDir: "/home/gw" },
+    ).port,
+    4813,
+  );
+});
+
+test("the system unit search path is the one systemd documents", () => {
+  // systemd.unit(5) "System Unit Search Path", ascending precedence. A
+  // missing directory means a daemon installed there is invisible to auto,
+  // which then starts an embedded orchestrator on its corpus. `/usr/local` is
+  // where a locally built daemon lands.
+  assert.deepEqual(
+    [...SYSTEMD_SYSTEM_UNIT_DIRS],
+    [
+      "/usr/lib/systemd/system",
+      "/lib/systemd/system",
+      "/usr/local/lib/systemd/system",
+      "/run/systemd/system",
+      "/etc/systemd/system",
+    ],
   );
 });
