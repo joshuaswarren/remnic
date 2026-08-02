@@ -388,6 +388,12 @@ export function registerDelegateRuntime(
       }
       return namespace.trim() || undefined;
     },
+    // The daemon's own namespace-aware probe, so a substituted default is
+    // proven usable before the first search rather than 403-ing on it.
+    verifyNamespaceAuthorization: async (candidate) => {
+      const probe = await probeDelegateAuthorization(target, candidate, ["memory_search"]);
+      return probe.state === "unavailable" ? undefined : probe.state === "authorized";
+    },
     memoryDir: options.capability.memoryDir,
     workspaceDir: options.capability.workspaceDir,
     agentIds: options.capability.agentIds,
@@ -415,9 +421,13 @@ export function registerDelegateRuntime(
       ctx: Record<string, unknown>,
     ): Promise<Record<string, unknown> | undefined> => {
       const query = recallQueryFrom(event);
-      if (query.trim().length < 5) return undefined;
       const sessionKey = sessionKeyFrom(event, ctx);
+      // Evict BEFORE the short-query exit. On a capability-only host the
+      // builder is the sole consumer, so a turn whose prompt construction
+      // aborted leaves lines behind; returning early without clearing would
+      // inject the PREVIOUS query's memory into this prompt.
       if (cachePromptLines) promptLinesBySession.delete(sessionKey);
+      if (query.trim().length < 5) return undefined;
       try {
         if (options.shouldSkipRecall(sessionKey)) {
           log.debug(`delegate recall skipped: cron policy excludes ${sessionKey}`);

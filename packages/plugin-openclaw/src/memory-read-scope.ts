@@ -118,6 +118,13 @@ export type MemoryReadScopeOptions = {
    * relative hits against the namespace directory the daemon reports first.
    */
   additionalRoots?: readonly string[];
+  /**
+   * Whether `<workspaceDir>/memory` is a readable root. Default `true`
+   * (embedded parity). Delegate mode sets `false`: the daemon reports only its
+   * `memoryDir`, so a gateway-local workspace it never searched cannot be
+   * authorized just because the two processes share a corpus.
+   */
+  includeWorkspaceRoot?: boolean;
   /** Canonicalizer seam. Defaults to `fs.promises.realpath`; tests inject. */
   realpath?: (filePath: string) => Promise<string>;
 }
@@ -189,7 +196,12 @@ export function createMemoryReadScope(options: MemoryReadScopeOptions): MemoryRe
   // workspace's memory subdirectory qualify.
   const allowedRoots = [
     memoryDir,
-    workspaceDir ? path.join(workspaceDir, "memory") : undefined,
+    // Delegate mode drops this: the daemon reports only its `memoryDir`, so a
+    // gateway-local workspace it never searched or authorized must not be a
+    // readable root just because the two processes share a corpus.
+    workspaceDir && options.includeWorkspaceRoot !== false
+      ? path.join(workspaceDir, "memory")
+      : undefined,
     ...(options.additionalRoots ?? []),
   ].filter((root): root is string => typeof root === "string" && root.length > 0);
 

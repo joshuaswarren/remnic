@@ -88,6 +88,13 @@ export type DelegateCapabilityOptions = {
    * stayed session-scoped.
    */
   resolveSearchNamespace: (sessionKey: string | undefined) => Promise<string | undefined>;
+  /**
+   * Ask the daemon whether the delegate token may use a namespace. Used only
+   * for a SUBSTITUTED default (a session with no binding), so a restricted
+   * token gets an actionable refusal instead of a 403 on its first search.
+   * `undefined` means the daemon could not answer - unproven, not refused.
+   */
+  verifyNamespaceAuthorization?: (namespace: string) => Promise<boolean | undefined>;
   memoryDir: string;
   workspaceDir: string;
   /** Agent ids this registration owns, for the public-artifact listing. */
@@ -207,6 +214,11 @@ export function createDelegateMemoryCapability(
           // in the frame the daemon returned it in...
           memoryDir: dir,
           workspaceDir: options.workspaceDir,
+          // The gateway's own workspace is NOT a readable root here: health
+          // validates `memoryDir` only, so a relative path absent from the
+          // daemon corpus must not be served from a workspace the daemon
+          // never searched or authorized.
+          includeWorkspaceRoot: false,
           // ...and the corpus ROOT stays readable, so a session bound to a
           // NON-default namespace can still open the absolute hits its own
           // search returns from `<root>/namespaces/<other>`.
@@ -295,6 +307,40 @@ export function createDelegateMemoryCapability(
     return namespace;
   };
 
+  /**
+   * The daemon default is a SUBSTITUTION, not something the caller asked for:
+   * a session with no binding yet gets it silently. On a token restricted to
+   * another namespace that turns the very first search into a 403 the host
+   * sees as "memory is broken".
+   *
+   * So a substituted default is verified once against the daemon's own
+   * namespace-aware authorization probe before it is used. An explicit scope
+   * is the caller's own and is not second-guessed here — the daemon still
+   * enforces it. A daemon that cannot answer the probe (older build) is
+   * treated as before: unproven, not refused.
+   */
+  // A separate flag, not `??=` on the verdict: an "unknown" answer is a real
+  // outcome, and re-probing it on every search would put a request in front of
+  // each one against an older daemon.
+  const substitutedNamespaceVerdicts = new Map<string, boolean | undefined>();
+  const resolveScopedNamespaceChecked = async (explicit?: string): Promise<string | undefined> => {
+    const namespace = requireScopedNamespace(explicit);
+    if (explicit !== undefined || namespace === undefined) return namespace;
+    if (options.verifyNamespaceAuthorization === undefined) return namespace;
+    if (!substitutedNamespaceVerdicts.has(namespace)) {
+      substitutedNamespaceVerdicts.set(
+        namespace,
+        await options.verifyNamespaceAuthorization(namespace),
+      );
+    }
+    if (substitutedNamespaceVerdicts.get(namespace) === false) {
+      throw new Error(
+        `delegate request unavailable: this session has no namespace binding and the daemon's default (${namespace}) is not authorized for the delegate token — bind the session explicitly or configure the namespace this deployment should use`,
+      );
+    }
+    return namespace;
+  };
+
   // `status()` is synchronous in the host contract, so the async probe runs in
   // getMemorySearchManager (which IS async) and status() reads the snapshot.
   const refreshHealth = async (): Promise<void> => {
@@ -374,7 +420,7 @@ export function createDelegateMemoryCapability(
     // An empty namespace means "the daemon's default", but the daemon reads an
     // ABSENT namespace as a principal-wide fan-out. Send the concrete default
     // health reports so a default-scoped session cannot see other namespaces.
-    const namespace = requireScopedNamespace(
+    const namespace = await resolveScopedNamespaceChecked(
       await options.resolveSearchNamespace(opts?.sessionKey),
     );
     // Mirror the embedded manager: "vsearch" is vector ranking, "query" is the
@@ -549,7 +595,7 @@ export function createDelegateMemoryCapability(
   return {
     resolveScopedNamespace: async (explicit?: string): Promise<string | undefined> => {
       await refreshHealth();
-      return requireScopedNamespace(explicit);
+      return await resolveScopedNamespaceChecked(explicit);
     },
     runtime: {
       async getMemorySearchManager() {

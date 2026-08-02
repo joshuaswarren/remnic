@@ -2816,3 +2816,36 @@ test("delegate authorization preflight probes only the operations enabled by con
     else process.env.REMNIC_BRIDGE_MODE = priorMode;
   }
 });
+
+test("a short query evicts the previous turn's cached recall", async () => {
+  // On a builder host the hook does not inject; if prompt construction aborted
+  // last turn the lines are still cached. A short query must not leave them
+  // there for the builder to splice into the NEXT prompt.
+  const stub = await startDaemonStub(() => ({ context: "stale daemon context" }));
+  try {
+    const api = recordingApi();
+    const captured: {
+      builder: null | ((params: { sessionKey?: string }) => string[] | null);
+    } = { builder: null };
+    const sectionApi = Object.assign(api, {
+      registerMemoryPromptSection(builder: (params: { sessionKey?: string }) => string[] | null): void {
+        captured.builder = builder;
+      },
+    });
+    registerDelegateRuntime(sectionApi, optionsFor(stub.port));
+    const builder = captured.builder;
+    if (builder === null) throw new Error("section builder was not registered");
+
+    // Turn 1 populates the cache; prompt construction never consumes it.
+    await invoke(api, "before_prompt_build", { prompt: "a real query worth recalling" }, { sessionKey: "s" });
+    // Turn 2 is too short to recall for.
+    await invoke(api, "before_prompt_build", { prompt: "hi" }, { sessionKey: "s" });
+    assert.equal(
+      builder({ sessionKey: "s" }),
+      null,
+      "the short turn cleared the stale lines instead of re-injecting them",
+    );
+  } finally {
+    await stub.close();
+  }
+});
