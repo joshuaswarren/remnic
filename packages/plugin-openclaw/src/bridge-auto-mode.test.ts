@@ -28,6 +28,7 @@ import {
   SYSTEMD_SYSTEM_UNIT_DIRS,
   resolveUnitEndpoint,
 } from "./bridge.js";
+import { daemonTargetFor } from "./delegate-daemon-target.js";
 
 type HealthStub = {
   port: number;
@@ -2391,9 +2392,13 @@ test("a unit credential is re-read after a rotation, like a config one", async (
   const priorHome = process.env.HOME;
   try {
     process.env.HOME = home;
-    assert.equal(readUnitAuthToken(source), "first-token");
+    assert.deepEqual(readUnitAuthToken(source), { readable: true, token: "first-token" });
     await writeToken("rotated-token");
-    assert.equal(readUnitAuthToken(source), "rotated-token", "the rotation is picked up");
+    assert.deepEqual(
+      readUnitAuthToken(source),
+      { readable: true, token: "rotated-token" },
+      "the rotation is picked up",
+    );
 
     // A drop-in rotation counts too, and outranks the base unit.
     await mkdir(`${unitPath}.d`, { recursive: true });
@@ -2402,12 +2407,19 @@ test("a unit credential is re-read after a rotation, like a config one", async (
       "[Service]\nEnvironment=REMNIC_AUTH_TOKEN=dropin-token\n",
       "utf8",
     );
-    assert.equal(readUnitAuthToken(source), "dropin-token");
+    assert.deepEqual(readUnitAuthToken(source), { readable: true, token: "dropin-token" });
 
-    // A unit that becomes unreadable reports nothing, so the caller can keep
-    // the last value that actually authenticated instead of sending none.
+    // A readable unit that no longer names a token is a DELIBERATE removal:
+    // the daemon has fallen back to its config or token store, and the caller
+    // must too rather than replaying a credential nobody serves.
+    await rm(`${unitPath}.d`, { recursive: true, force: true });
+    await writeFile(unitPath, "[Service]\nEnvironment=REMNIC_HOST=127.0.0.1\n", "utf8");
+    assert.deepEqual(readUnitAuthToken(source), { readable: true, token: undefined });
+
+    // An UNREADABLE unit proves nothing, so the caller keeps the last value
+    // that actually authenticated instead of sending none.
     await rm(unitPath, { force: true });
-    assert.equal(readUnitAuthToken(source), undefined);
+    assert.deepEqual(readUnitAuthToken(source), { readable: false });
   } finally {
     if (priorHome === undefined) delete process.env.HOME;
     else process.env.HOME = priorHome;
@@ -2491,4 +2503,49 @@ test("an EnvironmentFile wildcard loads the files systemd would", () => {
     { host: "127.0.0.1", port: 4813 },
     "matches apply in sorted order, and a non-matching file is left out",
   );
+});
+
+test("a removed unit token falls through instead of replaying a dead credential", async () => {
+  // An administrator who deletes `REMNIC_AUTH_TOKEN` from a still-readable
+  // unit has moved the daemon onto its config or token store. Replaying the
+  // credential the probe authenticated with would 401 every route until the
+  // gateway restarted.
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-token-removed-"));
+  const unitDir = path.join(home, ".config", "systemd", "user");
+  await mkdir(unitDir, { recursive: true });
+  const unitPath = path.join(unitDir, "remnic.service");
+  const source = { unitPath, dropInDirs: [`${unitPath}.d`], userScoped: true };
+  const bridge = {
+    mode: "delegate" as const,
+    daemonHost: "127.0.0.1",
+    daemonPort: 4318,
+    daemonAuthTokenOverride: "unit-token",
+    daemonAuthUnit: source,
+  };
+  const priorHome = process.env.HOME;
+  const priorToken = process.env.REMNIC_AUTH_TOKEN;
+  try {
+    process.env.HOME = home;
+    process.env.REMNIC_AUTH_TOKEN = "store-token";
+    await writeFile(
+      unitPath,
+      "[Service]\nEnvironment=REMNIC_AUTH_TOKEN=unit-token\n",
+      "utf8",
+    );
+    assert.equal(daemonTargetFor(bridge).resolveAuthToken().token, "unit-token");
+
+    // Token removed, unit still readable: fall through to normal resolution.
+    await writeFile(unitPath, "[Service]\nEnvironment=REMNIC_HOST=127.0.0.1\n", "utf8");
+    assert.equal(daemonTargetFor(bridge).resolveAuthToken().token, "store-token");
+
+    // Unit unreadable: nothing is proven, so the last working value stands.
+    await rm(unitPath, { force: true });
+    assert.equal(daemonTargetFor(bridge).resolveAuthToken().token, "unit-token");
+  } finally {
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    if (priorToken === undefined) delete process.env.REMNIC_AUTH_TOKEN;
+    else process.env.REMNIC_AUTH_TOKEN = priorToken;
+    await rm(home, { recursive: true, force: true });
+  }
 });

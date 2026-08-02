@@ -491,7 +491,12 @@ function readDaemonHost(): string {
 function readDaemonServerConfig(): { host?: string; port?: number } {
   for (const candidate of configPathCandidates()) {
     const server = readServerBlock(candidate);
-    if (server !== undefined) return server;
+    // A file that declares NEITHER field names no endpoint — a valid config
+    // with no `server` block, or one whose block sets only a token. Stopping
+    // there would hide a later candidate that does declare the endpoint.
+    // Host and port still come from ONE file: the first that declares either
+    // wins both, so the two are never spliced across configs.
+    if (server?.host !== undefined || server?.port !== undefined) return server;
   }
   return {};
 }
@@ -581,7 +586,10 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
           // token wins for both, two configs on one endpoint resolve the same
           // primary token but carry different fallbacks, and dropping the
           // second would leave the daemon's real credential untried.
-          c.fallbackToken === fallbackToken,
+          c.fallbackToken === fallbackToken &&
+          // So is the UNIT the credential is re-read from per request: two
+          // units can agree today and diverge on the next rotation.
+          c.authTokenUnit?.unitPath === authTokenUnit?.unitPath,
       )
     ) {
       return;

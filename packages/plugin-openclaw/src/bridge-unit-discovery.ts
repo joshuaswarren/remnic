@@ -124,13 +124,22 @@ function readUnitText(source: DaemonUnitSource): string | undefined {
  * unit (or its drop-in, or its `EnvironmentFile=`) and restarts the daemon
  * would otherwise 401 every delegated route until the gateway restarted too.
  */
-export function readUnitAuthToken(source: DaemonUnitSource): string | undefined {
+export function readUnitAuthToken(
+  source: DaemonUnitSource,
+): { readable: true; token: string | undefined } | { readable: false } {
   const unit = readUnitText(source);
-  if (unit === undefined) return undefined;
-  return resolveUnitEndpoint(unit, {
-    userScoped: source.userScoped,
-    homeDir: resolveHomeDir(),
-  }).authToken;
+  // The two outcomes are NOT the same. A unit this process can no longer read
+  // proves nothing, so the caller keeps the credential that last worked. A
+  // readable unit that supplies no token is a deliberate removal: the daemon
+  // has fallen back to its config or token store, and so must the caller.
+  if (unit === undefined) return { readable: false };
+  return {
+    readable: true,
+    token: resolveUnitEndpoint(unit, {
+      userScoped: source.userScoped,
+      homeDir: resolveHomeDir(),
+    }).authToken,
+  };
 }
 
 /** Every installed unit's endpoint hints, in discovery order. */
@@ -186,7 +195,13 @@ export function readServiceEndpoints(): Array<{
         entry.configPath === resolved.configPath &&
         entry.host === resolved.host &&
         entry.port === resolved.port &&
-        entry.authToken === resolved.authToken,
+        entry.authToken === resolved.authToken &&
+        // The UNIT is part of the identity now that credentials are re-read
+        // from it per request. Canonical and legacy units can start out
+        // identical while either is the active service; dropping the second
+        // would pin refresh to a unit that may never change again while the
+        // active one rotates its token.
+        entry.authTokenUnit?.unitPath === source.unitPath,
     );
     if (!seen) {
       endpoints.push(

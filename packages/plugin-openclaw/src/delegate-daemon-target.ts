@@ -30,15 +30,20 @@ export function daemonTargetFor(bridge: BridgeConfig): DelegateDaemonTarget {
     resolveAuthToken: () => {
       if (bridge.daemonAuthTokenOverride !== undefined) {
         // A unit-supplied credential is re-read from its unit — including its
-        // drop-ins and `EnvironmentFile=`. A unit that has become unreadable
-        // falls back to the value the probe authenticated with, rather than
-        // dropping the credential entirely.
-        const unitToken =
+        // drop-ins and `EnvironmentFile=`.
+        const unit =
           bridge.daemonAuthUnit === undefined ? undefined : readUnitAuthToken(bridge.daemonAuthUnit);
-        return {
-          token: unitToken ?? bridge.daemonAuthTokenOverride,
-          source: "daemon configuration",
-        };
+        if (unit?.readable === true && unit.token !== undefined) {
+          return { token: unit.token, source: "daemon configuration" };
+        }
+        // A unit that is no longer READABLE proves nothing, so the value the
+        // probe authenticated with is still the best guess.
+        if (unit === undefined || unit.readable === false) {
+          return { token: bridge.daemonAuthTokenOverride, source: "daemon configuration" };
+        }
+        // Readable and deliberately carrying no token: the daemon has fallen
+        // back to its config or token store, so fall through to the same
+        // resolution rather than replaying a credential nobody serves.
       }
       if (bridge.daemonAuthPrefersConfig && bridge.daemonConfigPath !== undefined) {
         const configToken = readDaemonConfigAuthToken(bridge.daemonConfigPath);
