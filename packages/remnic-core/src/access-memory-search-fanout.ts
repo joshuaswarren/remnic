@@ -208,15 +208,25 @@ export async function runFlatCorpusMemorySearch<TResult>(options: {
 }
 
 /**
- * Ceiling on how many candidates one generic memory search will ask the
- * backend for.
+ * Lower bound on the candidate ceiling for one generic memory search.
  *
- * This is a backend-safety bound, NOT a stand-in for corpus exhaustion: the
- * loop keeps doubling while the backend still returns full pages, so a long
- * run of excluded artifacts cannot make it give up early and report a thin
- * page. Only a short page (nothing left) or a satisfied budget ends it sooner.
+ * The ceiling is a backend-safety bound, NOT a stand-in for corpus exhaustion:
+ * the loop keeps doubling while the backend still returns full pages, so a
+ * long run of excluded artifacts cannot make it give up early and report a
+ * thin page. Only a short page (nothing left) or a satisfied budget ends it
+ * sooner.
  */
-const MEMORY_SEARCH_CANDIDATE_CEILING = 1_000;
+const MEMORY_SEARCH_CANDIDATE_FLOOR = 1_000;
+
+/**
+ * The safety bound for one search, which must always sit ABOVE the caller's
+ * budget: a fixed ceiling at or below it would stop the loop before a single
+ * excluded hit could be replaced, so a request for 2000 with one artifact in
+ * the first page would return 1999.
+ */
+function candidateCeiling(budget: number): number {
+  return Math.max(MEMORY_SEARCH_CANDIDATE_FLOOR, budget * 4);
+}
 
 /**
  * Run a ranked memory search and apply the generic-recall path exclusions
@@ -254,8 +264,9 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
     // A short page means the corpus is exhausted - asking for more is wasted
     // work that returns the same rows.
     if (raw.length === 0 || raw.length < served) break;
-    if (served >= MEMORY_SEARCH_CANDIDATE_CEILING) break;
-    limit = Math.min(served * 2, MEMORY_SEARCH_CANDIDATE_CEILING);
+    const ceiling = candidateCeiling(budget);
+    if (served >= ceiling) break;
+    limit = Math.min(served * 2, ceiling);
   }
   return results.slice(0, budget);
 }

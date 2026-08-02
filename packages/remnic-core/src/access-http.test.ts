@@ -4479,3 +4479,32 @@ test("HTTP memory search stops at the candidate ceiling", async () => {
   assert.equal(seen.at(-1), 1_000, "the last request lands exactly on the ceiling");
   assert.ok(seen.length < 20, "and the loop terminates");
 });
+
+test("HTTP memory search scales its ceiling above a large requested budget", async () => {
+  // A fixed 1000 ceiling would stop at or below a 2000-result request, so one
+  // excluded hit in the first page could never be replaced.
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 2_000,
+    sendInitialLimit: true,
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath === "artifacts/a.md",
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      const size = limit ?? 0;
+      return [
+        { path: "artifacts/a.md", score: 1, snippet: "artifact" },
+        ...Array.from({ length: size - 1 }, (_, index) => ({
+          path: `facts/f${index}.md`,
+          score: 0.5,
+          snippet: "fact",
+        })),
+      ];
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(seen, [2_000, 4_000], "tops up past the requested budget");
+  assert.equal(results.length, 2_000, "the requested page is delivered in full");
+});
