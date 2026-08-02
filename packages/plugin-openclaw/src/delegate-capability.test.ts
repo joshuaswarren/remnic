@@ -195,7 +195,6 @@ test("delegate search excludes artifact paths and honors minScore", async () => 
         { path: "artifacts/report.md", score: 0.99, snippet: "artifact" },
         { path: "facts/alice.md", score: 0.2, snippet: "low" },
         { path: "facts/bob.md", score: 0.8, snippet: "high" },
-        "not-an-object",
       ],
     },
   });
@@ -206,7 +205,7 @@ test("delegate search excludes artifact paths and honors minScore", async () => 
     assert.deepEqual(
       results?.map((result) => result.citation),
       [path.join("facts", "bob.md")],
-      "artifacts are isolated, sub-threshold hits are dropped, non-objects are skipped",
+      "artifacts are isolated and sub-threshold hits are dropped",
     );
   } finally {
     await stub.close();
@@ -874,6 +873,75 @@ test("delegate search with no budget keeps the daemon's page size on the wire", 
       results.map((hit) => hit.citation),
       [path.join("facts", "one.md"), path.join("facts", "two.md")],
     );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate search rejects a malformed result entry instead of inventing a memory", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // A 200 whose entries are not memories is a version-skewed or corrupt
+  // daemon. Synthesizing `memory-N` would hand the host a path it can then
+  // try to open (AGENTS.md #22).
+  for (const bad of ["not-an-object", { score: 0.9 }, { path: 42 }, { path: "  " }]) {
+    const stub = await startDaemonStub({
+      health: healthyDaemon(memoryDir),
+      search: { results: [{ path: "facts/ok.md", score: 0.9, snippet: "ok" }, bad] },
+    });
+    try {
+      const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+      const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+      await assert.rejects(
+        () => manager?.search("q") ?? Promise.resolve(),
+        /malformed result entry/,
+        `entry ${JSON.stringify(bad)} must be a protocol failure`,
+      );
+    } finally {
+      await stub.close();
+    }
+  }
+  await rm(memoryDir, { recursive: true, force: true });
+});
+
+test("delegate file surfaces refuse a namespace the health snapshot does not describe", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // Health answers without a namespace, so its memoryDir is the DEFAULT
+  // namespace's storage. A session scoped elsewhere would otherwise publish
+  // that namespace's files while omitting its own.
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+  });
+  try {
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      resolveSearchNamespace: async () => "team-a",
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /a local walk cannot be authorized for it/,
+    );
+    assert.deepEqual(await built.listArtifacts(), [], "artifacts are withheld, not cross-published");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate file surfaces stay available on the namespace health describes", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+  });
+  try {
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      resolveSearchNamespace: async () => "default",
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const read = await manager?.readFile({ relPath: "facts/alice.md" });
+    assert.equal(read?.path, path.join("facts", "alice.md"), "the read is served, not refused");
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });

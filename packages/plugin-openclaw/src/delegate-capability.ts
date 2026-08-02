@@ -119,12 +119,15 @@ export type DelegateCapabilityOptions = {
 
 const HEALTH_CACHE_TTL_MS = 30_000;
 /**
- * Candidate top-up rounds for the delegate search. A current daemon already
- * excludes artifacts before its own cap, but this side still drops artifacts
- * (older daemons) and sub-`minScore` hits, so a short page re-asks with a
- * doubled limit instead of returning fewer memories than the caller budgeted.
+ * Ceiling on how many candidates one delegate search will ask the daemon for.
+ *
+ * A current daemon already excludes artifacts before its own cap, but this
+ * side still drops artifacts (older daemons) and sub-`minScore` hits, so a
+ * thinned page re-asks with a doubled limit. The bound is a daemon-safety
+ * limit, NOT a stand-in for corpus exhaustion: only a short page or a
+ * satisfied budget ends the loop sooner.
  */
-const SEARCH_TOPUP_ROUNDS = 4;
+const SEARCH_CANDIDATE_CEILING = 1_000;
 // A failing probe backs off instead of retrying on every hook, so a daemon
 // that is down or rejecting the token cannot turn each turn into a request.
 const HEALTH_FAILURE_BACKOFF_MS = 5_000;
@@ -248,6 +251,28 @@ export function createDelegateMemoryCapability(
   };
 
   /**
+   * File-backed surfaces walk ONE local directory: the `memoryDir` health
+   * reports. The daemon answers `/engram/v1/health` without a namespace, so
+   * that directory is the DEFAULT namespace's storage — not necessarily the
+   * one this capability is scoped to, and not necessarily one the token may
+   * read. Corpus containment proves physical co-location, never authorization.
+   *
+   * So the local walk is allowed only when there is exactly one corpus to walk
+   * (namespaces disabled) or the scope resolves to the very namespace health
+   * described. Anything else would publish another namespace's facts,
+   * entities, and artifacts while omitting the session's own.
+   */
+  const requireHealthNamespaceScope = async (surface: string): Promise<void> => {
+    if (health.namespacesEnabled === false) return;
+    const scoped = await options.resolveSearchNamespace(undefined);
+    const resolved = scoped ?? health.defaultNamespace;
+    if (resolved !== undefined && resolved === health.defaultNamespace) return;
+    throw new Error(
+      `delegate ${surface} unavailable: the daemon reports the ${health.defaultNamespace ?? "unknown"} namespace's storage, but this session is scoped to ${resolved ?? "an unresolved namespace"} — a local walk cannot be authorized for it`,
+    );
+  };
+
+  /**
    * refreshHealth deliberately swallows probe failures, so a transient or
    * legacy response can leave both the caller's namespace and the daemon
    * default undefined. On a namespace-partitioned daemon an absent namespace
@@ -332,6 +357,10 @@ export function createDelegateMemoryCapability(
     // the daemon schema's `maxResults >= 1` and turn a valid no-results request
     // into a 400 purely by switching bridge mode.
     if (opts?.maxResults === 0) return [];
+    // A cached manager can outlive the probe that handed it out. Without this,
+    // a single transient health failure sticks a namespace refusal on every
+    // later search while recall/observe recover on their next scoped call.
+    await refreshHealth();
     // Cap-after-filter (AGENTS.md retrieval contract): artifact paths and
     // minScore are dropped on this side, so asking the daemon for exactly
     // `maxResults` would let a few excluded hits shrink — or empty — a page
@@ -382,10 +411,16 @@ export function createDelegateMemoryCapability(
     };
     const keep = (rawResults: unknown[]): RuntimeSearchResult[] => {
       const kept: RuntimeSearchResult[] = [];
-      for (const [index, raw] of rawResults.entries()) {
+      for (const raw of rawResults) {
         const hit = asRecord(raw);
-        if (!hit) continue;
-        const rawPath = typeof hit.path === "string" ? hit.path : `memory-${index + 1}`;
+        // A hit without a string `path` is a version-skewed or corrupt daemon.
+        // Synthesizing `memory-N` would present that as a real memory the host
+        // could then try to open (AGENTS.md #22: a protocol failure must not
+        // masquerade as data).
+        if (!hit || typeof hit.path !== "string" || hit.path.trim() === "") {
+          throw new Error("daemon /engram/v1/memories/search returned a malformed result entry");
+        }
+        const rawPath = hit.path;
         // Artifact isolation: the same exclusion the embedded runtime applies.
         // A current daemon already dropped these before its own cap; this
         // keeps the guarantee against an older one.
@@ -416,26 +451,33 @@ export function createDelegateMemoryCapability(
       return kept;
     };
     // A caller that named no budget keeps the daemon's own page size on the
-    // wire; the page it served becomes the budget the filtered list is
-    // measured against, so an excluded hit still cannot thin it out.
+    // wire, and the FIRST page it serves fixes the budget once. Recomputing it
+    // per round would let the target grow with every doubled request, so a
+    // default page of 10 could return 80 rows while never "reaching" it.
     let kept: RuntimeSearchResult[] = [];
+    let budget = requestedResults;
     let limit: number | undefined = requestedResults;
-    for (let round = 0; round < SEARCH_TOPUP_ROUNDS; round += 1) {
+    for (;;) {
       const rawResults = await fetchPage(limit);
       kept = keep(rawResults);
-      const budget = requestedResults ?? rawResults.length;
-      if (kept.length >= budget) return requestedResults === undefined ? kept : kept.slice(0, budget);
+      budget ??= rawResults.length;
+      if (kept.length >= budget) break;
       // What the daemon actually served this round. A short page means it has
       // nothing left, so asking again just replays the same rows.
       const served = limit ?? rawResults.length;
       if (rawResults.length === 0 || rawResults.length < served) break;
-      limit = served * 2;
+      if (served >= SEARCH_CANDIDATE_CEILING) break;
+      limit = Math.min(served * 2, SEARCH_CANDIDATE_CEILING);
     }
-    return requestedResults === undefined ? kept : kept.slice(0, requestedResults);
+    return kept.slice(0, budget);
   };
 
   const readMemoryFile = async (params: RuntimeReadParams): Promise<RuntimeReadResult> => {
+    // Same reason as `search`: a cached manager can outlive its probe, and a
+    // stale "corpus not confirmed" must not stick past a recovered daemon.
+    await refreshHealth();
     requireSharedCorpus("readFile");
+    await requireHealthNamespaceScope("readFile");
     const requestedPath = sharedScope().normalizeWorkspacePath(params.relPath);
     const absolutePath = await sharedScope().resolveReadablePath(params.relPath);
     const allLines = (await readFile(absolutePath, "utf8")).split(/\r?\n/);
@@ -532,6 +574,7 @@ export function createDelegateMemoryCapability(
         // this surface hangs off the capability object, not off a manager.
         await refreshHealth();
         requireSharedCorpus("publicArtifacts");
+        await requireHealthNamespaceScope("publicArtifacts");
         return await listRemnicPublicArtifacts({
           memoryDir: health.memoryDir ?? options.memoryDir,
           workspaceDir: options.workspaceDir,
