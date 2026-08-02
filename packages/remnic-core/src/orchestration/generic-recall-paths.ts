@@ -94,7 +94,17 @@ function isExternalWikiQmdPath(
   return isExternalWikiCollectionName(collection);
 }
 
-export function isGenericRecallExcludedPath(
+/**
+ * Paths an EXPLICIT ranked search must not return.
+ *
+ * Narrower than {@link isGenericRecallExcludedPath} on purpose. Recall
+ * injection also drops archived memories because they are cold by definition,
+ * but archive is explicitly reserved for "explicit read or search surfaces"
+ * (docs/architecture/memory-lifecycle.md) — hiding it from `memory_search`
+ * would remove the only way to find it. Everything else stays excluded: those
+ * paths flow through their own dedicated surfaces, never a generic search.
+ */
+export function isSearchExcludedPath(
   filePath: string,
   policy: GenericRecallPathPolicy = {},
   source: GenericRecallPathSource = "filesystem",
@@ -103,8 +113,20 @@ export function isGenericRecallExcludedPath(
     isExternalWikiQmdPath(filePath, source) ||
     isArtifactMemoryPath(filePath) ||
     isActivityDigestPath(filePath, policy.memoryDir) ||
-    isTopLevelArchivePath(filePath, policy, source) ||
     isMeetingRecordPath(filePath)
+  );
+}
+
+export function isGenericRecallExcludedPath(
+  filePath: string,
+  policy: GenericRecallPathPolicy = {},
+  source: GenericRecallPathSource = "filesystem",
+): boolean {
+  return (
+    isSearchExcludedPath(filePath, policy, source) ||
+    // Recall-only: archived memories are cold, but an explicit search is one
+    // of the surfaces they remain reachable through.
+    isTopLevelArchivePath(filePath, policy, source)
   );
 }
 

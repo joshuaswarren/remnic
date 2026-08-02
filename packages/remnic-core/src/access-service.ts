@@ -109,7 +109,7 @@ import {
   resolveMemorySearchDefaultFallback,
   memorySearchThroughScope,
 } from "./access-memory-search-fanout.js";
-import { isGenericRecallExcludedPath } from "./orchestration/generic-recall-paths.js";
+import { isSearchExcludedPath } from "./orchestration/generic-recall-paths.js";
 import {
   buildQualityScore,
   buildProposedActions,
@@ -4725,7 +4725,10 @@ export class EngramAccessService {
         // empty result with no backend call. Anything non-numeric falls back
         // to the documented default.
         defaultBudget: typeof config.qmdMaxResults === "number" ? config.qmdMaxResults : 10,
-        isExcluded: (memoryPath) => isGenericRecallExcludedPath(memoryPath, config, "qmd"),
+        // Search-specific: artifacts and the other dedicated surfaces stay
+        // out, but ARCHIVED memories remain findable - explicit search is one
+        // of the surfaces the lifecycle reserves them for.
+        isExcluded: (memoryPath) => isSearchExcludedPath(memoryPath, config, "qmd"),
         authorizeFlatCorpus: (namespace, principal) => {
           this.resolveReadableNamespace(namespace, principal);
         },

@@ -4572,3 +4572,41 @@ test("HTTP memory search still tops up a thinned default page", async () => {
   assert.deepEqual(seen, [undefined, 12], "tops up against the backend page size");
   assert.equal(results.length, 6);
 });
+
+test("search keeps archived memories but still excludes the dedicated surfaces", async () => {
+  // The lifecycle reserves archived memories for explicit read/search
+  // surfaces, so a ranked search must return them - while artifacts, activity
+  // digests, and meeting records stay on their own paths.
+  const { isSearchExcludedPath, isGenericRecallExcludedPath } = await import(
+    "./orchestration/generic-recall-paths.js"
+  );
+  assert.equal(
+    isSearchExcludedPath("archive/2026-01/fact-1.md"),
+    false,
+    "archived memories remain findable through search",
+  );
+  assert.equal(
+    isGenericRecallExcludedPath("archive/2026-01/fact-1.md"),
+    true,
+    "but recall injection still skips them",
+  );
+  // Artifacts flow only through the dedicated verbatim path, in BOTH modes.
+  assert.equal(isSearchExcludedPath("artifacts/report.md"), true);
+  assert.equal(isGenericRecallExcludedPath("artifacts/report.md"), true);
+  // And the wiring uses the search predicate, so an archived hit survives.
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 5,
+    sendInitialLimit: true,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => isSearchExcludedPath(memoryPath),
+    flatCorpus: async () => [
+      { path: "archive/2026-01/fact-1.md", score: 0.9, snippet: "archived" },
+      { path: "artifacts/report.md", score: 0.8, snippet: "artifact" },
+    ],
+    namespaced: async () => [],
+  });
+  assert.deepEqual(results.map((hit) => hit.path), ["archive/2026-01/fact-1.md"]);
+});
