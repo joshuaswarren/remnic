@@ -22,6 +22,7 @@ import {
   readDaemonMemoryDirSync,
   resolveBridgeMode,
   resolveUnitConfigPath,
+  resolveUnitEndpoint,
 } from "./bridge.js";
 
 type HealthStub = {
@@ -1061,4 +1062,130 @@ test("two configs on one endpoint with different tokens are both probed", async 
     await rm(home, { recursive: true, force: true });
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+test("explicit delegate keeps the daemon's own config order, ignoring a stale unit", async () => {
+  // The standalone server resolves cwd BEFORE home and never reads unit files.
+  // Explicit delegate resolves ONE endpoint, so it must match that order or
+  // the preflight checks the wrong daemon and falls back to embedded.
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-explicit-order-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-explicit-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    "[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4801 } }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4802 } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    const bridge = resolveBridgeMode("", { memoryDir: MEMORY_DIR });
+    assert.equal(bridge.mode, "delegate");
+    assert.equal(bridge.daemonPort, 4802, "the cwd config wins, as it does for the server");
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a unit's REMNIC_HOST/PORT override its config file when probing", async () => {
+  // The server merges its own environment OVER its config file, and the
+  // gateway does not inherit that environment - so the unit's values are the
+  // only way auto can learn the real endpoint.
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" });
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-unit-env-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    [
+      "[Service]",
+      "Environment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json",
+      "Environment=REMNIC_HOST=127.0.0.1",
+      `Environment=REMNIC_PORT=${stub.port}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  // The file says a port nothing listens on; the unit's env is the truth.
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4803 } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(home);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 5_000 });
+    assert.equal(bridge.mode, "delegate");
+    assert.equal(bridge.daemonPort, stub.port, "the unit's env beat its config file");
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await stub.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("resolveUnitEndpoint reads host and port, honoring account scope", () => {
+  const unit = [
+    "[Service]",
+    "Environment=REMNIC_CONFIG_PATH=/etc/remnic/config.json",
+    "Environment=REMNIC_HOST=127.0.0.5",
+    "Environment=REMNIC_PORT=4804",
+    "",
+  ].join("\n");
+  assert.deepEqual(resolveUnitEndpoint(unit, { userScoped: false, homeDir: "/home/gw" }), {
+    configPath: "/etc/remnic/config.json",
+    host: "127.0.0.5",
+    port: 4804,
+  });
+  // A non-integer port is not an endpoint.
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nEnvironment=REMNIC_PORT=abc\n", {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).port,
+    undefined,
+  );
+  // A system unit's %h is unknowable, so nothing is taken from it.
+  assert.deepEqual(
+    resolveUnitEndpoint("[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/c.json\n", {
+      userScoped: false,
+      homeDir: "/home/gw",
+    }),
+    {},
+  );
 });

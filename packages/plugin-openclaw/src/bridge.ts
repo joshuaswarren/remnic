@@ -314,13 +314,13 @@ function configPathCandidates(): string[] {
   const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
   return [
     ...(envPath ? [path.resolve(expandTildePath(envPath))] : []),
-    ...readServiceConfigPaths(),
     path.join(process.cwd(), "remnic.config.json"),
     path.join(process.cwd(), "engram.config.json"),
     path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
     path.join(resolveHomeDir(), ".config", "engram", "config.json"),
   ];
 }
+
 
 /**
  * The config path the INSTALLED daemon service is pinned to.
@@ -334,7 +334,9 @@ function configPathCandidates(): string[] {
  * asks the daemon which file it actually uses. Ranked below this process's own
  * `REMNIC_CONFIG_PATH`, which is a deliberate operator instruction.
  */
-function readServiceConfigPaths(): string[] {
+
+/** Every installed unit's endpoint hints, in discovery order. */
+function readServiceEndpoints(): Array<{ configPath?: string; host?: string; port?: number }> {
   const homeDir = resolveHomeDir();
   const unitPaths: Array<{ unitPath: string; userScoped: boolean }> = [
     ...[...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS].map((segments) => ({
@@ -346,7 +348,7 @@ function readServiceConfigPaths(): string[] {
   // EVERY distinct unit, not the first: canonical and legacy units coexist
   // during migration, and the inactive one can sort first. Stopping there
   // would hide the running daemon's endpoint from the candidate walk.
-  const resolvedPaths: string[] = [];
+  const endpoints: Array<{ configPath?: string; host?: string; port?: number }> = [];
   for (const { unitPath, userScoped } of unitPaths) {
     if (!fileExists(unitPath)) continue;
     let unit: string;
@@ -355,10 +357,19 @@ function readServiceConfigPaths(): string[] {
     } catch {
       continue;
     }
-    const resolved = resolveUnitConfigPath(unit, { userScoped, homeDir });
-    if (resolved !== undefined && !resolvedPaths.includes(resolved)) resolvedPaths.push(resolved);
+    const resolved = resolveUnitEndpoint(unit, { userScoped, homeDir });
+    if (resolved.configPath === undefined && resolved.host === undefined && resolved.port === undefined) {
+      continue;
+    }
+    const seen = endpoints.some(
+      (entry) =>
+        entry.configPath === resolved.configPath &&
+        entry.host === resolved.host &&
+        entry.port === resolved.port,
+    );
+    if (!seen) endpoints.push(resolved);
   }
-  return resolvedPaths;
+  return endpoints;
 }
 
 /**
@@ -372,25 +383,64 @@ export function resolveUnitConfigPath(
   unit: string,
   scope: { userScoped: boolean; homeDir: string },
 ): string | undefined {
+  return resolveUnitEndpoint(unit, scope).configPath;
+}
+
+/**
+ * Read a unit's environment assignment, or `undefined`. `%h` is systemd's HOME
+ * specifier, expanded in the SERVICE MANAGER's account: ours for a user unit,
+ * unknowable for a system one.
+ */
+function readUnitEnv(
+  unit: string,
+  name: string,
+  scope: { userScoped: boolean; homeDir: string },
+): string | undefined {
+  // systemd: Environment=NAME=value  /  Environment="NAME=value"
+  const systemd = new RegExp(`^\\s*Environment=\\"?${name}=([^\\"\\n]+)\\"?\\s*$`, "m").exec(unit);
+  // launchd: <key>NAME</key><string>value</string>
+  const launchd = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
+  const raw = (systemd?.[1] ?? launchd?.[1])?.trim();
+  if (raw === undefined || raw === "") return undefined;
+  if (!scope.userScoped && raw.includes("%")) return undefined;
+  return raw.replace(/%h/g, scope.homeDir);
+}
+
+/**
+ * Everything a unit file says about the daemon's endpoint.
+ *
+ * The server merges `REMNIC_HOST`/`REMNIC_PORT` from its own environment OVER
+ * its config file, and the gateway does not inherit that environment - so a
+ * unit that sets them would otherwise leave `auto` probing the file's stale
+ * default and starting a second orchestrator beside the live daemon.
+ */
+export function resolveUnitEndpoint(
+  unit: string,
+  scope: { userScoped: boolean; homeDir: string },
+): { configPath?: string; host?: string; port?: number } {
+  const host = readUnitEnv(unit, "REMNIC_HOST", scope) ?? readUnitEnv(unit, "ENGRAM_HOST", scope);
+  const port = coerceDaemonPort(
+    readUnitEnv(unit, "REMNIC_PORT", scope) ?? readUnitEnv(unit, "ENGRAM_PORT", scope),
+  );
+  return {
+    ...resolveUnitConfigPathInner(unit, scope),
+    ...(host === undefined ? {} : { host }),
+    ...(port === undefined ? {} : { port }),
+  };
+}
+
+function resolveUnitConfigPathInner(
+  unit: string,
+  scope: { userScoped: boolean; homeDir: string },
+): { configPath?: string } {
   for (const name of ["REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH"]) {
-    // systemd: Environment=NAME=value  /  Environment="NAME=value"
-    const systemd = new RegExp(`^\\s*Environment=\\"?${name}=([^\\"\\n]+)\\"?\\s*$`, "m").exec(unit);
-    // launchd: <key>NAME</key><string>value</string>
-    const launchd = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
-    const raw = systemd?.[1] ?? launchd?.[1];
-    if (raw === undefined || raw.trim() === "") continue;
-    // `%h` is systemd's HOME specifier, expanded in the service manager's
-    // account. For a user unit that account is ours. For a SYSTEM unit it is
-    // whatever `User=` names, which this process cannot know — substituting
-    // our own home would name a file the daemon never read, so a system unit
-    // must carry a literal absolute path or be ignored.
-    const trimmed = raw.trim();
-    if (!scope.userScoped && trimmed.includes("%")) continue;
-    const resolved = expandTildePath(trimmed.replace(/%h/g, scope.homeDir));
+    const raw = readUnitEnv(unit, name, scope);
+    if (raw === undefined) continue;
+    const resolved = expandTildePath(raw);
     if (!path.isAbsolute(resolved)) continue;
-    return resolved;
+    return { configPath: resolved };
   }
-  return undefined;
+  return {};
 }
 
 function fileExists(filePath: string): boolean {
@@ -714,9 +764,29 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
   if ((envHost !== undefined && envHost.trim() !== "") || envPort !== undefined) {
     add(undefined, undefined);
   }
-  for (const candidate of configPathCandidates()) {
+  const configOrder = configPathCandidates();
+  const envConfigPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH")
+    ? configOrder[0]
+    : undefined;
+  const addConfigCandidate = (candidate: string): void => {
     const server = readServerBlock(candidate);
     if (server !== undefined) add(server.host, server.port, candidate);
+  };
+  // THIS process's explicit REMNIC_CONFIG_PATH is a deliberate operator
+  // instruction and outranks everything, including an installed unit.
+  if (envConfigPath !== undefined) addConfigCandidate(envConfigPath);
+  // Then installed units: each contributes its config's endpoint with the
+  // unit's own REMNIC_HOST/REMNIC_PORT merged OVER it, exactly as the server
+  // merges its environment over its config file. They rank ahead of cwd/home
+  // because they name what the daemon was actually launched with - and every
+  // candidate is probed, so a stale one costs one failed probe.
+  for (const unit of readServiceEndpoints()) {
+    const server = unit.configPath === undefined ? {} : (readServerBlock(unit.configPath) ?? {});
+    add(unit.host ?? server.host, unit.port ?? server.port, unit.configPath);
+  }
+  for (const candidate of configOrder) {
+    if (candidate === envConfigPath) continue;
+    addConfigCandidate(candidate);
   }
   // The documented default, LAST. A daemon on 127.0.0.1:4318 with no config
   // file at all is the out-of-the-box shape, and explicit `delegate` dials it;
