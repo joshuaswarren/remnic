@@ -109,11 +109,20 @@ export function isSearchExcludedPath(
   policy: GenericRecallPathPolicy = {},
   source: GenericRecallPathSource = "filesystem",
 ): boolean {
+  // A QMD transport hands back collection-qualified paths
+  // (`qmd://<collection>/activity/<date>.md`, or `<collection>/activity/…`).
+  // The activity predicate is ROOT-AWARE — it matches only the top-level
+  // `activity/<date>.md` so a nested ordinary memory stays recallable — so an
+  // un-stripped collection prefix reads as a nested path and the digest would
+  // be served. Strip the prefix the same way the archive check does.
+  const relative = path.isAbsolute(filePath)
+    ? filePath
+    : stripQmdCollectionPrefix(filePath, policy, source);
   return (
     isExternalWikiQmdPath(filePath, source) ||
-    isArtifactMemoryPath(filePath) ||
-    isActivityDigestPath(filePath, policy.memoryDir) ||
-    isMeetingRecordPath(filePath)
+    isArtifactMemoryPath(relative) ||
+    isActivityDigestPath(relative, policy.memoryDir) ||
+    isMeetingRecordPath(relative)
   );
 }
 

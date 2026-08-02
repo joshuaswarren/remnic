@@ -4610,3 +4610,28 @@ test("search keeps archived memories but still excludes the dedicated surfaces",
   });
   assert.deepEqual(results.map((hit) => hit.path), ["archive/2026-01/fact-1.md"]);
 });
+
+test("a collection-qualified QMD path still hits the dedicated-surface exclusions", async () => {
+  const { isSearchExcludedPath } = await import("./orchestration/generic-recall-paths.js");
+  // A flat-corpus QMD transport returns `qmd://<collection>/<path>` or
+  // `<collection>/<path>`. The activity predicate is root-aware, so an
+  // un-stripped prefix reads as a NESTED path and the digest leaks into
+  // ranked search.
+  const policy = { memoryDir: "/memory", qmdCollection: "memories" };
+  for (const excluded of [
+    "qmd://memories/activity/2026-08-02.md",
+    "memories/activity/2026-08-02.md",
+    "qmd://memories/artifacts/report.md",
+    "memories/meetings/2026-01-01/mtg-2026-01-01-abcdef12.md",
+  ]) {
+    assert.equal(isSearchExcludedPath(excluded, policy, "qmd"), true, excluded);
+  }
+  // A nested ordinary memory that merely looks like a digest stays searchable,
+  // and so does an archived one.
+  for (const kept of [
+    "qmd://memories/facts/proj/activity/2026-08-02.md",
+    "memories/archive/2026-01/fact-1.md",
+  ]) {
+    assert.equal(isSearchExcludedPath(kept, policy, "qmd"), false, kept);
+  }
+});
