@@ -4719,18 +4719,12 @@ export class EngramAccessService {
     return memorySearchThroughScope(
       {
         namespacesEnabled: resolveNamespaceCapabilities(config).namespaces,
-        // A configured `0` disables the CAP, it does not disable search: recall
-        // applies `qmdMaxResults` only when it is finite and positive, and the
-        // ranked route used to pass an unset limit straight to the backend.
-        // Nullish-coalescing alone would turn it into an empty page with no
-        // backend call at all. An explicit `maxResults: 0` from the CALLER is
-        // still the documented no-results request and short-circuits earlier.
-        defaultBudget:
-          typeof config.qmdMaxResults === "number" &&
-          Number.isFinite(config.qmdMaxResults) &&
-          config.qmdMaxResults > 0
-            ? config.qmdMaxResults
-            : 10,
+        // `0` is preserved, never coerced: a zero limit is a runtime
+        // compatibility guarantee (AGENTS.md guardrail 4), and it means the
+        // same thing here as an explicit `maxResults: 0` from the caller - an
+        // empty result with no backend call. Anything non-numeric falls back
+        // to the documented default.
+        defaultBudget: typeof config.qmdMaxResults === "number" ? config.qmdMaxResults : 10,
         isExcluded: (memoryPath) => isGenericRecallExcludedPath(memoryPath, config, "qmd"),
         authorizeFlatCorpus: (namespace, principal) => {
           this.resolveReadableNamespace(namespace, principal);

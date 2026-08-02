@@ -1872,10 +1872,10 @@ test("memorySearch rejects mode+collection on a flat corpus even at a zero budge
   }
 });
 
-test("a configured qmdMaxResults of 0 does not turn ranked search into an empty page", async () => {
-  // `0` disables the CAP, not the search: recall applies the value only when
-  // it is finite and positive, and this route used to pass an unset limit
-  // through. Nullish-coalescing alone skipped the backend entirely.
+test("a configured qmdMaxResults of 0 is preserved, not coerced to a default", async () => {
+  // A zero limit is a runtime compatibility guarantee (AGENTS.md guardrail 4):
+  // it means the same thing as an explicit `maxResults: 0` - an empty result
+  // with no backend call - and must never be silently raised to a default.
   const { service } = makeServiceWithConfig({
     ...makeConfig(),
     qmdMaxResults: 0,
@@ -1888,6 +1888,11 @@ test("a configured qmdMaxResults of 0 does not turn ranked search into an empty 
     return [{ path: "facts/a.md", score: 0.9, snippet: "a" }];
   };
   const result = await service.memorySearch({ query: "anything", principal: "operator-x" });
-  assert.ok(searchCalls > 0, "the backend is consulted");
-  assert.ok(result.count > 0, "and its hits are returned");
+  assert.equal(result.count, 0, "the configured zero cap is honored");
+  assert.equal(searchCalls, 0, "and the backend is never consulted");
+  // The scope is still authorized first, so a zero cap cannot bypass the gate.
+  await assert.rejects(
+    () => service.memorySearch({ query: "q", namespace: "team", principal: "stranger" }),
+    /namespace is not readable: team/,
+  );
 });
