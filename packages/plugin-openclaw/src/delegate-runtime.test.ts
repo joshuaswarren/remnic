@@ -1680,22 +1680,53 @@ test("delegate honors allowPromptInjection=false but keeps observe/flush", async
 });
 
 
-test("loadDaemonAuth selects only the OpenClaw token from multi-connector stores", () => {
-  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-openclaw-token-"));
+const DAEMON_AUTH_ENV_VARS = [
+  "OPENCLAW_REMNIC_ACCESS_TOKEN",
+  "REMNIC_AUTH_TOKEN",
+  "OPENCLAW_ENGRAM_ACCESS_TOKEN",
+  "ENGRAM_AUTH_TOKEN",
+] as const;
+type DaemonAuthEnvVar = (typeof DAEMON_AUTH_ENV_VARS)[number];
+
+/**
+ * Run `body` against a scratch HOME with the daemon-auth environment set to
+ * exactly `env` — every name not listed is unset, so an ambient credential on
+ * the developer's machine or the CI runner cannot reach loadDaemonAuth().
+ */
+function withDaemonAuthEnv(
+  env: Partial<Record<DaemonAuthEnvVar, string>>,
+  body: (home: string) => void,
+): void {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-daemon-auth-"));
   const priorHome = process.env.HOME;
-  const authVariables = [
-    "OPENCLAW_REMNIC_ACCESS_TOKEN",
-    "OPENCLAW_ENGRAM_ACCESS_TOKEN",
-    "REMNIC_AUTH_TOKEN",
-    "ENGRAM_AUTH_TOKEN",
-  ] as const;
-  const priorAuth = new Map(authVariables.map((name) => [name, process.env[name]]));
+  const priorAuth: Record<string, string | undefined> = {};
+  for (const name of DAEMON_AUTH_ENV_VARS) priorAuth[name] = process.env[name];
   try {
-    for (const name of authVariables) Reflect.deleteProperty(process.env, name);
-    process.env.HOME = tempHome;
-    fs.mkdirSync(path.join(tempHome, ".remnic"), { recursive: true });
+    process.env.HOME = home;
+    for (const name of DAEMON_AUTH_ENV_VARS) {
+      const value = env[name];
+      if (value === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = value;
+    }
+    body(home);
+  } finally {
+    if (priorHome === undefined) Reflect.deleteProperty(process.env, "HOME");
+    else process.env.HOME = priorHome;
+    for (const name of DAEMON_AUTH_ENV_VARS) {
+      const value = priorAuth[name];
+      if (value === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = value;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test("loadDaemonAuth selects only the OpenClaw token from multi-connector stores", () => {
+  withDaemonAuthEnv({}, (home) => {
+    const store = path.join(home, ".remnic", "tokens.json");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(
-      path.join(tempHome, ".remnic", "tokens.json"),
+      store,
       JSON.stringify({
         tokens: [
           { token: "remnic_other_token", connector: "other", createdAt: "2026-01-01T00:00:00.000Z" },
@@ -1703,14 +1734,13 @@ test("loadDaemonAuth selects only the OpenClaw token from multi-connector stores
         ],
       }),
     );
-
     assert.deepEqual(loadDaemonAuth(), {
       token: "remnic_openclaw_token",
       source: "remnic token store",
     });
 
     fs.writeFileSync(
-      path.join(tempHome, ".remnic", "tokens.json"),
+      store,
       JSON.stringify({
         tokens: [
           { token: "remnic_other_token", connector: "other", createdAt: "2026-01-01T00:00:00.000Z" },
@@ -1721,14 +1751,82 @@ test("loadDaemonAuth selects only the OpenClaw token from multi-connector stores
       token: "",
       source: "no configured token",
     });
-  } finally {
-    if (priorHome === undefined) Reflect.deleteProperty(process.env, "HOME");
-    else process.env.HOME = priorHome;
-    for (const [name, value] of priorAuth) {
-      if (value === undefined) Reflect.deleteProperty(process.env, name);
-      else process.env[name] = value;
-    }
-    fs.rmSync(tempHome, { recursive: true, force: true });
+  });
+});
+
+test("loadDaemonAuth prefers REMNIC_AUTH_TOKEN over the legacy OPENCLAW_ENGRAM_ACCESS_TOKEN", () => {
+  withDaemonAuthEnv(
+    { REMNIC_AUTH_TOKEN: "current-token", OPENCLAW_ENGRAM_ACCESS_TOKEN: "stale-legacy-token" },
+    () => {
+      assert.deepEqual(loadDaemonAuth(), {
+        token: "current-token",
+        source: "REMNIC_AUTH_TOKEN",
+      });
+    },
+  );
+});
+
+test("loadDaemonAuth ranks both current names above both legacy aliases", () => {
+  withDaemonAuthEnv(
+    {
+      OPENCLAW_REMNIC_ACCESS_TOKEN: "connector-token",
+      REMNIC_AUTH_TOKEN: "operator-token",
+      OPENCLAW_ENGRAM_ACCESS_TOKEN: "legacy-connector-token",
+      ENGRAM_AUTH_TOKEN: "legacy-operator-token",
+    },
+    () => {
+      assert.deepEqual(loadDaemonAuth(), {
+        token: "connector-token",
+        source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+      });
+    },
+  );
+  // Drop the winner and the next current name takes over — not a legacy alias.
+  withDaemonAuthEnv(
+    {
+      REMNIC_AUTH_TOKEN: "operator-token",
+      OPENCLAW_ENGRAM_ACCESS_TOKEN: "legacy-connector-token",
+      ENGRAM_AUTH_TOKEN: "legacy-operator-token",
+    },
+    () => {
+      assert.deepEqual(loadDaemonAuth(), {
+        token: "operator-token",
+        source: "REMNIC_AUTH_TOKEN",
+      });
+    },
+  );
+});
+
+test("loadDaemonAuth still accepts each legacy alias when no current name is set", () => {
+  withDaemonAuthEnv(
+    { OPENCLAW_ENGRAM_ACCESS_TOKEN: "legacy-connector-token", ENGRAM_AUTH_TOKEN: "legacy-operator-token" },
+    () => {
+      assert.deepEqual(loadDaemonAuth(), {
+        token: "legacy-connector-token",
+        source: "OPENCLAW_ENGRAM_ACCESS_TOKEN",
+      });
+    },
+  );
+  withDaemonAuthEnv({ ENGRAM_AUTH_TOKEN: "legacy-operator-token" }, () => {
+    assert.deepEqual(loadDaemonAuth(), {
+      token: "legacy-operator-token",
+      source: "ENGRAM_AUTH_TOKEN",
+    });
+  });
+});
+
+test("loadDaemonAuth reports the variable it actually used", () => {
+  // `source` drives the operator-facing auth error. Naming the wrong variable
+  // sends someone rotating a credential that was never sent.
+  for (const name of [
+    "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    "REMNIC_AUTH_TOKEN",
+    "OPENCLAW_ENGRAM_ACCESS_TOKEN",
+    "ENGRAM_AUTH_TOKEN",
+  ] as const) {
+    withDaemonAuthEnv({ [name]: `token-via-${name}` }, () => {
+      assert.deepEqual(loadDaemonAuth(), { token: `token-via-${name}`, source: name });
+    });
   }
 });
 test("resolveBridgeMode is explicit-only: config delegate activates, absence stays embedded", () => {

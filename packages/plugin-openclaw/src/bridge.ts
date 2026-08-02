@@ -446,12 +446,19 @@ function isOpenClawTokenEntry(value: unknown): value is { token: string } {
 /**
  * Load daemon credentials from the environment, standard token stores, or
  * daemon configuration. Shared by health and delegate requests.
+ *
+ * Environment precedence is primary-before-legacy (AGENTS.md §9): both current
+ * names outrank both pre-rename aliases. A migrated deployment commonly still
+ * exports `OPENCLAW_ENGRAM_ACCESS_TOKEN` from an old shell profile or unit
+ * file; if that stale value outranked the `REMNIC_AUTH_TOKEN` the daemon is
+ * actually running with, every request would 401 and the reported `source`
+ * would point the operator at the wrong variable (issue #2286).
  */
 export function loadDaemonAuth(): DaemonAuthToken {
   const environmentTokens = [
     ["OPENCLAW_REMNIC_ACCESS_TOKEN", readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN")],
-    ["OPENCLAW_ENGRAM_ACCESS_TOKEN", readEnv("OPENCLAW_ENGRAM_ACCESS_TOKEN")],
     ["REMNIC_AUTH_TOKEN", readEnv("REMNIC_AUTH_TOKEN")],
+    ["OPENCLAW_ENGRAM_ACCESS_TOKEN", readEnv("OPENCLAW_ENGRAM_ACCESS_TOKEN")],
     ["ENGRAM_AUTH_TOKEN", readEnv("ENGRAM_AUTH_TOKEN")],
   ] as const;
   for (const [source, token] of environmentTokens) {
