@@ -1366,7 +1366,13 @@ test("a spent budget skips the authorization probe too", async () => {
       },
     });
     await fresh.resolveScopedNamespace(undefined, 5_000).catch(() => undefined);
-    assert.equal(await fresh.resolveScopedNamespace(undefined, 0), "default");
+    // A spent budget cannot revalidate, and an unscoped request will not run
+    // on an unconfirmed posture - so it fails closed WITHOUT reaching the
+    // authorization probe (which would throw if it were attempted).
+    await assert.rejects(
+      () => fresh.resolveScopedNamespace(undefined, 0),
+      /namespace posture could not be confirmed/,
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -1501,10 +1507,11 @@ test("delegate search rejects a malformed score and an invalid minScore", async 
   }
 });
 
-test("a cached flat posture expires far sooner than the rest of the snapshot", async () => {
+test("an unscoped request revalidates the posture instead of trusting the cache", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // A flat posture is the one value that licenses an UNSCOPED request, so a
-  // daemon repartitioning mid-TTL would turn it into a fan-out.
+  // A flat posture LICENSES an unscoped request. A daemon that restarts
+  // partitioned inside the TTL would otherwise keep that license with no probe
+  // failure to notice it.
   const stub = await startDaemonStub({
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
   });
@@ -1516,19 +1523,20 @@ test("a cached flat posture expires far sooner than the rest of the snapshot", a
       now: () => clock,
     });
     await built.resolveScopedNamespace(undefined);
-    const afterFirst = stub.calls.filter((call) => call.pathname.includes("/health")).length;
-    assert.equal(afterFirst, 1);
-    // Still inside the FLAT window: no re-probe.
-    clock += 4_000;
-    await built.resolveScopedNamespace(undefined);
-    assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 1);
-    // Past it, but well inside the ordinary 30s snapshot TTL: re-probed.
-    clock += 2_000;
     await built.resolveScopedNamespace(undefined);
     assert.equal(
       stub.calls.filter((call) => call.pathname.includes("/health")).length,
       2,
-      "the licensing value is re-confirmed long before the rest of the snapshot",
+      "each unscoped resolution confirms the posture, cache or not",
+    );
+    // An EXPLICIT scope is the caller's own and the daemon enforces it, so it
+    // rides the cache and costs no extra probe.
+    const before = stub.calls.filter((call) => call.pathname.includes("/health")).length;
+    await built.resolveScopedNamespace("team-a");
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/health")).length,
+      before,
+      "an explicit scope does not force a probe",
     );
   } finally {
     await stub.close();

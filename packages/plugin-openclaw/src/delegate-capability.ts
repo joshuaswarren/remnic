@@ -136,13 +136,6 @@ export type DelegateCapabilityOptions = {
 
 const HEALTH_CACHE_TTL_MS = 30_000;
 /**
- * A cached `namespacesEnabled: false` is the one value that LICENSES an
- * unscoped request, so it is the one a daemon repartitioning mid-TTL turns
- * into a principal-wide fan-out. It expires far sooner than the rest of the
- * snapshot; everything else is merely informational.
- */
-const FLAT_POSTURE_CACHE_TTL_MS = 5_000;
-/**
  * Ceiling on how many candidates one delegate search will ask the daemon for.
  *
  * A current daemon already excludes artifacts before its own cap, but this
@@ -401,7 +394,17 @@ export function createDelegateMemoryCapability(
    * waiting (spent budget, or a race lost to the caller's deadline) and the
    * values on hand are stale — safety facts read from them are unproven.
    */
-  const refreshHealth = async (timeoutMs?: number): Promise<boolean> => {
+  const refreshHealth = async (
+    timeoutMs?: number,
+    /**
+     * Skip the TTL shortcut. Set when the caller is about to issue an UNSCOPED
+     * request: a cached flat posture is an authorization fact, and a daemon
+     * that restarts partitioned inside the window would turn that request into
+     * a principal-wide fan-out with no probe failure to notice it. An
+     * in-flight probe is still shared, so concurrent callers cost one request.
+     */
+    revalidate = false,
+  ): Promise<boolean> => {
     // `NaN` would slip past every `<= 0` comparison and reach
     // `AbortSignal.timeout` as an invalid duration; a fraction would be
     // silently truncated. Both are caller bugs across an untyped boundary.
@@ -410,7 +413,7 @@ export function createDelegateMemoryCapability(
         `delegate request rejected (timeoutMs must be a finite integer): ${String(timeoutMs)}`,
       );
     }
-    if (now() < healthExpiresAt) return true;
+    if (!revalidate && now() < healthExpiresAt) return true;
     // A caller inside a shared deadline (the lifecycle flushes) passes what is
     // LEFT of it. Zero or less means the budget is already spent: starting a
     // fresh probe here would overrun the hook and get it abandoned before the
@@ -471,11 +474,10 @@ export function createDelegateMemoryCapability(
         // same substitution for `memoryDir` would compare the plugin's path to
         // itself and enable file-backed reads with no proof at all.
         health = readHealth(healthPayload);
-        healthExpiresAt =
-          now() +
-          (health.namespacesEnabled === false
-            ? FLAT_POSTURE_CACHE_TTL_MS
-            : HEALTH_CACHE_TTL_MS);
+        // One TTL for the whole snapshot. The posture does not need a shorter
+        // one because an UNSCOPED request revalidates unconditionally rather
+        // than trusting any cache window.
+        healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
         lastHealthFailure = undefined;
         // Path identity is decided by canonicalizing two strings ON THIS
         // HOST, so it proves nothing about a REMOTE daemon that happens to
@@ -563,12 +565,11 @@ export function createDelegateMemoryCapability(
     // An empty namespace means "the daemon's default", but the daemon reads an
     // ABSENT namespace as a principal-wide fan-out. Send the concrete default
     // health reports so a default-scoped session cannot see other namespaces.
-    const namespace = await resolveScopedNamespaceChecked(
-      await options.resolveSearchNamespace(opts?.sessionKey),
-      undefined,
-      true,
-      ["memory_search"],
-    );
+    const searchScope = await options.resolveSearchNamespace(opts?.sessionKey);
+    const scopeIsFresh = await refreshHealth(undefined, searchScope === undefined);
+    const namespace = await resolveScopedNamespaceChecked(searchScope, undefined, scopeIsFresh, [
+      "memory_search",
+    ]);
     // Mirror the embedded manager: "vsearch" is vector ranking, "query" is the
     // ordinary search plan, anything else is the backend default.
     // Embedded defaults to "search" when the host passes no override, and an
@@ -763,7 +764,10 @@ export function createDelegateMemoryCapability(
       timeoutMs?: number,
       operations?: readonly string[],
     ): Promise<string | undefined> => {
-      const fresh = await refreshHealth(timeoutMs);
+      // An explicit scope is the caller's own and the daemon enforces it, so
+      // it rides the cache. An ABSENT one is decided by the posture, which is
+      // an authorization fact and must be current.
+      const fresh = await refreshHealth(timeoutMs, explicit === undefined);
       return await resolveScopedNamespaceChecked(explicit, timeoutMs, fresh, operations);
     },
     runtime: {
