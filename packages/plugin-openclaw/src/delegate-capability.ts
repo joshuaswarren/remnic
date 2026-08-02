@@ -268,6 +268,10 @@ export function createDelegateMemoryCapability(
   // probe cannot prove anything and would spend the hook budget on a daemon
   // that is down.
   let healthCacheIsFailure = false;
+  // Whether ANY probe has settled. Until one has, the snapshot is all zeroes
+  // and the synchronous `status()` reader would report a daemon posture that
+  // was never observed.
+  let healthEverResolved = false;
   let healthInFlight: Promise<void> | undefined;
   let lastHealthFailure: string | undefined;
   // Local reads and artifact listing are only valid while the daemon serves
@@ -495,6 +499,7 @@ export function createDelegateMemoryCapability(
         // than trusting any cache window.
         healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
         healthCacheIsFailure = false;
+        healthEverResolved = true;
         lastHealthFailure = undefined;
         // Path identity is decided by canonicalizing two strings ON THIS
         // HOST, so it proves nothing about a REMOTE daemon that happens to
@@ -533,6 +538,9 @@ export function createDelegateMemoryCapability(
         corpusShared = daemonIsLocal ? undefined : false;
         healthExpiresAt = now() + HEALTH_FAILURE_BACKOFF_MS;
         healthCacheIsFailure = true;
+        // A failed probe settles the posture too: it is now KNOWN-unavailable
+        // rather than never observed, and the backoff owns the retry.
+        healthEverResolved = true;
         const message = `[${serviceId}] delegate capability health probe failed: ${String(err)}`;
         if (message !== lastHealthFailure) {
           lastHealthFailure = message;
@@ -696,9 +704,13 @@ export function createDelegateMemoryCapability(
   };
 
   const readMemoryFile = async (params: RuntimeReadParams): Promise<RuntimeReadResult> => {
-    // Same reason as `search`: a cached manager can outlive its probe, and a
-    // stale "corpus not confirmed" must not stick past a recovered daemon.
-    await refreshHealth();
+    // REVALIDATED, not merely refreshed. `corpusShared` is a safety fact, and
+    // a daemon that restarts onto another corpus inside the cache window
+    // produces no probe failure to invalidate it — the cached `true` would let
+    // this return a file from the corpus that is no longer being served. The
+    // failure backoff still applies, so a down daemon degrades immediately
+    // rather than probing per read.
+    await refreshHealth(undefined, true);
     requireSharedCorpus("readFile");
     requireSingleCorpusNamespacing("readFile");
     const requestedPath = sharedScope().normalizeWorkspacePath(params.relPath);
@@ -806,7 +818,16 @@ export function createDelegateMemoryCapability(
     },
     runtime: {
       async getMemorySearchManager() {
-        await refreshHealth();
+        // `status()` is SYNCHRONOUS by the host's interface, so it can only
+        // report what a probe has already established. The FIRST handout
+        // therefore waits — an unprobed snapshot has nothing truthful to say.
+        // Afterwards it never waits again: every operation that needs a
+        // current posture refreshes on its own, so blocking per handout only
+        // delays an explicitly scoped search that needs no posture at all, and
+        // pays for two sequential probes on an unscoped one that revalidates.
+        // A background refresh keeps the synchronous reader converging.
+        if (!healthEverResolved) await refreshHealth();
+        else void refreshHealth().catch(() => undefined);
         return { manager };
       },
       resolveMemoryBackendConfig() {
@@ -824,10 +845,13 @@ export function createDelegateMemoryCapability(
       }),
     listArtifacts: async () => {
       try {
-        // The listing walks the LOCAL corpus, so confirm the daemon serves it
-        // before trusting those files. Health may not have been probed yet:
-        // this surface hangs off the capability object, not off a manager.
-        await refreshHealth();
+        // The listing walks the LOCAL corpus, so confirm the daemon still
+        // serves it before trusting those files — revalidated for the same
+        // reason `readFile` is: a restart onto another corpus inside the cache
+        // window leaves no failure behind to notice. Health may also not have
+        // been probed at all yet: this surface hangs off the capability
+        // object, not off a manager.
+        await refreshHealth(undefined, true);
         requireSharedCorpus("publicArtifacts");
         requireSingleCorpusNamespacing("publicArtifacts");
         return await listRemnicPublicArtifacts({

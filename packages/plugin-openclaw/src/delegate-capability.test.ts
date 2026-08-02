@@ -20,6 +20,8 @@ type DaemonStub = {
   calls: RecordedCall[];
   /** Runs when a health request is served, so a test can advance its clock. */
   onHealth?: () => void;
+  /** Replaces the health body from the next request on. */
+  healthOverride?: unknown;
   close: () => Promise<void>;
 };
 
@@ -64,7 +66,9 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
           res.end(routes.healthRaw);
           return;
         }
-        let payload = isSearch ? routes.search : routes.health;
+        // A test may swap the health body mid-run, to model a daemon that
+        // restarts onto another corpus.
+        let payload = isSearch ? routes.search : (stub?.healthOverride ?? routes.health);
         if (isSearch && payload !== null && typeof payload === "object") {
           // Honor `maxResults` the way a real daemon does, so a client-side
           // top-up sees a genuinely truncated page.
@@ -547,13 +551,22 @@ test("delegate health is cached and refreshed on the injected clock", async () =
     const built = createDelegateMemoryCapability(
       optionsFor(stub.port, memoryDir, workspaceDir, { now: () => clock }),
     );
-    await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
-    await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     const healthCalls = () =>
       stub.calls.filter((call) => call.pathname.endsWith("/health")).length;
+    // The FIRST handout waits: `status()` is synchronous, so an unprobed
+    // snapshot has nothing truthful to report.
+    await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    assert.equal(healthCalls(), 1, "the first handout probes");
+    await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     assert.equal(healthCalls(), 1, "a warm snapshot is reused");
+
+    // An expired snapshot converges in the BACKGROUND — later handouts never
+    // block, so the request lands after the call returns.
     clock += 60_000;
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    for (let attempt = 0; attempt < 100 && healthCalls() < 2; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
     assert.equal(healthCalls(), 2, "an expired snapshot is refreshed");
   } finally {
     await stub.close();
@@ -2273,6 +2286,76 @@ test("an explicitly scoped search never waits on the health route", async () => 
       2,
       "and both searches reached the daemon",
     );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a local read revalidates the corpus instead of trusting the cache", async () => {
+  // A daemon that restarts onto ANOTHER corpus inside the cache window leaves
+  // no probe failure behind, so a cached `corpusShared: true` would let a read
+  // return a file from the corpus that is no longer served.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const otherCorpus = await mkdtemp(path.join(os.tmpdir(), "remnic-other-corpus-"));
+  let served = memoryDir;
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
+  stub.onHealth = () => {
+    stub.healthOverride = { ...healthyDaemon(served), memoryDir: served };
+  };
+  try {
+    // Each surface gets its OWN warmed capability: one revalidation would
+    // otherwise invalidate the shared cache and mask the other's behavior.
+    const reader = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await reader.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await manager?.readFile({ relPath: "facts/alice.md" });
+
+    const lister = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    assert.ok((await lister.listArtifacts()).length >= 0, "the listing warms its own snapshot");
+
+    // The daemon restarts onto a different corpus, well inside the TTL.
+    served = otherCorpus;
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /readFile unavailable/,
+      "the stale shared-corpus fact was revalidated away",
+    );
+    assert.deepEqual(
+      await lister.listArtifacts(),
+      [],
+      "the artifact listing refuses the same way",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(otherCorpus, { recursive: true, force: true });
+  }
+});
+
+test("only the first manager handout waits on health", async () => {
+  // `status()` is synchronous, so the first handout must have a probed
+  // snapshot to report. Every later handout returns immediately: the
+  // operations that need a current posture refresh on their own, and blocking
+  // per handout delays an explicitly scoped search that needs none.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir), healthDelayMs: 200 });
+  try {
+    let clock = 1_000_000;
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir, { now: () => clock }),
+    );
+    const firstStarted = Date.now();
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const firstElapsed = Date.now() - firstStarted;
+    assert.ok(firstElapsed >= 150, `the first handout probed (${firstElapsed}ms)`);
+    assert.equal(manager?.status().backend, "qmd", "and status has a real posture to report");
+
+    // EXPIRE the posture, so a handout that still awaited would pay the probe.
+    clock += 10 * 60 * 1_000;
+    const laterStarted = Date.now();
+    await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const laterElapsed = Date.now() - laterStarted;
+    assert.ok(laterElapsed < 100, `a later handout did not wait (${laterElapsed}ms)`);
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
