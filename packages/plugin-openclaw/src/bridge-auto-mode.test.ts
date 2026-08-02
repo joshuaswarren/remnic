@@ -40,6 +40,16 @@ const server = http.createServer((req, res) => {
   // \`hang\`: accept the connection and never answer, so the probe must burn its
   // whole timeout - the only way to observe a shared preflight deadline.
   if (workerData.hang) return;
+  // \`requireToken\`: answer 401 for anything else, the way a daemon rejects a
+  // stale credential.
+  if (workerData.requireToken) {
+    const auth = req.headers.authorization;
+    if (auth !== \`Bearer \${workerData.requireToken}\`) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+  }
   served += 1;
   // \`warmupResponses\`: answer 503 (readiness gate closed) that many times
   // before switching to the real body, the way a daemon that is listening but
@@ -61,6 +71,7 @@ async function startHealthStub(
   status = 200,
   warmupResponses = 0,
   hang = false,
+  requireToken?: string,
 ): Promise<HealthStub> {
   const worker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(STUB_SOURCE)}`),
@@ -70,6 +81,7 @@ async function startHealthStub(
         status,
         warmupResponses,
         hang,
+        requireToken,
         body: typeof body === "string" ? body : JSON.stringify(body),
       },
     } as ConstructorParameters<typeof Worker>[1] & { type: "module" },
@@ -933,6 +945,119 @@ test("each probed endpoint carries its own config's token", async () => {
       if (value === undefined) Reflect.deleteProperty(process.env, key);
       else process.env[key] = value;
     }
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("auto probes every installed unit, not just the first", async () => {
+  // Canonical and legacy units coexist during migration. The canonical one is
+  // inactive; the legacy one runs, and its config lives OUTSIDE the ordinary
+  // cwd/home discovery list - so only reading both units can find it.
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" });
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-two-units-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await mkdir(path.join(home, "opt"), { recursive: true });
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    "[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "engram.service"),
+    `[Service]\nEnvironment=REMNIC_CONFIG_PATH=${path.join(home, "opt", "legacy.json")}\n`,
+    "utf8",
+  );
+  // Nothing listens on the canonical unit's endpoint.
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4951 } }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, "opt", "legacy.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: stub.port } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(home);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 5_000 });
+    assert.equal(bridge.mode, "delegate");
+    assert.equal(bridge.daemonPort, stub.port, "the second unit's daemon was found");
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await stub.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("two configs on one endpoint with different tokens are both probed", async () => {
+  // A stale service config and a manually launched daemon can share host:port
+  // and differ only in server.authToken. Endpoint-only dedupe would send the
+  // stale token, take a 401, and never retry with the live credential.
+  const stub = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" },
+    200,
+    0,
+    false,
+    "live-token",
+  );
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-dupe-endpoint-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-dupe-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    "[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json\n",
+    "utf8",
+  );
+  const endpoint = { host: "127.0.0.1", port: stub.port };
+  // The unit config sorts FIRST and carries the stale credential.
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { ...endpoint, authToken: "stale-token" } }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { ...endpoint, authToken: "live-token" } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 5_000 });
+    assert.equal(bridge.mode, "delegate", "the live credential was retried on the same endpoint");
+    assert.equal(
+      bridge.daemonConfigPath,
+      path.join(cwd, "remnic.config.json"),
+      "and delegate requests bind to the config that actually authenticated",
+    );
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await stub.close();
     await rm(home, { recursive: true, force: true });
     await rm(cwd, { recursive: true, force: true });
   }

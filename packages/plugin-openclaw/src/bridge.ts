@@ -27,6 +27,8 @@ interface DaemonEndpointCandidate {
   host: string;
   port: number;
   configPath?: string;
+  /** Resolved once at discovery so dedupe can compare credentials. */
+  token: string;
 }
 
 export interface BridgeConfig {
@@ -310,10 +312,9 @@ function readCompatEnv(primary: string, legacy: string): string | undefined {
  */
 function configPathCandidates(): string[] {
   const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
-  const servicePath = readServiceConfigPath();
   return [
     ...(envPath ? [path.resolve(expandTildePath(envPath))] : []),
-    ...(servicePath ? [servicePath] : []),
+    ...readServiceConfigPaths(),
     path.join(process.cwd(), "remnic.config.json"),
     path.join(process.cwd(), "engram.config.json"),
     path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
@@ -333,7 +334,7 @@ function configPathCandidates(): string[] {
  * asks the daemon which file it actually uses. Ranked below this process's own
  * `REMNIC_CONFIG_PATH`, which is a deliberate operator instruction.
  */
-function readServiceConfigPath(): string | undefined {
+function readServiceConfigPaths(): string[] {
   const homeDir = resolveHomeDir();
   const unitPaths: Array<{ unitPath: string; userScoped: boolean }> = [
     ...[...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS].map((segments) => ({
@@ -342,6 +343,10 @@ function readServiceConfigPath(): string | undefined {
     })),
     ...SYSTEMD_SYSTEM_SERVICE_PATHS.map((unitPath) => ({ unitPath, userScoped: false })),
   ];
+  // EVERY distinct unit, not the first: canonical and legacy units coexist
+  // during migration, and the inactive one can sort first. Stopping there
+  // would hide the running daemon's endpoint from the candidate walk.
+  const resolvedPaths: string[] = [];
   for (const { unitPath, userScoped } of unitPaths) {
     if (!fileExists(unitPath)) continue;
     let unit: string;
@@ -351,9 +356,9 @@ function readServiceConfigPath(): string | undefined {
       continue;
     }
     const resolved = resolveUnitConfigPath(unit, { userScoped, homeDir });
-    if (resolved !== undefined) return resolved;
+    if (resolved !== undefined && !resolvedPaths.includes(resolved)) resolvedPaths.push(resolved);
   }
-  return undefined;
+  return resolvedPaths;
 }
 
 /**
@@ -693,8 +698,15 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
     );
     const dialHost = loopbackForWildcardBind(resolvedHost) ?? resolvedHost;
     const dialPort = envPort ?? port ?? DEFAULT_PORT;
-    if (candidates.some((c) => c.host === dialHost && c.port === dialPort)) return;
-    candidates.push({ host: dialHost, port: dialPort, configPath });
+    // Dedupe on the endpoint AND its credential: an inactive service config
+    // and a manually launched daemon can share host:port while carrying
+    // different `server.authToken` values. Dropping the later one would send
+    // the stale token, take a 401, and never retry with the live credential.
+    const token = loadDaemonAuth(configPath).token;
+    if (candidates.some((c) => c.host === dialHost && c.port === dialPort && c.token === token)) {
+      return;
+    }
+    candidates.push({ host: dialHost, port: dialPort, configPath, token });
   };
   // An env override alone, so a specified environment is dialed first even
   // when no config file exists. Without one this would inject a bare
@@ -756,7 +768,8 @@ export function detectDaemonBridgeMode(options: {
   const endpoints = daemonEndpointCandidates();
   // The first candidate is what an explicit `delegate` would dial, so it is
   // also what an embedded result reports.
-  const primary = endpoints[0] ?? { host: readDaemonHost(), port: readDaemonPort() };
+  const primary =
+    endpoints[0] ?? { host: readDaemonHost(), port: readDaemonPort(), token: "" };
   const embedded: BridgeConfig = {
     mode: "embedded",
     daemonHost: primary.host,
