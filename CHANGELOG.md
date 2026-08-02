@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.46.0] — 2026-08-02
+
 ### Fixed
 
 - `loadDaemonAuth()` in `@remnic/plugin-openclaw` now ranks daemon-credential environment variables primary-before-legacy: `OPENCLAW_REMNIC_ACCESS_TOKEN`, `REMNIC_AUTH_TOKEN`, then the pre-rename aliases `OPENCLAW_ENGRAM_ACCESS_TOKEN` and `ENGRAM_AUTH_TOKEN`. A deployment migrated off the Engram-era naming commonly still exports the old alias from a shell profile or unit file; that stale value previously outranked the `REMNIC_AUTH_TOKEN` the daemon was running with, so every delegate and health request 401'd while the reported token source named the wrong variable. This was the last resolver still on the old ordering — the Claude Code and Codex hooks were corrected in v9.46.0.
