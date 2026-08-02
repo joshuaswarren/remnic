@@ -95,16 +95,20 @@ function foldContinuationLines(unit: string): string[] {
 function readEffectiveDirectives(unit: string): {
   env: Map<string, string>;
   envFiles: string[];
+  unsetEnv: string[];
   execStart: string[];
   workingDirectory: string | undefined;
 } {
   const env = new Map<string, string>();
   const envFiles: string[] = [];
+  const unsetEnv: string[] = [];
   const execStart: string[] = [];
   let workingDirectory: string | undefined;
   for (const line of foldContinuationLines(unit)) {
     const directive =
-      /^\s*(Environment|EnvironmentFile|ExecStart|WorkingDirectory)=(.*)$/.exec(line);
+      /^\s*(Environment|EnvironmentFile|UnsetEnvironment|ExecStart|WorkingDirectory)=(.*)$/.exec(
+        line,
+      );
     if (directive === null) continue;
     const [, name, rawValue = ""] = directive;
     const value = rawValue.trim();
@@ -140,6 +144,19 @@ function readEffectiveDirectives(unit: string): {
       }
       continue;
     }
+    if (name === "UnsetEnvironment") {
+      // Applied as the FINAL environment-building step (systemd.exec), after
+      // every `Environment=` and `EnvironmentFile=`, so it is only collected
+      // here. An empty assignment resets the removal list.
+      if (value === "") {
+        unsetEnv.length = 0;
+        continue;
+      }
+      for (const rawToken of value.match(/"[^"]*"|'[^']*'|\S+/g) ?? []) {
+        unsetEnv.push(/^(["']).*\1$/.test(rawToken) ? rawToken.slice(1, -1) : rawToken);
+      }
+      continue;
+    }
     if (name === "ExecStart") {
       // `ExecStart=` resets the command list; `systemctl edit` pairs that
       // reset with the replacement command on the next line.
@@ -152,7 +169,7 @@ function readEffectiveDirectives(unit: string): {
     }
     workingDirectory = value === "" ? undefined : value;
   }
-  return { env, envFiles, execStart, workingDirectory };
+  return { env, envFiles, unsetEnv, execStart, workingDirectory };
 }
 
 /**
@@ -188,6 +205,7 @@ function readUnitEnvironment(
   unit: string,
   scope: UnitScope,
   readFile: (candidate: string) => string | undefined,
+  listDir: (directory: string) => string[],
 ): Map<string, string> {
   const directives = readEffectiveDirectives(unit);
   const merged = new Map(directives.env);
@@ -198,11 +216,62 @@ function readUnitEnvironment(
     // systemd requires an absolute path here; anything else cannot be read in
     // the daemon's frame with any confidence.
     if (!path.isAbsolute(resolved)) continue;
-    const body = readFile(resolved);
-    if (body === undefined) continue;
-    for (const [key, value] of parseEnvironmentFile(body)) merged.set(key, value);
+    // `EnvironmentFile=` accepts a wildcard expression as well as a plain
+    // filename, so a unit pointing at `/etc/remnic/*.env` must contribute the
+    // files systemd actually loads, not a literal path that reads as missing.
+    for (const match of expandEnvironmentFilePattern(resolved, listDir)) {
+      const body = readFile(match);
+      if (body === undefined) continue;
+      for (const [key, value] of parseEnvironmentFile(body)) merged.set(key, value);
+    }
+  }
+  // LAST, per systemd.exec: `UnsetEnvironment=` is the final environment-
+  // building step, so it removes an assignment whichever tier supplied it. A
+  // unit that removes `REMNIC_PORT` leaves the daemon on its config's value —
+  // keeping the stale assignment would probe the wrong endpoint.
+  for (const name of directives.unsetEnv) {
+    // The `NAME=value` spelling removes only that exact assignment.
+    const split = name.indexOf("=");
+    if (split <= 0) {
+      merged.delete(name);
+      continue;
+    }
+    const key = name.slice(0, split);
+    if (merged.get(key) === name.slice(split + 1)) merged.delete(key);
   }
   return merged;
+}
+
+/**
+ * The files a single `EnvironmentFile=` entry names.
+ *
+ * A plain filename is itself; a wildcard expression matches within its
+ * directory, in the sorted order systemd applies. Only the FINAL segment may
+ * be a pattern, which matches systemd's own globbing of this setting.
+ */
+function expandEnvironmentFilePattern(
+  candidate: string,
+  listDir: (directory: string) => string[],
+): string[] {
+  if (!/[*?[]/.test(candidate)) return [candidate];
+  const directory = path.dirname(candidate);
+  const pattern = path.basename(candidate);
+  if (/[*?[]/.test(directory)) return [];
+  const matcher = new RegExp(
+    `^${pattern.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")}$`,
+  );
+  return listDir(directory)
+    .filter((entry) => matcher.test(entry))
+    .sort()
+    .map((entry) => path.join(directory, entry));
+}
+
+function defaultUnitDirLister(directory: string): string[] {
+  try {
+    return fs.readdirSync(directory);
+  } catch {
+    return [];
+  }
 }
 
 function defaultUnitFileReader(candidate: string): string | undefined {
@@ -221,8 +290,9 @@ function readUnitEnv(
   name: string,
   scope: UnitScope,
   readFile: (candidate: string) => string | undefined = defaultUnitFileReader,
+  listDir: (directory: string) => string[] = defaultUnitDirLister,
 ): string | undefined {
-  const systemdValue = readUnitEnvironment(unit, scope, readFile).get(name);
+  const systemdValue = readUnitEnvironment(unit, scope, readFile, listDir).get(name);
   const systemd = systemdValue === undefined ? null : [undefined, systemdValue];
   // launchd: <key>NAME</key><string>value</string>
   const launchdRaw = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
@@ -374,6 +444,8 @@ export function resolveUnitEndpoint(
   scope: UnitScope,
   /** Injected in tests; reads a unit's `EnvironmentFile=` from disk. */
   readFile: (candidate: string) => string | undefined = defaultUnitFileReader,
+  /** Injected in tests; lists a directory for `EnvironmentFile=` wildcards. */
+  listDir: (directory: string) => string[] = defaultUnitDirLister,
 ): UnitEndpoint {
   // The server accepts --host/--port/--auth-token/--config on its command line
   // and they win over both its config file and its environment, so a unit that
@@ -382,9 +454,9 @@ export function resolveUnitEndpoint(
   // `??` on the PRIMARY spelling only when it is absent entirely — a blank
   // primary shadows the legacy one exactly as it does for the server.
   const envOverride = (primary: string, legacy: string): string | undefined => {
-    const value = readUnitEnv(unit, primary, scope, readFile);
+    const value = readUnitEnv(unit, primary, scope, readFile, listDir);
     if (value !== undefined) return value === "" ? undefined : value;
-    const legacyValue = readUnitEnv(unit, legacy, scope, readFile);
+    const legacyValue = readUnitEnv(unit, legacy, scope, readFile, listDir);
     return legacyValue === "" ? undefined : legacyValue;
   };
   const host = cli.host ?? envOverride("REMNIC_HOST", "ENGRAM_HOST");
@@ -396,7 +468,7 @@ export function resolveUnitEndpoint(
   const configFromCli =
     cli.configPath === undefined ? {} : { configPath: cli.configPath };
   return {
-    ...resolveUnitConfigPathInner(unit, scope, readFile),
+    ...resolveUnitConfigPathInner(unit, scope, readFile, listDir),
     ...configFromCli,
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
@@ -408,6 +480,7 @@ function resolveUnitConfigPathInner(
   unit: string,
   scope: UnitScope,
   readFile: (candidate: string) => string | undefined,
+  listDir: (directory: string) => string[],
 ): { configPath?: string } {
   // The daemon resolves a relative REMNIC_CONFIG_PATH against its own cwd,
   // exactly as it does for `--config`, so the unit's working directory is the
@@ -415,7 +488,7 @@ function resolveUnitConfigPathInner(
   // credential.
   const workingDirectory = readUnitWorkingDirectory(unit);
   for (const name of ["REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH"]) {
-    const raw = readUnitEnv(unit, name, scope, readFile);
+    const raw = readUnitEnv(unit, name, scope, readFile, listDir);
     // A blank primary shadows the legacy spelling, same as the endpoint vars.
     if (raw === "") return {};
     if (raw === undefined) continue;

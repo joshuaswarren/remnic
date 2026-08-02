@@ -2414,3 +2414,81 @@ test("a unit credential is re-read after a rotation, like a config one", async (
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test("UnsetEnvironment removes an assignment from every tier", () => {
+  // systemd.exec applies `UnsetEnvironment=` as the FINAL environment step, so
+  // a drop-in that removes an endpoint or credential leaves the daemon on its
+  // config's value. Keeping the stale assignment probes the wrong endpoint.
+  const files = new Map([["/etc/remnic/env", "REMNIC_AUTH_TOKEN=file-token\n"]]);
+  const read = (candidate: string): string | undefined => files.get(candidate);
+  const scope = { userScoped: false, homeDir: "/home/gw" };
+
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      [
+        "[Service]",
+        "Environment=REMNIC_HOST=127.0.0.1",
+        "Environment=REMNIC_PORT=4318",
+        "EnvironmentFile=/etc/remnic/env",
+        // ---- drop-in ----
+        "[Service]",
+        "UnsetEnvironment=REMNIC_PORT REMNIC_AUTH_TOKEN",
+      ].join("\n"),
+      scope,
+      read,
+    ),
+    { host: "127.0.0.1" },
+    "the removals win over BOTH the inline assignment and the file",
+  );
+
+  // The `NAME=value` spelling removes only that exact assignment.
+  assert.equal(
+    resolveUnitEndpoint(
+      ["[Service]", "Environment=REMNIC_PORT=4318", "UnsetEnvironment=REMNIC_PORT=4813"].join("\n"),
+      scope,
+      read,
+    ).port,
+    4318,
+  );
+  // An empty assignment resets the removal list.
+  assert.equal(
+    resolveUnitEndpoint(
+      [
+        "[Service]",
+        "Environment=REMNIC_PORT=4318",
+        "UnsetEnvironment=REMNIC_PORT",
+        "UnsetEnvironment=",
+      ].join("\n"),
+      scope,
+      read,
+    ).port,
+    4318,
+  );
+});
+
+test("an EnvironmentFile wildcard loads the files systemd would", () => {
+  // systemd.exec permits an absolute filename OR a wildcard expression.
+  // Passing the literal pattern to a file read loads nothing, so the endpoint
+  // and credential the daemon actually has go unseen.
+  const files = new Map([
+    ["/etc/remnic/10-base.env", "REMNIC_HOST=127.0.0.1\nREMNIC_PORT=4318\n"],
+    ["/etc/remnic/20-override.env", "REMNIC_PORT=4813\n"],
+    ["/etc/remnic/notes.txt", "REMNIC_PORT=9999\n"],
+  ]);
+  const read = (candidate: string): string | undefined => files.get(candidate);
+  const listDir = (directory: string): string[] =>
+    [...files.keys()]
+      .filter((file) => file.startsWith(`${directory}/`))
+      .map((file) => file.slice(directory.length + 1));
+
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      "[Service]\nEnvironmentFile=/etc/remnic/*.env\n",
+      { userScoped: false, homeDir: "/home/gw" },
+      read,
+      listDir,
+    ),
+    { host: "127.0.0.1", port: 4813 },
+    "matches apply in sorted order, and a non-matching file is left out",
+  );
+});
