@@ -374,7 +374,22 @@ export function createDelegateMemoryCapability(
     // fresh probe here would overrun the hook and get it abandoned before the
     // buffer drains, so the last known snapshot answers instead.
     if (timeoutMs !== undefined && timeoutMs <= 0) return;
-    if (healthInFlight !== undefined) return healthInFlight;
+    if (healthInFlight !== undefined) {
+      // An in-flight probe was started by whoever got here first, possibly on
+      // the full health timeout. A caller inside a shared deadline must not
+      // inherit that: it waits only for what it has left, then answers from
+      // the current snapshot. The probe itself is left running for the caller
+      // that owns it.
+      if (timeoutMs === undefined) return healthInFlight;
+      await Promise.race([
+        healthInFlight,
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, timeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+      return;
+    }
     healthInFlight = (async () => {
       try {
         const response = await fetch(daemonUrl(target, "/engram/v1/health"), {
@@ -426,6 +441,15 @@ export function createDelegateMemoryCapability(
       } catch (err) {
         // Keep the last known snapshot and retry after a backoff. Memory must
         // never break the turn, and a persistent failure must not log per hook.
+        //
+        // But the two SAFETY facts stop being proven the moment a probe fails:
+        // a daemon that was flat may have restarted partitioned, and one that
+        // served this corpus may now serve another. Holding the old values
+        // through the backoff would let an unbound search fan out across a
+        // freshly partitioned corpus, so both revert to unknown and fail
+        // closed until a probe succeeds again.
+        health = { ...health, namespacesEnabled: undefined, memoryDir: undefined };
+        corpusShared = daemonIsLocal ? undefined : false;
         healthExpiresAt = now() + HEALTH_FAILURE_BACKOFF_MS;
         const message = `[${serviceId}] delegate capability health probe failed: ${String(err)}`;
         if (message !== lastHealthFailure) {
@@ -589,17 +613,21 @@ export function createDelegateMemoryCapability(
     // from zero and silently returns the file's head, while `Infinity` returns
     // an empty page and is echoed back as the offset. Neither is the range the
     // caller asked for, so reject rather than serve a different one.
-    if (params.from !== undefined && !Number.isFinite(params.from)) {
-      throw new Error(`memory read rejected (from must be a finite number): ${String(params.from)}`);
-    }
-    if (params.lines !== undefined && !Number.isFinite(params.lines)) {
+    // Clamping a negative to 1 or truncating a fraction returns valid-looking
+    // content for a range the caller did not ask for, which across an untyped
+    // host boundary is indistinguishable from a correct answer.
+    if (params.from !== undefined && (!Number.isInteger(params.from) || params.from < 1)) {
       throw new Error(
-        `memory read rejected (lines must be a finite number): ${String(params.lines)}`,
+        `memory read rejected (from must be a positive integer): ${String(params.from)}`,
       );
     }
-    const from = typeof params.from === "number" ? Math.max(1, Math.floor(params.from)) : 1;
-    const lines =
-      typeof params.lines === "number" ? Math.max(1, Math.floor(params.lines)) : undefined;
+    if (params.lines !== undefined && (!Number.isInteger(params.lines) || params.lines < 1)) {
+      throw new Error(
+        `memory read rejected (lines must be a positive integer): ${String(params.lines)}`,
+      );
+    }
+    const from = typeof params.from === "number" ? params.from : 1;
+    const lines = typeof params.lines === "number" ? params.lines : undefined;
     const startIndex = from - 1;
     const endIndex = typeof lines === "number" ? startIndex + lines : allLines.length;
     const truncated = endIndex < allLines.length;

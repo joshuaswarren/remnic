@@ -1191,7 +1191,7 @@ test("a health 200 without memoryDir leaves the corpus unconfirmed", async () =>
   }
 });
 
-test("delegate readFile rejects non-finite offsets instead of serving another range", async () => {
+test("delegate readFile rejects invalid offsets instead of serving another range", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
@@ -1199,18 +1199,29 @@ test("delegate readFile rejects non-finite offsets instead of serving another ra
   try {
     const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
-    for (const from of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    // Non-finite AND finite-but-invalid: a clamp or truncation would return a
+    // different range while looking like a correct answer.
+    for (const from of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      -2,
+      0,
+      1.5,
+    ]) {
       await assert.rejects(
         () => manager?.readFile({ relPath: "facts/alice.md", from }) ?? Promise.resolve(),
-        /from must be a finite number/,
+        /from must be a positive integer/,
         `from: ${String(from)} must be rejected`,
       );
     }
-    await assert.rejects(
-      () =>
-        manager?.readFile({ relPath: "facts/alice.md", lines: Number.NaN }) ?? Promise.resolve(),
-      /lines must be a finite number/,
-    );
+    for (const lines of [Number.NaN, -1, 0, 0.5]) {
+      await assert.rejects(
+        () => manager?.readFile({ relPath: "facts/alice.md", lines }) ?? Promise.resolve(),
+        /lines must be a positive integer/,
+        `lines: ${String(lines)} must be rejected`,
+      );
+    }
     // A real range still works.
     const read = await manager?.readFile({ relPath: "facts/alice.md", from: 2, lines: 1 });
     assert.equal(read?.text, "two");
@@ -1351,6 +1362,54 @@ test("a spent budget skips the authorization probe too", async () => {
     assert.equal(await fresh.resolveScopedNamespace(undefined, 0), "default");
   } finally {
     await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a failed probe un-proves a previously flat posture", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // A flat daemon can restart PARTITIONED. Holding the old `false` through the
+  // failure backoff would send an unbound search across the new corpus.
+  let healthy = true;
+  const server = http.createServer((req, res) => {
+    if ((req.url ?? "").includes("/health") && !healthy) {
+      res.destroy();
+      return;
+    }
+    res.setHeader("content-type", "application/json");
+    res.end(
+      JSON.stringify(
+        (req.url ?? "").includes("/health")
+          ? { ...healthyDaemon(memoryDir), namespacesEnabled: false }
+          : { query: "q", count: 0, results: [] },
+      ),
+    );
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  let clock = 1_000;
+  try {
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(address.port, memoryDir, workspaceDir),
+      resolveSearchNamespace: async () => undefined,
+      now: () => clock,
+    });
+    // Proven flat: an absent namespace is safe.
+    assert.equal(await built.resolveScopedNamespace(undefined), undefined);
+    // The daemon comes back partitioned and health starts failing.
+    healthy = false;
+    clock += 10 * 60_000;
+    await assert.rejects(
+      () => built.resolveScopedNamespace(undefined),
+      /default namespace is unknown/,
+      "the stale flat posture must not survive a failed probe",
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

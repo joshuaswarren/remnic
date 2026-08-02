@@ -641,7 +641,11 @@ export function registerDelegateRuntime(
   ): Promise<boolean> => {
     try {
       const deadline = Date.now() + options.flushTimeoutMs;
+      // The floor of 1 keeps a doomed POST from being sent with a zero timeout
+      // (which some clients read as "no timeout"), but it must not disguise a
+      // spent deadline from callers that can legitimately SKIP work.
       const remainingTimeout = (): number => Math.max(1, deadline - Date.now());
+      const remainingBudget = (): number => deadline - Date.now();
       const sessionKey = lifecycleSessionKeyFrom(event, ctx);
       if (sessionKey === undefined) {
         log.warn("delegate flush skipped: lifecycle event has malformed session key");
@@ -662,7 +666,7 @@ export function registerDelegateRuntime(
           await withNamespace(sessionNamespace, { sessionKey }, (explicit) =>
             // Inside the flush's SHARED deadline: a health probe started here
             // with its own full timeout would overrun the hook.
-            capability.resolveScopedNamespace(explicit, remainingTimeout()),
+            capability.resolveScopedNamespace(explicit, remainingBudget()),
           ),
           remainingTimeout(),
         );
@@ -688,7 +692,7 @@ export function registerDelegateRuntime(
           namespaces.map(async (sessionNamespace) =>
             (await capability.resolveScopedNamespace(
               sessionNamespace || undefined,
-              remainingTimeout(),
+              remainingBudget(),
             )) ?? "",
           ),
         );
