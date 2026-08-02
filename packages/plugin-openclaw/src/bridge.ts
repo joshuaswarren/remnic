@@ -19,12 +19,16 @@ import {
   runHealthWorker,
   type HealthWorkerData,
 } from "./bridge-health-worker.js";
-import { resolveUnitEndpoint } from "./bridge-service-units.js";
+import { resolveSystemUnitSources, resolveUnitEndpoint } from "./bridge-service-units.js";
 
 export { runHealthWorker } from "./bridge-health-worker.js";
 import { daemonServesCorpus } from "./memory-read-scope.js";
 
-export { resolveUnitConfigPath, resolveUnitEndpoint } from "./bridge-service-units.js";
+export {
+  resolveSystemUnitSources,
+  resolveUnitConfigPath,
+  resolveUnitEndpoint,
+} from "./bridge-service-units.js";
 
 export type BridgeMode = "embedded" | "delegate";
 
@@ -166,12 +170,17 @@ const SYSTEMD_USER_SERVICE_PATHS = [
 // A packaged fleet install commonly runs the daemon as a SYSTEM unit rather
 // than a per-user one, so a home-relative scan alone misses it and auto mode
 // would never probe (issue #2120).
-const SYSTEMD_SYSTEM_SERVICE_PATHS = [
-  "/etc/systemd/system/remnic.service",
-  "/etc/systemd/system/engram.service",
-  "/lib/systemd/system/remnic.service",
-  "/usr/lib/systemd/system/remnic.service",
+// systemd's unit load path for SYSTEM units, in ASCENDING precedence. The base
+// unit is the highest-precedence file that exists; drop-ins are collected from
+// every directory, because `systemctl edit` writes its override under `/etc`
+// even when the packaged unit lives under `/usr/lib`.
+const SYSTEMD_SYSTEM_UNIT_DIRS = [
+  "/usr/lib/systemd/system",
+  "/lib/systemd/system",
+  "/run/systemd/system",
+  "/etc/systemd/system",
 ] as const;
+const SYSTEMD_SYSTEM_UNIT_NAMES = ["remnic.service", "engram.service"] as const;
 
 function readEnv(name: string): string | undefined {
   const env = (globalThis.process as { env?: Record<string, string | undefined> } | undefined)?.["env"];
@@ -228,24 +237,29 @@ function configPathCandidates(): string[] {
  * value, `ExecStart=` empty) lands as a blank assignment, which the parsers
  * already treat as present-but-empty.
  */
-function readUnitDropIns(unitPath: string): string[] {
-  const dropInDir = `${unitPath}.d`;
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dropInDir);
-  } catch {
-    return [];
-  }
-  // `readdir` order is not guaranteed; systemd applies drop-ins by sorted name.
-  const fragments: string[] = [];
-  for (const entry of entries.filter((name) => name.endsWith(".conf")).sort()) {
+function readUnitDropIns(dropInDirs: readonly string[]): string[] {
+  // A drop-in NAME is applied once: when the same filename exists in several
+  // load-path directories, the highest-precedence copy replaces the others
+  // rather than adding a second fragment. `dropInDirs` is in ascending
+  // precedence, so a later directory simply overwrites the entry.
+  const byName = new Map<string, string>();
+  for (const dropInDir of dropInDirs) {
+    let entries: string[];
     try {
-      fragments.push(fs.readFileSync(path.join(dropInDir, entry), "utf8"));
+      entries = fs.readdirSync(dropInDir);
     } catch {
-      // An unreadable fragment contributes nothing; the base still applies.
+      continue;
+    }
+    for (const entry of entries.filter((name) => name.endsWith(".conf"))) {
+      try {
+        byName.set(entry, fs.readFileSync(path.join(dropInDir, entry), "utf8"));
+      } catch {
+        // An unreadable fragment contributes nothing; the base still applies.
+      }
     }
   }
-  return fragments;
+  // `readdir` order is not guaranteed; systemd applies drop-ins by sorted name.
+  return [...byName.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, body]) => body);
 }
 
 /** Every installed unit's endpoint hints, in discovery order. */
@@ -256,12 +270,21 @@ function readServiceEndpoints(): Array<{
   authToken?: string;
 }> {
   const homeDir = resolveHomeDir();
-  const unitPaths: Array<{ unitPath: string; userScoped: boolean }> = [
-    ...[...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS].map((segments) => ({
-      unitPath: path.join(homeDir, ...segments),
-      userScoped: true,
-    })),
-    ...SYSTEMD_SYSTEM_SERVICE_PATHS.map((unitPath) => ({ unitPath, userScoped: false })),
+  const unitPaths: Array<{
+    unitPath: string;
+    dropInDirs: readonly string[];
+    userScoped: boolean;
+  }> = [
+    ...[...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS].map((segments) => {
+      const unitPath = path.join(homeDir, ...segments);
+      return { unitPath, dropInDirs: [`${unitPath}.d`], userScoped: true };
+    }),
+    // For a SYSTEM unit the base file and its overrides can live in different
+    // load-path directories: a packaged unit under `/usr/lib` customized by
+    // `systemctl edit`, which writes `/etc/systemd/system/<unit>.d/*.conf`.
+    ...resolveSystemUnitSources(SYSTEMD_SYSTEM_UNIT_DIRS, SYSTEMD_SYSTEM_UNIT_NAMES, fileExists).map(
+      (source) => ({ ...source, userScoped: false }),
+    ),
   ];
   // EVERY distinct unit, not the first: canonical and legacy units coexist
   // during migration, and the inactive one can sort first. Stopping there
@@ -272,7 +295,7 @@ function readServiceEndpoints(): Array<{
     port?: number;
     authToken?: string;
   }> = [];
-  for (const { unitPath, userScoped } of unitPaths) {
+  for (const { unitPath, dropInDirs, userScoped } of unitPaths) {
     if (!fileExists(unitPath)) continue;
     let unit: string;
     try {
@@ -283,7 +306,7 @@ function readServiceEndpoints(): Array<{
     // `systemctl edit` puts overrides in `<unit>.d/*.conf`, and the EFFECTIVE
     // configuration is the base plus those drop-ins. Reading only the base
     // would probe a stale endpoint on any unit an administrator customized.
-    unit = [unit, ...readUnitDropIns(unitPath)].join("\n");
+    unit = [unit, ...readUnitDropIns(dropInDirs)].join("\n");
     const resolved = resolveUnitEndpoint(unit, { userScoped, homeDir });
     if (
       resolved.configPath === undefined &&
@@ -340,7 +363,9 @@ function isDaemonServiceConfigured(): boolean {
   for (const segments of [...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS]) {
     if (fileExists(path.join(homeDir, ...segments))) return true;
   }
-  return SYSTEMD_SYSTEM_SERVICE_PATHS.some((unitPath) => fileExists(unitPath));
+  return SYSTEMD_SYSTEM_UNIT_DIRS.some((dir) =>
+    SYSTEMD_SYSTEM_UNIT_NAMES.some((name) => fileExists(path.join(dir, name))),
+  );
 }
 
 /**

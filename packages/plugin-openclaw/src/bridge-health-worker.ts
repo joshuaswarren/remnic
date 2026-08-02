@@ -29,7 +29,7 @@ export interface HealthWorkerResponse {
   statusCode?: number;
   resume(): void;
   setEncoding?(encoding: string): void;
-  on?(event: "data" | "end", handler: (chunk?: string) => void): void;
+  on?(event: "data" | "end" | "error", handler: (chunk?: string) => void): void;
 }
 
 export interface HealthWorkerRequest {
@@ -73,7 +73,12 @@ export function runHealthWorker(request: HealthRequest, data: HealthWorkerData):
       finish(false);
       return;
     }
-    let responseReceived = false;
+    // Whether THIS request has decided the probe's outcome — by finishing, by
+    // handing off to the fallback path, or by scheduling a readiness retry.
+    // Headers arriving is NOT a decision: a stall while reading the body must
+    // still fail the probe, or the caller blocks on `Atomics.wait` until the
+    // whole preflight deadline expires.
+    let settled = false;
     try {
       const headers: Record<string, string> = {};
       if (data.token) headers.Authorization = `Bearer ${data.token}`;
@@ -87,7 +92,6 @@ export function runHealthWorker(request: HealthRequest, data: HealthWorkerData):
           headers,
         },
         (res) => {
-          responseReceived = true;
           const statusCode = res.statusCode;
           if (statusCode === 200 && data.capture && data.captureField && res.on) {
             // Only the capture probe reads a body; every other caller resumes
@@ -119,11 +123,16 @@ export function runHealthWorker(request: HealthRequest, data: HealthWorkerData):
                 // A malformed body leaves the capture empty; the caller treats
                 // an empty capture as "unknown", never as a match.
               }
+              settled = true;
               finish(true);
+            });
+            res.on("error", () => {
+              if (!settled) finish(false);
             });
             return;
           }
           res.resume();
+          settled = true;
           if (statusCode === 200) {
             finish(true);
           } else if (statusCode === 404 && fallbackPath) {
@@ -147,11 +156,11 @@ export function runHealthWorker(request: HealthRequest, data: HealthWorkerData):
         },
       );
       req.on("error", () => {
-        if (!responseReceived) finish(false);
+        if (!settled) finish(false);
       });
       req.on("timeout", () => {
         req.destroy();
-        if (!responseReceived) finish(false);
+        if (!settled) finish(false);
       });
       req.end();
     } catch {

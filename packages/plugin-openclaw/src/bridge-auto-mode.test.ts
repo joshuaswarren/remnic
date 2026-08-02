@@ -23,6 +23,7 @@ import {
   readDaemonMemoryDirSync,
   resolveBridgeMode,
   resolveUnitConfigPath,
+  resolveSystemUnitSources,
   resolveUnitEndpoint,
 } from "./bridge.js";
 
@@ -53,6 +54,15 @@ const server = http.createServer((req, res) => {
     }
   }
   served += 1;
+  // \`stallBody\`: send the headers and a partial body, then drop the socket.
+  // Completion is decided AFTER the headers, so a probe that only watches for
+  // a pre-header failure never signals and burns its whole budget.
+  if (workerData.stallBody) {
+    res.writeHead(workerData.status, { "content-type": "application/json" });
+    res.write("{");
+    setTimeout(() => res.socket?.destroy(), 50);
+    return;
+  }
   // \`warmupResponses\`: answer 503 (readiness gate closed) that many times
   // before switching to the real body, the way a daemon that is listening but
   // still warming up behaves.
@@ -74,6 +84,7 @@ async function startHealthStub(
   warmupResponses = 0,
   hang = false,
   requireToken?: string,
+  stallBody = false,
 ): Promise<HealthStub> {
   const worker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(STUB_SOURCE)}`),
@@ -84,6 +95,7 @@ async function startHealthStub(
         warmupResponses,
         hang,
         requireToken,
+        stallBody,
         body: typeof body === "string" ? body : JSON.stringify(body),
       },
     } as ConstructorParameters<typeof Worker>[1] & { type: "module" },
@@ -2060,5 +2072,137 @@ test("an armed fallback credential does not cut a warming daemon's probe short",
     }
     await warming.close();
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a drop-in ExecStart reset replaces the base unit's command", () => {
+  // `systemctl edit` writes `ExecStart=` followed by the replacement, and the
+  // drop-in is appended after the base. Reading only the first `ExecStart=`
+  // returns the endpoint the administrator overrode.
+  assert.equal(
+    resolveUnitEndpoint(
+      [
+        "[Service]",
+        "ExecStart=/opt/remnic-server --port 4318 --config /base/c.json",
+        // ---- drop-in ----
+        "[Service]",
+        "ExecStart=",
+        "ExecStart=/opt/remnic-server --port 4813 --config /override/c.json",
+      ].join("\n"),
+      { userScoped: false, homeDir: "/home/gw" },
+    ).port,
+    4813,
+  );
+  assert.equal(
+    resolveUnitEndpoint(
+      [
+        "[Service]",
+        "ExecStart=/opt/remnic-server --config /base/c.json",
+        "[Service]",
+        "ExecStart=",
+        "ExecStart=/opt/remnic-server --config /override/c.json",
+      ].join("\n"),
+      { userScoped: false, homeDir: "/home/gw" },
+    ).configPath,
+    "/override/c.json",
+  );
+});
+
+test("a drop-in WorkingDirectory and Environment reset supersede the base", () => {
+  // A later `WorkingDirectory=` wins and a bare `Environment=` clears the
+  // whole block, exactly as systemd applies them.
+  assert.equal(
+    resolveUnitEndpoint(
+      [
+        "[Service]",
+        "WorkingDirectory=/srv/base",
+        "ExecStart=/opt/remnic-server --config ./c.json",
+        "[Service]",
+        "WorkingDirectory=/srv/override",
+      ].join("\n"),
+      { userScoped: false, homeDir: "/home/gw" },
+    ).configPath,
+    "/srv/override/c.json",
+  );
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      [
+        "[Service]",
+        "Environment=REMNIC_HOST=127.0.0.1",
+        "Environment=REMNIC_PORT=4318",
+        "[Service]",
+        "Environment=",
+        "Environment=REMNIC_PORT=4813",
+      ].join("\n"),
+      { userScoped: false, homeDir: "/home/gw" },
+    ),
+    { port: 4813 },
+    "the reset dropped the host, and the replacement port applies",
+  );
+});
+
+test("a vendor unit picks up the administrator's /etc drop-in", async () => {
+  // The packaged unit ships under `/usr/lib` and `systemctl edit` writes the
+  // override under `/etc/.../<unit>.d`. Deriving the drop-in directory from
+  // the base unit's own location would search `/usr/lib/.../<unit>.d` and
+  // probe the vendor endpoint the administrator replaced.
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-loadpath-"));
+  const vendor = path.join(root, "usr", "lib", "systemd", "system");
+  const admin = path.join(root, "etc", "systemd", "system");
+  const dirs = [vendor, path.join(root, "run", "systemd", "system"), admin];
+  try {
+    await mkdir(path.join(admin, "remnic.service.d"), { recursive: true });
+    await mkdir(vendor, { recursive: true });
+    await writeFile(path.join(vendor, "remnic.service"), "[Service]\n", "utf8");
+    await writeFile(
+      path.join(admin, "remnic.service.d", "override.conf"),
+      "[Service]\nEnvironment=REMNIC_PORT=4813\n",
+      "utf8",
+    );
+
+    const sources = resolveSystemUnitSources(dirs, ["remnic.service", "engram.service"]);
+    assert.equal(sources.length, 1, "only the installed unit is a source");
+    assert.equal(sources[0]?.unitPath, path.join(vendor, "remnic.service"));
+    assert.deepEqual(
+      sources[0]?.dropInDirs,
+      dirs.map((dir) => path.join(dir, "remnic.service.d")),
+      "every load path is searched for drop-ins, not just the base unit's own",
+    );
+
+    // `/etc` masks `/usr/lib` when BOTH carry the unit.
+    await writeFile(path.join(admin, "remnic.service"), "[Service]\n", "utf8");
+    assert.equal(
+      resolveSystemUnitSources(dirs, ["remnic.service"])[0]?.unitPath,
+      path.join(admin, "remnic.service"),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a health body that dies after the headers fails fast, not at the deadline", async () => {
+  // The capture probe reads the body, so completion is decided AFTER the
+  // headers arrive. A probe that only watches for a PRE-header failure never
+  // signals, and the caller blocks on `Atomics.wait` for its whole slice.
+  const stub = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR },
+    200,
+    0,
+    false,
+    undefined,
+    true,
+  );
+  try {
+    const budgetMs = 4_000;
+    const started = Date.now();
+    const health = readDaemonMemoryDirSync("127.0.0.1", stub.port, budgetMs);
+    const elapsed = Date.now() - started;
+    assert.deepEqual(health, { healthy: false, memoryDir: undefined });
+    assert.ok(
+      elapsed < budgetMs / 2,
+      `probe returned in ${elapsed}ms, well inside its ${budgetMs}ms budget`,
+    );
+  } finally {
+    await stub.close();
   }
 });

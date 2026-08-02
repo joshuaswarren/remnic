@@ -8,6 +8,7 @@
  * bridge.ts so the host-detection module stays under its size cap.
  */
 
+import fs from "node:fs";
 import path from "node:path";
 
 import { expandTildePath } from "@remnic/core";
@@ -53,22 +54,69 @@ export function resolveUnitConfigPath(
  * specifier, expanded in the SERVICE MANAGER's account: ours for a user unit,
  * unknowable for a system one.
  */
+/**
+ * The EFFECTIVE value of every systemd directive this module reads, after
+ * drop-in merging.
+ *
+ * Drop-ins are concatenated after the base unit, so applying them means
+ * replaying the assignments in order with systemd's own reset rule: a
+ * directive assigned an EMPTY value clears everything accumulated for it so
+ * far, and a later non-empty assignment supersedes an earlier one. Reading
+ * only the first match — as this module used to — returns the base unit's
+ * value for exactly the units an administrator has overridden.
+ */
+function readEffectiveDirectives(unit: string): {
+  env: Map<string, string>;
+  execStart: string[];
+  workingDirectory: string | undefined;
+} {
+  const env = new Map<string, string>();
+  const execStart: string[] = [];
+  let workingDirectory: string | undefined;
+  for (const line of unit.split("\n")) {
+    const directive = /^\s*(Environment|ExecStart|WorkingDirectory)=(.*)$/.exec(line);
+    if (directive === null) continue;
+    const [, name, rawValue = ""] = directive;
+    const value = rawValue.trim();
+    if (name === "Environment") {
+      // A bare `Environment=` resets the whole environment block.
+      if (value === "") {
+        env.clear();
+        continue;
+      }
+      // systemd allows SEVERAL assignments per directive, quoted or bare:
+      //   Environment=NAME=value
+      //   Environment="NAME=value" "OTHER=value"
+      // so every directive is tokenized rather than matched as one assignment.
+      for (const rawToken of value.match(/"[^"]*"|'[^']*'|\S+/g) ?? []) {
+        const token = /^(["']).*\1$/.test(rawToken) ? rawToken.slice(1, -1) : rawToken;
+        const split = token.indexOf("=");
+        if (split <= 0) continue;
+        env.set(token.slice(0, split), token.slice(split + 1));
+      }
+      continue;
+    }
+    if (name === "ExecStart") {
+      // `ExecStart=` resets the command list; `systemctl edit` pairs that
+      // reset with the replacement command on the next line.
+      if (value === "") {
+        execStart.length = 0;
+        continue;
+      }
+      execStart.push(value);
+      continue;
+    }
+    workingDirectory = value === "" ? undefined : value;
+  }
+  return { env, execStart, workingDirectory };
+}
+
 function readUnitEnv(
   unit: string,
   name: string,
   scope: UnitScope,
 ): string | undefined {
-  // systemd allows SEVERAL assignments per directive, quoted or bare:
-  //   Environment=NAME=value
-  //   Environment="NAME=value" "OTHER=value"
-  // so every directive is tokenized rather than matched as one assignment.
-  let systemdValue: string | undefined;
-  for (const directive of unit.matchAll(/^\s*Environment=(.*)$/gm)) {
-    for (const rawToken of directive[1]?.match(/"[^"]*"|'[^']*'|\S+/g) ?? []) {
-      const token = /^(["']).*\1$/.test(rawToken) ? rawToken.slice(1, -1) : rawToken;
-      if (token.startsWith(`${name}=`)) systemdValue = token.slice(name.length + 1);
-    }
-  }
+  const systemdValue = readEffectiveDirectives(unit).env.get(name);
   const systemd = systemdValue === undefined ? null : [undefined, systemdValue];
   // launchd: <key>NAME</key><string>value</string>
   const launchdRaw = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
@@ -130,7 +178,7 @@ function decodePlistString(value: string): string {
 }
 
 function readUnitWorkingDirectory(unit: string): string | undefined {
-  const systemd = /^\s*WorkingDirectory=(.+)$/m.exec(unit)?.[1]?.trim();
+  const systemd = readEffectiveDirectives(unit).workingDirectory;
   const launchdRaw = /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/.exec(unit)?.[1];
   const launchd = launchdRaw === undefined ? undefined : decodePlistString(launchdRaw).trim();
   const raw = systemd ?? launchd;
@@ -143,9 +191,11 @@ function readUnitCliOverrides(
   scope: UnitScope,
 ): UnitEndpoint {
   const tokens: string[] = [];
-  const execStart = /^\s*ExecStart=(.+)$/m.exec(unit);
-  if (execStart?.[1]) {
-    tokens.push(...(execStart[1].match(/"[^"]*"|'[^']*'|\S+/g) ?? []));
+  // Every command that survived the resets, in order. A `Type=oneshot` unit
+  // may legitimately keep several, and `readFlag` takes the last occurrence
+  // across all of them — which is also what a replacement command needs.
+  for (const command of readEffectiveDirectives(unit).execStart) {
+    tokens.push(...(command.match(/"[^"]*"|'[^']*'|\S+/g) ?? []));
   }
   const programArgs = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(unit);
   if (programArgs?.[1]) {
@@ -285,4 +335,34 @@ function resolveAgainstWorkingDirectory(
   const expanded = expandAccountRelative(workingDirectory, scope);
   if (!path.isAbsolute(expanded)) return undefined;
   return path.resolve(expanded, candidate);
+}
+
+/**
+ * The base unit file and drop-in directories for each named SYSTEM unit,
+ * following systemd's load-path rules.
+ *
+ * The base unit is the HIGHEST-precedence file that exists — `/etc` masks
+ * `/run` masks `/usr/lib`. Drop-in directories come from every load path,
+ * because `systemctl edit` writes its override under `/etc` even when the
+ * packaged unit ships in `/usr/lib`; deriving the drop-in directory from the
+ * base unit's own location alone would miss exactly the administrator
+ * customization that matters.
+ *
+ * @param unitDirs load path in ASCENDING precedence
+ */
+export function resolveSystemUnitSources(
+  unitDirs: readonly string[],
+  unitNames: readonly string[],
+  exists: (candidate: string) => boolean = (candidate) => fs.existsSync(candidate),
+): Array<{ unitPath: string; dropInDirs: string[] }> {
+  const sources: Array<{ unitPath: string; dropInDirs: string[] }> = [];
+  for (const name of unitNames) {
+    const unitPath = [...unitDirs]
+      .reverse()
+      .map((dir) => path.join(dir, name))
+      .find((candidate) => exists(candidate));
+    if (unitPath === undefined) continue;
+    sources.push({ unitPath, dropInDirs: unitDirs.map((dir) => path.join(dir, `${name}.d`)) });
+  }
+  return sources;
 }
