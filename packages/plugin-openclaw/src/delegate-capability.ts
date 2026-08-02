@@ -378,8 +378,15 @@ export function createDelegateMemoryCapability(
     if (!substitutedNamespaceVerdicts.has(verdictKey)) {
       // Inside a shared deadline this must not start its own fixed-timeout
       // request: a flush that already spent most of its budget on capability
-      // and binding work would overrun the hook before draining.
-      if (timeoutMs !== undefined && timeoutMs <= 0) return namespace;
+      // and binding work would overrun the hook before draining. But a
+      // SUBSTITUTED default is an authorization fact, so running unverified is
+      // not the safe degradation — refuse, exactly as an unconfirmed posture
+      // refuses an absent namespace. A cached verdict still answers for free.
+      if (timeoutMs !== undefined && timeoutMs <= 0) {
+        throw new Error(
+          `delegate request unavailable: the delegate token's authorization for the daemon's default namespace (${namespace}) could not be verified within the caller's deadline, so an unscoped request is not safe`,
+        );
+      }
       substitutedNamespaceVerdicts.set(
         verdictKey,
         await options.verifyNamespaceAuthorization(namespace, timeoutMs, operations),

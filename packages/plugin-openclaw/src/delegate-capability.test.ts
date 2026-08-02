@@ -18,6 +18,8 @@ type RecordedCall = { pathname: string; body: unknown };
 type DaemonStub = {
   port: number;
   calls: RecordedCall[];
+  /** Runs when a health request is served, so a test can advance its clock. */
+  onHealth?: () => void;
   close: () => Promise<void>;
 };
 
@@ -34,6 +36,7 @@ type StubRoutes = {
 
 async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
   const calls: RecordedCall[] = [];
+  let stub: DaemonStub | undefined;
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -42,6 +45,7 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
       const pathname = (req.url ?? "").split("?")[0] ?? "";
       calls.push({ pathname, body: raw ? JSON.parse(raw) : undefined });
       const isSearch = pathname.endsWith("/memories/search");
+      if (!isSearch) stub?.onHealth?.();
       const delayMs = isSearch ? 0 : (routes.healthDelayMs ?? 0);
       if (delayMs > 0) {
         setTimeout(() => respond(), delayMs);
@@ -86,7 +90,7 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
     server.close();
     throw new Error("stub did not bind");
   }
-  return {
+  stub = {
     port: address.port,
     calls,
     close: () => {
@@ -95,6 +99,7 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
       return closed.promise;
     },
   };
+  return stub;
 }
 
 async function makeCorpus(): Promise<{
@@ -2186,6 +2191,52 @@ test("an explicit scope needs no probe at all", async () => {
       0,
       "no posture probe ran for an explicit scope",
     );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a spent budget refuses an unverified substituted default", async () => {
+  // The substituted default is an AUTHORIZATION fact. Running the hook under
+  // it because the deadline ran out is fail-open: a partitioned daemon would
+  // serve recall/observe/flush under a scope this token was never verified
+  // for. A CACHED verdict still answers for free.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+  });
+  try {
+    let probes = 0;
+    // A clock the posture probe advances past the caller's whole budget, so
+    // the posture is FRESH but nothing is left for authorization — the only
+    // shape that reaches this branch.
+    let clock = 1_000_000;
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir, { now: () => clock }),
+      resolveSearchNamespace: async () => undefined,
+      verifyNamespaceAuthorization: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+    const spendBudgetDuringProbe = (): void => {
+      clock += 400;
+    };
+    stub.onHealth = spendBudgetDuringProbe;
+    await assert.rejects(
+      () => built.resolveScopedNamespace(undefined, 300),
+      /could not be verified within the caller's deadline/,
+    );
+    assert.equal(probes, 0, "and it did not send a doomed request either");
+
+    // Once a verdict is cached, a spent budget rides it rather than refusing.
+    stub.onHealth = undefined;
+    assert.equal(await built.resolveScopedNamespace(undefined, 5_000), "default");
+    assert.equal(probes, 1);
+    stub.onHealth = spendBudgetDuringProbe;
+    assert.equal(await built.resolveScopedNamespace(undefined, 300), "default");
+    assert.equal(probes, 1, "the cached verdict answered without a probe");
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
