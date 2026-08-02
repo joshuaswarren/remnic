@@ -18,6 +18,7 @@ import {
   detectDaemonBridgeMode,
   readDaemonMemoryDirSync,
   resolveBridgeMode,
+  resolveUnitConfigPath,
 } from "./bridge.js";
 
 type HealthStub = {
@@ -679,4 +680,86 @@ test("a config whose server block is not an object is skipped, not adopted", asy
     }
     await rm(home, { recursive: true, force: true });
   }
+});
+
+test("auto probes past a stale unit config to the daemon that is actually up", async () => {
+  // The unit is installed but inactive; the daemon was launched by hand from
+  // the cwd config. Trusting the unit's endpoint alone would leave auto
+  // embedded beside it and start a second orchestrator on its corpus.
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" });
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-stale-unit-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-stale-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    "[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json\n",
+    "utf8",
+  );
+  // Nothing listens here.
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4601 } }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: stub.port } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 3_000 });
+    assert.equal(bridge.mode, "delegate");
+    assert.equal(bridge.daemonPort, stub.port, "found the daemon that is actually listening");
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await stub.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a system unit's %h is not expanded with the gateway's home", () => {
+  // systemd expands %h in the SERVICE MANAGER's account. A system unit may run
+  // as another user, so substituting our home would name a file the daemon
+  // never read - and send auto at the wrong endpoint.
+  const unit = "[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json\n";
+  assert.equal(
+    resolveUnitConfigPath(unit, { userScoped: false, homeDir: "/home/gateway" }),
+    undefined,
+    "a system unit must carry a literal absolute path",
+  );
+  assert.equal(
+    resolveUnitConfigPath(unit, { userScoped: true, homeDir: "/home/gateway" }),
+    "/home/gateway/.config/remnic/config.json",
+    "a user unit runs in OUR account, so %h is ours",
+  );
+  assert.equal(
+    resolveUnitConfigPath(
+      "[Service]\nEnvironment=REMNIC_CONFIG_PATH=/etc/remnic/config.json\n",
+      { userScoped: false, homeDir: "/home/gateway" },
+    ),
+    "/etc/remnic/config.json",
+    "a literal system path is honored",
+  );
+  assert.equal(
+    resolveUnitConfigPath(
+      "<key>REMNIC_CONFIG_PATH</key>\n<string>/Users/x/.config/remnic/config.json</string>",
+      { userScoped: true, homeDir: "/Users/x" },
+    ),
+    "/Users/x/.config/remnic/config.json",
+    "launchd plists carry literal paths",
+  );
 });

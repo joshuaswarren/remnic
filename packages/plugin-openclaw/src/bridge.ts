@@ -318,13 +318,14 @@ function configPathCandidates(): string[] {
  */
 function readServiceConfigPath(): string | undefined {
   const homeDir = resolveHomeDir();
-  const unitPaths = [
-    ...[...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS].map((segments) =>
-      path.join(homeDir, ...segments),
-    ),
-    ...SYSTEMD_SYSTEM_SERVICE_PATHS,
+  const unitPaths: Array<{ unitPath: string; userScoped: boolean }> = [
+    ...[...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS].map((segments) => ({
+      unitPath: path.join(homeDir, ...segments),
+      userScoped: true,
+    })),
+    ...SYSTEMD_SYSTEM_SERVICE_PATHS.map((unitPath) => ({ unitPath, userScoped: false })),
   ];
-  for (const unitPath of unitPaths) {
+  for (const { unitPath, userScoped } of unitPaths) {
     if (!fileExists(unitPath)) continue;
     let unit: string;
     try {
@@ -332,21 +333,40 @@ function readServiceConfigPath(): string | undefined {
     } catch {
       continue;
     }
-    for (const name of ["REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH"]) {
-      // systemd: Environment=NAME=value  /  Environment="NAME=value"
-      const systemd = new RegExp(`^\\s*Environment=\\"?${name}=([^\\"\\n]+)\\"?\\s*$`, "m").exec(unit);
-      // launchd: <key>NAME</key><string>value</string>
-      const launchd = new RegExp(
-        `<key>${name}</key>\\s*<string>([^<]*)</string>`,
-      ).exec(unit);
-      const raw = systemd?.[1] ?? launchd?.[1];
-      if (raw === undefined || raw.trim() === "") continue;
-      // `%h` is systemd's home specifier; an installed plist carries a literal
-      // path, but expandTilde covers a hand-edited `~`.
-      const resolved = expandTildePath(raw.trim().replace(/%h/g, homeDir));
-      if (!path.isAbsolute(resolved)) continue;
-      return resolved;
-    }
+    const resolved = resolveUnitConfigPath(unit, { userScoped, homeDir });
+    if (resolved !== undefined) return resolved;
+  }
+  return undefined;
+}
+
+/**
+ * The config path a single unit file pins, or `undefined` when it pins none
+ * this process can resolve.
+ *
+ * Exported for tests: a system unit lives under `/etc`, which a test cannot
+ * write, so the account-scoping rule is verified against the unit TEXT.
+ */
+export function resolveUnitConfigPath(
+  unit: string,
+  scope: { userScoped: boolean; homeDir: string },
+): string | undefined {
+  for (const name of ["REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH"]) {
+    // systemd: Environment=NAME=value  /  Environment="NAME=value"
+    const systemd = new RegExp(`^\\s*Environment=\\"?${name}=([^\\"\\n]+)\\"?\\s*$`, "m").exec(unit);
+    // launchd: <key>NAME</key><string>value</string>
+    const launchd = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
+    const raw = systemd?.[1] ?? launchd?.[1];
+    if (raw === undefined || raw.trim() === "") continue;
+    // `%h` is systemd's HOME specifier, expanded in the service manager's
+    // account. For a user unit that account is ours. For a SYSTEM unit it is
+    // whatever `User=` names, which this process cannot know — substituting
+    // our own home would name a file the daemon never read, so a system unit
+    // must carry a literal absolute path or be ignored.
+    const trimmed = raw.trim();
+    if (!scope.userScoped && trimmed.includes("%")) continue;
+    const resolved = expandTildePath(trimmed.replace(/%h/g, scope.homeDir));
+    if (!path.isAbsolute(resolved)) continue;
+    return resolved;
   }
   return undefined;
 }
@@ -558,29 +578,78 @@ function readDaemonHost(): string {
  */
 function readDaemonServerConfig(): { host?: string; port?: number } {
   for (const candidate of configPathCandidates()) {
-    if (!fileExists(candidate)) continue;
-    try {
-      const raw: unknown = JSON.parse(fs.readFileSync(candidate, "utf8"));
-      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
-      const server = (raw as { server?: unknown }).server;
-      if (server === undefined) return {};
-      // A `server` that is not a plain object is a file the daemon's own
-      // loader REJECTS, so it is not the file it booted from — keep scanning
-      // rather than silently adopting this file's defaults.
-      if (typeof server !== "object" || server === null || Array.isArray(server)) continue;
-      const { host, port } = server as { host?: unknown; port?: unknown };
-      return {
-        ...(typeof host === "string" && host.trim() !== "" ? { host } : {}),
-        ...(coerceDaemonPort(port) === undefined ? {} : { port: coerceDaemonPort(port) }),
-      };
-    } catch {
-      // Unparseable: it names no endpoint at all, so it is not the file the
-      // daemon booted from. Continue - but note this is the ONLY reason to
-      // look further; a file that parses supplies every field or defaults it.
-      continue;
-    }
+    const server = readServerBlock(candidate);
+    if (server !== undefined) return server;
   }
   return {};
+}
+
+/**
+ * The `server` block of one config file, or `undefined` when that file is not
+ * one the daemon could have booted from (missing, unparseable, or carrying a
+ * `server` its own loader rejects).
+ */
+function readServerBlock(candidate: string): { host?: string; port?: number } | undefined {
+  if (!fileExists(candidate)) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(candidate, "utf8"));
+  } catch {
+    // Unparseable: it names no endpoint at all.
+    return undefined;
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const server = (raw as { server?: unknown }).server;
+  // Absent is fine — the daemon defaults every field. A `server` that is not a
+  // plain object is a file the daemon's own loader REJECTS.
+  if (server === undefined) return {};
+  if (typeof server !== "object" || server === null || Array.isArray(server)) return undefined;
+  const { host, port } = server as { host?: unknown; port?: unknown };
+  const parsedPort = coerceDaemonPort(port);
+  return {
+    ...(typeof host === "string" && host.trim() !== "" ? { host } : {}),
+    ...(parsedPort === undefined ? {} : { port: parsedPort }),
+  };
+}
+
+/**
+ * Every endpoint a same-host daemon could be listening on, most-likely first.
+ *
+ * `auto` cannot know WHICH config the running daemon booted from: a unit file
+ * can sit installed but inactive while the daemon was launched by hand from a
+ * cwd config, and vice versa. Picking one file and probing it once would leave
+ * `auto` embedded beside a daemon it simply did not dial. So auto probes the
+ * distinct candidates in order and delegates to the first that is healthy AND
+ * serves this corpus — both gates still apply per endpoint, so a stale entry
+ * costs one failed probe rather than a second orchestrator.
+ *
+ * Explicit `delegate` still resolves exactly one endpoint: the operator named
+ * a daemon, so guessing among candidates would be the wrong behavior.
+ */
+function daemonEndpointCandidates(): Array<{ host: string; port: number }> {
+  const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
+  const envPort = coerceDaemonPort(readCompatEnv("REMNIC_PORT", "ENGRAM_PORT"));
+  const candidates: Array<{ host: string; port: number }> = [];
+  const add = (host: string | undefined, port: number | undefined): void => {
+    const resolvedHost = normalizeDaemonHost(
+      envHost !== undefined && envHost.trim() !== "" ? envHost : (host ?? DEFAULT_HOST),
+    );
+    const dialHost = loopbackForWildcardBind(resolvedHost) ?? resolvedHost;
+    const dialPort = envPort ?? port ?? DEFAULT_PORT;
+    if (candidates.some((c) => c.host === dialHost && c.port === dialPort)) return;
+    candidates.push({ host: dialHost, port: dialPort });
+  };
+  // An env override alone, so a specified environment is dialed first even
+  // when no config file exists. Without one this would inject a bare
+  // default endpoint AHEAD of every config-derived candidate.
+  if ((envHost !== undefined && envHost.trim() !== "") || envPort !== undefined) {
+    add(undefined, undefined);
+  }
+  for (const candidate of configPathCandidates()) {
+    const server = readServerBlock(candidate);
+    if (server !== undefined) add(server.host, server.port);
+  }
+  return candidates;
 }
 
 function readConfiguredDaemonHost(): string {
@@ -622,43 +691,52 @@ export function detectDaemonBridgeMode(options: {
   timeoutMs?: number;
   onSkip?: (reason: string) => void;
 }): BridgeConfig {
-  const daemonHost = readDaemonHost();
-  const daemonPort = readDaemonPort();
-  const embedded: BridgeConfig = { mode: "embedded", daemonHost, daemonPort };
+  const endpoints = daemonEndpointCandidates();
+  // The first candidate is what an explicit `delegate` would dial, so it is
+  // also what an embedded result reports.
+  const primary = endpoints[0] ?? { host: readDaemonHost(), port: readDaemonPort() };
+  const embedded: BridgeConfig = {
+    mode: "embedded",
+    daemonHost: primary.host,
+    daemonPort: primary.port,
+  };
 
-  // Auto is SAME-HOST detection. A matching absolute memoryDir string proves
-  // nothing across machines — an unrelated remote daemon using the same
-  // conventional path would silently capture every recall and write — and the
-  // premise that the plugin may read the corpus locally only holds on one
-  // host. Explicit `delegate` may still target a remote daemon; `auto` may not.
-  if (!isLoopbackDaemonHost(daemonHost)) {
-    options.onSkip?.(
-      `daemon endpoint ${daemonHost}:${daemonPort} is not loopback; auto only delegates to a same-host daemon`,
-    );
-    return embedded;
+  for (const { host: daemonHost, port: daemonPort } of endpoints) {
+    // Auto is SAME-HOST detection. A matching absolute memoryDir string proves
+    // nothing across machines — an unrelated remote daemon using the same
+    // conventional path would silently capture every recall and write — and the
+    // premise that the plugin may read the corpus locally only holds on one
+    // host. Explicit `delegate` may still target a remote daemon; `auto` may not.
+    if (!isLoopbackDaemonHost(daemonHost)) {
+      options.onSkip?.(
+        `daemon endpoint ${daemonHost}:${daemonPort} is not loopback; auto only delegates to a same-host daemon`,
+      );
+      continue;
+    }
+    if (!isDaemonRunning() && !shouldProbeDaemonHealth(daemonHost)) {
+      options.onSkip?.("no daemon PID, service unit, or local endpoint to probe");
+      continue;
+    }
+    const health = readDaemonMemoryDirSync(daemonHost, daemonPort, options.timeoutMs);
+    if (!health.healthy) {
+      options.onSkip?.(`no healthy daemon at ${daemonHost}:${daemonPort}`);
+      continue;
+    }
+    if (health.memoryDir === undefined) {
+      options.onSkip?.(
+        `daemon at ${daemonHost}:${daemonPort} did not report a memoryDir, so its corpus cannot be confirmed`,
+      );
+      continue;
+    }
+    if (!daemonServesCorpus(options.memoryDir, health.memoryDir)) {
+      options.onSkip?.(
+        `daemon at ${daemonHost}:${daemonPort} serves a different memoryDir than this plugin`,
+      );
+      continue;
+    }
+    return { mode: "delegate", daemonHost, daemonPort, healthVerified: true };
   }
-  if (!isDaemonRunning() && !shouldProbeDaemonHealth(daemonHost)) {
-    options.onSkip?.("no daemon PID, service unit, or local endpoint to probe");
-    return embedded;
-  }
-  const health = readDaemonMemoryDirSync(daemonHost, daemonPort, options.timeoutMs);
-  if (!health.healthy) {
-    options.onSkip?.(`no healthy daemon at ${daemonHost}:${daemonPort}`);
-    return embedded;
-  }
-  if (health.memoryDir === undefined) {
-    options.onSkip?.(
-      `daemon at ${daemonHost}:${daemonPort} did not report a memoryDir, so its corpus cannot be confirmed`,
-    );
-    return embedded;
-  }
-  if (!daemonServesCorpus(options.memoryDir, health.memoryDir)) {
-    options.onSkip?.(
-      `daemon at ${daemonHost}:${daemonPort} serves a different memoryDir than this plugin`,
-    );
-    return embedded;
-  }
-  return { mode: "delegate", daemonHost, daemonPort, healthVerified: true };
+  return embedded;
 }
 
 /**
