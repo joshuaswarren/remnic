@@ -79,10 +79,14 @@ OpenClaw `2026.4.1`.
 
 The purpose of this project is working, shippable software delivered
 accretively. Process exists to serve that outcome; it must never become the
-product. GitHub issues and pull requests are this repo's record; there is no
-separate tracker and no evidence-packet workflow, so the currency here is a
-durable receipt: a merged PR, a passing test run, a command output, a linked
-GitHub issue. No receipt, no credit.
+product. Sequencing, dependencies, blockers, and contributor priority live in
+the GitHub Project roadmap that `docs/plans/README.md` designates as the
+source of truth; read it before choosing what to work on. GitHub issues and
+pull requests are the per-change record. There is no evidence-packet workflow
+here, so the currency is a durable receipt: a merged PR, a passing test run, a
+command output, a linked GitHub issue. No receipt, no credit. None of these
+are the "process artifacts" the next bullet prohibits — they are the record
+the work is judged against.
 
 - **No process porn.** Ledgers, dashboards, meta-reports, and process
   documents are not progress. A process artifact may exist only when it gates
