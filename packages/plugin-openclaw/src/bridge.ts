@@ -439,7 +439,7 @@ function probeDaemonSync(options: {
   configPath?: string;
   /** A unit-supplied credential, which outranks the config's. */
   authToken?: string;
-}): { ok: boolean; captured?: string } {
+}): { ok: boolean; captured?: string; rejectedAuth?: boolean } {
   const { host, port, timeoutMs } = options;
   if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return { ok: false };
   const deadline = Date.now() + timeoutMs;
@@ -470,7 +470,7 @@ function probeDaemonSync(options: {
     Atomics.wait(view, 0, 0, Math.max(0, deadline - Date.now()));
     const status = Atomics.load(view, 0);
     if (status === 0) void worker.terminate();
-    if (status !== 1) return { ok: false };
+    if (status !== 1) return { ok: false, ...(status === 3 ? { rejectedAuth: true } : {}) };
     if (!capture) return { ok: true };
     const length = new DataView(capture).getUint32(0);
     if (length === 0) return { ok: true };
@@ -511,7 +511,7 @@ export function readDaemonMemoryDirSync(
   timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
   configPath?: string,
   authToken?: string,
-): { healthy: boolean; memoryDir?: string } {
+): { healthy: boolean; memoryDir?: string; rejectedAuth?: boolean } {
   const probe = probeDaemonSync({
     host,
     port,
@@ -522,7 +522,13 @@ export function readDaemonMemoryDirSync(
     configPath,
     authToken,
   });
-  return { healthy: probe.ok, memoryDir: probe.captured };
+  return {
+    healthy: probe.ok,
+    memoryDir: probe.captured,
+    // Present only when true, so the result shape is unchanged for callers
+    // that compare it structurally.
+    ...(probe.rejectedAuth === true ? { rejectedAuth: true } : {}),
+  };
 }
 
 
@@ -803,28 +809,25 @@ export function detectDaemonBridgeMode(options: {
       Math.ceil(remainingMs / Math.max(1, probeable.length - probed)),
     );
     probed += 1;
-    // BOTH attempts share this candidate's slice. Giving the retry its own
-    // `perCandidateMs` would let one stalling endpoint with a fallback
-    // credential burn two shares and starve the healthy daemon behind it.
+    // BOTH attempts share this candidate's slice, so one stalling endpoint
+    // with a fallback credential cannot burn two shares and starve the healthy
+    // daemon behind it. The FIRST attempt gets the whole slice: reserving half
+    // for a retry would cut short a daemon that is merely still warming up,
+    // and a readiness stall is not something a different token fixes.
     const candidateDeadline = Date.now() + Math.min(remainingMs, perCandidateMs);
-    // The first attempt is capped so a stall still leaves room for the retry;
-    // with no fallback there is nothing to reserve and it takes the slice.
-    const firstAttemptMs =
-      fallbackToken === undefined
-        ? candidateDeadline - Date.now()
-        : Math.max(1, Math.ceil((candidateDeadline - Date.now()) / 2));
     let usedToken = authTokenOverride;
     let health = readDaemonMemoryDirSync(
       daemonHost,
       daemonPort,
-      firstAttemptMs,
+      candidateDeadline - Date.now(),
       configPath,
       usedToken,
     );
-    if (!health.healthy && fallbackToken !== undefined) {
-      // The first attempt used the gateway's token store; this endpoint's own
-      // config names a different credential, which is the one a daemon running
-      // under another account would accept.
+    // Retry ONLY on an actual authentication rejection, and only with a
+    // different credential: the gateway's token store outranks a config file
+    // inside `loadDaemonAuth`, which is wrong for a daemon running under
+    // another account with a static `server.authToken`.
+    if (health.rejectedAuth === true && fallbackToken !== undefined) {
       const retryMs = candidateDeadline - Date.now();
       if (retryMs > 0) {
         usedToken = fallbackToken;

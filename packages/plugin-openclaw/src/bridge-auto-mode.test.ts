@@ -157,14 +157,28 @@ test("readDaemonMemoryDirSync survives a malformed health body", async () => {
 });
 
 test("readDaemonMemoryDirSync reports unhealthy for a non-200 daemon", async () => {
-  const stub = await startHealthStub({ error: "unauthorized" }, 401);
+  // A 401/403 is unhealthy AND flagged as an auth rejection, which is what
+  // licenses the candidate walk to retry a different bound credential. A
+  // readiness stall or a dead socket carries no flag, because no token fixes
+  // those.
+  const rejecting = await startHealthStub({ error: "unauthorized" }, 401);
   try {
-    assert.deepEqual(readDaemonMemoryDirSync("127.0.0.1", stub.port, 5_000), {
+    assert.deepEqual(readDaemonMemoryDirSync("127.0.0.1", rejecting.port, 5_000), {
+      healthy: false,
+      memoryDir: undefined,
+      rejectedAuth: true,
+    });
+  } finally {
+    await rejecting.close();
+  }
+  const broken = await startHealthStub({ error: "boom" }, 500);
+  try {
+    assert.deepEqual(readDaemonMemoryDirSync("127.0.0.1", broken.port, 5_000), {
       healthy: false,
       memoryDir: undefined,
     });
   } finally {
-    await stub.close();
+    await broken.close();
   }
 });
 
@@ -1922,6 +1936,129 @@ test("auto reads systemd drop-ins, not just the base unit", async () => {
       else process.env[key] = value;
     }
     await stub.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a system unit's tilde is account-relative, like %h", () => {
+  // The daemon expands `~` in ITS account. Expanding it against the gateway's
+  // home would read a different user's config than the daemon did.
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nExecStart=/opt/remnic-server --config ~/c.json\n", {
+      userScoped: false,
+      homeDir: "/home/gw",
+    }).configPath,
+    undefined,
+  );
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nEnvironment=REMNIC_CONFIG_PATH=~/c.json\n", {
+      userScoped: false,
+      homeDir: "/home/gw",
+    }).configPath,
+    undefined,
+  );
+  // A USER unit runs in our account, so `~` is ours.
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nEnvironment=REMNIC_CONFIG_PATH=~/c.json\n", {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).configPath,
+    "/home/gw/c.json",
+  );
+});
+
+test("launchd plist values are XML-decoded before use", () => {
+  // launchd hands the daemon the DECODED value, so reading the encoded text
+  // would compare a different path or credential than the one in use.
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      [
+        "<key>EnvironmentVariables</key>",
+        "<dict>",
+        "<key>REMNIC_CONFIG_PATH</key>",
+        "<string>/srv/a&amp;b/config.json</string>",
+        "<key>REMNIC_AUTH_TOKEN</key>",
+        "<string>tok&amp;en&lt;1&gt;</string>",
+        "</dict>",
+      ].join("\n"),
+      { userScoped: true, homeDir: "/home/gw" },
+    ),
+    { configPath: "/srv/a&b/config.json", authToken: "tok&en<1>" },
+  );
+  // ProgramArguments are decoded too.
+  assert.equal(
+    resolveUnitEndpoint(
+      [
+        "<key>ProgramArguments</key>",
+        "<array>",
+        "<string>/opt/remnic-server</string>",
+        "<string>--config</string>",
+        "<string>/srv/x&amp;y/c.json</string>",
+        "</array>",
+      ].join("\n"),
+      { userScoped: true, homeDir: "/home/gw" },
+    ).configPath,
+    "/srv/x&y/c.json",
+  );
+});
+
+test("an armed fallback credential does not cut a warming daemon's probe short", async () => {
+  // The daemon needs ~2s of readiness retries (8 x 250ms) and its unit token
+  // is the ONLY valid credential. The candidate's slice is ~3s, so the full
+  // slice waits it out while a half-slice reservation for a fallback retry
+  // would stop the valid attempt early and then 401 with the config token.
+  const warming = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" },
+    200,
+    8,
+    false,
+    "unit-token",
+  );
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-warm-fallback-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    [
+      "[Service]",
+      "Environment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json",
+      "Environment=REMNIC_AUTH_TOKEN=unit-token",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  // A DIFFERENT config token, so a fallback retry is armed but would fail.
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({
+      server: { host: "127.0.0.1", port: warming.port, authToken: "stale-config-token" },
+    }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(home);
+    const skips: string[] = [];
+    const bridge = detectDaemonBridgeMode({
+      memoryDir: MEMORY_DIR,
+      timeoutMs: 9_000,
+      onSkip: (reason) => skips.push(reason),
+    });
+    assert.equal(bridge.mode, "delegate", `skips=${skips.join(" | ")}`);
+    assert.equal(bridge.daemonAuthTokenOverride, "unit-token");
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await warming.close();
     await rm(home, { recursive: true, force: true });
   }
 });

@@ -71,15 +71,20 @@ function readUnitEnv(
   }
   const systemd = systemdValue === undefined ? null : [undefined, systemdValue];
   // launchd: <key>NAME</key><string>value</string>
-  const launchd = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
+  const launchdRaw = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
+  const launchd = launchdRaw === null ? null : [undefined, decodePlistString(launchdRaw[1] ?? "")];
   const raw = (systemd?.[1] ?? launchd?.[1])?.trim();
   if (raw === undefined) return undefined;
   // An EMPTY assignment is present-but-blank. The server reads it as set, so
   // it overrides nothing but also stops the legacy variable from applying;
   // returning `undefined` here would let a stale `ENGRAM_*` win instead.
   if (raw === "") return "";
-  if (!scope.userScoped && raw.includes("%")) return undefined;
-  return raw.replace(/%h/g, scope.homeDir);
+  // `%h` AND a leading `~` are both account-relative. For a user unit the
+  // account is ours; for a SYSTEM unit it is whatever `User=` names, which
+  // this process cannot resolve — expanding either against the gateway's home
+  // would read a different account's file than the daemon did.
+  if (!scope.userScoped && (raw.includes("%") || raw.startsWith("~"))) return undefined;
+  return expandAccountRelative(raw, scope);
 }
 
 /**
@@ -96,11 +101,38 @@ function readUnitEnv(
  * `<key>WorkingDirectory</key>`. Relative CLI paths resolve against it exactly
  * as they do for the daemon process.
  */
+/**
+ * Decode the XML entities a plist stores values with. launchd hands the daemon
+ * the DECODED value, so reading the encoded text would compare a different
+ * path, endpoint, or credential than the one actually in use.
+ */
+/**
+ * Expand the account-relative spellings against the UNIT's account rather than
+ * the ambient `HOME`: `%h` is systemd's specifier and a leading `~` means the
+ * same thing. Callers reject both for a system unit before getting here, since
+ * that account is unknowable from this process.
+ */
+function expandAccountRelative(value: string, scope: UnitScope): string {
+  const withSpecifier = value.replace(/%h/g, scope.homeDir);
+  if (withSpecifier === "~") return scope.homeDir;
+  if (withSpecifier.startsWith("~/")) return path.join(scope.homeDir, withSpecifier.slice(2));
+  return withSpecifier;
+}
+
+function decodePlistString(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    // `&amp;` LAST so an encoded `&amp;lt;` does not become `<`.
+    .replace(/&amp;/g, "&");
+}
+
 function readUnitWorkingDirectory(unit: string): string | undefined {
   const systemd = /^\s*WorkingDirectory=(.+)$/m.exec(unit)?.[1]?.trim();
-  const launchd = /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/
-    .exec(unit)?.[1]
-    ?.trim();
+  const launchdRaw = /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/.exec(unit)?.[1];
+  const launchd = launchdRaw === undefined ? undefined : decodePlistString(launchdRaw).trim();
   const raw = systemd ?? launchd;
   if (raw === undefined || raw === "") return undefined;
   return /^(["']).*\1$/.test(raw) ? raw.slice(1, -1) : raw;
@@ -118,7 +150,7 @@ function readUnitCliOverrides(
   const programArgs = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(unit);
   if (programArgs?.[1]) {
     for (const entry of programArgs[1].matchAll(/<string>([^<]*)<\/string>/g)) {
-      tokens.push(entry[1]);
+      tokens.push(decodePlistString(entry[1] ?? ""));
     }
   }
   const unquote = (value: string): string =>
@@ -144,9 +176,9 @@ function readUnitCliOverrides(
   };
   const expand = (value: string | undefined): string | undefined => {
     if (value === undefined) return undefined;
-    // Same account-scope rule as the environment reader.
-    if (!scope.userScoped && value.includes("%")) return undefined;
-    return value.replace(/%h/g, scope.homeDir);
+    // Same account-scope rule as the environment reader, `~` included.
+    if (!scope.userScoped && (value.includes("%") || value.startsWith("~"))) return undefined;
+    return expandAccountRelative(value, scope);
   };
   const configPath = expand(readFlag("--config"));
   // The server resolves a relative `--config` against its own cwd, which the
@@ -155,7 +187,7 @@ function readUnitCliOverrides(
     configPath === undefined
       ? undefined
       : resolveAgainstWorkingDirectory(
-          expandTildePath(configPath),
+          configPath,
           readUnitWorkingDirectory(unit),
           scope,
         );
@@ -228,7 +260,7 @@ function resolveUnitConfigPathInner(
     // A blank primary shadows the legacy spelling, same as the endpoint vars.
     if (raw === "") return {};
     if (raw === undefined) continue;
-    const resolved = resolveAgainstWorkingDirectory(expandTildePath(raw), workingDirectory, scope);
+    const resolved = resolveAgainstWorkingDirectory(raw, workingDirectory, scope);
     if (resolved === undefined) continue;
     return { configPath: resolved };
   }
@@ -247,8 +279,10 @@ function resolveAgainstWorkingDirectory(
   if (path.isAbsolute(candidate)) return candidate;
   if (workingDirectory === undefined) return undefined;
   // Same account-scope rule: a system unit's `%h` names an unknowable home.
-  if (!scope.userScoped && workingDirectory.includes("%")) return undefined;
-  const expanded = expandTildePath(workingDirectory.replace(/%h/g, scope.homeDir));
+  if (!scope.userScoped && (workingDirectory.includes("%") || workingDirectory.startsWith("~"))) {
+    return undefined;
+  }
+  const expanded = expandAccountRelative(workingDirectory, scope);
   if (!path.isAbsolute(expanded)) return undefined;
   return path.resolve(expanded, candidate);
 }
