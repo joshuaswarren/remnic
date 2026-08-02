@@ -342,7 +342,17 @@ export function createDelegateMemoryCapability(
   const resolveScopedNamespaceChecked = async (
     explicit?: string,
     timeoutMs?: number,
+    healthIsFresh = true,
   ): Promise<string | undefined> => {
+    // An unconfirmed snapshot cannot license an ABSENT namespace: the daemon
+    // may have restarted partitioned since it was taken, and the flush would
+    // fan out under the new posture. An explicit scope is the caller's own and
+    // the daemon still enforces it.
+    if (!healthIsFresh && explicit === undefined) {
+      throw new Error(
+        "delegate request unavailable: the daemon's namespace posture could not be confirmed within the caller's deadline, so an unscoped request is not safe",
+      );
+    }
     const namespace = requireScopedNamespace(explicit);
     if (explicit !== undefined || namespace === undefined) return namespace;
     if (options.verifyNamespaceAuthorization === undefined) return namespace;
@@ -367,28 +377,40 @@ export function createDelegateMemoryCapability(
 
   // `status()` is synchronous in the host contract, so the async probe runs in
   // getMemorySearchManager (which IS async) and status() reads the snapshot.
-  const refreshHealth = async (timeoutMs?: number): Promise<void> => {
-    if (now() < healthExpiresAt) return;
+  /**
+   * Returns whether the snapshot is CURRENT. `false` means this call gave up
+   * waiting (spent budget, or a race lost to the caller's deadline) and the
+   * values on hand are stale — safety facts read from them are unproven.
+   */
+  const refreshHealth = async (timeoutMs?: number): Promise<boolean> => {
+    if (now() < healthExpiresAt) return true;
     // A caller inside a shared deadline (the lifecycle flushes) passes what is
     // LEFT of it. Zero or less means the budget is already spent: starting a
     // fresh probe here would overrun the hook and get it abandoned before the
     // buffer drains, so the last known snapshot answers instead.
-    if (timeoutMs !== undefined && timeoutMs <= 0) return;
+    if (timeoutMs !== undefined && timeoutMs <= 0) return false;
     if (healthInFlight !== undefined) {
       // An in-flight probe was started by whoever got here first, possibly on
       // the full health timeout. A caller inside a shared deadline must not
       // inherit that: it waits only for what it has left, then answers from
       // the current snapshot. The probe itself is left running for the caller
       // that owns it.
-      if (timeoutMs === undefined) return healthInFlight;
-      await Promise.race([
-        healthInFlight,
-        new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, timeoutMs);
+      if (timeoutMs === undefined) {
+        await healthInFlight;
+        return true;
+      }
+      const TIMED_OUT = Symbol("timed-out");
+      const outcome = await Promise.race([
+        healthInFlight.then(() => undefined),
+        new Promise<typeof TIMED_OUT>((resolve) => {
+          const timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
           timer.unref?.();
         }),
       ]);
-      return;
+      // Losing the race means the snapshot on hand was never confirmed by this
+      // call, so the caller must treat it as unproven rather than acting on a
+      // posture the daemon may have changed.
+      return outcome !== TIMED_OUT;
     }
     healthInFlight = (async () => {
       try {
@@ -448,7 +470,16 @@ export function createDelegateMemoryCapability(
         // through the backoff would let an unbound search fan out across a
         // freshly partitioned corpus, so both revert to unknown and fail
         // closed until a probe succeeds again.
-        health = { ...health, namespacesEnabled: undefined, memoryDir: undefined };
+        // `defaultNamespace` goes too: a partitioned daemon can change it
+        // across a restart, and a stale one is NOT undefined, so it would slip
+        // past the unknown-posture guard and bind a fresh session to the
+        // previous tenant's namespace.
+        health = {
+          ...health,
+          namespacesEnabled: undefined,
+          defaultNamespace: undefined,
+          memoryDir: undefined,
+        };
         corpusShared = daemonIsLocal ? undefined : false;
         healthExpiresAt = now() + HEALTH_FAILURE_BACKOFF_MS;
         const message = `[${serviceId}] delegate capability health probe failed: ${String(err)}`;
@@ -460,7 +491,8 @@ export function createDelegateMemoryCapability(
         healthInFlight = undefined;
       }
     })();
-    return healthInFlight;
+    await healthInFlight;
+    return true;
   };
 
   const search = async (
@@ -471,6 +503,11 @@ export function createDelegateMemoryCapability(
     // the daemon schema's `maxResults >= 1` and turn a valid no-results request
     // into a 400 purely by switching bridge mode.
     if (opts?.maxResults === 0) return [];
+    if (opts?.minScore !== undefined && !Number.isFinite(opts.minScore)) {
+      throw new Error(
+        `delegate search rejected (minScore must be a finite number): ${String(opts.minScore)}`,
+      );
+    }
     // Beyond the exact-zero short circuit, an out-of-range budget is a caller
     // bug, not something to reinterpret: coercing a negative to 1, truncating
     // a fraction, or dropping a non-finite value to the daemon default all
@@ -553,14 +590,14 @@ export function createDelegateMemoryCapability(
         // (`<root>/artifacts/remnic`) would otherwise lose every hit.
         const citation = sharedScope().relativizeToMemoryRoot(rawPath);
         if (isMemoryArtifactPath(citation)) continue;
-        const score = typeof hit.score === "number" && Number.isFinite(hit.score) ? hit.score : 0;
-        if (
-          typeof opts?.minScore === "number" &&
-          Number.isFinite(opts.minScore) &&
-          score < opts.minScore
-        ) {
-          continue;
+        // A missing or non-finite score is a protocol failure, not a zero: it
+        // would silently drop the hit under `minScore` and hand callers a
+        // fabricated ranking without one.
+        if (typeof hit.score !== "number" || !Number.isFinite(hit.score)) {
+          throw new Error("daemon /engram/v1/memories/search returned a malformed result entry");
         }
+        const score = hit.score;
+        if (typeof opts?.minScore === "number" && score < opts.minScore) continue;
         kept.push({
           // Absolute, so a follow-up readFile is unambiguous when the same
           // relative path exists under more than one allowed root.
@@ -691,8 +728,8 @@ export function createDelegateMemoryCapability(
       explicit?: string,
       timeoutMs?: number,
     ): Promise<string | undefined> => {
-      await refreshHealth(timeoutMs);
-      return await resolveScopedNamespaceChecked(explicit, timeoutMs);
+      const fresh = await refreshHealth(timeoutMs);
+      return await resolveScopedNamespaceChecked(explicit, timeoutMs, fresh);
     },
     runtime: {
       async getMemorySearchManager() {

@@ -1310,16 +1310,23 @@ test("a spent caller budget skips the health probe instead of overrunning it", a
     // A real budget probes once and caches the daemon's flat posture.
     assert.equal(await built.resolveScopedNamespace(undefined, 5_000), undefined);
     assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 1);
-    // Snapshot expired, budget spent: answer from the last known posture
-    // rather than starting a request that would overrun the shared deadline.
+    // Snapshot expired, budget spent: no request is started (it would overrun
+    // the shared deadline) AND an unscoped call fails closed, because the
+    // posture on hand was never confirmed by this call.
     clock += 10 * 60_000;
-    assert.equal(await built.resolveScopedNamespace(undefined, 0), undefined);
+    await assert.rejects(
+      () => built.resolveScopedNamespace(undefined, 0),
+      /namespace posture could not be confirmed/,
+    );
     assert.equal(
       stub.calls.filter((call) => call.pathname.includes("/health")).length,
       1,
       "no second probe once the shared deadline is gone",
     );
-    // With budget again, it re-probes.
+    // An explicit scope is the caller's own and still resolves unprobed.
+    assert.equal(await built.resolveScopedNamespace("team-a", 0), "team-a");
+    assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 1);
+    // With budget again, it re-probes and the unscoped call works.
     assert.equal(await built.resolveScopedNamespace(undefined, 5_000), undefined);
     assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 2);
   } finally {
@@ -1410,6 +1417,86 @@ test("a failed probe un-proves a previously flat posture", async () => {
     );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a probe failure un-proves the default namespace too", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // A partitioned daemon can change its default across a restart. A retained
+  // stale default is NOT undefined, so it would slip past the unknown-posture
+  // guard and bind a fresh session to the previous tenant.
+  let healthy = true;
+  const server = http.createServer((req, res) => {
+    if ((req.url ?? "").includes("/health") && !healthy) {
+      res.destroy();
+      return;
+    }
+    res.setHeader("content-type", "application/json");
+    res.end(
+      JSON.stringify(
+        (req.url ?? "").includes("/health")
+          ? { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "tenant-a" }
+          : { query: "q", count: 0, results: [] },
+      ),
+    );
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  let clock = 1_000;
+  try {
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(address.port, memoryDir, workspaceDir),
+      resolveSearchNamespace: async () => undefined,
+      verifyNamespaceAuthorization: async () => true,
+      now: () => clock,
+    });
+    assert.equal(await built.resolveScopedNamespace(undefined), "tenant-a");
+    healthy = false;
+    clock += 10 * 60_000;
+    await assert.rejects(
+      () => built.resolveScopedNamespace(undefined),
+      /default namespace is unknown/,
+      "the stale default must not bind a fresh session",
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate search rejects a malformed score and an invalid minScore", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+    search: {
+      query: "q",
+      count: 1,
+      results: [{ path: "facts/a.md", snippet: "no score" }],
+    },
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    // A missing score is a protocol failure, not a zero ranking.
+    await assert.rejects(
+      () => manager?.search("q") ?? Promise.resolve(),
+      /malformed result entry/,
+    );
+    // An unusable threshold must not silently disable the filter.
+    for (const minScore of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      await assert.rejects(
+        () => manager?.search("q", { minScore }) ?? Promise.resolve(),
+        /minScore must be a finite number/,
+        `minScore: ${String(minScore)} must be rejected`,
+      );
+    }
+  } finally {
+    await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
