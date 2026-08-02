@@ -87,7 +87,7 @@ high-confidence personal fact that auto-promotes into recall. That
 output is plausible, personally relevant, and fabricated, which makes
 it worse than a missed fact.
 
-Two independent guards run before trust scoring ever sees a candidate:
+Three guards run before a candidate can reach active recall:
 
 1. **Provenance in the prompt.** Every turn built from a wearable
    transcript is flagged `ambientCapture`, and extraction adds a
@@ -97,14 +97,30 @@ Two independent guards run before trust scoring ever sees a candidate:
    weddings, funerals, and any medical detail) it cannot attribute to
    the wearer, and score anything it is unsure about in the speculative
    tier. The section is shared by the local-LLM, direct-client, and
-   gateway prompts, so the three paths cannot drift.
-2. **A deterministic clamp.** When the model ignores the prompt anyway,
-   extraction holds high-impact personal facts from ambient input at
-   the speculative ceiling (0.39). At the default `sourceTrust` of 0.8
-   that lands them below `reviewTrust`, so a fabricated birthday is
-   dropped or queued rather than written active. Ordinary wearable
-   facts are untouched — clamping everything would defeat the point of
-   the integration.
+   gateway prompts, so the three paths cannot drift. This is the
+   primary defense; the two below are backstops for when a model
+   ignores it.
+2. **A deterministic clamp.** Extraction holds high-impact personal
+   facts from ambient input at the speculative ceiling (0.39). A
+   candidate is high-impact when its category is personal-claim-shaped
+   by construction (`moment`, `relationship`), when its text carries
+   kinship, milestone, or health vocabulary, or when it is tagged into
+   one of those classes. Ordinary wearable facts are untouched —
+   clamping everything would defeat the point of the integration.
+3. **A trust-band cap.** Confidence alone is not enough: 0.39 against
+   the default `sourceTrust` of 0.8 is 0.312, and a judge accept
+   (+0.15) plus cross-source (+0.15) and existing-memory (+0.10)
+   corroboration reaches 0.712 — past the 0.7 auto-approve line. Two
+   devices in one room record the same television program and
+   corroborate each other perfectly, so a high-impact ambient candidate
+   tops out in the review queue (`trustDecision:
+   ambient-high-impact`) no matter what it scores. Late-arriving
+   evidence cannot promote one either.
+
+The vocabulary in guard 2 cannot be exhaustive, which is why guard 1 is
+the real defense and guard 3 is keyed off the same classifier: a missed
+term still has to get past the prompt. Extend the lists in
+`ambient-provenance.ts` when a miss shows up in practice.
 
 ### How smart mode decides
 

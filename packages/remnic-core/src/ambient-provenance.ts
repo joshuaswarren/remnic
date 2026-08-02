@@ -75,11 +75,34 @@ export const AMBIENT_CAPTURE_PROMPT_RULE =
   "- The transcript may contain ambient audio nobody in the meeting authored: television, podcasts, music, or a passing conversation. Treat scripted, performed, or third-person speech as background media and never record it as a decision, commitment, or question.";
 
 /**
- * Content classes where one fabricated fact does the most damage. Word-bounded
- * alternation only — no nesting, no backtracking risk.
+ * Categories that are personal-claim-shaped by construction, independent of any
+ * vocabulary: `moment` is defined as an emotionally significant event or
+ * milestone, and on ambient audio a `relationship` claim is a link the model
+ * inferred between people it overheard. Non-lexical, so they still catch harm
+ * the term lists below miss.
  */
-const HIGH_IMPACT_PERSONAL_PATTERN =
-  /\b(?:mother|mothers|mom|moms|mum|father|fathers|dad|dads|parent|parents|sister|sisters|brother|brothers|sibling|siblings|son|sons|daughter|daughters|child|children|kid|kids|wife|wives|husband|husbands|spouse|partner|fiance|fiancee|grandmother|grandfather|grandma|grandpa|grandparent|grandparents|grandson|granddaughter|grandchild|grandchildren|aunt|uncle|cousin|niece|nephew|stepmother|stepfather|stepson|stepdaughter|in-law|family|birthday|birthdays|anniversary|anniversaries|wedding|weddings|engaged|engagement|married|marriage|divorce|divorced|widow|widowed|funeral|memorial|pregnant|pregnancy|miscarriage|newborn|diagnosis|diagnosed|cancer|tumor|tumour|biopsy|chemotherapy|chemo|surgery|surgeon|hospital|hospitalized|hospitalised|icu|stroke|seizure|medication|medications|prescription|prescribed|symptom|symptoms|illness|disease|disorder|therapy|therapist|psychiatrist|antidepressant|diabetes|diabetic|dementia|alzheimer|alzheimers|overdose|relapse|sobriety|miscarried)\b/i;
+const HIGH_IMPACT_CATEGORIES: Record<string, true> = { moment: true, relationship: true };
+
+/**
+ * Kinship, milestone, and health vocabulary. Deliberately broad: a false
+ * positive costs one ambient fact a trip through the review queue, a false
+ * negative puts a fabricated medical claim into active recall. The list cannot
+ * be exhaustive and is not the primary defense — the prompt is, and the
+ * category signal above plus the trust-band cap in the wearable pass catch
+ * classes no word list enumerates. Extend it when a miss is observed.
+ *
+ * Word-bounded alternation only — no nesting, no backtracking risk.
+ */
+const HIGH_IMPACT_TOPIC_PATTERN =
+  /\b(?:mother|mothers|mom|moms|mum|father|fathers|dad|dads|sister|sisters|brother|brothers|son|sons|daughter|daughters|wife|wives|husband|husbands|spouse|fiance|fiancee|grandmother|grandfather|grandma|grandpa|grandparent|grandparents|grandson|granddaughter|grandchild|grandchildren|aunt|uncle|cousin|niece|nephew|stepmother|stepfather|stepson|stepdaughter|stepchild|godmother|godfather|birthday|birthdays|anniversary|anniversaries|wedding|weddings|honeymoon|married|marriage|divorce|divorced|widow|widowed|funeral|memorial service|engagement party|baby shower|christening|bar mitzvah|pregnant|pregnancy|miscarriage|miscarried|newborn|gave birth|stillbirth|infertility|ivf|menopause|diagnosis|diagnosed|prognosis|tested positive|cancer|carcinoma|leukemia|tumor|tumour|biopsy|chemotherapy|chemo|radiation therapy|remission|hospice|palliative|terminal illness|surgery|surgeon|hospital|hospitalized|hospitalised|icu|emergency room|ambulance|stroke|heart attack|cardiac|arrhythmia|afib|seizure|epilepsy|asthma|allergy|allergic|diabetes|diabetic|insulin|cholesterol|blood pressure|hypertension|dementia|alzheimer|alzheimers|parkinson|parkinsons|hiv|aids diagnosis|medication|medications|prescription|prescribed|dosage|symptom|symptoms|illness|disease|disorder|syndrome|therapy|therapist|psychiatrist|psychologist|antidepressant|depression|anxiety|bipolar|schizophrenia|adhd|autism|ptsd|overdose|relapse|sobriety|rehab|addiction|alcoholism|concussion|transplant|dialysis|immunocompromised|mental health)\b/i;
+
+/**
+ * Words that are personal only when someone possesses them: "child process",
+ * "parent component", "sibling node", and "customer family" are everyday
+ * technical speech, while "his child" and "Rachel's parents" are not.
+ */
+const POSSESSED_KINSHIP_PATTERN =
+  /(?:\b(?:my|your|his|her|their|our)|'s)\s+(?:child|children|kid|kids|parent|parents|partner|family|sibling|siblings|in-law|in-laws|relatives)\b/i;
 
 /** Tags that mark a fact as belonging to the same high-impact classes. */
 const HIGH_IMPACT_TAGS: Record<string, true> = {
@@ -90,8 +113,6 @@ const HIGH_IMPACT_TAGS: Record<string, true> = {
   diagnosis: true,
   birthday: true,
   anniversary: true,
-  milestone: true,
-  relationship: true,
   marriage: true,
   pregnancy: true,
   "mental-health": true,
@@ -100,11 +121,17 @@ const HIGH_IMPACT_TAGS: Record<string, true> = {
 /**
  * True when this fact makes a personal claim whose fabrication causes real
  * harm — a family relationship, a personal milestone, or a medical detail.
+ *
+ * Read by BOTH ambient guards: the post-extraction confidence clamp below and
+ * the wearable trust-band cap, so a fact this flags can never auto-approve on
+ * corroboration boosts either.
  */
 export function isHighImpactPersonalFact(
-  fact: Pick<ExtractedFact, "content" | "tags">,
+  fact: Pick<ExtractedFact, "category" | "content" | "tags">,
 ): boolean {
-  if (HIGH_IMPACT_PERSONAL_PATTERN.test(fact.content)) return true;
+  if (HIGH_IMPACT_CATEGORIES[fact.category] === true) return true;
+  if (HIGH_IMPACT_TOPIC_PATTERN.test(fact.content)) return true;
+  if (POSSESSED_KINSHIP_PATTERN.test(fact.content)) return true;
   for (const tag of fact.tags ?? []) {
     if (HIGH_IMPACT_TAGS[tag.trim().toLowerCase()] === true) return true;
   }

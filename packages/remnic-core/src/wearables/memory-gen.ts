@@ -28,6 +28,7 @@
  */
 
 import { scoreImportance } from "../importance.js";
+import { isHighImpactPersonalFact } from "../ambient-provenance.js";
 import type { MemoryWriteResult } from "../storage.js";
 import {
   composeMemoryEnvelope,
@@ -449,8 +450,13 @@ export async function generateWearableMemories(
     const promoteScores = await scoreCandidates(promotable, settings, deps, result);
     for (const [index, candidate] of promotable.entries()) {
       const scored = promoteScores.get(index);
+      // Every wearable candidate is ambient by construction, so a high-impact
+      // personal claim can only ever reach the review queue — late-arriving
+      // corroboration must not promote a clamped TV line to active (#2294).
       const decision = scored
-        ? decideSmart(scored.trust, scored.verdict, settings)
+        ? decideSmart(scored.trust, scored.verdict, settings, {
+            capAtReview: isHighImpactPersonalFact(candidate.fact),
+          })
         : undefined;
       if (!scored || !decision) {
         skip("duplicate-existing");
@@ -545,7 +551,9 @@ export async function generateWearableMemories(
     }
     const scored = trustById.get(index);
     if (!scored) return;
-    const decision = decideSmart(scored.trust, scored.verdict, settings);
+    const decision = decideSmart(scored.trust, scored.verdict, settings, {
+      capAtReview: isHighImpactPersonalFact(candidate.fact),
+    });
     if (decision.outcome === "drop") {
       skip(decision.reason);
       return;

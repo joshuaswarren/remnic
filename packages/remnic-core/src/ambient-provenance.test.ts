@@ -13,7 +13,8 @@ import { SUMMARY_SYSTEM_PROMPT } from "./meetings/summary-extractor.js";
 import { emptySpeakerRegistry } from "./wearables/speakers.js";
 import { buildExtractionTurns } from "./wearables/memory-gen.js";
 import type { WearableConversation } from "./wearables/types.js";
-import type { BufferTurn, ExtractedFact, ExtractionResult } from "./types.js";
+import { decideSmart } from "./wearables/trust.js";
+import type { BufferTurn, ExtractedFact, ExtractionResult, MemoryCategory } from "./types.js";
 
 /**
  * Ambient-capture contamination (issue #2294): a wearable records a TV show,
@@ -186,6 +187,10 @@ test("ordinary ambient facts keep their confidence — only high-impact classes 
   assert.equal(result.facts[0]?.confidence, 0.88);
 });
 
+function claim(content: string, tags: string[] = [], category: MemoryCategory = "fact") {
+  return { category, content, tags };
+}
+
 test("isHighImpactPersonalFact flags family, milestone, and medical content", () => {
   for (const content of [
     "Rachel's mother has a birthday on June 3rd.",
@@ -193,18 +198,29 @@ test("isHighImpactPersonalFact flags family, milestone, and medical content", ()
     "He was diagnosed with diabetes last spring.",
     "Her surgery is scheduled for Tuesday.",
     "The funeral is on Saturday.",
+    // The health wording an earlier term list missed (review round 1).
+    "The user is HIV-positive.",
+    "He has depression.",
+    "She suffered a heart attack in March.",
+    "He is in remission after chemotherapy.",
+    "Her blood pressure medication was changed.",
   ]) {
-    assert.equal(isHighImpactPersonalFact({ content, tags: [] }), true, content);
+    assert.equal(isHighImpactPersonalFact(claim(content)), true, content);
   }
+});
+
+test("isHighImpactPersonalFact flags personal-claim-shaped categories with no matching word", () => {
+  assert.equal(isHighImpactPersonalFact(claim("Dana leads the Helsinki office.", [], "relationship")), true);
+  assert.equal(isHighImpactPersonalFact(claim("They closed on the new place.", [], "moment")), true);
 });
 
 test("isHighImpactPersonalFact flags high-impact tags even when the text is bland", () => {
   assert.equal(
-    isHighImpactPersonalFact({ content: "The date is June 3rd.", tags: ["Family"] }),
+    isHighImpactPersonalFact(claim("The date is June 3rd.", ["Family"])),
     true,
     "tag matching is case-insensitive",
   );
-  assert.equal(isHighImpactPersonalFact({ content: "The date is June 3rd.", tags: [" medical "] }), true);
+  assert.equal(isHighImpactPersonalFact(claim("The date is June 3rd.", [" medical "])), true);
 });
 
 test("isHighImpactPersonalFact leaves ordinary content alone", () => {
@@ -212,8 +228,25 @@ test("isHighImpactPersonalFact leaves ordinary content alone", () => {
     "The team uses PostgreSQL for the primary store.",
     "Deploys run every Thursday at 9am.",
     "The build cache lives under the workspace root.",
+    // Technical and business speech an earlier term list mis-flagged
+    // (review round 1): bare kinship-adjacent words are not personal.
+    "The child process inherits the parent environment.",
+    "Render the sibling node before the parent component.",
+    "Customer engagement rose after the launch.",
+    "The partner integration ships next quarter.",
+    "This is one of a family of retry strategies.",
   ]) {
-    assert.equal(isHighImpactPersonalFact({ content, tags: ["tools"] }), false, content);
+    assert.equal(isHighImpactPersonalFact(claim(content, ["tools"])), false, content);
+  }
+});
+
+test("isHighImpactPersonalFact flags the same kinship words once someone possesses them", () => {
+  for (const content of [
+    "His child starts school in September.",
+    "Rachel's parents are visiting next week.",
+    "Their family moved to Lisbon.",
+  ]) {
+    assert.equal(isHighImpactPersonalFact(claim(content)), true, content);
   }
 });
 
@@ -249,6 +282,33 @@ test("clampAmbientCaptureConfidence returns the input untouched when nothing qua
   };
 
   assert.equal(clampAmbientCaptureConfidence(result), result, "no reallocation on the common path");
+});
+
+/**
+ * Clamping extraction confidence is not enough on its own: at the default
+ * thresholds, 0.39 x 0.8 sourceTrust plus a judge accept (+0.15), cross-source
+ * corroboration (+0.15), and an existing supporting memory (+0.10) reaches
+ * 0.712 — past the 0.7 auto-approve line. Two devices in one room recording
+ * the same television program corroborate each other perfectly, so the wearable
+ * pass caps a high-impact ambient candidate at the review queue.
+ */
+const DEFAULT_THRESHOLDS = { autoApproveTrust: 0.7, reviewTrust: 0.45 };
+
+test("a fully-boosted high-impact ambient candidate stops at review, never active", () => {
+  const boosted = 0.39 * 0.8 + 0.15 + 0.15 + 0.1;
+  assert.ok(boosted > DEFAULT_THRESHOLDS.autoApproveTrust, "the boosts do clear auto-approve");
+
+  const capped = decideSmart(boosted, "accept", DEFAULT_THRESHOLDS, { capAtReview: true });
+
+  assert.equal(capped.outcome, "review");
+  assert.equal(capped.reason, "ambient-high-impact");
+});
+
+test("the cap changes nothing for ordinary candidates or for drop/defer verdicts", () => {
+  assert.equal(decideSmart(0.9, "accept", DEFAULT_THRESHOLDS).outcome, "active");
+  assert.equal(decideSmart(0.5, undefined, DEFAULT_THRESHOLDS, { capAtReview: true }).reason, "queued-for-review");
+  assert.equal(decideSmart(0.9, "reject", DEFAULT_THRESHOLDS, { capAtReview: true }).outcome, "drop");
+  assert.equal(decideSmart(0.2, undefined, DEFAULT_THRESHOLDS, { capAtReview: true }).outcome, "drop");
 });
 
 test("wearable extraction turns carry the ambient-capture flag", () => {
