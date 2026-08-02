@@ -143,6 +143,20 @@ the work is judged against.
   boring default, leave a receipt, and go build. An open question about
   security, data integrity, host compatibility, or a mandated validation is
   by definition still changing the plan — run it down before you default.
+- **Budget the review loop, then decline.** The AI review gates here find real
+  defects for about two rounds. After that they generate adversarial cases
+  against the previous round's fix, which is unbounded by construction — a
+  reviewer will always find one more hypothetical. **From round three on, only
+  these are actionable:** a correctness, security, or data-integrity defect in
+  shipped behavior; a failing *required* check; a factual claim that is wrong
+  against the tree; or a rule this repo mandates that the PR actually
+  violates. Everything else — style, hypothetical mutations of code or
+  wording nobody would write, further tightening of a check that already fails
+  on the regression it names — is **declined in-thread with the reason and
+  the thread resolved**, not fixed. The Cleaner PR Workflow's "zero unresolved
+  threads" bar is satisfied by a reasoned decline exactly as much as by a fix;
+  it asks for resolution, not obedience. Three rounds on a change with no
+  runtime behavior is itself the signal to stop.
 
 These rules bind human-directed sessions, delegated subagents, and scheduled
 or otherwise autonomous agent runs alike.
