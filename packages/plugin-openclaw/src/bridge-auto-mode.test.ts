@@ -1429,3 +1429,109 @@ test("resolveUnitEndpoint resolves a relative --config against WorkingDirectory"
     "/etc/remnic/c.json",
   );
 });
+
+test("a repeated CLI flag takes the LAST value, like the daemon's parser", () => {
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nExecStart=/opt/remnic-server --port 4318 --port 4813\n", {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).port,
+    4813,
+  );
+  assert.equal(
+    resolveUnitEndpoint(
+      "[Service]\nExecStart=/opt/remnic-server --host 127.0.0.2 --host=127.0.0.3\n",
+      { userScoped: true, homeDir: "/home/gw" },
+    ).host,
+    "127.0.0.3",
+  );
+});
+
+test("one stalling candidate cannot consume the whole preflight budget", async () => {
+  // A stale unit endpoint that accepts and never answers sorts FIRST. Handing
+  // it the entire deadline would leave the live daemon behind it undialed.
+  const dead = await startHealthStub({}, 200, 0, true);
+  const live = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" });
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-budget-share-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-budget-share-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    `[Service]\nExecStart=/opt/remnic-server --host 127.0.0.1 --port ${dead.port}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: live.port } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 4_000 });
+    assert.equal(bridge.mode, "delegate", "the live daemon behind the staller was still dialed");
+    assert.equal(bridge.daemonPort, live.port);
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await dead.close();
+    await live.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("explicit delegate binds its credential to the config it took the endpoint from", async () => {
+  // Without the binding, loadDaemonAuth rescans and can pair this endpoint
+  // with a different file's token - a 401 the plugin reads as "no daemon".
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-explicit-auth-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-explicit-auth-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4830, authToken: "cwd-token" } }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4831, authToken: "home-token" } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    const bridge = resolveBridgeMode("", { memoryDir: MEMORY_DIR });
+    assert.equal(bridge.daemonPort, 4830, "the cwd config supplied the endpoint");
+    assert.equal(
+      bridge.daemonConfigPath,
+      path.join(cwd, "remnic.config.json"),
+      "so its token is the one delegate requests will use",
+    );
+    assert.equal(loadDaemonAuth(bridge.daemonConfigPath).token, "cwd-token");
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

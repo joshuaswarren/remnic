@@ -120,6 +120,9 @@ function readUnitCliOverrides(
   const unquote = (value: string): string =>
     /^(["']).*\1$/.test(value) ? value.slice(1, -1) : value;
   const readFlag = (flag: string): string | undefined => {
+    // LAST occurrence wins: the daemon's own parser overwrites `args[key]` on
+    // every repeat, so `--port 4318 --port 4813` makes it listen on 4813.
+    let found: string | undefined;
     for (const [index, rawToken] of tokens.entries()) {
       const token = unquote(rawToken);
       if (token === flag) {
@@ -128,11 +131,12 @@ function readUnitCliOverrides(
         const value = unquote(next);
         // `--host --port` means --host was given no value.
         if (value.startsWith("-")) continue;
-        return value;
+        found = value;
+        continue;
       }
-      if (token.startsWith(`${flag}=`)) return unquote(token.slice(flag.length + 1));
+      if (token.startsWith(`${flag}=`)) found = unquote(token.slice(flag.length + 1));
     }
-    return undefined;
+    return found;
   };
   const expand = (value: string | undefined): string | undefined => {
     if (value === undefined) return undefined;

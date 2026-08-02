@@ -827,6 +827,7 @@ export function detectDaemonBridgeMode(options: {
   // shares one deadline.
   const totalTimeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
   const deadline = Date.now() + totalTimeoutMs;
+  let probed = 0;
   for (const { host: daemonHost, port: daemonPort, configPath, authTokenOverride } of endpoints) {
     // Auto is SAME-HOST detection. A matching absolute memoryDir string proves
     // nothing across machines — an unrelated remote daemon using the same
@@ -850,10 +851,19 @@ export function detectDaemonBridgeMode(options: {
       );
       break;
     }
+    // Cap each probe at a SHARE of what is left rather than handing it the
+    // whole budget. Installed-unit candidates deliberately precede cwd/home,
+    // so one stale endpoint that accepts a connection and stalls would
+    // otherwise eat the entire preflight and the live daemon behind it would
+    // never be dialed. The share is over the endpoints still unprobed, so the
+    // last candidate can still use everything that remains.
+    const remainingCandidates = endpoints.length - probed;
+    const perCandidateMs = Math.max(1, Math.ceil(remainingMs / Math.max(1, remainingCandidates)));
+    probed += 1;
     const health = readDaemonMemoryDirSync(
       daemonHost,
       daemonPort,
-      remainingMs,
+      Math.min(remainingMs, perCandidateMs),
       configPath,
       authTokenOverride,
     );
@@ -937,11 +947,25 @@ export function resolveBridgeMode(
       onSkip: options.onSkip,
     });
   }
+  // The config the endpoint came from rides along so delegate requests bind
+  // their credential to the SAME file. Without it `loadDaemonAuth` rescans and
+  // can pair this endpoint with another file's token, which the daemon answers
+  // with a 401 and the plugin reads as "no daemon".
+  const selectedConfig = selectedDaemonConfigPath();
   return {
     mode: requested,
     daemonHost: readDaemonHost(),
     daemonPort: readDaemonPort(),
+    ...(selectedConfig === undefined ? {} : { daemonConfigPath: selectedConfig }),
   };
+}
+
+/** The one config file explicit resolution took host and port from. */
+function selectedDaemonConfigPath(): string | undefined {
+  for (const candidate of configPathCandidates()) {
+    if (readServerBlock(candidate) !== undefined) return candidate;
+  }
+  return undefined;
 }
 
 function isOpenClawTokenEntry(value: unknown): value is { token: string } {
