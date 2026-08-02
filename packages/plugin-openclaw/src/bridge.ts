@@ -133,6 +133,22 @@ const LIVENESS_PATH = "/engram/v1/live";
 const LEGACY_HEALTH_PATH = "/engram/v1/health";
 export const DEFAULT_DAEMON_HEALTH_TIMEOUT_MS = 10_000;
 
+/**
+ * Validate a caller-supplied probe budget, in the same range the config
+ * parser enforces. Shared so the public detector cannot drift from it.
+ */
+function assertProbeBudget(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) return DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_BRIDGE_HEALTH_TIMEOUT_MS) {
+    throw new Error(
+      `timeoutMs must be an integer in [1, ${MAX_BRIDGE_HEALTH_TIMEOUT_MS}]; got ${String(timeoutMs)}`,
+    );
+  }
+  return timeoutMs;
+}
+
+const MAX_BRIDGE_HEALTH_TIMEOUT_MS = 120_000;
+
 function parseBridgeHealthTimeoutMs(value: unknown): number {
   if (value === undefined) return DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
   const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
@@ -141,10 +157,10 @@ function parseBridgeHealthTimeoutMs(value: unknown): number {
     !Number.isFinite(parsed) ||
     !Number.isInteger(parsed) ||
     parsed < 1 ||
-    parsed > 120_000
+    parsed > MAX_BRIDGE_HEALTH_TIMEOUT_MS
   ) {
     throw new Error(
-      `bridgeHealthTimeoutMs must be an integer in [1, 120000]; got ${String(value)}`,
+      `bridgeHealthTimeoutMs must be an integer in [1, ${MAX_BRIDGE_HEALTH_TIMEOUT_MS}]; got ${String(value)}`,
     );
   }
   return parsed;
@@ -783,7 +799,12 @@ export function detectDaemonBridgeMode(options: {
   // registration is synchronous — probing several stale endpoints for the full
   // budget each would hold gateway startup for a multiple of it. Every probe
   // shares one deadline.
-  const totalTimeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
+  // A library consumer reaches this entry point directly, bypassing the config
+  // parser. An invalid budget must be REJECTED, not reinterpreted: zero or a
+  // negative silently skips every probe and selects embedded beside a running
+  // same-corpus daemon, which is the exact failure this detector exists to
+  // prevent (AGENTS.md §1).
+  const totalTimeoutMs = assertProbeBudget(options.timeoutMs);
   const deadline = Date.now() + totalTimeoutMs;
   // Partition BEFORE budgeting. A candidate rejected for being non-loopback,
   // or for having no liveness hint, costs no time at all — leaving it in the
@@ -968,6 +989,10 @@ export function resolveBridgeMode(
   options: { memoryDir?: string; timeoutMs?: number; onSkip?: (reason: string) => void } = {},
 ): BridgeConfig {
   const requested = resolveRequestedBridgeMode(configBridgeMode);
+  // Validated for EVERY mode, not just the branch that spends it: an invalid
+  // budget is a caller bug, and accepting it silently on an explicit mode
+  // would make the same value an error only after someone flips to `auto`.
+  assertProbeBudget(options.timeoutMs);
   if (requested === "auto") {
     const memoryDir = options.memoryDir ?? "";
     if (!memoryDir.trim()) {

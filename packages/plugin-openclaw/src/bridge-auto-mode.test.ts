@@ -2206,3 +2206,34 @@ test("a health body that dies after the headers fails fast, not at the deadline"
     await stub.close();
   }
 });
+
+test("an invalid probe budget is rejected, never silently skipped", async () => {
+  // A library consumer reaches these exports directly, bypassing the config
+  // parser. Zero or a negative would skip every probe and select embedded
+  // beside a running same-corpus daemon — the exact failure auto prevents.
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR });
+  try {
+    withDaemonEnv(stub.port, () => {
+      for (const timeoutMs of [0, -1, 2.5, Number.NaN, Number.POSITIVE_INFINITY, 120_001]) {
+        assert.throws(
+          () => detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs }),
+          /timeoutMs must be an integer in \[1, 120000\]/,
+          `detect: ${String(timeoutMs)}`,
+        );
+        // Rejected for every mode, so flipping to `auto` cannot turn an
+        // accepted value into an error later.
+        for (const mode of ["auto", "delegate", "embedded"]) {
+          assert.throws(
+            () => resolveBridgeMode(mode, { memoryDir: MEMORY_DIR, timeoutMs }),
+            /timeoutMs must be an integer/,
+            `${mode}: ${String(timeoutMs)}`,
+          );
+        }
+      }
+      // An omitted budget still takes the documented default.
+      assert.equal(detectDaemonBridgeMode({ memoryDir: MEMORY_DIR }).mode, "delegate");
+    });
+  } finally {
+    await stub.close();
+  }
+});
