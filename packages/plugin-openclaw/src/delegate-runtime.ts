@@ -1099,7 +1099,10 @@ export function maybeRegisterDelegateRuntime(
     // Bound to the config the resolved endpoint came from, so a deployment
     // with two configs sends each daemon its OWN token instead of whichever
     // one discovery happened to read first.
-    resolveAuthToken: () => loadDaemonAuth(bridge.daemonConfigPath),
+    resolveAuthToken: () =>
+      bridge.daemonAuthTokenOverride === undefined
+        ? loadDaemonAuth(bridge.daemonConfigPath)
+        : { token: bridge.daemonAuthTokenOverride, source: "daemon configuration" },
   };
   registerDelegateRuntime(api, {
     serviceId: options.serviceId,

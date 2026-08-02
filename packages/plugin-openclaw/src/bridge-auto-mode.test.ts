@@ -1189,3 +1189,78 @@ test("resolveUnitEndpoint reads host and port, honoring account scope", () => {
     {},
   );
 });
+
+test("a unit's REMNIC_AUTH_TOKEN is used to probe and to delegate", async () => {
+  // The server merges REMNIC_AUTH_TOKEN over server.authToken, and the gateway
+  // does not inherit the service environment - so probing with the config's
+  // stale credential 401s and auto falls back beside the live daemon.
+  const stub = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" },
+    200,
+    0,
+    false,
+    "unit-token",
+  );
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-unit-auth-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    [
+      "[Service]",
+      "Environment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json",
+      "Environment=REMNIC_AUTH_TOKEN=unit-token",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  // The file carries the STALE credential the daemon no longer accepts.
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({
+      server: { host: "127.0.0.1", port: stub.port, authToken: "stale-token" },
+    }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(home);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 5_000 });
+    assert.equal(bridge.mode, "delegate", "the unit's credential authenticated the probe");
+    assert.equal(
+      bridge.daemonAuthTokenOverride,
+      "unit-token",
+      "and rides along so delegate requests use the same one",
+    );
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await stub.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("resolveUnitEndpoint reads the auth override under the same account scope", () => {
+  const unit = "[Service]\nEnvironment=REMNIC_AUTH_TOKEN=abc123\n";
+  assert.equal(
+    resolveUnitEndpoint(unit, { userScoped: true, homeDir: "/home/gw" }).authToken,
+    "abc123",
+  );
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nEnvironment=ENGRAM_AUTH_TOKEN=legacy\n", {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).authToken,
+    "legacy",
+    "the legacy spelling still resolves",
+  );
+});

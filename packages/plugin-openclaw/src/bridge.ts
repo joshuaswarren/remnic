@@ -29,6 +29,12 @@ interface DaemonEndpointCandidate {
   configPath?: string;
   /** Resolved once at discovery so dedupe can compare credentials. */
   token: string;
+  /**
+   * A credential the unit file supplies directly, which outranks anything the
+   * config path resolves to. Carried onto `BridgeConfig` so delegate requests
+   * keep using the token the probe authenticated with.
+   */
+  authTokenOverride?: string;
 }
 
 export interface BridgeConfig {
@@ -48,6 +54,12 @@ export interface BridgeConfig {
    * two configs sends each daemon its OWN token.
    */
   daemonConfigPath?: string;
+  /**
+   * A credential taken from the installed unit's environment, which the
+   * gateway does not inherit and no config file carries. Delegate requests
+   * must use it or they authenticate as a different daemon would.
+   */
+  daemonAuthTokenOverride?: string;
 }
 
 export type DaemonAuthTokenSource =
@@ -336,7 +348,12 @@ function configPathCandidates(): string[] {
  */
 
 /** Every installed unit's endpoint hints, in discovery order. */
-function readServiceEndpoints(): Array<{ configPath?: string; host?: string; port?: number }> {
+function readServiceEndpoints(): Array<{
+  configPath?: string;
+  host?: string;
+  port?: number;
+  authToken?: string;
+}> {
   const homeDir = resolveHomeDir();
   const unitPaths: Array<{ unitPath: string; userScoped: boolean }> = [
     ...[...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS].map((segments) => ({
@@ -348,7 +365,12 @@ function readServiceEndpoints(): Array<{ configPath?: string; host?: string; por
   // EVERY distinct unit, not the first: canonical and legacy units coexist
   // during migration, and the inactive one can sort first. Stopping there
   // would hide the running daemon's endpoint from the candidate walk.
-  const endpoints: Array<{ configPath?: string; host?: string; port?: number }> = [];
+  const endpoints: Array<{
+    configPath?: string;
+    host?: string;
+    port?: number;
+    authToken?: string;
+  }> = [];
   for (const { unitPath, userScoped } of unitPaths) {
     if (!fileExists(unitPath)) continue;
     let unit: string;
@@ -358,14 +380,20 @@ function readServiceEndpoints(): Array<{ configPath?: string; host?: string; por
       continue;
     }
     const resolved = resolveUnitEndpoint(unit, { userScoped, homeDir });
-    if (resolved.configPath === undefined && resolved.host === undefined && resolved.port === undefined) {
+    if (
+      resolved.configPath === undefined &&
+      resolved.host === undefined &&
+      resolved.port === undefined &&
+      resolved.authToken === undefined
+    ) {
       continue;
     }
     const seen = endpoints.some(
       (entry) =>
         entry.configPath === resolved.configPath &&
         entry.host === resolved.host &&
-        entry.port === resolved.port,
+        entry.port === resolved.port &&
+        entry.authToken === resolved.authToken,
     );
     if (!seen) endpoints.push(resolved);
   }
@@ -417,15 +445,21 @@ function readUnitEnv(
 export function resolveUnitEndpoint(
   unit: string,
   scope: { userScoped: boolean; homeDir: string },
-): { configPath?: string; host?: string; port?: number } {
+): { configPath?: string; host?: string; port?: number; authToken?: string } {
   const host = readUnitEnv(unit, "REMNIC_HOST", scope) ?? readUnitEnv(unit, "ENGRAM_HOST", scope);
   const port = coerceDaemonPort(
     readUnitEnv(unit, "REMNIC_PORT", scope) ?? readUnitEnv(unit, "ENGRAM_PORT", scope),
   );
+  // The server merges REMNIC_AUTH_TOKEN over `server.authToken` the same way
+  // it merges host and port, so a unit that sets it is the only place the
+  // gateway can learn the live credential.
+  const authToken =
+    readUnitEnv(unit, "REMNIC_AUTH_TOKEN", scope) ?? readUnitEnv(unit, "ENGRAM_AUTH_TOKEN", scope);
   return {
     ...resolveUnitConfigPathInner(unit, scope),
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
+    ...(authToken === undefined ? {} : { authToken }),
   };
 }
 
@@ -575,6 +609,8 @@ function probeDaemonSync(options: {
   captureField?: string;
   /** Bind the credential to the config this endpoint came from. */
   configPath?: string;
+  /** A unit-supplied credential, which outranks the config's. */
+  authToken?: string;
 }): { ok: boolean; captured?: string } {
   const { host, port, timeoutMs } = options;
   if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return { ok: false };
@@ -595,7 +631,7 @@ function probeDaemonSync(options: {
         port,
         path: options.path,
         fallbackPath: options.fallbackPath,
-        token: loadDaemonAuth(options.configPath).token,
+        token: options.authToken ?? loadDaemonAuth(options.configPath).token,
         deadline,
         state,
         ...(capture ? { capture, captureField: options.captureField } : {}),
@@ -646,6 +682,7 @@ export function readDaemonMemoryDirSync(
   port: number,
   timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
   configPath?: string,
+  authToken?: string,
 ): { healthy: boolean; memoryDir?: string } {
   const probe = probeDaemonSync({
     host,
@@ -655,6 +692,7 @@ export function readDaemonMemoryDirSync(
     fallbackPath: null,
     captureField: "memoryDir",
     configPath,
+    authToken,
   });
   return { healthy: probe.ok, memoryDir: probe.captured };
 }
@@ -742,6 +780,7 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
     host: string | undefined,
     port: number | undefined,
     configPath?: string,
+    authTokenOverride?: string,
   ): void => {
     const resolvedHost = normalizeDaemonHost(
       envHost !== undefined && envHost.trim() !== "" ? envHost : (host ?? DEFAULT_HOST),
@@ -752,11 +791,17 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
     // and a manually launched daemon can share host:port while carrying
     // different `server.authToken` values. Dropping the later one would send
     // the stale token, take a 401, and never retry with the live credential.
-    const token = loadDaemonAuth(configPath).token;
+    const token = authTokenOverride ?? loadDaemonAuth(configPath).token;
     if (candidates.some((c) => c.host === dialHost && c.port === dialPort && c.token === token)) {
       return;
     }
-    candidates.push({ host: dialHost, port: dialPort, configPath, token });
+    candidates.push({
+      host: dialHost,
+      port: dialPort,
+      configPath,
+      token,
+      ...(authTokenOverride === undefined ? {} : { authTokenOverride }),
+    });
   };
   // An env override alone, so a specified environment is dialed first even
   // when no config file exists. Without one this would inject a bare
@@ -782,7 +827,7 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
   // candidate is probed, so a stale one costs one failed probe.
   for (const unit of readServiceEndpoints()) {
     const server = unit.configPath === undefined ? {} : (readServerBlock(unit.configPath) ?? {});
-    add(unit.host ?? server.host, unit.port ?? server.port, unit.configPath);
+    add(unit.host ?? server.host, unit.port ?? server.port, unit.configPath, unit.authToken);
   }
   for (const candidate of configOrder) {
     if (candidate === envConfigPath) continue;
@@ -845,6 +890,9 @@ export function detectDaemonBridgeMode(options: {
     daemonHost: primary.host,
     daemonPort: primary.port,
     ...(primary.configPath === undefined ? {} : { daemonConfigPath: primary.configPath }),
+    ...(primary.authTokenOverride === undefined
+      ? {}
+      : { daemonAuthTokenOverride: primary.authTokenOverride }),
   };
 
   // `bridgeHealthTimeoutMs` is documented as the TOTAL preflight budget, and
@@ -853,7 +901,7 @@ export function detectDaemonBridgeMode(options: {
   // shares one deadline.
   const totalTimeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
   const deadline = Date.now() + totalTimeoutMs;
-  for (const { host: daemonHost, port: daemonPort, configPath } of endpoints) {
+  for (const { host: daemonHost, port: daemonPort, configPath, authTokenOverride } of endpoints) {
     // Auto is SAME-HOST detection. A matching absolute memoryDir string proves
     // nothing across machines — an unrelated remote daemon using the same
     // conventional path would silently capture every recall and write — and the
@@ -876,7 +924,13 @@ export function detectDaemonBridgeMode(options: {
       );
       break;
     }
-    const health = readDaemonMemoryDirSync(daemonHost, daemonPort, remainingMs, configPath);
+    const health = readDaemonMemoryDirSync(
+      daemonHost,
+      daemonPort,
+      remainingMs,
+      configPath,
+      authTokenOverride,
+    );
     if (!health.healthy) {
       options.onSkip?.(`no healthy daemon at ${daemonHost}:${daemonPort}`);
       continue;
@@ -893,7 +947,14 @@ export function detectDaemonBridgeMode(options: {
       );
       continue;
     }
-    return { mode: "delegate", daemonHost, daemonPort, healthVerified: true, ...(configPath === undefined ? {} : { daemonConfigPath: configPath }) };
+    return {
+      mode: "delegate",
+      daemonHost,
+      daemonPort,
+      healthVerified: true,
+      ...(configPath === undefined ? {} : { daemonConfigPath: configPath }),
+      ...(authTokenOverride === undefined ? {} : { daemonAuthTokenOverride: authTokenOverride }),
+    };
   }
   return embedded;
 }
