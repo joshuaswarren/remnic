@@ -778,11 +778,22 @@ export function createDelegateMemoryCapability(
       timeoutMs?: number,
       operations?: readonly string[],
     ): Promise<string | undefined> => {
-      // An explicit scope is the caller's own and the daemon enforces it, so
-      // it rides the cache. An ABSENT one is decided by the posture, which is
-      // an authorization fact and must be current.
-      const fresh = await refreshHealth(timeoutMs, explicit === undefined);
-      return await resolveScopedNamespaceChecked(explicit, timeoutMs, fresh, operations);
+      // An explicit scope is the caller's OWN and the daemon enforces it on
+      // the operation endpoint. It needs no health fact and no authorization
+      // probe, so a cold cache must not spend the hook's deadline here — a
+      // `/health` that eats the prompt budget would drop memory injection for
+      // a recall the daemon was ready to serve.
+      if (explicit !== undefined) {
+        return await resolveScopedNamespaceChecked(explicit, timeoutMs, true, operations);
+      }
+      // An ABSENT scope is decided by the posture, which is an authorization
+      // fact and must be current. The posture probe and the authorization
+      // probe below share ONE deadline: billing each the full remaining budget
+      // would overrun the hook before its own request runs.
+      const deadline = timeoutMs === undefined ? undefined : now() + timeoutMs;
+      const fresh = await refreshHealth(timeoutMs, true);
+      const remaining = deadline === undefined ? undefined : Math.floor(deadline - now());
+      return await resolveScopedNamespaceChecked(undefined, remaining, fresh, operations);
     },
     runtime: {
       async getMemorySearchManager() {

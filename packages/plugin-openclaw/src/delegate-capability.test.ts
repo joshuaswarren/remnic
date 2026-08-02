@@ -26,6 +26,8 @@ type StubRoutes = {
   /** A literal response body, for shapes `JSON.stringify` would normalize. */
   healthRaw?: string;
   healthStatus?: number;
+  /** Delay the health response, so a test can observe a shared deadline. */
+  healthDelayMs?: number;
   search?: unknown;
   searchStatus?: number;
 };
@@ -40,27 +42,39 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
       const pathname = (req.url ?? "").split("?")[0] ?? "";
       calls.push({ pathname, body: raw ? JSON.parse(raw) : undefined });
       const isSearch = pathname.endsWith("/memories/search");
-      const status = isSearch ? (routes.searchStatus ?? 200) : (routes.healthStatus ?? 200);
-      res.writeHead(status, { "content-type": "application/json" });
-      if (!isSearch && routes.healthRaw !== undefined) {
-        // A literal body, so a test can send a 200 that is valid JSON but not
-        // a record — the shape `?? {}` would otherwise paper over.
-        res.end(routes.healthRaw);
+      const delayMs = isSearch ? 0 : (routes.healthDelayMs ?? 0);
+      if (delayMs > 0) {
+        setTimeout(() => respond(), delayMs);
         return;
       }
-      let payload = isSearch ? routes.search : routes.health;
-      if (isSearch && payload !== null && typeof payload === "object") {
-        // Honor `maxResults` the way a real daemon does, so a client-side
-        // top-up sees a genuinely truncated page.
-        const requested = (calls[calls.length - 1]?.body as { maxResults?: number } | undefined)
-          ?.maxResults;
-        const page = payload as { results?: unknown[]; count?: number };
-        if (typeof requested === "number" && Array.isArray(page.results)) {
-          const sliced = page.results.slice(0, requested);
-          payload = { ...page, results: sliced, count: sliced.length };
+      respond();
+
+      function respond(): void {
+        const status = isSearch
+          ? (routes.searchStatus ?? 200)
+          : (routes.healthStatus ?? 200);
+        res.writeHead(status, { "content-type": "application/json" });
+        if (!isSearch && routes.healthRaw !== undefined) {
+          // A literal body, so a test can send a 200 that is valid JSON but not
+          // a record — the shape `?? {}` would otherwise paper over.
+          res.end(routes.healthRaw);
+          return;
         }
+        let payload = isSearch ? routes.search : routes.health;
+        if (isSearch && payload !== null && typeof payload === "object") {
+          // Honor `maxResults` the way a real daemon does, so a client-side
+          // top-up sees a genuinely truncated page.
+          const requested = (
+            calls[calls.length - 1]?.body as { maxResults?: number } | undefined
+          )?.maxResults;
+          const page = payload as { results?: unknown[]; count?: number };
+          if (typeof requested === "number" && Array.isArray(page.results)) {
+            const sliced = page.results.slice(0, requested);
+            payload = { ...page, results: sliced, count: sliced.length };
+          }
+        }
+        res.end(JSON.stringify(payload ?? {}));
       }
-      res.end(JSON.stringify(payload ?? {}));
     });
   });
   const listening = Promise.withResolvers<void>();
@@ -83,17 +97,31 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
   };
 }
 
-async function makeCorpus(): Promise<{ memoryDir: string; workspaceDir: string }> {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-cap-")));
+async function makeCorpus(): Promise<{
+  memoryDir: string;
+  workspaceDir: string;
+}> {
+  const root = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "remnic-delegate-cap-")),
+  );
   const memoryDir = path.join(root, "memory");
   const workspaceDir = path.join(root, "workspace");
   await mkdir(path.join(memoryDir, "facts"), { recursive: true });
   await mkdir(path.join(memoryDir, "artifacts"), { recursive: true });
   await mkdir(path.join(workspaceDir, "memory"), { recursive: true });
-  await writeFile(path.join(memoryDir, "facts", "alice.md"), "one\ntwo\nthree\nfour\n");
+  await writeFile(
+    path.join(memoryDir, "facts", "alice.md"),
+    "one\ntwo\nthree\nfour\n",
+  );
   // Exists ONLY under the gateway's workspace - the daemon never saw it.
-  await writeFile(path.join(workspaceDir, "memory", "notes.md"), "gateway-only\n");
-  await writeFile(path.join(memoryDir, "artifacts", "report.md"), "secret artifact\n");
+  await writeFile(
+    path.join(workspaceDir, "memory", "notes.md"),
+    "gateway-only\n",
+  );
+  await writeFile(
+    path.join(memoryDir, "artifacts", "report.md"),
+    "secret artifact\n",
+  );
   return { memoryDir, workspaceDir };
 }
 
@@ -108,7 +136,10 @@ function optionsFor(
     target: {
       host: "127.0.0.1",
       port,
-      resolveAuthToken: () => ({ token: "test-token", source: "REMNIC_AUTH_TOKEN" }),
+      resolveAuthToken: () => ({
+        token: "test-token",
+        source: "REMNIC_AUTH_TOKEN",
+      }),
     },
     namespace: "",
     resolveSearchNamespace: async () => undefined,
@@ -133,12 +164,20 @@ function healthyDaemon(memoryDir: string): Record<string, unknown> {
     namespacesEnabled: false,
     searchBackend: "qmd",
     qmdEnabled: true,
-    qmd: { enabled: true, active: true, degraded: false, debugStatus: "cli=true" },
+    qmd: {
+      enabled: true,
+      active: true,
+      degraded: false,
+      debugStatus: "cli=true",
+    },
   };
 }
 
 test.before(() =>
-  initLogger({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }, false),
+  initLogger(
+    { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    false,
+  ),
 );
 test.after(() => resetLogger());
 
@@ -156,8 +195,13 @@ test("delegate search maps daemon hits into runtime results", async () => {
     },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     assert.ok(manager);
     const results = await manager.search("alice", { maxResults: 5 });
     assert.deepEqual(results, [
@@ -180,8 +224,14 @@ test("delegate search maps daemon hits into runtime results", async () => {
         citation: path.join("sessions", "2026-01-01.md"),
       },
     ]);
-    const searchCall = stub.calls.find((call) => call.pathname.endsWith("/memories/search"));
-    assert.deepEqual(searchCall?.body, { query: "alice", maxResults: 5, mode: "search" });
+    const searchCall = stub.calls.find((call) =>
+      call.pathname.endsWith("/memories/search"),
+    );
+    assert.deepEqual(searchCall?.body, {
+      query: "alice",
+      maxResults: 5,
+      mode: "search",
+    });
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -201,8 +251,13 @@ test("delegate search excludes artifact paths and honors minScore", async () => 
     },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     const results = await manager?.search("q", { minScore: 0.5 });
     assert.deepEqual(
       results?.map((result) => result.citation),
@@ -217,7 +272,10 @@ test("delegate search excludes artifact paths and honors minScore", async () => 
 
 test("delegate search scopes the namespace through the session resolver", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir), search: { results: [] } });
+  const stub = await startDaemonStub({
+    health: healthyDaemon(memoryDir),
+    search: { results: [] },
+  });
   const seen: Array<string | undefined> = [];
   try {
     const built = createDelegateMemoryCapability(
@@ -229,17 +287,30 @@ test("delegate search scopes the namespace through the session resolver", async 
         },
       }),
     );
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await manager?.search("q", { sessionKey: "s1" });
     await manager?.search("q");
-    const searches = stub.calls.filter((call) => call.pathname.endsWith("/memories/search"));
-    assert.deepEqual(searches[0]?.body, { query: "q", mode: "search", namespace: "team-a" });
+    const searches = stub.calls.filter((call) =>
+      call.pathname.endsWith("/memories/search"),
+    );
+    assert.deepEqual(searches[0]?.body, {
+      query: "q",
+      mode: "search",
+      namespace: "team-a",
+    });
     assert.deepEqual(
       searches[1]?.body,
       { query: "q", mode: "search", namespace: "fallback-ns" },
       "a search with no session key falls back to the registration-wide namespace",
     );
-    assert.deepEqual(seen, ["s1", undefined], "the host session key reaches the resolver");
+    assert.deepEqual(
+      seen,
+      ["s1", undefined],
+      "the host session key reaches the resolver",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -250,17 +321,29 @@ test("delegate refuses file-backed surfaces when the daemon serves another corpu
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: healthyDaemon(path.join(memoryDir, "..", "someone-elses-corpus")),
-    search: { results: [{ path: "facts/alice.md", score: 0.5, snippet: "hit" }] },
+    search: {
+      results: [{ path: "facts/alice.md", score: 0.5, snippet: "hit" }],
+    },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
-      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      () =>
+        manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
       /delegate readFile unavailable/,
       "reading a same-named local file would serve the wrong corpus",
     );
-    assert.deepEqual(await built.listArtifacts(), [], "artifact listing is disabled too");
+    assert.deepEqual(
+      await built.listArtifacts(),
+      [],
+      "artifact listing is disabled too",
+    );
     const results = await manager?.search("alice");
     assert.equal(results?.length, 1, "daemon-backed search still works");
   } finally {
@@ -273,10 +356,16 @@ test("delegate refuses file-backed surfaces until the corpus is confirmed", asyn
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ healthStatus: 500, health: {} });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
-      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      () =>
+        manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
       /delegate readFile unavailable/,
       "an unconfirmed corpus fails closed rather than reading local files",
     );
@@ -288,10 +377,19 @@ test("delegate refuses file-backed surfaces until the corpus is confirmed", asyn
 
 test("delegate search surfaces a daemon failure instead of returning empty", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir), searchStatus: 503, search: {} });
+  const stub = await startDaemonStub({
+    health: healthyDaemon(memoryDir),
+    searchStatus: 503,
+    search: {},
+  });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
       () => manager?.search("q") ?? Promise.resolve([]),
       /responded 503/,
@@ -307,9 +405,18 @@ test("delegate readFile reads the shared corpus and paginates", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
-    const page = await manager?.readFile({ relPath: "facts/alice.md", from: 2, lines: 2 });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
+    const page = await manager?.readFile({
+      relPath: "facts/alice.md",
+      from: 2,
+      lines: 2,
+    });
     assert.equal(page?.text, "two\nthree");
     assert.equal(page?.truncated, true);
     assert.equal(page?.nextFrom, 4);
@@ -325,8 +432,13 @@ test("delegate readFile refuses paths outside the memory roots", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
       () => manager?.readFile({ relPath: "/etc/hosts" }) ?? Promise.resolve(),
       /memory read (outside allowed roots|restricted to \.md files|rejected)/,
@@ -341,18 +453,26 @@ test("delegate status reflects the daemon health snapshot", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     const status = manager?.status();
     assert.equal(status?.backend, "qmd");
     assert.equal(status?.dbPath, memoryDir);
     assert.deepEqual(status?.vector, { enabled: true, available: true });
     assert.equal(await manager?.probeVectorAvailability(), true);
     assert.deepEqual(await manager?.probeEmbeddingAvailability(), { ok: true });
-    assert.deepEqual(built.runtime.resolveMemoryBackendConfig({ cfg: {}, agentId: "main" }), {
-      backend: "qmd",
-      qmd: { command: "qmd" },
-    });
+    assert.deepEqual(
+      built.runtime.resolveMemoryBackendConfig({ cfg: {}, agentId: "main" }),
+      {
+        backend: "qmd",
+        qmd: { command: "qmd" },
+      },
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -367,12 +487,22 @@ test("delegate status reports a degraded daemon QMD as unavailable", async () =>
       namespacesEnabled: false,
       searchBackend: "qmd",
       qmdEnabled: true,
-      qmd: { enabled: true, active: true, degraded: true, debugStatus: "collection missing" },
+      qmd: {
+        enabled: true,
+        active: true,
+        degraded: true,
+        debugStatus: "collection missing",
+      },
     },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     assert.equal(manager?.status().vector?.available, false);
     assert.deepEqual(await manager?.probeEmbeddingAvailability(), {
       ok: false,
@@ -388,8 +518,13 @@ test("delegate status keeps the configured backend when the daemon health probe 
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ healthStatus: 500, health: {} });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     // A failed probe must not fabricate an outage — the seeded config wins.
     assert.equal(manager?.status().backend, "qmd");
     assert.equal(manager?.status().dbPath, memoryDir);
@@ -409,7 +544,8 @@ test("delegate health is cached and refreshed on the injected clock", async () =
     );
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
-    const healthCalls = () => stub.calls.filter((call) => call.pathname.endsWith("/health")).length;
+    const healthCalls = () =>
+      stub.calls.filter((call) => call.pathname.endsWith("/health")).length;
     assert.equal(healthCalls(), 1, "a warm snapshot is reused");
     clock += 60_000;
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -424,8 +560,13 @@ test("delegate runtime offers no sync — indexing stays the daemon's job", asyn
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     assert.equal(manager?.sync, undefined);
   } finally {
     await stub.close();
@@ -446,7 +587,10 @@ test("delegate flush plan matches the embedded contract", async () => {
     const plan = built.flushPlanResolver();
     assert.equal(plan.forceFlushTranscriptBytes, 48_000);
     assert.equal(plan.model, "gpt-test");
-    assert.equal(plan.relativePath, "state/plugins/openclaw-remnic/flush-plan.md");
+    assert.equal(
+      plan.relativePath,
+      "state/plugins/openclaw-remnic/flush-plan.md",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -457,12 +601,21 @@ test("delegate publicArtifacts lists the corpus and degrades to empty on failure
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
     const artifacts = await built.listArtifacts();
-    assert.ok(artifacts.length > 0, "the shared corpus yields public artifacts");
+    assert.ok(
+      artifacts.length > 0,
+      "the shared corpus yields public artifacts",
+    );
 
     const missing = createDelegateMemoryCapability(
-      optionsFor(stub.port, path.join(memoryDir, "does-not-exist"), workspaceDir),
+      optionsFor(
+        stub.port,
+        path.join(memoryDir, "does-not-exist"),
+        workspaceDir,
+      ),
     );
     assert.deepEqual(await missing.listArtifacts(), []);
   } finally {
@@ -505,14 +658,23 @@ test("registerDelegateMemoryCapability wires the unified host surface", async ()
     assert.ok(registered.runtime);
     assert.ok(registered.flushPlan);
 
-    const promptBuilder = capability.promptBuilder as (p: { sessionKey?: string }) => string[] | null;
-    assert.deepEqual(promptBuilder({ sessionKey: "s1" }), ["## Memory", "line"]);
+    const promptBuilder = capability.promptBuilder as (p: {
+      sessionKey?: string;
+    }) => string[] | null;
+    assert.deepEqual(promptBuilder({ sessionKey: "s1" }), [
+      "## Memory",
+      "line",
+    ]);
     assert.deepEqual(
       seenSessionKeys,
       ["s1"],
       "the host session key reaches the seam, which owns peek-vs-consume",
     );
-    assert.equal(promptBuilder({}), null, "a missing session key reads the default bucket");
+    assert.equal(
+      promptBuilder({}),
+      null,
+      "a missing session key reads the default bucket",
+    );
     assert.deepEqual(seenSessionKeys, ["s1", "default"]);
   } finally {
     await stub.close();
@@ -531,7 +693,9 @@ test("registerDelegateMemoryCapability omits promptBuilder when injection is dis
           capability = value as Record<string, unknown>;
         },
       },
-      optionsFor(stub.port, memoryDir, workspaceDir, { allowPromptInjection: false }),
+      optionsFor(stub.port, memoryDir, workspaceDir, {
+        allowPromptInjection: false,
+      }),
     );
     assert.ok(capability);
     assert.equal("promptBuilder" in capability, false);
@@ -571,9 +735,16 @@ test("registerDelegateMemoryCapability is a no-op on a host with no memory surfa
   const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
     assert.doesNotThrow(() =>
-      registerDelegateMemoryCapability({}, optionsFor(stub.port, memoryDir, workspaceDir)),
+      registerDelegateMemoryCapability(
+        {},
+        optionsFor(stub.port, memoryDir, workspaceDir),
+      ),
     );
-    assert.equal(stub.calls.length, 0, "nothing is probed when nothing can be registered");
+    assert.equal(
+      stub.calls.length,
+      0,
+      "nothing is probed when nothing can be registered",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -588,10 +759,19 @@ test("delegate accepts a daemon serving a namespace under the corpus root", asyn
   await writeFile(path.join(namespaceDir, "facts", "alice.md"), "one\ntwo\n");
   const stub = await startDaemonStub({ health: healthyDaemon(namespaceDir) });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     const page = await manager?.readFile({ relPath: "facts/alice.md" });
-    assert.equal(page?.text.startsWith("one"), true, "a migrated default namespace is not foreign");
+    assert.equal(
+      page?.text.startsWith("one"),
+      true,
+      "a migrated default namespace is not foreign",
+    );
     assert.ok((await built.listArtifacts()).length > 0);
   } finally {
     await stub.close();
@@ -601,10 +781,18 @@ test("delegate accepts a daemon serving a namespace under the corpus root", asyn
 
 test("delegate search forwards the host's ranking override", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir), search: { results: [] } });
+  const stub = await startDaemonStub({
+    health: healthyDaemon(memoryDir),
+    search: { results: [] },
+  });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await manager?.search("q", { qmdSearchModeOverride: "vsearch" });
     await manager?.search("q", { qmdSearchModeOverride: "query" });
     await manager?.search("q");
@@ -626,22 +814,35 @@ test("delegate roots reads and artifacts on the daemon's namespace directory", a
   const { memoryDir, workspaceDir } = await makeCorpus();
   const namespaceDir = path.join(memoryDir, "namespaces", "generalist");
   await mkdir(path.join(namespaceDir, "facts"), { recursive: true });
-  await writeFile(path.join(namespaceDir, "facts", "scoped.md"), "namespace fact\n");
+  await writeFile(
+    path.join(namespaceDir, "facts", "scoped.md"),
+    "namespace fact\n",
+  );
   const stub = await startDaemonStub({ health: healthyDaemon(namespaceDir) });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     // The daemon's hits are relative to ITS storage dir, so the read scope must
     // be rooted there, not on the configured corpus root.
     const page = await manager?.readFile({ relPath: "facts/scoped.md" });
     assert.equal(page?.text.trim(), "namespace fact");
-    const artifacts = (await built.listArtifacts()) as Array<{ absolutePath?: string }>;
+    const artifacts = (await built.listArtifacts()) as Array<{
+      absolutePath?: string;
+    }>;
     assert.ok(
       artifacts.some((entry) => entry.absolutePath?.startsWith(namespaceDir)),
       "the active namespace's artifacts are listed",
     );
     assert.equal(
-      artifacts.some((entry) => entry.absolutePath === path.join(memoryDir, "facts", "alice.md")),
+      artifacts.some(
+        (entry) =>
+          entry.absolutePath === path.join(memoryDir, "facts", "alice.md"),
+      ),
       false,
       "flat-root files outside the active namespace are not published for it",
     );
@@ -665,9 +866,14 @@ test("delegate search sends the daemon's default namespace, never an absent one"
         resolveSearchNamespace: async () => undefined,
       }),
     );
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await manager?.search("q");
-    const body = stub.calls.find((call) => call.pathname.endsWith("/memories/search"))?.body;
+    const body = stub.calls.find((call) =>
+      call.pathname.endsWith("/memories/search"),
+    )?.body;
     assert.deepEqual(
       body,
       { query: "q", mode: "search", namespace: "generalist" },
@@ -681,10 +887,18 @@ test("delegate search sends the daemon's default namespace, never an absent one"
 
 test("delegate search returns empty for a zero result budget without calling the daemon", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir), search: { results: [] } });
+  const stub = await startDaemonStub({
+    health: healthyDaemon(memoryDir),
+    search: { results: [] },
+  });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     assert.deepEqual(await manager?.search("q", { maxResults: 0 }), []);
     assert.equal(
       stub.calls.some((call) => call.pathname.endsWith("/memories/search")),
@@ -709,7 +923,13 @@ test("delegate reads a hit from another namespace's storage directory", async ()
   const stub = await startDaemonStub({
     health: healthyDaemon(defaultDir),
     search: {
-      results: [{ path: path.join(otherDir, "facts", "scoped.md"), score: 0.9, snippet: "hit" }],
+      results: [
+        {
+          path: path.join(otherDir, "facts", "scoped.md"),
+          score: 0.9,
+          snippet: "hit",
+        },
+      ],
     },
   });
   try {
@@ -718,11 +938,18 @@ test("delegate reads a hit from another namespace's storage directory", async ()
         resolveSearchNamespace: async () => "team-a",
       }),
     );
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     const [hit] = (await manager?.search("q")) ?? [];
     assert.ok(hit, "the daemon returned a hit");
     const page = await manager?.readFile({ relPath: hit.path });
-    assert.equal(page?.text.trim(), "team-a fact", "the host can open its own search hit");
+    assert.equal(
+      page?.text.trim(),
+      "team-a fact",
+      "the host can open its own search hit",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -733,7 +960,9 @@ test("delegate refuses file-backed surfaces for a remote daemon with an identica
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
     health: healthyDaemon(memoryDir),
-    search: { results: [{ path: "facts/alice.md", score: 0.5, snippet: "hit" }] },
+    search: {
+      results: [{ path: "facts/alice.md", score: 0.5, snippet: "hit" }],
+    },
   });
   try {
     const built = createDelegateMemoryCapability(
@@ -747,9 +976,13 @@ test("delegate refuses file-backed surfaces for a remote daemon with an identica
         },
       }),
     );
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
-      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      () =>
+        manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
       /is not local/,
     );
     assert.deepEqual(await built.listArtifacts(), []);
@@ -763,10 +996,17 @@ test("delegate readFile refuses artifact paths", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
-      () => manager?.readFile({ relPath: "artifacts/report.md" }) ?? Promise.resolve(),
+      () =>
+        manager?.readFile({ relPath: "artifacts/report.md" }) ??
+        Promise.resolve(),
       /artifact path/,
       "search filters artifacts; the read path must not be a way around that",
     );
@@ -795,17 +1035,26 @@ test("delegate search caps AFTER dropping artifacts, not before", async () => {
     },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     const results = (await manager?.search("q", { maxResults: 2 })) ?? [];
     assert.deepEqual(
       results.map((hit) => hit.citation),
       [path.join("facts", "one.md"), path.join("facts", "two.md")],
       "a full page of real memories, and never more than the budget",
     );
-    const searchCalls = stub.calls.filter((call) => call.pathname.includes("/memories/search"));
+    const searchCalls = stub.calls.filter((call) =>
+      call.pathname.includes("/memories/search"),
+    );
     assert.deepEqual(
-      searchCalls.map((call) => (call.body as { maxResults?: number }).maxResults),
+      searchCalls.map(
+        (call) => (call.body as { maxResults?: number }).maxResults,
+      ),
       [2, 4],
       "asks again with a doubled limit rather than returning a thin page",
     );
@@ -821,18 +1070,30 @@ test("delegate health backs off on a 200 with a malformed body", async () => {
   // immediate re-fetch; it backs off exactly like a transport failure.
   const stub = await startDaemonStub({ healthRaw: "null" });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
     // Every entry point that consults health goes through the same refresh, so
     // three back-to-back handouts would mean three probes with no backoff.
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
-    const healthCalls = stub.calls.filter((call) => call.pathname.includes("/health"));
-    assert.equal(healthCalls.length, 1, "later handouts reuse the backoff, they do not re-probe");
+    const healthCalls = stub.calls.filter((call) =>
+      call.pathname.includes("/health"),
+    );
+    assert.equal(
+      healthCalls.length,
+      1,
+      "later handouts reuse the backoff, they do not re-probe",
+    );
     // And the malformed payload never becomes a corpus claim.
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
-      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      () =>
+        manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
       /has not been confirmed/,
     );
   } finally {
@@ -856,10 +1117,17 @@ test("delegate search with no budget keeps the daemon's page size on the wire", 
     },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     const results = (await manager?.search("q")) ?? [];
-    const searchCalls = stub.calls.filter((call) => call.pathname.includes("/memories/search"));
+    const searchCalls = stub.calls.filter((call) =>
+      call.pathname.includes("/memories/search"),
+    );
     // First request carries no cap - the caller accepted the daemon's page.
     assert.equal(
       (searchCalls[0]?.body as { maxResults?: number }).maxResults,
@@ -868,7 +1136,9 @@ test("delegate search with no budget keeps the daemon's page size on the wire", 
     );
     // The artifact thinned that page, so it tops up against what was served.
     assert.deepEqual(
-      searchCalls.map((call) => (call.body as { maxResults?: number }).maxResults),
+      searchCalls.map(
+        (call) => (call.body as { maxResults?: number }).maxResults,
+      ),
       [undefined, 6],
     );
     assert.deepEqual(
@@ -886,14 +1156,26 @@ test("delegate search rejects a malformed result entry instead of inventing a me
   // A 200 whose entries are not memories is a version-skewed or corrupt
   // daemon. Synthesizing `memory-N` would hand the host a path it can then
   // try to open (AGENTS.md #22).
-  for (const bad of ["not-an-object", { score: 0.9 }, { path: 42 }, { path: "  " }]) {
+  for (const bad of [
+    "not-an-object",
+    { score: 0.9 },
+    { path: 42 },
+    { path: "  " },
+  ]) {
     const stub = await startDaemonStub({
       health: healthyDaemon(memoryDir),
-      search: { results: [{ path: "facts/ok.md", score: 0.9, snippet: "ok" }, bad] },
+      search: {
+        results: [{ path: "facts/ok.md", score: 0.9, snippet: "ok" }, bad],
+      },
     });
     try {
-      const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-      const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+      const built = createDelegateMemoryCapability(
+        optionsFor(stub.port, memoryDir, workspaceDir),
+      );
+      const { manager } = await built.runtime.getMemorySearchManager({
+        cfg: {},
+        agentId: "main",
+      });
       await assert.rejects(
         () => manager?.search("q") ?? Promise.resolve(),
         /malformed result entry/,
@@ -917,17 +1199,26 @@ test("delegate file surfaces refuse a namespace-partitioned daemon", async () =>
   // is flat" must still fail closed.
   for (const namespacesEnabled of [true, undefined]) {
     const stub = await startDaemonStub({
-      health: { ...healthyDaemon(memoryDir), namespacesEnabled, defaultNamespace: "default" },
+      health: {
+        ...healthyDaemon(memoryDir),
+        namespacesEnabled,
+        defaultNamespace: "default",
+      },
       search: { query: "q", count: 0, results: [] },
     });
     try {
       const built = createDelegateMemoryCapability({
         ...optionsFor(stub.port, memoryDir, workspaceDir),
-        resolveSearchNamespace: async (sessionKey) => (sessionKey === "s2" ? "team-a" : "default"),
+        resolveSearchNamespace: async (sessionKey) =>
+          sessionKey === "s2" ? "team-a" : "default",
       });
-      const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+      const { manager } = await built.runtime.getMemorySearchManager({
+        cfg: {},
+        agentId: "main",
+      });
       await assert.rejects(
-        () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+        () =>
+          manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
         /a local read cannot be authorized/,
         `namespacesEnabled: ${String(namespacesEnabled)} must fail closed`,
       );
@@ -937,7 +1228,9 @@ test("delegate file surfaces refuse a namespace-partitioned daemon", async () =>
         "artifacts are withheld, not cross-published",
       );
       // Search is unaffected: it carries the session and the daemon enforces.
-      assert.ok(Array.isArray(await manager?.search("q", { sessionKey: "s2" })));
+      assert.ok(
+        Array.isArray(await manager?.search("q", { sessionKey: "s2" })),
+      );
     } finally {
       await stub.close();
     }
@@ -951,10 +1244,19 @@ test("delegate file surfaces stay available on a single-corpus daemon", async ()
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     const read = await manager?.readFile({ relPath: "facts/alice.md" });
-    assert.equal(read?.path, path.join("facts", "alice.md"), "the read is served, not refused");
+    assert.equal(
+      read?.path,
+      path.join("facts", "alice.md"),
+      "the read is served, not refused",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -969,8 +1271,13 @@ test("delegate reads do not fall back to the gateway's own workspace", async () 
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
       () => manager?.readFile({ relPath: "notes.md" }) ?? Promise.resolve(),
       /memory read rejected/,
@@ -991,7 +1298,11 @@ test("delegate refuses a substituted default namespace the token cannot use", as
   // token scoped elsewhere that would 403 on the very first search; the
   // refusal must name the fix instead.
   const stub = await startDaemonStub({
-    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+    health: {
+      ...healthyDaemon(memoryDir),
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    },
     search: { query: "q", count: 0, results: [] },
   });
   try {
@@ -1000,7 +1311,10 @@ test("delegate refuses a substituted default namespace the token cannot use", as
       resolveSearchNamespace: async () => undefined,
       verifyNamespaceAuthorization: async () => false,
     });
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
       () => manager?.search("q") ?? Promise.resolve(),
       /is not authorized for the delegate token/,
@@ -1015,7 +1329,11 @@ test("delegate proceeds when the substituted default IS authorized, and on an ol
   const { memoryDir, workspaceDir } = await makeCorpus();
   for (const verdict of [true, undefined]) {
     const stub = await startDaemonStub({
-      health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+      health: {
+        ...healthyDaemon(memoryDir),
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+      },
       search: { query: "q", count: 0, results: [] },
     });
     try {
@@ -1028,10 +1346,17 @@ test("delegate proceeds when the substituted default IS authorized, and on an ol
           return verdict;
         },
       });
-      const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+      const { manager } = await built.runtime.getMemorySearchManager({
+        cfg: {},
+        agentId: "main",
+      });
       assert.deepEqual(await manager?.search("q"), []);
       await manager?.search("q again");
-      assert.equal(probes, 1, "the verdict is cached, not re-probed per search");
+      assert.equal(
+        probes,
+        1,
+        "the verdict is cached, not re-probed per search",
+      );
     } finally {
       await stub.close();
     }
@@ -1042,7 +1367,11 @@ test("delegate proceeds when the substituted default IS authorized, and on an ol
 test("delegate does not second-guess an explicit namespace", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
-    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+    health: {
+      ...healthyDaemon(memoryDir),
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    },
     search: { query: "q", count: 0, results: [] },
   });
   try {
@@ -1055,11 +1384,23 @@ test("delegate does not second-guess an explicit namespace", async () => {
         return false;
       },
     });
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     assert.deepEqual(await manager?.search("q"), []);
-    assert.equal(probed, false, "the caller's own scope is the daemon's to enforce");
-    const searchCall = stub.calls.find((call) => call.pathname.includes("/memories/search"));
-    assert.equal((searchCall?.body as { namespace?: string }).namespace, "team-a");
+    assert.equal(
+      probed,
+      false,
+      "the caller's own scope is the daemon's to enforce",
+    );
+    const searchCall = stub.calls.find((call) =>
+      call.pathname.includes("/memories/search"),
+    );
+    assert.equal(
+      (searchCall?.body as { namespace?: string }).namespace,
+      "team-a",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -1072,7 +1413,11 @@ test("swapping in an authorized token recovers unbound delegate search", async (
   // the namespace alone would keep rejecting search locally after an operator
   // replaced an under-scoped token, while recall and observe recovered.
   const stub = await startDaemonStub({
-    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+    health: {
+      ...healthyDaemon(memoryDir),
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    },
     search: { query: "q", count: 0, results: [] },
   });
   try {
@@ -1080,17 +1425,27 @@ test("swapping in an authorized token recovers unbound delegate search", async (
     const base = optionsFor(stub.port, memoryDir, workspaceDir);
     const built = createDelegateMemoryCapability({
       ...base,
-      target: { ...base.target, resolveAuthToken: () => ({ token, source: "REMNIC_AUTH_TOKEN" }) },
+      target: {
+        ...base.target,
+        resolveAuthToken: () => ({ token, source: "REMNIC_AUTH_TOKEN" }),
+      },
       resolveSearchNamespace: async () => undefined,
       verifyNamespaceAuthorization: async () => token === "authorized",
     });
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
       () => manager?.search("q") ?? Promise.resolve(),
       /is not authorized for the delegate token/,
     );
     token = "authorized";
-    assert.deepEqual(await manager?.search("q"), [], "the new token is re-probed, not refused from cache");
+    assert.deepEqual(
+      await manager?.search("q"),
+      [],
+      "the new token is re-probed, not refused from cache",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -1133,7 +1488,10 @@ test("a daemon that ANSWERS without a posture is unknown, not flat", async () =>
       ...optionsFor(stub.port, memoryDir, workspaceDir),
       resolveSearchNamespace: async () => undefined,
     });
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
       () => manager?.search("q") ?? Promise.resolve(),
       /default namespace is unknown/,
@@ -1155,7 +1513,10 @@ test("a partitioned plugin config still fails closed before the first probe", as
       ...optionsFor(stub.port, memoryDir, workspaceDir),
       resolveSearchNamespace: async () => undefined,
     });
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
       () => manager?.search("q") ?? Promise.resolve(),
       /default namespace is unknown/,
@@ -1176,10 +1537,16 @@ test("a health 200 without memoryDir leaves the corpus unconfirmed", async () =>
     search: { query: "q", count: 0, results: [] },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
-      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      () =>
+        manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
       /daemon serves an unknown memoryDir/,
       "file-backed reads stay disabled until the daemon names its corpus",
     );
@@ -1197,8 +1564,13 @@ test("delegate readFile rejects invalid offsets instead of serving another range
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     // Non-finite AND finite-but-invalid: a clamp or truncation would return a
     // different range while looking like a correct answer.
     for (const from of [
@@ -1210,20 +1582,28 @@ test("delegate readFile rejects invalid offsets instead of serving another range
       1.5,
     ]) {
       await assert.rejects(
-        () => manager?.readFile({ relPath: "facts/alice.md", from }) ?? Promise.resolve(),
+        () =>
+          manager?.readFile({ relPath: "facts/alice.md", from }) ??
+          Promise.resolve(),
         /from must be a positive integer/,
         `from: ${String(from)} must be rejected`,
       );
     }
     for (const lines of [Number.NaN, -1, 0, 0.5]) {
       await assert.rejects(
-        () => manager?.readFile({ relPath: "facts/alice.md", lines }) ?? Promise.resolve(),
+        () =>
+          manager?.readFile({ relPath: "facts/alice.md", lines }) ??
+          Promise.resolve(),
         /lines must be a positive integer/,
         `lines: ${String(lines)} must be rejected`,
       );
     }
     // A real range still works.
-    const read = await manager?.readFile({ relPath: "facts/alice.md", from: 2, lines: 1 });
+    const read = await manager?.readFile({
+      relPath: "facts/alice.md",
+      from: 2,
+      lines: 1,
+    });
     assert.equal(read?.text, "two");
   } finally {
     await stub.close();
@@ -1234,7 +1614,9 @@ test("delegate readFile rejects invalid offsets instead of serving another range
 test("delegate search keeps hits when the corpus sits under an `artifacts` ancestor", async () => {
   // <root>/artifacts/remnic is an ordinary corpus. Judging the ABSOLUTE hit
   // path would discard every result the daemon returned.
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-cap-ancestor-")));
+  const root = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "remnic-cap-ancestor-")),
+  );
   const memoryDir = path.join(root, "artifacts", "remnic");
   const workspaceDir = path.join(root, "workspace");
   await mkdir(path.join(memoryDir, "facts"), { recursive: true });
@@ -1246,14 +1628,27 @@ test("delegate search keeps hits when the corpus sits under an `artifacts` ances
       query: "q",
       count: 2,
       results: [
-        { path: path.join(memoryDir, "facts", "a.md"), score: 0.9, snippet: "fact" },
-        { path: path.join(memoryDir, "artifacts", "report.md"), score: 0.8, snippet: "artifact" },
+        {
+          path: path.join(memoryDir, "facts", "a.md"),
+          score: 0.9,
+          snippet: "fact",
+        },
+        {
+          path: path.join(memoryDir, "artifacts", "report.md"),
+          score: 0.8,
+          snippet: "artifact",
+        },
       ],
     },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     const results = (await manager?.search("q")) ?? [];
     assert.deepEqual(
       results.map((hit) => hit.citation),
@@ -1273,8 +1668,13 @@ test("delegate search rejects an out-of-range maxResults instead of coercing it"
     search: { query: "q", count: 0, results: [] },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     for (const maxResults of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       await assert.rejects(
         () => manager?.search("q", { maxResults }) ?? Promise.resolve(),
@@ -1308,8 +1708,14 @@ test("a spent caller budget skips the health probe instead of overrunning it", a
       now: () => clock,
     });
     // A real budget probes once and caches the daemon's flat posture.
-    assert.equal(await built.resolveScopedNamespace(undefined, 5_000), undefined);
-    assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 1);
+    assert.equal(
+      await built.resolveScopedNamespace(undefined, 5_000),
+      undefined,
+    );
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/health")).length,
+      1,
+    );
     // Snapshot expired, budget spent: no request is started (it would overrun
     // the shared deadline) AND an unscoped call fails closed, because the
     // posture on hand was never confirmed by this call.
@@ -1325,10 +1731,19 @@ test("a spent caller budget skips the health probe instead of overrunning it", a
     );
     // An explicit scope is the caller's own and still resolves unprobed.
     assert.equal(await built.resolveScopedNamespace("team-a", 0), "team-a");
-    assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 1);
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/health")).length,
+      1,
+    );
     // With budget again, it re-probes and the unscoped call works.
-    assert.equal(await built.resolveScopedNamespace(undefined, 5_000), undefined);
-    assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 2);
+    assert.equal(
+      await built.resolveScopedNamespace(undefined, 5_000),
+      undefined,
+    );
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/health")).length,
+      2,
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -1340,7 +1755,11 @@ test("a spent budget skips the authorization probe too", async () => {
   // The remaining-budget argument must reach the authorization probe, not stop
   // at health: its own fixed timeout would overrun a nearly-spent flush.
   const stub = await startDaemonStub({
-    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+    health: {
+      ...healthyDaemon(memoryDir),
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    },
     search: { query: "q", count: 0, results: [] },
   });
   try {
@@ -1355,8 +1774,16 @@ test("a spent budget skips the authorization probe too", async () => {
     });
     // Health is already cached by this first call, so the spent-budget path
     // below is exercised against the authorization probe specifically.
-    assert.equal(await built.resolveScopedNamespace(undefined, 5_000), "default");
-    assert.deepEqual(budgets, [5_000], "the caller's budget reaches the probe");
+    assert.equal(
+      await built.resolveScopedNamespace(undefined, 5_000),
+      "default",
+    );
+    assert.equal(budgets.length, 1, "the caller's budget reaches the probe");
+    const billed = budgets[0];
+    assert.ok(
+      typeof billed === "number" && billed > 0 && billed <= 5_000,
+      `the probe got what the posture probe left, not a fresh budget: ${String(billed)}`,
+    );
 
     const fresh = createDelegateMemoryCapability({
       ...optionsFor(stub.port, memoryDir, workspaceDir),
@@ -1442,7 +1869,11 @@ test("a probe failure un-proves the default namespace too", async () => {
     res.end(
       JSON.stringify(
         (req.url ?? "").includes("/health")
-          ? { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "tenant-a" }
+          ? {
+              ...healthyDaemon(memoryDir),
+              namespacesEnabled: true,
+              defaultNamespace: "tenant-a",
+            }
           : { query: "q", count: 0, results: [] },
       ),
     );
@@ -1486,8 +1917,13 @@ test("delegate search rejects a malformed score and an invalid minScore", async 
     },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     // A missing score is a protocol failure, not a zero ranking.
     await assert.rejects(
       () => manager?.search("q") ?? Promise.resolve(),
@@ -1531,7 +1967,9 @@ test("an unscoped request revalidates the posture instead of trusting the cache"
     );
     // An EXPLICIT scope is the caller's own and the daemon enforces it, so it
     // rides the cache and costs no extra probe.
-    const before = stub.calls.filter((call) => call.pathname.includes("/health")).length;
+    const before = stub.calls.filter((call) =>
+      call.pathname.includes("/health"),
+    ).length;
     await built.resolveScopedNamespace("team-a");
     assert.equal(
       stub.calls.filter((call) => call.pathname.includes("/health")).length,
@@ -1550,7 +1988,11 @@ test("the authorization probe names the operation the caller is performing", asy
   // hard-coded operation would reject those locally before their own route
   // could authorize them.
   const stub = await startDaemonStub({
-    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+    health: {
+      ...healthyDaemon(memoryDir),
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    },
     search: { query: "q", count: 0, results: [] },
   });
   try {
@@ -1564,7 +2006,10 @@ test("the authorization probe names the operation the caller is performing", asy
         return !(operations ?? []).includes("memory_search");
       },
     });
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
       () => manager?.search("q") ?? Promise.resolve(),
       /is not authorized for the delegate token/,
@@ -1572,7 +2017,9 @@ test("the authorization probe names the operation the caller is performing", asy
     );
     // A flush-scoped resolution names its own operation and is allowed.
     assert.equal(
-      await built.resolveScopedNamespace(undefined, undefined, ["lcm_compaction_flush"]),
+      await built.resolveScopedNamespace(undefined, undefined, [
+        "lcm_compaction_flush",
+      ]),
       "default",
     );
     assert.deepEqual(asked, [["memory_search"], ["lcm_compaction_flush"]]);
@@ -1588,7 +2035,9 @@ test("an invalid caller budget is rejected at the boundary", async () => {
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
     for (const timeoutMs of [Number.NaN, Number.POSITIVE_INFINITY, 12.5]) {
       await assert.rejects(
         () => built.resolveScopedNamespace(undefined, timeoutMs),
@@ -1609,8 +2058,13 @@ test("a health-failure backoff is honored even by an unscoped request", async ()
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({ healthStatus: 500, health: {} });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const built = createDelegateMemoryCapability(
+      optionsFor(stub.port, memoryDir, workspaceDir),
+    );
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     const probes = (): number =>
       stub.calls.filter((call) => call.pathname.includes("/health")).length;
     await assert.rejects(
@@ -1620,9 +2074,19 @@ test("a health-failure backoff is honored even by an unscoped request", async ()
     );
     const afterFirst = probes();
     assert.ok(afterFirst >= 1, "the first unscoped request probes");
-    await assert.rejects(() => manager?.search("q") ?? Promise.resolve(), /could not be confirmed/);
-    await assert.rejects(() => manager?.search("q") ?? Promise.resolve(), /could not be confirmed/);
-    assert.equal(probes(), afterFirst, "the failure backoff suppressed the repeat probes");
+    await assert.rejects(
+      () => manager?.search("q") ?? Promise.resolve(),
+      /could not be confirmed/,
+    );
+    await assert.rejects(
+      () => manager?.search("q") ?? Promise.resolve(),
+      /could not be confirmed/,
+    );
+    assert.equal(
+      probes(),
+      afterFirst,
+      "the failure backoff suppressed the repeat probes",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -1634,7 +2098,11 @@ test("a zero-budget search is authorized before it answers empty", async () => {
   // answer for a namespace the session may not read.
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
-    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "team" },
+    health: {
+      ...healthyDaemon(memoryDir),
+      namespacesEnabled: true,
+      defaultNamespace: "team",
+    },
     search: { query: "q", count: 0, results: [] },
   });
   try {
@@ -1642,16 +2110,81 @@ test("a zero-budget search is authorized before it answers empty", async () => {
       ...optionsFor(stub.port, memoryDir, workspaceDir),
       verifyNamespaceAuthorization: async () => false,
     });
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const { manager } = await built.runtime.getMemorySearchManager({
+      cfg: {},
+      agentId: "main",
+    });
     await assert.rejects(
       () => manager?.search("q", { maxResults: 0 }) ?? Promise.resolve(),
       /not authorized/,
       "a zero budget still runs the authorization gate",
     );
     assert.equal(
-      stub.calls.filter((call) => call.pathname.includes("/memories/search")).length,
+      stub.calls.filter((call) => call.pathname.includes("/memories/search"))
+        .length,
       0,
       "and still makes no backend call",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("the posture and authorization probes share one deadline", async () => {
+  // Billing each probe the full remaining budget lets namespace resolution
+  // alone overrun a hook before its own request runs.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: {
+      ...healthyDaemon(memoryDir),
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    },
+    healthDelayMs: 300,
+  });
+  try {
+    let authBudget: number | undefined;
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      resolveSearchNamespace: async () => undefined,
+      verifyNamespaceAuthorization: async (_namespace, timeoutMs) => {
+        authBudget = timeoutMs;
+        return true;
+      },
+    });
+    assert.equal(
+      await built.resolveScopedNamespace(undefined, 1_000),
+      "default",
+    );
+    assert.ok(
+      typeof authBudget === "number" && authBudget <= 750,
+      `the ~300ms posture probe came out of the shared 1000ms: ${String(authBudget)}`,
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an explicit scope needs no probe at all", async () => {
+  // `requireScopedNamespace` returns an explicit scope untouched and the
+  // daemon enforces it on the operation endpoint, so a cold health cache must
+  // not spend the prompt deadline before the recall POST runs.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({ health: healthyDaemon(memoryDir) });
+  try {
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      verifyNamespaceAuthorization: async () => {
+        throw new Error("an explicit scope must not be authorized client-side");
+      },
+    });
+    assert.equal(await built.resolveScopedNamespace("team", 5_000), "team");
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/health")).length,
+      0,
+      "no posture probe ran for an explicit scope",
     );
   } finally {
     await stub.close();
