@@ -77,7 +77,21 @@ test("plugin-codex has required plugin manifest", () => {
   const manifest = path.join(PACKAGES, "plugin-codex", ".codex-plugin", "plugin.json");
   assert.ok(fs.existsSync(manifest), ".codex-plugin/plugin.json must exist");
   const pkg = JSON.parse(fs.readFileSync(manifest, "utf-8"));
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(PACKAGES, "plugin-codex", "package.json"), "utf-8"),
+  );
   assert.equal(pkg.name, "remnic");
+  assert.equal(pkg.version, packageJson.version, "Codex manifest version must match the package");
+  assert.equal(pkg.author?.name, "Joshua Warren");
+  assert.equal(pkg.interface?.displayName, "Remnic");
+  assert.ok(pkg.interface?.defaultPrompt?.length > 0, "Codex manifest must provide starter prompts");
+});
+
+test("plugin-codex memory write workflows are model-invocable", () => {
+  for (const skill of ["remnic-memory-workflow", "remnic-remember"]) {
+    const content = fs.readFileSync(path.join(PACKAGES, "plugin-codex", "skills", skill, "SKILL.md"), "utf-8");
+    assert.match(content, /^disable-model-invocation: false$/m, `${skill} must be available to the model`);
+  }
 });
 
 test("plugin-codex has Stop hook (unique to Codex)", () => {
