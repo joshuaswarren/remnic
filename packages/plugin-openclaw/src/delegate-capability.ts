@@ -392,6 +392,10 @@ export function createDelegateMemoryCapability(
           // knows about its own deployment. Anything the daemon does report
           // wins.
           namespacesEnabled: reported.namespacesEnabled ?? options.configuredNamespacesEnabled,
+          // Same reason: a 200 that omits `memoryDir` (older build, or a token
+          // without health access) must not ERASE the configured path and
+          // leave `corpusShared` false beside a co-located corpus.
+          memoryDir: reported.memoryDir ?? health.memoryDir,
         };
         healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
         lastHealthFailure = undefined;
@@ -500,7 +504,12 @@ export function createDelegateMemoryCapability(
         // Artifact isolation: the same exclusion the embedded runtime applies.
         // A current daemon already dropped these before its own cap; this
         // keeps the guarantee against an older one.
-        if (isMemoryArtifactPath(rawPath)) continue;
+        //
+        // Judged on the ROOT-RELATIVE citation, never the absolute hit: a
+        // corpus that merely LIVES under a directory named `artifacts`
+        // (`<root>/artifacts/remnic`) would otherwise lose every hit.
+        const citation = sharedScope().relativizeToMemoryRoot(rawPath);
+        if (isMemoryArtifactPath(citation)) continue;
         const score = typeof hit.score === "number" && Number.isFinite(hit.score) ? hit.score : 0;
         if (
           typeof opts?.minScore === "number" &&
@@ -509,7 +518,6 @@ export function createDelegateMemoryCapability(
         ) {
           continue;
         }
-        const citation = sharedScope().relativizeToMemoryRoot(rawPath);
         kept.push({
           // Absolute, so a follow-up readFile is unambiguous when the same
           // relative path exists under more than one allowed root.
@@ -558,11 +566,21 @@ export function createDelegateMemoryCapability(
     const requestedPath = sharedScope().normalizeWorkspacePath(params.relPath);
     const absolutePath = await sharedScope().resolveReadablePath(params.relPath);
     const allLines = (await readFile(absolutePath, "utf8")).split(/\r?\n/);
+    // `NaN` and `Infinity` are numbers: without the finite check `NaN` slices
+    // from zero and silently returns the file's head, while `Infinity` returns
+    // an empty page and is echoed back as the offset. Neither is the range the
+    // caller asked for, so reject rather than serve a different one.
+    if (params.from !== undefined && !Number.isFinite(params.from)) {
+      throw new Error(`memory read rejected (from must be a finite number): ${String(params.from)}`);
+    }
+    if (params.lines !== undefined && !Number.isFinite(params.lines)) {
+      throw new Error(
+        `memory read rejected (lines must be a finite number): ${String(params.lines)}`,
+      );
+    }
     const from = typeof params.from === "number" ? Math.max(1, Math.floor(params.from)) : 1;
     const lines =
-      typeof params.lines === "number" && Number.isFinite(params.lines)
-        ? Math.max(1, Math.floor(params.lines))
-        : undefined;
+      typeof params.lines === "number" ? Math.max(1, Math.floor(params.lines)) : undefined;
     const startIndex = from - 1;
     const endIndex = typeof lines === "number" ? startIndex + lines : allLines.length;
     const truncated = endIndex < allLines.length;

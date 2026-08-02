@@ -1144,3 +1144,86 @@ test("a partitioned plugin config still fails closed before the first probe", as
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("a health 200 without memoryDir keeps the configured corpus", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // An older daemon (or a token without health access) reports no memoryDir.
+  // Erasing the seed would leave corpusShared false beside a co-located
+  // corpus and silently disable readFile and public artifacts.
+  const stub = await startDaemonStub({
+    health: { ok: true, namespacesEnabled: false },
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const read = await manager?.readFile({ relPath: "facts/alice.md" });
+    assert.equal(read?.path, path.join("facts", "alice.md"), "the read is served, not refused");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate readFile rejects non-finite offsets instead of serving another range", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    for (const from of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      await assert.rejects(
+        () => manager?.readFile({ relPath: "facts/alice.md", from }) ?? Promise.resolve(),
+        /from must be a finite number/,
+        `from: ${String(from)} must be rejected`,
+      );
+    }
+    await assert.rejects(
+      () =>
+        manager?.readFile({ relPath: "facts/alice.md", lines: Number.NaN }) ?? Promise.resolve(),
+      /lines must be a finite number/,
+    );
+    // A real range still works.
+    const read = await manager?.readFile({ relPath: "facts/alice.md", from: 2, lines: 1 });
+    assert.equal(read?.text, "two");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("delegate search keeps hits when the corpus sits under an `artifacts` ancestor", async () => {
+  // <root>/artifacts/remnic is an ordinary corpus. Judging the ABSOLUTE hit
+  // path would discard every result the daemon returned.
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-cap-ancestor-")));
+  const memoryDir = path.join(root, "artifacts", "remnic");
+  const workspaceDir = path.join(root, "workspace");
+  await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+  await mkdir(path.join(memoryDir, "artifacts"), { recursive: true });
+  await mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+    search: {
+      query: "q",
+      count: 2,
+      results: [
+        { path: path.join(memoryDir, "facts", "a.md"), score: 0.9, snippet: "fact" },
+        { path: path.join(memoryDir, "artifacts", "report.md"), score: 0.8, snippet: "artifact" },
+      ],
+    },
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const results = (await manager?.search("q")) ?? [];
+    assert.deepEqual(
+      results.map((hit) => hit.citation),
+      [path.join("facts", "a.md")],
+      "the ordinary hit survives and the corpus's own artifact is still excluded",
+    );
+  } finally {
+    await stub.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
