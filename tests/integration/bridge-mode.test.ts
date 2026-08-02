@@ -9,6 +9,27 @@ import { Worker } from "node:worker_threads";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
+// Liveness-probe timings, shared by every checkDaemonHealth/checkDaemonHealthSync
+// test below so the sync and async pairs cannot drift apart.
+//
+// bridge.ts derives every request timeout from ONE deadline
+// (`deadline = Date.now() + timeoutMs`, then `remainingMs = deadline - now()`),
+// so the budget is the TOTAL for a liveness probe plus its detailed-health
+// fallback — not a per-request allowance.
+//
+// STALLED_DETAILED_HEALTH_MS must stay above PROBE_BUDGET_MS: that gap is what
+// makes "returns true" prove the liveness path short-circuited. A probe that
+// regressed into waiting on detailed health would exhaust the budget and
+// return false, failing the test. The async tests previously budgeted 100 ms,
+// which is not a reliable margin for one loopback round-trip on a loaded CI
+// runner — let alone two (issue #2287).
+//
+// The stall is a real timer on purpose: it lives inside a worker-thread HTTP
+// server (a separate JS realm), and the sync variant under test blocks the main
+// thread with Atomics.wait. Fake timers can drive neither side, so the only
+// lever available is a wide margin between the two constants below.
+const PROBE_BUDGET_MS = 2_500;
+const STALLED_DETAILED_HEALTH_MS = 3_000;
 const HEALTH_SERVER_WORKER_SOURCE = `
 import { createServer } from "node:http";
 import { workerData } from "node:worker_threads";
@@ -47,7 +68,7 @@ const server = createServer((req, res) => {
   setTimeout(() => {
     res.writeHead(200);
     res.end();
-  }, 3_000);
+  }, ${STALLED_DETAILED_HEALTH_MS});
 });
 
 server.listen(0, "127.0.0.1", () => {
@@ -204,14 +225,14 @@ test("checkDaemonHealth uses liveness without waiting for detailed health", asyn
     setTimeout(() => {
       res.writeHead(200);
       res.end();
-    }, 500);
+    }, STALLED_DETAILED_HEALTH_MS);
   });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as { port: number }).port;
   try {
     const { checkDaemonHealth } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    assert.equal(await checkDaemonHealth("127.0.0.1", port, 100), true);
+    assert.equal(await checkDaemonHealth("127.0.0.1", port, PROBE_BUDGET_MS), true);
     assert.deepEqual(paths, ["/engram/v1/live"]);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -231,7 +252,7 @@ test("checkDaemonHealthSync uses liveness without waiting for detailed health", 
 
   try {
     const { checkDaemonHealthSync } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    assert.equal(checkDaemonHealthSync("127.0.0.1", port, 2_500), true);
+    assert.equal(checkDaemonHealthSync("127.0.0.1", port, PROBE_BUDGET_MS), true);
     assert.equal(Atomics.load(view, 2), 1);
   } finally {
     await serverWorker.terminate();
@@ -251,7 +272,7 @@ test("checkDaemonHealthSync falls back to detailed health for older daemons", as
 
   try {
     const { checkDaemonHealthSync } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    assert.equal(checkDaemonHealthSync("127.0.0.1", port, 2_500), true);
+    assert.equal(checkDaemonHealthSync("127.0.0.1", port, PROBE_BUDGET_MS), true);
     assert.equal(Atomics.load(view, 2), 2);
   } finally {
     await serverWorker.terminate();
@@ -270,11 +291,21 @@ test("checkDaemonHealth falls back to detailed health for older daemons", async 
   const port = (server.address() as { port: number }).port;
   try {
     const { checkDaemonHealth } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    assert.equal(await checkDaemonHealth("127.0.0.1", port, 100), true);
+    assert.equal(await checkDaemonHealth("127.0.0.1", port, PROBE_BUDGET_MS), true);
     assert.deepEqual(paths, ["/engram/v1/live", "/engram/v1/health"]);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
+});
+
+test("liveness probe budget stays under the stalled detailed-health delay", () => {
+  // Guards the four tests above. Raising PROBE_BUDGET_MS past the stall would
+  // leave them passing while proving nothing: a probe that wrongly waited on
+  // detailed health would then finish inside the budget and still return true.
+  assert.ok(
+    PROBE_BUDGET_MS < STALLED_DETAILED_HEALTH_MS,
+    `PROBE_BUDGET_MS (${PROBE_BUDGET_MS}) must stay below STALLED_DETAILED_HEALTH_MS (${STALLED_DETAILED_HEALTH_MS})`,
+  );
 });
 
 test("checkDaemonHealth falls back to legacy token file when remnic tokens are malformed", async () => {
