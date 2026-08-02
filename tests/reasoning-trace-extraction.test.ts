@@ -18,6 +18,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { ExtractedFactSchema } from "../packages/remnic-core/src/schemas.js";
 import {
@@ -364,33 +365,41 @@ describe("looksLikeReasoningTrace heuristic", () => {
 
 describe("extraction prompt includes reasoning_trace guidance", () => {
   it("gateway and local prompts mention reasoning_trace with schema hints", async () => {
-    const src = await (await import("node:fs/promises")).readFile(
+    // The local prompt is built inline by the engine; the shared cloud prompt
+    // and the JSON response shape live in the sibling prompt module (#2294).
+    const engineSrc = await readFile(
       new URL("../packages/remnic-core/src/extraction.ts", import.meta.url),
+      "utf-8",
+    );
+    const promptSrc = await readFile(
+      new URL("../packages/remnic-core/src/extraction-prompt.ts", import.meta.url),
       "utf-8",
     );
     // Local prompt branch
     assert.ok(
-      /reasoning_trace: Stored solution chains/.test(src),
+      /reasoning_trace: Stored solution chains/.test(engineSrc),
       "local LLM prompt should describe reasoning_trace",
     );
     // Gateway prompt branch
     assert.ok(
-      /reasoning_trace: A stored solution chain/.test(src),
+      /reasoning_trace: A stored solution chain/.test(promptSrc),
       "gateway prompt should describe reasoning_trace",
     );
-    // Both prompt JSON examples must reference reasoningTrace
+    // Both prompt JSON examples must reference reasoningTrace. The examples are
+    // split across the two prompt-owning modules, so assert on their union.
+    const bothPrompts = engineSrc + promptSrc;
     assert.ok(
-      src.includes('"category": "reasoning_trace"'),
+      bothPrompts.includes('"category": "reasoning_trace"'),
       "prompt JSON example should include a reasoning_trace fact",
     );
     assert.ok(
-      src.includes('"reasoningTrace"'),
+      bothPrompts.includes('"reasoningTrace"'),
       "prompt JSON example should include a reasoningTrace field",
     );
   });
 
   it("normalizeExtractionResultPayload accepts snake_case reasoning_trace key", async () => {
-    const src = await (await import("node:fs/promises")).readFile(
+    const src = await readFile(
       new URL("../packages/remnic-core/src/extraction.ts", import.meta.url),
       "utf-8",
     );
