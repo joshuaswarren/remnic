@@ -76,6 +76,36 @@ the way production memory systems do:
 | `review` | Every extracted candidate is written `pending_review` — nothing enters active recall until approved. For operators who want a human in the loop. |
 | `auto` | Deterministic gates only; survivors written active (no judge, no trust scoring). |
 
+### Ambient audio never becomes a personal fact
+
+An always-on recorder captures speech nobody in the room authored:
+television and film dialogue, podcasts, radio, ads, music with spoken
+segments, a conversation the wearer walked past. Left unmarked, a
+scripted line about a relative's birthday or a medical diagnosis reads
+to an extractor exactly like the wearer saying it — and lands as a
+high-confidence personal fact that auto-promotes into recall. That
+output is plausible, personally relevant, and fabricated, which makes
+it worse than a missed fact.
+
+Two independent guards run before trust scoring ever sees a candidate:
+
+1. **Provenance in the prompt.** Every turn built from a wearable
+   transcript is flagged `ambientCapture`, and extraction adds a
+   source-provenance section telling the model to separate the wearer's
+   own speech from background media, drop high-consequence personal
+   claims (family relationships, births, birthdays, anniversaries,
+   weddings, funerals, and any medical detail) it cannot attribute to
+   the wearer, and score anything it is unsure about in the speculative
+   tier. The section is shared by the local-LLM, direct-client, and
+   gateway prompts, so the three paths cannot drift.
+2. **A deterministic clamp.** When the model ignores the prompt anyway,
+   extraction holds high-impact personal facts from ambient input at
+   the speculative ceiling (0.39). At the default `sourceTrust` of 0.8
+   that lands them below `reviewTrust`, so a fabricated birthday is
+   dropped or queued rather than written active. Ordinary wearable
+   facts are untouched — clamping everything would defeat the point of
+   the integration.
+
 ### How smart mode decides
 
 Each extracted candidate gets a **trust score** assembled from signals
