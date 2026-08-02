@@ -149,9 +149,10 @@ the work is judged against.
   reviewer will always find one more hypothetical. **From round three on, only
   these are actionable:** a correctness, security, or data-integrity defect
   in the behavior this change ships, whether already deployed or still in
-  the PR; a failing *required* check; a factual claim that is wrong
-  against the tree; or a rule this repo mandates that the PR actually
-  violates. Everything else — style, hypothetical mutations of code or
+  the PR; a performance or capacity regression (an N+1 query, an unbounded
+  loop, a latency or memory blowup); a failing *required* check; a factual
+  claim that is wrong against the tree; or a rule this repo mandates that
+  the PR actually violates. Everything else — style, hypothetical mutations of code or
   wording nobody would write, further tightening of a check that already fails
   on the regression it names — is **declined in-thread with the reason and
   the thread resolved**, not fixed. The Cleaner PR Workflow's "zero unresolved
