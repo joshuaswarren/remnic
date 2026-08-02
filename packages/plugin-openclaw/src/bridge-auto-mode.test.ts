@@ -19,6 +19,7 @@ import {
   isLoopbackDaemonHost,
   loadDaemonAuth,
   loopbackForWildcardBind,
+  readDaemonConfigAuthToken,
   readDaemonMemoryDirSync,
   resolveBridgeMode,
   resolveUnitConfigPath,
@@ -1638,10 +1639,25 @@ test("a rejected gateway token falls back to the endpoint's own config token", a
     process.chdir(home);
     const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 6_000 });
     assert.equal(bridge.mode, "delegate", "the bound config credential was retried");
+    // Signalled, not frozen: delegate requests re-read the file so a rotated
+    // token does not 401 every route until the gateway restarts.
+    assert.equal(bridge.daemonAuthPrefersConfig, true);
+    assert.equal(bridge.daemonAuthTokenOverride, undefined, "the value is not baked in");
     assert.equal(
-      bridge.daemonAuthTokenOverride,
+      readDaemonConfigAuthToken(path.join(home, ".config", "remnic", "config.json")),
       "config-token",
-      "and delegate requests keep using the one that worked",
+    );
+    // Rotate it on disk; the next read picks up the new value.
+    await writeFile(
+      path.join(home, ".config", "remnic", "config.json"),
+      JSON.stringify({
+        server: { host: "127.0.0.1", port: stub.port, authToken: "rotated-token" },
+      }),
+      "utf8",
+    );
+    assert.equal(
+      readDaemonConfigAuthToken(path.join(home, ".config", "remnic", "config.json")),
+      "rotated-token",
     );
   } finally {
     process.chdir(priorCwd);
@@ -1795,6 +1811,69 @@ test("a credential retry shares its candidate's slice, not a second one", async 
     await stallerA.close();
     await stallerB.close();
     await live.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("two configs on one endpoint with different tokens both survive dedupe", async () => {
+  // A gateway-store token wins for BOTH, so their primary tokens match and an
+  // endpoint+token dedupe would drop the second - leaving the daemon's real
+  // credential untried.
+  const stub = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" },
+    200,
+    0,
+    false,
+    "second-config-token",
+  );
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-dupe-fallback-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-dupe-fallback-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await mkdir(path.join(home, ".remnic"), { recursive: true });
+  await writeFile(
+    path.join(home, ".remnic", "tokens.json"),
+    JSON.stringify({ tokens: [{ connector: "openclaw", token: "remnic_gateway_token" }] }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    "[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json\n",
+    "utf8",
+  );
+  const endpoint = { host: "127.0.0.1", port: stub.port };
+  // Unit config sorts first and names the WRONG credential.
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { ...endpoint, authToken: "first-config-token" } }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { ...endpoint, authToken: "second-config-token" } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 6_000 });
+    assert.equal(bridge.mode, "delegate", "the second config's candidate survived dedupe");
+    assert.equal(bridge.daemonConfigPath, path.join(cwd, "remnic.config.json"));
+    assert.equal(bridge.daemonAuthPrefersConfig, true);
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await stub.close();
     await rm(home, { recursive: true, force: true });
     await rm(cwd, { recursive: true, force: true });
   }

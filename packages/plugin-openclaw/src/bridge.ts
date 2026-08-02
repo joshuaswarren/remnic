@@ -14,7 +14,14 @@ import { isIPv4, isIPv6 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { expandTildePath } from "@remnic/core";
 
+import {
+  HEALTH_WORKER_SOURCE,
+  runHealthWorker,
+  type HealthWorkerData,
+} from "./bridge-health-worker.js";
 import { resolveUnitEndpoint } from "./bridge-service-units.js";
+
+export { runHealthWorker } from "./bridge-health-worker.js";
 import { daemonServesCorpus } from "./memory-read-scope.js";
 
 export { resolveUnitConfigPath, resolveUnitEndpoint } from "./bridge-service-units.js";
@@ -66,8 +73,19 @@ export interface BridgeConfig {
    * A credential taken from the installed unit's environment, which the
    * gateway does not inherit and no config file carries. Delegate requests
    * must use it or they authenticate as a different daemon would.
+   *
+   * Only for values with no other source. A credential that came from a CONFIG
+   * FILE is signalled by {@link daemonAuthPrefersConfig} instead, so a rotated
+   * token is re-read rather than frozen at detection time.
    */
   daemonAuthTokenOverride?: string;
+  /**
+   * The probe authenticated with `daemonConfigPath`'s own `server.authToken`
+   * rather than the gateway token store. Delegate requests must make the same
+   * choice — but by RE-READING that file each time, so rotating the token does
+   * not 401 every route until the gateway restarts.
+   */
+  daemonAuthPrefersConfig?: boolean;
 }
 
 export type DaemonAuthTokenSource =
@@ -136,161 +154,6 @@ export function parseOpenClawBridgeConfig(
   };
 }
 
-interface HealthWorkerData {
-  state: SharedArrayBuffer;
-  deadline: number;
-  host: string;
-  port: number;
-  path: string;
-  fallbackPath: string | null;
-  token: string;
-  /**
-   * When present, a 200 response body is parsed as JSON and the string value
-   * at `captureField` is written here UTF-8 encoded, length-prefixed in the
-   * first 4 bytes. Absent for plain liveness probes, which never read a body.
-   */
-  capture?: SharedArrayBuffer;
-  captureField?: string;
-}
-
-interface HealthWorkerResponse {
-  statusCode?: number;
-  resume(): void;
-  setEncoding?(encoding: string): void;
-  on?(event: "data" | "end", handler: (chunk?: string) => void): void;
-}
-
-interface HealthWorkerRequest {
-  on(event: "error" | "timeout", handler: () => void): HealthWorkerRequest;
-  destroy(): void;
-  end(): void;
-}
-
-type HealthRequest = (
-  options: {
-    hostname: string;
-    port: number;
-    path: string;
-    method: "GET";
-    timeout: number;
-    headers: Record<string, string>;
-  },
-  onResponse: (response: HealthWorkerResponse) => void,
-) => HealthWorkerRequest;
-
-export function runHealthWorker(request: HealthRequest, data: HealthWorkerData): void {
-  // Inlined rather than closed over: the worker runs this function's SOURCE,
-  // so it can reference nothing from this module.
-  const READINESS_RETRY_MS = 250;
-  const view = new Int32Array(data.state);
-  let completed = false;
-
-  function finish(ok: boolean): void {
-    if (completed) return;
-    completed = true;
-    Atomics.store(view, 0, ok ? 1 : 2);
-    Atomics.notify(view, 0);
-  }
-
-  function probe(pathname: string, fallbackPath: string | null): void {
-    const remainingMs = data.deadline - Date.now();
-    if (remainingMs <= 0) {
-      finish(false);
-      return;
-    }
-    let responseReceived = false;
-    try {
-      const headers: Record<string, string> = {};
-      if (data.token) headers.Authorization = `Bearer ${data.token}`;
-      const req = request(
-        {
-          hostname: data.host,
-          port: data.port,
-          path: pathname,
-          method: "GET",
-          timeout: remainingMs,
-          headers,
-        },
-        (res) => {
-          responseReceived = true;
-          const statusCode = res.statusCode;
-          if (statusCode === 200 && data.capture && data.captureField && res.on) {
-            // Only the capture probe reads a body; every other caller resumes
-            // the stream immediately so the socket is freed.
-            let body = "";
-            res.setEncoding?.("utf8");
-            res.on("data", (chunk) => {
-              // Bound the buffered body: a runaway response must not grow the
-              // worker's heap while the caller blocks on Atomics.wait.
-              if (body.length < 65_536) body += chunk ?? "";
-            });
-            res.on("end", () => {
-              try {
-                const parsed: unknown = JSON.parse(body);
-                const value =
-                  typeof parsed === "object" && parsed !== null
-                    ? (parsed as Record<string, unknown>)[data.captureField as string]
-                    : undefined;
-                if (typeof value === "string") {
-                  const bytes = new TextEncoder().encode(value);
-                  const capture = new Uint8Array(data.capture as SharedArrayBuffer);
-                  // Record the TRUE byte length even when it does not fit, so
-                  // the reader can tell "too long to carry" from a short value
-                  // and treat it as unknown instead of truncated.
-                  new DataView(data.capture as SharedArrayBuffer).setUint32(0, bytes.length);
-                  if (bytes.length <= capture.length - 4) capture.set(bytes, 4);
-                }
-              } catch {
-                // A malformed body leaves the capture empty; the caller treats
-                // an empty capture as "unknown", never as a match.
-              }
-              finish(true);
-            });
-            return;
-          }
-          res.resume();
-          if (statusCode === 200) {
-            finish(true);
-          } else if (statusCode === 404 && fallbackPath) {
-            probe(fallbackPath, null);
-          } else if (statusCode === 503) {
-            // The daemon is listening but its readiness gate is still closed
-            // (deferred warmup). When the gateway and the service start
-            // together this is a matter of seconds - treating it as "no
-            // daemon" would start a second orchestrator on its corpus. Retry
-            // within the SAME preflight deadline the caller already budgeted.
-            if (Date.now() + READINESS_RETRY_MS >= data.deadline) {
-              finish(false);
-              return;
-            }
-            setTimeout(() => probe(pathname, fallbackPath), READINESS_RETRY_MS);
-          } else {
-            finish(false);
-          }
-        },
-      );
-      req.on("error", () => {
-        if (!responseReceived) finish(false);
-      });
-      req.on("timeout", () => {
-        req.destroy();
-        if (!responseReceived) finish(false);
-      });
-      req.end();
-    } catch {
-      finish(false);
-    }
-  }
-
-  probe(data.path, data.fallbackPath);
-}
-
-const HEALTH_WORKER_SOURCE = `
-import { request } from "node:http";
-import { workerData } from "node:worker_threads";
-const __name = (target) => target;
-(${runHealthWorker.toString()})(request, workerData);
-`;
 const LAUNCHD_SERVICE_PATHS = [
   ["Library", "LaunchAgents", "ai.remnic.daemon.plist"],
   ["Library", "LaunchAgents", "ai.remnic.server.plist"],
@@ -735,7 +598,19 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
     const configToken = configPath === undefined ? undefined : readServerBlock(configPath)?.authToken;
     const fallbackToken =
       configToken !== undefined && configToken !== token ? configToken : undefined;
-    if (candidates.some((c) => c.host === dialHost && c.port === dialPort && c.token === token)) {
+    if (
+      candidates.some(
+        (c) =>
+          c.host === dialHost &&
+          c.port === dialPort &&
+          c.token === token &&
+          // The BOUND credential is part of the identity too: when a gateway
+          // token wins for both, two configs on one endpoint resolve the same
+          // primary token but carry different fallbacks, and dropping the
+          // second would leave the daemon's real credential untried.
+          c.fallbackToken === fallbackToken,
+      )
+    ) {
       return;
     }
     candidates.push({
@@ -944,7 +819,14 @@ export function detectDaemonBridgeMode(options: {
       daemonPort,
       healthVerified: true,
       ...(configPath === undefined ? {} : { daemonConfigPath: configPath }),
-      ...(usedToken === undefined ? {} : { daemonAuthTokenOverride: usedToken }),
+      // A unit-supplied credential has no other source, so it is carried by
+      // value; a config-supplied one is re-read from its file per request.
+      ...(usedToken !== undefined && usedToken === authTokenOverride
+        ? { daemonAuthTokenOverride: usedToken }
+        : {}),
+      ...(usedToken !== undefined && usedToken === fallbackToken
+        ? { daemonAuthPrefersConfig: true }
+        : {}),
     };
   }
   return embedded;
@@ -1031,6 +913,17 @@ export function resolveBridgeMode(
     daemonPort: readDaemonPort(),
     ...(selectedConfig === undefined ? {} : { daemonConfigPath: selectedConfig }),
   };
+}
+
+/**
+ * The `server.authToken` a specific config file declares, read fresh.
+ *
+ * Delegate requests call this per request rather than reusing the value
+ * detection succeeded with, so rotating the daemon's token does not 401 every
+ * route until the gateway restarts.
+ */
+export function readDaemonConfigAuthToken(configPath: string): string | undefined {
+  return readServerBlock(configPath)?.authToken;
 }
 
 /** The one config file explicit resolution took host and port from. */
