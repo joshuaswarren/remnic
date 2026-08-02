@@ -1849,3 +1849,25 @@ test("memorySearch authorizes the scope even when the budget is zero", async () 
   );
   assert.equal(searchCalls, 0, "and the backend is never consulted");
 });
+
+test("memorySearch rejects mode+collection on a flat corpus even at a zero budget", async () => {
+  // Changing only the requested result count must never make an invalid
+  // request succeed.
+  const { service } = makeServiceWithConfig({
+    ...makeConfig(),
+    namespacesEnabled: false,
+  } as unknown as PluginConfig);
+  for (const maxResults of [0, 5]) {
+    await assert.rejects(
+      () =>
+        service.memorySearch({
+          query: "q",
+          collection: "some-collection",
+          mode: "vector",
+          maxResults,
+        }),
+      /mode is not supported together with collection on a flat corpus/,
+      `maxResults: ${maxResults} must reject`,
+    );
+  }
+});

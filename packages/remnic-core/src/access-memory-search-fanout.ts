@@ -176,6 +176,28 @@ export async function runMemorySearchFanout<TResult>(options: {
  * here, because that is the only path honoring it; the legacy direct-QMD calls
  * stay the default so nothing else moves.
  */
+/**
+ * Reject an option combination a flat corpus cannot honor.
+ *
+ * A `mode` routes through the namespace-aware backend, which cannot target a
+ * specific collection, so pairing the two would silently search the default
+ * collection and return unrelated results (AGENTS.md pattern 39).
+ *
+ * Exported as its own step because callers validate BEFORE any budget
+ * short-circuit: changing only the requested result count must never make an
+ * invalid request succeed.
+ */
+export function assertFlatCorpusOptions(
+  mode: string | undefined,
+  collection: string | undefined,
+): void {
+  if (mode && collection) {
+    throw new EngramAccessInputError(
+      `mode is not supported together with collection on a flat corpus (got collection: ${collection})`,
+    );
+  }
+}
+
 export async function runFlatCorpusMemorySearch<TResult>(options: {
   query: string;
   maxResults?: number;
@@ -190,16 +212,10 @@ export async function runFlatCorpusMemorySearch<TResult>(options: {
   search(query: string, collection: string | undefined, maxResults?: number): Promise<TResult[]>;
 }): Promise<TResult[]> {
   const { query, maxResults, collection, mode } = options;
+  assertFlatCorpusOptions(options.mode, options.collection);
   if (mode) {
     // The mode-aware backend has no collection selector on a flat corpus, so
     // honoring the mode would silently search the default collection instead
-    // of the requested one. Reject the combination rather than return
-    // unrelated results (AGENTS.md pattern 39).
-    if (collection) {
-      throw new EngramAccessInputError(
-        `mode is not supported together with collection on a flat corpus (got collection: ${collection})`,
-      );
-    }
     return options.searchAcrossNamespaces({ query, maxResults, mode });
   }
   return collection === "global"
@@ -372,7 +388,12 @@ export async function memorySearchThroughScope(
     budget: maxResults ?? deps.defaultBudget,
     sendInitialLimit: maxResults !== undefined,
     authorizeScope: async () => {
-      if (!deps.namespacesEnabled) return deps.authorizeFlatCorpus(namespace, principal);
+      if (!deps.namespacesEnabled) {
+        // Validate the option combination here too: a zero budget must not be
+        // a way to slip an invalid request past the check.
+        assertFlatCorpusOptions(mode, collection);
+        return deps.authorizeFlatCorpus(namespace, principal);
+      }
       searchNamespaces = await deps.authorizeNamespaces(namespace, principal, collection);
     },
     flatCorpus: (limit) =>
