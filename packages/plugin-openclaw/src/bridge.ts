@@ -14,7 +14,10 @@ import { isIPv4, isIPv6 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { expandTildePath } from "@remnic/core";
 
+import { resolveUnitEndpoint } from "./bridge-service-units.js";
 import { daemonServesCorpus } from "./memory-read-scope.js";
+
+export { resolveUnitConfigPath, resolveUnitEndpoint } from "./bridge-service-units.js";
 
 export type BridgeMode = "embedded" | "delegate";
 
@@ -398,83 +401,6 @@ function readServiceEndpoints(): Array<{
     if (!seen) endpoints.push(resolved);
   }
   return endpoints;
-}
-
-/**
- * The config path a single unit file pins, or `undefined` when it pins none
- * this process can resolve.
- *
- * Exported for tests: a system unit lives under `/etc`, which a test cannot
- * write, so the account-scoping rule is verified against the unit TEXT.
- */
-export function resolveUnitConfigPath(
-  unit: string,
-  scope: { userScoped: boolean; homeDir: string },
-): string | undefined {
-  return resolveUnitEndpoint(unit, scope).configPath;
-}
-
-/**
- * Read a unit's environment assignment, or `undefined`. `%h` is systemd's HOME
- * specifier, expanded in the SERVICE MANAGER's account: ours for a user unit,
- * unknowable for a system one.
- */
-function readUnitEnv(
-  unit: string,
-  name: string,
-  scope: { userScoped: boolean; homeDir: string },
-): string | undefined {
-  // systemd: Environment=NAME=value  /  Environment="NAME=value"
-  const systemd = new RegExp(`^\\s*Environment=\\"?${name}=([^\\"\\n]+)\\"?\\s*$`, "m").exec(unit);
-  // launchd: <key>NAME</key><string>value</string>
-  const launchd = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
-  const raw = (systemd?.[1] ?? launchd?.[1])?.trim();
-  if (raw === undefined || raw === "") return undefined;
-  if (!scope.userScoped && raw.includes("%")) return undefined;
-  return raw.replace(/%h/g, scope.homeDir);
-}
-
-/**
- * Everything a unit file says about the daemon's endpoint.
- *
- * The server merges `REMNIC_HOST`/`REMNIC_PORT` from its own environment OVER
- * its config file, and the gateway does not inherit that environment - so a
- * unit that sets them would otherwise leave `auto` probing the file's stale
- * default and starting a second orchestrator beside the live daemon.
- */
-export function resolveUnitEndpoint(
-  unit: string,
-  scope: { userScoped: boolean; homeDir: string },
-): { configPath?: string; host?: string; port?: number; authToken?: string } {
-  const host = readUnitEnv(unit, "REMNIC_HOST", scope) ?? readUnitEnv(unit, "ENGRAM_HOST", scope);
-  const port = coerceDaemonPort(
-    readUnitEnv(unit, "REMNIC_PORT", scope) ?? readUnitEnv(unit, "ENGRAM_PORT", scope),
-  );
-  // The server merges REMNIC_AUTH_TOKEN over `server.authToken` the same way
-  // it merges host and port, so a unit that sets it is the only place the
-  // gateway can learn the live credential.
-  const authToken =
-    readUnitEnv(unit, "REMNIC_AUTH_TOKEN", scope) ?? readUnitEnv(unit, "ENGRAM_AUTH_TOKEN", scope);
-  return {
-    ...resolveUnitConfigPathInner(unit, scope),
-    ...(host === undefined ? {} : { host }),
-    ...(port === undefined ? {} : { port }),
-    ...(authToken === undefined ? {} : { authToken }),
-  };
-}
-
-function resolveUnitConfigPathInner(
-  unit: string,
-  scope: { userScoped: boolean; homeDir: string },
-): { configPath?: string } {
-  for (const name of ["REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH"]) {
-    const raw = readUnitEnv(unit, name, scope);
-    if (raw === undefined) continue;
-    const resolved = expandTildePath(raw);
-    if (!path.isAbsolute(resolved)) continue;
-    return { configPath: resolved };
-  }
-  return {};
 }
 
 function fileExists(filePath: string): boolean {
@@ -960,6 +886,32 @@ export function detectDaemonBridgeMode(options: {
 }
 
 /**
+ * The mode the deployment ASKED for, without probing anything.
+ *
+ * Split out so a caller can tell "delegate was attempted and failed" from
+ * "this deployment is embedded and something unrelated is misconfigured" —
+ * only the former is a fallback worth recording.
+ */
+export function resolveRequestedBridgeMode(configBridgeMode: string): BridgeModeRequest {
+  const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
+  const isRequest = (value: string): value is BridgeModeRequest =>
+    value === "embedded" || value === "delegate" || value === "auto";
+  if (envMode !== undefined && envMode !== "") {
+    if (!isRequest(envMode)) {
+      throw new Error(
+        `Invalid REMNIC_BRIDGE_MODE env override: ${envMode} (expected "embedded", "delegate", or "auto")`,
+      );
+    }
+    return envMode;
+  }
+  if (configBridgeMode === undefined || configBridgeMode === "") return "embedded";
+  if (isRequest(configBridgeMode)) return configBridgeMode;
+  throw new Error(
+    `Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded", "delegate", or "auto")`,
+  );
+}
+
+/**
  * Resolve the bridge mode for the plugin runtime (issue #2120).
  *
  * Precedence is env override > plugin config > `embedded`. `auto` is the only
@@ -973,26 +925,7 @@ export function resolveBridgeMode(
   configBridgeMode: string,
   options: { memoryDir?: string; timeoutMs?: number; onSkip?: (reason: string) => void } = {},
 ): BridgeConfig {
-  const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
-  const isRequest = (value: string): value is BridgeModeRequest =>
-    value === "embedded" || value === "delegate" || value === "auto";
-  let requested: BridgeModeRequest;
-  if (envMode !== undefined && envMode !== "") {
-    if (!isRequest(envMode)) {
-      throw new Error(
-        `Invalid REMNIC_BRIDGE_MODE env override: ${envMode} (expected "embedded", "delegate", or "auto")`,
-      );
-    }
-    requested = envMode;
-  } else if (configBridgeMode === undefined || configBridgeMode === "") {
-    requested = "embedded";
-  } else if (isRequest(configBridgeMode)) {
-    requested = configBridgeMode;
-  } else {
-    throw new Error(
-      `Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded", "delegate", or "auto")`,
-    );
-  }
+  const requested = resolveRequestedBridgeMode(configBridgeMode);
   if (requested === "auto") {
     const memoryDir = options.memoryDir ?? "";
     if (!memoryDir.trim()) {

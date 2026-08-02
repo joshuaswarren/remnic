@@ -2849,3 +2849,60 @@ test("a short query evicts the previous turn's cached recall", async () => {
     await stub.close();
   }
 });
+
+test("an invalid health timeout on an EMBEDDED deployment does not poison the api", async () => {
+  // The timeout is parsed before mode resolution, so a bad value throws even
+  // when the deployment never wanted delegate. Marking the api as a fallback
+  // would then block a later delegate registration on the same gateway api
+  // once the value is fixed.
+  const stub = await startDaemonStub(() => ({ context: "ctx" }));
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  try {
+    delete process.env.REMNIC_BRIDGE_MODE;
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embedded-timeout-"));
+    const common = {
+      serviceId: "embedded-timeout",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir,
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (text: string) => text,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
+    };
+    const api = recordingApi();
+    const bad = maybeRegisterDelegateRuntime(
+      api,
+      { ...common, configBridgeMode: "embedded", bridgeHealthTimeoutMs: "not-a-number" },
+      { checkHealth: () => true },
+    );
+    assert.equal(bad, false, "registration declines, embedded continues");
+
+    // The SAME api can still take a delegate registration afterwards.
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    process.env.REMNIC_PORT = String(stub.port);
+    const good = maybeRegisterDelegateRuntime(
+      api,
+      { ...common, configBridgeMode: "delegate" },
+      { checkHealth: () => true },
+    );
+    assert.equal(good, true, "the earlier embedded-only failure did not poison the api");
+    await rm(memoryDir, { recursive: true, force: true });
+  } finally {
+    if (priorMode === undefined) delete process.env.REMNIC_BRIDGE_MODE;
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) delete process.env.REMNIC_HOST;
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) delete process.env.REMNIC_PORT;
+    else process.env.REMNIC_PORT = priorPort;
+    await stub.close();
+  }
+});

@@ -47,6 +47,7 @@ import {
   loadDaemonAuth,
   parseOpenClawBridgeConfig,
   resolveBridgeMode,
+  resolveRequestedBridgeMode,
 } from "./bridge.js";
 import {
   REMNIC_OPENCLAW_LEGACY_PLUGIN_ID,
@@ -1000,6 +1001,21 @@ export interface MaybeRegisterDelegateDeps {
   ) => Promise<DelegateAuthorizationPreflight>;
 }
 
+/**
+ * Whether this deployment was asking for delegate at all.
+ *
+ * An unparseable bridgeMode is itself the thing the operator got wrong, so it
+ * counts as an attempt: only a deployment that clearly said `embedded` has
+ * nothing to fall back FROM.
+ */
+function requestedDelegate(configBridgeMode: string): boolean {
+  try {
+    return resolveRequestedBridgeMode(configBridgeMode) !== "embedded";
+  } catch {
+    return true;
+  }
+}
+
 export function maybeRegisterDelegateRuntime(
   api: DelegateHookApi,
   options: MaybeRegisterDelegateOptions,
@@ -1036,8 +1052,18 @@ export function maybeRegisterDelegateRuntime(
     // override) must not abort the whole plugin registration — reject LOUDLY,
     // then run embedded so the deployment keeps its memory loop (AGENTS.md §4:
     // side effects must not crash the main flow).
-    log.error(`${String(err)} — falling back to the embedded runtime`);
-    delegateEmbeddedFallbackApis.add(api);
+    //
+    // The api is marked as a fallback ONLY when delegate was actually being
+    // attempted. An `embedded` deployment that merely carries a bad timeout
+    // has nothing to fall back FROM, and marking it would block a later
+    // delegate registration on the same gateway api once the value is fixed.
+    const wantedDelegate = requestedDelegate(options.configBridgeMode);
+    log.error(
+      wantedDelegate
+        ? `${String(err)} — falling back to the embedded runtime`
+        : `${String(err)} — the deployment is embedded, so this only affects delegate mode`,
+    );
+    if (wantedDelegate) delegateEmbeddedFallbackApis.add(api);
     return false;
   }
   if (delegateEmbeddedFallbackApis.has(api)) {

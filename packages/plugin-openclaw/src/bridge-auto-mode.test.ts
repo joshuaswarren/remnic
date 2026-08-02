@@ -1264,3 +1264,100 @@ test("resolveUnitEndpoint reads the auth override under the same account scope",
     "the legacy spelling still resolves",
   );
 });
+
+test("resolveUnitEndpoint reads endpoint flags off the launch command line", () => {
+  // systemd ExecStart, both `--flag value` and `--flag=value`.
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      "[Service]\nExecStart=/usr/bin/node /opt/remnic-server --host 127.0.0.7 --port=4810 --auth-token cli-token --config /etc/remnic/c.json\n",
+      { userScoped: false, homeDir: "/home/gw" },
+    ),
+    { configPath: "/etc/remnic/c.json", host: "127.0.0.7", port: 4810, authToken: "cli-token" },
+  );
+  // launchd ProgramArguments.
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      [
+        "<key>ProgramArguments</key>",
+        "<array>",
+        "  <string>/usr/bin/node</string>",
+        "  <string>/opt/remnic-server</string>",
+        "  <string>--port</string>",
+        "  <string>4811</string>",
+        "</array>",
+      ].join("\n"),
+      { userScoped: true, homeDir: "/home/gw" },
+    ),
+    { port: 4811 },
+  );
+  // A CLI flag outranks the unit's own environment, matching the server.
+  assert.equal(
+    resolveUnitEndpoint(
+      "[Service]\nEnvironment=REMNIC_PORT=4812\nExecStart=/opt/remnic-server --port 4813\n",
+      { userScoped: true, homeDir: "/home/gw" },
+    ).port,
+    4813,
+  );
+  // A flag given no value is not an endpoint.
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nExecStart=/opt/remnic-server --host --port 4814\n", {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).host,
+    undefined,
+  );
+  // Quoted values unwrap; a system unit's %h is still refused.
+  assert.equal(
+    resolveUnitEndpoint('[Service]\nExecStart=/opt/remnic-server --host "127.0.0.8"\n', {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).host,
+    "127.0.0.8",
+  );
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nExecStart=/opt/remnic-server --config %h/c.json\n", {
+      userScoped: false,
+      homeDir: "/home/gw",
+    }).configPath,
+    undefined,
+  );
+});
+
+test("auto dials the endpoint a unit passes on the command line", async () => {
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" });
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-unit-cli-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    `[Service]\nExecStart=/usr/bin/node /opt/remnic-server --host 127.0.0.1 --port ${stub.port}\n`,
+    "utf8",
+  );
+  // The home config names a dead port; only the command line is right.
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4815 } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(home);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 5_000 });
+    assert.equal(bridge.mode, "delegate");
+    assert.equal(bridge.daemonPort, stub.port);
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await stub.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
