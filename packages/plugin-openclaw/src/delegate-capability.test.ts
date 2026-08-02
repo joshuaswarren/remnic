@@ -2242,3 +2242,39 @@ test("a spent budget refuses an unverified substituted default", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("an explicitly scoped search never waits on the health route", async () => {
+  // The daemon enforces an explicit scope on `/memories/search`, so a slow or
+  // dead `/health` must not delay a search it would serve. A cached manager
+  // must also cost at most ONE probe, never an eager one plus a revalidating
+  // one.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+    search: { query: "q", count: 0, results: [] },
+  });
+  try {
+    let clock = 1_000_000;
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir, { now: () => clock }),
+      resolveSearchNamespace: async () => "team",
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const probes = (): number =>
+      stub.calls.filter((call) => call.pathname.includes("/health")).length;
+    const afterHandout = probes();
+    // Expire the posture cache: an explicit scope must STILL not probe.
+    clock += 10 * 60 * 1_000;
+    assert.deepEqual(await manager?.search("q"), []);
+    assert.deepEqual(await manager?.search("q"), []);
+    assert.equal(probes(), afterHandout, "no posture probe ran for an explicit scope");
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/memories/search")).length,
+      2,
+      "and both searches reached the daemon",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

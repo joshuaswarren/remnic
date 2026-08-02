@@ -568,10 +568,6 @@ export function createDelegateMemoryCapability(
         `delegate search rejected (maxResults must be a non-negative integer): ${String(opts.maxResults)}`,
       );
     }
-    // A cached manager can outlive the probe that handed it out. Without this,
-    // a single transient health failure sticks a namespace refusal on every
-    // later search while recall/observe recover on their next scoped call.
-    await refreshHealth();
     // Cap-after-filter (AGENTS.md retrieval contract): artifact paths and
     // minScore are dropped on this side, so asking the daemon for exactly
     // `maxResults` would let a few excluded hits shrink — or empty — a page
@@ -581,7 +577,13 @@ export function createDelegateMemoryCapability(
     // ABSENT namespace as a principal-wide fan-out. Send the concrete default
     // health reports so a default-scoped session cannot see other namespaces.
     const searchScope = await options.resolveSearchNamespace(opts?.sessionKey);
-    const scopeIsFresh = await refreshHealth(undefined, searchScope === undefined);
+    // The scope decides whether a posture probe is needed at all. An EXPLICIT
+    // one is enforced by the daemon on the search endpoint, so a slow or dead
+    // `/health` must not delay a search the daemon would serve; an ABSENT one
+    // is decided by the posture, which is an authorization fact and must be
+    // current. Resolving the scope first also means a cached manager costs at
+    // most ONE probe here, never one eager plus one revalidating.
+    const scopeIsFresh = searchScope === undefined ? await refreshHealth(undefined, true) : true;
     const namespace = await resolveScopedNamespaceChecked(searchScope, undefined, scopeIsFresh, [
       "memory_search",
     ]);
