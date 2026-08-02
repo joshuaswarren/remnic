@@ -1096,7 +1096,10 @@ export function maybeRegisterDelegateRuntime(
   const target: DelegateDaemonTarget = {
     host: bridge.daemonHost,
     port: bridge.daemonPort,
-    resolveAuthToken: loadDaemonAuth,
+    // Bound to the config the resolved endpoint came from, so a deployment
+    // with two configs sends each daemon its OWN token instead of whichever
+    // one discovery happened to read first.
+    resolveAuthToken: () => loadDaemonAuth(bridge.daemonConfigPath),
   };
   registerDelegateRuntime(api, {
     serviceId: options.serviceId,

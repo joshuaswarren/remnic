@@ -16,6 +16,9 @@ import { Worker } from "node:worker_threads";
 import {
   checkDaemonHealthSync,
   detectDaemonBridgeMode,
+  isLoopbackDaemonHost,
+  loadDaemonAuth,
+  loopbackForWildcardBind,
   readDaemonMemoryDirSync,
   resolveBridgeMode,
   resolveUnitConfigPath,
@@ -857,6 +860,79 @@ test("auto spends ONE preflight budget across every candidate endpoint", async (
       else process.env[key] = value;
     }
     await Promise.all(stubs.map((stub) => stub.close()));
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("equivalent IPv6 loopback and wildcard spellings are recognized", () => {
+  // Raw string comparison would classify these as remote and leave auto
+  // embedded beside a reachable same-host daemon.
+  for (const spelling of [
+    "::1",
+    "[::1]",
+    "0:0:0:0:0:0:0:1",
+    "0000:0000:0000:0000:0000:0000:0000:0001",
+    "::ffff:127.0.0.1",
+    "::FFFF:127.0.0.1",
+  ]) {
+    assert.equal(isLoopbackDaemonHost(spelling), true, `${spelling} is loopback`);
+  }
+  for (const spelling of ["::", "[::]", "0:0:0:0:0:0:0:0", "0.0.0.0"]) {
+    assert.equal(isLoopbackDaemonHost(spelling), true, `${spelling} is a wildcard bind`);
+    assert.ok(loopbackForWildcardBind(spelling) !== undefined, `${spelling} dials through loopback`);
+  }
+  // Still literal-only: a routable v6 address and a loopback-shaped DNS name
+  // must not pass.
+  for (const spelling of ["2001:db8::1", "::ffff:10.0.0.1", "127.daemon.example"]) {
+    assert.equal(isLoopbackDaemonHost(spelling), false, `${spelling} is not loopback`);
+  }
+});
+
+test("each probed endpoint carries its own config's token", async () => {
+  // Two configs with different server.authToken values. Resolving credentials
+  // globally would send the FIRST config's token to the second daemon, which
+  // 401s and leaves auto embedded beside it.
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-token-bind-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-token-bind-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  const cwdConfig = path.join(cwd, "remnic.config.json");
+  const homeConfig = path.join(home, ".config", "remnic", "config.json");
+  await writeFile(
+    cwdConfig,
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4941, authToken: "cwd-token" } }),
+    "utf8",
+  );
+  await writeFile(
+    homeConfig,
+    JSON.stringify({ server: { host: "127.0.0.1", port: 4942, authToken: "home-token" } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    assert.deepEqual(loadDaemonAuth(cwdConfig), {
+      token: "cwd-token",
+      source: "daemon configuration",
+    });
+    assert.deepEqual(loadDaemonAuth(homeConfig), {
+      token: "home-token",
+      source: "daemon configuration",
+    });
+    // A bound config with no token means that daemon runs unauthenticated -
+    // it must NOT fall through to another config's credential.
+    const openConfig = path.join(home, "open.config.json");
+    await writeFile(openConfig, JSON.stringify({ server: { port: 4943 } }), "utf8");
+    assert.deepEqual(loadDaemonAuth(openConfig), { token: "", source: "no configured token" });
+  } finally {
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
     await rm(home, { recursive: true, force: true });
     await rm(cwd, { recursive: true, force: true });
   }

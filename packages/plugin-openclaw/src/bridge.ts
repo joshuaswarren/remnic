@@ -10,13 +10,24 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isIPv4 } from "node:net";
+import { isIPv4, isIPv6 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { expandTildePath } from "@remnic/core";
 
 import { daemonServesCorpus } from "./memory-read-scope.js";
 
 export type BridgeMode = "embedded" | "delegate";
+
+/**
+ * One endpoint `auto` may dial, plus the config file it came from — the
+ * credential tier is bound to that file so a second daemon's token cannot be
+ * sent to the first.
+ */
+interface DaemonEndpointCandidate {
+  host: string;
+  port: number;
+  configPath?: string;
+}
 
 export interface BridgeConfig {
   mode: BridgeMode;
@@ -29,6 +40,12 @@ export interface BridgeConfig {
    * synchronous registration spend twice the configured preflight budget.
    */
   healthVerified?: boolean;
+  /**
+   * The config file the resolved endpoint came from, when discovery found one.
+   * Delegate requests bind their credential tier to it, so a deployment with
+   * two configs sends each daemon its OWN token.
+   */
+  daemonConfigPath?: string;
 }
 
 export type DaemonAuthTokenSource =
@@ -412,20 +429,52 @@ function isDaemonServiceConfigured(): boolean {
 /**
  * Whether a daemon endpoint names THIS host.
  *
- * Literal only: a prefix test would accept a DNS name like
- * `127.daemon.example` that resolves anywhere. A wildcard bind
- * (`0.0.0.0` / `::`) names every interface on this host, so it counts as local
- * — `server.host: "0.0.0.0"` is the documented daemon configuration.
+ * IPv6 literals have many valid spellings for the same address, so they are
+ * CANONICALIZED before classifying: `0:0:0:0:0:0:0:1`, `::1`, and
+ * `::ffff:127.0.0.1` are all loopback; `0:0:0:0:0:0:0:0` is the wildcard.
+ * Comparing raw strings would leave `auto` embedded beside a reachable
+ * same-host daemon just because its config spelled the address differently.
+ *
+ * Names stay literal: a prefix test would accept a DNS name like
+ * `127.daemon.example` that resolves anywhere. A wildcard bind names every
+ * interface on this host, so it counts as local — `server.host: "0.0.0.0"` is
+ * the documented daemon configuration.
  */
 export function isLoopbackDaemonHost(host: string): boolean {
   const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
-  if (normalized === "localhost" || normalized === "::1") return true;
+  if (normalized === "localhost") return true;
   if (loopbackForWildcardBind(normalized) !== undefined) return true;
+  const ipv6 = canonicalIPv6(normalized);
+  if (ipv6 !== undefined) {
+    if (ipv6 === "::1") return true;
+    // IPv4-mapped carries an IPv4 address; judge THAT. Canonicalization emits
+    // the hex form (`::ffff:7f00:1`), so read 127 out of the high group.
+    const mappedHex = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/.exec(ipv6);
+    if (mappedHex !== null) return Number.parseInt(mappedHex[1], 16) >> 8 === 0x7f;
+    const mappedDotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ipv6);
+    return (
+      mappedDotted !== null &&
+      isIPv4(mappedDotted[1]) &&
+      mappedDotted[1].split(".")[0] === "127"
+    );
+  }
   return isIPv4(normalized) && normalized.split(".")[0] === "127";
 }
 
-/** Normalize a host for node:http/health use: strip surrounding IPv6 brackets
- * (`[::1]` → `::1`). URL builders re-bracket as needed. */
+/**
+ * Collapse an IPv6 literal to its canonical form, or `undefined` when the
+ * string is not one. Node's `net.isIPv6` validates; `URL` canonicalizes.
+ */
+function canonicalIPv6(value: string): string | undefined {
+  if (!isIPv6(value)) return undefined;
+  try {
+    // The URL parser applies RFC 5952 compression and lowercasing.
+    return new URL(`http://[${value}]`).hostname.replace(/^\[/, "").replace(/\]$/, "");
+  } catch {
+    return value;
+  }
+}
+
 /**
  * A wildcard bind names every interface on THIS host, not a remote one. The
  * documented `server.host: "0.0.0.0"` daemon config would otherwise be
@@ -434,9 +483,9 @@ export function isLoopbackDaemonHost(host: string): boolean {
  * dialed through the matching loopback.
  */
 export function loopbackForWildcardBind(host: string): string | undefined {
-  const normalized = host.trim().toLowerCase();
+  const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
   if (normalized === "0.0.0.0") return DEFAULT_HOST;
-  if (normalized === "::" || normalized === "[::]") return "::1";
+  if (canonicalIPv6(normalized) === "::") return "::1";
   return undefined;
 }
 
@@ -469,6 +518,8 @@ function probeDaemonSync(options: {
   path: string;
   fallbackPath: string | null;
   captureField?: string;
+  /** Bind the credential to the config this endpoint came from. */
+  configPath?: string;
 }): { ok: boolean; captured?: string } {
   const { host, port, timeoutMs } = options;
   if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return { ok: false };
@@ -489,7 +540,7 @@ function probeDaemonSync(options: {
         port,
         path: options.path,
         fallbackPath: options.fallbackPath,
-        token: loadDaemonAuth().token,
+        token: loadDaemonAuth(options.configPath).token,
         deadline,
         state,
         ...(capture ? { capture, captureField: options.captureField } : {}),
@@ -539,6 +590,7 @@ export function readDaemonMemoryDirSync(
   host: string,
   port: number,
   timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
+  configPath?: string,
 ): { healthy: boolean; memoryDir?: string } {
   const probe = probeDaemonSync({
     host,
@@ -547,6 +599,7 @@ export function readDaemonMemoryDirSync(
     path: LEGACY_HEALTH_PATH,
     fallbackPath: null,
     captureField: "memoryDir",
+    configPath,
   });
   return { healthy: probe.ok, memoryDir: probe.captured };
 }
@@ -626,18 +679,22 @@ function readServerBlock(candidate: string): { host?: string; port?: number } | 
  * Explicit `delegate` still resolves exactly one endpoint: the operator named
  * a daemon, so guessing among candidates would be the wrong behavior.
  */
-function daemonEndpointCandidates(): Array<{ host: string; port: number }> {
+function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
   const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
   const envPort = coerceDaemonPort(readCompatEnv("REMNIC_PORT", "ENGRAM_PORT"));
-  const candidates: Array<{ host: string; port: number }> = [];
-  const add = (host: string | undefined, port: number | undefined): void => {
+  const candidates: DaemonEndpointCandidate[] = [];
+  const add = (
+    host: string | undefined,
+    port: number | undefined,
+    configPath?: string,
+  ): void => {
     const resolvedHost = normalizeDaemonHost(
       envHost !== undefined && envHost.trim() !== "" ? envHost : (host ?? DEFAULT_HOST),
     );
     const dialHost = loopbackForWildcardBind(resolvedHost) ?? resolvedHost;
     const dialPort = envPort ?? port ?? DEFAULT_PORT;
     if (candidates.some((c) => c.host === dialHost && c.port === dialPort)) return;
-    candidates.push({ host: dialHost, port: dialPort });
+    candidates.push({ host: dialHost, port: dialPort, configPath });
   };
   // An env override alone, so a specified environment is dialed first even
   // when no config file exists. Without one this would inject a bare
@@ -647,7 +704,7 @@ function daemonEndpointCandidates(): Array<{ host: string; port: number }> {
   }
   for (const candidate of configPathCandidates()) {
     const server = readServerBlock(candidate);
-    if (server !== undefined) add(server.host, server.port);
+    if (server !== undefined) add(server.host, server.port, candidate);
   }
   // The documented default, LAST. A daemon on 127.0.0.1:4318 with no config
   // file at all is the out-of-the-box shape, and explicit `delegate` dials it;
@@ -704,6 +761,7 @@ export function detectDaemonBridgeMode(options: {
     mode: "embedded",
     daemonHost: primary.host,
     daemonPort: primary.port,
+    ...(primary.configPath === undefined ? {} : { daemonConfigPath: primary.configPath }),
   };
 
   // `bridgeHealthTimeoutMs` is documented as the TOTAL preflight budget, and
@@ -712,7 +770,7 @@ export function detectDaemonBridgeMode(options: {
   // shares one deadline.
   const totalTimeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
   const deadline = Date.now() + totalTimeoutMs;
-  for (const { host: daemonHost, port: daemonPort } of endpoints) {
+  for (const { host: daemonHost, port: daemonPort, configPath } of endpoints) {
     // Auto is SAME-HOST detection. A matching absolute memoryDir string proves
     // nothing across machines — an unrelated remote daemon using the same
     // conventional path would silently capture every recall and write — and the
@@ -735,7 +793,7 @@ export function detectDaemonBridgeMode(options: {
       );
       break;
     }
-    const health = readDaemonMemoryDirSync(daemonHost, daemonPort, remainingMs);
+    const health = readDaemonMemoryDirSync(daemonHost, daemonPort, remainingMs, configPath);
     if (!health.healthy) {
       options.onSkip?.(`no healthy daemon at ${daemonHost}:${daemonPort}`);
       continue;
@@ -752,7 +810,7 @@ export function detectDaemonBridgeMode(options: {
       );
       continue;
     }
-    return { mode: "delegate", daemonHost, daemonPort, healthVerified: true };
+    return { mode: "delegate", daemonHost, daemonPort, healthVerified: true, ...(configPath === undefined ? {} : { daemonConfigPath: configPath }) };
   }
   return embedded;
 }
@@ -830,8 +888,15 @@ function isOpenClawTokenEntry(value: unknown): value is { token: string } {
  * file; if that stale value outranked the `REMNIC_AUTH_TOKEN` the daemon is
  * actually running with, every request would 401 and the reported `source`
  * would point the operator at the wrong variable (issue #2286).
+ *
+ * `configPath` binds the config-file tier to ONE file. Candidate endpoints are
+ * discovered per config, and two configs can carry different
+ * `server.authToken` values — resolving credentials independently would send
+ * the first config's token to a daemon that came from the second, which
+ * answers 401 and leaves `auto` embedded beside it. Env and token stores are
+ * daemon-independent and keep their precedence.
  */
-export function loadDaemonAuth(): DaemonAuthToken {
+export function loadDaemonAuth(configPath?: string): DaemonAuthToken {
   const environmentTokens = [
     ["OPENCLAW_REMNIC_ACCESS_TOKEN", readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN")],
     ["REMNIC_AUTH_TOKEN", readEnv("REMNIC_AUTH_TOKEN")],
@@ -870,17 +935,24 @@ export function loadDaemonAuth(): DaemonAuthToken {
     }
   }
 
-  try {
-    for (const configPath of configPathCandidates()) {
-      if (!fs.existsSync(configPath)) continue;
-      const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
-      const token = raw.server?.authToken;
+  // Bound to the caller's config when given, else the discovery order.
+  for (const candidate of configPath === undefined ? configPathCandidates() : [configPath]) {
+    if (!fileExists(candidate)) continue;
+    try {
+      const raw: unknown = JSON.parse(fs.readFileSync(candidate, "utf8"));
+      const server = (raw as { server?: { authToken?: unknown } } | null)?.server;
+      const token = server?.authToken;
       if (typeof token === "string" && token.length > 0) {
         return { token, source: "daemon configuration" };
       }
+    } catch {
+      // Unreadable or malformed: it names no credential. Keep looking when we
+      // are scanning; a caller-bound path simply has none.
+      continue;
     }
-  } catch {
-    return { token: "", source: "no configured token" };
+    // A readable config with no token IS the answer for a bound path: the
+    // daemon it describes runs unauthenticated.
+    if (configPath !== undefined) break;
   }
   return { token: "", source: "no configured token" };
 }
