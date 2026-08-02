@@ -839,3 +839,43 @@ test("delegate health backs off on a 200 with a malformed body", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("delegate search with no budget keeps the daemon's page size on the wire", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: healthyDaemon(memoryDir),
+    search: {
+      query: "q",
+      count: 3,
+      results: [
+        { path: "artifacts/a1.md", score: 0.9, snippet: "artifact" },
+        { path: "facts/one.md", score: 0.5, snippet: "one" },
+        { path: "facts/two.md", score: 0.4, snippet: "two" },
+      ],
+    },
+  });
+  try {
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    const results = (await manager?.search("q")) ?? [];
+    const searchCalls = stub.calls.filter((call) => call.pathname.includes("/memories/search"));
+    // First request carries no cap - the caller accepted the daemon's page.
+    assert.equal(
+      (searchCalls[0]?.body as { maxResults?: number }).maxResults,
+      undefined,
+      "no invented budget on the wire",
+    );
+    // The artifact thinned that page, so it tops up against what was served.
+    assert.deepEqual(
+      searchCalls.map((call) => (call.body as { maxResults?: number }).maxResults),
+      [undefined, 6],
+    );
+    assert.deepEqual(
+      results.map((hit) => hit.citation),
+      [path.join("facts", "one.md"), path.join("facts", "two.md")],
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

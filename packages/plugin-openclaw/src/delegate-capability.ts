@@ -415,19 +415,23 @@ export function createDelegateMemoryCapability(
       }
       return kept;
     };
-    // No budget: the caller accepted the daemon's own page size, so there is
-    // no cap on this side that a filtered hit could fall short of.
-    if (requestedResults === undefined) return keep(await fetchPage(undefined));
+    // A caller that named no budget keeps the daemon's own page size on the
+    // wire; the page it served becomes the budget the filtered list is
+    // measured against, so an excluded hit still cannot thin it out.
     let kept: RuntimeSearchResult[] = [];
-    let limit = requestedResults;
+    let limit: number | undefined = requestedResults;
     for (let round = 0; round < SEARCH_TOPUP_ROUNDS; round += 1) {
       const rawResults = await fetchPage(limit);
       kept = keep(rawResults);
-      // Enough after filtering, or the daemon has nothing left to give.
-      if (kept.length >= requestedResults || rawResults.length < limit) break;
-      limit *= 2;
+      const budget = requestedResults ?? rawResults.length;
+      if (kept.length >= budget) return requestedResults === undefined ? kept : kept.slice(0, budget);
+      // What the daemon actually served this round. A short page means it has
+      // nothing left, so asking again just replays the same rows.
+      const served = limit ?? rawResults.length;
+      if (rawResults.length === 0 || rawResults.length < served) break;
+      limit = served * 2;
     }
-    return kept.slice(0, requestedResults);
+    return requestedResults === undefined ? kept : kept.slice(0, requestedResults);
   };
 
   const readMemoryFile = async (params: RuntimeReadParams): Promise<RuntimeReadResult> => {
