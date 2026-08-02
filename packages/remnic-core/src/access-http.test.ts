@@ -4514,3 +4514,61 @@ test("HTTP memory search scales its ceiling above a large requested budget", asy
   assert.deepEqual(seen, [2_000, 4_000], "tops up past the requested budget");
   assert.equal(results.length, 2_000, "the requested page is delivered in full");
 });
+
+test("HTTP memory search keeps the backend page size when no limit is named", async () => {
+  // The backend's default page (6) is smaller than the configured cap (8).
+  // Treating the cap as the target made a FULL page look short and reissued
+  // the query, returning 8 where the same request used to return 6.
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 8,
+    sendInitialLimit: false,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: () => false,
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      const size = limit ?? 6;
+      return Array.from({ length: size }, (_, index) => ({
+        path: `facts/f${index}.md`,
+        score: 0.5,
+        snippet: "fact",
+      }));
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(seen, [undefined], "one request, no spurious top-up");
+  assert.equal(results.length, 6, "the backend's own page is returned intact");
+});
+
+test("HTTP memory search still tops up a thinned default page", async () => {
+  // Same shape, but an excluded hit really does shorten the page: the target
+  // is the backend page size, so it tops up to restore it.
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 8,
+    sendInitialLimit: false,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      const size = limit ?? 6;
+      return [
+        { path: "artifacts/a.md", score: 1, snippet: "artifact" },
+        ...Array.from({ length: size - 1 }, (_, index) => ({
+          path: `facts/f${index}.md`,
+          score: 0.5,
+          snippet: "fact",
+        })),
+      ];
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(seen, [undefined, 12], "tops up against the backend page size");
+  assert.equal(results.length, 6);
+});

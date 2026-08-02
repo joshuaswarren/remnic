@@ -270,21 +270,32 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
   if (budget <= 0) return [];
   let results: TResult[] = [];
   let limit: number | undefined = options.sendInitialLimit ? budget : undefined;
+  // With no explicit limit the caller asked for the BACKEND's page, so that
+  // page's size is the target — not the configured cap. Using the cap would
+  // reissue the query whenever the backend's default page is smaller, and
+  // return more rows than the same request used to.
+  let target = budget;
+  let firstPage = true;
   for (;;) {
     const raw = await options.search(limit);
     results = raw.filter((hit) => !options.isExcluded(hit.path));
-    if (results.length >= budget) break;
+    if (firstPage) {
+      firstPage = false;
+      if (!options.sendInitialLimit) target = Math.min(budget, raw.length);
+      if (target <= 0) return [];
+    }
+    if (results.length >= target) break;
     // What the backend actually served this round: its own page size when we
     // named no limit.
     const served = limit ?? raw.length;
     // A short page means the corpus is exhausted - asking for more is wasted
     // work that returns the same rows.
     if (raw.length === 0 || raw.length < served) break;
-    const ceiling = candidateCeiling(budget);
+    const ceiling = candidateCeiling(target);
     if (served >= ceiling) break;
     limit = Math.min(served * 2, ceiling);
   }
-  return results.slice(0, budget);
+  return results.slice(0, target);
 }
 
 /**
