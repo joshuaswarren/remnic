@@ -281,6 +281,12 @@ export async function runScopedMemorySearch(options: {
   budget: number;
   /** `false` when the caller named no `maxResults`; see the helper below. */
   sendInitialLimit: boolean;
+  /**
+   * Authorize the scope. Runs BEFORE any budget decision so a zero budget - a
+   * valid empty search - can never skip the namespace/principal gate and turn
+   * an access error into a successful empty result.
+   */
+  authorizeScope(): Promise<void> | void;
   collection?: string;
   mode?: "search" | "hybrid" | "bm25" | "vector";
   namespacesEnabled: boolean;
@@ -292,6 +298,7 @@ export async function runScopedMemorySearch(options: {
     limit: number | undefined,
   ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
 }): Promise<Array<{ path: string; score: number; snippet: string }>> {
+  await options.authorizeScope();
   const results = await searchWithGenericExclusion({
     budget: options.budget,
     sendInitialLimit: options.sendInitialLimit,
@@ -304,4 +311,84 @@ export async function runScopedMemorySearch(options: {
     score: hit.score,
     snippet: (hit.snippet ?? "").slice(0, 800),
   }));
+}
+
+/** Everything the ranked memory-search surface needs from the service. */
+export interface ScopedMemorySearchDeps {
+  namespacesEnabled: boolean;
+  defaultBudget: number;
+  isExcluded(memoryPath: string): boolean;
+  /** Flat-corpus authorization; throws when the namespace is unreadable. */
+  authorizeFlatCorpus(namespace: string | undefined, principal: string | undefined): void;
+  /** Namespace-aware authorization; throws, else returns the search fan-out. */
+  authorizeNamespaces(
+    namespace: string | undefined,
+    principal: string | undefined,
+    collection: string | undefined,
+  ): Promise<string[]>;
+  searchAcrossNamespaces(params: {
+    query: string;
+    namespaces?: string[];
+    maxResults?: number;
+    mode?: "search" | "hybrid" | "bm25" | "vector";
+  }): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+  searchGlobal(
+    query: string,
+    maxResults?: number,
+  ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+  search(
+    query: string,
+    collection?: string,
+    maxResults?: number,
+  ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+}
+
+/** The whole `memory_search` surface: validate, authorize, search, shape. */
+export async function memorySearchThroughScope(
+  deps: ScopedMemorySearchDeps,
+  request: {
+    query: string;
+    namespace?: string;
+    maxResults?: number;
+    collection?: string;
+    mode?: "search" | "hybrid" | "bm25" | "vector";
+    principal?: string;
+  },
+): Promise<{
+  query: string;
+  results: Array<{ path: string; score: number; snippet: string }>;
+  count: number;
+}> {
+  const { query, namespace, maxResults, mode, principal } = request;
+  const collection = request.collection?.trim();
+  if (request.collection !== undefined && !collection) {
+    throw new EngramAccessInputError("collection must be a non-empty string");
+  }
+  let searchNamespaces: string[] = [];
+  const results = await runScopedMemorySearch({
+    query, collection, mode,
+    namespacesEnabled: deps.namespacesEnabled,
+    isExcluded: deps.isExcluded,
+    budget: maxResults ?? deps.defaultBudget,
+    sendInitialLimit: maxResults !== undefined,
+    authorizeScope: async () => {
+      if (!deps.namespacesEnabled) return deps.authorizeFlatCorpus(namespace, principal);
+      searchNamespaces = await deps.authorizeNamespaces(namespace, principal, collection);
+    },
+    flatCorpus: (limit) =>
+      runFlatCorpusMemorySearch({
+        query, maxResults: limit, collection, mode,
+        searchAcrossNamespaces: (p) => deps.searchAcrossNamespaces(p),
+        searchGlobal: (q, globalLimit) => deps.searchGlobal(q, globalLimit),
+        search: (q, coll, searchLimit) => deps.search(q, coll, searchLimit),
+      }),
+    namespaced: (limit) =>
+      runMemorySearchFanout({
+        query, maxResults: limit, principal, collection, mode,
+        requestedNamespace: namespace,
+        namespaces: searchNamespaces,
+        search: (p) => deps.searchAcrossNamespaces(p),
+      }),
+  });
+  return { query, results, count: results.length };
 }

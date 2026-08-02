@@ -107,9 +107,7 @@ import {
   defaultNamespaceAtFlatRoot,
   mergeMemorySearchDefaultFallback,
   resolveMemorySearchDefaultFallback,
-  runFlatCorpusMemorySearch,
-  runMemorySearchFanout,
-  runScopedMemorySearch,
+  memorySearchThroughScope,
 } from "./access-memory-search-fanout.js";
 import { isGenericRecallExcludedPath } from "./orchestration/generic-recall-paths.js";
 import {
@@ -4717,42 +4715,27 @@ export class EngramAccessService {
     mode?: "search" | "hybrid" | "bm25" | "vector";
     principal?: string;
   }): Promise<{ query: string; results: Array<{ path: string; score: number; snippet: string }>; count: number }> {
-    const { query, namespace, maxResults, mode, principal } = request;
-    const collection = request.collection?.trim();
-    if (request.collection !== undefined && !collection) {
-      throw new EngramAccessInputError("collection must be a non-empty string");
-    }
-
-    const results = await runScopedMemorySearch({
-      query, collection, mode,
-      budget: maxResults ?? this.orchestrator.config.qmdMaxResults ?? 10,
-      sendInitialLimit: maxResults !== undefined,
-      namespacesEnabled: resolveNamespaceCapabilities(this.orchestrator.config).namespaces,
-      isExcluded: (memoryPath) =>
-        isGenericRecallExcludedPath(memoryPath, this.orchestrator.config, "qmd"),
-      flatCorpus: (limit) => {
-        this.resolveReadableNamespace(namespace, principal);
-        const { qmd } = this.orchestrator;
-        return runFlatCorpusMemorySearch({
-          query, maxResults: limit, collection, mode,
-          searchAcrossNamespaces: (p) => this.orchestrator.searchAcrossNamespaces(p),
-          searchGlobal: (q, globalLimit) => qmd.searchGlobal(q, globalLimit),
-          search: (q, coll, searchLimit) => qmd.search(q, coll, searchLimit),
-        });
-      },
-      namespaced: async (limit) =>
-        await runMemorySearchFanout({
-          query, maxResults: limit, principal, collection, mode,
-          requestedNamespace: namespace,
-          namespaces: this.resolveMemorySearchNamespacesForCollection(
+    const { qmd, config } = this.orchestrator;
+    return memorySearchThroughScope(
+      {
+        namespacesEnabled: resolveNamespaceCapabilities(config).namespaces,
+        defaultBudget: config.qmdMaxResults ?? 10,
+        isExcluded: (memoryPath) => isGenericRecallExcludedPath(memoryPath, config, "qmd"),
+        authorizeFlatCorpus: (namespace, principal) => {
+          this.resolveReadableNamespace(namespace, principal);
+        },
+        authorizeNamespaces: async (namespace, principal, collection) =>
+          this.resolveMemorySearchNamespacesForCollection(
             collection,
             await this.resolveReadableNamespacesForSearch(namespace, principal),
             namespace?.trim() ? undefined : principal,
           ),
-          search: (p) => this.orchestrator.searchAcrossNamespaces(p),
-        }),
-    });
-    return { query, results, count: results.length };
+        searchAcrossNamespaces: (params) => this.orchestrator.searchAcrossNamespaces(params),
+        searchGlobal: (query, maxResults) => qmd.searchGlobal(query, maxResults),
+        search: (query, collection, maxResults) => qmd.search(query, collection, maxResults),
+      },
+      request,
+    );
   }
 
   async memoryProfile(namespace?: string, principal?: string): Promise<Record<string, unknown>> {

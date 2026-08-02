@@ -4358,6 +4358,7 @@ test("HTTP memory search excludes artifacts and tops up to a full page", async (
     query: "q",
     budget: 2,
     sendInitialLimit: true,
+    authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
     flatCorpus: async (limit) => {
@@ -4381,6 +4382,7 @@ test("HTTP memory search stops topping up when the corpus is exhausted", async (
     query: "q",
     budget: 5,
     sendInitialLimit: true,
+    authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
     flatCorpus: async (limit) => {
@@ -4402,6 +4404,7 @@ test("HTTP memory search omits maxResults when the caller named no budget", asyn
     query: "q",
     budget: 3,
     sendInitialLimit: false,
+    authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
     flatCorpus: async (limit) => {
@@ -4442,6 +4445,7 @@ test("HTTP memory search keeps topping up past four excluded pages", async () =>
     query: "q",
     budget: 2,
     sendInitialLimit: true,
+    authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
     flatCorpus: async (limit) => {
@@ -4463,6 +4467,7 @@ test("HTTP memory search stops at the candidate ceiling", async () => {
     query: "q",
     budget: 1,
     sendInitialLimit: true,
+    authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: () => true,
     flatCorpus: async (limit) => {
@@ -4489,6 +4494,7 @@ test("HTTP memory search scales its ceiling above a large requested budget", asy
     query: "q",
     budget: 2_000,
     sendInitialLimit: true,
+    authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath === "artifacts/a.md",
     flatCorpus: async (limit) => {

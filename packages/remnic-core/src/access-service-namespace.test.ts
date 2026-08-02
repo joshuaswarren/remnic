@@ -1824,3 +1824,28 @@ test("memorySearch does not probe default storage for an explicit namespace or b
     "default-namespace storage must not be probed for an explicit-namespace query",
   );
 });
+
+test("memorySearch authorizes the scope even when the budget is zero", async () => {
+  // A zero budget is a valid empty search, never a way to skip the namespace
+  // gate: returning [] for an unreadable namespace would turn an access error
+  // into a successful result.
+  const { service } = makeService();
+  let searchCalls = 0;
+  (service as unknown as {
+    orchestrator: { searchAcrossNamespaces(params: unknown): Promise<unknown[]> };
+  }).orchestrator.searchAcrossNamespaces = async () => {
+    searchCalls += 1;
+    return [];
+  };
+  await assert.rejects(
+    () =>
+      service.memorySearch({
+        query: "release note",
+        namespace: "team",
+        maxResults: 0,
+        principal: "stranger",
+      }),
+    /namespace is not readable: team/,
+  );
+  assert.equal(searchCalls, 0, "and the backend is never consulted");
+});
