@@ -58,8 +58,18 @@ function readUnitEnv(
   name: string,
   scope: UnitScope,
 ): string | undefined {
-  // systemd: Environment=NAME=value  /  Environment="NAME=value"
-  const systemd = new RegExp(`^\\s*Environment=\\"?${name}=([^\\"\\n]+)\\"?\\s*$`, "m").exec(unit);
+  // systemd allows SEVERAL assignments per directive, quoted or bare:
+  //   Environment=NAME=value
+  //   Environment="NAME=value" "OTHER=value"
+  // so every directive is tokenized rather than matched as one assignment.
+  let systemdValue: string | undefined;
+  for (const directive of unit.matchAll(/^\s*Environment=(.*)$/gm)) {
+    for (const rawToken of directive[1]?.match(/"[^"]*"|'[^']*'|\S+/g) ?? []) {
+      const token = /^(["']).*\1$/.test(rawToken) ? rawToken.slice(1, -1) : rawToken;
+      if (token.startsWith(`${name}=`)) systemdValue = token.slice(name.length + 1);
+    }
+  }
+  const systemd = systemdValue === undefined ? null : [undefined, systemdValue];
   // launchd: <key>NAME</key><string>value</string>
   const launchd = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
   const raw = (systemd?.[1] ?? launchd?.[1])?.trim();
@@ -77,6 +87,21 @@ function readUnitEnv(
  * double quotes is unwrapped - which covers everything the shipped units and
  * ordinary hand edits produce.
  */
+/**
+ * The unit's declared working directory: systemd `WorkingDirectory=`, launchd
+ * `<key>WorkingDirectory</key>`. Relative CLI paths resolve against it exactly
+ * as they do for the daemon process.
+ */
+function readUnitWorkingDirectory(unit: string): string | undefined {
+  const systemd = /^\s*WorkingDirectory=(.+)$/m.exec(unit)?.[1]?.trim();
+  const launchd = /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/
+    .exec(unit)?.[1]
+    ?.trim();
+  const raw = systemd ?? launchd;
+  if (raw === undefined || raw === "") return undefined;
+  return /^(["']).*\1$/.test(raw) ? raw.slice(1, -1) : raw;
+}
+
 function readUnitCliOverrides(
   unit: string,
   scope: UnitScope,
@@ -116,7 +141,16 @@ function readUnitCliOverrides(
     return value.replace(/%h/g, scope.homeDir);
   };
   const configPath = expand(readFlag("--config"));
-  const resolvedConfig = configPath === undefined ? undefined : expandTildePath(configPath);
+  // The server resolves a relative `--config` against its own cwd, which the
+  // unit sets. Discarding it would hide that config's host, port, and token.
+  const workingDirectory = expand(readUnitWorkingDirectory(unit));
+  const expandedConfig = configPath === undefined ? undefined : expandTildePath(configPath);
+  const resolvedConfig =
+    expandedConfig === undefined || path.isAbsolute(expandedConfig)
+      ? expandedConfig
+      : workingDirectory !== undefined && path.isAbsolute(workingDirectory)
+        ? path.resolve(workingDirectory, expandedConfig)
+        : undefined;
   const host = expand(readFlag("--host"));
   const authToken = expand(readFlag("--auth-token"));
   return {

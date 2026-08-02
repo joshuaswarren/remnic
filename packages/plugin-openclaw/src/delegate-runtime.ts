@@ -1077,7 +1077,23 @@ export function maybeRegisterDelegateRuntime(
     // binds nothing and must not poison a later delegate registration).
     // Record active registers so a later reload that flips to delegate on the
     // SAME api stays embedded instead of stacking both memory paths.
-    if (!options.passive) delegateEmbeddedFallbackApis.add(api);
+    //
+    // This is deliberate for `auto` too. Once embedded hooks are bound there is
+    // no way to take them off — OpenClaw exposes no unregister — so adopting
+    // delegate on a later register() of the same api would run BOTH memory
+    // paths over one corpus, which is the exact failure this whole mode exists
+    // to prevent. Picking up a daemon that appeared after startup therefore
+    // needs a gateway restart, and the log says so rather than leaving an
+    // operator wondering why `auto` never switched.
+    if (!options.passive) {
+      delegateEmbeddedFallbackApis.add(api);
+      if (resolveRequestedBridgeMode(options.configBridgeMode) === "auto") {
+        log.info(
+          `[${options.serviceId}] bridge mode auto: embedded hooks are bound on this api — ` +
+            `a daemon that starts later is picked up on the next gateway restart`,
+        );
+      }
+    }
     return false;
   }
   // register() is synchronous, so the preflight uses the bridge's

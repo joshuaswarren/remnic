@@ -1361,3 +1361,71 @@ test("auto dials the endpoint a unit passes on the command line", async () => {
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test("resolveUnitEndpoint reads every assignment on a grouped Environment line", () => {
+  // systemd allows several assignments per directive, quoted or bare. A
+  // whole-line match recognized neither, so the daemon got both overrides
+  // while auto probed the config default.
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      '[Service]\nEnvironment="REMNIC_HOST=127.0.0.4" "REMNIC_PORT=4820"\n',
+      { userScoped: true, homeDir: "/home/gw" },
+    ),
+    { host: "127.0.0.4", port: 4820 },
+  );
+  // Bare (unquoted) grouping, and a later directive overriding an earlier one.
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      "[Service]\nEnvironment=REMNIC_HOST=127.0.0.5 REMNIC_PORT=4821\nEnvironment=REMNIC_PORT=4822\n",
+      { userScoped: true, homeDir: "/home/gw" },
+    ),
+    { host: "127.0.0.5", port: 4822 },
+  );
+  // A single assignment still works, quoted or not.
+  assert.equal(
+    resolveUnitEndpoint('[Service]\nEnvironment="REMNIC_PORT=4823"\n', {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).port,
+    4823,
+  );
+});
+
+test("resolveUnitEndpoint resolves a relative --config against WorkingDirectory", () => {
+  assert.equal(
+    resolveUnitEndpoint(
+      "[Service]\nWorkingDirectory=/srv/remnic\nExecStart=/opt/remnic-server --config remnic.config.json\n",
+      { userScoped: true, homeDir: "/home/gw" },
+    ).configPath,
+    "/srv/remnic/remnic.config.json",
+  );
+  // launchd spells it the same way in its plist.
+  assert.equal(
+    resolveUnitEndpoint(
+      [
+        "<key>WorkingDirectory</key>",
+        "<string>/srv/remnic</string>",
+        "<key>ProgramArguments</key>",
+        "<array><string>/opt/remnic-server</string><string>--config</string><string>c.json</string></array>",
+      ].join("\n"),
+      { userScoped: true, homeDir: "/home/gw" },
+    ).configPath,
+    "/srv/remnic/c.json",
+  );
+  // No working directory: a relative path names nothing this process can read.
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nExecStart=/opt/remnic-server --config c.json\n", {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).configPath,
+    undefined,
+  );
+  // An absolute flag is unaffected by a working directory.
+  assert.equal(
+    resolveUnitEndpoint(
+      "[Service]\nWorkingDirectory=/srv/remnic\nExecStart=/opt/remnic-server --config /etc/remnic/c.json\n",
+      { userScoped: true, homeDir: "/home/gw" },
+    ).configPath,
+    "/etc/remnic/c.json",
+  );
+});
