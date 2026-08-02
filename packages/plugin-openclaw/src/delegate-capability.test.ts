@@ -48,7 +48,18 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
         res.end(routes.healthRaw);
         return;
       }
-      const payload = isSearch ? routes.search : routes.health;
+      let payload = isSearch ? routes.search : routes.health;
+      if (isSearch && payload !== null && typeof payload === "object") {
+        // Honor `maxResults` the way a real daemon does, so a client-side
+        // top-up sees a genuinely truncated page.
+        const requested = (calls[calls.length - 1]?.body as { maxResults?: number } | undefined)
+          ?.maxResults;
+        const page = payload as { results?: unknown[]; count?: number };
+        if (typeof requested === "number" && Array.isArray(page.results)) {
+          const sliced = page.results.slice(0, requested);
+          payload = { ...page, results: sliced, count: sliced.length };
+        }
+      }
       res.end(JSON.stringify(payload ?? {}));
     });
   });
@@ -168,10 +179,7 @@ test("delegate search maps daemon hits into runtime results", async () => {
       },
     ]);
     const searchCall = stub.calls.find((call) => call.pathname.endsWith("/memories/search"));
-    // Headroom: artifacts and sub-minScore hits are dropped on this side, so
-    // the daemon is asked for more than the caller's budget and the cap lands
-    // on the FILTERED list.
-    assert.deepEqual(searchCall?.body, { query: "alice", maxResults: 15, mode: "search" });
+    assert.deepEqual(searchCall?.body, { query: "alice", maxResults: 5, mode: "search" });
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });
@@ -794,11 +802,11 @@ test("delegate search caps AFTER dropping artifacts, not before", async () => {
       [path.join("facts", "one.md"), path.join("facts", "two.md")],
       "a full page of real memories, and never more than the budget",
     );
-    const searchCall = stub.calls.find((call) => call.pathname.includes("/memories/search"));
-    assert.equal(
-      (searchCall?.body as { maxResults?: number } | undefined)?.maxResults,
-      6,
-      "asks the daemon for headroom",
+    const searchCalls = stub.calls.filter((call) => call.pathname.includes("/memories/search"));
+    assert.deepEqual(
+      searchCalls.map((call) => (call.body as { maxResults?: number }).maxResults),
+      [2, 4],
+      "asks again with a doubled limit rather than returning a thin page",
     );
   } finally {
     await stub.close();

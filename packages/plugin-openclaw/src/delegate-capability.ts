@@ -119,12 +119,12 @@ export type DelegateCapabilityOptions = {
 
 const HEALTH_CACHE_TTL_MS = 30_000;
 /**
- * Candidate headroom for the delegate search: this side drops artifact paths
- * and sub-`minScore` hits after the daemon ranks, so the request asks for more
- * than the caller's budget and the cap is applied to the filtered list.
+ * Candidate top-up rounds for the delegate search. A current daemon already
+ * excludes artifacts before its own cap, but this side still drops artifacts
+ * (older daemons) and sub-`minScore` hits, so a short page re-asks with a
+ * doubled limit instead of returning fewer memories than the caller budgeted.
  */
-const SEARCH_HEADROOM_FACTOR = 3;
-const SEARCH_HEADROOM_CEILING = 200;
+const SEARCH_TOPUP_ROUNDS = 4;
 // A failing probe backs off instead of retrying on every hook, so a daemon
 // that is down or rejecting the token cannot turn each turn into a request.
 const HEALTH_FAILURE_BACKOFF_MS = 5_000;
@@ -291,24 +291,22 @@ export function createDelegateMemoryCapability(
           // immediately and hammer a persistently malformed daemon.
           throw new Error("daemon /engram/v1/health returned a malformed envelope");
         }
-        {
-          health = readHealth(healthPayload);
-          healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
-          lastHealthFailure = undefined;
-          // Path identity is decided by canonicalizing two strings ON THIS
-          // HOST, so it proves nothing about a REMOTE daemon that happens to
-          // use the same absolute pathname. Explicit `delegate` may target a
-          // remote daemon; the file-backed surfaces may not follow it there.
-          corpusShared =
-            daemonIsLocal &&
-            health.memoryDir !== undefined &&
-            daemonServesCorpus(options.memoryDir, health.memoryDir);
-          if (!corpusShared && daemonIsLocal && !reportedCorpusMismatch) {
-            reportedCorpusMismatch = true;
-            log.error(
-              `[${serviceId}] delegate capability: the daemon does not serve this plugin's memoryDir (daemon: ${health.memoryDir ?? "unreported"}, plugin: ${options.memoryDir}) — file-backed reads and public artifacts are disabled; search still runs through the daemon`,
-            );
-          }
+        health = readHealth(healthPayload);
+        healthExpiresAt = now() + HEALTH_CACHE_TTL_MS;
+        lastHealthFailure = undefined;
+        // Path identity is decided by canonicalizing two strings ON THIS
+        // HOST, so it proves nothing about a REMOTE daemon that happens to
+        // use the same absolute pathname. Explicit `delegate` may target a
+        // remote daemon; the file-backed surfaces may not follow it there.
+        corpusShared =
+          daemonIsLocal &&
+          health.memoryDir !== undefined &&
+          daemonServesCorpus(options.memoryDir, health.memoryDir);
+        if (!corpusShared && daemonIsLocal && !reportedCorpusMismatch) {
+          reportedCorpusMismatch = true;
+          log.error(
+            `[${serviceId}] delegate capability: the daemon does not serve this plugin's memoryDir (daemon: ${health.memoryDir ?? "unreported"}, plugin: ${options.memoryDir}) — file-backed reads and public artifacts are disabled; search still runs through the daemon`,
+          );
         }
       } catch (err) {
         // Keep the last known snapshot and retry after a backoff. Memory must
@@ -336,17 +334,12 @@ export function createDelegateMemoryCapability(
     if (opts?.maxResults === 0) return [];
     // Cap-after-filter (AGENTS.md retrieval contract): artifact paths and
     // minScore are dropped on this side, so asking the daemon for exactly
-    // `maxResults` would let a few artifact hits shrink — or empty — a page
-    // that has valid lower-ranked memories behind it. Ask for headroom, then
-    // cap the FILTERED list.
+    // `maxResults` would let a few excluded hits shrink — or empty — a page
+    // that has valid lower-ranked memories behind it.
     const requestedResults =
       typeof opts?.maxResults === "number" && Number.isFinite(opts.maxResults)
         ? Math.max(1, Math.floor(opts.maxResults))
         : undefined;
-    const candidateResults =
-      requestedResults === undefined
-        ? undefined
-        : Math.min(SEARCH_HEADROOM_CEILING, requestedResults * SEARCH_HEADROOM_FACTOR);
     // An empty namespace means "the daemon's default", but the daemon reads an
     // ABSENT namespace as a principal-wide fan-out. Send the concrete default
     // health reports so a default-scoped session cannot see other namespaces.
@@ -359,64 +352,82 @@ export function createDelegateMemoryCapability(
     // omitted mode sends a flat corpus down the legacy direct-QMD path — a
     // different ranking for the same request. Always send one.
     const searchMode = opts?.qmdSearchModeOverride === "vsearch" ? "vector" : "search";
-    const response = await fetch(daemonUrl(target, "/engram/v1/memories/search"), {
-      method: "POST",
-      headers: { ...daemonAuthHeaders(target), "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query,
-        ...(candidateResults === undefined ? {} : { maxResults: candidateResults }),
-        // Same override mapping the embedded manager applies, so a host asking
-        // for vector or lexical ranking gets the same semantics in either mode.
-        mode: searchMode,
-        ...(namespace === undefined ? {} : { namespace }),
-      }),
-      signal: AbortSignal.timeout(options.searchTimeoutMs),
-    });
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error(`daemon /engram/v1/memories/search responded ${response.status}`);
-    }
-    const payload: unknown = await response.json();
-    const body = asRecord(payload);
-    if (!Array.isArray(body?.results)) {
-      // A 200 with no usable `results` is a protocol or version failure.
-      // Returning [] would make it indistinguishable from a valid empty
-      // search and quietly report that no memories exist (AGENTS.md #22).
-      throw new Error("daemon /engram/v1/memories/search returned a malformed envelope");
-    }
-    const results: RuntimeSearchResult[] = [];
-    const rawResults = body.results;
-    for (const [index, raw] of rawResults.entries()) {
-      const hit = asRecord(raw);
-      if (!hit) continue;
-      const rawPath = typeof hit.path === "string" ? hit.path : `memory-${index + 1}`;
-      // Artifact isolation: the same exclusion the embedded runtime applies.
-      if (isMemoryArtifactPath(rawPath)) continue;
-      const score = typeof hit.score === "number" && Number.isFinite(hit.score) ? hit.score : 0;
-      if (
-        typeof opts?.minScore === "number" &&
-        Number.isFinite(opts.minScore) &&
-        score < opts.minScore
-      ) {
-        continue;
-      }
-      const citation = sharedScope().relativizeToMemoryRoot(rawPath);
-      results.push({
-        // Absolute, so a follow-up readFile is unambiguous when the same
-        // relative path exists under more than one allowed root.
-        path: sharedScope().absolutize(rawPath),
-        // The daemon's ranked search returns whole-memory hits with no line
-        // span; the embedded runtime reports the same 1..1 default.
-        startLine: 1,
-        endLine: 1,
-        score,
-        snippet: typeof hit.snippet === "string" ? hit.snippet : "",
-        source: isSessionsMemoryPath(citation) ? "sessions" : "memory",
-        citation,
+    const fetchPage = async (limit: number | undefined): Promise<unknown[]> => {
+      const response = await fetch(daemonUrl(target, "/engram/v1/memories/search"), {
+        method: "POST",
+        headers: { ...daemonAuthHeaders(target), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          ...(limit === undefined ? {} : { maxResults: limit }),
+          // Same override mapping the embedded manager applies, so a host asking
+          // for vector or lexical ranking gets the same semantics in either mode.
+          mode: searchMode,
+          ...(namespace === undefined ? {} : { namespace }),
+        }),
+        signal: AbortSignal.timeout(options.searchTimeoutMs),
       });
-      if (requestedResults !== undefined && results.length >= requestedResults) break;
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error(`daemon /engram/v1/memories/search responded ${response.status}`);
+      }
+      const payload: unknown = await response.json();
+      const body = asRecord(payload);
+      if (!Array.isArray(body?.results)) {
+        // A 200 with no usable `results` is a protocol or version failure.
+        // Returning [] would make it indistinguishable from a valid empty
+        // search and quietly report that no memories exist (AGENTS.md #22).
+        throw new Error("daemon /engram/v1/memories/search returned a malformed envelope");
+      }
+      return body.results;
+    };
+    const keep = (rawResults: unknown[]): RuntimeSearchResult[] => {
+      const kept: RuntimeSearchResult[] = [];
+      for (const [index, raw] of rawResults.entries()) {
+        const hit = asRecord(raw);
+        if (!hit) continue;
+        const rawPath = typeof hit.path === "string" ? hit.path : `memory-${index + 1}`;
+        // Artifact isolation: the same exclusion the embedded runtime applies.
+        // A current daemon already dropped these before its own cap; this
+        // keeps the guarantee against an older one.
+        if (isMemoryArtifactPath(rawPath)) continue;
+        const score = typeof hit.score === "number" && Number.isFinite(hit.score) ? hit.score : 0;
+        if (
+          typeof opts?.minScore === "number" &&
+          Number.isFinite(opts.minScore) &&
+          score < opts.minScore
+        ) {
+          continue;
+        }
+        const citation = sharedScope().relativizeToMemoryRoot(rawPath);
+        kept.push({
+          // Absolute, so a follow-up readFile is unambiguous when the same
+          // relative path exists under more than one allowed root.
+          path: sharedScope().absolutize(rawPath),
+          // The daemon's ranked search returns whole-memory hits with no line
+          // span; the embedded runtime reports the same 1..1 default.
+          startLine: 1,
+          endLine: 1,
+          score,
+          snippet: typeof hit.snippet === "string" ? hit.snippet : "",
+          source: isSessionsMemoryPath(citation) ? "sessions" : "memory",
+          citation,
+        });
+      }
+      return kept;
+    };
+    // No budget: the caller accepted the daemon's own page size, so there is
+    // no cap on this side that a filtered hit could fall short of.
+    if (requestedResults === undefined) return keep(await fetchPage(undefined));
+    let kept: RuntimeSearchResult[] = [];
+    let limit = requestedResults;
+    for (let round = 0; round < SEARCH_TOPUP_ROUNDS; round += 1) {
+      const rawResults = await fetchPage(limit);
+      kept = keep(rawResults);
+      // Enough after filtering, or the daemon has nothing left to give.
+      if (kept.length >= requestedResults || rawResults.length < limit) break;
+      limit *= 2;
     }
-    return results;
+    return kept.slice(0, requestedResults);
   };
 
   const readMemoryFile = async (params: RuntimeReadParams): Promise<RuntimeReadResult> => {
