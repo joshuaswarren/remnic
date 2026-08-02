@@ -118,7 +118,6 @@ function optionsFor(
     allowPromptInjection: true,
     readPromptLines: () => null,
     configuredSearchBackend: "qmd",
-    configuredNamespacesEnabled: false,
     configuredQmdCommand: "qmd",
     searchTimeoutMs: 5_000,
     healthTimeoutMs: 5_000,
@@ -924,7 +923,6 @@ test("delegate file surfaces refuse a namespace-partitioned daemon", async () =>
     try {
       const built = createDelegateMemoryCapability({
         ...optionsFor(stub.port, memoryDir, workspaceDir),
-        configuredNamespacesEnabled: true,
         resolveSearchNamespace: async (sessionKey) => (sessionKey === "s2" ? "team-a" : "default"),
       });
       const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -1099,18 +1097,22 @@ test("swapping in an authorized token recovers unbound delegate search", async (
   }
 });
 
-test("a single-corpus plugin config resolves scope while the probe is failing", async () => {
+test("a failed probe leaves the posture unknown, so unbound calls fail closed", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // No daemon answers at all, so the seeded snapshot is all there is. A flat
-  // deployment must still resolve its scope rather than refusing every call
-  // for the duration of an outage.
+  // Nothing answers. The plugin's own config describes the PLUGIN, never the
+  // daemon's partitioning, so there is no local evidence that an absent
+  // namespace is safe - and an unrestricted token would otherwise fan out.
   const built = createDelegateMemoryCapability({
     ...optionsFor(1, memoryDir, workspaceDir),
-    configuredNamespacesEnabled: false,
     resolveSearchNamespace: async () => undefined,
   });
   try {
-    assert.equal(await built.resolveScopedNamespace(undefined), undefined);
+    await assert.rejects(
+      () => built.resolveScopedNamespace(undefined),
+      /default namespace is unknown/,
+    );
+    // An explicit scope is the caller's own and still resolves.
+    assert.equal(await built.resolveScopedNamespace("team-a"), "team-a");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -1129,7 +1131,6 @@ test("a daemon that ANSWERS without a posture is unknown, not flat", async () =>
   try {
     const built = createDelegateMemoryCapability({
       ...optionsFor(stub.port, memoryDir, workspaceDir),
-      configuredNamespacesEnabled: false,
       resolveSearchNamespace: async () => undefined,
     });
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -1152,7 +1153,6 @@ test("a partitioned plugin config still fails closed before the first probe", as
   try {
     const built = createDelegateMemoryCapability({
       ...optionsFor(stub.port, memoryDir, workspaceDir),
-      configuredNamespacesEnabled: true,
       resolveSearchNamespace: async () => undefined,
     });
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
@@ -1289,17 +1289,66 @@ test("a spent caller budget skips the health probe instead of overrunning it", a
     health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
   });
   try {
-    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
-    // Budget already spent: answer from the seeded snapshot, probe nothing.
+    // A controllable clock so the cached snapshot can be aged out without a
+    // test-only hook in production code.
+    let clock = 1_000;
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      now: () => clock,
+    });
+    // A real budget probes once and caches the daemon's flat posture.
+    assert.equal(await built.resolveScopedNamespace(undefined, 5_000), undefined);
+    assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 1);
+    // Snapshot expired, budget spent: answer from the last known posture
+    // rather than starting a request that would overrun the shared deadline.
+    clock += 10 * 60_000;
     assert.equal(await built.resolveScopedNamespace(undefined, 0), undefined);
     assert.equal(
       stub.calls.filter((call) => call.pathname.includes("/health")).length,
-      0,
-      "no probe is started once the shared deadline is gone",
+      1,
+      "no second probe once the shared deadline is gone",
     );
-    // A real budget still probes.
-    await built.resolveScopedNamespace(undefined, 5_000);
-    assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 1);
+    // With budget again, it re-probes.
+    assert.equal(await built.resolveScopedNamespace(undefined, 5_000), undefined);
+    assert.equal(stub.calls.filter((call) => call.pathname.includes("/health")).length, 2);
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a spent budget skips the authorization probe too", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  // The remaining-budget argument must reach the authorization probe, not stop
+  // at health: its own fixed timeout would overrun a nearly-spent flush.
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+    search: { query: "q", count: 0, results: [] },
+  });
+  try {
+    const budgets: Array<number | undefined> = [];
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      resolveSearchNamespace: async () => undefined,
+      verifyNamespaceAuthorization: async (_namespace, timeoutMs) => {
+        budgets.push(timeoutMs);
+        return true;
+      },
+    });
+    // Health is already cached by this first call, so the spent-budget path
+    // below is exercised against the authorization probe specifically.
+    assert.equal(await built.resolveScopedNamespace(undefined, 5_000), "default");
+    assert.deepEqual(budgets, [5_000], "the caller's budget reaches the probe");
+
+    const fresh = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      resolveSearchNamespace: async () => undefined,
+      verifyNamespaceAuthorization: async () => {
+        throw new Error("must not probe once the deadline is spent");
+      },
+    });
+    await fresh.resolveScopedNamespace(undefined, 5_000).catch(() => undefined);
+    assert.equal(await fresh.resolveScopedNamespace(undefined, 0), "default");
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });

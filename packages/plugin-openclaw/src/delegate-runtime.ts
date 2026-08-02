@@ -110,8 +110,6 @@ export interface DelegateRuntimeOptions {
     extractionMaxTurnChars?: unknown;
     flushModel?: string;
     configuredSearchBackend: "qmd" | "builtin";
-    /** Seeds the capability's health snapshot; see DelegateCapabilityOptions. */
-    configuredNamespacesEnabled: boolean;
     configuredQmdCommand: string;
   };
   /** Injectable clock for capability-cache expiry tests and deterministic hosts. */
@@ -165,10 +163,14 @@ function reportDaemonAuthorizationFailure(
   );
 }
 
+const AUTHORIZATION_PROBE_TIMEOUT_MS = 2_000;
+
 export async function probeDelegateAuthorization(
   target: DelegateDaemonTarget,
   namespace = "",
   operations: readonly DelegateAuthorizationOperation[] = DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS,
+  /** Cap from a caller's shared deadline; the default is this probe's own. */
+  timeoutMs?: number,
 ): Promise<DelegateAuthorizationPreflight> {
   const auth = target.resolveAuthToken();
   const headers = auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined;
@@ -178,7 +180,9 @@ export async function probeDelegateAuthorization(
   try {
     const response = await fetch(daemonUrl(target, `/engram/v1/authorization?${query}`), {
       headers,
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.timeout(
+        timeoutMs === undefined ? AUTHORIZATION_PROBE_TIMEOUT_MS : Math.min(AUTHORIZATION_PROBE_TIMEOUT_MS, timeoutMs),
+      ),
     });
     await response.body?.cancel();
     if (response.status === 200) {
@@ -392,8 +396,13 @@ export function registerDelegateRuntime(
     },
     // The daemon's own namespace-aware probe, so a substituted default is
     // proven usable before the first search rather than 403-ing on it.
-    verifyNamespaceAuthorization: async (candidate) => {
-      const probe = await probeDelegateAuthorization(target, candidate, ["memory_search"]);
+    verifyNamespaceAuthorization: async (candidate, timeoutMs) => {
+      const probe = await probeDelegateAuthorization(
+        target,
+        candidate,
+        ["memory_search"],
+        timeoutMs,
+      );
       return probe.state === "unavailable" ? undefined : probe.state === "authorized";
     },
     memoryDir: options.capability.memoryDir,
@@ -411,7 +420,6 @@ export function registerDelegateRuntime(
     extractionMaxTurnChars: options.capability.extractionMaxTurnChars,
     flushModel: options.capability.flushModel,
     configuredSearchBackend: options.capability.configuredSearchBackend,
-    configuredNamespacesEnabled: options.capability.configuredNamespacesEnabled,
     configuredQmdCommand: options.capability.configuredQmdCommand,
     searchTimeoutMs: options.recallTimeoutMs,
     healthTimeoutMs: options.recallTimeoutMs,

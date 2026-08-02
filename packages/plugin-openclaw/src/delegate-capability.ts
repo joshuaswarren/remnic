@@ -94,7 +94,10 @@ export type DelegateCapabilityOptions = {
    * token gets an actionable refusal instead of a 403 on its first search.
    * `undefined` means the daemon could not answer - unproven, not refused.
    */
-  verifyNamespaceAuthorization?: (namespace: string) => Promise<boolean | undefined>;
+  verifyNamespaceAuthorization?: (
+    namespace: string,
+    timeoutMs?: number,
+  ) => Promise<boolean | undefined>;
   memoryDir: string;
   workspaceDir: string;
   /** Agent ids this registration owns, for the public-artifact listing. */
@@ -117,12 +120,6 @@ export type DelegateCapabilityOptions = {
   flushModel?: string;
   /** Fallback backend facts used until the first health probe answers. */
   configuredSearchBackend: "qmd" | "builtin";
-  /**
-   * The plugin's own `namespacesEnabled`, used to SEED the health snapshot so
-   * a single-corpus deployment is not refused before the first probe answers
-   * (or while one is failing). The daemon's own report overwrites it.
-   */
-  configuredNamespacesEnabled: boolean;
   configuredQmdCommand: string;
   searchTimeoutMs: number;
   healthTimeoutMs: number;
@@ -248,10 +245,10 @@ export function createDelegateMemoryCapability(
     searchBackend: options.configuredSearchBackend,
     qmdEnabled: options.configuredSearchBackend === "qmd",
     qmdAvailable: options.configuredSearchBackend === "qmd",
-    // Same field the daemon reports and `requireScopedNamespace` reads. A
-    // partitioned plugin config seeds `true`, which is the fail-closed value:
-    // only an explicit `false` makes an absent namespace safe.
-    namespacesEnabled: options.configuredNamespacesEnabled,
+    // Deliberately NOT seeded from the plugin's config: that describes this
+    // plugin's own deployment, never the daemon's partitioning. Only a
+    // successful probe can prove a flat corpus, and until one does, an absent
+    // namespace fails closed.
   };
   let healthExpiresAt = 0;
   let healthInFlight: Promise<void> | undefined;
@@ -351,9 +348,13 @@ export function createDelegateMemoryCapability(
     if (options.verifyNamespaceAuthorization === undefined) return namespace;
     const verdictKey = `${target.resolveAuthToken().token}\u0000${namespace}`;
     if (!substitutedNamespaceVerdicts.has(verdictKey)) {
+      // Inside a shared deadline this must not start its own fixed-timeout
+      // request: a flush that already spent most of its budget on capability
+      // and binding work would overrun the hook before draining.
+      if (timeoutMs !== undefined && timeoutMs <= 0) return namespace;
       substitutedNamespaceVerdicts.set(
         verdictKey,
-        await options.verifyNamespaceAuthorization(namespace),
+        await options.verifyNamespaceAuthorization(namespace, timeoutMs),
       );
     }
     if (substitutedNamespaceVerdicts.get(verdictKey) === false) {
