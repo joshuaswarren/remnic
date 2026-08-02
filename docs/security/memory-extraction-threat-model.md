@@ -151,15 +151,31 @@ including `/engram/v1/recall`, `GET /engram/v1/memories` (list/browse),
 `GET /engram/v1/review-queue` — have no rate limit.
 
 `POST /engram/v1/memories/search` is the ranked `memory_search` capability over
-HTTP. It is authenticated and namespace-scoped on the same boundary as every
-other read route: the operation gate rejects an unauthorized `memory_search`,
-and the namespace is resolved from the authenticated principal — never from a
-client-supplied value — so an absent `namespace` fans out only across
-namespaces that principal may read. Because it is a read route it inherits the
-gap above: **no rate limit**, so it is an extraction vector for any holder of a
-read-capable token and belongs in extraction and read-rate-limit testing
-alongside `/engram/v1/recall`. The same capability remains available through
-the MCP tool surface (`access-mcp.ts`).
+HTTP, authenticated by the same bearer boundary as every other read route: the
+operation gate rejects a token without `memory_search`. Its namespace scope has
+three distinct cases, and they determine the extraction blast radius:
+
+1. **Explicit `namespace` in the body.** The client selects it, and the request
+   is authorized against that selection — the allow-list gate normalizes and
+   checks it before the operation runs, so a namespace outside the token's
+   permitted set is rejected (403) rather than searched.
+2. **Omitted, unrestricted token** (no `namespaces` axis on the token). The
+   search is a FAN-OUT across every namespace the authenticated *principal* may
+   read. This is the widest case: one request can span the principal's whole
+   readable surface.
+3. **Omitted, namespace-scoped token.** A scoped bearer may read fewer
+   namespaces than its principal, so an un-bound fan-out would return results
+   the token was never authorized for. The route therefore binds the effective
+   namespace to the configured default, which the allow-list gate has already
+   proven permitted for that token.
+
+In every case the authorization decision comes from the authenticated token and
+principal, never from an unchecked client value. Because it is a read route it
+inherits the gap above: **no rate limit**. Case 2 in particular makes it an
+extraction vector for any holder of a broadly-scoped read token, so it belongs
+in extraction and read-rate-limit testing alongside `/engram/v1/recall`. The
+same capability remains available through the MCP tool surface
+(`access-mcp.ts`).
 
 ### 4.3 CLI access
 `remnic query` (standalone recall) and the hosted `openclaw engram recall` /
