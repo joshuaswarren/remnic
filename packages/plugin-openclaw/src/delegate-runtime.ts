@@ -62,6 +62,7 @@ import {
   readDaemonConfigAuthToken,
   parseOpenClawBridgeConfig,
   resolveBridgeMode,
+  requestedDelegate,
   resolveRequestedBridgeMode,
 } from "./bridge.js";
 import {
@@ -928,6 +929,13 @@ const delegateActiveServiceIds = new Set<string>();
 // hooks from the fallback are still bound (OpenClaw exposes no unregister), so
 // switching would stack both memory paths (double recall/observe/flush).
 const delegateEmbeddedFallbackApis = new WeakSet<object>();
+/**
+ * Apis where SOME service has bound delegate hooks. The canonical and legacy
+ * plugin IDs register separately against one api, and those hooks serve every
+ * session on it — so once delegate is established the sibling must reuse it
+ * rather than bind an embedded runtime alongside.
+ */
+const delegateBoundApis = new WeakSet<object>();
 const delegateAuthorizationPreflightServices = new WeakMap<object, Set<string>>();
 
 /**
@@ -948,21 +956,6 @@ export interface MaybeRegisterDelegateDeps {
   ) => Promise<DelegateAuthorizationPreflight>;
 }
 
-/**
- * Whether this deployment was asking for delegate at all.
- *
- * An unparseable bridgeMode is itself the thing the operator got wrong, so it
- * counts as an attempt: only a deployment that clearly said `embedded` has
- * nothing to fall back FROM.
- */
-function requestedDelegate(configBridgeMode: string): boolean {
-  try {
-    return resolveRequestedBridgeMode(configBridgeMode) !== "embedded";
-  } catch {
-    return true;
-  }
-}
-
 export function maybeRegisterDelegateRuntime(
   api: DelegateHookApi,
   options: MaybeRegisterDelegateOptions,
@@ -979,6 +972,16 @@ export function maybeRegisterDelegateRuntime(
       `delegate register: ${options.serviceId} already has hooks bound on this api — skipping duplicate registration`,
     );
     return true;
+  }
+  // BEFORE any health-dependent resolution. The result is already irrevocably
+  // embedded on this api, so running `auto`'s synchronous endpoint walk first
+  // would let a stalling endpoint block every reload and sibling registration
+  // for the full configured timeout to reach a foregone conclusion.
+  if (delegateEmbeddedFallbackApis.has(api)) {
+    log.debug(
+      `delegate register: ${options.serviceId} previously fell back to embedded on this api — staying embedded to avoid stacking memory paths`,
+    );
+    return false;
   }
   let bridge: BridgeConfig;
   let bridgeHealthTimeoutMs: number;
@@ -1013,13 +1016,20 @@ export function maybeRegisterDelegateRuntime(
     if (wantedDelegate) delegateEmbeddedFallbackApis.add(api);
     return false;
   }
-  if (delegateEmbeddedFallbackApis.has(api)) {
-    log.debug(
-      `delegate register: ${options.serviceId} previously fell back to embedded on this api — staying embedded to avoid stacking memory paths`,
-    );
-    return false;
-  }
   if (bridge.mode !== "delegate") {
+    // A SIBLING service (canonical + legacy plugin IDs register separately
+    // against one api) may already have delegate hooks bound here, and those
+    // serve every session on it. Reporting embedded now would have the caller
+    // bind an embedded runtime BESIDE them — two memory paths over one corpus,
+    // the exact failure this mode prevents. A transient probe failure for the
+    // second service must not undo the first service's established mode, so
+    // the api is reported handled and nothing new is bound.
+    if (delegateBoundApis.has(api)) {
+      log.warn(
+        `[${options.serviceId}] bridge mode resolved embedded, but a sibling service already bound delegate hooks on this api — reusing them instead of stacking an embedded runtime`,
+      );
+      return true;
+    }
     // The caller will bind embedded hooks on this api (unless passive, which
     // binds nothing and must not poison a later delegate registration).
     // Record active registers so a later reload that flips to delegate on the
@@ -1053,6 +1063,17 @@ export function maybeRegisterDelegateRuntime(
     !bridge.healthVerified &&
     !deps.checkHealth(bridge.daemonHost, bridge.daemonPort, bridgeHealthTimeoutMs)
   ) {
+    // Same sibling rule as the embedded-resolution branch: when delegate hooks
+    // are already bound on this api by the canonical/legacy counterpart, a
+    // transient probe failure here must not hand the caller an embedded
+    // runtime to stack beside them.
+    if (delegateBoundApis.has(api)) {
+      log.warn(
+        `[${options.serviceId}] no healthy daemon at ${bridge.daemonHost}:${bridge.daemonPort}, ` +
+          `but a sibling service already bound delegate hooks on this api — reusing them instead of stacking an embedded runtime`,
+      );
+      return true;
+    }
     // Record the fallback so a later register() on the same api does not switch
     // to delegate and stack memory paths on top of the embedded hooks just bound.
     delegateEmbeddedFallbackApis.add(api);
@@ -1069,6 +1090,10 @@ export function maybeRegisterDelegateRuntime(
       options.serviceId,
     );
     delegateActiveServiceIds.add(options.serviceId);
+    // Delegate is now the api's established mode, so a sibling service
+    // registering later reuses these hooks instead of binding embedded ones
+    // beside them. Passive registrations bind nothing and must not claim it.
+    delegateBoundApis.add(api);
   }
   // Embedded toggle-store parity: same primary path (per-service plugin state)
   // and optional bundled active-memory secondary read.

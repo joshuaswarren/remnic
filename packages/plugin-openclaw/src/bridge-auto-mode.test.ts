@@ -1878,3 +1878,50 @@ test("two configs on one endpoint with different tokens both survive dedupe", as
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("auto reads systemd drop-ins, not just the base unit", async () => {
+  // `systemctl edit` puts overrides in <unit>.d/*.conf. Reading only the base
+  // unit probes the stale endpoint the administrator overrode.
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" });
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-dropin-"));
+  const unitDir = path.join(home, ".config", "systemd", "user");
+  await mkdir(path.join(unitDir, "remnic.service.d"), { recursive: true });
+  // Base unit names a port nothing listens on.
+  await writeFile(
+    path.join(unitDir, "remnic.service"),
+    "[Service]\nEnvironment=REMNIC_HOST=127.0.0.1\nEnvironment=REMNIC_PORT=4860\n",
+    "utf8",
+  );
+  // A LATER drop-in (lexical order) supplies the live one.
+  await writeFile(
+    path.join(unitDir, "remnic.service.d", "10-first.conf"),
+    "[Service]\nEnvironment=REMNIC_PORT=4861\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(unitDir, "remnic.service.d", "20-override.conf"),
+    `[Service]\nEnvironment=REMNIC_PORT=${stub.port}\n`,
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(home);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 5_000 });
+    assert.equal(bridge.mode, "delegate");
+    assert.equal(bridge.daemonPort, stub.port, "the last drop-in wins, as systemd applies them");
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await stub.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});

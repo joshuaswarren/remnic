@@ -2906,3 +2906,122 @@ test("an invalid health timeout on an EMBEDDED deployment does not poison the ap
     await stub.close();
   }
 });
+
+test("a sibling service keeps the api's delegate mode when its own probe fails", async () => {
+  // Canonical and legacy plugin IDs register separately on ONE api. If the
+  // second service's probe transiently fails, binding its embedded runtime
+  // beside the first's delegate hooks would run two memory paths over one
+  // corpus - the exact failure this mode prevents.
+  const stub = await startDaemonStub(() => ({ context: "ctx" }));
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-sibling-mode-"));
+  try {
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    process.env.REMNIC_PORT = String(stub.port);
+    const common = {
+      configBridgeMode: "delegate",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir,
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (text: string) => text,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
+    };
+    const api = recordingApi();
+    // First service binds delegate.
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        api,
+        { ...common, serviceId: "openclaw-remnic" },
+        { checkHealth: () => true },
+      ),
+      true,
+    );
+    // Second service's own health probe fails.
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        api,
+        { ...common, serviceId: "openclaw-engram" },
+        { checkHealth: () => false },
+      ),
+      true,
+      "reported handled, so the caller binds no embedded runtime beside delegate",
+    );
+  } finally {
+    if (priorMode === undefined) delete process.env.REMNIC_BRIDGE_MODE;
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) delete process.env.REMNIC_HOST;
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) delete process.env.REMNIC_PORT;
+    else process.env.REMNIC_PORT = priorPort;
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an api that already fell back skips the endpoint walk entirely", async () => {
+  // The result is irrevocably embedded, so running `auto`'s synchronous walk
+  // to reach that foregone conclusion lets a stalling endpoint block every
+  // reload for the full configured timeout.
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fallback-skip-"));
+  try {
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    // Nothing listens here, so the first attempt records the fallback.
+    process.env.REMNIC_PORT = "4870";
+    const common = {
+      serviceId: "fallback-skip",
+      configBridgeMode: "delegate",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir,
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (text: string) => text,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
+    };
+    const api = recordingApi();
+    assert.equal(
+      maybeRegisterDelegateRuntime(api, common, { checkHealth: () => false }),
+      false,
+      "the first attempt falls back and records it",
+    );
+    // A second registration must not consult health again.
+    let probed = false;
+    assert.equal(
+      maybeRegisterDelegateRuntime(api, common, {
+        checkHealth: () => {
+          probed = true;
+          return true;
+        },
+      }),
+      false,
+    );
+    assert.equal(probed, false, "no health-dependent work on an already-decided api");
+  } finally {
+    if (priorMode === undefined) delete process.env.REMNIC_BRIDGE_MODE;
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) delete process.env.REMNIC_HOST;
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) delete process.env.REMNIC_PORT;
+    else process.env.REMNIC_PORT = priorPort;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

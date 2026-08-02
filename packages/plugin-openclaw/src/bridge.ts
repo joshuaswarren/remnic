@@ -218,6 +218,36 @@ function configPathCandidates(): string[] {
  * `REMNIC_CONFIG_PATH`, which is a deliberate operator instruction.
  */
 
+/**
+ * Drop-in fragments for a unit, in systemd's own lexical order.
+ *
+ * Appended AFTER the base so a later assignment wins, which matches how
+ * systemd merges them for the directives read here (`Environment=`,
+ * `ExecStart=`, `WorkingDirectory=`) — the parsers already take the last
+ * occurrence. A drop-in that RESETS a directive (`Environment=` with no
+ * value, `ExecStart=` empty) lands as a blank assignment, which the parsers
+ * already treat as present-but-empty.
+ */
+function readUnitDropIns(unitPath: string): string[] {
+  const dropInDir = `${unitPath}.d`;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dropInDir);
+  } catch {
+    return [];
+  }
+  // `readdir` order is not guaranteed; systemd applies drop-ins by sorted name.
+  const fragments: string[] = [];
+  for (const entry of entries.filter((name) => name.endsWith(".conf")).sort()) {
+    try {
+      fragments.push(fs.readFileSync(path.join(dropInDir, entry), "utf8"));
+    } catch {
+      // An unreadable fragment contributes nothing; the base still applies.
+    }
+  }
+  return fragments;
+}
+
 /** Every installed unit's endpoint hints, in discovery order. */
 function readServiceEndpoints(): Array<{
   configPath?: string;
@@ -250,6 +280,10 @@ function readServiceEndpoints(): Array<{
     } catch {
       continue;
     }
+    // `systemctl edit` puts overrides in `<unit>.d/*.conf`, and the EFFECTIVE
+    // configuration is the base plus those drop-ins. Reading only the base
+    // would probe a stale endpoint on any unit an administrator customized.
+    unit = [unit, ...readUnitDropIns(unitPath)].join("\n");
     const resolved = resolveUnitEndpoint(unit, { userScoped, homeDir });
     if (
       resolved.configPath === undefined &&
@@ -874,6 +908,21 @@ export function detectBridgeMode(options: { memoryDir?: string } = {}): BridgeCo
     return { mode: "embedded", daemonHost: readDaemonHost(), daemonPort: readDaemonPort() };
   }
   return resolveBridgeMode("", options);
+}
+
+/**
+ * Whether this deployment was asking for delegate at all.
+ *
+ * An unparseable bridgeMode is itself the thing the operator got wrong, so it
+ * counts as an attempt: only a deployment that clearly said `embedded` has
+ * nothing to fall back FROM.
+ */
+export function requestedDelegate(configBridgeMode: string): boolean {
+  try {
+    return resolveRequestedBridgeMode(configBridgeMode) !== "embedded";
+  } catch {
+    return true;
+  }
 }
 
 /**
