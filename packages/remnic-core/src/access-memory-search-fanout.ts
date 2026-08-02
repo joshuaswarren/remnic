@@ -187,10 +187,33 @@ export async function runMemorySearchFanout<TResult>(options: {
  * short-circuit: changing only the requested result count must never make an
  * invalid request succeed.
  */
+export const MEMORY_SEARCH_MODES = ["search", "hybrid", "bm25", "vector"] as const;
+
+export type MemorySearchMode = (typeof MEMORY_SEARCH_MODES)[number];
+
+/**
+ * Reject an unrecognized ranking mode at the service boundary.
+ *
+ * The HTTP and MCP schemas already validate their own input, but an
+ * in-process caller reaches this service untyped. Both namespace backends
+ * route an unknown mode through their DEFAULT ordinary-search branch, so a
+ * typo would silently rank differently instead of reporting bad input
+ * (AGENTS.md §39).
+ */
+export function assertMemorySearchMode(mode: unknown): void {
+  if (mode === undefined) return;
+  if (typeof mode !== "string" || !(MEMORY_SEARCH_MODES as readonly string[]).includes(mode)) {
+    throw new EngramAccessInputError(
+      `mode must be one of ${MEMORY_SEARCH_MODES.join(", ")} (got ${JSON.stringify(mode)})`,
+    );
+  }
+}
+
 export function assertFlatCorpusOptions(
   mode: string | undefined,
   collection: string | undefined,
 ): void {
+  assertMemorySearchMode(mode);
   if (mode && collection) {
     throw new EngramAccessInputError(
       `mode is not supported together with collection on a flat corpus (got collection: ${collection})`,
@@ -387,6 +410,10 @@ export async function memorySearchThroughScope(
   count: number;
 }> {
   const { query, namespace, maxResults, mode, principal } = request;
+  // BOTH branches take the mode, and only the flat one reaches
+  // `assertFlatCorpusOptions` — validate here so a namespaced request cannot
+  // rank differently on a typo, and before any budget short-circuit.
+  assertMemorySearchMode(mode);
   const collection = request.collection?.trim();
   if (request.collection !== undefined && !collection) {
     throw new EngramAccessInputError("collection must be a non-empty string");

@@ -1896,3 +1896,49 @@ test("a configured qmdMaxResults of 0 is preserved, not coerced to a default", a
     /namespace is not readable: team/,
   );
 });
+
+test("an unrecognized search mode is rejected, not silently reranked", async () => {
+  // Both namespace backends route an unknown mode through their default
+  // ordinary-search branch, so a typo from an untyped in-process caller would
+  // succeed with different ranking instead of reporting bad input.
+  for (const namespacesEnabled of [true, false]) {
+    const label = `namespacesEnabled=${namespacesEnabled}`;
+    const { service } = makeService();
+    (service as unknown as { orchestrator: { config: PluginConfig } }).orchestrator.config = {
+      ...makeConfig(),
+      namespacesEnabled,
+    };
+    let searchCalls = 0;
+    (service as unknown as {
+      orchestrator: { searchAcrossNamespaces(params: unknown): Promise<unknown[]> };
+    }).orchestrator.searchAcrossNamespaces = async () => {
+      searchCalls += 1;
+      return [];
+    };
+
+    await assert.rejects(
+      () => service.memorySearch({ query: "q", mode: "vectors" as never, principal: "reader" }),
+      /mode must be one of search, hybrid, bm25, vector/,
+      label,
+    );
+    // A zero budget must not be a way to slip an invalid mode past the check.
+    await assert.rejects(
+      () =>
+        service.memorySearch({
+          query: "q",
+          mode: "vectors" as never,
+          maxResults: 0,
+          principal: "reader",
+        }),
+      /mode must be one of/,
+      `zero budget, ${label}`,
+    );
+    assert.equal(searchCalls, 0, `no backend call on an invalid mode, ${label}`);
+
+    // Every accepted mode still reaches the backend (AGENTS.md §40).
+    for (const mode of ["search", "hybrid", "bm25", "vector"] as const) {
+      await service.memorySearch({ query: "q", mode, principal: "reader" });
+    }
+    assert.equal(searchCalls, 4, `every valid mode dispatches, ${label}`);
+  }
+});
