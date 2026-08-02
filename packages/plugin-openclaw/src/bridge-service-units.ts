@@ -67,14 +67,17 @@ export function resolveUnitConfigPath(
  */
 function readEffectiveDirectives(unit: string): {
   env: Map<string, string>;
+  envFiles: string[];
   execStart: string[];
   workingDirectory: string | undefined;
 } {
   const env = new Map<string, string>();
+  const envFiles: string[] = [];
   const execStart: string[] = [];
   let workingDirectory: string | undefined;
   for (const line of unit.split("\n")) {
-    const directive = /^\s*(Environment|ExecStart|WorkingDirectory)=(.*)$/.exec(line);
+    const directive =
+      /^\s*(Environment|EnvironmentFile|ExecStart|WorkingDirectory)=(.*)$/.exec(line);
     if (directive === null) continue;
     const [, name, rawValue = ""] = directive;
     const value = rawValue.trim();
@@ -96,6 +99,20 @@ function readEffectiveDirectives(unit: string): {
       }
       continue;
     }
+    if (name === "EnvironmentFile") {
+      // An empty assignment resets the FILE LIST, like every other list-type
+      // setting. Several paths may be listed per directive.
+      if (value === "") {
+        envFiles.length = 0;
+        continue;
+      }
+      for (const rawToken of value.match(/"[^"]*"|'[^']*'|\S+/g) ?? []) {
+        const token = /^(["']).*\1$/.test(rawToken) ? rawToken.slice(1, -1) : rawToken;
+        // A leading `-` marks the file optional; it is not part of the path.
+        envFiles.push(token.startsWith("-") ? token.slice(1) : token);
+      }
+      continue;
+    }
     if (name === "ExecStart") {
       // `ExecStart=` resets the command list; `systemctl edit` pairs that
       // reset with the replacement command on the next line.
@@ -108,15 +125,77 @@ function readEffectiveDirectives(unit: string): {
     }
     workingDirectory = value === "" ? undefined : value;
   }
-  return { env, execStart, workingDirectory };
+  return { env, envFiles, execStart, workingDirectory };
+}
+
+/**
+ * Parse a systemd environment file: `NAME=value` lines, `#`/`;` comments,
+ * optionally quoted values.
+ */
+function parseEnvironmentFile(body: string): Map<string, string> {
+  const parsed = new Map<string, string>();
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith(";")) continue;
+    const split = trimmed.indexOf("=");
+    if (split <= 0) continue;
+    const key = trimmed.slice(0, split).trim();
+    const raw = trimmed.slice(split + 1).trim();
+    parsed.set(key, /^(["']).*\1$/.test(raw) ? raw.slice(1, -1) : raw);
+  }
+  return parsed;
+}
+
+/**
+ * The unit's effective environment: inline `Environment=` assignments with
+ * every `EnvironmentFile=` merged over them.
+ *
+ * systemd.exec is explicit that "settings from these files override settings
+ * made with Environment=", regardless of the order the directives appear in,
+ * and later files override earlier ones. A daemon running under another
+ * account commonly keeps its credential in exactly such a file, so reading
+ * only the inline assignments probes with the wrong token, reads a failure,
+ * and starts an embedded orchestrator beside the live daemon.
+ */
+function readUnitEnvironment(
+  unit: string,
+  scope: UnitScope,
+  readFile: (candidate: string) => string | undefined,
+): Map<string, string> {
+  const directives = readEffectiveDirectives(unit);
+  const merged = new Map(directives.env);
+  for (const candidate of directives.envFiles) {
+    // Same account-scope rule as every other unit-supplied path.
+    if (!scope.userScoped && (candidate.includes("%") || candidate.startsWith("~"))) continue;
+    const resolved = expandAccountRelative(candidate, scope);
+    // systemd requires an absolute path here; anything else cannot be read in
+    // the daemon's frame with any confidence.
+    if (!path.isAbsolute(resolved)) continue;
+    const body = readFile(resolved);
+    if (body === undefined) continue;
+    for (const [key, value] of parseEnvironmentFile(body)) merged.set(key, value);
+  }
+  return merged;
+}
+
+function defaultUnitFileReader(candidate: string): string | undefined {
+  try {
+    return fs.readFileSync(candidate, "utf8");
+  } catch {
+    // An unreadable file contributes nothing — `EnvironmentFile=-path` is the
+    // documented spelling for that, and an unreadable required one only means
+    // this process cannot see what the daemon saw.
+    return undefined;
+  }
 }
 
 function readUnitEnv(
   unit: string,
   name: string,
   scope: UnitScope,
+  readFile: (candidate: string) => string | undefined = defaultUnitFileReader,
 ): string | undefined {
-  const systemdValue = readEffectiveDirectives(unit).env.get(name);
+  const systemdValue = readUnitEnvironment(unit, scope, readFile).get(name);
   const systemd = systemdValue === undefined ? null : [undefined, systemdValue];
   // launchd: <key>NAME</key><string>value</string>
   const launchdRaw = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(unit);
@@ -266,6 +345,8 @@ function readUnitCliOverrides(
 export function resolveUnitEndpoint(
   unit: string,
   scope: UnitScope,
+  /** Injected in tests; reads a unit's `EnvironmentFile=` from disk. */
+  readFile: (candidate: string) => string | undefined = defaultUnitFileReader,
 ): UnitEndpoint {
   // The server accepts --host/--port/--auth-token/--config on its command line
   // and they win over both its config file and its environment, so a unit that
@@ -274,9 +355,9 @@ export function resolveUnitEndpoint(
   // `??` on the PRIMARY spelling only when it is absent entirely — a blank
   // primary shadows the legacy one exactly as it does for the server.
   const envOverride = (primary: string, legacy: string): string | undefined => {
-    const value = readUnitEnv(unit, primary, scope);
+    const value = readUnitEnv(unit, primary, scope, readFile);
     if (value !== undefined) return value === "" ? undefined : value;
-    const legacyValue = readUnitEnv(unit, legacy, scope);
+    const legacyValue = readUnitEnv(unit, legacy, scope, readFile);
     return legacyValue === "" ? undefined : legacyValue;
   };
   const host = cli.host ?? envOverride("REMNIC_HOST", "ENGRAM_HOST");
@@ -288,7 +369,7 @@ export function resolveUnitEndpoint(
   const configFromCli =
     cli.configPath === undefined ? {} : { configPath: cli.configPath };
   return {
-    ...resolveUnitConfigPathInner(unit, scope),
+    ...resolveUnitConfigPathInner(unit, scope, readFile),
     ...configFromCli,
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
@@ -299,6 +380,7 @@ export function resolveUnitEndpoint(
 function resolveUnitConfigPathInner(
   unit: string,
   scope: UnitScope,
+  readFile: (candidate: string) => string | undefined,
 ): { configPath?: string } {
   // The daemon resolves a relative REMNIC_CONFIG_PATH against its own cwd,
   // exactly as it does for `--config`, so the unit's working directory is the
@@ -306,7 +388,7 @@ function resolveUnitConfigPathInner(
   // credential.
   const workingDirectory = readUnitWorkingDirectory(unit);
   for (const name of ["REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH"]) {
-    const raw = readUnitEnv(unit, name, scope);
+    const raw = readUnitEnv(unit, name, scope, readFile);
     // A blank primary shadows the legacy spelling, same as the endpoint vars.
     if (raw === "") return {};
     if (raw === undefined) continue;

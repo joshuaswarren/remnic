@@ -2237,3 +2237,67 @@ test("an invalid probe budget is rejected, never silently skipped", async () => 
     await stub.close();
   }
 });
+
+test("EnvironmentFile assignments reach the endpoint, overriding inline ones", () => {
+  // A daemon running under another account commonly keeps its credential in
+  // an environment file. Reading only inline `Environment=` probes with the
+  // wrong token, reads a failure, and starts an orchestrator beside it.
+  const files = new Map([
+    ["/etc/remnic/env", "# comment\nREMNIC_AUTH_TOKEN=\"file-token\"\nREMNIC_PORT=4813\n"],
+    ["/etc/remnic/late.env", "REMNIC_PORT=4900\n"],
+    // Readable HERE, so refusing it must come from the account-scope rule and
+    // not merely from a missing file.
+    ["/home/gw/env", "REMNIC_AUTH_TOKEN=another-accounts-token\n"],
+  ]);
+  const read = (candidate: string): string | undefined => files.get(candidate);
+  const scope = { userScoped: false, homeDir: "/home/gw" };
+
+  // systemd.exec: file settings override `Environment=`, whatever the order.
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      [
+        "[Service]",
+        "EnvironmentFile=/etc/remnic/env",
+        "Environment=REMNIC_HOST=127.0.0.1",
+        "Environment=REMNIC_AUTH_TOKEN=inline-token",
+      ].join("\n"),
+      scope,
+      read,
+    ),
+    { host: "127.0.0.1", port: 4813, authToken: "file-token" },
+  );
+
+  // A later file overrides an earlier one, and `-` marks one optional.
+  assert.equal(
+    resolveUnitEndpoint(
+      ["[Service]", "EnvironmentFile=/etc/remnic/env", "EnvironmentFile=-/etc/remnic/late.env"].join(
+        "\n",
+      ),
+      scope,
+      read,
+    ).port,
+    4900,
+  );
+
+  // A missing file contributes nothing rather than throwing.
+  assert.deepEqual(
+    resolveUnitEndpoint("[Service]\nEnvironmentFile=/etc/remnic/absent.env\n", scope, read),
+    {},
+  );
+
+  // An empty assignment resets the file LIST, like every other list setting.
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      ["[Service]", "EnvironmentFile=/etc/remnic/env", "EnvironmentFile=", ""].join("\n"),
+      scope,
+      read,
+    ),
+    {},
+  );
+
+  // Account-relative paths are refused for a system unit, same as everywhere.
+  assert.deepEqual(
+    resolveUnitEndpoint("[Service]\nEnvironmentFile=%h/env\n", scope, read),
+    {},
+  );
+});
