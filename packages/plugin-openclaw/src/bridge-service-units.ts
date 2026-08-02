@@ -151,14 +151,14 @@ function readUnitCliOverrides(
   const configPath = expand(readFlag("--config"));
   // The server resolves a relative `--config` against its own cwd, which the
   // unit sets. Discarding it would hide that config's host, port, and token.
-  const workingDirectory = expand(readUnitWorkingDirectory(unit));
-  const expandedConfig = configPath === undefined ? undefined : expandTildePath(configPath);
   const resolvedConfig =
-    expandedConfig === undefined || path.isAbsolute(expandedConfig)
-      ? expandedConfig
-      : workingDirectory !== undefined && path.isAbsolute(workingDirectory)
-        ? path.resolve(workingDirectory, expandedConfig)
-        : undefined;
+    configPath === undefined
+      ? undefined
+      : resolveAgainstWorkingDirectory(
+          expandTildePath(configPath),
+          readUnitWorkingDirectory(unit),
+          scope,
+        );
   const host = expand(readFlag("--host"));
   const authToken = expand(readFlag("--auth-token"));
   return {
@@ -218,14 +218,37 @@ function resolveUnitConfigPathInner(
   unit: string,
   scope: UnitScope,
 ): { configPath?: string } {
+  // The daemon resolves a relative REMNIC_CONFIG_PATH against its own cwd,
+  // exactly as it does for `--config`, so the unit's working directory is the
+  // frame here too. Discarding it would lose that config's endpoint AND its
+  // credential.
+  const workingDirectory = readUnitWorkingDirectory(unit);
   for (const name of ["REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH"]) {
     const raw = readUnitEnv(unit, name, scope);
     // A blank primary shadows the legacy spelling, same as the endpoint vars.
     if (raw === "") return {};
     if (raw === undefined) continue;
-    const resolved = expandTildePath(raw);
-    if (!path.isAbsolute(resolved)) continue;
+    const resolved = resolveAgainstWorkingDirectory(expandTildePath(raw), workingDirectory, scope);
+    if (resolved === undefined) continue;
     return { configPath: resolved };
   }
   return {};
+}
+
+/**
+ * Make a unit-supplied path absolute in the frame the daemon would use, or
+ * `undefined` when this process cannot know that frame.
+ */
+function resolveAgainstWorkingDirectory(
+  candidate: string,
+  workingDirectory: string | undefined,
+  scope: UnitScope,
+): string | undefined {
+  if (path.isAbsolute(candidate)) return candidate;
+  if (workingDirectory === undefined) return undefined;
+  // Same account-scope rule: a system unit's `%h` names an unknowable home.
+  if (!scope.userScoped && workingDirectory.includes("%")) return undefined;
+  const expanded = expandTildePath(workingDirectory.replace(/%h/g, scope.homeDir));
+  if (!path.isAbsolute(expanded)) return undefined;
+  return path.resolve(expanded, candidate);
 }

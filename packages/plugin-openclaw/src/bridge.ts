@@ -894,12 +894,21 @@ export function detectDaemonBridgeMode(options: {
       Math.ceil(remainingMs / Math.max(1, probeable.length - probed)),
     );
     probed += 1;
-    const probeBudget = Math.min(remainingMs, perCandidateMs);
+    // BOTH attempts share this candidate's slice. Giving the retry its own
+    // `perCandidateMs` would let one stalling endpoint with a fallback
+    // credential burn two shares and starve the healthy daemon behind it.
+    const candidateDeadline = Date.now() + Math.min(remainingMs, perCandidateMs);
+    // The first attempt is capped so a stall still leaves room for the retry;
+    // with no fallback there is nothing to reserve and it takes the slice.
+    const firstAttemptMs =
+      fallbackToken === undefined
+        ? candidateDeadline - Date.now()
+        : Math.max(1, Math.ceil((candidateDeadline - Date.now()) / 2));
     let usedToken = authTokenOverride;
     let health = readDaemonMemoryDirSync(
       daemonHost,
       daemonPort,
-      probeBudget,
+      firstAttemptMs,
       configPath,
       usedToken,
     );
@@ -907,7 +916,7 @@ export function detectDaemonBridgeMode(options: {
       // The first attempt used the gateway's token store; this endpoint's own
       // config names a different credential, which is the one a daemon running
       // under another account would accept.
-      const retryMs = Math.min(deadline - Date.now(), perCandidateMs);
+      const retryMs = candidateDeadline - Date.now();
       if (retryMs > 0) {
         usedToken = fallbackToken;
         health = readDaemonMemoryDirSync(daemonHost, daemonPort, retryMs, configPath, usedToken);
@@ -965,6 +974,24 @@ export function resolveRequestedBridgeMode(configBridgeMode: string): BridgeMode
   throw new Error(
     `Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded", "delegate", or "auto")`,
   );
+}
+
+/**
+ * @deprecated Use {@link resolveBridgeMode} (explicit config/env) or
+ * {@link detectDaemonBridgeMode} (`auto` same-host detection). Kept so an
+ * existing consumer keeps importing after upgrading (AGENTS.md §11).
+ *
+ * Maps onto the current resolution rather than re-implementing the old
+ * heuristics, so a caller cannot get a different answer than the plugin does.
+ * `auto` needs a corpus to verify against; without a `memoryDir` there is
+ * nothing to compare and it stays embedded instead of guessing.
+ */
+export function detectBridgeMode(options: { memoryDir?: string } = {}): BridgeConfig {
+  const requested = resolveRequestedBridgeMode("");
+  if (requested === "auto" && !options.memoryDir?.trim()) {
+    return { mode: "embedded", daemonHost: readDaemonHost(), daemonPort: readDaemonPort() };
+  }
+  return resolveBridgeMode("", options);
 }
 
 /**

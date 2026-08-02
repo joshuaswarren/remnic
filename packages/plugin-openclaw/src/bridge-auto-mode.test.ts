@@ -1655,3 +1655,147 @@ test("a rejected gateway token falls back to the endpoint's own config token", a
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test("a relative REMNIC_CONFIG_PATH resolves against WorkingDirectory too", () => {
+  // The daemon resolves the environment form against its cwd exactly as it
+  // does `--config`; discarding it loses that config's endpoint AND token.
+  assert.equal(
+    resolveUnitEndpoint(
+      "[Service]\nWorkingDirectory=/srv/remnic\nEnvironment=REMNIC_CONFIG_PATH=remnic.config.json\n",
+      { userScoped: true, homeDir: "/home/gw" },
+    ).configPath,
+    "/srv/remnic/remnic.config.json",
+  );
+  // No working directory: the frame is unknowable, so it is dropped.
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nEnvironment=REMNIC_CONFIG_PATH=c.json\n", {
+      userScoped: true,
+      homeDir: "/home/gw",
+    }).configPath,
+    undefined,
+  );
+  // A system unit's %h working directory is unknowable as well.
+  assert.equal(
+    resolveUnitEndpoint(
+      "[Service]\nWorkingDirectory=%h/srv\nEnvironment=REMNIC_CONFIG_PATH=c.json\n",
+      { userScoped: false, homeDir: "/home/gw" },
+    ).configPath,
+    undefined,
+  );
+  // Absolute is unaffected.
+  assert.equal(
+    resolveUnitEndpoint(
+      "[Service]\nWorkingDirectory=/srv/remnic\nEnvironment=REMNIC_CONFIG_PATH=/etc/remnic/c.json\n",
+      { userScoped: true, homeDir: "/home/gw" },
+    ).configPath,
+    "/etc/remnic/c.json",
+  );
+});
+
+test("detectBridgeMode stays exported and maps onto current resolution", async () => {
+  // Imported from the PACKAGE ROOT: the finding is that consumers importing
+  // `detectBridgeMode` from @remnic/plugin-openclaw must keep resolving.
+  const pkg = (await import("./index.js")) as {
+    detectBridgeMode?: (options?: { memoryDir?: string }) => { mode: string };
+  };
+  assert.equal(
+    typeof pkg.detectBridgeMode,
+    "function",
+    "the deprecated export must remain on the package surface",
+  );
+  const detectBridgeMode = pkg.detectBridgeMode;
+  assert.ok(detectBridgeMode);
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    // Default deployment: embedded, same as resolveBridgeMode("").
+    assert.equal(detectBridgeMode().mode, "embedded");
+    // An explicit env override is honored through the same resolver.
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    assert.equal(detectBridgeMode().mode, "delegate");
+    // `auto` without a corpus to verify against cannot probe, so it stays
+    // embedded rather than guessing.
+    process.env.REMNIC_BRIDGE_MODE = "auto";
+    assert.equal(detectBridgeMode().mode, "embedded");
+  } finally {
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("a credential retry shares its candidate's slice, not a second one", async () => {
+  // TWO stalling endpoints, each armed with a fallback credential, sort ahead
+  // of the live daemon. One share each leaves room for it; two shares each
+  // (probe + retry billed separately) exhausts the deadline first.
+  const stallerA = await startHealthStub({}, 200, 0, true);
+  const stallerB = await startHealthStub({}, 200, 0, true);
+  const live = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" });
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-retry-budget-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-retry-budget-cwd-"));
+  await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+  await mkdir(path.join(home, ".config", "engram"), { recursive: true });
+  await mkdir(path.join(home, ".config", "systemd", "user"), { recursive: true });
+  await mkdir(path.join(home, ".remnic"), { recursive: true });
+  // A gateway-store token so each staller's config token differs from what
+  // `loadDaemonAuth` resolves, arming the retry on both.
+  await writeFile(
+    path.join(home, ".remnic", "tokens.json"),
+    JSON.stringify({ tokens: [{ connector: "openclaw", token: "remnic_gateway_token" }] }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "remnic.service"),
+    "[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "systemd", "user", "engram.service"),
+    "[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/.config/engram/config.json\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "remnic", "config.json"),
+    JSON.stringify({
+      server: { host: "127.0.0.1", port: stallerA.port, authToken: "staller-a-token" },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(home, ".config", "engram", "config.json"),
+    JSON.stringify({
+      server: { host: "127.0.0.1", port: stallerB.port, authToken: "staller-b-token" },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(cwd, "remnic.config.json"),
+    JSON.stringify({ server: { host: "127.0.0.1", port: live.port } }),
+    "utf8",
+  );
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  try {
+    process.env.HOME = home;
+    process.chdir(cwd);
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 3_000 });
+    assert.equal(bridge.mode, "delegate", "the live daemon was still reached");
+    assert.equal(bridge.daemonPort, live.port);
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await stallerA.close();
+    await stallerB.close();
+    await live.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

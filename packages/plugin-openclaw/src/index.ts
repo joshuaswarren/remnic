@@ -20,6 +20,8 @@ export { default } from "../../../src/index.js";
 // Bridge mode resolution, same-host daemon detection, and health checks
 export {
   checkDaemonHealth,
+  // Deprecated; retained so existing importers keep resolving (AGENTS.md §11).
+  detectBridgeMode,
   detectDaemonBridgeMode,
   readDaemonMemoryDirSync,
   resolveBridgeMode,
