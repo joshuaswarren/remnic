@@ -254,21 +254,23 @@ export function createDelegateMemoryCapability(
    * File-backed surfaces walk ONE local directory: the `memoryDir` health
    * reports. The daemon answers `/engram/v1/health` without a namespace, so
    * that directory is the DEFAULT namespace's storage — not necessarily the
-   * one this capability is scoped to, and not necessarily one the token may
+   * one a given session is scoped to, and not necessarily one the token may
    * read. Corpus containment proves physical co-location, never authorization.
    *
-   * So the local walk is allowed only when there is exactly one corpus to walk
-   * (namespaces disabled) or the scope resolves to the very namespace health
-   * described. Anything else would publish another namespace's facts,
-   * entities, and artifacts while omitting the session's own.
+   * The host contract makes this decidable only one way: `readFile` and
+   * `listArtifacts` carry NO session, so on a namespace-partitioned daemon
+   * there is no scope to check them against — a per-registration fallback
+   * would authorize one namespace's disk for sessions bound to another.
+   * Search is unaffected: it carries `sessionKey` and the daemon enforces.
+   *
+   * So the local walk requires a daemon with exactly one corpus to walk.
+   * Unknown namespacing (older build, or a token without health access) fails
+   * closed the same way.
    */
-  const requireHealthNamespaceScope = async (surface: string): Promise<void> => {
+  const requireSingleCorpusNamespacing = (surface: string): void => {
     if (health.namespacesEnabled === false) return;
-    const scoped = await options.resolveSearchNamespace(undefined);
-    const resolved = scoped ?? health.defaultNamespace;
-    if (resolved !== undefined && resolved === health.defaultNamespace) return;
     throw new Error(
-      `delegate ${surface} unavailable: the daemon reports the ${health.defaultNamespace ?? "unknown"} namespace's storage, but this session is scoped to ${resolved ?? "an unresolved namespace"} — a local walk cannot be authorized for it`,
+      `delegate ${surface} unavailable: the daemon partitions namespaces (${health.namespacesEnabled === true ? `default: ${health.defaultNamespace ?? "unreported"}` : "namespacing unreported"}) and this surface carries no session, so a local read cannot be authorized for the caller's namespace`,
     );
   };
 
@@ -477,7 +479,7 @@ export function createDelegateMemoryCapability(
     // stale "corpus not confirmed" must not stick past a recovered daemon.
     await refreshHealth();
     requireSharedCorpus("readFile");
-    await requireHealthNamespaceScope("readFile");
+    requireSingleCorpusNamespacing("readFile");
     const requestedPath = sharedScope().normalizeWorkspacePath(params.relPath);
     const absolutePath = await sharedScope().resolveReadablePath(params.relPath);
     const allLines = (await readFile(absolutePath, "utf8")).split(/\r?\n/);
@@ -574,7 +576,7 @@ export function createDelegateMemoryCapability(
         // this surface hangs off the capability object, not off a manager.
         await refreshHealth();
         requireSharedCorpus("publicArtifacts");
-        await requireHealthNamespaceScope("publicArtifacts");
+        requireSingleCorpusNamespacing("publicArtifacts");
         return await listRemnicPublicArtifacts({
           memoryDir: health.memoryDir ?? options.memoryDir,
           workspaceDir: options.workspaceDir,

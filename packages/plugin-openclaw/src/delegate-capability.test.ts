@@ -904,41 +904,49 @@ test("delegate search rejects a malformed result entry instead of inventing a me
   await rm(memoryDir, { recursive: true, force: true });
 });
 
-test("delegate file surfaces refuse a namespace the health snapshot does not describe", async () => {
+test("delegate file surfaces refuse a namespace-partitioned daemon", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
-  // Health answers without a namespace, so its memoryDir is the DEFAULT
-  // namespace's storage. A session scoped elsewhere would otherwise publish
-  // that namespace's files while omitting its own.
-  const stub = await startDaemonStub({
-    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
-  });
-  try {
-    const built = createDelegateMemoryCapability({
-      ...optionsFor(stub.port, memoryDir, workspaceDir),
-      resolveSearchNamespace: async () => "team-a",
+  // `readFile` and `listArtifacts` carry NO session, and health answers
+  // without a namespace, so on a partitioned daemon there is nothing to
+  // authorize the local walk against. A per-registration fallback would open
+  // one namespace's disk for sessions bound to another.
+  for (const namespacesEnabled of [true, undefined]) {
+    const stub = await startDaemonStub({
+      health: { ...healthyDaemon(memoryDir), namespacesEnabled, defaultNamespace: "default" },
+      search: { query: "q", count: 0, results: [] },
     });
-    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
-    await assert.rejects(
-      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
-      /a local walk cannot be authorized for it/,
-    );
-    assert.deepEqual(await built.listArtifacts(), [], "artifacts are withheld, not cross-published");
-  } finally {
-    await stub.close();
-    await rm(memoryDir, { recursive: true, force: true });
+    try {
+      const built = createDelegateMemoryCapability({
+        ...optionsFor(stub.port, memoryDir, workspaceDir),
+        resolveSearchNamespace: async (sessionKey) => (sessionKey === "s2" ? "team-a" : "default"),
+      });
+      const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+      await assert.rejects(
+        () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+        /a local read cannot be authorized/,
+        `namespacesEnabled: ${String(namespacesEnabled)} must fail closed`,
+      );
+      assert.deepEqual(
+        await built.listArtifacts(),
+        [],
+        "artifacts are withheld, not cross-published",
+      );
+      // Search is unaffected: it carries the session and the daemon enforces.
+      assert.ok(Array.isArray(await manager?.search("q", { sessionKey: "s2" })));
+    } finally {
+      await stub.close();
+    }
   }
+  await rm(memoryDir, { recursive: true, force: true });
 });
 
-test("delegate file surfaces stay available on the namespace health describes", async () => {
+test("delegate file surfaces stay available on a single-corpus daemon", async () => {
   const { memoryDir, workspaceDir } = await makeCorpus();
   const stub = await startDaemonStub({
-    health: { ...healthyDaemon(memoryDir), namespacesEnabled: true, defaultNamespace: "default" },
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
   });
   try {
-    const built = createDelegateMemoryCapability({
-      ...optionsFor(stub.port, memoryDir, workspaceDir),
-      resolveSearchNamespace: async () => "default",
-    });
+    const built = createDelegateMemoryCapability(optionsFor(stub.port, memoryDir, workspaceDir));
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     const read = await manager?.readFile({ relPath: "facts/alice.md" });
     assert.equal(read?.path, path.join("facts", "alice.md"), "the read is served, not refused");
