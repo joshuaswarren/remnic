@@ -200,6 +200,24 @@ export type MemorySearchMode = (typeof MEMORY_SEARCH_MODES)[number];
  * typo would silently rank differently instead of reporting bad input
  * (AGENTS.md §39).
  */
+/**
+ * Reject a budget that is not a finite non-negative integer.
+ *
+ * The HTTP and MCP schemas validate their own input, but an in-process caller
+ * reaches this service untyped: a negative would hit the `budget <= 0`
+ * short-circuit and return a successful EMPTY page, and a fraction or a
+ * non-finite value would flow into the backend limit and top-up arithmetic.
+ * Zero keeps its documented meaning — an empty result with no backend call.
+ */
+export function assertMemorySearchLimit(maxResults: unknown): void {
+  if (maxResults === undefined) return;
+  if (typeof maxResults !== "number" || !Number.isInteger(maxResults) || maxResults < 0) {
+    throw new EngramAccessInputError(
+      `maxResults must be a non-negative integer (got ${JSON.stringify(maxResults)})`,
+    );
+  }
+}
+
 export function assertMemorySearchMode(mode: unknown): void {
   if (mode === undefined) return;
   if (typeof mode !== "string" || !(MEMORY_SEARCH_MODES as readonly string[]).includes(mode)) {
@@ -414,6 +432,7 @@ export async function memorySearchThroughScope(
   // `assertFlatCorpusOptions` — validate here so a namespaced request cannot
   // rank differently on a typo, and before any budget short-circuit.
   assertMemorySearchMode(mode);
+  assertMemorySearchLimit(maxResults);
   const collection = request.collection?.trim();
   if (request.collection !== undefined && !collection) {
     throw new EngramAccessInputError("collection must be a non-empty string");

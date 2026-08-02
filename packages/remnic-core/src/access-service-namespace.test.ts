@@ -1942,3 +1942,31 @@ test("an unrecognized search mode is rejected, not silently reranked", async () 
     assert.equal(searchCalls, 4, `every valid mode dispatches, ${label}`);
   }
 });
+
+test("an out-of-range search limit is rejected, not turned into an empty page", async () => {
+  // A negative would hit the `budget <= 0` short-circuit and answer with a
+  // successful EMPTY page; a fraction or non-finite value would flow into the
+  // backend limit and top-up arithmetic.
+  const { service } = makeService();
+  let searchCalls = 0;
+  (service as unknown as {
+    orchestrator: { searchAcrossNamespaces(params: unknown): Promise<unknown[]> };
+  }).orchestrator.searchAcrossNamespaces = async () => {
+    searchCalls += 1;
+    return [];
+  };
+  for (const maxResults of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    await assert.rejects(
+      () => service.memorySearch({ query: "q", maxResults, principal: "reader" }),
+      /maxResults must be a non-negative integer/,
+      String(maxResults),
+    );
+  }
+  assert.equal(searchCalls, 0, "no backend call on an invalid budget");
+  // Zero keeps its documented meaning: an empty result, no backend call.
+  const zero = await service.memorySearch({ query: "q", maxResults: 0, principal: "reader" });
+  assert.equal(zero.count, 0);
+  assert.equal(searchCalls, 0, "a zero budget still short-circuits");
+  await service.memorySearch({ query: "q", maxResults: 3, principal: "reader" });
+  assert.equal(searchCalls, 1, "an ordinary budget dispatches");
+});

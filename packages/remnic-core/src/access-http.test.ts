@@ -4626,6 +4626,28 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
   ]) {
     assert.equal(isSearchExcludedPath(excluded, policy, "qmd"), true, excluded);
   }
+  // A collection whose NAME is also a memory category is disambiguated two
+  // ways: a `qmd://` URI states it in the authority, and a bare path is
+  // resolved against the collection the caller actually requested.
+  assert.equal(
+    isSearchExcludedPath("qmd://facts/activity/2026-08-02.md", policy, "qmd"),
+    true,
+    "the URI authority is unambiguously the collection",
+  );
+  assert.equal(
+    isSearchExcludedPath(
+      "facts/activity/2026-08-02.md",
+      { ...policy, requestedCollection: "facts" },
+      "qmd",
+    ),
+    true,
+    "the caller named `facts` as its collection",
+  );
+  assert.equal(
+    isSearchExcludedPath("facts/activity/2026-08-02.md", policy, "qmd"),
+    false,
+    "without that, `facts` stays a memory category and the memory is searchable",
+  );
   // A collection this policy does NOT know — a caller-named custom one, or
   // any collection global search spans — is covered too.
   for (const excluded of [

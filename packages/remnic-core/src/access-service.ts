@@ -4728,7 +4728,14 @@ export class EngramAccessService {
         // Search-specific: artifacts and the other dedicated surfaces stay
         // out, but ARCHIVED memories remain findable - explicit search is one
         // of the surfaces the lifecycle reserves them for.
-        isExcluded: (memoryPath) => isSearchExcludedPath(memoryPath, config, "qmd"),
+        isExcluded: (memoryPath) =>
+          isSearchExcludedPath(
+            memoryPath,
+            // The caller's own collection disambiguates a prefix that is also
+            // a memory category name (`collection: "facts"`).
+            { ...config, requestedCollection: request.collection?.trim() || undefined },
+            "qmd",
+          ),
         authorizeFlatCorpus: (namespace, principal) => {
           this.resolveReadableNamespace(namespace, principal);
         },

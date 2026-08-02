@@ -13,6 +13,12 @@ export interface GenericRecallPathPolicy {
   readonly memoryDir?: string;
   readonly qmdCollection?: string;
   readonly qmdColdCollection?: string;
+  /**
+   * The collection THIS request named, when it named one. A caller may select
+   * a custom collection whose name is also a memory category, which the
+   * configured names alone cannot disambiguate.
+   */
+  readonly requestedCollection?: string;
 }
 
 type GenericRecallPathSource = "filesystem" | "qmd";
@@ -142,12 +148,30 @@ function collectionSpellings(
   source: GenericRecallPathSource,
 ): string[] {
   if (path.isAbsolute(filePath)) return [filePath];
+  // A `qmd://<collection>/<path>` URI states its collection UNAMBIGUOUSLY in
+  // the authority, so the leading segment of its normalized form is never a
+  // memory category — strip it outright rather than guessing.
+  if (source === "qmd" && filePath.startsWith("qmd://")) {
+    const normalized = path.posix.normalize(normalizeQmdUriPath(filePath, source).replace(/\\/g, "/"));
+    const slashIndex = normalized.indexOf("/");
+    return slashIndex <= 0 || slashIndex >= normalized.length - 1
+      ? [normalized]
+      : [normalized, normalized.slice(slashIndex + 1)];
+  }
   const stripped = stripQmdCollectionPrefix(filePath, policy, source);
   const spellings = [stripped];
   const slashIndex = stripped.indexOf("/");
   if (slashIndex <= 0 || slashIndex >= stripped.length - 1) return spellings;
   const prefix = stripped.slice(0, slashIndex);
-  if (Object.hasOwn(CATEGORY_MEMORY_ROOTS, prefix) || Object.hasOwn(RESERVED_ARCHIVE_ROOTS, prefix)) {
+  // The CALLER's own collection is authoritative: a request for
+  // `collection: "facts"` means that segment is the collection, whatever it is
+  // also the name of. Otherwise a category-shaped prefix stays part of the
+  // path, so an ordinary `facts/proj/activity/<date>.md` memory is searchable.
+  const requested = policy.requestedCollection;
+  if (
+    prefix !== requested &&
+    (Object.hasOwn(CATEGORY_MEMORY_ROOTS, prefix) || Object.hasOwn(RESERVED_ARCHIVE_ROOTS, prefix))
+  ) {
     return spellings;
   }
   spellings.push(stripped.slice(slashIndex + 1));
