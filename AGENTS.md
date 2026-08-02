@@ -79,9 +79,10 @@ OpenClaw `2026.4.1`.
 
 The purpose of this project is working, shippable software delivered
 accretively. Process exists to serve that outcome; it must never become the
-product. Remnic has no ticket tracker of record and no evidence-packet
-workflow, so the currency here is a durable receipt: a merged PR, a passing
-test run, a command output, a linked issue. No receipt, no credit.
+product. GitHub issues and pull requests are this repo's record; there is no
+separate tracker and no evidence-packet workflow, so the currency here is a
+durable receipt: a merged PR, a passing test run, a command output, a linked
+GitHub issue. No receipt, no credit.
 
 - **No process porn.** Ledgers, dashboards, meta-reports, and process
   documents are not progress. A process artifact may exist only when it gates
@@ -108,8 +109,11 @@ test run, a command output, a linked issue. No receipt, no credit.
   shows up in code as gold plating: an abstraction for a second caller that
   does not exist, a config knob nobody asked for, a retry wrapper around a
   call that does not fail, a refactor sitting next to the actual change. Build
-  what was asked, at the size asked. A defect you find mid-task is still yours
-  to fix; an unrequested improvement is not — file it as an issue and move on.
+  what was asked, at the size asked. A defect inside the subsystem you are
+  already changing is yours to fix now; a defect elsewhere, and any
+  unrequested improvement, is not — open a GitHub issue for it and move on,
+  because the one-subsystem-per-PR rule below outranks the urge to widen the
+  diff.
 - **Bound the machinery, then freeze it.** Validators, linters, scaffolds,
   harnesses, and helper scripts obey the same law as any other process
   artifact. Each must gate a named deliverable, and "good enough to keep the
@@ -119,17 +123,22 @@ test run, a command output, a linked issue. No receipt, no credit.
   issue — never built preemptively against a future you are imagining. Keep
   every check that has caught a real defect; kill the tranches that only
   deepen the apparatus.
-- **The deliverable outranks the apparatus.** Shipping the real feature always
-  outranks perfecting the thing that would verify it. Machinery can be
-  reconciled afterwards, as a derivative of what shipped; what ships never
-  waits on machinery completeness.
+- **The deliverable outranks the apparatus.** Shipping the real feature
+  outranks perfecting the *optional* machinery that would verify it. Machinery
+  can be reconciled afterwards, as a derivative of what shipped; what ships
+  never waits on optional-machinery completeness. This never reaches the
+  mandated gates above — the Cleaner PR Workflow checks, `preflight:quick`,
+  `test:entity-hardening`, and the required CI checks are part of the
+  deliverable, not apparatus around it.
 - **Watch the ratio in your own turns.** If your recent activity is mostly
   plans, schema debates, review letters, and status prose while the count of
   shipped units has not moved, you are the one who needs the redirect, and it
   is due mid-task rather than in a retrospective. Apply to yourself the
   threshold you would apply to a subagent you were supervising. Investigation
   that has stopped changing your plan is finished investigation: take the
-  boring default, leave a receipt, and go build.
+  boring default, leave a receipt, and go build. An open question about
+  security, data integrity, host compatibility, or a mandated validation is
+  by definition still changing the plan — run it down before you default.
 
 These rules bind human-directed sessions, delegated subagents, and scheduled
 or otherwise autonomous agent runs alike.
