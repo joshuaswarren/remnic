@@ -49,7 +49,6 @@ import {
 import {
   createBoundedCoreSectionRunner,
   createRecallSectionMetricRecorder,
-  resolveRecallCoreSectionDeadlineMs,
 } from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
 import { type GraphRecallExpandedEntry, type LastRecallSnapshot } from "../recall-state.js";
@@ -151,15 +150,13 @@ export class RecallInternalCoordinator {
       profileTraceClosed = true;
       this.deps.profiler.endTrace(profileTraceId); // persists to JSONL file
     };
-    // The static, config-derived figure the untouched sections report in their
-    // metrics. The bounded runner below resolves its own effective budget per
+    // The CONFIGURED core budget, which is what the sections that run outside the
+    // bounded runner report in their metrics: nothing enforces a deadline for them,
+    // so reporting a derived figure would claim a bound that does not exist. The
+    // bounded runner below derives and reports its own effective budget per
     // section, against the request budget still left when that section starts.
-    const configuredCoreDeadlineMs = this.deps.config.recallCoreDeadlineMs ?? 75_000;
+    const recallSectionDeadlineMs = this.deps.config.recallCoreDeadlineMs ?? 75_000;
     const recallOuterTimeoutMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
-    const recallSectionDeadlineMs = resolveRecallCoreSectionDeadlineMs({
-      configuredCoreDeadlineMs,
-      remainingOuterMs: recallOuterTimeoutMs > 0 ? recallOuterTimeoutMs : null,
-    });
     const enrichmentSectionDeadlineMs =
       this.deps.config.recallEnrichmentDeadlineMs ?? 25_000;
     // Wrap entire recall body in try/finally so profiling trace is always closed,
@@ -219,7 +216,7 @@ export class RecallInternalCoordinator {
       logger: log,
     });
     const runBoundedCoreSection = createBoundedCoreSectionRunner({
-      configuredDeadlineMs: configuredCoreDeadlineMs,
+      configuredDeadlineMs: recallSectionDeadlineMs,
       outerDeadlineAtMs:
         recallOuterTimeoutMs > 0 ? recallStart + recallOuterTimeoutMs : null,
       parentSignal: options.abortSignal,
