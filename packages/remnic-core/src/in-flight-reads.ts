@@ -15,7 +15,20 @@ import type { MemoryFile } from "./types.js";
  * differently-keyed manager for the same dir — that would bypass the keyId
  * isolation getCachedMemories enforces. Locked/plaintext stores use keyId "".
  */
-const inFlightReadsByKey = new Map<string, Promise<MemoryFile[]>>();
+type InFlightEntry = {
+  read: Promise<MemoryFile[]>;
+  /**
+   * Detaches the starter's cancellation from the shared scan (issue #2307).
+   * Called the first time another reader joins: nobody may cancel a scan someone
+   * else is still waiting for, so the scan becomes uncancellable rather than
+   * being refcounted. One boolean's worth of state, and it only ever moves one
+   * way — the failure mode is a scan that outlives its starter, never a joiner
+   * left with a cancelled read.
+   */
+  detachCancellation?: () => void;
+};
+
+const inFlightReadsByKey = new Map<string, InFlightEntry>();
 
 const DIR_SEP = "\u0000";
 
@@ -24,11 +37,20 @@ function composeKey(baseDir: string, keyId: string): string {
 }
 
 export function getInFlightRead(baseDir: string, keyId = ""): Promise<MemoryFile[]> | undefined {
-  return inFlightReadsByKey.get(composeKey(baseDir, keyId));
+  const entry = inFlightReadsByKey.get(composeKey(baseDir, keyId));
+  if (entry === undefined) return undefined;
+  entry.detachCancellation?.();
+  entry.detachCancellation = undefined;
+  return entry.read;
 }
 
-export function setInFlightRead(baseDir: string, keyId: string, read: Promise<MemoryFile[]>): void {
-  inFlightReadsByKey.set(composeKey(baseDir, keyId), read);
+export function setInFlightRead(
+  baseDir: string,
+  keyId: string,
+  read: Promise<MemoryFile[]>,
+  detachCancellation?: () => void,
+): void {
+  inFlightReadsByKey.set(composeKey(baseDir, keyId), { read, detachCancellation });
 }
 
 /**
@@ -41,7 +63,7 @@ export function deleteInFlightRead(
   expected?: Promise<MemoryFile[]>,
 ): void {
   const key = composeKey(baseDir, keyId);
-  if (expected === undefined || inFlightReadsByKey.get(key) === expected) {
+  if (expected === undefined || inFlightReadsByKey.get(key)?.read === expected) {
     inFlightReadsByKey.delete(key);
   }
 }

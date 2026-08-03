@@ -16,6 +16,7 @@ import {
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
+import { checkCorpusReadAbort, type CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-search.js";
 import path from "node:path";
 import { log } from "./logger.js";
@@ -4347,8 +4348,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return id;
   }
 
-  private async readAllArtifactsCached(): Promise<MemoryFile[]> {
-    return this.memoryReadStore.readAllArtifactsCached();
+  private async readAllArtifactsCached(options?: CorpusReadOptions): Promise<MemoryFile[]> {
+    return this.memoryReadStore.readAllArtifactsCached(options);
   }
 
   async searchArtifacts(
@@ -4357,7 +4358,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     options: ArtifactSearchOptions = {},
   ): Promise<MemoryFile[]> {
     return selectArtifactMatches(
-      () => this.readAllArtifactsCached(),
+      () => this.readAllArtifactsCached({ abortSignal: options.abortSignal }),
       query,
       maxResults,
       options,
@@ -4474,7 +4475,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return memories;
   }
 
-  async readAllMemories(): Promise<MemoryFile[]> {
+  async readAllMemories(options?: CorpusReadOptions): Promise<MemoryFile[]> {
+    checkCorpusReadAbort(options);
     if (this.hotMemoriesCacheEnabled) {
       const cached = getCachedMemories(
         this.baseDir,
@@ -4495,22 +4497,40 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const inFlight = getInFlightRead(this.baseDir, keyId);
     if (inFlight) return this.rememberMemorySnapshots(await inFlight);
 
+    // This caller STARTED the scan, so its cancellation may stop it — but only
+    // while it stays the sole waiter. `getInFlightRead` detaches this link the
+    // moment a second reader joins, because cancelling a scan someone else is
+    // waiting for would hand them a truncated corpus (issue #2307).
+    const scanAbort = new AbortController();
+    const callerSignal = options?.abortSignal;
+    const onCallerAbort = () => scanAbort.abort();
+    let detached = false;
+    const detachCancellation = () => {
+      if (detached) return;
+      detached = true;
+      callerSignal?.removeEventListener("abort", onCallerAbort);
+    };
+    callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+
     const readPromise = (async (): Promise<MemoryFile[]> => {
       const version = this.getMemoryCorpusVersion();
-      const memories = await this._readAllMemoriesFromDisk();
+      const memories = await this._readAllMemoriesFromDisk({ abortSignal: scanAbort.signal });
       // Publish only if neither the corpus version NOR the key identity changed
       // during the scan. The version guard prevents clobbering a newer patched +
       // re-keyed entry; the keyId guard prevents publishing this key's decrypted
-      // corpus under a since-changed identity (Codex Medium, #1902).
+      // corpus under a since-changed identity (Codex Medium, #1902). A cancelled
+      // scan never arrives here — the checkpoints throw — so a partial corpus is
+      // never published.
       if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === version && this.hotCacheKeyId() === keyId) {
         setCachedMemories(this.baseDir, memories, version, keyId, this.hotCacheTtlMs());
       }
       return memories;
     })();
-    setInFlightRead(this.baseDir, keyId, readPromise);
+    setInFlightRead(this.baseDir, keyId, readPromise, detachCancellation);
     try {
       return this.rememberMemorySnapshots(await readPromise);
     } finally {
+      detachCancellation();
       deleteInFlightRead(this.baseDir, keyId, readPromise);
     }
   }
@@ -4769,7 +4789,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * active memory file paths without parsing frontmatter — safe on a 100k+
    * corpus, unlike readAllMemories().
    */
-  async collectActiveMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
+  async collectActiveMemoryPaths(
+    options?: { propagateReadErrors?: boolean } & CorpusReadOptions,
+  ): Promise<string[]> {
     return this.memoryReadStore.collectActiveMemoryPaths(options);
   }
 
@@ -4793,12 +4815,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return `${this.getMemoryCorpusVersion()}:${this.readColdWriteVersion()}`;
   }
 
-  private async readParsedMemoriesFromPaths(filePaths: string[], batchSize?: number): Promise<MemoryFile[]> {
+  private async readParsedMemoriesFromPaths(
+    filePaths: string[],
+    batchSize?: number,
+    options?: CorpusReadOptions,
+  ): Promise<MemoryFile[]> {
     if (filePaths.length === 0) return [];
 
     const normalizedBatchSize = this.normalizeMemoryReadBatchSize(batchSize);
     const memories: MemoryFile[] = [];
     for (let i = 0; i < filePaths.length; i += normalizedBatchSize) {
+      // Per batch: the parse phase is as long as the walk on a large corpus, and
+      // an abandoned caller must not keep paying for it (issue #2307).
+      checkCorpusReadAbort(options);
       const batch = filePaths.slice(i, i + normalizedBatchSize);
       const results = await Promise.all(
         batch.map(async (fullPath) => {
@@ -4939,9 +4968,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.memoryReadStore.readMemoriesWindow(options);
   }
 
-  private async _readAllMemoriesFromDisk(): Promise<MemoryFile[]> {
-    const filePaths = await this.collectActiveMemoryPaths();
-    return this.readParsedMemoriesFromPaths(filePaths, 50);
+  private async _readAllMemoriesFromDisk(options?: CorpusReadOptions): Promise<MemoryFile[]> {
+    const filePaths = await this.collectActiveMemoryPaths(options);
+    return this.readParsedMemoriesFromPaths(filePaths, 50, options);
   }
 
   async readAllColdMemories(): Promise<MemoryFile[]> {
@@ -6430,8 +6459,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   // Scoring + Knowledge Index (Knowledge Graph v7.0)
   // ---------------------------------------------------------------------------
 
-  async readAllEntityFiles(): Promise<EntityFile[]> {
-    return this.entityStore.readAllEntityFiles();
+  async readAllEntityFiles(options?: CorpusReadOptions): Promise<EntityFile[]> {
+    return this.entityStore.readAllEntityFiles(options);
   }
 
   /**

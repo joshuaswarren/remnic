@@ -18,6 +18,8 @@ import { type BufferSurpriseEvent, type CompressionGuidelineOptimizerState, type
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
+import { isAbortError } from "../abort-error.js";
+import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { isValidTranscriptDate } from "../wearables/day-store.js";
 import {
   isValidBufferSurpriseEvent,
@@ -147,7 +149,8 @@ export class MemoryReadStore {
     return days;
   }
 
-  async readAllArtifactsCached(): Promise<MemoryFile[]> {
+  async readAllArtifactsCached(options?: CorpusReadOptions): Promise<MemoryFile[]> {
+    checkCorpusReadAbort(options);
     if (
       this.deps.artifactIndexCache &&
       Date.now() - this.deps.artifactIndexCache.loadedAtMs <= this.deps.storageManagerClass.ARTIFACT_INDEX_CACHE_TTL_MS &&
@@ -162,6 +165,10 @@ export class MemoryReadStore {
         try {
           const entries = await readdir(dir, { withFileTypes: true });
           for (const entry of entries) {
+            // Per-entry, so a tree of any shape has a checkpoint: this scan has no
+            // in-flight dedup, so every abandoned recall used to start another
+            // full walk of it (issue #2307).
+            checkCorpusReadAbort(options);
             const fullPath = path.join(dir, entry.name);
             if (entry.isDirectory()) {
               await readDir(fullPath);
@@ -172,7 +179,10 @@ export class MemoryReadStore {
             if (!memory) continue;
             artifacts.push(memory);
           }
-        } catch {
+        } catch (err) {
+          // A cancelled scan must surface, not be swallowed as "directory doesn't
+          // exist yet" — otherwise a partial walk would be cached as complete.
+          if (isAbortError(err)) throw err;
           // Directory doesn't exist yet
         }
       };
@@ -183,6 +193,7 @@ export class MemoryReadStore {
     const MAX_REBUILD_RETRIES = 2;
     let latestArtifacts: MemoryFile[] = [];
     for (let attempt = 0; attempt <= MAX_REBUILD_RETRIES; attempt += 1) {
+      checkCorpusReadAbort(options);
       const versionBefore = this.deps.getArtifactWriteVersion();
       const artifacts = await scanArtifacts();
       const versionAfter = this.deps.getArtifactWriteVersion();
@@ -210,6 +221,7 @@ export class MemoryReadStore {
   private async collectContainedMarkdownPaths(
     startDirs: readonly string[],
     propagateReadErrors = false,
+    options?: CorpusReadOptions,
   ): Promise<string[]> {
     const filePaths: string[] = [];
 
@@ -226,6 +238,7 @@ export class MemoryReadStore {
     }
 
     const collectPaths = async (dir: string): Promise<void> => {
+      checkCorpusReadAbort(options);
       // Directory-level guard, isolated from per-entry handling: skip symlinked
       // or non-directory category dirs and assert the resolved dir stays inside
       // the memory root before reading. A failure here means the whole subtree
@@ -264,6 +277,10 @@ export class MemoryReadStore {
 
       const subdirs: string[] = [];
       for (const entry of entries) {
+        // Outside the per-entry try/catch below, which deliberately swallows
+        // non-propagatable errors — a cancellation must never be swallowed with
+        // them (issue #2307).
+        checkCorpusReadAbort(options);
         // Never follow symlinked entries out of the store.
         if (entry.isSymbolicLink()) continue;
         const fullPath = path.join(dir, entry.name);
@@ -300,7 +317,9 @@ export class MemoryReadStore {
     return filePaths;
   }
 
-  async collectActiveMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
+  async collectActiveMemoryPaths(
+    options?: { propagateReadErrors?: boolean } & CorpusReadOptions,
+  ): Promise<string[]> {
     // Scan EVERY supported memory category directory, not just the legacy four
     // (facts/procedures/reasoning-traces/corrections). Issue #1497: the QMD
     // filesystem-fallback recall path (orchestrator `recent_scan` ->
@@ -330,6 +349,7 @@ export class MemoryReadStore {
     return this.collectContainedMarkdownPaths(
       RECALL_FALLBACK_DIRS.map((dir) => path.join(this.deps.baseDir, dir)),
       options?.propagateReadErrors ?? false,
+      options,
     );
   }
 
@@ -342,10 +362,13 @@ export class MemoryReadStore {
    * of the recall fallback corpus (collectActiveMemoryPaths), whose scan is
    * intentionally unchanged.
    */
-  async collectColdMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
+  async collectColdMemoryPaths(
+    options?: { propagateReadErrors?: boolean } & CorpusReadOptions,
+  ): Promise<string[]> {
     return this.collectContainedMarkdownPaths(
       [this.deps.resolveTierRootDir("cold")],
       options?.propagateReadErrors ?? false,
+      options,
     );
   }
 

@@ -34,6 +34,7 @@ import { RerankCache, rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.j
 import type { SearchBackend, SearchDegradation, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
 import { SecureStoreLockedError } from "../secure-store/index.js";
 import { isPathInsideStorageRoot } from "../storage-paths.js";
+import type { CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { extractTagsFromPrompt, isTemporalQuery, queryByDateRangeAsync, queryByTagsAsync, readIndexSnapshotAsync, recencyWindowFromPrompt } from "../temporal-index.js";
 import {
   buildQueryAwarePrefilter as buildQueryAwarePrefilterHelper,
@@ -206,6 +207,7 @@ export interface RecallSearchPipelineDeps {
   resolveArtifactSourceStatuses(
     storage: StorageManager,
     sourceIds: string[],
+    options?: CorpusReadOptions,
   ): Promise<Map<string, "active" | "superseded" | "archived" | "missing">>;
   resolveColdQmdResultForRecall(
     result: QmdSearchResult,
