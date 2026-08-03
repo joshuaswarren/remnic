@@ -422,6 +422,9 @@ export function checkDaemonHealthSync(
   port: number,
   timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
 ): boolean {
+  // Same hazard as the capture probe: a non-finite budget reaches
+  // `Atomics.wait` as an unbounded wait on the caller's main thread.
+  assertProbeBudget(timeoutMs);
   return probeDaemonSync({
     host,
     port,
@@ -444,6 +447,10 @@ export function readDaemonMemoryDirSync(
   configPath?: string,
   authToken?: string,
 ): { healthy: boolean; memoryDir?: string; rejectedAuth?: boolean } {
+  // A non-finite budget survives `Math.max(0, deadline - Date.now())` and
+  // reaches `Atomics.wait` as an UNBOUNDED wait, hanging the caller's main
+  // thread instead of failing the probe.
+  assertProbeBudget(timeoutMs);
   const probe = probeDaemonSync({
     host,
     port,
@@ -712,6 +719,13 @@ export function detectDaemonBridgeMode(options: {
   // negative silently skips every probe and selects embedded beside a running
   // same-corpus daemon, which is the exact failure this detector exists to
   // prevent (AGENTS.md §1).
+  // Same reasoning as the budget: a library consumer reaches this entry point
+  // directly. A blank corpus can never match, so the walk would return
+  // `embedded` — an invalid required argument dressed up as a mode decision,
+  // which binds an embedded runtime beside the daemon the caller meant to find.
+  if (options.memoryDir.trim() === "") {
+    throw new Error("detectDaemonBridgeMode requires a non-empty memoryDir to verify the daemon corpus");
+  }
   const totalTimeoutMs = assertProbeBudget(options.timeoutMs);
   const deadline = Date.now() + totalTimeoutMs;
   // Partition BEFORE budgeting. A candidate rejected for being non-loopback,
@@ -945,6 +959,16 @@ export function readDaemonConfigAuthToken(configPath: string): string | undefine
 
 /** The one config file explicit resolution took host and port from. */
 function selectedDaemonConfigPath(): string | undefined {
+  // The SAME rule the endpoint search uses: the first candidate that declares
+  // host or port. Selecting merely the first parseable file would bind
+  // requests to a config that named no endpoint — and therefore no token —
+  // while the endpoint came from a later one, 401ing every delegated call.
+  for (const candidate of configPathCandidates()) {
+    const server = readServerBlock(candidate);
+    if (server?.host !== undefined || server?.port !== undefined) return candidate;
+  }
+  // No file names an endpoint: fall back to the first parseable one, which is
+  // still the best source for a token that accompanies the default endpoint.
   for (const candidate of configPathCandidates()) {
     if (readServerBlock(candidate) !== undefined) return candidate;
   }

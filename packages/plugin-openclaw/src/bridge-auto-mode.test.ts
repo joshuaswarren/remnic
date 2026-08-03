@@ -1591,10 +1591,14 @@ test("a skipped remote candidate does not shrink the live daemon's probe budget"
   // A non-loopback unit endpoint costs no time, so it must not sit in the
   // divisor: a warming daemon behind it would otherwise get a fraction of the
   // budget and be misread as absent.
+  // 16 x 250ms of readiness retries against a 9s budget: comfortably inside
+  // the whole budget the live candidate must get, and comfortably OUTSIDE the
+  // half it would get if the skipped remote endpoint sat in the divisor. The
+  // wide margins keep the ratio meaningful when the suite runs loaded.
   const warming = await startHealthStub(
     { ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" },
     200,
-    6,
+    16,
   );
   const home = await mkdtemp(path.join(os.tmpdir(), "remnic-skip-divisor-"));
   const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-skip-divisor-cwd-"));
@@ -1616,7 +1620,7 @@ test("a skipped remote candidate does not shrink the live daemon's probe budget"
   try {
     process.env.HOME = home;
     process.chdir(cwd);
-    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 4_000 });
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 9_000 });
     assert.equal(bridge.mode, "delegate", "the warming daemon was waited out");
     assert.equal(bridge.daemonPort, warming.port);
   } finally {
@@ -1826,7 +1830,9 @@ test("a credential retry shares its candidate's slice, not a second one", async 
   try {
     process.env.HOME = home;
     process.chdir(cwd);
-    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 3_000 });
+    // Two stalling candidates each burn one share; the live one must still be
+    // reached inside its own. A wide budget keeps that true under load.
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 9_000 });
     assert.equal(bridge.mode, "delegate", "the live daemon was still reached");
     assert.equal(bridge.daemonPort, live.port);
   } finally {
@@ -2611,5 +2617,72 @@ test("a user unit installed system-wide is discovered", async () => {
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the public detector rejects a blank corpus and a hostile probe budget", () => {
+  // Both are required arguments a library consumer can get wrong. A blank
+  // corpus can never match, so the walk would answer `embedded` — an invalid
+  // argument dressed up as a mode decision. A non-finite budget survives to
+  // `Atomics.wait` as an UNBOUNDED wait on the caller's main thread.
+  for (const memoryDir of ["", "   "]) {
+    assert.throws(
+      () => detectDaemonBridgeMode({ memoryDir, timeoutMs: 1_000 }),
+      /requires a non-empty memoryDir/,
+      JSON.stringify(memoryDir),
+    );
+  }
+  for (const timeoutMs of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1]) {
+    assert.throws(
+      () => readDaemonMemoryDirSync("127.0.0.1", 4318, timeoutMs),
+      /timeoutMs must be an integer/,
+      `capture: ${String(timeoutMs)}`,
+    );
+    assert.throws(
+      () => checkDaemonHealthSync("127.0.0.1", 4318, timeoutMs),
+      /timeoutMs must be an integer/,
+      `liveness: ${String(timeoutMs)}`,
+    );
+  }
+});
+
+test("the delegate config binds to the file that named the endpoint", async () => {
+  // An earlier config that parses but declares no endpoint must not capture
+  // the credential binding: requests would then carry no token while the
+  // endpoint came from a later file that has one.
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-config-bind-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-config-cwd-"));
+  const priorHome = process.env.HOME;
+  const priorCwd = process.cwd();
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+    process.env.HOME = home;
+    process.chdir(cwd);
+    // cwd config: valid JSON, no `server` block at all.
+    await writeFile(path.join(cwd, "remnic.config.json"), JSON.stringify({ remnic: {} }), "utf8");
+    await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
+    await writeFile(
+      path.join(home, ".config", "remnic", "config.json"),
+      JSON.stringify({ server: { host: "127.0.0.1", port: 4899, authToken: "home-token" } }),
+      "utf8",
+    );
+    const bridge = resolveBridgeMode("delegate", { timeoutMs: 1_000 });
+    assert.equal(bridge.daemonPort, 4899, "the endpoint came from the home config");
+    assert.match(
+      String(bridge.daemonConfigPath),
+      /\.config[\\/]remnic[\\/]config\.json$/,
+      "and the credential is bound to that same file",
+    );
+  } finally {
+    process.chdir(priorCwd);
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
   }
 });

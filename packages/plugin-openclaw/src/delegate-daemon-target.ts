@@ -43,7 +43,16 @@ export function daemonTargetFor(bridge: BridgeConfig): DelegateDaemonTarget {
         }
         // Readable and deliberately carrying no token: the daemon has fallen
         // back to its config or token store, so fall through to the same
-        // resolution rather than replaying a credential nobody serves.
+        // resolution rather than replaying a credential nobody serves. The
+        // BOUND config is tried first — `loadDaemonAuth` puts the gateway's
+        // own token store ahead of it, which is wrong for a daemon running
+        // under another account and would keep 401ing after the restart.
+        if (bridge.daemonConfigPath !== undefined) {
+          const configToken = readDaemonConfigAuthToken(bridge.daemonConfigPath);
+          if (configToken !== undefined) {
+            return { token: configToken, source: "daemon configuration" };
+          }
+        }
       }
       if (bridge.daemonAuthPrefersConfig && bridge.daemonConfigPath !== undefined) {
         const configToken = readDaemonConfigAuthToken(bridge.daemonConfigPath);
