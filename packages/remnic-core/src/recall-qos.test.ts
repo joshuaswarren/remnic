@@ -237,15 +237,44 @@ test("a section rejection surfaces to the caller instead of being swallowed", as
   );
 });
 
-test("the default core section budget is capped below the request ceiling", () => {
+test("the default core section budget is capped below the remaining request budget", () => {
   // Both settings default to 75s. Taken at face value the section deadline could
   // never fire first, so degradation would be unreachable on default config.
   assert.equal(
     resolveRecallCoreSectionDeadlineMs({
       configuredCoreDeadlineMs: 75_000,
-      outerTimeoutMs: 75_000,
+      remainingOuterMs: 75_000,
     }),
     60_000,
+  );
+});
+
+test("the core section budget shrinks with the request budget already spent", () => {
+  // A section that starts 20s into a 75s request must finish inside the 55s left,
+  // not inside the original ceiling — otherwise the request is aborted wholesale.
+  assert.equal(
+    resolveRecallCoreSectionDeadlineMs({
+      configuredCoreDeadlineMs: 75_000,
+      remainingOuterMs: 55_000,
+    }),
+    44_000,
+  );
+});
+
+test("a request already over budget degrades its sections immediately", () => {
+  assert.equal(
+    resolveRecallCoreSectionDeadlineMs({
+      configuredCoreDeadlineMs: 75_000,
+      remainingOuterMs: 0,
+    }),
+    1,
+  );
+  assert.equal(
+    resolveRecallCoreSectionDeadlineMs({
+      configuredCoreDeadlineMs: 75_000,
+      remainingOuterMs: -5_000,
+    }),
+    1,
   );
 });
 
@@ -253,7 +282,7 @@ test("an explicitly lowered core section budget is honored exactly", () => {
   assert.equal(
     resolveRecallCoreSectionDeadlineMs({
       configuredCoreDeadlineMs: 5_000,
-      outerTimeoutMs: 75_000,
+      remainingOuterMs: 75_000,
     }),
     5_000,
   );
@@ -261,14 +290,31 @@ test("an explicitly lowered core section budget is honored exactly", () => {
 
 test("a zero budget on either side keeps the configured value", () => {
   assert.equal(
-    resolveRecallCoreSectionDeadlineMs({ configuredCoreDeadlineMs: 0, outerTimeoutMs: 75_000 }),
+    resolveRecallCoreSectionDeadlineMs({ configuredCoreDeadlineMs: 0, remainingOuterMs: 75_000 }),
     0,
   );
   // No request ceiling means nothing to reserve headroom against.
   assert.equal(
-    resolveRecallCoreSectionDeadlineMs({ configuredCoreDeadlineMs: 75_000, outerTimeoutMs: 0 }),
+    resolveRecallCoreSectionDeadlineMs({ configuredCoreDeadlineMs: 75_000, remainingOuterMs: null }),
     75_000,
   );
+});
+
+test("a bounded core section resolves its budget from the budget left when it starts", async () => {
+  const metrics: RecallSectionMetric[] = [];
+  const clockMs = 1_000_000;
+  const runSection = createBoundedCoreSectionRunner({
+    configuredDeadlineMs: 75_000,
+    // 75s request that started 20s ago: 55s left, so the section gets 80% of 55s.
+    outerDeadlineAtMs: clockMs + 55_000,
+    record: (metric) => metrics.push(metric),
+    logger: { warn: () => {} },
+    now: () => clockMs,
+  });
+
+  await runSection("entityRetrieval", null as string | null, async () => "section body");
+
+  assert.equal(metrics[0]?.deadlineMs, 44_000);
 });
 
 test("a bounded core section degrades on cancellation rather than rejecting", async () => {
@@ -277,7 +323,8 @@ test("a bounded core section degrades on cancellation rather than rejecting", as
   const metrics: RecallSectionMetric[] = [];
   const caller = new AbortController();
   const runSection = createBoundedCoreSectionRunner({
-    deadlineMs: 5_000,
+    configuredDeadlineMs: 5_000,
+    outerDeadlineAtMs: null,
     parentSignal: caller.signal,
     record: (metric) => metrics.push(metric),
     logger: { warn: () => {} },
@@ -297,7 +344,8 @@ test("a bounded core section degrades on cancellation rather than rejecting", as
 
 test("a bounded core section still surfaces a non-abort failure", async () => {
   const runSection = createBoundedCoreSectionRunner({
-    deadlineMs: 5_000,
+    configuredDeadlineMs: 5_000,
+    outerDeadlineAtMs: null,
     record: () => {},
     logger: { warn: () => {} },
   });

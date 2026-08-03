@@ -107,34 +107,48 @@ export function createRecallSectionMetricRecorder(options: {
 }
 
 /**
- * Fraction of a whole recall request that a single core section may consume.
- * The remainder is what makes degradation possible at all: time to assemble and
- * return the sections that did arrive before the outer timeout kills the request.
+ * Fraction of the request's REMAINING budget that a single core section may
+ * consume.  The remainder is what makes degradation possible at all: time to
+ * assemble and return the sections that did arrive before the outer timeout
+ * kills the request outright.
  */
 const CORE_SECTION_MAX_SHARE_OF_REQUEST = 0.8;
 
 /**
  * Effective per-section deadline for optional core recall providers.
  *
- * `recallCoreDeadlineMs` and `recallOuterTimeoutMs` both default to 75s, so a
- * section budget taken at face value can never fire before the request ceiling
- * that cancels everything — the caller loses the whole recall rather than one
- * section (issue #2291).  Capping the section at a share of the request keeps
- * graceful degradation reachable on default config, while an operator who lowers
- * `recallCoreDeadlineMs` still gets exactly what they asked for.
+ * Two things make the configured value unusable as-is (issue #2291):
  *
- * A zero/non-finite value on either side means "no bound" for that side and is
- * preserved, per the config contract that a zero budget disables the limit.
+ *  - `recallCoreDeadlineMs` and `recallOuterTimeoutMs` both default to 75s, so a
+ *    section budget taken at face value can never fire before the request ceiling
+ *    that cancels everything — the caller loses the whole recall rather than one
+ *    section.
+ *  - Sections start *after* planning, namespace resolution, and mode selection.
+ *    Capping against the original ceiling would let a section that starts 20s in
+ *    still be running when the request is aborted, which is the same failure.
+ *
+ * So the cap is taken against `remainingOuterMs` — the request budget left when
+ * the section actually starts. An operator who lowers `recallCoreDeadlineMs`
+ * below that still gets exactly what they asked for.
+ *
+ * `remainingOuterMs === null` means the request is unbounded and there is nothing
+ * to reserve headroom against. A non-positive remainder means the request is
+ * already over budget, so the section degrades immediately rather than starting
+ * work that cannot be delivered.
  */
 export function resolveRecallCoreSectionDeadlineMs(options: {
   configuredCoreDeadlineMs: number;
-  outerTimeoutMs: number;
+  remainingOuterMs: number | null;
 }): number {
   const configured = options.configuredCoreDeadlineMs;
   if (!Number.isFinite(configured) || configured <= 0) return configured;
-  const outer = options.outerTimeoutMs;
-  if (!Number.isFinite(outer) || outer <= 0) return configured;
-  return Math.min(configured, Math.floor(outer * CORE_SECTION_MAX_SHARE_OF_REQUEST));
+  const remaining = options.remainingOuterMs;
+  if (remaining === null || !Number.isFinite(remaining)) return configured;
+  if (remaining <= 0) return 1;
+  return Math.min(
+    configured,
+    Math.max(1, Math.floor(remaining * CORE_SECTION_MAX_SHARE_OF_REQUEST)),
+  );
 }
 
 export interface RecallSectionDeadlineOutcome<T> {
@@ -222,6 +236,12 @@ export async function runRecallSectionWithinDeadline<T>(options: {
  * section as `timeout` — so a slow provider costs its own section, not the
  * response.
  *
+ * The budget is resolved when each section STARTS, against the request budget
+ * still left at that moment (`outerDeadlineAtMs`), not against the original
+ * configured ceiling: sections begin after planning and namespace resolution, and
+ * a section sized to the full request would otherwise still be running when the
+ * request itself is aborted.
+ *
  * Cancellation degrades too, and must: the section signal fires on the caller's
  * abort, and the phase this section belongs to is awaited through a race that the
  * caller's abort also wins.  A rejection here would therefore land on a promise
@@ -232,38 +252,48 @@ export async function runRecallSectionWithinDeadline<T>(options: {
  * IS the degraded contract.
  */
 export function createBoundedCoreSectionRunner(options: {
-  deadlineMs: number;
+  configuredDeadlineMs: number;
+  /** Absolute time the whole request is aborted, or null when unbounded. */
+  outerDeadlineAtMs: number | null;
   parentSignal?: AbortSignal;
   record: (metric: RecallSectionMetric) => unknown;
   logger?: Pick<LoggerBackend, "warn">;
+  now?: () => number;
 }): <T>(
   section: string,
   fallback: T,
   run: (sectionSignal: AbortSignal) => Promise<T>,
 ) => Promise<T> {
   const logger = options.logger ?? log;
+  const now = options.now ?? Date.now;
   return async <T>(
     section: string,
     fallback: T,
     run: (sectionSignal: AbortSignal) => Promise<T>,
   ): Promise<T> => {
-    const startedAtMs = Date.now();
+    const startedAtMs = now();
+    const deadlineMs = resolveRecallCoreSectionDeadlineMs({
+      configuredCoreDeadlineMs: options.configuredDeadlineMs,
+      remainingOuterMs:
+        options.outerDeadlineAtMs === null ? null : options.outerDeadlineAtMs - startedAtMs,
+    });
     let outcome: RecallSectionDeadlineOutcome<T>;
     try {
       outcome = await runRecallSectionWithinDeadline({
-        deadlineMs: options.deadlineMs,
+        deadlineMs,
         fallback,
         parentSignal: options.parentSignal,
         run,
+        now,
       });
     } catch (err) {
       if (!isAbortError(err)) throw err;
-      const durationMs = Date.now() - startedAtMs;
+      const durationMs = now() - startedAtMs;
       options.record({
         section,
         priority: "core",
         durationMs,
-        deadlineMs: options.deadlineMs,
+        deadlineMs,
         source: "skip",
         success: false,
         timing: `cancelled(${durationMs}ms)`,
@@ -272,7 +302,7 @@ export function createBoundedCoreSectionRunner(options: {
     }
     if (outcome.timedOut) {
       logger.warn(
-        `recall section [${section}] exceeded its ${options.deadlineMs}ms core deadline ` +
+        `recall section [${section}] exceeded its ${deadlineMs}ms core deadline ` +
           `after ${outcome.durationMs}ms; recall continues without it`,
       );
     }
@@ -280,7 +310,7 @@ export function createBoundedCoreSectionRunner(options: {
       section,
       priority: "core",
       durationMs: outcome.durationMs,
-      deadlineMs: options.deadlineMs,
+      deadlineMs,
       source: outcome.timedOut ? "timeout" : "fresh",
       success: !outcome.timedOut,
     });

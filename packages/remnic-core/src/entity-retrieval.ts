@@ -635,6 +635,12 @@ async function buildEntityMentionIndex(
     }
   }
 
+  // Each remaining phase is another synchronous pass over the whole index
+  // (alias map, native-chunk merge, sort, two full serializations). Yield between
+  // them so a section deadline can fire between passes instead of only after all
+  // of them (issue #2291).
+  await yieldToEventLoop();
+  throwIfAborted(abortSignal, "entity recall aborted");
   const aliasIndex = buildAliasIndex([...entities.values()]);
   for (const chunk of nativeChunks) {
     const existingPseudo = entities.get(nativePseudoCanonicalId(chunk));
@@ -655,8 +661,12 @@ async function buildEntityMentionIndex(
     entities.set(pseudoEntry.canonicalId, pseudoEntry);
   }
 
+  await yieldToEventLoop();
+  throwIfAborted(abortSignal, "entity recall aborted");
   const sortedEntities = [...entities.values()].sort((left, right) => left.name.localeCompare(right.name));
+  await yieldToEventLoop();
   const previousEntities = previousIndex ? JSON.stringify(previousIndex.entities) : "";
+  await yieldToEventLoop();
   const nextEntities = JSON.stringify(sortedEntities);
   const entityStatusVersionAfter = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
   const canPersistIndex = shouldPersistIndex && entityStatusVersionBefore === entityStatusVersionAfter;
@@ -1120,7 +1130,13 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
     );
     if (namespaceCacheKey) rememberNamespaceEntityIndex(namespaceCacheKey, index);
   }
+  // Candidate resolution is another synchronous pass over every entity and alias,
+  // reached even on a cache hit that did no I/O at all — so yield here too, or a
+  // cached corpus could still hold the loop past the section budget (issue #2291).
+  await yieldToEventLoop();
+  throwIfAborted(options.abortSignal, "entity recall aborted");
   const explicitCandidates = resolveExplicitCandidates(index, options.query);
+  await yieldToEventLoop();
   const queryCandidates = prefixedMode
     ? explicitCandidates
     : resolveLanguageIndependentExplicitCandidates(index, options.query);

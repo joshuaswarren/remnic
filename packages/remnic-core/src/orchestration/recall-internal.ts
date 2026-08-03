@@ -151,9 +151,14 @@ export class RecallInternalCoordinator {
       profileTraceClosed = true;
       this.deps.profiler.endTrace(profileTraceId); // persists to JSONL file
     };
+    // The static, config-derived figure the untouched sections report in their
+    // metrics. The bounded runner below resolves its own effective budget per
+    // section, against the request budget still left when that section starts.
+    const configuredCoreDeadlineMs = this.deps.config.recallCoreDeadlineMs ?? 75_000;
+    const recallOuterTimeoutMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
     const recallSectionDeadlineMs = resolveRecallCoreSectionDeadlineMs({
-      configuredCoreDeadlineMs: this.deps.config.recallCoreDeadlineMs ?? 75_000,
-      outerTimeoutMs: this.deps.config.recallOuterTimeoutMs ?? 75_000,
+      configuredCoreDeadlineMs,
+      remainingOuterMs: recallOuterTimeoutMs > 0 ? recallOuterTimeoutMs : null,
     });
     const enrichmentSectionDeadlineMs =
       this.deps.config.recallEnrichmentDeadlineMs ?? 25_000;
@@ -214,7 +219,9 @@ export class RecallInternalCoordinator {
       logger: log,
     });
     const runBoundedCoreSection = createBoundedCoreSectionRunner({
-      deadlineMs: recallSectionDeadlineMs,
+      configuredDeadlineMs: configuredCoreDeadlineMs,
+      outerDeadlineAtMs:
+        recallOuterTimeoutMs > 0 ? recallStart + recallOuterTimeoutMs : null,
       parentSignal: options.abortSignal,
       record: recordRecallSectionMetric,
       logger: log,
