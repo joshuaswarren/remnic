@@ -28,6 +28,7 @@ import {
   type MeetingsDayFactGenResult,
 } from "./memory-generator.js";
 import { computeTrustScore, decideSmart, type TrustEvidence } from "../wearables/trust.js";
+import { isHighImpactPersonalFact } from "../ambient-provenance.js";
 import { describeErrorForOperator } from "../wearables/errors.js";
 import type { MeetingRecord, MeetingsConfig } from "./types.js";
 
@@ -61,7 +62,10 @@ export function composeMeetingEpisodeContent(record: MeetingRecord): string {
 /**
  * Write the deterministic episode memory for one meeting. Idempotent: skips
  * when an identical episode already exists. Returns true when a new episode was
- * written. The episode is `active` (a recall anchor, not a trust-gated claim).
+ * written. The episode is `active` (a recall anchor, not a trust-gated claim)
+ * UNLESS its provider-derived title is itself a personal claim — that title
+ * comes from the same ambient audio the summary layer already guards, so it
+ * gets the same treatment rather than riding in on the anchor (#2294).
  */
 export async function writeMeetingEpisodeMemory(
   record: MeetingRecord,
@@ -92,10 +96,23 @@ export async function writeMeetingEpisodeMemory(
   if (envelope.salvageNotes.length > 0) {
     log.warn(`meeting episode write salvaged invalid fields: ${envelope.salvageNotes.join("; ")}`);
   }
+  // Two reasons an episode is not a trusted anchor. (1) Only the title is
+  // provider-derived, so the classifier reads the TITLE alone — never our own
+  // deterministic rendering of id, clock, attendees, and sources. (2) An
+  // `audio` detection is a heuristic over speech alone with no corroborating
+  // app span, so fifteen minutes of television with two voices produces an
+  // episode asserting a meeting happened, with the show's speakers listed as
+  // attendees. `app+audio` and `provider` records carry that corroboration and
+  // stay active (#2294).
+  const titleIsPersonalClaim =
+    record.title !== undefined &&
+    record.title.length > 0 &&
+    isHighImpactPersonalFact({ category: "fact", content: record.title });
+  const uncorroboratedDetection = record.detectionSource === "audio";
   await writer.writeSealedMemory(envelope, {
     importance: scoreImportance(content, "moment", [MEETING_SOURCE_PREFIX]),
     contentHashSource: content,
-    status: "active",
+    status: titleIsPersonalClaim || uncorroboratedDetection ? "pending_review" : "active",
     memoryKind: "episode",
   });
   return true;
@@ -241,14 +258,22 @@ function resolveMeetingFactOutcome(
   config: MeetingsConfig,
   trust: number,
   judgeVerdict: "accept" | "reject" | "defer" | undefined,
+  claim: { category: string; content: string },
 ): "active" | "review" | "drop" {
   if (config.summaryMode === "review") {
     return judgeVerdict === "reject" ? "drop" : "review";
   }
-  return decideSmart(trust, judgeVerdict, {
-    autoApproveTrust: config.autoApproveTrust,
-    reviewTrust: config.reviewTrust,
-  }).outcome;
+  // A meeting transcript is the same always-on capture audio a wearable
+  // records, so it carries the same contamination risk — and the extractor
+  // hands decisions and commitments a fixed 0.8 confidence, which clears the
+  // default band on a judge accept alone. A high-impact personal claim tops
+  // out in the review queue here too (#2294).
+  return decideSmart(
+    trust,
+    judgeVerdict,
+    { autoApproveTrust: config.autoApproveTrust, reviewTrust: config.reviewTrust },
+    { capAtReview: isHighImpactPersonalFact(claim) },
+  ).outcome;
 }
 
 /**
@@ -321,7 +346,7 @@ export async function generateMeetingSummaryFacts(
       judgeVerdict,
       evidence,
     });
-    const outcome = resolveMeetingFactOutcome(config, trust, judgeVerdict);
+    const outcome = resolveMeetingFactOutcome(config, trust, judgeVerdict, candidate);
     if (outcome === "drop") {
       result.dropped++;
       continue;
@@ -353,7 +378,10 @@ export async function generateMeetingSummaryFacts(
         sourceTrust: config.sourceTrust,
         evidence,
       });
-      const outcome = resolveMeetingFactOutcome(config, summaryTrust, undefined);
+      const outcome = resolveMeetingFactOutcome(config, summaryTrust, undefined, {
+        category: "fact",
+        content: summaryText,
+      });
       if (outcome === "drop") {
         result.dropped++;
       } else {

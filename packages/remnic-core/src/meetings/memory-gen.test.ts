@@ -129,6 +129,32 @@ test("episode write is idempotent — an identical episode is skipped", async ()
   assert.equal(writer.writes.length, 1);
 });
 
+test("an episode whose provider title is a personal claim is held for review (#2294)", async () => {
+  // The episode is a recall anchor written active, but its title comes from the
+  // provider's read of the same ambient audio — so a title lifted from a
+  // television scene must not enter recall on the anchor.
+  const writer = new FakeWriter();
+  await writeMeetingEpisodeMemory(record({ title: "Dana's cancer diagnosis" }), writer);
+  assert.equal(writer.writes[0]!.extras.status, "pending_review");
+
+  const clean = new FakeWriter();
+  await writeMeetingEpisodeMemory(record({ title: "Sprint planning" }), clean);
+  assert.equal(clean.writes[0]!.extras.status, "active", "an ordinary title is unaffected");
+});
+
+test("an audio-only episode is held for review — detection alone is not corroboration (#2294)", async () => {
+  // `audio` detection is a heuristic over speech with no app span behind it, so
+  // fifteen minutes of television with two voices yields an episode asserting a
+  // meeting happened with the show's speakers as attendees.
+  const writer = new FakeWriter();
+  await writeMeetingEpisodeMemory(record({ app: undefined, detectionSource: "audio" }), writer);
+  assert.equal(writer.writes[0]!.extras.status, "pending_review");
+
+  const corroborated = new FakeWriter();
+  await writeMeetingEpisodeMemory(record({ detectionSource: "app+audio" }), corroborated);
+  assert.equal(corroborated.writes[0]!.extras.status, "active");
+});
+
 test("an audio-only meeting omits the meetingApp attribute and the app suffix", async () => {
   const writer = new FakeWriter();
   const audioOnly = record({ app: undefined, detectionSource: "audio" });
@@ -204,6 +230,31 @@ test("summaryMode smart routes a high-trust decision to active with meeting prov
   assert.equal(decision!.extras.status, "active");
   assert.equal(decision!.envelope.rawStructuredAttributes?.meetingId, "mtg-2026-03-10-abcdef01");
   assert.ok(writer.writes.some((w) => w.envelope.category === "commitment"), "a commitment fact was written");
+});
+
+test("a high-impact personal claim never goes active, however the trust adds up (#2294)", async () => {
+  // A meeting transcript is the same always-on capture audio a wearable
+  // records, so a fabricated medical line can arrive in it. At the extractor's
+  // fixed 0.9 confidence, 0.9 * 0.85 = 0.765 clears the 0.7 auto-approve line;
+  // the ambient cap must hold it in the review queue anyway.
+  const writer = new FakeWriter();
+  const extractor = spyExtractor("Meeting summary.", [
+    { content: "Dana was diagnosed with cancer last month", category: "decision", confidence: 0.9 },
+    { content: "Team decided to ship v2 on Friday", category: "decision", confidence: 0.9 },
+  ]);
+
+  const res = await generateMeetingSummaryFacts(TRANSCRIPT_RECORD(), meetingConfig({ summaryMode: "smart" }), {
+    extractor,
+    writer,
+  });
+
+  assert.equal(res.dropped, 0, "the cap downgrades rather than drops");
+  const medical = writer.writes.find((w) => w.envelope.content.includes("diagnosed"));
+  assert.ok(medical, "the medical claim was written");
+  assert.equal(medical!.extras.status, "pending_review");
+  const ordinary = writer.writes.find((w) => w.envelope.content.includes("ship v2"));
+  assert.ok(ordinary, "the ordinary decision was written");
+  assert.equal(ordinary!.extras.status, "active", "ordinary meeting facts are unaffected");
 });
 
 test("summaryMode smart drops a low-trust candidate but corroboration promotes it to review", async () => {

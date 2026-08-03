@@ -142,8 +142,22 @@ export interface SmartDecision {
     | "judge-deferred"
     | "auto-approved"
     | "queued-for-review"
-    | "below-trust";
+    | "below-trust"
+    | "ambient-high-impact";
   trust: number;
+}
+
+export interface SmartDecisionOptions {
+  /**
+   * Deny auto-approval regardless of score (issue #2294). Set for high-impact
+   * personal facts derived from ambient capture: clamping extraction
+   * confidence to the speculative ceiling is not enough on its own, because
+   * judge-accept plus cross-source and existing-memory boosts sum past
+   * `autoApproveTrust` — and two devices in one room recording the same
+   * television program corroborate each other perfectly. Such a candidate
+   * tops out in the review queue.
+   */
+  capAtReview?: boolean;
 }
 
 /** Map judge verdict + trust score to the smart-mode decision. */
@@ -151,6 +165,7 @@ export function decideSmart(
   trust: number,
   judgeVerdict: "accept" | "reject" | "defer" | undefined,
   thresholds: { autoApproveTrust: number; reviewTrust: number },
+  options?: SmartDecisionOptions,
 ): SmartDecision {
   if (judgeVerdict === "reject") {
     return { outcome: "drop", reason: "judge-rejected", trust };
@@ -159,7 +174,9 @@ export function decideSmart(
     return { outcome: "review", reason: "judge-deferred", trust };
   }
   if (trust >= thresholds.autoApproveTrust) {
-    return { outcome: "active", reason: "auto-approved", trust };
+    return options?.capAtReview === true
+      ? { outcome: "review", reason: "ambient-high-impact", trust }
+      : { outcome: "active", reason: "auto-approved", trust };
   }
   if (trust >= thresholds.reviewTrust) {
     return { outcome: "review", reason: "queued-for-review", trust };

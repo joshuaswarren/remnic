@@ -224,6 +224,33 @@ test("auto mode writes active status", async () => {
   assert.equal(writes[0].options.status, "active");
 });
 
+test("auto mode still refuses to write a high-impact personal claim active (#2294)", async () => {
+  // `auto` has no trust scoring, and an operator may lower minConfidence to or
+  // below the speculative ceiling the ambient clamp writes — which would let a
+  // clamped TV line straight into recall without this guard.
+  const { writer, writes } = makeWriter();
+  await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "auto", minConfidence: 0.3 }),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        { category: "fact", content: "Dana's mother has a birthday on June 3rd.", confidence: 0.39, tags: [] },
+        { category: "fact", content: "Vendor call happens tomorrow morning.", confidence: 0.8, tags: [] },
+      ]),
+      writer,
+    },
+  );
+  const personal = writes.find((w) => w.content.includes("birthday"));
+  assert.ok(personal, "the personal claim was written");
+  assert.equal(personal!.options.status, "pending_review");
+  const ordinary = writes.find((w) => w.content.includes("Vendor call"));
+  assert.ok(ordinary, "the ordinary fact was written");
+  assert.equal(ordinary!.options.status, "active");
+});
+
 test("gates: confidence floor, importance floor, dedup, and unsupported categories", async () => {
   const { writer, writes } = makeWriter(["Already stored fact about the vendor."]);
   const result = await generateWearableMemories(
@@ -341,6 +368,61 @@ test("daily digest writes one deterministic episode memory and dedups", async ()
   );
   assert.equal(wroteAgain, false);
   assert.equal(writes2.length, 0);
+});
+
+test("review mode queues a clamped personal claim instead of dropping it below the floor (#2294)", async () => {
+  // The extraction clamp pins high-impact ambient facts to 0.39, under the 0.6
+  // default minConfidence — so without an exemption the pre-filter would drop
+  // exactly the candidates review mode promises to queue.
+  const { writer, writes } = makeWriter();
+  const result = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "review" }),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        { category: "fact", content: "Dana's mother has a birthday on June 3rd.", confidence: 0.39, tags: [] },
+        { category: "fact", content: "A low-signal rumor about the vendor.", confidence: 0.39, tags: [] },
+      ]),
+      writer,
+    },
+  );
+
+  assert.equal(writes.length, 1, "only the high-impact claim is exempt from the floor");
+  assert.match(writes[0].content, /birthday/);
+  assert.equal(writes[0].options.status, "pending_review");
+  assert.equal(result.skippedByReason["below-confidence"], 1, "ordinary low-confidence facts still drop");
+});
+
+test("a digest whose provider title is a personal claim is held for review (#2294)", async () => {
+  // Providers derive conversation.title from the same captured audio, so a
+  // title lifted from a television scene must not ride into recall on the
+  // digest, which bypasses extraction and its clamp entirely.
+  const { writer, writes } = makeWriter();
+  const wrote = await writeDailyDigestMemory(
+    "limitless",
+    "2026-06-10",
+    [{ ...LONG_CONVERSATION, title: "Dana's cancer diagnosis" }],
+    settings({ memoryMode: "smart" }),
+    REGISTRY,
+    writer,
+  );
+
+  assert.equal(wrote, true, "the digest is still written, just not active");
+  assert.equal(writes[0].options.status, "pending_review");
+
+  const { writer: clean, writes: cleanWrites } = makeWriter();
+  await writeDailyDigestMemory(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "smart" }),
+    REGISTRY,
+    clean,
+  );
+  assert.equal(cleanWrites[0].options.status, "active", "an ordinary digest is unaffected");
 });
 
 function judgeReturning(

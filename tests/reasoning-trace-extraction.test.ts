@@ -18,8 +18,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { ExtractedFactSchema } from "../packages/remnic-core/src/schemas.js";
+import { parseConfig } from "../packages/remnic-core/src/config.js";
+import { ExtractionEngine } from "../packages/remnic-core/src/extraction.js";
+import type { BufferTurn } from "../packages/remnic-core/src/types.js";
 import {
   buildReasoningTraceMarkdownBody,
   buildReasoningTracePersistBody,
@@ -363,34 +367,112 @@ describe("looksLikeReasoningTrace heuristic", () => {
 });
 
 describe("extraction prompt includes reasoning_trace guidance", () => {
-  it("gateway and local prompts mention reasoning_trace with schema hints", async () => {
-    const src = await (await import("node:fs/promises")).readFile(
-      new URL("../packages/remnic-core/src/extraction.ts", import.meta.url),
-      "utf-8",
+  // Drive the real extraction paths and assert on the prompt each one actually
+  // sends. Grepping the source would pass on text no request ever carries.
+  const SOURCE_TURN: BufferTurn = {
+    role: "user",
+    content: "Here is how I debugged the latency spike, step by step.",
+    timestamp: "2026-08-02T12:00:00.000Z",
+  };
+  const EMPTY_RESULT = JSON.stringify({
+    facts: [],
+    profileUpdates: [],
+    entities: [],
+    questions: [],
+  });
+  const CONTEXT_SIZES = {
+    calculateContextSizes: () => ({ maxInputChars: 8_000, maxOutputTokens: 1_000, description: "fixture" }),
+  };
+
+  it("the local prompt the model receives describes reasoning_trace", async () => {
+    const engine = new ExtractionEngine(
+      parseConfig({ localLlmEnabled: true, localLlmModel: "fixture-local", localLlmFallback: false }),
     );
-    // Local prompt branch
+    let prompt = "";
+    // Production signature: chatCompletion(messages, options) — the options
+    // object carries operation/priority/signal, so a mock that omits it would
+    // pass while the real client contract drifted.
+    let localOptions: { operation?: string } | undefined;
+    const localLlm = {
+      async chatCompletion(
+        messages: Array<{ role: string; content: string }>,
+        options: { operation?: string; signal?: AbortSignal } = {},
+      ) {
+        localOptions = options;
+        prompt = messages[1]?.content ?? "";
+        return { content: EMPTY_RESULT };
+      },
+    };
+    assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
+    assert.equal(Reflect.set(engine, "modelRegistry", CONTEXT_SIZES), true);
+
+    await engine.extract([SOURCE_TURN]);
+
+    assert.equal(localOptions?.operation, "extraction", "the engine passes the options argument");
+    assert.match(prompt, /reasoning_trace: Stored solution chains/);
     assert.ok(
-      /reasoning_trace: Stored solution chains/.test(src),
-      "local LLM prompt should describe reasoning_trace",
+      prompt.includes('"category": "reasoning_trace"'),
+      "local prompt should show a reasoning_trace fact example",
     );
-    // Gateway prompt branch
+    assert.ok(prompt.includes('"reasoningTrace"'), "local prompt should carry the reasoningTrace field");
+  });
+
+  it("the gateway prompt the model receives describes reasoning_trace", async () => {
+    const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
+    let prompt = "";
+    // Production signature: parseWithSchemaDetailed(messages, schema, options).
+    let gatewaySchema: unknown;
+    const fallbackLlm = {
+      async parseWithSchemaDetailed(
+        messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+        schema: { parse: (data: unknown) => unknown },
+        _options: { signal?: AbortSignal } = {},
+      ) {
+        gatewaySchema = schema;
+        prompt = messages[0]?.content ?? "";
+        return { modelUsed: "fixture-gateway", result: JSON.parse(EMPTY_RESULT) };
+      },
+    };
+    assert.equal(Reflect.set(engine, "fallbackLlm", fallbackLlm), true);
+
+    await engine.extract([SOURCE_TURN]);
+
+    assert.equal(typeof (gatewaySchema as { parse?: unknown })?.parse, "function", "the engine passes a schema");
+    assert.match(prompt, /reasoning_trace: A stored solution chain/);
+  });
+
+  it("the direct-client request carries the guidance and the reasoningTrace response shape", async () => {
+    const engine = new ExtractionEngine(parseConfig({ openaiApiKey: "fixture-key" }));
+    let prompt = "";
+    const client = {
+      chat: {
+        completions: {
+          // Production signature: create(body, requestOptions?) where body
+          // carries model + token params alongside messages.
+          async create(
+            request: { model: string; messages: Array<{ role: string; content: string }> },
+            _requestOptions?: { signal?: AbortSignal },
+          ) {
+            assert.equal(typeof request.model, "string", "the engine sends a model");
+            prompt = request.messages[0]?.content ?? "";
+            return { choices: [{ message: { content: EMPTY_RESULT } }] };
+          },
+        },
+      },
+    };
+    assert.equal(Reflect.set(engine, "client", client), true);
+
+    await engine.extract([SOURCE_TURN]);
+
+    assert.match(prompt, /reasoning_trace: A stored solution chain/);
     assert.ok(
-      /reasoning_trace: A stored solution chain/.test(src),
-      "gateway prompt should describe reasoning_trace",
-    );
-    // Both prompt JSON examples must reference reasoningTrace
-    assert.ok(
-      src.includes('"category": "reasoning_trace"'),
-      "prompt JSON example should include a reasoning_trace fact",
-    );
-    assert.ok(
-      src.includes('"reasoningTrace"'),
-      "prompt JSON example should include a reasoningTrace field",
+      prompt.includes('"reasoningTrace"'),
+      "direct-client prompt should carry the reasoningTrace response shape",
     );
   });
 
   it("normalizeExtractionResultPayload accepts snake_case reasoning_trace key", async () => {
-    const src = await (await import("node:fs/promises")).readFile(
+    const src = await readFile(
       new URL("../packages/remnic-core/src/extraction.ts", import.meta.url),
       "utf-8",
     );
