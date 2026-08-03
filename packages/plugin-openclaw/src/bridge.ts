@@ -10,6 +10,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { isIPv4 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { expandTildePath } from "@remnic/core";
 
@@ -34,6 +35,26 @@ export type DaemonAuthTokenSource =
 export interface DaemonAuthToken {
   readonly token: string;
   readonly source: DaemonAuthTokenSource;
+}
+
+/** Everything a delegate-mode request needs to reach the standalone daemon. */
+export interface DelegateDaemonTarget {
+  host: string;
+  port: number;
+  resolveAuthToken: () => DaemonAuthToken;
+}
+
+/** Base URL for a daemon route, bracketing a bare IPv6 literal host. */
+export function daemonUrl(target: DelegateDaemonTarget, pathname: string): string {
+  const host =
+    target.host.includes(":") && !target.host.startsWith("[") ? `[${target.host}]` : target.host;
+  return `http://${host}:${target.port}${pathname}`;
+}
+
+/** Bearer header for a daemon request; empty when no token is configured. */
+export function daemonAuthHeaders(target: DelegateDaemonTarget): Record<string, string> {
+  const auth = target.resolveAuthToken();
+  return auth.token ? { Authorization: `Bearer ${auth.token}` } : {};
 }
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -237,8 +258,37 @@ function isDaemonServiceConfigured(): boolean {
   return false;
 }
 
+/**
+ * Whether a daemon endpoint names THIS host.
+ *
+ * Literal only: a prefix test would accept a DNS name like
+ * `127.daemon.example` that resolves anywhere. A wildcard bind
+ * (`0.0.0.0` / `::`) names every interface on this host, so it counts as local
+ * — `server.host: "0.0.0.0"` is the documented daemon configuration.
+ */
+export function isLoopbackDaemonHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  if (normalized === "localhost" || normalized === "::1") return true;
+  if (loopbackForWildcardBind(normalized) !== undefined) return true;
+  return isIPv4(normalized) && normalized.split(".")[0] === "127";
+}
+
 /** Normalize a host for node:http/health use: strip surrounding IPv6 brackets
  * (`[::1]` → `::1`). URL builders re-bracket as needed. */
+/**
+ * A wildcard bind names every interface on THIS host, not a remote one. The
+ * documented `server.host: "0.0.0.0"` daemon config would otherwise be
+ * classified as remote — leaving `auto` embedded beside a same-host daemon on
+ * the same corpus — and is not a portable destination address either, so it is
+ * dialed through the matching loopback.
+ */
+export function loopbackForWildcardBind(host: string): string | undefined {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "0.0.0.0") return DEFAULT_HOST;
+  if (normalized === "::" || normalized === "[::]") return "::1";
+  return undefined;
+}
+
 function normalizeDaemonHost(value: string): string {
   const match = value.trim().match(/^\[(.+)\]$/);
   return match ? match[1] : value.trim();
@@ -290,6 +340,7 @@ export function checkDaemonHealthSync(
   }
 }
 
+
 function shouldProbeDaemonHealth(host: string): boolean {
   const normalized = host.trim().toLowerCase();
   return (
@@ -306,6 +357,11 @@ function shouldProbeDaemonHealth(host: string): boolean {
  * readDaemonPort's precedence. Falls back to DEFAULT_HOST.
  */
 function readDaemonHost(): string {
+  const resolved = readConfiguredDaemonHost();
+  return loopbackForWildcardBind(resolved) ?? resolved;
+}
+
+function readConfiguredDaemonHost(): string {
   const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
   if (envHost !== undefined && envHost.trim() !== "") return normalizeDaemonHost(envHost);
   for (const p of configPathCandidates()) {

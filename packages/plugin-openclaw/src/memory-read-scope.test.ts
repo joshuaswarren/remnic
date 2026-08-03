@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createMemoryReadScope, isSessionsMemoryPath } from "./memory-read-scope.js";
+import {
+  createMemoryReadScope,
+  daemonServesCorpus,
+  isSessionsMemoryPath,
+} from "./memory-read-scope.js";
 
 async function makeCorpus(): Promise<{
   memoryDir: string;
@@ -18,10 +22,12 @@ async function makeCorpus(): Promise<{
   const workspaceDir = path.join(root, "workspace");
   const outsideDir = path.join(root, "outside");
   await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+  await mkdir(path.join(memoryDir, "artifacts"), { recursive: true });
   await mkdir(path.join(workspaceDir, "memory"), { recursive: true });
   await mkdir(outsideDir, { recursive: true });
   await writeFile(path.join(memoryDir, "facts", "alice.md"), "# alice\nline two\n");
   await writeFile(path.join(memoryDir, "index.json"), "{}\n");
+  await writeFile(path.join(memoryDir, "artifacts", "report.md"), "# artifact\n");
   await writeFile(path.join(workspaceDir, "memory", "notes.md"), "# notes\n");
   await writeFile(path.join(outsideDir, "secret.md"), "# secret\n");
   return { memoryDir, workspaceDir, outsideDir };
@@ -246,5 +252,161 @@ test("resolveReadablePath rejects a missing path as a domain error", async () =>
       /memory read rejected \(missing path\)/,
       String(bad),
     );
+  }
+});
+
+test("daemonServesCorpus accepts the namespace-resolved storage dir under the corpus root", async () => {
+  const { memoryDir } = await makeCorpus();
+  // GET /engram/v1/health reports storage.dir, which is <root>/namespaces/<ns>
+  // once the default namespace migrates out of the flat root.
+  const namespaceDir = path.join(memoryDir, "namespaces", "generalist");
+  await mkdir(namespaceDir, { recursive: true });
+  assert.equal(daemonServesCorpus(memoryDir, memoryDir), true);
+  assert.equal(daemonServesCorpus(memoryDir, namespaceDir), true);
+  assert.equal(daemonServesCorpus(memoryDir, `${memoryDir}/`), true);
+});
+
+test("daemonServesCorpus rejects a directory that does not exist or escapes by symlink", async () => {
+  const { memoryDir, outsideDir } = await makeCorpus();
+  assert.equal(
+    daemonServesCorpus(memoryDir, path.join(memoryDir, "namespaces", "never-created")),
+    false,
+    "an unresolvable daemon directory is not a corpus",
+  );
+  // Lexically contained, but a component resolves outside the root: accepting
+  // it would hand local reads a different corpus than the daemon serves.
+  const escape = path.join(memoryDir, "escape");
+  await symlink(outsideDir, escape);
+  assert.equal(daemonServesCorpus(memoryDir, escape), false);
+});
+
+test("daemonServesCorpus rejects any descendant that is not a namespace directory", async () => {
+  const { memoryDir } = await makeCorpus();
+  // A daemon independently configured for a nested corpus is NOT this corpus;
+  // accepting it would silently redirect every recall and write into it.
+  const nested = path.join(memoryDir, "archive");
+  const deep = path.join(memoryDir, "namespaces", "team", "extra");
+  await mkdir(nested, { recursive: true });
+  await mkdir(deep, { recursive: true });
+  assert.equal(daemonServesCorpus(memoryDir, nested), false);
+  assert.equal(daemonServesCorpus(memoryDir, deep), false, "only one level under namespaces/");
+  assert.equal(
+    daemonServesCorpus(memoryDir, path.join(memoryDir, "namespaces")),
+    false,
+    "the namespaces container itself is not a namespace corpus",
+  );
+});
+
+test("daemonServesCorpus rejects a foreign, relative, or blank corpus", async () => {
+  const { memoryDir, outsideDir } = await makeCorpus();
+  assert.equal(daemonServesCorpus(memoryDir, outsideDir), false);
+  assert.equal(
+    daemonServesCorpus(memoryDir, path.dirname(memoryDir)),
+    false,
+    "the daemon serving a PARENT of the corpus root is not the same corpus",
+  );
+  // A relative path names a different directory in each process's cwd, so
+  // resolving both here would manufacture a match between distinct corpora.
+  assert.equal(daemonServesCorpus("./memory", "./memory"), false);
+  assert.equal(daemonServesCorpus(memoryDir, "./memory"), false);
+  assert.equal(daemonServesCorpus("", memoryDir), false);
+  assert.equal(daemonServesCorpus(memoryDir, "   "), false);
+});
+
+test("daemonServesCorpus resolves an aliased PARENT but rejects a symlinked root", async () => {
+  // A dedicated root: the alias must live INSIDE the fixture, not in the
+  // shared temp directory where parallel runs would collide.
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-corpus-alias-")));
+  const holder = path.join(root, "holder");
+  const memoryDir = path.join(holder, "memory");
+  await mkdir(memoryDir, { recursive: true });
+
+  // An aliased ancestor is the ordinary case (think /var vs /private/var): the
+  // two spellings name one directory, and splitting them would start a second
+  // orchestrator beside the daemon on the same files.
+  const aliasedHolder = path.join(root, "aliased-holder");
+  await symlink(holder, aliasedHolder);
+  const viaAlias = path.join(aliasedHolder, "memory");
+  assert.equal(daemonServesCorpus(memoryDir, viaAlias), true);
+  assert.equal(daemonServesCorpus(viaAlias, memoryDir), true);
+
+  // The ROOT itself being a link is different: it is a mutable trust anchor,
+  // and retargeting it after validation would move the corpus underneath us.
+  const linkedRoot = path.join(root, "linked-memory");
+  await symlink(memoryDir, linkedRoot);
+  assert.equal(daemonServesCorpus(linkedRoot, memoryDir), false);
+  assert.equal(daemonServesCorpus(memoryDir, linkedRoot), false);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("daemonServesCorpus keeps a drive/filesystem root intact", async () => {
+  const { memoryDir } = await makeCorpus();
+  // Trailing separators are trimmed, but never past the root: on Windows a
+  // corpus at `C:\\` must not collapse to the drive-relative `C:`.
+  assert.equal(daemonServesCorpus(`${memoryDir}///`, memoryDir), true);
+  assert.equal(daemonServesCorpus(path.parse(memoryDir).root, path.parse(memoryDir).root), true);
+});
+
+test("resolveReadablePath refuses artifact files even when contained and markdown", async () => {
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const scope = createMemoryReadScope({ memoryDir, workspaceDir });
+  // Artifacts are served only through the dedicated verbatim path; a generic
+  // memory reader must never open them, however the caller spells the path.
+  await assert.rejects(
+    () => scope.resolveReadablePath("artifacts/report.md"),
+    /memory read excluded \(artifact path\)/,
+  );
+  await assert.rejects(
+    () => scope.resolveReadablePath(path.join(memoryDir, "artifacts", "report.md")),
+    /memory read excluded \(artifact path\)/,
+  );
+  // A symlink alias outside artifacts/ must not route around the exclusion.
+  const alias = path.join(memoryDir, "facts", "alias.md");
+  await symlink(path.join(memoryDir, "artifacts", "report.md"), alias);
+  await assert.rejects(
+    () => scope.resolveReadablePath("facts/alias.md"),
+    /memory read excluded \(artifact path\)/,
+  );
+  // Non-artifact reads are unaffected.
+  assert.equal(
+    await scope.resolveReadablePath("facts/alice.md"),
+    path.join(memoryDir, "facts", "alice.md"),
+  );
+});
+
+test("an `artifacts` ancestor of the corpus does not poison every read", async () => {
+  // A corpus at /srv/artifacts/remnic is ordinary. Judging the ABSOLUTE path
+  // would reject every markdown file in it.
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-artifacts-ancestor-")));
+  const memoryDir = path.join(root, "artifacts", "remnic");
+  const workspaceDir = path.join(root, "workspace");
+  await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+  await mkdir(path.join(memoryDir, "artifacts"), { recursive: true });
+  await mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+  await writeFile(path.join(memoryDir, "facts", "a.md"), "# a\n");
+  await writeFile(path.join(memoryDir, "artifacts", "report.md"), "# artifact\n");
+  const scope = createMemoryReadScope({ memoryDir, workspaceDir });
+  try {
+    assert.equal(
+      await scope.resolveReadablePath("facts/a.md"),
+      path.join(memoryDir, "facts", "a.md"),
+      "an ordinary read under an artifacts-named ancestor still resolves",
+    );
+    assert.equal(
+      await scope.resolveReadablePath(path.join(memoryDir, "facts", "a.md")),
+      path.join(memoryDir, "facts", "a.md"),
+      "including when the caller passes the absolute path a search returned",
+    );
+    // The corpus's OWN artifacts directory is still excluded.
+    await assert.rejects(
+      () => scope.resolveReadablePath("artifacts/report.md"),
+      /memory read excluded \(artifact path\)/,
+    );
+    await assert.rejects(
+      () => scope.resolveReadablePath(path.join(memoryDir, "artifacts", "report.md")),
+      /memory read excluded \(artifact path\)/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

@@ -13,14 +13,118 @@
  * already closed.
  */
 
+import { lstatSync, realpathSync } from "node:fs";
 import { realpath as fsRealpath } from "node:fs/promises";
 import path from "node:path";
+
+import { expandTildePath } from "@remnic/core";
+
+/**
+ * Strip trailing separators from an already-normalized path.
+ *
+ * A character loop rather than a `/[\\/]+$/` regex: the inputs are
+ * externally supplied (daemon health payloads, config files), and a
+ * quantified trailing-separator class is the polynomial-backtracking shape
+ * CodeQL flags on uncontrolled data.
+ */
+function trimTrailingSeparators(value: string): string {
+  // Never strip past the root. On Windows a corpus at `C:\\` would otherwise
+  // become `C:`, which node:path treats as DRIVE-RELATIVE — `path.relative`
+  // would then measure against the gateway's cwd and reject a daemon serving
+  // `C:\\namespaces\\<ns>`.
+  const floor = Math.max(1, path.parse(value).root.length);
+  let end = value.length;
+  while (end > floor && (value[end - 1] === "/" || value[end - 1] === "\\")) end -= 1;
+  return value.slice(0, end);
+}
+
+function defaultIsSymlink(target: string): boolean {
+  try {
+    return lstatSync(target).isSymbolicLink();
+  } catch {
+    // A missing path is rejected by the canonicalization below; report it as
+    // "not a symlink" so the failure surfaces there with the right reason.
+    return false;
+  }
+}
+
+/** The only descendant layout that still names the configured corpus. */
+const NAMESPACE_STORAGE_SEGMENT = "namespaces";
+
+/**
+ * Whether a daemon's reported memory directory names the corpus this plugin
+ * is configured for.
+ *
+ * Accepts exactly two shapes: the root itself, or one namespace storage
+ * directory beneath it (`<corpusRoot>/namespaces/<namespace>`).
+ * `GET /engram/v1/health` reports the NAMESPACE-RESOLVED storage directory, so
+ * a deployment whose default namespace has migrated out of the flat root
+ * answers the second shape and requiring equality would mark a healthy
+ * co-located daemon foreign. Any OTHER descendant — say a daemon independently
+ * configured for `<corpusRoot>/archive` — is a different corpus, and accepting
+ * it would silently redirect every recall and write into it.
+ *
+ * Both sides must be ABSOLUTE. A relative `memoryDir` names a different
+ * directory in each process's working directory, so resolving both against the
+ * gateway's cwd would manufacture a match between two distinct corpora.
+ *
+ * Both sides are canonicalized BEFORE the shape is judged, so two symlink
+ * spellings of one directory match — otherwise a co-located gateway and daemon
+ * on the same files would be judged different and both run, exactly the
+ * duplicate-orchestrator deployment this check exists to prevent — and a
+ * component symlinking out of the corpus cannot masquerade as contained.
+ *
+ * Fails CLOSED: relative, blank, or unresolvable paths are never a match.
+ */
+export function daemonServesCorpus(
+  corpusRoot: string,
+  daemonMemoryDir: string,
+  realpath: (target: string) => string = realpathSync,
+  isSymlink: (target: string) => boolean = defaultIsSymlink,
+): boolean {
+  if (!corpusRoot?.trim() || !daemonMemoryDir?.trim()) return false;
+  const expandedRoot = expandTildePath(corpusRoot.trim());
+  const expandedDaemon = expandTildePath(daemonMemoryDir.trim());
+  if (!path.isAbsolute(expandedRoot) || !path.isAbsolute(expandedDaemon)) return false;
+  // A root that is ITSELF a symlink is a mutable trust anchor: realpath would
+  // erase that fact, and retargeting the link after validation would silently
+  // move the directory treated as the corpus. Reject it outright.
+  if (isSymlink(path.resolve(expandedRoot)) || isSymlink(path.resolve(expandedDaemon))) {
+    return false;
+  }
+  let canonicalRoot: string;
+  let canonicalDaemon: string;
+  try {
+    canonicalRoot = trimTrailingSeparators(path.normalize(realpath(path.resolve(expandedRoot))));
+    canonicalDaemon = trimTrailingSeparators(path.normalize(realpath(path.resolve(expandedDaemon))));
+  } catch {
+    return false;
+  }
+  if (canonicalRoot === canonicalDaemon) return true;
+  const relative = path.relative(canonicalRoot, canonicalDaemon);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  const segments = relative.split(path.sep).filter((segment) => segment.length > 0);
+  return segments.length === 2 && segments[0] === NAMESPACE_STORAGE_SEGMENT;
+}
 
 export type MemoryReadScopeOptions = {
   /** Remnic memory root — the primary allowed read root. */
   memoryDir: string;
   /** Agent workspace root. `<workspaceDir>/memory` becomes a second root. */
   workspaceDir: string;
+  /**
+   * Extra allowed roots, appended after the two above and searched in order.
+   * Delegate mode uses this to keep the corpus ROOT readable while resolving
+   * relative hits against the namespace directory the daemon reports first.
+   */
+  additionalRoots?: readonly string[];
+  /**
+   * Whether `<workspaceDir>/memory` is a readable root. Default `true`
+   * (embedded parity). Delegate mode sets `false`: the daemon reports only its
+   * `memoryDir`, so a gateway-local workspace it never searched cannot be
+   * authorized just because the two processes share a corpus.
+   */
+  includeWorkspaceRoot?: boolean;
   /** Canonicalizer seam. Defaults to `fs.promises.realpath`; tests inject. */
   realpath?: (filePath: string) => Promise<string>;
 }
@@ -64,6 +168,16 @@ export function isSessionsMemoryPath(relativePath: string): boolean {
 }
 
 /**
+ * Artifact-backed files are served only through the dedicated verbatim
+ * artifact path, so every generic memory reader must exclude them. Both bridge
+ * modes filter search results with this predicate; a mode that skipped it
+ * would bypass the isolation every other reader honors.
+ */
+export function isMemoryArtifactPath(candidate: string): boolean {
+  return /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(candidate);
+}
+
+/**
  * Containment predicate shared by every check below: `path.relative` yields
  * `""` for the root itself, a `..`-prefixed path for an escape, and an
  * absolute path when the two live on different Windows volumes.
@@ -82,7 +196,13 @@ export function createMemoryReadScope(options: MemoryReadScopeOptions): MemoryRe
   // workspace's memory subdirectory qualify.
   const allowedRoots = [
     memoryDir,
-    workspaceDir ? path.join(workspaceDir, "memory") : undefined,
+    // Delegate mode drops this: the daemon reports only its `memoryDir`, so a
+    // gateway-local workspace it never searched or authorized must not be a
+    // readable root just because the two processes share a corpus.
+    workspaceDir && options.includeWorkspaceRoot !== false
+      ? path.join(workspaceDir, "memory")
+      : undefined,
+    ...(options.additionalRoots ?? []),
   ].filter((root): root is string => typeof root === "string" && root.length > 0);
 
   // Init-time canonicalization tolerates realpath failure: the roots may not
@@ -173,11 +293,33 @@ export function createMemoryReadScope(options: MemoryReadScopeOptions): MemoryRe
         throw new Error(`memory read rejected (path unresolvable): ${requestedPath}`);
       }
       const canonicalRoots = await canonicalRootsPromise;
-      if (!canonicalRoots.some((root) => isContained(root, canonicalPath))) {
+      const containingRoot = canonicalRoots.find((root) => isContained(root, canonicalPath));
+      if (containingRoot === undefined) {
         throw new Error(`memory read outside allowed roots: ${requestedPath}`);
       }
       if (!canonicalPath.toLowerCase().endsWith(".md")) {
         throw new Error(`memory read restricted to .md files: ${requestedPath}`);
+      }
+      // Artifact isolation is a contract, not a search-ranking detail: generic
+      // memory readers must never open artifact files, which are served only
+      // through the dedicated verbatim path.
+      //
+      // Judged ROOT-RELATIVE, on the canonical path so a symlink alias cannot
+      // route around it. An absolute test would match any corpus that merely
+      // LIVES under a directory named `artifacts` (`/srv/artifacts/remnic`)
+      // and reject every ordinary read in it.
+      const rootRelative = path.relative(containingRoot, canonicalPath);
+      if (rootRelative.startsWith("..") || path.isAbsolute(rootRelative)) {
+        // Containment already passed, so this is unreachable in practice; a
+        // path that escapes on the second look is refused rather than trusted.
+        throw new Error(`memory read outside allowed roots: ${requestedPath}`);
+      }
+      // The raw request is judged only when it is RELATIVE — it is then
+      // already corpus-relative by construction. An absolute request would
+      // reintroduce the ancestor-directory false positive this fix removes.
+      const rawIsArtifact = !path.isAbsolute(requestedPath) && isMemoryArtifactPath(requestedPath);
+      if (isMemoryArtifactPath(rootRelative) || rawIsArtifact) {
+        throw new Error(`memory read excluded (artifact path): ${requestedPath}`);
       }
       return canonicalPath;
     },

@@ -21,6 +21,19 @@ import {
   createInMemorySessionNamespaceBindingStore,
 } from "@remnic/core/session-namespace-bindings";
 
+/**
+ * Capability inputs shared by every delegate registration in this file. The
+ * daemon-backed capability is exercised on its own in
+ * delegate-capability.test.ts; here it only needs to construct.
+ */
+const TEST_CAPABILITY: DelegateRuntimeOptions["capability"] = {
+  memoryDir: path.join(os.tmpdir(), "remnic-delegate-runtime-memory"),
+  workspaceDir: path.join(os.tmpdir(), "remnic-delegate-runtime-workspace"),
+  agentIds: ["generalist"],
+  configuredSearchBackend: "qmd",
+  configuredQmdCommand: "qmd",
+};
+
 type HookHandler = (
   event: Record<string, unknown>,
   ctx: Record<string, unknown>,
@@ -90,7 +103,14 @@ async function startDaemonStub(
           ? options.capabilityResponses?.[capabilityResponseIndex++]
           : undefined;
       const responsePromise =
-        pathname === "/engram/v1/capabilities" && capabilityResponse !== undefined
+        // A real daemon always answers health with its namespace posture; the
+        // capability refuses to scope a request without it.
+        pathname === "/engram/v1/health"
+          ? Promise.resolve({
+              status: 200,
+              body: { ok: true, memoryDir: TEST_CAPABILITY.memoryDir, namespacesEnabled: false },
+            })
+          : pathname === "/engram/v1/capabilities" && capabilityResponse !== undefined
           ? Promise.resolve(capabilityResponse)
           : pathname === "/engram/v1/capabilities" && options.batchFlush !== false
             ? Promise.resolve({ status: 200, body: { lcmCompactionFlushBatch: true } })
@@ -181,6 +201,7 @@ function optionsFor(port: number, overrides: Partial<DelegateRuntimeOptions> = {
     hookTimeoutMs: 5_000,
     shouldSkipRecall: () => false,
     flushOnResetEnabled: true,
+    capability: TEST_CAPABILITY,
     recallTimeoutMs: 5_000,
     observeTimeoutMs: 5_000,
     flushTimeoutMs: 5_000,
@@ -1142,6 +1163,7 @@ test("delegate reloads a persisted namespace binding after its daemon host confi
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     const firstApi = recordingApi();
     assert.equal(maybeRegisterDelegateRuntime(firstApi, common, { checkHealth: () => true }), true);
@@ -1250,6 +1272,7 @@ test("delegate ignores a corrupt legacy binding file when canonical scope is ava
           hookTimeoutMs: 5_000,
           shouldSkipRecall: () => false,
           flushOnResetEnabled: true,
+          capability: TEST_CAPABILITY,
         },
         { checkHealth: () => true },
       ),
@@ -1350,6 +1373,7 @@ test("delegate restores full canonical history during concurrent explicit legacy
           hookTimeoutMs: 5_000,
           shouldSkipRecall: () => false,
           flushOnResetEnabled: true,
+          capability: TEST_CAPABILITY,
         },
         { checkHealth: () => true },
       ),
@@ -1372,6 +1396,7 @@ test("delegate restores full canonical history during concurrent explicit legacy
           hookTimeoutMs: 5_000,
           shouldSkipRecall: () => false,
           flushOnResetEnabled: true,
+          capability: TEST_CAPABILITY,
         },
         { checkHealth: () => true },
       ),
@@ -1467,6 +1492,7 @@ test("delegate bounds completed legacy migration sessions and rechecks evicted k
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     const api = recordingApi();
     assert.equal(maybeRegisterDelegateRuntime(api, common, { checkHealth: () => true }), true);
@@ -1556,6 +1582,7 @@ test("delegate preserves legacy bindings while the legacy adapter is active", as
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     const legacyApi = recordingApi();
     const canonicalApi = recordingApi();
@@ -1967,6 +1994,7 @@ test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", as
         hookTimeoutMs: 5_000,
         shouldSkipRecall: () => false,
         flushOnResetEnabled: true,
+        capability: TEST_CAPABILITY,
       };
       const healthDeps = { checkHealth: () => true };
       const first = maybeRegisterDelegateRuntime(api, opts, healthDeps);
@@ -2138,6 +2166,7 @@ test("maybeRegister stays embedded after a daemon-down fallback (no stacking)", 
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     // First call: daemon down -> falls back to embedded.
     let first = maybeRegisterDelegateRuntime(api, opts, { checkHealth: () => false });
@@ -2182,6 +2211,7 @@ test("maybeRegister passes the configured timeout to the daemon health preflight
         hookTimeoutMs: 5_000,
         shouldSkipRecall: () => false,
         flushOnResetEnabled: true,
+        capability: TEST_CAPABILITY,
       },
       {
         checkHealth: (_host, _port, timeoutMs) => {
@@ -2226,6 +2256,7 @@ test("maybeRegister rejects an invalid delegate timeout and falls back to embedd
         hookTimeoutMs: 5_000,
         shouldSkipRecall: () => false,
         flushOnResetEnabled: true,
+        capability: TEST_CAPABILITY,
       },
       {
         checkHealth: () => {
@@ -2322,6 +2353,7 @@ test("maybeRegister: invalid bridgeMode logs and falls back to embedded (no thro
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     let handled = true;
     assert.doesNotThrow(() => {
@@ -2353,6 +2385,7 @@ test("maybeRegister: passive registration does not poison a later active one", (
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     const healthDeps = { checkHealth: () => true };
     assert.equal(maybeRegisterDelegateRuntime(api, opts, healthDeps), true, "passive handled");
@@ -2406,6 +2439,7 @@ test("maybeRegister: an embedded-mode registration blocks a later delegate flip 
       hookTimeoutMs: 5_000,
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
     };
     const healthDeps = { checkHealth: () => true };
     assert.equal(maybeRegisterDelegateRuntime(api, opts, healthDeps), false, "embedded mode");
@@ -2426,8 +2460,16 @@ test("delegate runtime reloads a rotated daemon token without re-registering hoo
   let currentToken = "expired-token";
   const receivedAuthorization: Array<string | undefined> = [];
   const server = http.createServer((req, res) => {
-    receivedAuthorization.push(req.headers.authorization);
+    // The capability's health probe rides the same server; this test is about
+    // the RECALL route's token, so record only that one.
+    if (String(req.url).startsWith("/engram/v1/recall")) {
+      receivedAuthorization.push(req.headers.authorization);
+    }
     res.setHeader("content-type", "application/json");
+    if (String(req.url).startsWith("/engram/v1/health")) {
+      res.end(JSON.stringify({ ok: true, namespacesEnabled: false }));
+      return;
+    }
     if (req.headers.authorization !== "Bearer accepted-token") {
       res.writeHead(401);
       res.end(JSON.stringify({ error: "unauthorized" }));
@@ -2499,6 +2541,13 @@ test("delegate daemon auth failures log one sanitized error per route and status
   const paths: string[] = [];
   const server = http.createServer((req, res) => {
     paths.push(req.url ?? "");
+    // Health stays readable: this test is about the MEMORY routes rejecting a
+    // token, and the capability needs a namespace posture to scope with.
+    if (String(req.url).startsWith("/engram/v1/health")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, namespacesEnabled: false }));
+      return;
+    }
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "unauthorized" }));
   });
@@ -2550,15 +2599,22 @@ test("delegate daemon auth failures log one sanitized error per route and status
     await invoke(api, "before_compaction", {}, { sessionKey: "auth" });
 
     assert.deepEqual(new Set(paths), new Set([
+      // The capability probes health to resolve the daemon's default namespace
+      // before each scoped write; it is not one of the auth-logged routes.
+      "/engram/v1/health",
       "/engram/v1/recall",
       "/engram/v1/observe",
       "/engram/v1/lcm/compaction/flush",
     ]));
-    assert.equal(errors.length, 4, "each route/status pair emits one error");
-    assert.equal(warnings.length, 0, "auth failures replace generic degradation warnings");
-    assert.equal(errors.filter((message) => message.includes("(401;")).length, 1);
-    assert.equal(errors.filter((message) => message.includes("(403;")).length, 3);
-    for (const message of errors) {
+    // This test is about the AUTHORIZATION log; the capability separately
+    // reports that the stub daemon serves no confirmable corpus, which is
+    // correct and covered in delegate-capability.test.ts.
+    const authErrors = errors.filter((message) => message.includes("authorization failed"));
+    assert.equal(authErrors.length, 4, "each route/status pair emits one error");
+    assert.deepEqual(warnings, [], "auth failures replace generic degradation warnings");
+    assert.equal(authErrors.filter((message) => message.includes("(401;")).length, 1);
+    assert.equal(authErrors.filter((message) => message.includes("(403;")).length, 3);
+    for (const message of authErrors) {
       assert.match(message, /token source: OPENCLAW_REMNIC_ACCESS_TOKEN/);
       assert.doesNotMatch(message, /test-token/);
     }
@@ -2576,7 +2632,7 @@ test("delegate authorization probe reports grant, rejection, and network failure
     assert.equal(req.method, "GET");
     assert.match(
       String(req.url),
-      /\/engram\/v1\/authorization\?op=recall&op=observe&op=lcm_compaction_flush&namespace=/,
+      /\/engram\/v1\/authorization\?op=recall&op=observe&op=lcm_compaction_flush&op=memory_search&namespace=/,
     );
     receivedAuthorization.push(req.headers.authorization);
     res.writeHead(responseStatus, { "content-type": "application/json" });
@@ -2667,6 +2723,7 @@ test("delegate activation warns each service once and keeps its memory hooks", a
     hookTimeoutMs: 5_000,
     shouldSkipRecall: () => false,
     flushOnResetEnabled: true,
+    capability: TEST_CAPABILITY,
   };
   let probeCalls = 0;
   const probedOperations: Array<readonly string[]> = [];
@@ -2703,8 +2760,8 @@ test("delegate activation warns each service once and keeps its memory hooks", a
   assert.equal(probeCalls, 2, "each service receives a preflight");
   assert.equal(warnings.length, 2);
   assert.deepEqual(probedOperations, [
-    ["recall", "observe", "lcm_compaction_flush"],
-    ["observe", "lcm_compaction_flush"],
+    ["recall", "observe", "lcm_compaction_flush", "memory_search"],
+    ["observe", "lcm_compaction_flush", "memory_search"],
   ]);
 });
 
@@ -2725,6 +2782,7 @@ test("delegate authorization preflight probes only the operations enabled by con
     hookTimeoutMs: 5_000,
     shouldSkipRecall: () => false,
     flushOnResetEnabled: true,
+    capability: TEST_CAPABILITY,
   };
   try {
     for (const disabledRecall of [
@@ -2751,10 +2809,43 @@ test("delegate authorization preflight probes only the operations enabled by con
         true,
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.deepEqual(operations, ["observe", "lcm_compaction_flush"]);
+      assert.deepEqual(operations, ["observe", "lcm_compaction_flush", "memory_search"]);
     }
   } finally {
     if (priorMode === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorMode;
+  }
+});
+
+test("a short query evicts the previous turn's cached recall", async () => {
+  // On a builder host the hook does not inject; if prompt construction aborted
+  // last turn the lines are still cached. A short query must not leave them
+  // there for the builder to splice into the NEXT prompt.
+  const stub = await startDaemonStub(() => ({ context: "stale daemon context" }));
+  try {
+    const api = recordingApi();
+    const captured: {
+      builder: null | ((params: { sessionKey?: string }) => string[] | null);
+    } = { builder: null };
+    const sectionApi = Object.assign(api, {
+      registerMemoryPromptSection(builder: (params: { sessionKey?: string }) => string[] | null): void {
+        captured.builder = builder;
+      },
+    });
+    registerDelegateRuntime(sectionApi, optionsFor(stub.port));
+    const builder = captured.builder;
+    if (builder === null) throw new Error("section builder was not registered");
+
+    // Turn 1 populates the cache; prompt construction never consumes it.
+    await invoke(api, "before_prompt_build", { prompt: "a real query worth recalling" }, { sessionKey: "s" });
+    // Turn 2 is too short to recall for.
+    await invoke(api, "before_prompt_build", { prompt: "hi" }, { sessionKey: "s" });
+    assert.equal(
+      builder({ sessionKey: "s" }),
+      null,
+      "the short turn cleared the stale lines instead of re-injecting them",
+    );
+  } finally {
+    await stub.close();
   }
 });
