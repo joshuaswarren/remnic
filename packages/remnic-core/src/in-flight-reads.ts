@@ -14,18 +14,17 @@ import type { MemoryFile } from "./types.js";
  * an unlocked manager's decrypted scan must NOT be handed to a locked or
  * differently-keyed manager for the same dir — that would bypass the keyId
  * isolation getCachedMemories enforces. Locked/plaintext stores use keyId "".
+ *
+ * Since issue #2307 the registry also owns the scan's CANCELLATION, because
+ * whether a shared scan may be cancelled is purely a question of who is still
+ * attached to it — see `beginCoalescedScan`.
  */
 type InFlightEntry = {
   read: Promise<MemoryFile[]>;
-  /**
-   * Detaches the starter's cancellation from the shared scan (issue #2307).
-   * Called the first time another reader joins: nobody may cancel a scan someone
-   * else is still waiting for, so the scan becomes uncancellable rather than
-   * being refcounted. One boolean's worth of state, and it only ever moves one
-   * way — the failure mode is a scan that outlives its starter, never a joiner
-   * left with a cancelled read.
-   */
-  detachCancellation?: () => void;
+  /** Readers still awaiting this scan. At zero the scan has no reason to finish. */
+  waiters: number;
+  /** Withdraw the slot and abort the scan. Absent for an uncancellable scan. */
+  cancel?: () => void;
 };
 
 const inFlightReadsByKey = new Map<string, InFlightEntry>();
@@ -36,21 +35,97 @@ function composeKey(baseDir: string, keyId: string): string {
   return `${baseDir}${DIR_SEP}${keyId}`;
 }
 
-export function getInFlightRead(baseDir: string, keyId = ""): Promise<MemoryFile[]> | undefined {
-  const entry = inFlightReadsByKey.get(composeKey(baseDir, keyId));
-  if (entry === undefined) return undefined;
-  entry.detachCancellation?.();
-  entry.detachCancellation = undefined;
-  return entry.read;
+/**
+ * A reader's attachment to a shared scan. `leave()` is idempotent per reader and
+ * must be called when that reader stops waiting — because its own signal fired, or
+ * because the scan settled.
+ */
+export interface CoalescedScanWaiter {
+  leave(): void;
 }
 
-export function setInFlightRead(
+/**
+ * Cancellation lifecycle for a coalesced corpus scan (issue #2307).
+ *
+ * The rule is reference counting, not ownership: **the scan is cancelled when its
+ * LAST waiter leaves, and never before.** One reader can therefore not cancel work
+ * another still needs, and two readers that both give up do not leave a full disk
+ * scan running for nobody — which was the abandoned I/O this whole change exists to
+ * remove.
+ *
+ * On the last leave the slot is withdrawn from the registry BEFORE the controller
+ * fires, so a reader arriving later cannot attach to a promise already doomed to
+ * reject with an `AbortError` it never asked for; it starts a fresh scan instead.
+ */
+export interface CoalescedScan extends CoalescedScanWaiter {
+  /** The signal the shared scan itself observes. */
+  readonly scanSignal: AbortSignal;
+  /** Publish the scan to the registry and arm cancellation. */
+  arm(read: Promise<MemoryFile[]>): void;
+}
+
+/** Build the per-reader `leave` closure: decrement once, cancel at zero. */
+function trackWaiter(entry: InFlightEntry, callerSignal?: AbortSignal): CoalescedScanWaiter {
+  let left = false;
+  const leave = () => {
+    if (left) return;
+    left = true;
+    callerSignal?.removeEventListener("abort", onAbort);
+    entry.waiters -= 1;
+    if (entry.waiters <= 0) entry.cancel?.();
+  };
+  // Named so the listener can be removed again; `once` alone would leak the
+  // reference for a reader that leaves normally.
+  function onAbort() {
+    leave();
+  }
+  callerSignal?.addEventListener("abort", onAbort, { once: true });
+  return { leave };
+}
+
+/**
+ * Attach to an existing scan for (baseDir, keyId), or `undefined` when none is in
+ * flight. The caller MUST `leave()` once it stops awaiting the returned promise.
+ */
+export function attachInFlightReader(
+  baseDir: string,
+  keyId = "",
+  callerSignal?: AbortSignal,
+): { read: Promise<MemoryFile[]>; waiter: CoalescedScanWaiter } | undefined {
+  const entry = inFlightReadsByKey.get(composeKey(baseDir, keyId));
+  if (entry === undefined) return undefined;
+  entry.waiters += 1;
+  return { read: entry.read, waiter: trackWaiter(entry, callerSignal) };
+}
+
+/** Start a cancellable coalesced scan as its first waiter. */
+export function beginCoalescedScan(
   baseDir: string,
   keyId: string,
-  read: Promise<MemoryFile[]>,
-  detachCancellation?: () => void,
-): void {
-  inFlightReadsByKey.set(composeKey(baseDir, keyId), { read, detachCancellation });
+  callerSignal?: AbortSignal,
+): CoalescedScan {
+  const controller = new AbortController();
+  let waiter: CoalescedScanWaiter | undefined;
+  return {
+    scanSignal: controller.signal,
+    arm(read: Promise<MemoryFile[]>): void {
+      // `waiters: 1` IS the starter; trackWaiter only builds its leave closure
+      // (attaching readers do their own increment).
+      const entry: InFlightEntry = {
+        read,
+        waiters: 1,
+        cancel: () => {
+          deleteInFlightRead(baseDir, keyId, read);
+          controller.abort();
+        },
+      };
+      inFlightReadsByKey.set(composeKey(baseDir, keyId), entry);
+      waiter = trackWaiter(entry, callerSignal);
+    },
+    leave(): void {
+      waiter?.leave();
+    },
+  };
 }
 
 /**
@@ -66,57 +141,6 @@ export function deleteInFlightRead(
   if (expected === undefined || inFlightReadsByKey.get(key)?.read === expected) {
     inFlightReadsByKey.delete(key);
   }
-}
-
-export interface CoalescedScanCancellation {
-  /** The signal the shared scan itself observes. */
-  readonly scanSignal: AbortSignal;
-  /** Publish the scan to the registry and arm sole-waiter cancellation. */
-  arm(read: Promise<MemoryFile[]>): void;
-  /** Stop tracking the caller's signal (scan settled, or a joiner adopted it). */
-  detach(): void;
-}
-
-/**
- * Cancellation lifecycle for a coalesced corpus scan (issue #2307).
- *
- * Lives beside the registry because the two are one mechanism: whether a scan may
- * be cancelled depends entirely on whether anyone else has attached to it.
- *
- *  - The starter's signal may cancel the scan, because it is the only waiter.
- *  - `getInFlightRead` calls `detachCancellation` the instant a second reader
- *    joins, so the scan becomes uncancellable rather than refcounted. The failure
- *    mode is a scan that outlives its starter, never a joiner holding a cancelled
- *    read.
- *  - On the starter's abort the slot is withdrawn BEFORE the controller fires, so
- *    a reader arriving later cannot attach to a promise already doomed to reject
- *    with someone else's `AbortError`; it starts a fresh scan instead.
- */
-export function beginCoalescedScan(
-  baseDir: string,
-  keyId: string,
-  callerSignal?: AbortSignal,
-): CoalescedScanCancellation {
-  const controller = new AbortController();
-  let detached = false;
-  let onCallerAbort = () => {};
-  const detach = () => {
-    if (detached) return;
-    detached = true;
-    callerSignal?.removeEventListener("abort", onCallerAbort);
-  };
-  return {
-    scanSignal: controller.signal,
-    arm(read: Promise<MemoryFile[]>): void {
-      setInFlightRead(baseDir, keyId, read, detach);
-      onCallerAbort = () => {
-        deleteInFlightRead(baseDir, keyId, read);
-        controller.abort();
-      };
-      callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
-    },
-    detach,
-  };
 }
 
 /**

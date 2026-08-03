@@ -73,7 +73,7 @@ import {
   updateCacheOnWrite,
 } from "./memory-cache.js";
 import {
-  getInFlightRead,
+  attachInFlightReader,
   beginCoalescedScan,
   deleteInFlightRead,
   deleteInFlightReadsForDir,
@@ -4495,14 +4495,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // The in-flight slot get/set/delete also key on this snapshot so a mid-scan
     // key change can't orphan the slot registered under the old identity.
     const keyId = this.hotCacheKeyId();
-    const inFlight = getInFlightRead(this.baseDir, keyId);
+    const inFlight = attachInFlightReader(this.baseDir, keyId, options?.abortSignal);
     if (inFlight) {
-      // A joiner never cancels the shared scan, but it does stop waiting on it:
-      // its own signal must be honoured, or it would sit here for the full scan
-      // and then be handed data it no longer wants (issue #2307 review).
-      return this.rememberMemorySnapshots(
-        await raceAbort(inFlight, options?.abortSignal, "corpus read aborted"),
-      );
+      // A joiner never cancels the shared scan on its own, but it does stop waiting
+      // on it, and its departure counts: if it was the last waiter the scan is
+      // cancelled (issue #2307 review).
+      try {
+        return this.rememberMemorySnapshots(
+          await raceAbort(inFlight.read, options?.abortSignal, "corpus read aborted"),
+        );
+      } finally {
+        inFlight.waiter.leave();
+      }
     }
 
     // Sole-waiter cancellation lives with the registry that decides whether this
@@ -4526,7 +4530,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     try {
       return this.rememberMemorySnapshots(await readPromise);
     } finally {
-      scan.detach();
+      scan.leave();
       deleteInFlightRead(this.baseDir, keyId, readPromise);
     }
   }

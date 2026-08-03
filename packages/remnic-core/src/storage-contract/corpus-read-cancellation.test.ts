@@ -225,6 +225,54 @@ test("readAllMemories: a joiner honours its own signal without cancelling the sh
   });
 });
 
+test("readAllMemories: the scan is cancelled once its LAST waiter leaves", async () => {
+  await withStorage("remnic-2307-memories-last-waiter-", async (sm) => {
+    await sm.writeMemory("fact", "last waiter memory");
+    sm.invalidateAllMemoriesCacheForDir();
+
+    // Two cancellable readers overlap and both give up. Neither may cancel alone,
+    // but with nobody left the scan must not run on for no one — that is the
+    // abandoned I/O this whole change removes (issue #2307 review).
+    const scanReached = Promise.withResolvers<void>();
+    const releaseScan = Promise.withResolvers<void>();
+    const inner = sm as unknown as {
+      collectActiveMemoryPaths: (...args: unknown[]) => Promise<string[]>;
+    };
+    const origCollect = inner.collectActiveMemoryPaths.bind(sm);
+    let held = false;
+    inner.collectActiveMemoryPaths = async (...args: unknown[]) => {
+      if (!held) {
+        held = true;
+        scanReached.resolve();
+        await releaseScan.promise;
+      }
+      return origCollect(...args);
+    };
+
+    const starterAbort = new AbortController();
+    const joinerAbort = new AbortController();
+    const starter = sm.readAllMemories({ abortSignal: starterAbort.signal });
+    await scanReached.promise;
+    const joiner = sm.readAllMemories({ abortSignal: joinerAbort.signal });
+
+    // First to leave must NOT cancel: the other reader still wants the result.
+    joinerAbort.abort();
+    await assert.rejects(joiner, isAbort);
+    starterAbort.abort();
+    releaseScan.resolve();
+
+    await assert.rejects(starter, isAbort);
+
+    // With the scan cancelled rather than completed, nothing was published: a
+    // fresh read has to scan again.
+    inner.collectActiveMemoryPaths = origCollect;
+    const spy = installScanSpy(sm);
+    const after = await sm.readAllMemories();
+    assert.equal(spy.scans(), 1, "the abandoned scan must not have published a cache entry");
+    assert.ok(after.some((m) => m.content === "last waiter memory"));
+  });
+});
+
 test("readAllMemories: a sole waiter's abort does stop the scan", async () => {
   await withStorage("remnic-2307-memories-sole-", async (sm) => {
     await sm.writeMemory("fact", "sole waiter memory");
