@@ -8,16 +8,14 @@ import { compareEntityTimestamps, normalizeEntityName, type StorageManager } fro
 import { normalizeEntityText, resolveRequestedEntitySectionKeys } from "./entity-schema.js";
 import type { EntityStructuredSection, MemoryFile, PluginConfig, TranscriptEntry } from "./types.js";
 import { containsPhrase } from "./entity-retrieval-boundaries.js";
-import { throwIfAborted } from "./abort-error.js";
-import { yieldToEventLoop } from "./recall-qos.js";
+import {
+  checkEntityRecallAbort,
+  entityRecallSectionAbsent,
+  yieldEntityRecallScan,
+  yieldEntityRecallScanEvery,
+} from "./entity-recall-cancellation.js";
 
 const ENTITY_INDEX_VERSION = 3;
-/**
- * Entities/memories processed between two yields during an index build. Matches
- * the artifact scan's interval: large enough that the yields are free relative to
- * the work, small enough that a section deadline is observed promptly.
- */
-const ENTITY_SCAN_YIELD_INTERVAL = 256;
 const RECENT_TRANSCRIPT_LOOKBACK_HOURS = 24;
 const INSTRUCTION_LIKE_RE = /\b(always|never|must|should|remember to|do not|don't|process|workflow|template|checklist|instruction)\b/i;
 const METADATA_WRAPPER_RE = /^(source|context|metadata|notes?):/i;
@@ -540,7 +538,7 @@ async function buildEntityMentionIndex(
   resolvedStorages?: StorageManager[],
   abortSignal?: AbortSignal,
 ): Promise<EntityMentionIndex> {
-  throwIfAborted(abortSignal, "entity recall aborted");
+  checkEntityRecallAbort(abortSignal);
   const storages = resolvedStorages ?? await resolveEntityIndexStorages(
     storage,
     config,
@@ -558,7 +556,7 @@ async function buildEntityMentionIndex(
   ]);
   // The bulk reads above cannot be interrupted mid-flight; stop before spending
   // the (larger) indexing pass over their results.
-  throwIfAborted(abortSignal, "entity recall aborted");
+  checkEntityRecallAbort(abortSignal);
   // Pair each entity with the storage that owns it (#1534): canonical ids must
   // reflect that store's aliases and historical migration mappings, never another
   // namespace's.
@@ -574,10 +572,7 @@ async function buildEntityMentionIndex(
   const entities = new Map<string, EntityMentionIndexEntry>();
   for (const { entity, storage: entityStorage } of entityRecords) {
     scanned += 1;
-    if (scanned % ENTITY_SCAN_YIELD_INTERVAL === 0) {
-      await yieldToEventLoop();
-      throwIfAborted(abortSignal, "entity recall aborted");
-    }
+    await yieldEntityRecallScanEvery(scanned, abortSignal);
     const canonicalId =
       typeof entityStorage.normalizeEntityName === "function"
         ? entityStorage.normalizeEntityName(entity.name, entity.type)
@@ -621,10 +616,7 @@ async function buildEntityMentionIndex(
   scanned = 0;
   for (const memory of memories) {
     scanned += 1;
-    if (scanned % ENTITY_SCAN_YIELD_INTERVAL === 0) {
-      await yieldToEventLoop();
-      throwIfAborted(abortSignal, "entity recall aborted");
-    }
+    await yieldEntityRecallScanEvery(scanned, abortSignal);
     const entityRef = typeof memory.frontmatter.entityRef === "string" ? memory.frontmatter.entityRef : "";
     if (!entityRef) continue;
     const entry = entities.get(entityRef);
@@ -639,8 +631,7 @@ async function buildEntityMentionIndex(
   // (alias map, native-chunk merge, sort, two full serializations). Yield between
   // them so a section deadline can fire between passes instead of only after all
   // of them (issue #2291).
-  await yieldToEventLoop();
-  throwIfAborted(abortSignal, "entity recall aborted");
+  await yieldEntityRecallScan(abortSignal);
   const aliasIndex = buildAliasIndex([...entities.values()]);
   for (const chunk of nativeChunks) {
     const existingPseudo = entities.get(nativePseudoCanonicalId(chunk));
@@ -661,12 +652,11 @@ async function buildEntityMentionIndex(
     entities.set(pseudoEntry.canonicalId, pseudoEntry);
   }
 
-  await yieldToEventLoop();
-  throwIfAborted(abortSignal, "entity recall aborted");
+  await yieldEntityRecallScan(abortSignal);
   const sortedEntities = [...entities.values()].sort((left, right) => left.name.localeCompare(right.name));
-  await yieldToEventLoop();
+  await yieldEntityRecallScan(abortSignal);
   const previousEntities = previousIndex ? JSON.stringify(previousIndex.entities) : "";
-  await yieldToEventLoop();
+  await yieldEntityRecallScan(abortSignal);
   const nextEntities = JSON.stringify(sortedEntities);
   const entityStatusVersionAfter = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
   const canPersistIndex = shouldPersistIndex && entityStatusVersionBefore === entityStatusVersionAfter;
@@ -680,6 +670,10 @@ async function buildEntityMentionIndex(
     entities: sortedEntities,
   };
   if (canPersistIndex) {
+    // A build the caller has abandoned must not leave a persisted index behind:
+    // the write is I/O the timed-out recall no longer needs, and the next recall
+    // is already competing for the same disk.
+    checkEntityRecallAbort(abortSignal);
     await writeEntityIndexState(storage, index);
   }
   return index;
@@ -1069,7 +1063,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   // native-chunk read, storage resolution, index build).  The per-candidate
   // formatting that follows never awaits real I/O, so a deadline that fires
   // during a scan is observed here (issue #2291).
-  throwIfAborted(options.abortSignal, "entity recall aborted");
+  checkEntityRecallAbort(options.abortSignal);
   const prefixedMode = detectEntityQueryMode(options.query);
   const persistedIndex = prefixedMode
     ? null
@@ -1079,7 +1073,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
       options.recallNamespaces,
       options.namespaceStorage,
     );
-  throwIfAborted(options.abortSignal, "entity recall aborted");
+  checkEntityRecallAbort(options.abortSignal);
   let nativeChunks: NativeKnowledgeChunk[] | undefined;
   if (
     !prefixedMode &&
@@ -1088,7 +1082,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   ) {
     nativeChunks = await readNativeChunks(options.config, options.recallNamespaces);
     if (!hasFreshNativeExplicitMention(persistedIndex, nativeChunks, options.query)) {
-      return null;
+      return entityRecallSectionAbsent(options.abortSignal);
     }
   }
   const namespaceScoped =
@@ -1117,7 +1111,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   let index: EntityMentionIndex | undefined = namespaceCacheKey
     ? namespaceEntityIndexCache.get(namespaceCacheKey)
     : undefined;
-  throwIfAborted(options.abortSignal, "entity recall aborted");
+  checkEntityRecallAbort(options.abortSignal);
   if (!index) {
     index = await buildEntityMentionIndex(
       options.storage,
@@ -1133,22 +1127,20 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   // Candidate resolution is another synchronous pass over every entity and alias,
   // reached even on a cache hit that did no I/O at all — so yield here too, or a
   // cached corpus could still hold the loop past the section budget (issue #2291).
-  await yieldToEventLoop();
-  throwIfAborted(options.abortSignal, "entity recall aborted");
+  await yieldEntityRecallScan(options.abortSignal);
   const explicitCandidates = resolveExplicitCandidates(index, options.query);
-  await yieldToEventLoop();
-  throwIfAborted(options.abortSignal, "entity recall aborted");
+  await yieldEntityRecallScan(options.abortSignal);
   const queryCandidates = prefixedMode
     ? explicitCandidates
     : resolveLanguageIndependentExplicitCandidates(index, options.query);
   const mode = prefixedMode ?? (queryCandidates.length > 0 ? "direct" : null);
-  if (!mode) return null;
+  if (!mode) return entityRecallSectionAbsent(options.abortSignal);
 
   const candidates = queryCandidates.length > 0
     ? queryCandidates
     : resolveRecentTurnCandidates(index, options.transcriptEntries, options.recentTurns);
 
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return entityRecallSectionAbsent(options.abortSignal);
 
   const queryTokens = tokenize(options.query);
   const candidateLimit = queryCandidates.length === 0 && mode === "follow_up"
@@ -1181,7 +1173,9 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   );
 
   const section = formatEntityHintSection(enriched, queryTokens, mode, options.maxRelatedEntities, options.maxChars);
-  if (!section) return null;
+  // `entityRecallSectionAbsent` so a cancelled build is not recorded as a
+  // successful section that simply found no entities.
+  if (!section) return entityRecallSectionAbsent(options.abortSignal);
   return section;
 }
 
