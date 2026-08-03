@@ -4700,3 +4700,21 @@ test("search keeps paging while the backend page is full of excluded hits", asyn
     "while still respecting the absolute backend cap",
   );
 });
+
+test("a budget above the backend cap still gets the rows it asked for", async () => {
+  // The cap protects the backend from an unbounded walk; it must never sit
+  // BELOW an explicit request, or a large search returns a short page for a
+  // count the operation deliberately supports.
+  const { searchWithGenericExclusion } = await import("./access-memory-search-fanout.js");
+  const corpus = [
+    { path: "artifacts/excluded.md" },
+    ...Array.from({ length: 30_000 }, (_, index) => ({ path: `facts/f-${index}.md` })),
+  ];
+  const results = await searchWithGenericExclusion({
+    budget: 30_000,
+    sendInitialLimit: true,
+    search: async (limit) => corpus.slice(0, limit ?? corpus.length),
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+  });
+  assert.equal(results.length, 30_000, "the excluded hit was replaced, not subtracted");
+});

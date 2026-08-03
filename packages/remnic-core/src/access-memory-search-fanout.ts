@@ -326,8 +326,14 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
     // A short page means the corpus is exhausted - asking for more is wasted
     // work that returns the same rows.
     if (raw.length === 0 || raw.length < served) break;
-    if (served >= MEMORY_SEARCH_CANDIDATE_CAP) break;
-    limit = Math.min(served * 2, MEMORY_SEARCH_CANDIDATE_CAP);
+    // The cap protects the backend from an unbounded walk, but it can never
+    // sit at or below what the caller explicitly asked for: a request for N
+    // rows needs room BEYOND N to replace the excluded hits among them, or a
+    // large search returns a short page for a count the operation deliberately
+    // supports.
+    const cap = Math.max(MEMORY_SEARCH_CANDIDATE_CAP, target * 2);
+    if (served >= cap) break;
+    limit = Math.min(served * 2, cap);
   }
   return results.slice(0, target);
 }
