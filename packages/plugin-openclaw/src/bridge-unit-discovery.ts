@@ -51,9 +51,25 @@ export function systemdUserUnitDirs(homeDir: string): string[] {
   // directory sits BELOW `/run` and `/etc`, not above them: `/etc/systemd/user`
   // is an administrator override and outranks anything a package dropped in
   // `~/.local/share`.
+  const xdgConfigDirs = env?.["XDG_CONFIG_DIRS"];
+  const systemConfigDirs =
+    xdgConfigDirs !== undefined && xdgConfigDirs.trim() !== ""
+      ? xdgConfigDirs
+          .split(":")
+          .filter((entry) => entry.trim() !== "")
+          .map((entry) => path.join(expandTildePath(entry), "systemd", "user"))
+      : ["/etc/xdg/systemd/user"];
   return [
+    // Distribution `share` locations rank below their `lib` counterparts.
+    "/usr/share/systemd/user",
     "/usr/lib/systemd/user",
+    "/usr/local/share/systemd/user",
     "/usr/local/lib/systemd/user",
+    // `XDG_CONFIG_DIRS` (default `/etc/xdg`) sits between the vendor
+    // directories and the machine's own `/run` and `/etc` overrides. Listed
+    // in ASCENDING precedence, so a later entry of the colon list wins — the
+    // reverse of how XDG reads it.
+    ...systemConfigDirs.reverse(),
     xdgData !== undefined && xdgData.trim() !== ""
       ? path.join(expandTildePath(xdgData), "systemd", "user")
       : underHome(".local", "share", "systemd", "user"),
@@ -238,13 +254,15 @@ export function readServiceEndpoints(): Array<{
         entry.authTokenUnit?.unitPath === source.unitPath,
     );
     if (!seen) {
-      endpoints.push(
-        // The unit is remembered ONLY when it is the credential's source, so a
-        // rotation can be re-read from the same file per request.
-        resolved.authToken === undefined
-          ? resolved
-          : { ...resolved, authTokenUnit: { ...source, dropInDirs: [...source.dropInDirs] } },
-      );
+      // The unit is remembered for EVERY endpoint it describes, not just one
+      // that names a token today: an administrator who later adds
+      // `REMNIC_AUTH_TOKEN` to the unit (or a drop-in) needs a source to
+      // re-read, or delegated requests keep sending the old config credential
+      // until the gateway restarts.
+      endpoints.push({
+        ...resolved,
+        authTokenUnit: { ...source, dropInDirs: [...source.dropInDirs] },
+      });
     }
   }
   return endpoints;

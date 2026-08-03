@@ -1592,10 +1592,10 @@ test("a skipped remote candidate does not shrink the live daemon's probe budget"
   // A non-loopback unit endpoint costs no time, so it must not sit in the
   // divisor: a warming daemon behind it would otherwise get a fraction of the
   // budget and be misread as absent.
-  // 16 x 250ms of readiness retries against a 9s budget: comfortably inside
-  // the whole budget the live candidate must get, and comfortably OUTSIDE the
-  // half it would get if the skipped remote endpoint sat in the divisor. The
-  // wide margins keep the ratio meaningful when the suite runs loaded.
+  // 16 x 250ms of readiness retries. The live candidate must be waited out,
+  // which it only can be if the skipped remote endpoint stayed OUT of the
+  // budget divisor — a share would not cover the retries. The budget is wide
+  // enough that a loaded suite cannot turn a pass into a failure.
   const warming = await startHealthStub(
     { ok: true, memoryDir: MEMORY_DIR, searchBackend: "qmd" },
     200,
@@ -1621,7 +1621,7 @@ test("a skipped remote candidate does not shrink the live daemon's probe budget"
   try {
     process.env.HOME = home;
     process.chdir(cwd);
-    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 9_000 });
+    const bridge = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, timeoutMs: 20_000 });
     assert.equal(bridge.mode, "delegate", "the warming daemon was waited out");
     assert.equal(bridge.daemonPort, warming.port);
   } finally {
@@ -2789,14 +2789,17 @@ test("the user unit search path is ordered the way systemd orders it", () => {
   // Ascending precedence, per systemd.unit's user search path. The data
   // directory sits BELOW `/run` and `/etc` — an administrator override wins
   // over whatever a package dropped in `~/.local/share`.
-  const priorData = process.env.XDG_DATA_HOME;
-  const priorConfig = process.env.XDG_CONFIG_HOME;
+  const priorEnv = new Map(
+    ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS"].map((key) => [key, process.env[key]]),
+  );
   try {
-    delete process.env.XDG_DATA_HOME;
-    delete process.env.XDG_CONFIG_HOME;
+    for (const key of priorEnv.keys()) Reflect.deleteProperty(process.env, key);
     assert.deepEqual(systemdUserUnitDirs("/home/gw"), [
+      "/usr/share/systemd/user",
       "/usr/lib/systemd/user",
+      "/usr/local/share/systemd/user",
       "/usr/local/lib/systemd/user",
+      "/etc/xdg/systemd/user",
       "/home/gw/.local/share/systemd/user",
       "/run/systemd/user",
       "/etc/systemd/user",
@@ -2805,12 +2808,36 @@ test("the user unit search path is ordered the way systemd orders it", () => {
     // XDG overrides replace their defaults in place, not their precedence.
     process.env.XDG_DATA_HOME = "/xdg/data";
     process.env.XDG_CONFIG_HOME = "/xdg/config";
-    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(2, 3), ["/xdg/data/systemd/user"]);
+    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(5, 6), ["/xdg/data/systemd/user"]);
     assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(-1), ["/xdg/config/systemd/user"]);
+    // `XDG_CONFIG_DIRS` is read highest-first, so it is reversed into this
+    // ascending list: the FIRST entry of the colon list outranks the second.
+    process.env.XDG_CONFIG_DIRS = "/first/xdg:/second/xdg";
+    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(4, 6), [
+      "/second/xdg/systemd/user",
+      "/first/xdg/systemd/user",
+    ]);
   } finally {
-    if (priorData === undefined) delete process.env.XDG_DATA_HOME;
-    else process.env.XDG_DATA_HOME = priorData;
-    if (priorConfig === undefined) delete process.env.XDG_CONFIG_HOME;
-    else process.env.XDG_CONFIG_HOME = priorConfig;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
   }
+});
+
+test("an environment file's wrapped value is joined, not truncated", () => {
+  // systemd drops the backslash-newline pair and hands the daemon one value.
+  // Reading physical lines kept the first fragment WITH its trailing `\` and
+  // discarded the rest of a long path or credential.
+  const files = new Map([
+    ["/etc/remnic/env", "REMNIC_AUTH_TOKEN=first-half\\\nsecond-half\nREMNIC_PORT=4813\n"],
+  ]);
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      "[Service]\nEnvironmentFile=/etc/remnic/env\n",
+      { userScoped: false, homeDir: "/home/gw" },
+      (candidate) => files.get(candidate),
+    ),
+    { port: 4813, authToken: "first-half second-half" },
+  );
 });

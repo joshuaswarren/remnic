@@ -178,7 +178,11 @@ function readEffectiveDirectives(unit: string): {
  */
 function parseEnvironmentFile(body: string): Map<string, string> {
   const parsed = new Map<string, string>();
-  for (const line of body.split("\n")) {
+  // Environment files take continuation lines too: systemd drops the
+  // backslash-newline pair and hands the daemon one joined value, so reading
+  // physical lines would record the first fragment WITH its trailing `\` and
+  // silently discard the rest of a long path or credential.
+  for (const line of foldContinuationLines(body)) {
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith(";")) continue;
     const split = trimmed.indexOf("=");
