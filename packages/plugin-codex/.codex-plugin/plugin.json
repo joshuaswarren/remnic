@@ -1,7 +1,7 @@
 {
   "name": "remnic",
   "description": "Universal memory for AI agents — automatic recall, observation, and cross-agent knowledge sharing",
-  "version": "9.46.2",
+  "version": "9.47.0",
   "author": {
     "name": "Joshua Warren",
     "url": "https://github.com/joshuaswarren"
@@ -9,14 +9,23 @@
   "homepage": "https://github.com/joshuaswarren/remnic",
   "repository": "https://github.com/joshuaswarren/remnic",
   "license": "MIT",
-  "keywords": ["memory", "recall", "knowledge", "agents"],
+  "keywords": [
+    "memory",
+    "recall",
+    "knowledge",
+    "agents"
+  ],
   "interface": {
     "displayName": "Remnic",
     "shortDescription": "Persistent memory and recall for Codex",
     "longDescription": "Connect Codex to Remnic for automatic recall, observation, durable memory, and shared knowledge across agents.",
     "developerName": "Joshua Warren",
     "category": "Productivity",
-    "capabilities": ["Recall", "Memory", "Cross-agent sharing"],
+    "capabilities": [
+      "Recall",
+      "Memory",
+      "Cross-agent sharing"
+    ],
     "websiteURL": "https://github.com/joshuaswarren/remnic",
     "defaultPrompt": [
       "Recall relevant context for this task.",
