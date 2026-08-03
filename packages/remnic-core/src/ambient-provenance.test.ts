@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   AMBIENT_CAPTURE_PROMPT_RULE,
+  collectPersonEntityRefs,
   SPECULATIVE_CONFIDENCE_CEILING,
   clampAmbientCaptureConfidence,
   isHighImpactPersonalFact,
@@ -469,4 +470,41 @@ test("copyBufferTurn round-trips both ambient-flag values and equality agrees", 
 
 test("the meeting scribe prompt carries the ambient-audio rule", () => {
   assert.ok(SUMMARY_SYSTEM_PROMPT.includes(AMBIENT_CAPTURE_PROMPT_RULE));
+});
+
+test("personhood comes from entity metadata, not from how entityRef is spelled", () => {
+  // The prompt asks for `person-jane-doe` but the field is optional and models
+  // routinely emit a bare `dana`, so the prefix alone is not a reliable signal.
+  const refs = collectPersonEntityRefs({
+    entities: [
+      { name: "Dana Reed", type: "person" },
+      { name: "remnic", type: "project" },
+    ],
+  });
+
+  assert.equal(isHighImpactPersonalFact({ category: "fact", content: "Dana has ALS.", entityRef: "dana-reed" }, refs), true);
+  assert.equal(isHighImpactPersonalFact({ category: "fact", content: "Dana has ALS.", entityRef: "Dana_Reed" }, refs), true);
+  assert.equal(
+    isHighImpactPersonalFact({ category: "fact", content: "Ships on Fridays.", entityRef: "remnic" }, refs),
+    false,
+    "non-person entities stay out of the cap",
+  );
+});
+
+test("the clamp resolves person entities from the extraction it is given", () => {
+  const clamped = clampAmbientCaptureConfidence({
+    facts: [
+      { category: "fact", content: "Dana has ALS.", confidence: 0.95, tags: ["personal"], entityRef: "dana" },
+      { category: "fact", content: "Remnic ships on Fridays.", confidence: 0.95, tags: ["tools"], entityRef: "remnic" },
+    ],
+    profileUpdates: [],
+    entities: [
+      { name: "dana", type: "person", facts: [] },
+      { name: "remnic", type: "project", facts: [] },
+    ],
+    questions: [],
+  });
+
+  assert.equal(clamped.facts[0]?.confidence, SPECULATIVE_CONFIDENCE_CEILING, "an unprefixed person ref still clamps");
+  assert.equal(clamped.facts[1]?.confidence, 0.95);
 });

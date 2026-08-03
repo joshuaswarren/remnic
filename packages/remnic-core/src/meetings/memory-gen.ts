@@ -62,7 +62,10 @@ export function composeMeetingEpisodeContent(record: MeetingRecord): string {
 /**
  * Write the deterministic episode memory for one meeting. Idempotent: skips
  * when an identical episode already exists. Returns true when a new episode was
- * written. The episode is `active` (a recall anchor, not a trust-gated claim).
+ * written. The episode is `active` (a recall anchor, not a trust-gated claim)
+ * UNLESS its provider-derived title is itself a personal claim — that title
+ * comes from the same ambient audio the summary layer already guards, so it
+ * gets the same treatment rather than riding in on the anchor (#2294).
  */
 export async function writeMeetingEpisodeMemory(
   record: MeetingRecord,
@@ -93,10 +96,17 @@ export async function writeMeetingEpisodeMemory(
   if (envelope.salvageNotes.length > 0) {
     log.warn(`meeting episode write salvaged invalid fields: ${envelope.salvageNotes.join("; ")}`);
   }
+  // Only the title is provider-derived; the rest of the episode is our own
+  // deterministic rendering (id, clock, attendees, sources), so the classifier
+  // reads the title alone and does not trip on our own wording.
+  const titleIsPersonalClaim =
+    record.title !== undefined &&
+    record.title.length > 0 &&
+    isHighImpactPersonalFact({ category: "fact", content: record.title });
   await writer.writeSealedMemory(envelope, {
     importance: scoreImportance(content, "moment", [MEETING_SOURCE_PREFIX]),
     contentHashSource: content,
-    status: "active",
+    status: titleIsPersonalClaim ? "pending_review" : "active",
     memoryKind: "episode",
   });
   return true;

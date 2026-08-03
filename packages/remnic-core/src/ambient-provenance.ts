@@ -139,18 +139,25 @@ const HIGH_IMPACT_TAGS: Record<string, true> = {
  *
  * Takes the shape rather than `ExtractedFact` so meeting candidates — which
  * carry no tags — pass without a synthetic empty array.
+ *
+ * `personRefs` comes from `collectPersonEntityRefs` over the same extraction:
+ * pass it whenever the entity list is available, so personhood is read from
+ * the extractor's own `type: "person"` metadata instead of inferred from how
+ * it happened to spell the ref.
  */
-export function isHighImpactPersonalFact(fact: {
-  category: string;
-  content: string;
-  tags?: readonly string[];
-  entityRef?: string;
-}): boolean {
-  // The strongest non-lexical signal: extraction normalizes person entities to
-  // a `person-<name>` ref, so a claim ABOUT A PERSON is flagged whatever
-  // condition, relationship, or milestone the sentence happens to name. This is
-  // what covers the wording no list anticipates ("Dana is deaf").
-  if (fact.entityRef !== undefined && /^person[-:]/i.test(fact.entityRef)) return true;
+export function isHighImpactPersonalFact(
+  fact: {
+    category: string;
+    content: string;
+    tags?: readonly string[];
+    entityRef?: string;
+  },
+  personRefs?: ReadonlySet<string>,
+): boolean {
+  // The strongest non-lexical signal: a claim ABOUT A PERSON is high-impact
+  // whatever condition, relationship, or milestone the sentence names. This is
+  // what covers wording no list anticipates ("Dana is deaf").
+  if (isPersonRef(fact.entityRef, personRefs)) return true;
   if (HIGH_IMPACT_CATEGORIES[fact.category] === true) return true;
   if (HIGH_IMPACT_TOPIC_PATTERN.test(fact.content)) return true;
   if (AFFLICTION_SHAPE_PATTERN.test(fact.content)) return true;
@@ -159,6 +166,44 @@ export function isHighImpactPersonalFact(fact: {
     if (HIGH_IMPACT_TAGS[tag.trim().toLowerCase()] === true) return true;
   }
   return false;
+}
+
+/**
+ * Normalize an entity reference for comparison: casefold, strip a leading
+ * type prefix, and collapse separators. `Person-Jane_Doe`, `person:jane-doe`,
+ * and `jane doe` all reduce to `jane-doe`.
+ */
+function normalizeEntityRef(ref: string): string {
+  return ref
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:person|people)[-:_\s]+/, "")
+    .replace(/[\s_]+/g, "-");
+}
+
+/**
+ * Names of every `type: "person"` entity in an extraction, normalized for
+ * lookup. Personhood is the extractor's own metadata, not a guess from the
+ * shape of `entityRef` — the prompt asks for `person-jane-doe` but the field is
+ * optional and models routinely emit a bare `jane-doe`.
+ */
+export function collectPersonEntityRefs(result: {
+  entities: ReadonlyArray<{ name: string; type: string }>;
+}): ReadonlySet<string> {
+  const refs = new Set<string>();
+  for (const entity of result.entities) {
+    if (entity.type !== "person") continue;
+    const normalized = normalizeEntityRef(entity.name);
+    if (normalized.length > 0) refs.add(normalized);
+  }
+  return refs;
+}
+
+/** True when this ref names a person, by metadata or by explicit prefix. */
+function isPersonRef(ref: string | undefined, personRefs?: ReadonlySet<string>): boolean {
+  if (ref === undefined || ref.trim().length === 0) return false;
+  if (/^(?:person|people)[-:_]/i.test(ref.trim())) return true;
+  return personRefs !== undefined && personRefs.has(normalizeEntityRef(ref));
 }
 
 /**
@@ -173,9 +218,10 @@ export function clampAmbientCaptureConfidence(
   result: ExtractionResult,
 ): ExtractionResult {
   let clampedAny = false;
+  const personRefs = collectPersonEntityRefs(result);
   const facts = result.facts.map((fact) => {
     if (fact.confidence <= SPECULATIVE_CONFIDENCE_CEILING) return fact;
-    if (!isHighImpactPersonalFact(fact)) return fact;
+    if (!isHighImpactPersonalFact(fact, personRefs)) return fact;
     clampedAny = true;
     return { ...fact, confidence: SPECULATIVE_CONFIDENCE_CEILING };
   });

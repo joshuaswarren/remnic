@@ -129,6 +129,19 @@ test("episode write is idempotent — an identical episode is skipped", async ()
   assert.equal(writer.writes.length, 1);
 });
 
+test("an episode whose provider title is a personal claim is held for review (#2294)", async () => {
+  // The episode is a recall anchor written active, but its title comes from the
+  // provider's read of the same ambient audio — so a title lifted from a
+  // television scene must not enter recall on the anchor.
+  const writer = new FakeWriter();
+  await writeMeetingEpisodeMemory(record({ title: "Dana's cancer diagnosis" }), writer);
+  assert.equal(writer.writes[0]!.extras.status, "pending_review");
+
+  const clean = new FakeWriter();
+  await writeMeetingEpisodeMemory(record({ title: "Sprint planning" }), clean);
+  assert.equal(clean.writes[0]!.extras.status, "active", "an ordinary title is unaffected");
+});
+
 test("an audio-only meeting omits the meetingApp attribute and the app suffix", async () => {
   const writer = new FakeWriter();
   const audioOnly = record({ app: undefined, detectionSource: "audio" });

@@ -28,7 +28,7 @@
  */
 
 import { scoreImportance } from "../importance.js";
-import { isHighImpactPersonalFact } from "../ambient-provenance.js";
+import { collectPersonEntityRefs, isHighImpactPersonalFact } from "../ambient-provenance.js";
 import type { MemoryWriteResult } from "../storage.js";
 import {
   composeMemoryEnvelope,
@@ -262,6 +262,12 @@ interface GatedCandidate {
   fact: ExtractedFact;
   importance: ImportanceScore;
   conversation: WearableConversation;
+  /**
+   * Ambient high-impact verdict, decided where the extraction's entity list is
+   * still in scope so personhood comes from the extractor's own `type:
+   * "person"` metadata rather than the spelling of `entityRef` (#2294).
+   */
+  highImpact: boolean;
 }
 
 interface ScoredCandidate {
@@ -379,6 +385,7 @@ export async function generateWearableMemories(
       result.completed = false;
       break;
     }
+    const personRefs = collectPersonEntityRefs(extraction);
     for (const fact of extraction.facts) {
       const content = fact.content?.trim();
       if (!content) {
@@ -414,7 +421,12 @@ export async function generateWearableMemories(
         continue;
       }
       seenContent.add(dedupKey);
-      candidates.push({ fact: { ...fact, content }, importance, conversation });
+      candidates.push({
+        fact: { ...fact, content },
+        importance,
+        conversation,
+        highImpact: isHighImpactPersonalFact({ ...fact, content }, personRefs),
+      });
     }
   }
 
@@ -455,7 +467,7 @@ export async function generateWearableMemories(
       // corroboration must not promote a clamped TV line to active (#2294).
       const decision = scored
         ? decideSmart(scored.trust, scored.verdict, settings, {
-            capAtReview: isHighImpactPersonalFact(candidate.fact),
+            capAtReview: candidate.highImpact,
           })
         : undefined;
       if (!scored || !decision) {
@@ -549,7 +561,7 @@ export async function generateWearableMemories(
     // never be written active — on ANY mode. `auto` has no trust scoring and an
     // operator may set minConfidence at or below the speculative ceiling, which
     // would otherwise let a clamped TV line straight into recall (#2294).
-    const capAtReview = isHighImpactPersonalFact(candidate.fact);
+    const capAtReview = candidate.highImpact;
     if (settings.memoryMode !== "smart") {
       const status = capAtReview ? "pending_review" : modeStatus;
       writable.push({
