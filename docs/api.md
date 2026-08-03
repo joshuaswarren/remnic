@@ -31,7 +31,7 @@ Two infrastructure routes carry no request envelope and sit outside the op-gated
 
 - `POST /engram/v1/memories` — explicit memory write path
 - `GET /engram/v1/memories` — browse memories with query/status/category filters
-- `POST /engram/v1/memories/search` — ranked semantic search over memories (the QMD-backed `memory_search` surface; `GET /engram/v1/memories` is a substring browse). Optional `mode` (`search` │ `hybrid` │ `bm25` │ `vector`) selects the ranking; omitted means the backend default
+- `POST /engram/v1/memories/search` — ranked semantic search over memories (the QMD-backed `memory_search` surface; `GET /engram/v1/memories` is a substring browse). Optional `mode` (`search` │ `hybrid` │ `bm25` │ `vector`) selects the ranking; omitted means the backend default. On a flat corpus `mode` and `collection` are mutually exclusive (see `memory_search` below)
 - `GET /engram/v1/memories/:id` — fetch one memory
 - `GET /engram/v1/memories/:id/timeline` — fetch one memory's lifecycle timeline
 - `POST /engram/v1/suggestions` — queue review-first memory suggestions
@@ -456,6 +456,13 @@ Search memories by semantic similarity.
 - `collection` (string, optional) — QMD collection override for direct MCP/access calls.
 
 When namespaces are enabled, unqualified searches use the authenticated principal's readable recall namespaces. Passing `collection: "global"` remains ACL-scoped to those readable namespaces; it does not bypass namespace isolation. Namespace-derived collection names are accepted only when they match a readable requested namespace. Arbitrary custom collections are rejected in namespace mode because Remnic cannot prove they are namespace-safe. Deployments without namespaces may still search a named custom QMD collection directly.
+
+`mode` and `collection` are mutually exclusive on a flat corpus (namespaces
+disabled): the mode-aware backend has no collection selector there, so
+honoring both would silently search the default collection instead of the one
+that was named. Sending both is rejected with a 400 — including
+`mode: "search"`, which is the backend default but still an explicit choice.
+With namespaces enabled the two compose normally.
 
 **Returns:** Array of matching memories with scores, paths, and content snippets.
 
