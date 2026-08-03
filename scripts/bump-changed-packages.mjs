@@ -264,31 +264,26 @@ async function syncJsonManifestVersion(repoRoot, relativeManifestPath, version, 
   return writeJson(manifestPath, manifest, dryRun);
 }
 
+// Packages whose version must also be written into a companion manifest that
+// ships alongside package.json. `set-release-version.mjs` derives the same set
+// from package directories; keep both in sync with the release workflow's
+// staging globs.
+const companionManifestsByPackageDir = new Map([
+  [
+    "packages/plugin-openclaw",
+    ["packages/plugin-openclaw/openclaw.plugin.json", "openclaw.plugin.json"],
+  ],
+  ["packages/shim-openclaw-engram", ["packages/shim-openclaw-engram/openclaw.plugin.json"]],
+  ["packages/plugin-claude-code", ["packages/plugin-claude-code/.claude-plugin/plugin.json"]],
+  ["packages/plugin-codex", ["packages/plugin-codex/.codex-plugin/plugin.json"]],
+]);
+
 async function syncCompanionVersions(repoRoot, pkg, version, dryRun) {
   const changedFiles = [];
 
-  if (pkg.relativeDir === "packages/plugin-openclaw") {
-    const packageManifest = "packages/plugin-openclaw/openclaw.plugin.json";
-    const rootManifest = "openclaw.plugin.json";
-    if (await syncJsonManifestVersion(repoRoot, packageManifest, version, dryRun)) {
-      changedFiles.push(packageManifest);
-    }
-    if (await syncJsonManifestVersion(repoRoot, rootManifest, version, dryRun)) {
-      changedFiles.push(rootManifest);
-    }
-  }
-
-  if (pkg.relativeDir === "packages/shim-openclaw-engram") {
-    const shimManifest = "packages/shim-openclaw-engram/openclaw.plugin.json";
-    if (await syncJsonManifestVersion(repoRoot, shimManifest, version, dryRun)) {
-      changedFiles.push(shimManifest);
-    }
-  }
-
-  if (pkg.relativeDir === "packages/plugin-claude-code") {
-    const claudeManifest = "packages/plugin-claude-code/.claude-plugin/plugin.json";
-    if (await syncJsonManifestVersion(repoRoot, claudeManifest, version, dryRun)) {
-      changedFiles.push(claudeManifest);
+  for (const relativeManifestPath of companionManifestsByPackageDir.get(pkg.relativeDir) ?? []) {
+    if (await syncJsonManifestVersion(repoRoot, relativeManifestPath, version, dryRun)) {
+      changedFiles.push(relativeManifestPath);
     }
   }
 

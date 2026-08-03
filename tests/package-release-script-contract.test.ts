@@ -61,3 +61,32 @@ test("release workflow updates lockfile after version mutations without frozen C
     assert.match(installCommand, /--no-frozen-lockfile/);
   }
 });
+
+test("release workflow stages every companion manifest the release scripts rewrite", () => {
+  const releaseWorkflow = readFileSync(
+    join(repoRoot, ".github", "workflows", "release-and-publish.yml"),
+    "utf8",
+  );
+  const companionGlobs = [
+    "packages/*/openclaw.plugin.json",
+    "packages/*/.claude-plugin/plugin.json",
+    "packages/*/.codex-plugin/plugin.json",
+  ];
+
+  const manifestPathLines = releaseWorkflow
+    .split("\n")
+    .filter((line) => /\b(git add|git diff)\b/.test(line) && line.includes("packages/*/package.json"));
+
+  assert.ok(
+    manifestPathLines.length >= 5,
+    `expected the release workflow to stage package manifests in at least 5 places, saw ${manifestPathLines.length}`,
+  );
+  for (const line of manifestPathLines) {
+    for (const glob of companionGlobs) {
+      assert.ok(
+        line.includes(glob),
+        `release workflow must include ${glob} where it stages package manifests: ${line.trim()}`,
+      );
+    }
+  }
+});
