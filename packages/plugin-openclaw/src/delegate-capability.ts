@@ -620,6 +620,13 @@ export function createDelegateMemoryCapability(
         `delegate search rejected (maxResults must be a non-negative integer): ${String(opts.maxResults)}`,
       );
     }
+    // ONE deadline for the WHOLE call, opened before ANY network work: the
+    // posture probe, the authorization probe, and every search page share it.
+    // Opened after scope resolution instead, a slow `/health` could spend the
+    // entire budget and each later request would still start a fresh one — a
+    // 25-second search taking fifty.
+    const searchDeadline = now() + options.searchTimeoutMs;
+    const searchRemaining = (): number => searchDeadline - now();
     // Cap-after-filter (AGENTS.md retrieval contract): artifact paths and
     // minScore are dropped on this side, so asking the daemon for exactly
     // `maxResults` would let a few excluded hits shrink — or empty — a page
@@ -635,10 +642,14 @@ export function createDelegateMemoryCapability(
     // is decided by the posture, which is an authorization fact and must be
     // current. Resolving the scope first also means a cached manager costs at
     // most ONE probe here, never one eager plus one revalidating.
-    const scopeIsFresh = searchScope === undefined ? await refreshHealth(undefined, true) : true;
-    const namespace = await resolveScopedNamespaceChecked(searchScope, undefined, scopeIsFresh, [
-      "memory_search",
-    ]);
+    const scopeIsFresh =
+      searchScope === undefined ? await refreshHealth(searchRemaining(), true) : true;
+    const namespace = await resolveScopedNamespaceChecked(
+      searchScope,
+      searchRemaining(),
+      scopeIsFresh,
+      ["memory_search"],
+    );
     // Embedded returns an empty set for a zero budget, and forwarding 0 would
     // hit the daemon schema's `maxResults >= 1` — a 400 purely from switching
     // bridge mode. The short circuit lands HERE, after scope and authorization
@@ -651,12 +662,8 @@ export function createDelegateMemoryCapability(
     // omitted mode sends a flat corpus down the legacy direct-QMD path — a
     // different ranking for the same request. Always send one.
     const searchMode = opts?.qmdSearchModeOverride === "vsearch" ? "vector" : "search";
-    // ONE budget for the whole search, pagination included: a fresh timer per
-    // top-up page let a slow daemon stretch a single `search()` across minutes
-    // while each individual request looked well inside its timeout.
-    const searchDeadline = now() + options.searchTimeoutMs;
     const fetchPage = async (limit: number | undefined): Promise<unknown[]> => {
-      const remaining = searchDeadline - now();
+      const remaining = searchRemaining();
       if (remaining <= 0) {
         throw new Error(
           `delegate search unavailable: the search budget of ${options.searchTimeoutMs}ms is spent`,

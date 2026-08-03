@@ -2456,3 +2456,40 @@ test("pagination shares one search budget instead of restarting it", async () =>
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("the posture probe comes out of the search budget, not before it", async () => {
+  // Opening the deadline after scope resolution let a slow `/health` spend the
+  // whole budget while every later request still started a fresh one — a
+  // 25-second search taking fifty.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+    search: { query: "q", count: 0, results: [] },
+  });
+  try {
+    let clock = 1_000_000;
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir, { now: () => clock }),
+      resolveSearchNamespace: async () => undefined,
+      searchTimeoutMs: 1_000,
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    // The unscoped posture probe alone consumes the whole budget.
+    stub.onHealth = () => {
+      clock += 1_200;
+    };
+    await assert.rejects(
+      () => manager?.search("q") ?? Promise.resolve(),
+      /search budget of 1000ms is spent|could not be confirmed/,
+      "the search refused rather than starting a fresh timer for the page",
+    );
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/memories/search")).length,
+      0,
+      "and no page request was issued against an exhausted budget",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
