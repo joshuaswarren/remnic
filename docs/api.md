@@ -450,10 +450,18 @@ Search memories by semantic similarity.
 
 **Parameters:**
 - `query` (string, required) — The search query.
-- `limit` (number, optional, default: 10) — Max results to return.
-- `category` (string, optional) — Filter by memory category.
+- `maxResults` (number, optional) — Max results to return; defaults to the
+  deployment's `qmdMaxResults`. `0` returns an empty result without querying
+  the backend.
 - `namespace` (string, optional) — Filter by namespace.
 - `collection` (string, optional) — QMD collection override for direct MCP/access calls.
+- `mode` (string, optional) — Ranking mode: `search`, `hybrid`, `bm25`, or
+  `vector`. Omitted uses the backend default.
+
+There is no `category` filter on this surface, and the limit is `maxResults`,
+not `limit` — the boundary schema strips unknown keys, so a request using
+either of those names would silently search with the default budget and no
+filter.
 
 When namespaces are enabled, unqualified searches use the authenticated principal's readable recall namespaces. Passing `collection: "global"` remains ACL-scoped to those readable namespaces; it does not bypass namespace isolation. Namespace-derived collection names are accepted only when they match a readable requested namespace. Arbitrary custom collections are rejected in namespace mode because Remnic cannot prove they are namespace-safe. Deployments without namespaces may still search a named custom QMD collection directly.
 
