@@ -1025,13 +1025,10 @@ export class RecallInternalCoordinator {
             transcriptEntries,
             abortSignal: sectionSignal,
           }).catch((err) => {
-            // A cancelled build is the deadline/abort contract working, not a
-            // failure worth a warning on every aborted request.
-            if (isAbortError(err)) {
-              log.debug(`entity retrieval build cancelled: ${err}`);
-            } else {
-              log.warn(`entity retrieval build failed: ${err}`);
-            }
+            // Cancellation is the deadline/abort contract working; let the bounded
+            // runner record it as cancelled rather than as an empty section.
+            if (isAbortError(err)) throw err;
+            log.warn(`entity retrieval build failed: ${err}`);
             return null;
           });
         },

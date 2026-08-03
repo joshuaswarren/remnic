@@ -1,5 +1,20 @@
-import { abortError } from "./abort-error.js";
+import { abortError, isAbortError } from "./abort-error.js";
 import { log, type LoggerBackend } from "./logger.js";
+
+/**
+ * Hand the event loop one macrotask.
+ *
+ * A recall section deadline is a timer, and a timer cannot fire while a
+ * synchronous scan holds the loop — so a provider that iterates the whole corpus
+ * must call this periodically or its budget is unenforceable (issue #2291).
+ * `setImmediate` (check phase) is used rather than a `0ms` timer so the yield
+ * cannot be starved by the timer queue it exists to let run.
+ */
+export function yieldToEventLoop(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setImmediate(resolve);
+  return promise;
+}
 
 export type RecallSectionPriority = "core" | "enrichment";
 /**
@@ -207,6 +222,12 @@ export async function runRecallSectionWithinDeadline<T>(options: {
  * section as `timeout` — so a slow provider costs its own section, not the
  * response.
  *
+ * Cancellation degrades too, and must: the section signal fires on the caller's
+ * abort, and the phase this section belongs to is awaited through a race that the
+ * caller's abort also wins.  A rejection here would therefore land on a promise
+ * nobody is awaiting any more — an unhandled rejection rather than a signal.  The
+ * caller learns of its own abort from that race, not from a section result.
+ *
  * Only sections whose absence leaves recall coherent belong here: the fallback
  * IS the degraded contract.
  */
@@ -226,12 +247,29 @@ export function createBoundedCoreSectionRunner(options: {
     fallback: T,
     run: (sectionSignal: AbortSignal) => Promise<T>,
   ): Promise<T> => {
-    const outcome = await runRecallSectionWithinDeadline({
-      deadlineMs: options.deadlineMs,
-      fallback,
-      parentSignal: options.parentSignal,
-      run,
-    });
+    const startedAtMs = Date.now();
+    let outcome: RecallSectionDeadlineOutcome<T>;
+    try {
+      outcome = await runRecallSectionWithinDeadline({
+        deadlineMs: options.deadlineMs,
+        fallback,
+        parentSignal: options.parentSignal,
+        run,
+      });
+    } catch (err) {
+      if (!isAbortError(err)) throw err;
+      const durationMs = Date.now() - startedAtMs;
+      options.record({
+        section,
+        priority: "core",
+        durationMs,
+        deadlineMs: options.deadlineMs,
+        source: "skip",
+        success: false,
+        timing: `cancelled(${durationMs}ms)`,
+      });
+      return fallback;
+    }
     if (outcome.timedOut) {
       logger.warn(
         `recall section [${section}] exceeded its ${options.deadlineMs}ms core deadline ` +

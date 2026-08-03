@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { throwIfAborted } from "./abort-error.js";
 import {
+  createBoundedCoreSectionRunner,
   createRecallSectionMetricRecorder,
   resolveRecallCoreSectionDeadlineMs,
   runRecallSectionWithinDeadline,
+  yieldToEventLoop,
   type RecallSectionMetric,
 } from "./recall-qos.js";
 
@@ -266,4 +269,58 @@ test("a zero budget on either side keeps the configured value", () => {
     resolveRecallCoreSectionDeadlineMs({ configuredCoreDeadlineMs: 75_000, outerTimeoutMs: 0 }),
     75_000,
   );
+});
+
+test("a bounded core section degrades on cancellation rather than rejecting", async () => {
+  // The phase this section belongs to is awaited through a race the caller's
+  // abort also wins, so a rejection here would be an unhandled rejection.
+  const metrics: RecallSectionMetric[] = [];
+  const caller = new AbortController();
+  const runSection = createBoundedCoreSectionRunner({
+    deadlineMs: 5_000,
+    parentSignal: caller.signal,
+    record: (metric) => metrics.push(metric),
+    logger: { warn: () => {} },
+  });
+
+  caller.abort();
+  const value = await runSection("artifacts", [] as string[], async (sectionSignal) => {
+    throwIfAborted(sectionSignal, "artifact search aborted");
+    return ["should not be reached"];
+  });
+
+  assert.deepEqual(value, []);
+  assert.equal(metrics[0]?.section, "artifacts");
+  assert.equal(metrics[0]?.success, false);
+  assert.match(metrics[0]?.timing ?? "", /^cancelled\(\d+ms\)$/);
+});
+
+test("a bounded core section still surfaces a non-abort failure", async () => {
+  const runSection = createBoundedCoreSectionRunner({
+    deadlineMs: 5_000,
+    record: () => {},
+    logger: { warn: () => {} },
+  });
+
+  await assert.rejects(
+    runSection("artifacts", [] as string[], async () => {
+      throw new Error("artifact tier unreadable");
+    }),
+    /artifact tier unreadable/,
+  );
+});
+
+test("yieldToEventLoop lets a pending timer run", async () => {
+  // The guarantee corpus scans depend on: without a yield the timer that carries
+  // a section deadline cannot fire while the scan holds the loop.
+  let timerFired = false;
+  const timer = setTimeout(() => {
+    timerFired = true;
+  }, 0);
+
+  await yieldToEventLoop();
+  await yieldToEventLoop();
+  clearTimeout(timer);
+
+  assert.equal(timerFired, true);
 });

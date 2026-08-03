@@ -67,7 +67,9 @@ export async function fetchActiveArtifactsForNamespace(
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     throwIfRecallAborted(options.abortSignal);
-    const rawResults = await storage.searchArtifacts(prompt, fetchLimit);
+    const rawResults = await storage.searchArtifacts(prompt, fetchLimit, {
+      abortSignal: options.abortSignal,
+    });
     const sourceIds = Array.from(
       new Set(
         rawResults

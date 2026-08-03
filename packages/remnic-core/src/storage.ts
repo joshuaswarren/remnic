@@ -16,6 +16,7 @@ import {
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
+import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-search.js";
 import path from "node:path";
 import { log } from "./logger.js";
 import { createMemorySnapshot } from "./memory-snapshot.js";
@@ -235,36 +236,6 @@ import {
 // stripCitation import removed: legacy rebuild fallback was replaced by a
 // skip-with-warning strategy (Finding 1 — Uhol).  See ensureFactHashIndexAuthoritative.
 
-const ARTIFACT_SEARCH_STOPWORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "are",
-  "as",
-  "at",
-  "be",
-  "but",
-  "by",
-  "for",
-  "from",
-  "has",
-  "have",
-  "i",
-  "in",
-  "is",
-  "it",
-  "of",
-  "on",
-  "or",
-  "that",
-  "the",
-  "this",
-  "to",
-  "was",
-  "were",
-  "with",
-]);
-
 type SharedVersionKind = "memory-status" | "artifact-write" | "cold-write" | "memory-corpus" | "entity-mutation";
 
 type OfflineSyncDigestCacheEntry = {
@@ -321,15 +292,6 @@ export interface MemoryLifecycleEventWriteOptions {
   ruleVersion?: string;
   relatedMemoryIds?: string[];
   correlationId?: string;
-}
-
-function tokenizeArtifactSearchText(input: string): string[] {
-  return input
-    .toLowerCase()
-    .split(/[^a-z0-9]+/i)
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 2)
-    .filter((t) => !ARTIFACT_SEARCH_STOPWORDS.has(t));
 }
 
 /**
@@ -4389,23 +4351,17 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.memoryReadStore.readAllArtifactsCached();
   }
 
-  async searchArtifacts(query: string, maxResults: number): Promise<MemoryFile[]> {
-    const tokens = tokenizeArtifactSearchText(query);
-    if (tokens.length === 0) return [];
-
-    const artifacts = await this.readAllArtifactsCached();
-    const hits: Array<{ score: number; memory: MemoryFile }> = [];
-    for (const memory of artifacts) {
-      const indexedTokens = new Set(
-        tokenizeArtifactSearchText(`${memory.content} ${(memory.frontmatter.tags ?? []).join(" ")}`)
-      );
-      const score = tokens.reduce((sum, t) => sum + (indexedTokens.has(t) ? 1 : 0), 0);
-      if (score > 0) {
-        hits.push({ score, memory });
-      }
-    }
-    hits.sort((a, b) => b.score - a.score);
-    return hits.slice(0, maxResults).map((h) => h.memory);
+  async searchArtifacts(
+    query: string,
+    maxResults: number,
+    options: ArtifactSearchOptions = {},
+  ): Promise<MemoryFile[]> {
+    return selectArtifactMatches(
+      await this.readAllArtifactsCached(),
+      query,
+      maxResults,
+      options,
+    );
   }
 
   async writeEntity(

@@ -199,9 +199,9 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 | `maxMemoryTokens` | `2000` | Legacy token cap. Only used to compute `recallBudgetChars` when that setting is absent. **Prefer setting `recallBudgetChars` directly.** |
 | `recallMaxConcurrentPerPrincipal` | `4` | Maximum concurrent recalls executed per principal (issue #1906); recalls beyond the cap queue FIFO. `0` = unlimited; set `1` to restore exact serialization. |
 | `recallSingleFlightEnabled` | `true` | Coalesce identical concurrent recalls for the same principal into a single in-flight execution (issue #1906); each caller still receives its own cloned response. Set `false` to restore per-request execution. |
-| `recallCoreDeadlineMs` | `75000` | **Per-section deadline for optional core recall providers.** `entity-retrieval` and `verbatim-artifacts` scan the memory tree, which can take minutes on a large or network/bind-mounted store; when one exceeds this budget the section is dropped, logged as `timeout(<ms>)` in the recall section metrics, and signalled to stop, while the rest of the recall still returns (issue #2291). Lower it (for example `5000`) when recall is consumed by a **synchronous** prompt-injection hook that cannot wait. `0` disables the bound. |
+| `recallCoreDeadlineMs` | `75000` | **Per-section deadline for optional core recall providers.** `entity-retrieval` and `verbatim-artifacts` scan the memory tree, which can take minutes on a large or network/bind-mounted store; when one exceeds this budget the section is dropped, logged as `timeout(<ms>)` in the recall section metrics, and signalled to stop, while the rest of the recall still returns (issue #2291). Lower it (for example `5000`) when recall is consumed by a **synchronous** prompt-injection hook that cannot wait. `0` disables the bound. **The effective value is capped at 80% of `recallOuterTimeoutMs`** — see the note below. |
 | `recallEnrichmentDeadlineMs` | `25000` | Shared budget for the deferred enrichment sections assembled after the core phase. `0` disables the bound. |
-| `recallOuterTimeoutMs` | `75000` | Outer ceiling for a whole recall request. `0` disables the bound. |
+| `recallOuterTimeoutMs` | `75000` | Outer ceiling for a whole recall request; on breach the recall is aborted and fails rather than degrading. `0` disables the bound. |
 | `qmdEnabled` | `true` | Use QMD for hybrid search |
 | `qmdCollection` | `openclaw-engram` | QMD collection name |
 | `externalWikis` | `[]` | External compiled-wiki roots for on-demand search. Each item requires `id` and an absolute or `~/` `rootDir`; optional fields are `enabled`, `label`, `pagesDir`, `indexFile`, `indexInQmd`, and the false-only `includeInDefaultRecall` guard. |
@@ -256,6 +256,16 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 | `recallDirectAnswerEligibleTaxonomyBuckets` | `["decisions","principles","conventions","runbooks","entities"]` | Taxonomy category IDs eligible for direct-answer routing. Set to `[]` to disable the gate without unsetting `enabled`. |
 | `hotMemoriesCacheEnabled` | `true` | Serve `readAllMemories()` from a version-keyed in-process cache of the full parsed corpus (issue #1902), eliminating repeated full-corpus disk scans on the recall hot path. Cross-process coherence is preserved by an on-disk corpus version sentinel; single-file writes patch the cache in place. Set `false` to force disk scans on memory-constrained hosts (behavior then matches the pre-#1902 scan path). Version invalidation is the primary coherence mechanism; `hotMemoriesCacheTtlMs` bounds staleness from external edits. |
 | `hotMemoriesCacheTtlMs` | `60000` | Max age (ms) a hot-cache entry is served before a fresh disk scan (issue #1902). The version sentinel gives immediate coherence for writers that go through StorageManager or the corpus-bump helper, but direct filesystem edits (manual, git checkout, external tools) don't bump it; this TTL bounds how long such an edit stays stale. Set `0` to disable the TTL (version invalidation only; max performance for pure-daemon deployments with no external edits). |
+
+**Effective core section deadline.** A section budget only helps if it fires
+*before* the request ceiling that cancels everything, so the effective value is
+`min(recallCoreDeadlineMs, floor(recallOuterTimeoutMs * 0.8))`. With both
+defaults at `75000` that is **60000** — raising `recallCoreDeadlineMs` alone has
+no effect, because at 75s the outer timeout would abort the whole recall instead
+of dropping one section. To give sections a longer budget, raise
+`recallOuterTimeoutMs` too. The effective value is what appears as `deadlineMs`
+in the recall section metric log, so the number in effect is always observable.
+Either bound set to `0` is left alone.
 
 ### `recallPipeline` entries
 

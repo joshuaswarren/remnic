@@ -9,8 +9,15 @@ import { normalizeEntityText, resolveRequestedEntitySectionKeys } from "./entity
 import type { EntityStructuredSection, MemoryFile, PluginConfig, TranscriptEntry } from "./types.js";
 import { containsPhrase } from "./entity-retrieval-boundaries.js";
 import { throwIfAborted } from "./abort-error.js";
+import { yieldToEventLoop } from "./recall-qos.js";
 
 const ENTITY_INDEX_VERSION = 3;
+/**
+ * Entities/memories processed between two yields during an index build. Matches
+ * the artifact scan's interval: large enough that the yields are free relative to
+ * the work, small enough that a section deadline is observed promptly.
+ */
+const ENTITY_SCAN_YIELD_INTERVAL = 256;
 const RECENT_TRANSCRIPT_LOOKBACK_HOURS = 24;
 const INSTRUCTION_LIKE_RE = /\b(always|never|must|should|remember to|do not|don't|process|workflow|template|checklist|instruction)\b/i;
 const METADATA_WRAPPER_RE = /^(source|context|metadata|notes?):/i;
@@ -560,8 +567,17 @@ async function buildEntityMentionIndex(
   );
   const memories = memorySets.flat();
 
+  // The two passes over the corpus below never await real I/O, so without an
+  // explicit yield they hold the event loop and no recall section deadline can
+  // fire during them (issue #2291).
+  let scanned = 0;
   const entities = new Map<string, EntityMentionIndexEntry>();
   for (const { entity, storage: entityStorage } of entityRecords) {
+    scanned += 1;
+    if (scanned % ENTITY_SCAN_YIELD_INTERVAL === 0) {
+      await yieldToEventLoop();
+      throwIfAborted(abortSignal, "entity recall aborted");
+    }
     const canonicalId =
       typeof entityStorage.normalizeEntityName === "function"
         ? entityStorage.normalizeEntityName(entity.name, entity.type)
@@ -602,7 +618,13 @@ async function buildEntityMentionIndex(
     });
   }
 
+  scanned = 0;
   for (const memory of memories) {
+    scanned += 1;
+    if (scanned % ENTITY_SCAN_YIELD_INTERVAL === 0) {
+      await yieldToEventLoop();
+      throwIfAborted(abortSignal, "entity recall aborted");
+    }
     const entityRef = typeof memory.frontmatter.entityRef === "string" ? memory.frontmatter.entityRef : "";
     if (!entityRef) continue;
     const entry = entities.get(entityRef);
