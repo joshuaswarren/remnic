@@ -4621,6 +4621,7 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
   // un-stripped prefix reads as a NESTED path and the digest leaks into
   // ranked search.
   const policy = { memoryDir: "/memory", qmdCollection: "memories" };
+
   for (const excluded of [
     "qmd://memories/activity/2026-08-02.md",
     "memories/activity/2026-08-02.md",
@@ -4629,6 +4630,18 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
   ]) {
     assert.equal(isSearchExcludedPath(excluded, policy, "qmd"), true, excluded);
   }
+  // A namespaced search rewrites hits to absolute paths beneath the
+  // namespace's own storage root; the digest there must be excluded too.
+  assert.equal(
+    isSearchExcludedPath("/memory/namespaces/team/activity/2026-08-02.md", policy, "qmd"),
+    true,
+    "a digest under a namespace root is still a digest",
+  );
+  assert.equal(
+    isSearchExcludedPath("/memory/namespaces/team/facts/proj/activity/2026-08-02.md", policy, "qmd"),
+    false,
+    "and an ordinary nested memory under that root stays searchable",
+  );
   // A collection whose NAME is also a memory category is disambiguated two
   // ways: a `qmd://` URI states it in the authority, and a bare path is
   // resolved against the collection the caller actually requested.

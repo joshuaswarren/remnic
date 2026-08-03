@@ -132,13 +132,32 @@ export function isSearchExcludedPath(
   for (const candidate of collectionSpellings(filePath, policy, source)) {
     if (
       isArtifactMemoryPath(candidate) ||
-      isActivityDigestPath(candidate, policy.memoryDir) ||
+      isNamespacedActivityDigestPath(candidate, policy.memoryDir) ||
       isMeetingRecordPath(candidate)
     ) {
       return true;
     }
   }
   return false;
+}
+
+/**
+ * The activity check, applied against the NAMESPACE root a hit came from.
+ *
+ * `isActivityDigestPath` is root-aware — the digest must sit directly under
+ * the root it is given — but a namespaced search rewrites hits to absolute
+ * paths beneath `…/namespaces/<ns>/`, and only the global `memoryDir` is
+ * available here. Measured against that root, a real digest at
+ * `<memoryDir>/namespaces/team/activity/<date>.md` reads as nested and is
+ * served. Re-measuring against the namespace's own root closes that.
+ */
+function isNamespacedActivityDigestPath(candidate: string, memoryDir?: string): boolean {
+  if (isActivityDigestPath(candidate, memoryDir)) return true;
+  if (memoryDir === undefined || memoryDir.length === 0) return false;
+  const relative = path.relative(memoryDir, path.resolve(memoryDir, candidate));
+  const namespaced = /^namespaces[\\/]([^\\/]+)[\\/](.*)$/.exec(relative);
+  if (namespaced === null) return false;
+  return isActivityDigestPath(namespaced[2] ?? "", memoryDir);
 }
 
 /** A path as given, plus its form with a leading COLLECTION segment removed. */
