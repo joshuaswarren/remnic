@@ -2361,3 +2361,34 @@ test("only the first manager handout waits on health", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("a local read is refused when the token cannot read memories", async () => {
+  // Corpus containment proves co-location and the single-namespace check
+  // proves there is one namespace — neither proves this token may READ. A
+  // token with `memory_search` but not `memory_get` must not open files
+  // straight off disk, which is the gate delegating to the daemon preserves.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+  });
+  try {
+    const probed: Array<readonly string[] | undefined> = [];
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      verifyNamespaceAuthorization: async (_namespace, _timeoutMs, operations) => {
+        probed.push(operations);
+        return false;
+      },
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /not authorized for memory_get/,
+    );
+    assert.deepEqual(await built.listArtifacts(), [], "the artifact listing refuses too");
+    assert.deepEqual(probed[0], ["memory_get"], "the READ operation is what was probed");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

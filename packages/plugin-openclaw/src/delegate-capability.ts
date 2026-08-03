@@ -313,6 +313,36 @@ export function createDelegateMemoryCapability(
    * Unknown namespacing (older build, or a token without health access) fails
    * closed the same way.
    */
+  /**
+   * A local file read must clear the daemon's OPERATION gate too.
+   *
+   * Corpus containment proves physical co-location and
+   * `requireSingleCorpusNamespacing` proves there is only one namespace to
+   * read — neither proves this token may read memories. A token granted
+   * `memory_search` but not `memory_get` would otherwise open any known path
+   * straight off disk, which is exactly the check delegating to the daemon is
+   * supposed to preserve.
+   */
+  const requireLocalReadAuthorized = async (
+    surface: string,
+    operations: readonly string[],
+  ): Promise<void> => {
+    if (options.verifyNamespaceAuthorization === undefined) return;
+    const namespace = health.defaultNamespace ?? "";
+    const verdictKey = `${target.resolveAuthToken().token}\u0000${operations.join(",")}\u0000${namespace}`;
+    if (!substitutedNamespaceVerdicts.has(verdictKey)) {
+      substitutedNamespaceVerdicts.set(
+        verdictKey,
+        await options.verifyNamespaceAuthorization(namespace, undefined, operations),
+      );
+    }
+    if (substitutedNamespaceVerdicts.get(verdictKey) === false) {
+      throw new Error(
+        `delegate ${surface} unavailable: the delegate token is not authorized for ${operations.join(", ")} on the daemon's corpus`,
+      );
+    }
+  };
+
   const requireSingleCorpusNamespacing = (surface: string): void => {
     if (health.namespacesEnabled === false) return;
     throw new Error(
@@ -713,6 +743,7 @@ export function createDelegateMemoryCapability(
     await refreshHealth(undefined, true);
     requireSharedCorpus("readFile");
     requireSingleCorpusNamespacing("readFile");
+    await requireLocalReadAuthorized("readFile", ["memory_get"]);
     const requestedPath = sharedScope().normalizeWorkspacePath(params.relPath);
     const absolutePath = await sharedScope().resolveReadablePath(params.relPath);
     const allLines = (await readFile(absolutePath, "utf8")).split(/\r?\n/);
@@ -854,6 +885,7 @@ export function createDelegateMemoryCapability(
         await refreshHealth(undefined, true);
         requireSharedCorpus("publicArtifacts");
         requireSingleCorpusNamespacing("publicArtifacts");
+        await requireLocalReadAuthorized("publicArtifacts", ["memory_get"]);
         return await listRemnicPublicArtifacts({
           memoryDir: health.memoryDir ?? options.memoryDir,
           workspaceDir: options.workspaceDir,

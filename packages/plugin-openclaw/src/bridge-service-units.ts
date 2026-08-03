@@ -363,6 +363,18 @@ function expandAccountRelative(value: string, scope: UnitScope): string {
  */
 const ESCAPED_PERCENT = "\u0000remnic-escaped-percent\u0000";
 
+/**
+ * `%t` for a user manager is the account's own runtime directory —
+ * `/run/user/<uid>`, not the shared `/run/user` parent. The gateway runs as
+ * the same account a user unit does, so its uid is the right one; without
+ * `getuid` (Windows) there is no such directory to name.
+ */
+function userRuntimeDir(): string {
+  const getuid = (globalThis.process as { getuid?: () => number } | undefined)?.getuid;
+  const uid = typeof getuid === "function" ? getuid.call(globalThis.process) : undefined;
+  return uid === undefined ? "/run/user" : `/run/user/${uid}`;
+}
+
 /** Restore literal percents, once the unresolved-specifier guard has run. */
 function settleUnitValue(value: string): string {
   return value.replaceAll(ESCAPED_PERCENT, "%");
@@ -381,7 +393,7 @@ function expandUnitSpecifiers(value: string, scope: UnitScope): string {
         S: xdg("XDG_STATE_HOME", path.join(home, ".local", "state")),
         C: xdg("XDG_CACHE_HOME", path.join(home, ".cache")),
         L: path.join(xdg("XDG_STATE_HOME", path.join(home, ".local", "state")), "log"),
-        t: xdg("XDG_RUNTIME_DIR", "/run/user"),
+        t: xdg("XDG_RUNTIME_DIR", userRuntimeDir()),
       }
     : { E: "/etc", S: "/var/lib", C: "/var/cache", L: "/var/log", t: "/run" };
   // An escaped `%%` becomes a placeholder rather than a literal `%`, so the
@@ -417,13 +429,24 @@ function readUnitWorkingDirectory(unit: string): string | undefined {
 function readUnitCliOverrides(
   unit: string,
   scope: UnitScope,
+  readFile: (candidate: string) => string | undefined,
+  listDir: (directory: string) => string[],
 ): UnitEndpoint {
   const tokens: string[] = [];
+  // systemd substitutes `$VAR` and `${VAR}` in a command line from the unit's
+  // own environment before launching, so a `--port ${PORT}` reaches the daemon
+  // as a number. Leaving it literal makes `coercePort` discard it and sends
+  // detection to the default endpoint instead of the running one.
+  const environment = readUnitEnvironment(unit, scope, readFile, listDir);
+  const substitute = (command: string): string =>
+    command.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (match, braced, bare) =>
+      environment.get(braced ?? bare) ?? match,
+    );
   // Every command that survived the resets, in order. A `Type=oneshot` unit
   // may legitimately keep several, and `readFlag` takes the last occurrence
   // across all of them — which is also what a replacement command needs.
   for (const command of readEffectiveDirectives(unit).execStart) {
-    tokens.push(...(command.match(/"[^"]*"|'[^']*'|\S+/g) ?? []));
+    tokens.push(...(substitute(command).match(/"[^"]*"|'[^']*'|\S+/g) ?? []));
   }
   const programArgs = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(unit);
   if (programArgs?.[1]) {
@@ -503,7 +526,7 @@ export function resolveUnitEndpoint(
   // The server accepts --host/--port/--auth-token/--config on its command line
   // and they win over both its config file and its environment, so a unit that
   // launches it that way is the only place the endpoint is written down.
-  const cli = readUnitCliOverrides(unit, scope);
+  const cli = readUnitCliOverrides(unit, scope, readFile, listDir);
   // `??` on the PRIMARY spelling only when it is absent entirely — a blank
   // primary shadows the legacy one exactly as it does for the server.
   const envOverride = (primary: string, legacy: string): string | undefined => {

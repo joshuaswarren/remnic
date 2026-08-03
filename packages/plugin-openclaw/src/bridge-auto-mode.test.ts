@@ -2686,3 +2686,43 @@ test("the delegate config binds to the file that named the endpoint", async () =
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("ExecStart substitutes the unit's own environment variables", () => {
+  // systemd substitutes `$VAR` and `${VAR}` from the unit's environment before
+  // launching, so `--port ${PORT}` reaches the daemon as a number. Left
+  // literal, `coercePort` discards it and detection dials the default.
+  const scope = { userScoped: false, homeDir: "/home/gw" };
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      [
+        "[Service]",
+        "Environment=PORT=4813 TOKEN=env-token",
+        "ExecStart=/opt/remnic-server --port ${PORT} --auth-token $TOKEN",
+      ].join("\n"),
+      scope,
+    ),
+    { port: 4813, authToken: "env-token" },
+  );
+  // An undefined variable stays literal, and is then discarded as a bad port
+  // rather than being guessed at.
+  assert.deepEqual(
+    resolveUnitEndpoint("[Service]\nExecStart=/opt/remnic-server --port ${MISSING}\n", scope),
+    {},
+  );
+});
+
+test("%t names the account's own runtime directory", () => {
+  // systemd expands `%t` to `/run/user/<uid>` for a user manager, not the
+  // shared parent — a `%t`-based path read from the wrong place finds nothing.
+  const uid = process.getuid?.();
+  if (uid === undefined) return;
+  const files = new Map([[`/run/user/${uid}/remnic.env`, "REMNIC_PORT=4813\n"]]);
+  assert.equal(
+    resolveUnitEndpoint(
+      "[Service]\nEnvironmentFile=%t/remnic.env\n",
+      { userScoped: true, homeDir: "/home/gw" },
+      (candidate) => files.get(candidate),
+    ).port,
+    4813,
+  );
+});
