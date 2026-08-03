@@ -46,7 +46,11 @@ import {
   boundRecallContextComposition, composeRecallContext, contextBudgetForFooter,
   formatCuriosityFooter, selectCuriosityQuestion,
 } from "../recall-context-composition.js";
-import { createRecallSectionMetricRecorder } from "../recall-qos.js";
+import {
+  createBoundedCoreSectionRunner,
+  createRecallSectionMetricRecorder,
+  resolveRecallCoreSectionDeadlineMs,
+} from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
 import { type GraphRecallExpandedEntry, type LastRecallSnapshot } from "../recall-state.js";
 import {
@@ -74,7 +78,7 @@ import { searchTrustZoneRecords } from "../trust-zones.js";
 import type { IdentityInjectionMode, MemoryFile, QmdSearchResult, RecallPlanMode } from "../types.js";
 import { type VerifiedEpisodeResult, compareVerifiedEpisodeResults, searchVerifiedEpisodes } from "../verified-recall.js";
 import { type WorkProductLedgerSearchResult, searchWorkProductLedgerEntries } from "../work-product-ledger.js";
-import { abortError } from "../abort-error.js";
+import { abortError, isAbortError } from "../abort-error.js";
 import {
   applyQueryAwareCandidateFilter,
   filterRecallCandidates,
@@ -147,7 +151,10 @@ export class RecallInternalCoordinator {
       profileTraceClosed = true;
       this.deps.profiler.endTrace(profileTraceId); // persists to JSONL file
     };
-    const recallSectionDeadlineMs = this.deps.config.recallCoreDeadlineMs ?? 75_000;
+    const recallSectionDeadlineMs = resolveRecallCoreSectionDeadlineMs({
+      configuredCoreDeadlineMs: this.deps.config.recallCoreDeadlineMs ?? 75_000,
+      outerTimeoutMs: this.deps.config.recallOuterTimeoutMs ?? 75_000,
+    });
     const enrichmentSectionDeadlineMs =
       this.deps.config.recallEnrichmentDeadlineMs ?? 25_000;
     // Wrap entire recall body in try/finally so profiling trace is always closed,
@@ -204,6 +211,12 @@ export class RecallInternalCoordinator {
     };
     const recordRecallSectionMetric = createRecallSectionMetricRecorder({
       timings,
+      logger: log,
+    });
+    const runBoundedCoreSection = createBoundedCoreSectionRunner({
+      deadlineMs: recallSectionDeadlineMs,
+      parentSignal: options.abortSignal,
+      record: recordRecallSectionMetric,
       logger: log,
     });
     const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -985,41 +998,44 @@ export class RecallInternalCoordinator {
         });
         return null;
       }
-      const t0 = Date.now();
-      const transcriptEntries = sessionKey
-        ? await readRecentEntityTranscriptEntries(
-            this.deps.transcript.readRecent(
-              entityRecentTranscriptLookbackHours,
-              sessionKey,
-            ),
+      return await runBoundedCoreSection(
+        "entityRetrieval",
+        null as string | null,
+        async (sectionSignal) => {
+          const transcriptEntries = sessionKey
+            ? await readRecentEntityTranscriptEntries(
+                this.deps.transcript.readRecent(
+                  entityRecentTranscriptLookbackHours,
+                  sessionKey,
+                ),
+                recentTurns,
+              )
+            : [];
+          return await buildEntityRecallSection({
+            config: this.deps.config,
+            storage: profileStorage,
+            namespaceStorage: (namespace) => this.deps.getStorage(namespace),
+            query: retrievalQuery,
+            recallNamespaces,
             recentTurns,
-          )
-        : [];
-      const section = await buildEntityRecallSection({
-        config: this.deps.config,
-        storage: profileStorage,
-        namespaceStorage: (namespace) => this.deps.getStorage(namespace),
-        query: retrievalQuery,
-        recallNamespaces,
-        recentTurns,
-        maxHints,
-        maxSupportingFacts,
-        maxRelatedEntities,
-        maxChars,
-        transcriptEntries,
-      }).catch((err) => {
-        log.warn(`entity retrieval build failed: ${err}`);
-        return null;
-      });
-      recordRecallSectionMetric({
-        section: "entityRetrieval",
-        priority: "core",
-        durationMs: Date.now() - t0,
-        deadlineMs: recallSectionDeadlineMs,
-        source: "fresh",
-        success: true,
-      });
-      return section;
+            maxHints,
+            maxSupportingFacts,
+            maxRelatedEntities,
+            maxChars,
+            transcriptEntries,
+            abortSignal: sectionSignal,
+          }).catch((err) => {
+            // A cancelled build is the deadline/abort contract working, not a
+            // failure worth a warning on every aborted request.
+            if (isAbortError(err)) {
+              log.debug(`entity retrieval build cancelled: ${err}`);
+            } else {
+              log.warn(`entity retrieval build failed: ${err}`);
+            }
+            return null;
+          });
+        },
+      );
     })();
 
     // 1b. Knowledge Index (v7.0)
@@ -1130,7 +1146,6 @@ export class RecallInternalCoordinator {
       )
         return [];
       if (!resolvePresentationCapabilities(this.deps.config).verbatimArtifacts) return [];
-      const t0 = Date.now();
       const targetCount = computeArtifactRecallLimit(
         recallMode,
         recallResultLimit,
@@ -1148,25 +1163,23 @@ export class RecallInternalCoordinator {
         });
         return [];
       }
-      const results = await this.deps.recallArtifactsAcrossNamespaces(
-        retrievalQuery,
-        recallNamespaces,
-        targetCount,
+      return await runBoundedCoreSection(
+        "artifacts",
+        [] as MemoryFile[],
+        async (sectionSignal) => {
+          const results = await this.deps.recallArtifactsAcrossNamespaces(
+            retrievalQuery,
+            recallNamespaces,
+            targetCount,
+            { abortSignal: sectionSignal },
+          );
+          return lifecycleCaps.extractionScopeClassification
+            ? results.filter((artifact) =>
+                canRecallToolScopedMemory(artifact.frontmatter, options.sourceConnector),
+              )
+            : results;
+        },
       );
-
-      recordRecallSectionMetric({
-        section: "artifacts",
-        priority: "core",
-        durationMs: Date.now() - t0,
-        deadlineMs: recallSectionDeadlineMs,
-        source: "fresh",
-        success: true,
-      });
-      return lifecycleCaps.extractionScopeClassification
-        ? results.filter((artifact) =>
-            canRecallToolScopedMemory(artifact.frontmatter, options.sourceConnector),
-          )
-        : results;
     })();
 
     const objectiveStatePromise = (async (): Promise<string | null> => {

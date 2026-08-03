@@ -120,6 +120,7 @@ import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.j
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
+import type { ArtifactRecallOptions } from "./orchestration/recall-search-prefilter.js";
 import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
 import { RecallIntrospectionCoordinator } from "./orchestration/recall-introspection.js";
 import { OrchestratorInitCoordinator } from "./orchestration/orchestrator-init.js";
@@ -2460,11 +2461,10 @@ export class Orchestrator {
     namespace: string,
     prompt: string,
     targetCount: number,
+    options: ArtifactRecallOptions = {},
   ): Promise<MemoryFile[]> {
     return this.recallSearchPipelineCoordinator.fetchActiveArtifactsForNamespace(
-      namespace,
-      prompt,
-      targetCount,
+      namespace, prompt, targetCount, options,
     );
   }
 
@@ -2472,11 +2472,10 @@ export class Orchestrator {
     prompt: string,
     recallNamespaces: string[],
     targetCount: number,
+    options: ArtifactRecallOptions = {},
   ): Promise<MemoryFile[]> {
     return this.namespaceReadFanoutCoordinator.recallArtifactsAcrossNamespaces(
-      prompt,
-      recallNamespaces,
-      targetCount,
+      prompt, recallNamespaces, targetCount, options,
     );
   }
 

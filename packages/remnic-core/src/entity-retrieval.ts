@@ -8,6 +8,7 @@ import { compareEntityTimestamps, normalizeEntityName, type StorageManager } fro
 import { normalizeEntityText, resolveRequestedEntitySectionKeys } from "./entity-schema.js";
 import type { EntityStructuredSection, MemoryFile, PluginConfig, TranscriptEntry } from "./types.js";
 import { containsPhrase } from "./entity-retrieval-boundaries.js";
+import { throwIfAborted } from "./abort-error.js";
 
 const ENTITY_INDEX_VERSION = 3;
 const RECENT_TRANSCRIPT_LOOKBACK_HOURS = 24;
@@ -81,6 +82,13 @@ export interface BuildEntityRecallSectionOptions {
   maxRelatedEntities: number;
   maxChars: number;
   transcriptEntries: TranscriptEntry[];
+  /**
+   * Cancels the build at its next checkpoint (issue #2291).  Entity recall reads
+   * every entity and memory file across the recalled namespaces, which is
+   * minutes of work on a large or slow store; without this the scan kept running
+   * after the recall that asked for it had been abandoned.
+   */
+  abortSignal?: AbortSignal;
 }
 
 function tokenize(value: string): string[] {
@@ -523,7 +531,9 @@ async function buildEntityMentionIndex(
   namespaceStorage?: (namespace: string) => Promise<StorageManager>,
   nativeChunksOverride?: NativeKnowledgeChunk[],
   resolvedStorages?: StorageManager[],
+  abortSignal?: AbortSignal,
 ): Promise<EntityMentionIndex> {
+  throwIfAborted(abortSignal, "entity recall aborted");
   const storages = resolvedStorages ?? await resolveEntityIndexStorages(
     storage,
     config,
@@ -539,6 +549,9 @@ async function buildEntityMentionIndex(
     Promise.all(storages.map((scopedStorage) => scopedStorage.readAllMemories())),
     nativeChunksOverride ? Promise.resolve(nativeChunksOverride) : readNativeChunks(config, recallNamespaces),
   ]);
+  // The bulk reads above cannot be interrupted mid-flight; stop before spending
+  // the (larger) indexing pass over their results.
+  throwIfAborted(abortSignal, "entity recall aborted");
   // Pair each entity with the storage that owns it (#1534): canonical ids must
   // reflect that store's aliases and historical migration mappings, never another
   // namespace's.
@@ -1020,6 +1033,11 @@ function formatEntityHintSection(
 }
 
 export async function buildEntityRecallSection(options: BuildEntityRecallSectionOptions): Promise<string | null> {
+  // Checkpoints sit at the real I/O boundaries below (persisted-index read,
+  // native-chunk read, storage resolution, index build).  The per-candidate
+  // formatting that follows never awaits real I/O, so a deadline that fires
+  // during a scan is observed here (issue #2291).
+  throwIfAborted(options.abortSignal, "entity recall aborted");
   const prefixedMode = detectEntityQueryMode(options.query);
   const persistedIndex = prefixedMode
     ? null
@@ -1029,6 +1047,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
       options.recallNamespaces,
       options.namespaceStorage,
     );
+  throwIfAborted(options.abortSignal, "entity recall aborted");
   let nativeChunks: NativeKnowledgeChunk[] | undefined;
   if (
     !prefixedMode &&
@@ -1066,6 +1085,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   let index: EntityMentionIndex | undefined = namespaceCacheKey
     ? namespaceEntityIndexCache.get(namespaceCacheKey)
     : undefined;
+  throwIfAborted(options.abortSignal, "entity recall aborted");
   if (!index) {
     index = await buildEntityMentionIndex(
       options.storage,
@@ -1074,6 +1094,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
       options.namespaceStorage,
       nativeChunks,
       resolvedStorages,
+      options.abortSignal,
     );
     if (namespaceCacheKey) rememberNamespaceEntityIndex(namespaceCacheKey, index);
   }

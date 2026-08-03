@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createRecallSectionMetricRecorder,
+  resolveRecallCoreSectionDeadlineMs,
+  runRecallSectionWithinDeadline,
   type RecallSectionMetric,
 } from "./recall-qos.js";
 
@@ -82,4 +84,186 @@ test("recall section metric recorder respects timing overrides and logs enrichme
     source: "skip",
     success: true,
   });
+});
+
+test("timed-out section metric reports the breach instead of a plain duration", () => {
+  const timings: Record<string, string> = {};
+  const calls: Array<{ level: "info" | "debug"; payload: unknown[] }> = [];
+  const recorder = createRecallSectionMetricRecorder({
+    timings,
+    logger: {
+      info: (_message: string, ...payload: unknown[]) => calls.push({ level: "info", payload }),
+      debug: (_message: string, ...payload: unknown[]) => calls.push({ level: "debug", payload }),
+    },
+  });
+
+  recorder({
+    section: "entityRetrieval",
+    priority: "core",
+    durationMs: 75_004,
+    deadlineMs: 75_000,
+    source: "timeout",
+    success: false,
+  });
+
+  assert.equal(timings.entityRetrieval, "timeout(75004ms)");
+  // A breach is not a success, so it must not be logged as one.
+  assert.equal(calls[0]?.level, "debug");
+});
+
+test("recall section deadline degrades to the fallback and cancels the section", async () => {
+  let observedSignal: AbortSignal | undefined;
+  let cancelledDuringWork = false;
+
+  // A real timer is the subject here, not a guessed wait: the section below
+  // never settles on its own, so the deadline always wins regardless of load.
+  const outcome = await runRecallSectionWithinDeadline({
+    deadlineMs: 15,
+    fallback: "degraded",
+    run: async (sectionSignal) => {
+      observedSignal = sectionSignal;
+      const cancelled = Promise.withResolvers<void>();
+      sectionSignal.addEventListener("abort", () => {
+        cancelledDuringWork = true;
+        cancelled.resolve();
+      });
+      await cancelled.promise;
+      return "late value";
+    },
+  });
+
+  assert.equal(outcome.timedOut, true);
+  assert.equal(outcome.value, "degraded");
+  assert.equal(observedSignal?.aborted, true);
+  assert.equal(cancelledDuringWork, true);
+});
+
+test("recall section deadline returns the real value when the section finishes in time", async () => {
+  const outcome = await runRecallSectionWithinDeadline({
+    deadlineMs: 5_000,
+    fallback: null as string | null,
+    run: async (sectionSignal) => {
+      assert.equal(sectionSignal.aborted, false);
+      return "section body";
+    },
+  });
+
+  assert.equal(outcome.timedOut, false);
+  assert.equal(outcome.value, "section body");
+});
+
+test("a zero deadline disables the bound rather than failing every section", async () => {
+  const released = Promise.withResolvers<void>();
+  const pending = runRecallSectionWithinDeadline({
+    deadlineMs: 0,
+    fallback: "degraded",
+    run: async () => {
+      await released.promise;
+      return "unbounded value";
+    },
+  });
+
+  // Two full event-loop turns: any 0ms timer would already have fired, so a
+  // still-pending section proves the bound was disabled rather than instant.
+  for (let turn = 0; turn < 2; turn += 1) {
+    const turned = Promise.withResolvers<void>();
+    setImmediate(turned.resolve);
+    await turned.promise;
+  }
+  released.resolve();
+
+  const outcome = await pending;
+  assert.equal(outcome.timedOut, false);
+  assert.equal(outcome.value, "unbounded value");
+});
+
+test("a caller abort propagates into the section signal", async () => {
+  const caller = new AbortController();
+  let cancelledDuringWork = false;
+
+  const pending = runRecallSectionWithinDeadline({
+    deadlineMs: 5_000,
+    fallback: "degraded",
+    parentSignal: caller.signal,
+    run: async (sectionSignal) => {
+      const cancelled = Promise.withResolvers<void>();
+      sectionSignal.addEventListener("abort", () => {
+        cancelledDuringWork = true;
+        cancelled.resolve();
+      });
+      await cancelled.promise;
+      return "cancelled";
+    },
+  });
+
+  caller.abort();
+  const outcome = await pending;
+
+  assert.equal(cancelledDuringWork, true);
+  assert.equal(outcome.timedOut, false);
+  assert.equal(outcome.value, "cancelled");
+});
+
+test("an already-aborted caller signal cancels the section before it does work", async () => {
+  const caller = new AbortController();
+  caller.abort();
+
+  const outcome = await runRecallSectionWithinDeadline({
+    deadlineMs: 5_000,
+    fallback: "degraded",
+    parentSignal: caller.signal,
+    run: async (sectionSignal) => {
+      assert.equal(sectionSignal.aborted, true);
+      return "observed";
+    },
+  });
+
+  assert.equal(outcome.value, "observed");
+});
+
+test("a section rejection surfaces to the caller instead of being swallowed", async () => {
+  await assert.rejects(
+    runRecallSectionWithinDeadline({
+      deadlineMs: 5_000,
+      fallback: "degraded",
+      run: async () => {
+        throw new Error("section exploded");
+      },
+    }),
+    /section exploded/,
+  );
+});
+
+test("the default core section budget is capped below the request ceiling", () => {
+  // Both settings default to 75s. Taken at face value the section deadline could
+  // never fire first, so degradation would be unreachable on default config.
+  assert.equal(
+    resolveRecallCoreSectionDeadlineMs({
+      configuredCoreDeadlineMs: 75_000,
+      outerTimeoutMs: 75_000,
+    }),
+    60_000,
+  );
+});
+
+test("an explicitly lowered core section budget is honored exactly", () => {
+  assert.equal(
+    resolveRecallCoreSectionDeadlineMs({
+      configuredCoreDeadlineMs: 5_000,
+      outerTimeoutMs: 75_000,
+    }),
+    5_000,
+  );
+});
+
+test("a zero budget on either side keeps the configured value", () => {
+  assert.equal(
+    resolveRecallCoreSectionDeadlineMs({ configuredCoreDeadlineMs: 0, outerTimeoutMs: 75_000 }),
+    0,
+  );
+  // No request ceiling means nothing to reserve headroom against.
+  assert.equal(
+    resolveRecallCoreSectionDeadlineMs({ configuredCoreDeadlineMs: 75_000, outerTimeoutMs: 0 }),
+    75_000,
+  );
 });

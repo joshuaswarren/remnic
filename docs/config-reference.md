@@ -199,6 +199,9 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 | `maxMemoryTokens` | `2000` | Legacy token cap. Only used to compute `recallBudgetChars` when that setting is absent. **Prefer setting `recallBudgetChars` directly.** |
 | `recallMaxConcurrentPerPrincipal` | `4` | Maximum concurrent recalls executed per principal (issue #1906); recalls beyond the cap queue FIFO. `0` = unlimited; set `1` to restore exact serialization. |
 | `recallSingleFlightEnabled` | `true` | Coalesce identical concurrent recalls for the same principal into a single in-flight execution (issue #1906); each caller still receives its own cloned response. Set `false` to restore per-request execution. |
+| `recallCoreDeadlineMs` | `75000` | **Per-section deadline for optional core recall providers.** `entity-retrieval` and `verbatim-artifacts` scan the memory tree, which can take minutes on a large or network/bind-mounted store; when one exceeds this budget the section is dropped, logged as `timeout(<ms>)` in the recall section metrics, and signalled to stop, while the rest of the recall still returns (issue #2291). Lower it (for example `5000`) when recall is consumed by a **synchronous** prompt-injection hook that cannot wait. `0` disables the bound. |
+| `recallEnrichmentDeadlineMs` | `25000` | Shared budget for the deferred enrichment sections assembled after the core phase. `0` disables the bound. |
+| `recallOuterTimeoutMs` | `75000` | Outer ceiling for a whole recall request. `0` disables the bound. |
 | `qmdEnabled` | `true` | Use QMD for hybrid search |
 | `qmdCollection` | `openclaw-engram` | QMD collection name |
 | `externalWikis` | `[]` | External compiled-wiki roots for on-demand search. Each item requires `id` and an absolute or `~/` `rootDir`; optional fields are `enabled`, `label`, `pagesDir`, `indexFile`, `indexInQmd`, and the false-only `includeInDefaultRecall` guard. |

@@ -1506,3 +1506,88 @@ test("assembleRecallSections reserves a memory that fits its section cap without
   assert.deepEqual(assembled.includedMemoryPaths, ["facts/section-fit.md"]);
   assert.ok(assembled.finalChars <= 50);
 });
+
+function captureRecallTimings(
+  orchestrator: Orchestrator,
+): () => Record<string, string> {
+  let captured: Record<string, string> = {};
+  (orchestrator as any).emitTrace = (event: { kind: string; timings?: Record<string, string> }) => {
+    if (event.kind === "recall_summary" && event.timings) captured = event.timings;
+  };
+  return () => captured;
+}
+
+test("a stalled artifact provider degrades at the core deadline instead of holding recall", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-artifact-deadline-", {
+    verbatimArtifactsEnabled: true,
+    // A real timer, not a guessed wait: the stub below never settles on its own,
+    // so the deadline decides this test regardless of machine load.
+    recallCoreDeadlineMs: 25,
+  });
+  const recallTimings = captureRecallTimings(orchestrator);
+  (orchestrator as any).isRecallSectionEnabled = (id: string) =>
+    id === "verbatim-artifacts" || id === "memories";
+
+  let sectionSignal: AbortSignal | undefined;
+  let cancelledDuringScan = false;
+  (orchestrator as any).recallArtifactsAcrossNamespaces = async (
+    _prompt: string,
+    _namespaces: string[],
+    _targetCount: number,
+    options?: { abortSignal?: AbortSignal },
+  ) => {
+    sectionSignal = options?.abortSignal;
+    const cancelled = Promise.withResolvers<void>();
+    options?.abortSignal?.addEventListener("abort", () => {
+      cancelledDuringScan = true;
+      cancelled.resolve();
+    });
+    await cancelled.promise;
+    return [];
+  };
+
+  const context = await (orchestrator as any).recallInternal(
+    "which artifacts mention the deploy runbook?",
+    "agent:test:artifact-deadline",
+    { mode: "full" },
+  );
+
+  // The contract: recall returned at all, and the slow provider was told to stop.
+  assert.equal(typeof context, "string");
+  assert.ok(sectionSignal, "the artifact scan received a cancellation signal");
+  assert.equal(cancelledDuringScan, true);
+  assert.match(recallTimings().artifacts ?? "", /^timeout\(\d+ms\)$/);
+});
+
+test("a stalled entity provider degrades at the core deadline instead of holding recall", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-entity-deadline-", {
+    entityRetrievalEnabled: true,
+    recallCoreDeadlineMs: 25,
+  });
+  const recallTimings = captureRecallTimings(orchestrator);
+  (orchestrator as any).isRecallSectionEnabled = (id: string) =>
+    id === "entity-retrieval";
+
+  const scanStarted = Promise.withResolvers<void>();
+  // Stall the entity section's first read. On a large or slow memory tree the
+  // scans it fans out to take minutes; here one never returns, so only the
+  // deadline can release the response — the guarantee issue #2291 asked for.
+  (orchestrator as any).transcript = {
+    readRecent: async () => {
+      scanStarted.resolve();
+      await Promise.withResolvers<void>().promise;
+      return [];
+    },
+  };
+
+  const recallPromise = (orchestrator as any).recallInternal(
+    "what do we know about the deploy runbook?",
+    "agent:test:entity-deadline",
+    { mode: "full" },
+  );
+  await scanStarted.promise;
+
+  const context = await recallPromise;
+  assert.equal(typeof context, "string");
+  assert.match(recallTimings().entityRetrieval ?? "", /^timeout\(\d+ms\)$/);
+});
