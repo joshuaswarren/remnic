@@ -1,5 +1,6 @@
 import { canReadNamespace, defaultNamespaceForPrincipal } from "./namespaces/principal.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
+import { EngramAccessInputError } from "./access-errors.js";
 import { log } from "./logger.js";
 import type { SearchDegradation, SearchExecutionOptions } from "./search/port.js";
 import type { PluginConfig } from "./types.js";
@@ -126,11 +127,12 @@ export async function runMemorySearchFanout<TResult>(options: {
   principal?: string;
   requestedNamespace?: string;
   collection?: string;
+  mode?: "search" | "hybrid" | "bm25" | "vector";
   search(params: {
     query: string;
     namespaces: string[];
     maxResults?: number;
-    mode: "search";
+    mode: "search" | "hybrid" | "bm25" | "vector";
     execution: SearchExecutionOptions;
   }): Promise<TResult[]>;
 }): Promise<TResult[]> {
@@ -153,7 +155,7 @@ export async function runMemorySearchFanout<TResult>(options: {
     query,
     namespaces,
     maxResults,
-    mode: "search",
+    mode: options.mode ?? "search",
     execution: {
       onDegradation: (degradation) => degradations.push(degradation),
     },
@@ -165,4 +167,305 @@ export async function runMemorySearchFanout<TResult>(options: {
     });
   }
   return results;
+}
+
+/**
+ * Resolve results for a FLAT corpus (namespaces disabled).
+ *
+ * An explicit ranking mode routes through the namespace-aware search even
+ * here, because that is the only path honoring it; the legacy direct-QMD calls
+ * stay the default so nothing else moves.
+ */
+/**
+ * Reject an option combination a flat corpus cannot honor.
+ *
+ * A `mode` routes through the namespace-aware backend, which cannot target a
+ * specific collection, so pairing the two would silently search the default
+ * collection and return unrelated results (AGENTS.md pattern 39).
+ *
+ * Exported as its own step because callers validate BEFORE any budget
+ * short-circuit: changing only the requested result count must never make an
+ * invalid request succeed.
+ */
+export const MEMORY_SEARCH_MODES = ["search", "hybrid", "bm25", "vector"] as const;
+
+export type MemorySearchMode = (typeof MEMORY_SEARCH_MODES)[number];
+
+/**
+ * Reject an unrecognized ranking mode at the service boundary.
+ *
+ * The HTTP and MCP schemas already validate their own input, but an
+ * in-process caller reaches this service untyped. Both namespace backends
+ * route an unknown mode through their DEFAULT ordinary-search branch, so a
+ * typo would silently rank differently instead of reporting bad input
+ * (AGENTS.md §39).
+ */
+/**
+ * Reject a budget that is not a finite non-negative integer.
+ *
+ * The HTTP and MCP schemas validate their own input, but an in-process caller
+ * reaches this service untyped: a negative would hit the `budget <= 0`
+ * short-circuit and return a successful EMPTY page, and a fraction or a
+ * non-finite value would flow into the backend limit and top-up arithmetic.
+ * Zero keeps its documented meaning — an empty result with no backend call.
+ */
+export function assertMemorySearchLimit(maxResults: unknown): void {
+  if (maxResults === undefined) return;
+  if (typeof maxResults !== "number" || !Number.isInteger(maxResults) || maxResults < 0) {
+    throw new EngramAccessInputError(
+      `maxResults must be a non-negative integer (got ${JSON.stringify(maxResults)})`,
+    );
+  }
+}
+
+export function assertMemorySearchMode(mode: unknown): void {
+  if (mode === undefined) return;
+  if (typeof mode !== "string" || !(MEMORY_SEARCH_MODES as readonly string[]).includes(mode)) {
+    throw new EngramAccessInputError(
+      `mode must be one of ${MEMORY_SEARCH_MODES.join(", ")} (got ${JSON.stringify(mode)})`,
+    );
+  }
+}
+
+export function assertFlatCorpusOptions(
+  mode: string | undefined,
+  collection: string | undefined,
+): void {
+  assertMemorySearchMode(mode);
+  if (mode && collection) {
+    throw new EngramAccessInputError(
+      `mode is not supported together with collection on a flat corpus (got collection: ${collection})`,
+    );
+  }
+}
+
+export async function runFlatCorpusMemorySearch<TResult>(options: {
+  query: string;
+  maxResults?: number;
+  collection?: string;
+  mode?: "search" | "hybrid" | "bm25" | "vector";
+  searchAcrossNamespaces(params: {
+    query: string;
+    maxResults?: number;
+    mode: "search" | "hybrid" | "bm25" | "vector";
+  }): Promise<TResult[]>;
+  searchGlobal(query: string, maxResults?: number): Promise<TResult[]>;
+  search(query: string, collection: string | undefined, maxResults?: number): Promise<TResult[]>;
+}): Promise<TResult[]> {
+  const { query, maxResults, collection, mode } = options;
+  assertFlatCorpusOptions(options.mode, options.collection);
+  if (mode) {
+    // The mode-aware backend has no collection selector on a flat corpus, so
+    // honoring the mode would silently search the default collection instead
+    return options.searchAcrossNamespaces({ query, maxResults, mode });
+  }
+  return collection === "global"
+    ? options.searchGlobal(query, maxResults)
+    : options.search(query, collection, maxResults);
+}
+
+/**
+ * How far one generic memory search may page before it stops.
+ *
+ * A backend-safety bound, NOT a stand-in for corpus exhaustion — which is why
+ * it is ABSOLUTE rather than a multiple of the caller's budget. Scaling it to
+ * the budget made "the excluded paths happen to rank first" indistinguishable
+ * from "there is nothing else": a 1,000-row request whose first 4,000 hits are
+ * artifacts stopped at 4,000 and returned an empty page while valid memories
+ * sat at rank 4,001. Pages that come back FULL mean the corpus is not
+ * exhausted, so the loop keeps going until a short page proves it is or this
+ * cap protects the backend.
+ */
+const MEMORY_SEARCH_CANDIDATE_CAP = 25_000;
+
+
+/**
+ * Run a ranked memory search and apply the generic-recall path exclusions
+ * BEFORE the user-facing cap.
+ *
+ * Artifact isolation is a retrieval contract, not a ranking preference:
+ * artifacts flow only through the dedicated verbatim path. Filtering after the
+ * backend's own cap would let a handful of top-ranked artifacts shrink - or
+ * empty - a page that has valid memories right behind them, so the search runs
+ * with candidate headroom and tops up until the post-filter budget is met or
+ * the corpus is exhausted.
+ */
+export async function searchWithGenericExclusion<TResult extends { path: string }>(options: {
+  budget: number;
+  /**
+   * `false` omits `maxResults` on the FIRST request, so a caller that named no
+   * budget keeps the backend's own page size on the wire; the resolved budget
+   * is still what the filtered page is measured against.
+   */
+  sendInitialLimit: boolean;
+  search(limit: number | undefined): Promise<TResult[]>;
+  isExcluded(memoryPath: string): boolean;
+}): Promise<TResult[]> {
+  const { budget } = options;
+  if (budget <= 0) return [];
+  let results: TResult[] = [];
+  let limit: number | undefined = options.sendInitialLimit ? budget : undefined;
+  // With no explicit limit the caller asked for the BACKEND's page, so that
+  // page's size is the target — not the configured cap. Using the cap would
+  // reissue the query whenever the backend's default page is smaller, and
+  // return more rows than the same request used to.
+  let target = budget;
+  let firstPage = true;
+  for (;;) {
+    const raw = await options.search(limit);
+    results = raw.filter((hit) => !options.isExcluded(hit.path));
+    if (firstPage) {
+      firstPage = false;
+      if (!options.sendInitialLimit) target = Math.min(budget, raw.length);
+      if (target <= 0) return [];
+    }
+    if (results.length >= target) break;
+    // What the backend actually served this round: its own page size when we
+    // named no limit.
+    const served = limit ?? raw.length;
+    // A short page means the corpus is exhausted - asking for more is wasted
+    // work that returns the same rows.
+    if (raw.length === 0 || raw.length < served) break;
+    // The cap protects the backend from an unbounded walk, but it can never
+    // sit at or below what the caller explicitly asked for: a request for N
+    // rows needs room BEYOND N to replace the excluded hits among them, or a
+    // large search returns a short page for a count the operation deliberately
+    // supports.
+    const cap = Math.max(MEMORY_SEARCH_CANDIDATE_CAP, target * 2);
+    if (served >= cap) break;
+    limit = Math.min(served * 2, cap);
+  }
+  return results.slice(0, target);
+}
+
+/**
+ * The whole ranked memory-search path behind `POST /engram/v1/memories/search`
+ * and the `memory_search` tool: pick the flat-corpus or namespace-aware
+ * backend, then apply generic-recall exclusions before the caller's cap.
+ */
+export async function runScopedMemorySearch(options: {
+  query: string;
+  budget: number;
+  /** `false` when the caller named no `maxResults`; see the helper below. */
+  sendInitialLimit: boolean;
+  /**
+   * Authorize the scope. Runs BEFORE any budget decision so a zero budget - a
+   * valid empty search - can never skip the namespace/principal gate and turn
+   * an access error into a successful empty result.
+   */
+  authorizeScope(): Promise<void> | void;
+  collection?: string;
+  mode?: "search" | "hybrid" | "bm25" | "vector";
+  namespacesEnabled: boolean;
+  isExcluded(memoryPath: string): boolean;
+  flatCorpus(
+    limit: number | undefined,
+  ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+  namespaced(
+    limit: number | undefined,
+  ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+}): Promise<Array<{ path: string; score: number; snippet: string }>> {
+  await options.authorizeScope();
+  const results = await searchWithGenericExclusion({
+    budget: options.budget,
+    sendInitialLimit: options.sendInitialLimit,
+    isExcluded: options.isExcluded,
+    search: (limit) =>
+      options.namespacesEnabled ? options.namespaced(limit) : options.flatCorpus(limit),
+  });
+  return results.map((hit) => ({
+    path: hit.path,
+    score: hit.score,
+    snippet: (hit.snippet ?? "").slice(0, 800),
+  }));
+}
+
+/** Everything the ranked memory-search surface needs from the service. */
+export interface ScopedMemorySearchDeps {
+  namespacesEnabled: boolean;
+  defaultBudget: number;
+  isExcluded(memoryPath: string): boolean;
+  /** Flat-corpus authorization; throws when the namespace is unreadable. */
+  authorizeFlatCorpus(namespace: string | undefined, principal: string | undefined): void;
+  /** Namespace-aware authorization; throws, else returns the search fan-out. */
+  authorizeNamespaces(
+    namespace: string | undefined,
+    principal: string | undefined,
+    collection: string | undefined,
+  ): Promise<string[]>;
+  searchAcrossNamespaces(params: {
+    query: string;
+    namespaces?: string[];
+    maxResults?: number;
+    mode?: "search" | "hybrid" | "bm25" | "vector";
+  }): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+  searchGlobal(
+    query: string,
+    maxResults?: number,
+  ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+  search(
+    query: string,
+    collection?: string,
+    maxResults?: number,
+  ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
+}
+
+/** The whole `memory_search` surface: validate, authorize, search, shape. */
+export async function memorySearchThroughScope(
+  deps: ScopedMemorySearchDeps,
+  request: {
+    query: string;
+    namespace?: string;
+    maxResults?: number;
+    collection?: string;
+    mode?: "search" | "hybrid" | "bm25" | "vector";
+    principal?: string;
+  },
+): Promise<{
+  query: string;
+  results: Array<{ path: string; score: number; snippet: string }>;
+  count: number;
+}> {
+  const { query, namespace, maxResults, mode, principal } = request;
+  // BOTH branches take the mode, and only the flat one reaches
+  // `assertFlatCorpusOptions` — validate here so a namespaced request cannot
+  // rank differently on a typo, and before any budget short-circuit.
+  assertMemorySearchMode(mode);
+  assertMemorySearchLimit(maxResults);
+  const collection = request.collection?.trim();
+  if (request.collection !== undefined && !collection) {
+    throw new EngramAccessInputError("collection must be a non-empty string");
+  }
+  let searchNamespaces: string[] = [];
+  const results = await runScopedMemorySearch({
+    query, collection, mode,
+    namespacesEnabled: deps.namespacesEnabled,
+    isExcluded: deps.isExcluded,
+    budget: maxResults ?? deps.defaultBudget,
+    sendInitialLimit: maxResults !== undefined,
+    authorizeScope: async () => {
+      if (!deps.namespacesEnabled) {
+        // Validate the option combination here too: a zero budget must not be
+        // a way to slip an invalid request past the check.
+        assertFlatCorpusOptions(mode, collection);
+        return deps.authorizeFlatCorpus(namespace, principal);
+      }
+      searchNamespaces = await deps.authorizeNamespaces(namespace, principal, collection);
+    },
+    flatCorpus: (limit) =>
+      runFlatCorpusMemorySearch({
+        query, maxResults: limit, collection, mode,
+        searchAcrossNamespaces: (p) => deps.searchAcrossNamespaces(p),
+        searchGlobal: (q, globalLimit) => deps.searchGlobal(q, globalLimit),
+        search: (q, coll, searchLimit) => deps.search(q, coll, searchLimit),
+      }),
+    namespaced: (limit) =>
+      runMemorySearchFanout({
+        query, maxResults: limit, principal, collection, mode,
+        requestedNamespace: namespace,
+        namespaces: searchNamespaces,
+        search: (p) => deps.searchAcrossNamespaces(p),
+      }),
+  });
+  return { query, results, count: results.length };
 }

@@ -3830,6 +3830,7 @@ test("HTTP capabilities explicitly advertise receiver convergence finalization",
     assert.deepEqual(await response.json(), {
       lcmCompactionFlushBatch: true,
       offlineSyncConvergenceComplete: true,
+      memoriesSearch: true,
     });
   } finally {
     await server.stop();
@@ -4090,4 +4091,648 @@ test("HTTP external wiki search aliases return the same cited result", async () 
     await server.stop();
     await rm(rootDir, { recursive: true, force: true });
   }
+});
+
+test("HTTP memory search aliases dispatch the boundary operation identically", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const service = {
+    memorySearch: async (request: Record<string, unknown>) => {
+      calls.push(request);
+      return {
+        query: request.query,
+        results: [{ path: "facts/alice.md", score: 0.71, snippet: "alice prefers dark mode" }],
+        count: 1,
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "operator",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    let canonicalBody: unknown;
+    for (const prefix of ["engram", "remnic"]) {
+      const response = await fetch(`http://127.0.0.1:${status.port}/${prefix}/v1/memories/search`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ query: "dark mode", maxResults: 3 }),
+      });
+      assert.equal(response.status, 200);
+      const body: unknown = await response.json();
+      if (canonicalBody === undefined) canonicalBody = body;
+      else assert.deepEqual(body, canonicalBody, "both prefixes must return one shape");
+    }
+    assert.deepEqual(canonicalBody, {
+      query: "dark mode",
+      results: [{ path: "facts/alice.md", score: 0.71, snippet: "alice prefers dark mode" }],
+      count: 1,
+    });
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.equal(call.query, "dark mode");
+      assert.equal(call.maxResults, 3);
+      assert.equal(
+        call.principal,
+        "operator",
+        "the authenticated principal — not a client field — scopes the search",
+      );
+    }
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP memory search rejects an invalid body before service dispatch", async () => {
+  const calls: unknown[] = [];
+  const service = {
+    memorySearch: async (request: unknown) => {
+      calls.push(request);
+      return { query: "", results: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const post = (body: unknown) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories/search`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  try {
+    assert.equal((await post({ query: "   " })).status, 400, "blank query is rejected");
+    assert.equal((await post({})).status, 400, "a missing query is rejected");
+    assert.equal((await post({ query: "ok", maxResults: 0 })).status, 400, "maxResults must be >= 1");
+    assert.equal(
+      (await post({ query: "ok", namespace: 123 })).status,
+      400,
+      "a non-string namespace is rejected, not silently defaulted to the principal's scope",
+    );
+    assert.equal((await post({ query: "ok", namespace: ["a"] })).status, 400);
+    assert.equal((await post({ query: "ok", namespace: {} })).status, 400);
+    assert.equal(calls.length, 0, "no invalid request may reach the service");
+    assert.equal(
+      (await post({ query: "ok", namespace: null })).status,
+      200,
+      "an explicit null keeps its documented no-namespace meaning",
+    );
+    assert.equal(calls.length, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP memory search enforces token op and namespace allow-lists", async () => {
+  const calls: unknown[] = [];
+  const service = {
+    memorySearch: async (request: unknown) => {
+      calls.push(request);
+      return { query: "q", results: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    principal: "reader",
+    authTokenEntriesGetter: () => [
+      { token: "wrong-op", capabilities: { version: 1, ops: ["recall"] } },
+      {
+        token: "wrong-namespace",
+        capabilities: { version: 1, ops: ["memory_search"], namespaces: ["other"] },
+      },
+      {
+        token: "reader",
+        capabilities: { version: 1, ops: ["memory_search"], namespaces: ["team"] },
+      },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const post = (token: string, body: unknown) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories/search`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  try {
+    assert.equal((await post("wrong-op", { query: "q", namespace: "team" })).status, 403);
+    assert.equal(
+      (await post("wrong-namespace", { query: "q", namespace: "team" })).status,
+      403,
+      "a body namespace outside the token allow-list must fail closed",
+    );
+    assert.equal(calls.length, 0, "no denied request may reach the service");
+    assert.equal((await post("reader", { query: "q", namespace: "team" })).status, 200);
+    assert.equal(calls.length, 1);
+    assert.equal(
+      (calls[0] as { namespace?: unknown }).namespace,
+      "team",
+      "the gated namespace reaches the service",
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP memory search binds a scoped token to one namespace instead of fanning out", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const service = {
+    configRef: { defaultNamespace: "generalist" },
+    memorySearch: async (request: Record<string, unknown>) => {
+      calls.push(request);
+      return { query: "q", results: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    principal: "reader",
+    authTokenEntriesGetter: () => [
+      {
+        token: "scoped",
+        capabilities: { version: 1, ops: ["memory_search"], namespaces: ["generalist"] },
+      },
+      { token: "unrestricted", capabilities: { version: 1, ops: ["memory_search"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const post = (token: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories/search`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ query: "q" }),
+    });
+  try {
+    assert.equal((await post("scoped")).status, 200);
+    assert.equal(
+      calls[0]?.namespace,
+      "generalist",
+      "an omitted namespace on a scoped token binds to the allowed effective namespace",
+    );
+    assert.equal((await post("unrestricted")).status, 200);
+    assert.equal(
+      calls[1]?.namespace,
+      undefined,
+      "an unrestricted token keeps the principal-wide fan-out",
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP memory search forwards a validated ranking mode and trims the namespace", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const service = {
+    configRef: { defaultNamespace: "generalist" },
+    memorySearch: async (request: Record<string, unknown>) => {
+      calls.push(request);
+      return { query: "q", results: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    principal: "reader",
+    authTokenEntriesGetter: () => [
+      { token: "scoped", capabilities: { version: 1, ops: ["memory_search"], namespaces: ["team"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const post = (body: unknown) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories/search`, {
+      method: "POST",
+      headers: { authorization: "Bearer scoped", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    assert.equal(
+      (await post({ query: "q", namespace: "  team  ", mode: "vector" })).status,
+      200,
+      "surrounding whitespace must not 403 a namespace the token allows",
+    );
+    assert.equal(calls[0]?.namespace, "team");
+    assert.equal(calls[0]?.mode, "vector", "the ranking mode reaches the service");
+    assert.equal(
+      (await post({ query: "q", namespace: "team", mode: "vsearch" })).status,
+      400,
+      "an unknown ranking mode is rejected, not silently ignored",
+    );
+    assert.equal(calls.length, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP memory search excludes artifacts and tops up to a full page", async () => {
+  // Artifacts rank above real memories. Filtering after the cap would return a
+  // thin page; the search must keep asking until the budget is met.
+  const seen: number[] = [];
+  const corpus = [
+    { path: "artifacts/a1.md", score: 0.99, snippet: "artifact" },
+    { path: "artifacts/a2.md", score: 0.98, snippet: "artifact" },
+    { path: "artifacts/a3.md", score: 0.97, snippet: "artifact" },
+    { path: "facts/one.md", score: 0.5, snippet: "one" },
+    { path: "facts/two.md", score: 0.4, snippet: "two" },
+  ];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 2,
+    sendInitialLimit: true,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    flatCorpus: async (limit) => {
+      seen.push(limit ?? -1);
+      return corpus.slice(0, limit);
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(
+    results.map((hit) => hit.path),
+    ["facts/one.md", "facts/two.md"],
+    "a full page of real memories",
+  );
+  assert.deepEqual(seen, [2, 4, 8], "doubles the candidate request until the budget is met");
+});
+
+test("HTTP memory search stops topping up when the corpus is exhausted", async () => {
+  const seen: number[] = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 5,
+    sendInitialLimit: true,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    flatCorpus: async (limit) => {
+      seen.push(limit ?? -1);
+      return [{ path: "facts/only.md", score: 0.5, snippet: "only" }];
+    },
+    namespaced: async () => [],
+  });
+  assert.equal(results.length, 1);
+  assert.deepEqual(seen, [5], "a short page means there is nothing left to fetch");
+});
+
+test("HTTP memory search omits maxResults when the caller named no budget", async () => {
+  // The wire stays exactly as it was for the default request: the backend's
+  // own page size, not a resolved number. Top-up rounds are explicit.
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 3,
+    sendInitialLimit: false,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      const corpus = [
+        { path: "artifacts/a1.md", score: 0.9, snippet: "artifact" },
+        { path: "facts/one.md", score: 0.5, snippet: "one" },
+        { path: "facts/two.md", score: 0.4, snippet: "two" },
+        { path: "facts/three.md", score: 0.3, snippet: "three" },
+      ];
+      return limit === undefined ? corpus.slice(0, 3) : corpus.slice(0, limit);
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(seen, [undefined, 6], "first request carries no cap, the top-up does");
+  assert.deepEqual(results.map((hit) => hit.path), [
+    "facts/one.md",
+    "facts/two.md",
+    "facts/three.md",
+  ]);
+});
+
+test("HTTP memory search keeps topping up past four excluded pages", async () => {
+  // Eight pages of artifacts ahead of the real memories: a fixed round count
+  // would give up and report a thin page while valid hits sit right behind.
+  const corpus = [
+    ...Array.from({ length: 40 }, (_, index) => ({
+      path: `artifacts/a${index}.md`,
+      score: 1 - index / 100,
+      snippet: "artifact",
+    })),
+    { path: "facts/one.md", score: 0.1, snippet: "one" },
+    { path: "facts/two.md", score: 0.09, snippet: "two" },
+  ];
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 2,
+    sendInitialLimit: true,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      return corpus.slice(0, limit);
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(seen, [2, 4, 8, 16, 32, 64], "doubles past four rounds until the budget is met");
+  assert.deepEqual(results.map((hit) => hit.path), ["facts/one.md", "facts/two.md"]);
+});
+
+test("HTTP memory search stops at the candidate ceiling", async () => {
+  // A backend that always returns a full page of excluded hits must not be
+  // asked for an unbounded number of candidates.
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 1,
+    sendInitialLimit: true,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: () => true,
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      return Array.from({ length: limit ?? 0 }, (_, index) => ({
+        path: `artifacts/a${index}.md`,
+        score: 0.5,
+        snippet: "artifact",
+      }));
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(results, []);
+  // The cap is ABSOLUTE, not a multiple of the budget: a small request whose
+  // hits are all excluded still walks far enough to prove the corpus holds
+  // nothing for it, then stops on the backend-safety bound.
+  assert.equal(seen.at(-1), 25_000, "the last request lands exactly on the cap");
+  assert.ok(seen.length < 20, "and the loop terminates");
+});
+
+test("HTTP memory search scales its ceiling above a large requested budget", async () => {
+  // A fixed 1000 ceiling would stop at or below a 2000-result request, so one
+  // excluded hit in the first page could never be replaced.
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 2_000,
+    sendInitialLimit: true,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath === "artifacts/a.md",
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      const size = limit ?? 0;
+      return [
+        { path: "artifacts/a.md", score: 1, snippet: "artifact" },
+        ...Array.from({ length: size - 1 }, (_, index) => ({
+          path: `facts/f${index}.md`,
+          score: 0.5,
+          snippet: "fact",
+        })),
+      ];
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(seen, [2_000, 4_000], "tops up past the requested budget");
+  assert.equal(results.length, 2_000, "the requested page is delivered in full");
+});
+
+test("HTTP memory search keeps the backend page size when no limit is named", async () => {
+  // The backend's default page (6) is smaller than the configured cap (8).
+  // Treating the cap as the target made a FULL page look short and reissued
+  // the query, returning 8 where the same request used to return 6.
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 8,
+    sendInitialLimit: false,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: () => false,
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      const size = limit ?? 6;
+      return Array.from({ length: size }, (_, index) => ({
+        path: `facts/f${index}.md`,
+        score: 0.5,
+        snippet: "fact",
+      }));
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(seen, [undefined], "one request, no spurious top-up");
+  assert.equal(results.length, 6, "the backend's own page is returned intact");
+});
+
+test("HTTP memory search still tops up a thinned default page", async () => {
+  // Same shape, but an excluded hit really does shorten the page: the target
+  // is the backend page size, so it tops up to restore it.
+  const seen: Array<number | undefined> = [];
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 8,
+    sendInitialLimit: false,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    flatCorpus: async (limit) => {
+      seen.push(limit);
+      const size = limit ?? 6;
+      return [
+        { path: "artifacts/a.md", score: 1, snippet: "artifact" },
+        ...Array.from({ length: size - 1 }, (_, index) => ({
+          path: `facts/f${index}.md`,
+          score: 0.5,
+          snippet: "fact",
+        })),
+      ];
+    },
+    namespaced: async () => [],
+  });
+  assert.deepEqual(seen, [undefined, 12], "tops up against the backend page size");
+  assert.equal(results.length, 6);
+});
+
+test("search keeps archived memories but still excludes the dedicated surfaces", async () => {
+  // The lifecycle reserves archived memories for explicit read/search
+  // surfaces, so a ranked search must return them - while artifacts, activity
+  // digests, and meeting records stay on their own paths.
+  const { isSearchExcludedPath, isGenericRecallExcludedPath } = await import(
+    "./orchestration/generic-recall-paths.js"
+  );
+  assert.equal(
+    isSearchExcludedPath("archive/2026-01/fact-1.md"),
+    false,
+    "archived memories remain findable through search",
+  );
+  assert.equal(
+    isGenericRecallExcludedPath("archive/2026-01/fact-1.md"),
+    true,
+    "but recall injection still skips them",
+  );
+  // Artifacts flow only through the dedicated verbatim path, in BOTH modes.
+  assert.equal(isSearchExcludedPath("artifacts/report.md"), true);
+  assert.equal(isGenericRecallExcludedPath("artifacts/report.md"), true);
+  // And the wiring uses the search predicate, so an archived hit survives.
+  const { runScopedMemorySearch } = await import("./access-memory-search-fanout.js");
+  const results = await runScopedMemorySearch({
+    query: "q",
+    budget: 5,
+    sendInitialLimit: true,
+    authorizeScope: () => {},
+    namespacesEnabled: false,
+    isExcluded: (memoryPath) => isSearchExcludedPath(memoryPath),
+    flatCorpus: async () => [
+      { path: "archive/2026-01/fact-1.md", score: 0.9, snippet: "archived" },
+      { path: "artifacts/report.md", score: 0.8, snippet: "artifact" },
+    ],
+    namespaced: async () => [],
+  });
+  assert.deepEqual(results.map((hit) => hit.path), ["archive/2026-01/fact-1.md"]);
+});
+
+test("a collection-qualified QMD path still hits the dedicated-surface exclusions", async () => {
+  const { isSearchExcludedPath } = await import("./orchestration/generic-recall-paths.js");
+  // A flat-corpus QMD transport returns `qmd://<collection>/<path>` or
+  // `<collection>/<path>`. The activity predicate is root-aware, so an
+  // un-stripped prefix reads as a NESTED path and the digest leaks into
+  // ranked search.
+  const policy = { memoryDir: "/memory", qmdCollection: "memories" };
+
+  for (const excluded of [
+    "qmd://memories/activity/2026-08-02.md",
+    "memories/activity/2026-08-02.md",
+    "qmd://memories/artifacts/report.md",
+    "memories/meetings/2026-01-01/mtg-2026-01-01-abcdef12.md",
+  ]) {
+    assert.equal(isSearchExcludedPath(excluded, policy, "qmd"), true, excluded);
+  }
+  // A namespaced search rewrites hits to absolute paths beneath the
+  // namespace's own storage root; the digest there must be excluded too.
+  assert.equal(
+    isSearchExcludedPath("/memory/namespaces/team/activity/2026-08-02.md", policy, "qmd"),
+    true,
+    "a digest under a namespace root is still a digest",
+  );
+  assert.equal(
+    isSearchExcludedPath("/memory/namespaces/team/facts/proj/activity/2026-08-02.md", policy, "qmd"),
+    false,
+    "and an ordinary nested memory under that root stays searchable",
+  );
+  // A collection whose NAME is also a memory category is disambiguated two
+  // ways: a `qmd://` URI states it in the authority, and a bare path is
+  // resolved against the collection the caller actually requested.
+  assert.equal(
+    isSearchExcludedPath("qmd://facts/activity/2026-08-02.md", policy, "qmd"),
+    true,
+    "the URI authority is unambiguously the collection",
+  );
+  assert.equal(
+    isSearchExcludedPath(
+      "facts/activity/2026-08-02.md",
+      { ...policy, requestedCollection: "facts" },
+      "qmd",
+    ),
+    true,
+    "the caller named `facts` as its collection",
+  );
+  assert.equal(
+    isSearchExcludedPath("facts/activity/2026-08-02.md", policy, "qmd"),
+    false,
+    "without that, `facts` stays a memory category and the memory is searchable",
+  );
+  // A collection this policy does NOT know — a caller-named custom one, or
+  // any collection global search spans — is covered too.
+  for (const excluded of [
+    "custom/activity/2026-08-02.md",
+    "qmd://custom/activity/2026-08-02.md",
+    "custom/artifacts/report.md",
+  ]) {
+    assert.equal(isSearchExcludedPath(excluded, policy, "qmd"), true, excluded);
+  }
+  // A nested ordinary memory that merely looks like a digest stays searchable,
+  // including under a custom collection, and so does an archived one. A
+  // leading segment naming a memory CATEGORY is never read as a collection.
+  for (const kept of [
+    "qmd://memories/facts/proj/activity/2026-08-02.md",
+    "custom/facts/proj/activity/2026-08-02.md",
+    // The configured collection is stripped ONCE. Removing `projects` too
+    // would leave `activity/<date>.md` and hide an ordinary nested memory
+    // from search and recall alike.
+    "memories/projects/activity/2026-08-02.md",
+    "qmd://memories/projects/activity/2026-08-02.md",
+    "facts/activity/2026-08-02.md",
+    "memories/archive/2026-01/fact-1.md",
+  ]) {
+    assert.equal(isSearchExcludedPath(kept, policy, "qmd"), false, kept);
+  }
+});
+
+test("search keeps paging while the backend page is full of excluded hits", async () => {
+  // A budget-proportional ceiling made "the excluded paths rank first"
+  // indistinguishable from "there is nothing else": a 1,000-row request whose
+  // first 4,000 hits are artifacts stopped at 4,000 and answered empty while
+  // valid memories sat at rank 4,001.
+  const { searchWithGenericExclusion } = await import("./access-memory-search-fanout.js");
+  const corpus = [
+    ...Array.from({ length: 4_000 }, (_, index) => ({ path: `artifacts/a-${index}.md` })),
+    ...Array.from({ length: 50, }, (_, index) => ({ path: `facts/f-${index}.md` })),
+  ];
+  const limits: Array<number | undefined> = [];
+  const results = await searchWithGenericExclusion({
+    budget: 1_000,
+    sendInitialLimit: true,
+    search: async (limit) => {
+      limits.push(limit);
+      return corpus.slice(0, limit ?? corpus.length);
+    },
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+  });
+  assert.equal(results.length, 50, "the memories behind the excluded block are returned");
+  assert.ok(limits.length > 1, "and it took more than the first page to reach them");
+  assert.ok(
+    limits.every((limit) => (limit ?? 0) <= 25_000),
+    "while still respecting the absolute backend cap",
+  );
+});
+
+test("a budget above the backend cap still gets the rows it asked for", async () => {
+  // The cap protects the backend from an unbounded walk; it must never sit
+  // BELOW an explicit request, or a large search returns a short page for a
+  // count the operation deliberately supports.
+  const { searchWithGenericExclusion } = await import("./access-memory-search-fanout.js");
+  const corpus = [
+    { path: "artifacts/excluded.md" },
+    ...Array.from({ length: 30_000 }, (_, index) => ({ path: `facts/f-${index}.md` })),
+  ];
+  const results = await searchWithGenericExclusion({
+    budget: 30_000,
+    sendInitialLimit: true,
+    search: async (limit) => corpus.slice(0, limit ?? corpus.length),
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+  });
+  assert.equal(results.length, 30_000, "the excluded hit was replaced, not subtracted");
 });
