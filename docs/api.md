@@ -450,9 +450,10 @@ Search memories by semantic similarity.
 
 **Parameters:**
 - `query` (string, required) — The search query.
-- `maxResults` (number, optional) — Max results to return; defaults to the
-  deployment's `qmdMaxResults`. `0` returns an empty result without querying
-  the backend.
+- `maxResults` (integer, optional, minimum 1) — Max results to return;
+  defaults to the deployment's `qmdMaxResults`. The HTTP and MCP boundary
+  rejects `0` and any non-positive value with a 400; the empty-result-without-
+  a-backend-call behavior for `0` exists only for in-process service callers.
 - `namespace` (string, optional) — Filter by namespace.
 - `collection` (string, optional) — QMD collection override for direct MCP/access calls.
 - `mode` (string, optional) — Ranking mode: `search`, `hybrid`, `bm25`, or
