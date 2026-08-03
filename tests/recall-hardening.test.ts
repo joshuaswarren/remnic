@@ -532,21 +532,28 @@ test("recallInternal aborts while phase-one preamble promises are still pending"
   const callerAbortController = new AbortController();
   (orchestrator as any).isRecallSectionEnabled = (id: string) =>
     id === "shared-context";
+  // Deterministic handshake instead of a wall-clock poll: the stub signals when
+  // the preamble read has started, and never completes until this test releases
+  // it. A time budget here only measured machine load (issue #2300).
   let releaseSharedRead: (() => void) | null = null;
-  let sharedReadStarted = false;
+  let sharedReadCompleted = false;
+  let signalSharedReadStarted: (() => void) | null = null;
+  const sharedReadStarted = new Promise<void>((resolve) => {
+    signalSharedReadStarted = resolve;
+  });
   (orchestrator as any).sharedContext = {
     readPriorities: async () => {
-      sharedReadStarted = true;
+      signalSharedReadStarted?.();
       await new Promise<void>((resolve) => {
         releaseSharedRead = resolve;
       });
+      sharedReadCompleted = true;
       return "slow priorities";
     },
     readLatestRoundtable: async () => null,
     readLatestCrossSignals: async () => null,
   };
 
-  const startedAt = Date.now();
   const recallPromise = (orchestrator as any).recallInternal(
     "phase one abort test",
     "agent:test:phase-one",
@@ -556,26 +563,20 @@ test("recallInternal aborts while phase-one preamble promises are still pending"
     },
   );
 
-  const waitForStartDeadline = Date.now() + 100;
-  while (!sharedReadStarted && Date.now() < waitForStartDeadline) {
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
+  await sharedReadStarted;
   callerAbortController.abort();
 
   await assert.rejects(
     recallPromise,
     (err: unknown) => err instanceof Error && err.name === "AbortError",
   );
-  const elapsedMs = Date.now() - startedAt;
+
+  // The contract, stated directly: the abort surfaced without waiting for the
+  // preamble, which is still pending because only this test can release it.
+  assert.equal(sharedReadCompleted, false, "recall rejected while the preamble read was still pending");
 
   const release = releaseSharedRead as (() => void) | null;
   release?.();
-
-  assert.equal(sharedReadStarted, true);
-  assert.ok(
-    elapsedMs < 80,
-    `expected phase-one abort before slow shared-context read completed, saw ${elapsedMs}ms`,
-  );
 });
 
 test("recallInternal does not launch phase-one preamble work for an already-aborted signal", async () => {
