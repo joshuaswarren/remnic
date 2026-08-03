@@ -241,9 +241,6 @@ export function buildExtractionTurns(
       timestamp,
       sourceValidAt: timestamp,
       sessionKey,
-      // Always-on capture: this transcript may carry TV, podcast, or
-      // overheard speech the wearer never authored (issue #2294).
-      ambientCapture: true,
     });
     chunkLines = [];
     chunkChars = 0;

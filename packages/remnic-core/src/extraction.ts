@@ -46,12 +46,6 @@ import {
 import { applyGroundingWithConnector, headerConnector, renderExtractionConversation, resolveSourceConnector, type ExtractionGroundingContext } from "./source-agent-qualifier.js";
 import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
-import {
-  AMBIENT_CAPTURE_PROMPT_SECTION,
-  AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT,
-  AMBIENT_SPECULATIVE_TIER_CLAUSE,
-  clampAmbientCaptureConfidence,
-} from "./ambient-provenance.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 import { resolveMemoryLifecycleCapabilities,
@@ -1099,11 +1093,6 @@ export class ExtractionEngine {
     return null;
   }
 
-  /**
-   * The one funnel every successful extraction path returns through — local
-   * LLM, direct client, and gateway fallback alike. The ambient clamp lives
-   * here so a new path cannot bypass it (issue #2294).
-   */
   private finalizeExtractionResult(
     result: ExtractionResult,
     turns: ReadonlyArray<{
@@ -1114,10 +1103,8 @@ export class ExtractionEngine {
       turnFingerprint?: string;
     }>,
     sourceConnector?: string,
-    ambientCapture = false,
   ): ExtractionResult {
-    const clamped = ambientCapture ? clampAmbientCaptureConfidence(result) : result;
-    const provenanced = attachExtractionProvenance(clamped, turns, this.config.provenance);
+    const provenanced = attachExtractionProvenance(result, turns, this.config.provenance);
     return sourceConnector === undefined ? provenanced : { ...provenanced, sourceConnector };
   }
 
@@ -1148,12 +1135,6 @@ export class ExtractionEngine {
     // operate on. result.sourceConnector carries it to persistence so the
     // orchestrator does not recompute over a different turn set (#2183).
     const resolvedConnector = resolveSourceConnector(boundedTurns);
-    // Ambient-capture provenance (issue #2294): true when any contributing turn
-    // came from an always-on recorder, so the prompt warns about media audio
-    // and the finalize chokepoint clamps high-impact personal facts.
-    const ambientCapture = boundedTurns.some(
-      (turn) => turn.ambientCapture === true && turn.extractionContextOnly !== true,
-    );
     // The header and qualifier strip/restore are gated on the scope-classification
     // capability; persistence records resolvedConnector regardless (trusted metadata).
     const sourceConnector = lifecycleCaps.extractionScopeClassification
@@ -1241,7 +1222,7 @@ export class ExtractionEngine {
       this.profiler.startSpan("local-llm", extractionTraceId);
       primaryExtractorAttempted = true;
       try {
-        const localResult = await this.extractWithLocalLlm(conversation, existingEntities, signal, ambientCapture);
+        const localResult = await this.extractWithLocalLlm(conversation, existingEntities, signal);
         throwIfExtractionAborted(signal);
         if (localResult) {
           const durationMs = Date.now() - startTime;
@@ -1251,7 +1232,7 @@ export class ExtractionEngine {
           const sanitized = this.sanitizeExtractionResult(localResult, messageTimestamp);
           const grounded = applyGroundingWithConnector(this.config, sanitized, groundingContext);
           const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
-          return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector, ambientCapture);
+          return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector);
         }
         // Local failed, fall back if allowed
         if (!this.config.localLlmFallback) {
@@ -1291,7 +1272,7 @@ export class ExtractionEngine {
       this.profiler.startSpan("direct-client", extractionTraceId);
       primaryExtractorAttempted = true;
       try {
-        const directResult = await this.extractWithDirectClient(conversation, existingEntities, signal, ambientCapture);
+        const directResult = await this.extractWithDirectClient(conversation, existingEntities, signal);
         if (directResult) {
           const durationMs = Date.now() - startTime;
           this.profiler.endSpan("direct-client", extractionTraceId);
@@ -1300,7 +1281,7 @@ export class ExtractionEngine {
           const sanitized = this.sanitizeExtractionResult(directResult, messageTimestamp);
           const grounded = applyGroundingWithConnector(this.config, sanitized, groundingContext);
           const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
-          return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector, ambientCapture);
+          return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector);
         }
         // Emit error event so Opik sees the direct client failure before fallback.
         // Wrapped in try/catch so a subscriber error doesn't break the fallback path.
@@ -1356,7 +1337,7 @@ export class ExtractionEngine {
     this.profiler.startSpan("gateway-fallback", extractionTraceId);
     try {
       const messages = [
-        { role: "system" as const, content: this.buildExtractionInstructions(existingEntities, ambientCapture) },
+        { role: "system" as const, content: this.buildExtractionInstructions(existingEntities) },
         { role: "user" as const, content: conversation },
       ];
 
@@ -1388,7 +1369,7 @@ export class ExtractionEngine {
         const sanitized = this.sanitizeExtractionResult(normalized, messageTimestamp);
         const grounded = applyGroundingWithConnector(this.config, sanitized, groundingContext);
         const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
-        return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector, ambientCapture);
+        return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector);
       }
 
       this.emit({
@@ -1446,7 +1427,6 @@ export class ExtractionEngine {
     conversation: string,
     existingEntities?: string[],
     signal?: AbortSignal,
-    ambientCapture = false,
   ): Promise<ExtractionResult | null> {
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     log.debug(
@@ -1493,7 +1473,7 @@ Rules:
 - Add structuredAttributes only for concrete values.
 - Include at most five durable relationships.${this.config.provenance?.enabled ? `
 - Each fact must include a quote copied verbatim from one contiguous conversation span.` : ""}${lifecycleCaps.extractionScopeClassification ? `
-- Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge. Tool, command, or CLI-flag instructions tied to one agent are "project" (the same tool name can mean different things across agents); when keeping one, begin the fact with a leading "In <agent>," clause naming that agent.` : ""}${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}
+- Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge. Tool, command, or CLI-flag instructions tied to one agent are "project" (the same tool name can mean different things across agents); when keeping one, begin the fact with a leading "In <agent>," clause naming that agent.` : ""}
 ${this.eventTimePromptInstruction()}
 Return only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:
 ${EXTRACTION_RESPONSE_SHAPE}
@@ -1570,7 +1550,6 @@ ${truncatedConversation}`;
     conversation: string,
     existingEntities?: string[],
     signal?: AbortSignal,
-    ambientCapture = false,
   ): Promise<ExtractionResult | null> {
     if (!this.client) return null;
 
@@ -1586,7 +1565,7 @@ ${truncatedConversation}`;
           {
             role: "system",
             content:
-              this.buildExtractionInstructions(existingEntities, ambientCapture) +
+              this.buildExtractionInstructions(existingEntities) +
               `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${EXTRACTION_RESPONSE_SHAPE}`,
           },
           { role: "user", content: conversation },
@@ -1678,11 +1657,8 @@ When a fact states when it became or stopped being true, copy that explicit temp
 
   /**
    * Build extraction instructions shared between local and cloud LLM.
-   *
-   * `ambientCapture` marks input from an always-on recorder, which may carry
-   * speech the user never authored (issue #2294).
    */
-  private buildExtractionInstructions(existingEntities?: string[], ambientCapture = false): string {
+  private buildExtractionInstructions(existingEntities?: string[]): string {
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     return `You are a memory extraction system. Analyze the following conversation and extract durable, reusable memories.
 
@@ -1720,7 +1696,7 @@ Rules:
   * Explicit (0.95-1.0): Direct user statements — "I prefer X", "my name is Y"
   * Implied (0.70-0.94): Strong contextual inference — user consistently does X, clear from conversation flow
   * Inferred (0.40-0.69): Pattern recognition — reasonable guess from limited evidence
-  * Speculative (0.00-0.39): Tentative hypothesis — weak signal, needs future confirmation. Speculative memories auto-expire after 30 days if not confirmed.${ambientCapture ? AMBIENT_SPECULATIVE_TIER_CLAUSE : ""}${this.config.provenance?.enabled ? `
+  * Speculative (0.00-0.39): Tentative hypothesis — weak signal, needs future confirmation. Speculative memories auto-expire after 30 days if not confirmed.${this.config.provenance?.enabled ? `
 - Source quotes: For each fact, include a "quote" field containing the EXACT verbatim words from the conversation that support the fact. Copy a contiguous span from a single speaker turn (not a paraphrase, not a summary). Cap at ~300 characters. This grounds every memory in the literal utterance that created it.` : ""}
 - For commitments: include any deadline or timeframe mentioned${lifecycleCaps.extractionScopeClassification ? `
 
@@ -1729,8 +1705,6 @@ For each fact, set "scope" to one of:
 - "global" — knowledge that applies across projects: core framework/library bugs, API behavior patterns, user preferences (editor, language, style), general coding patterns, infrastructure knowledge, technology facts not tied to one codebase
 - "project" — knowledge specific to one codebase: file paths, environment configs, deployment details, project-specific workarounds, team/stakeholder info tied to one project, repo-specific conventions. Tool, command, or CLI-flag instructions TIED TO ONE AGENT are also "project", because the same tool name means different things in different agent integrations (a "search" tool may search repository code in one agent and the web in another); when keeping such an agent-tied instruction, the fact text MUST name the originating agent as a leading "In <agent>," clause (e.g. "In Pi, use the search tool with a repository path."). A tool/command fact that holds in every agent and every repo is NOT agent-tied — leave it "global" and do not add a qualifier (e.g. "\`git status --short\` emits compact output"). Examples: "In Pi, the search tool takes a repository path" -> "project"; "\`git status --short\` emits compact output" -> "global".
 When in doubt, prefer "project" — it is safer to keep knowledge scoped narrowly.` : ""}
-${ambientCapture ? `${AMBIENT_CAPTURE_PROMPT_SECTION}
-` : ""}
 Entity creation rules (STRICT):
 - Only create entities for DURABLE things: real people, companies, products, tools, ongoing projects
 - NEVER create entities for transient items: individual PRs, branches, Jira tickets, meetings, agent task IDs, log files, database tables, cron job runs, sessions

@@ -6,7 +6,7 @@ import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
 import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ExternalWikiRoot } from "./external-wiki-config.js";
 
-import type { AmbientCaptureProvenance, BufferTurnOwner } from "./buffer-turn-helpers.js";
+import type { BufferTurnOwner } from "./buffer-turn-helpers.js";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 export type TriggerMode = "smart" | "every_n" | "time_based";
 export type ConvergeConflictPolicy = "newest-wins" | "manual";
@@ -2643,7 +2643,7 @@ export interface RelevanceFeedback {
 export interface SourceConnectorProvenance {
   sourceConnector?: string;
 }
-export interface BufferTurn extends SourceConnectorProvenance, BufferTurnOwner, AmbientCaptureProvenance {
+export interface BufferTurn extends SourceConnectorProvenance, BufferTurnOwner {
   role: "user" | "assistant";
   content: string;
   timestamp: string;

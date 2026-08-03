@@ -9,18 +9,6 @@ export interface BufferTurnOwner {
   sessionOwnerPrincipal?: string;
 }
 
-export interface AmbientCaptureProvenance {
-  /**
-   * True when this turn's content came from an always-on ambient capture
-   * device (a wearable recorder, a room microphone) and may therefore carry
-   * speech the user never authored: TV, podcasts, music, overheard
-   * conversation (issue #2294). Set by the ingesting subsystem, never from
-   * tool arguments — extraction reads it to warn the model about media audio
-   * and to clamp high-impact personal facts to the speculative tier.
-   */
-  ambientCapture?: boolean;
-}
-
 export function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (err === null) return "null";
@@ -58,9 +46,6 @@ export function copyBufferTurn(turn: BufferTurn): BufferTurn {
   if (typeof turn.sourceConnector === "string") {
     copy.sourceConnector = turn.sourceConnector;
   }
-  if (turn.ambientCapture === true) {
-    copy.ambientCapture = true;
-  }
   return copy;
 }
 
@@ -76,8 +61,7 @@ export function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn
     left.providerThreadId === right.providerThreadId &&
     left.turnFingerprint === right.turnFingerprint &&
     left.persistProcessedFingerprint === right.persistProcessedFingerprint &&
-    left.sourceConnector === right.sourceConnector &&
-    left.ambientCapture === right.ambientCapture
+    left.sourceConnector === right.sourceConnector
   );
 }
 
