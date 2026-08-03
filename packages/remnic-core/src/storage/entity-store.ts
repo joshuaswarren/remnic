@@ -524,7 +524,9 @@ export class EntityStore {
           if (content !== null) entities.push(parseEntityFile(content, this.deps.entitySchemas));
         }
       }
-
+      // A signal that fired during the last batch's await would otherwise publish
+      // and return as if uncancelled (issue #2307 review).
+      checkCorpusReadAbort(options);
       setCachedEntities(this.deps.baseDir, entities, currentVersion, cacheKey);
       return entities;
     } catch (err) {

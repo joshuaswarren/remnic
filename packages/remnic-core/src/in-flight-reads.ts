@@ -68,6 +68,57 @@ export function deleteInFlightRead(
   }
 }
 
+export interface CoalescedScanCancellation {
+  /** The signal the shared scan itself observes. */
+  readonly scanSignal: AbortSignal;
+  /** Publish the scan to the registry and arm sole-waiter cancellation. */
+  arm(read: Promise<MemoryFile[]>): void;
+  /** Stop tracking the caller's signal (scan settled, or a joiner adopted it). */
+  detach(): void;
+}
+
+/**
+ * Cancellation lifecycle for a coalesced corpus scan (issue #2307).
+ *
+ * Lives beside the registry because the two are one mechanism: whether a scan may
+ * be cancelled depends entirely on whether anyone else has attached to it.
+ *
+ *  - The starter's signal may cancel the scan, because it is the only waiter.
+ *  - `getInFlightRead` calls `detachCancellation` the instant a second reader
+ *    joins, so the scan becomes uncancellable rather than refcounted. The failure
+ *    mode is a scan that outlives its starter, never a joiner holding a cancelled
+ *    read.
+ *  - On the starter's abort the slot is withdrawn BEFORE the controller fires, so
+ *    a reader arriving later cannot attach to a promise already doomed to reject
+ *    with someone else's `AbortError`; it starts a fresh scan instead.
+ */
+export function beginCoalescedScan(
+  baseDir: string,
+  keyId: string,
+  callerSignal?: AbortSignal,
+): CoalescedScanCancellation {
+  const controller = new AbortController();
+  let detached = false;
+  let onCallerAbort = () => {};
+  const detach = () => {
+    if (detached) return;
+    detached = true;
+    callerSignal?.removeEventListener("abort", onCallerAbort);
+  };
+  return {
+    scanSignal: controller.signal,
+    arm(read: Promise<MemoryFile[]>): void {
+      setInFlightRead(baseDir, keyId, read, detach);
+      onCallerAbort = () => {
+        deleteInFlightRead(baseDir, keyId, read);
+        controller.abort();
+      };
+      callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+    },
+    detach,
+  };
+}
+
 /**
  * Drop EVERY in-flight slot for `baseDir` across all secure-store identities.
  * Used by mutations / invalidation / out-of-band corpus bumps: after the corpus

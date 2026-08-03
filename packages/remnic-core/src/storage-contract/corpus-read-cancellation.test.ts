@@ -121,6 +121,7 @@ test("readAllMemories: a second reader protects the coalesced scan from the star
       return origCollect(...args);
     };
 
+    const spy = installScanSpy(sm);
     const starterAbort = new AbortController();
     const starter = sm.readAllMemories({ abortSignal: starterAbort.signal });
     await scanReached.promise;
@@ -138,6 +139,88 @@ test("readAllMemories: a second reader protects the coalesced scan from the star
     assert.deepEqual(
       (await starter).map((m) => m.content),
       joined.map((m) => m.content),
+    );
+    assert.equal(spy.scans(), 1, "the joiner reused the in-flight scan rather than starting its own");
+  });
+});
+
+test("readAllMemories: a joiner arriving after the starter aborted starts a fresh scan", async () => {
+  await withStorage("remnic-2307-memories-late-joiner-", async (sm) => {
+    await sm.writeMemory("fact", "late joiner memory");
+    sm.invalidateAllMemoriesCacheForDir();
+
+    // The starter's scan is doomed the instant its signal fires. Withdrawing it
+    // from the registry first is what stops a late joiner inheriting that
+    // AbortError for a request it never cancelled (issue #2307 review).
+    const scanReached = Promise.withResolvers<void>();
+    const releaseScan = Promise.withResolvers<void>();
+    const inner = sm as unknown as {
+      collectActiveMemoryPaths: (...args: unknown[]) => Promise<string[]>;
+    };
+    const origCollect = inner.collectActiveMemoryPaths.bind(sm);
+    let held = false;
+    inner.collectActiveMemoryPaths = async (...args: unknown[]) => {
+      if (!held) {
+        held = true;
+        scanReached.resolve();
+        await releaseScan.promise;
+      }
+      return origCollect(...args);
+    };
+
+    const starterAbort = new AbortController();
+    const starter = sm.readAllMemories({ abortSignal: starterAbort.signal });
+    await scanReached.promise;
+    starterAbort.abort();
+
+    // Joins only AFTER the abort — must not attach to the doomed scan.
+    const lateJoiner = sm.readAllMemories();
+    releaseScan.resolve();
+
+    await assert.rejects(starter, isAbort);
+    const joined = await lateJoiner;
+    assert.ok(
+      joined.some((m) => m.content === "late joiner memory"),
+      "a late joiner must get its own scan, not the starter's AbortError",
+    );
+  });
+});
+
+test("readAllMemories: a joiner honours its own signal without cancelling the shared scan", async () => {
+  await withStorage("remnic-2307-memories-joiner-abort-", async (sm) => {
+    await sm.writeMemory("fact", "shared scan memory");
+    sm.invalidateAllMemoriesCacheForDir();
+
+    const scanReached = Promise.withResolvers<void>();
+    const releaseScan = Promise.withResolvers<void>();
+    const inner = sm as unknown as {
+      collectActiveMemoryPaths: (...args: unknown[]) => Promise<string[]>;
+    };
+    const origCollect = inner.collectActiveMemoryPaths.bind(sm);
+    let held = false;
+    inner.collectActiveMemoryPaths = async (...args: unknown[]) => {
+      if (!held) {
+        held = true;
+        scanReached.resolve();
+        await releaseScan.promise;
+      }
+      return origCollect(...args);
+    };
+
+    const starter = sm.readAllMemories();
+    await scanReached.promise;
+    const joinerAbort = new AbortController();
+    const joiner = sm.readAllMemories({ abortSignal: joinerAbort.signal });
+    joinerAbort.abort();
+
+    // The joiner stops waiting immediately, before the scan is even released.
+    await assert.rejects(joiner, isAbort);
+
+    releaseScan.resolve();
+    const starterResult = await starter;
+    assert.ok(
+      starterResult.some((m) => m.content === "shared scan memory"),
+      "a joiner's cancellation must never reach the shared scan",
     );
   });
 });
@@ -191,6 +274,38 @@ test("readAllEntityFiles: an already-aborted caller reads nothing and caches not
     // Nothing was published, so the corpus still reads correctly afterwards.
     const entities = await sm.readAllEntityFiles();
     assert.ok(entities.some((e) => e.name === "Cancelled Person"));
+  });
+});
+
+test("readAllEntityFiles: a mid-scan abort publishes no partial entity cache", async () => {
+  await withStorage("remnic-2307-entities-midscan-", async (sm) => {
+    await sm.writeEntity("First Person", "person", ["First Person owns this test."]);
+    await sm.writeEntity("Second Person", "person", ["Second Person owns this test too."]);
+
+    // Abort once the first entity file has been read: the post-loop checkpoint is
+    // what stops that partial batch reaching setCachedEntities.
+    const aborted = new AbortController();
+    const inner = sm as unknown as {
+      readStorageSecureFile: (filePath: string) => Promise<string>;
+    };
+    const origRead = inner.readStorageSecureFile.bind(sm);
+    let reads = 0;
+    inner.readStorageSecureFile = async (filePath: string) => {
+      reads += 1;
+      aborted.abort();
+      return origRead(filePath);
+    };
+
+    await assert.rejects(sm.readAllEntityFiles({ abortSignal: aborted.signal }), isAbort);
+    assert.ok(reads >= 1, "the scan started before it was cancelled");
+
+    inner.readStorageSecureFile = origRead;
+    const entities = await sm.readAllEntityFiles();
+    assert.deepEqual(
+      entities.map((e) => e.name).sort(),
+      ["First Person", "Second Person"],
+      "the aborted scan must not have cached a partial entity set",
+    );
   });
 });
 

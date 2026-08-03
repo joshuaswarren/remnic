@@ -16,6 +16,7 @@ import {
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
+import { raceAbort } from "./abort-error.js";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-search.js";
 import path from "node:path";
@@ -73,7 +74,7 @@ import {
 } from "./memory-cache.js";
 import {
   getInFlightRead,
-  setInFlightRead,
+  beginCoalescedScan,
   deleteInFlightRead,
   deleteInFlightReadsForDir,
   clearInFlightReads,
@@ -4495,26 +4496,21 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // key change can't orphan the slot registered under the old identity.
     const keyId = this.hotCacheKeyId();
     const inFlight = getInFlightRead(this.baseDir, keyId);
-    if (inFlight) return this.rememberMemorySnapshots(await inFlight);
+    if (inFlight) {
+      // A joiner never cancels the shared scan, but it does stop waiting on it:
+      // its own signal must be honoured, or it would sit here for the full scan
+      // and then be handed data it no longer wants (issue #2307 review).
+      return this.rememberMemorySnapshots(
+        await raceAbort(inFlight, options?.abortSignal, "corpus read aborted"),
+      );
+    }
 
-    // This caller STARTED the scan, so its cancellation may stop it — but only
-    // while it stays the sole waiter. `getInFlightRead` detaches this link the
-    // moment a second reader joins, because cancelling a scan someone else is
-    // waiting for would hand them a truncated corpus (issue #2307).
-    const scanAbort = new AbortController();
-    const callerSignal = options?.abortSignal;
-    const onCallerAbort = () => scanAbort.abort();
-    let detached = false;
-    const detachCancellation = () => {
-      if (detached) return;
-      detached = true;
-      callerSignal?.removeEventListener("abort", onCallerAbort);
-    };
-    callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
-
+    // Sole-waiter cancellation lives with the registry that decides whether this
+    // scan is still cancellable at all — see `beginCoalescedScan` (issue #2307).
+    const scan = beginCoalescedScan(this.baseDir, keyId, options?.abortSignal);
     const readPromise = (async (): Promise<MemoryFile[]> => {
       const version = this.getMemoryCorpusVersion();
-      const memories = await this._readAllMemoriesFromDisk({ abortSignal: scanAbort.signal });
+      const memories = await this._readAllMemoriesFromDisk({ abortSignal: scan.scanSignal });
       // Publish only if neither the corpus version NOR the key identity changed
       // during the scan. The version guard prevents clobbering a newer patched +
       // re-keyed entry; the keyId guard prevents publishing this key's decrypted
@@ -4526,11 +4522,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
       return memories;
     })();
-    setInFlightRead(this.baseDir, keyId, readPromise, detachCancellation);
+    scan.arm(readPromise);
     try {
       return this.rememberMemorySnapshots(await readPromise);
     } finally {
-      detachCancellation();
+      scan.detach();
       deleteInFlightRead(this.baseDir, keyId, readPromise);
     }
   }
@@ -4860,6 +4856,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         if (memory !== null) memories.push(memory);
       }
     }
+    // Once more after the loop: a signal that fired during the LAST batch's await
+    // would otherwise let this return successfully, publishing to the cache and
+    // handing results to a caller that had already given up (issue #2307 review).
+    checkCorpusReadAbort(options);
     return memories;
   }
 

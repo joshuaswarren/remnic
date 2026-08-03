@@ -198,6 +198,9 @@ export class MemoryReadStore {
       const artifacts = await scanArtifacts();
       const versionAfter = this.deps.getArtifactWriteVersion();
       latestArtifacts = artifacts;
+      // A signal that fired during the last file read of the walk would otherwise
+      // publish this scan and return it as if uncancelled (issue #2307 review).
+      checkCorpusReadAbort(options);
       if (versionAfter === versionBefore) {
         this.deps.artifactIndexCache = { memories: artifacts, loadedAtMs: Date.now(), writeVersion: versionAfter };
         return artifacts;
@@ -314,6 +317,9 @@ export class MemoryReadStore {
     for (const dir of startDirs) {
       await collectPaths(dir);
     }
+    // A signal that fired during the last directory read would otherwise return a
+    // truncated path list as if it were the whole corpus (issue #2307 review).
+    checkCorpusReadAbort(options);
     return filePaths;
   }
 
