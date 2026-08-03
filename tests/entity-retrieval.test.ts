@@ -2392,3 +2392,106 @@ test("orchestrator preserves zero-limit semantics for entity retrieval", async (
   assert.equal(context.includes("## entity_answer_hints"), false);
   assert.equal(context.includes("## Knowledge Index"), true);
 });
+
+test("entity recall stops at its first checkpoint when the caller has already aborted", async () => {
+  const { config, storage } = await buildHarness("engram-entity-preaborted");
+  await writeEntity(
+    storage,
+    "Aborted Person",
+    "person",
+    ["Aborted Person owns the cancellation test."],
+    "Aborted Person exists only to verify cancellation.",
+  );
+
+  // The scans below read every entity and memory file for the recalled
+  // namespaces (issue #2291): an already-abandoned recall must not start them.
+  let entityFileReads = 0;
+  const readAllEntityFiles = storage.readAllEntityFiles.bind(storage);
+  storage.readAllEntityFiles = async () => {
+    entityFileReads += 1;
+    return readAllEntityFiles();
+  };
+
+  const aborted = new AbortController();
+  aborted.abort();
+
+  await assert.rejects(
+    buildEntityRecallSection({
+      config,
+      storage,
+      query: "Who is Aborted Person?",
+      recentTurns: 6,
+      maxHints: 2,
+      maxSupportingFacts: 6,
+      maxRelatedEntities: 3,
+      maxChars: 2400,
+      transcriptEntries: [],
+      abortSignal: aborted.signal,
+    }),
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+  );
+  assert.equal(entityFileReads, 0);
+});
+
+test("entity recall completes normally when its abort signal never fires", async () => {
+  const { config, storage } = await buildHarness("engram-entity-signal-passthrough");
+  await writeEntity(
+    storage,
+    "Signal Person",
+    "person",
+    ["Signal Person owns the passthrough test."],
+    "Signal Person exists only to verify the signal is inert when unfired.",
+  );
+
+  const section = await buildEntityRecallSection({
+    config,
+    storage,
+    query: "Who is Signal Person?",
+    recentTurns: 6,
+    maxHints: 2,
+    maxSupportingFacts: 6,
+    maxRelatedEntities: 3,
+    maxChars: 2400,
+    transcriptEntries: [],
+    abortSignal: new AbortController().signal,
+  });
+
+  assert.match(section ?? "", /Signal Person/);
+});
+
+test("entity recall reports mid-build cancellation as an abort, not an empty section", async () => {
+  const { config, storage } = await buildHarness("engram-entity-midbuild-abort");
+  await writeEntity(
+    storage,
+    "Midbuild Person",
+    "person",
+    ["Midbuild Person owns the mid-build cancellation test."],
+    "Midbuild Person exists only to verify cancellation accounting.",
+  );
+
+  // Abort while the build is reading, i.e. exactly when a section deadline would
+  // fire. Returning null here would be recorded as a successful empty section and
+  // would hide the breach (issue #2291).
+  const aborted = new AbortController();
+  const readAllEntityFiles = storage.readAllEntityFiles.bind(storage);
+  storage.readAllEntityFiles = async () => {
+    aborted.abort();
+    return readAllEntityFiles();
+  };
+
+  await assert.rejects(
+    buildEntityRecallSection({
+      config,
+      storage,
+      query: "Who is Midbuild Person?",
+      recentTurns: 6,
+      maxHints: 2,
+      maxSupportingFacts: 6,
+      maxRelatedEntities: 3,
+      maxChars: 2400,
+      transcriptEntries: [],
+      abortSignal: aborted.signal,
+    }),
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+  );
+});

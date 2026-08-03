@@ -42,11 +42,22 @@ export interface PrefilterAndArtifactDeps {
   ): Promise<QmdSearchResult[]>;
 }
 
+/**
+ * Cancellation for the artifact recall path (issue #2291).  Artifact recall
+ * re-scans and re-tokenizes every stored artifact, up to `MAX_ATTEMPTS` times
+ * with a growing fetch limit; on a large or slow memory tree that is minutes of
+ * work that used to keep running after the caller had already given up.
+ */
+export interface ArtifactRecallOptions {
+  abortSignal?: AbortSignal;
+}
+
 export async function fetchActiveArtifactsForNamespace(
   deps: Pick<PrefilterAndArtifactDeps, "storageRouter" | "resolveArtifactSourceStatuses">,
   namespace: string,
   prompt: string,
   targetCount: number,
+  options: ArtifactRecallOptions = {},
 ): Promise<MemoryFile[]> {
   const storage = await deps.storageRouter.storageFor(namespace);
   let fetchLimit = computeArtifactCandidateFetchLimit(targetCount);
@@ -55,7 +66,10 @@ export async function fetchActiveArtifactsForNamespace(
   let bestFiltered: MemoryFile[] = [];
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-    const rawResults = await storage.searchArtifacts(prompt, fetchLimit);
+    throwIfRecallAborted(options.abortSignal);
+    const rawResults = await storage.searchArtifacts(prompt, fetchLimit, {
+      abortSignal: options.abortSignal,
+    });
     const sourceIds = Array.from(
       new Set(
         rawResults
@@ -65,6 +79,9 @@ export async function fetchActiveArtifactsForNamespace(
           ),
       ),
     );
+    // The status snapshot rebuild reads every memory in the namespace; do not
+    // start one for a recall that has already been abandoned.
+    throwIfRecallAborted(options.abortSignal);
     const sourceStatus =
       sourceIds.length > 0
         ? await deps.resolveArtifactSourceStatuses(storage, sourceIds)

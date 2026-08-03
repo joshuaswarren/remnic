@@ -40,6 +40,7 @@ import {
   fetchActiveArtifactsForNamespace as fetchActiveArtifactsForNamespaceHelper,
   searchEmbeddingFallback as searchEmbeddingFallbackHelper,
   searchQueryAwareFallback as searchQueryAwareFallbackHelper,
+  type ArtifactRecallOptions,
 } from "./recall-search-prefilter.js";
 import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "../temporal-validity.js";
@@ -251,8 +252,15 @@ export class RecallSearchPipelineCoordinator {
     namespace: string,
     prompt: string,
     targetCount: number,
+    options: ArtifactRecallOptions = {},
   ): Promise<MemoryFile[]> {
-    return fetchActiveArtifactsForNamespaceHelper(this.deps, namespace, prompt, targetCount);
+    return fetchActiveArtifactsForNamespaceHelper(
+      this.deps,
+      namespace,
+      prompt,
+      targetCount,
+      options,
+    );
   }
 
   async buildQueryAwarePrefilter(

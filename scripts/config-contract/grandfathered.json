@@ -1331,22 +1331,12 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "recallCoreDeadlineMs",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "recallDisclosureEscalation",
     "issue": "#1990"
   },
   {
     "kind": "undocumented-key",
     "key": "recallDisclosureEscalationThreshold",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "recallEnrichmentDeadlineMs",
     "issue": "#1990"
   },
   {
@@ -1402,11 +1392,6 @@
   {
     "kind": "undocumented-key",
     "key": "recallMmrTopN",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "recallOuterTimeoutMs",
     "issue": "#1990"
   },
   {

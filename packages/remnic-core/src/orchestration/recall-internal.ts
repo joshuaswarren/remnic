@@ -46,7 +46,10 @@ import {
   boundRecallContextComposition, composeRecallContext, contextBudgetForFooter,
   formatCuriosityFooter, selectCuriosityQuestion,
 } from "../recall-context-composition.js";
-import { createRecallSectionMetricRecorder } from "../recall-qos.js";
+import {
+  createBoundedCoreSectionRunner,
+  createRecallSectionMetricRecorder,
+} from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
 import { type GraphRecallExpandedEntry, type LastRecallSnapshot } from "../recall-state.js";
 import {
@@ -74,7 +77,7 @@ import { searchTrustZoneRecords } from "../trust-zones.js";
 import type { IdentityInjectionMode, MemoryFile, QmdSearchResult, RecallPlanMode } from "../types.js";
 import { type VerifiedEpisodeResult, compareVerifiedEpisodeResults, searchVerifiedEpisodes } from "../verified-recall.js";
 import { type WorkProductLedgerSearchResult, searchWorkProductLedgerEntries } from "../work-product-ledger.js";
-import { abortError } from "../abort-error.js";
+import { abortError, isAbortError, raceAbort } from "../abort-error.js";
 import {
   applyQueryAwareCandidateFilter,
   filterRecallCandidates,
@@ -147,7 +150,13 @@ export class RecallInternalCoordinator {
       profileTraceClosed = true;
       this.deps.profiler.endTrace(profileTraceId); // persists to JSONL file
     };
+    // The CONFIGURED core budget, which is what the sections that run outside the
+    // bounded runner report in their metrics: nothing enforces a deadline for them,
+    // so reporting a derived figure would claim a bound that does not exist. The
+    // bounded runner below derives and reports its own effective budget per
+    // section, against the request budget still left when that section starts.
     const recallSectionDeadlineMs = this.deps.config.recallCoreDeadlineMs ?? 75_000;
+    const recallOuterTimeoutMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
     const enrichmentSectionDeadlineMs =
       this.deps.config.recallEnrichmentDeadlineMs ?? 25_000;
     // Wrap entire recall body in try/finally so profiling trace is always closed,
@@ -204,6 +213,14 @@ export class RecallInternalCoordinator {
     };
     const recordRecallSectionMetric = createRecallSectionMetricRecorder({
       timings,
+      logger: log,
+    });
+    const runBoundedCoreSection = createBoundedCoreSectionRunner({
+      configuredDeadlineMs: recallSectionDeadlineMs,
+      outerDeadlineAtMs:
+        recallOuterTimeoutMs > 0 ? recallStart + recallOuterTimeoutMs : null,
+      parentSignal: options.abortSignal,
+      record: recordRecallSectionMetric,
       logger: log,
     });
     const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -985,41 +1002,48 @@ export class RecallInternalCoordinator {
         });
         return null;
       }
-      const t0 = Date.now();
-      const transcriptEntries = sessionKey
-        ? await readRecentEntityTranscriptEntries(
-            this.deps.transcript.readRecent(
-              entityRecentTranscriptLookbackHours,
-              sessionKey,
-            ),
+      return await runBoundedCoreSection(
+        "entityRetrieval",
+        null as string | null,
+        async (sectionSignal) => {
+          // The transcript store is shared and takes no signal of its own, so the
+          // section stops WAITING on a stalled read rather than pretending to
+          // interrupt it — otherwise a cancelled section sits in this await.
+          const transcriptEntries = sessionKey
+            ? await raceAbort(
+                readRecentEntityTranscriptEntries(
+                  this.deps.transcript.readRecent(
+                    entityRecentTranscriptLookbackHours,
+                    sessionKey,
+                  ),
+                  recentTurns,
+                ),
+                sectionSignal,
+                "entity recall aborted",
+              )
+            : [];
+          return await buildEntityRecallSection({
+            config: this.deps.config,
+            storage: profileStorage,
+            namespaceStorage: (namespace) => this.deps.getStorage(namespace),
+            query: retrievalQuery,
+            recallNamespaces,
             recentTurns,
-          )
-        : [];
-      const section = await buildEntityRecallSection({
-        config: this.deps.config,
-        storage: profileStorage,
-        namespaceStorage: (namespace) => this.deps.getStorage(namespace),
-        query: retrievalQuery,
-        recallNamespaces,
-        recentTurns,
-        maxHints,
-        maxSupportingFacts,
-        maxRelatedEntities,
-        maxChars,
-        transcriptEntries,
-      }).catch((err) => {
-        log.warn(`entity retrieval build failed: ${err}`);
-        return null;
-      });
-      recordRecallSectionMetric({
-        section: "entityRetrieval",
-        priority: "core",
-        durationMs: Date.now() - t0,
-        deadlineMs: recallSectionDeadlineMs,
-        source: "fresh",
-        success: true,
-      });
-      return section;
+            maxHints,
+            maxSupportingFacts,
+            maxRelatedEntities,
+            maxChars,
+            transcriptEntries,
+            abortSignal: sectionSignal,
+          }).catch((err) => {
+            // Cancellation is the deadline/abort contract working; let the bounded
+            // runner record it as cancelled rather than as an empty section.
+            if (isAbortError(err)) throw err;
+            log.warn(`entity retrieval build failed: ${err}`);
+            return null;
+          });
+        },
+      );
     })();
 
     // 1b. Knowledge Index (v7.0)
@@ -1130,7 +1154,6 @@ export class RecallInternalCoordinator {
       )
         return [];
       if (!resolvePresentationCapabilities(this.deps.config).verbatimArtifacts) return [];
-      const t0 = Date.now();
       const targetCount = computeArtifactRecallLimit(
         recallMode,
         recallResultLimit,
@@ -1148,25 +1171,23 @@ export class RecallInternalCoordinator {
         });
         return [];
       }
-      const results = await this.deps.recallArtifactsAcrossNamespaces(
-        retrievalQuery,
-        recallNamespaces,
-        targetCount,
+      return await runBoundedCoreSection(
+        "artifacts",
+        [] as MemoryFile[],
+        async (sectionSignal) => {
+          const results = await this.deps.recallArtifactsAcrossNamespaces(
+            retrievalQuery,
+            recallNamespaces,
+            targetCount,
+            { abortSignal: sectionSignal },
+          );
+          return lifecycleCaps.extractionScopeClassification
+            ? results.filter((artifact) =>
+                canRecallToolScopedMemory(artifact.frontmatter, options.sourceConnector),
+              )
+            : results;
+        },
       );
-
-      recordRecallSectionMetric({
-        section: "artifacts",
-        priority: "core",
-        durationMs: Date.now() - t0,
-        deadlineMs: recallSectionDeadlineMs,
-        source: "fresh",
-        success: true,
-      });
-      return lifecycleCaps.extractionScopeClassification
-        ? results.filter((artifact) =>
-            canRecallToolScopedMemory(artifact.frontmatter, options.sourceConnector),
-          )
-        : results;
     })();
 
     const objectiveStatePromise = (async (): Promise<string | null> => {

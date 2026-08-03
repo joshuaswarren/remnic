@@ -35,6 +35,7 @@ import type { VerifiedEpisodeResult } from "../verified-recall.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
 import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
 import type { RecallRerankCoordinator, RecallResultPartitionSink } from "./recall-rerank-coordinator.js";
+import type { ArtifactRecallOptions } from "./recall-search-prefilter.js";
 import type { RecallSectionAppendOptions, RecallSectionBuckets } from "./recall-section-coordinator.js";
 
 export interface RecallInternalDeps {
@@ -339,6 +340,7 @@ export interface RecallInternalDeps {
     prompt: string,
     recallNamespaces: string[],
     targetCount: number,
+    options?: ArtifactRecallOptions,
   ): Promise<MemoryFile[]>;
   recallAssemblyClockMs(): number;
   recordLastGraphRecallSnapshot(options: {

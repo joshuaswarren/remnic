@@ -27,6 +27,7 @@ import { mergeArtifactRecallCandidates, tokenizeRecallQuery } from "./orchestrat
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import { qmdCollectionNamespaceFromPrefix as computeQmdCollectionNamespaceFromPrefix } from "./orchestrator-namespace-scope.js";
 import { resolveNamespaceFromStorageDir } from "../scopes/scope-plan.js";
+import type { ArtifactRecallOptions } from "./recall-search-prefilter.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
 import type { MemoryFile, PluginConfig, QmdSearchResult } from "../types.js";
 import {
@@ -41,6 +42,7 @@ export interface NamespaceReadFanoutDeps {
     namespace: string,
     prompt: string,
     targetCount: number,
+    options?: ArtifactRecallOptions,
   ): Promise<MemoryFile[]>;
   loadNamespaceStorageDirHintsFromCatalog(): void;
   readonly namespaceCatalog: NamespaceCatalog;
@@ -338,12 +340,13 @@ export class NamespaceReadFanoutCoordinator {
     prompt: string,
     recallNamespaces: string[],
     targetCount: number,
+    options: ArtifactRecallOptions = {},
   ): Promise<MemoryFile[]> {
     if (targetCount <= 0) return [];
     const namespaces = Array.from(new Set(recallNamespaces));
     const filteredByNamespace = await Promise.all(
       namespaces.map((namespace) =>
-        this.deps.fetchActiveArtifactsForNamespace(namespace, prompt, targetCount),
+        this.deps.fetchActiveArtifactsForNamespace(namespace, prompt, targetCount, options),
       ),
     );
 
