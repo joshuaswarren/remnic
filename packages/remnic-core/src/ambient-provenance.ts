@@ -94,7 +94,7 @@ const HIGH_IMPACT_CATEGORIES: Record<string, true> = { moment: true, relationshi
  * Word-bounded alternation only — no nesting, no backtracking risk.
  */
 const HIGH_IMPACT_TOPIC_PATTERN =
-  /\b(?:mother|mothers|mom|moms|mum|father|fathers|dad|dads|sister|sisters|brother|brothers|son|sons|daughter|daughters|wife|wives|husband|husbands|spouse|fiance|fiancee|grandmother|grandfather|grandma|grandpa|grandparent|grandparents|grandson|granddaughter|grandchild|grandchildren|aunt|uncle|cousin|niece|nephew|stepmother|stepfather|stepson|stepdaughter|stepchild|godmother|godfather|birthday|birthdays|anniversary|anniversaries|wedding|weddings|honeymoon|married|marriage|divorce|divorced|widow|widowed|funeral|memorial service|engagement party|baby shower|christening|bar mitzvah|pregnant|pregnancy|miscarriage|miscarried|newborn|gave birth|stillbirth|infertility|ivf|menopause|diagnosis|diagnosed|prognosis|tested positive|cancer|carcinoma|leukemia|tumor|tumour|biopsy|chemotherapy|chemo|radiation therapy|remission|hospice|palliative|terminal illness|surgery|surgeon|hospital|hospitalized|hospitalised|icu|emergency room|ambulance|stroke|heart attack|cardiac|arrhythmia|afib|seizure|epilepsy|asthma|allergy|allergic|diabetes|diabetic|insulin|cholesterol|blood pressure|hypertension|dementia|alzheimer|alzheimers|parkinson|parkinsons|hiv|aids diagnosis|medication|medications|prescription|prescribed|dosage|symptom|symptoms|illness|disease|disorder|syndrome|therapy|therapist|psychiatrist|psychologist|antidepressant|depression|anxiety|bipolar|schizophrenia|adhd|autism|ptsd|overdose|relapse|sobriety|rehab|addiction|alcoholism|concussion|transplant|dialysis|immunocompromised|mental health|covid|covid-19|coronavirus|flu|influenza|pneumonia|bronchitis|infection|infected|fever|migraine|ulcer|hernia|appendicitis|sepsis|sick leave|urgent care|broken leg|broken arm|broken wrist|broken hip|broken rib|broken ribs|sprained|dislocated|torn ligament|torn acl|whiplash|burn unit|chronic pain|disability|wheelchair|hearing aid|blind in|vaccinated|vaccination|immunization|blood test|scan results|mri|ct scan|x-ray)\b/i;
+  /\b(?:mother|mothers|mom|moms|mum|father|fathers|dad|dads|sister|sisters|brother|brothers|son|sons|daughter|daughters|wife|wives|husband|husbands|spouse|fiance|fiancee|grandmother|grandfather|grandma|grandpa|grandparent|grandparents|grandson|granddaughter|grandchild|grandchildren|aunt|uncle|cousin|niece|nephew|stepmother|stepfather|stepson|stepdaughter|stepchild|godmother|godfather|birthday|birthdays|anniversary|anniversaries|wedding|weddings|honeymoon|married|marriage|divorce|divorced|widow|widowed|funeral|memorial service|engagement party|baby shower|christening|bar mitzvah|pregnant|pregnancy|miscarriage|miscarried|newborn|gave birth|stillbirth|infertility|ivf|menopause|diagnosis|diagnosed|prognosis|tested positive|cancer|carcinoma|leukemia|tumor|tumour|biopsy|chemotherapy|chemo|radiation therapy|remission|hospice|palliative|terminal illness|surgery|surgeon|hospital|hospitalized|hospitalised|icu|emergency room|ambulance|stroke|heart attack|cardiac|arrhythmia|afib|seizure|epilepsy|asthma|allergy|allergic|diabetes|diabetic|insulin|cholesterol|blood pressure|hypertension|dementia|alzheimer|alzheimers|parkinson|parkinsons|hiv|aids diagnosis|medication|medications|prescription|prescribed|dosage|symptom|symptoms|illness|disease|disorder|syndrome|therapy|therapist|psychiatrist|psychologist|antidepressant|depression|anxiety|bipolar|schizophrenia|adhd|autism|ptsd|overdose|relapse|sobriety|rehab|addiction|alcoholism|concussion|transplant|dialysis|immunocompromised|mental health|covid|covid-19|coronavirus|flu|influenza|pneumonia|bronchitis|infection|infected|fever|migraine|ulcer|hernia|appendicitis|sepsis|sick leave|urgent care|broken leg|broken arm|broken wrist|broken hip|broken rib|broken ribs|sprained|dislocated|torn ligament|torn acl|whiplash|burn unit|chronic pain|disability|wheelchair|hearing aid|blind in|vaccinated|vaccination|immunization|blood test|scan results|mri|ct scan|x-ray|deaf|deafness|blind|blindness|mute|nonverbal|paralyzed|paralysed|paraplegic|quadriplegic|amputee|amputation|prosthetic|multiple sclerosis|lupus|crohn|celiac|fibromyalgia|cystic fibrosis|sickle cell|cerebral palsy|down syndrome|muscular dystrophy|chronic fatigue|chronic illness|terminally ill|life support|coma|special needs|caregiver|nursing home|assisted living)\b/i;
 
 /**
  * Bodily-harm and affliction SHAPES rather than nouns: "broke her leg", "tore
@@ -116,6 +116,7 @@ const POSSESSED_KINSHIP_PATTERN =
 
 /** Tags that mark a fact as belonging to the same high-impact classes. */
 const HIGH_IMPACT_TAGS: Record<string, true> = {
+  disability: true,
   family: true,
   health: true,
   medical: true,
@@ -143,7 +144,13 @@ export function isHighImpactPersonalFact(fact: {
   category: string;
   content: string;
   tags?: readonly string[];
+  entityRef?: string;
 }): boolean {
+  // The strongest non-lexical signal: extraction normalizes person entities to
+  // a `person-<name>` ref, so a claim ABOUT A PERSON is flagged whatever
+  // condition, relationship, or milestone the sentence happens to name. This is
+  // what covers the wording no list anticipates ("Dana is deaf").
+  if (fact.entityRef !== undefined && /^person[-:]/i.test(fact.entityRef)) return true;
   if (HIGH_IMPACT_CATEGORIES[fact.category] === true) return true;
   if (HIGH_IMPACT_TOPIC_PATTERN.test(fact.content)) return true;
   if (AFFLICTION_SHAPE_PATTERN.test(fact.content)) return true;

@@ -700,10 +700,19 @@ export async function writeDailyDigestMemory(
     },
     { source: wearableSourceLabel(sourceId) },
   );
+  // A provider derives conversation.title from the same captured audio, so a
+  // title lifted from a television scene ("Dana's cancer diagnosis") would
+  // otherwise ride into recall on the digest, bypassing the extraction prompt
+  // and its clamp entirely. Digest content is `moment`, which the classifier
+  // already treats as personal-claim-shaped, so this reads the titles alone
+  // and holds only a contaminated digest for review (#2294).
+  const titleIsHighImpact = lines.some((line) =>
+    isHighImpactPersonalFact({ category: "fact", content: line }),
+  );
   await writer.writeSealedMemory(digestEnvelope, {
     importance: scoreImportance(content, "moment", ["daily-digest"]),
     contentHashSource: content,
-    status: memoryStatusForMode(settings.memoryMode),
+    status: titleIsHighImpact ? "pending_review" : memoryStatusForMode(settings.memoryMode),
     memoryKind: "episode",
   });
   return true;

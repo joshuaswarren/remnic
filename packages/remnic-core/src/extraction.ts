@@ -49,9 +49,7 @@ import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./e
 import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence } from "./ambient-provenance.js";
 import { EXTRACTION_RESPONSE_PLACEHOLDERS, EXTRACTION_RESPONSE_SHAPE, buildExtractionInstructions, eventTimePromptInstruction } from "./extraction-prompt.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
-import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
-import { resolveMemoryLifecycleCapabilities,
-  resolveLocalLlmCapabilities,resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
+import { resolveLocalLlmCapabilities, resolveMemoryLifecycleCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 
 type ExtractionQuestion = ExtractionResult["questions"][number];
 type ExtractedFactResult = ExtractionResult["facts"][number];
@@ -641,16 +639,11 @@ export class ExtractionEngine {
     if (!shouldRunProactivePass(this.config, maxAdditional, this.shouldUseLocalLlm, this.localLlm)) return base;
 
     try {
-      const proactive = await this.generateProactiveQuestions(conversation, base, maxAdditional, signal);
+      const proactive = await this.generateProactiveQuestions(conversation, base, maxAdditional, ctx.ambientCapture === true, signal);
       if (proactive.length === 0) return base;
+      const ambient = ctx.ambientCapture === true;
       const proactiveAdditions = await this.answerProactiveQuestions(
-        conversation,
-        base,
-        proactive,
-        maxAdditional,
-        ctx.sourceConnector,
-        signal,
-      );
+        conversation, base, proactive, maxAdditional, ctx.sourceConnector, ambient, signal);
       const sanitizedAdditions = this.sanitizeExtractionResult(proactiveAdditions, ctx.messageTimestamp);
       const groundedAdditions = applyGroundingWithConnector(this.config, sanitizedAdditions, ctx);
       if (!this.hasExtractionOutputs(groundedAdditions)) return base;
@@ -700,6 +693,7 @@ export class ExtractionEngine {
     conversation: string,
     base: ExtractionResult,
     maxAdditional: number,
+    ambientCapture: boolean,
     signal?: AbortSignal,
   ): Promise<ExtractionQuestion[]> {
     const existingQuestionKeys = new Set(
@@ -718,7 +712,7 @@ export class ExtractionEngine {
 
     const prompt = [
       "You are doing a proactive second-pass memory extraction.",
-      `Generate up to ${maxAdditional} additional high-value follow-up questions not already covered.`,
+      `Generate up to ${maxAdditional} additional high-value follow-up questions not already covered.${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}`,
       "Return only valid JSON with this shape:",
       '{"questions":[{"question":"...","context":"...","priority":0.0}]}',
       "",
@@ -801,6 +795,7 @@ export class ExtractionEngine {
     proactiveQuestions: ExtractionQuestion[],
     maxAdditional: number,
     sourceConnector: string | undefined,
+    ambientCapture: boolean,
     signal?: AbortSignal,
   ): Promise<ExtractionResult> {
     const factsPreview = base.facts
@@ -819,7 +814,7 @@ export class ExtractionEngine {
     const prompt = [
       "You are answering proactive memory follow-up questions using only the provided buffered conversation.",
       `Return at most ${maxAdditional} additional high-confidence memory candidates that were omitted from the base extraction.`,
-      "Only include information directly supported by the conversation. Do not speculate. Do not repeat the base extraction.",
+      `Only include information directly supported by the conversation. Do not speculate. Do not repeat the base extraction.${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}`,
       "Return only valid JSON with this shape:",
       '{"facts":[{"category":"fact","content":"...","confidence":0.0,"tags":["..."],"entityRef":"optional","promptedByQuestion":"optional","quote":"optional verbatim span from a single turn"}],"profileUpdates":["..."],"entities":[{"name":"...","type":"person","facts":["..."],"structuredSections":[{"key":"beliefs","title":"Beliefs","facts":["..."]}],"promptedByQuestion":"optional"}],"relationships":[{"source":"...","target":"...","label":"...","promptedByQuestion":"optional"}]}',
       this.config.provenance?.enabled
@@ -1172,6 +1167,7 @@ export class ExtractionEngine {
       roleAssertionSources,
       messageTimestamp,
       sourceConnector,
+      ambientCapture,
       scopeClassificationEnabled: lifecycleCaps.extractionScopeClassification,
     };
 

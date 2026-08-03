@@ -370,6 +370,35 @@ test("daily digest writes one deterministic episode memory and dedups", async ()
   assert.equal(writes2.length, 0);
 });
 
+test("a digest whose provider title is a personal claim is held for review (#2294)", async () => {
+  // Providers derive conversation.title from the same captured audio, so a
+  // title lifted from a television scene must not ride into recall on the
+  // digest, which bypasses extraction and its clamp entirely.
+  const { writer, writes } = makeWriter();
+  const wrote = await writeDailyDigestMemory(
+    "limitless",
+    "2026-06-10",
+    [{ ...LONG_CONVERSATION, title: "Dana's cancer diagnosis" }],
+    settings({ memoryMode: "smart" }),
+    REGISTRY,
+    writer,
+  );
+
+  assert.equal(wrote, true, "the digest is still written, just not active");
+  assert.equal(writes[0].options.status, "pending_review");
+
+  const { writer: clean, writes: cleanWrites } = makeWriter();
+  await writeDailyDigestMemory(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "smart" }),
+    REGISTRY,
+    clean,
+  );
+  assert.equal(cleanWrites[0].options.status, "active", "an ordinary digest is unaffected");
+});
+
 function judgeReturning(
   kinds: Array<"accept" | "reject" | "defer">,
 ): NonNullable<Parameters<typeof generateWearableMemories>[5]["judgeFacts"]> {

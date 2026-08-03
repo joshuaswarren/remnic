@@ -48,6 +48,9 @@ export interface ExtractionGroundingContext {
   roleAssertionSources?: ExtractionGroundingRoleSources;
   messageTimestamp: Date | undefined;
   sourceConnector?: string;
+  /** Input came from an always-on recorder (issue #2294); the proactive
+   *  second pass reads it so its prompts carry the same media warning. */
+  ambientCapture?: boolean;
   scopeClassificationEnabled?: boolean;
 }
 

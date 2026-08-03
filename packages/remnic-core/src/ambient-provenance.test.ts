@@ -177,6 +177,48 @@ test("an ambient turn marked context-only does not trigger the ambient prompt", 
   assert.doesNotMatch(prompt, /always-on capture/i);
 });
 
+test("the proactive second pass carries the ambient warning into its own prompts", async () => {
+  // The proactive pass makes extra LLM calls on the same conversation and
+  // merges their additions. Without the flag those prompts had no media
+  // warning at all, so a background line could return as a confident fact.
+  const engine = new ExtractionEngine(
+    parseConfig({
+      modelSource: "gateway",
+      proactiveExtractionEnabled: true,
+      maxProactiveQuestionsPerExtraction: 2,
+    }),
+  );
+  const prompts: string[] = [];
+  const fallbackLlm = {
+    async parseWithSchemaDetailed(
+      messages: ChatMessage[],
+      _schema: { parse: (data: unknown) => unknown },
+      _options: { signal?: AbortSignal } = {},
+    ) {
+      prompts.push(messages.map((m) => m.content).join("\n"));
+      return { modelUsed: "fixture-gateway", result: HIGH_IMPACT_EXTRACTION };
+    },
+    // Question generation goes through parseWithSchema, answering through
+    // parseWithSchemaDetailed — the mock must offer both or the pass aborts.
+    async parseWithSchema(
+      messages: ChatMessage[],
+      _schema: { parse: (data: unknown) => unknown },
+      _options: { signal?: AbortSignal } = {},
+    ) {
+      prompts.push(messages.map((m) => m.content).join("\n"));
+      return { questions: [{ question: "What else was said?", context: "", priority: 0.9 }] };
+    },
+  };
+  assert.equal(Reflect.set(engine, "fallbackLlm", fallbackLlm), true);
+
+  await engine.extract([AMBIENT_TURN]);
+
+  assert.ok(prompts.length > 1, "the proactive pass issued at least one extra call");
+  for (const [index, prompt] of prompts.entries()) {
+    assert.match(prompt, /ambient|always-on capture/i, `prompt ${index} carries the media warning`);
+  }
+});
+
 test("ordinary ambient facts keep their confidence — only high-impact classes clamp", async () => {
   const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
   const line = "The team uses PostgreSQL for the primary store.";
@@ -250,6 +292,30 @@ test("isHighImpactPersonalFact flags bodily harm by sentence shape, not by condi
   }
   // Articles are excluded on purpose: a broken build is not a broken bone.
   assert.equal(isHighImpactPersonalFact(claim("The build broke the deploy pipeline.", ["tools"])), false);
+});
+
+test("a claim attached to a person entity is high-impact whatever it says", () => {
+  // The lexicon-free catch-all: extraction normalizes people to `person-<name>`,
+  // so wording no list anticipates is still flagged when it is about a person.
+  assert.equal(
+    isHighImpactPersonalFact({ category: "fact", content: "Dana is deaf.", entityRef: "person-dana" }),
+    true,
+  );
+  assert.equal(
+    isHighImpactPersonalFact({ category: "fact", content: "Some wording no list anticipates.", entityRef: "person-dana" }),
+    true,
+  );
+  assert.equal(
+    isHighImpactPersonalFact({ category: "fact", content: "Ships on Fridays.", entityRef: "project-remnic" }),
+    false,
+    "non-person entities are unaffected",
+  );
+});
+
+test("isHighImpactPersonalFact flags disability and chronic-condition wording", () => {
+  for (const content of ["Dana is deaf.", "Dana is blind.", "Dana has multiple sclerosis.", "He is in a nursing home."]) {
+    assert.equal(isHighImpactPersonalFact(claim(content)), true, content);
+  }
 });
 
 test("isHighImpactPersonalFact flags high-impact tags even when the text is bland", () => {
