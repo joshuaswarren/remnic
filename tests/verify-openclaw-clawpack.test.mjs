@@ -134,7 +134,7 @@ test("a symlinked dist root is refused rather than scanned", () => {
   assert.match(result.stderr, /dist directory is a symlink/);
 });
 
-test("a symlink inside dist is refused, dangling or not", () => {
+test("a dangling symlink inside dist is refused, not thrown on", () => {
   const pkgDir = makeFixture();
   symlinkSync("/nonexistent/target.js", path.join(pkgDir, "dist", "linked.js"));
 
@@ -142,4 +142,39 @@ test("a symlink inside dist is refused, dangling or not", () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /dist\/linked\.js is a symlink/);
+});
+
+test("a symlink inside dist pointing at a real file is refused too", () => {
+  const pkgDir = makeFixture();
+  symlinkSync(path.join(pkgDir, "dist", "index.js"), path.join(pkgDir, "dist", "linked.js"), "file");
+
+  const result = run(pkgDir);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /dist\/linked\.js is a symlink/);
+});
+
+test("a prepack script that creates dist/ is honored, not pre-judged", () => {
+  // Existence is re-read after `npm pack`, so a package whose prepack builds
+  // into dist/ is not rejected on the pre-pack snapshot.
+  const root = mkdtempSync(path.join(tmpdir(), "clawpack-test-"));
+  const pkgDir = path.join(root, "pkg");
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(
+    path.join(pkgDir, "package.json"),
+    JSON.stringify({
+      name: "prepack-fixture",
+      version: "0.0.0",
+      type: "module",
+      main: "dist/index.js",
+      files: ["dist", "openclaw.plugin.json"],
+      scripts: { prepack: "node -e \"require('node:fs').mkdirSync('dist',{recursive:true});require('node:fs').writeFileSync('dist/index.js','export const x=1;\\n')\"" },
+    }),
+  );
+  writeFileSync(path.join(pkgDir, "README.md"), "# fixture\n");
+  writeFileSync(path.join(pkgDir, "openclaw.plugin.json"), JSON.stringify({ id: "fixture" }));
+
+  const result = run(pkgDir);
+
+  assert.equal(result.status, 0, result.stderr);
 });

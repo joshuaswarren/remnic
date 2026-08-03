@@ -31,7 +31,10 @@ function assertRealDirectory(dir, label) {
 }
 
 assertRealDirectory(packageDir, "package directory");
-const distDirExists = assertRealDirectory(distDir, "dist directory");
+// Checked here so a redirected root is rejected before `npm pack` runs any
+// lifecycle script; existence is re-read after the pack, because a `prepack`
+// script may legitimately create dist/.
+assertRealDirectory(distDir, "dist directory");
 
 function parsePackOutput(stdout) {
   const candidates = [0];
@@ -110,7 +113,7 @@ for (const requiredFile of requiredFiles) {
 // requirement; removing that module in #2279 left the assertion unsatisfiable
 // and blocked every release from 2026-07-31 on.
 const distFiles = [...files].filter((file) => file.startsWith("dist/"));
-const builtDistFiles = distDirExists
+const builtDistFiles = assertRealDirectory(distDir, "dist directory")
   ? readdirSync(distDir, { recursive: true })
       .map((relative) => String(relative).split(path.sep).join("/"))
       .filter((relative) => {
