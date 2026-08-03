@@ -26,6 +26,7 @@ import {
   readUnitAuthToken,
   resolveSystemUnitSources,
   SYSTEMD_SYSTEM_UNIT_DIRS,
+  systemdUserUnitDirs,
   resolveUnitEndpoint,
 } from "./bridge.js";
 import { daemonTargetFor } from "./delegate-daemon-target.js";
@@ -2725,4 +2726,87 @@ test("%t names the account's own runtime directory", () => {
     ).port,
     4813,
   );
+});
+
+test("an /etc user unit outranks one in the data directory", async () => {
+  // systemd's user search path puts `$XDG_DATA_HOME/systemd/user` BELOW
+  // `/run` and `/etc`: an administrator override wins over whatever a package
+  // dropped in the data directory.
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-user-prec-"));
+  const data = path.join(root, "data", "systemd", "user");
+  const etc = path.join(root, "etc", "systemd", "user");
+  const config = path.join(root, "config", "systemd", "user");
+  const dirs = [path.join(root, "usr", "lib", "systemd", "user"), data, etc, config];
+  try {
+    for (const dir of [data, etc]) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, "remnic.service"), "[Service]\n", "utf8");
+    }
+    assert.equal(
+      resolveSystemUnitSources(dirs, ["remnic.service"])[0]?.unitPath,
+      path.join(etc, "remnic.service"),
+      "/etc outranks the data directory",
+    );
+    // The user's own config directory still outranks /etc.
+    await mkdir(config, { recursive: true });
+    await writeFile(path.join(config, "remnic.service"), "[Service]\n", "utf8");
+    assert.equal(
+      resolveSystemUnitSources(dirs, ["remnic.service"])[0]?.unitPath,
+      path.join(config, "remnic.service"),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an exhausted budget skips a candidate instead of throwing", async () => {
+  // The public probe rejects a non-positive budget — correctly — so the walk
+  // must notice an elapsed slice itself rather than turning a spent budget
+  // into a thrown configuration error. `bridgeHealthTimeoutMs: 1` is the
+  // supported minimum and crosses that line immediately.
+  const stub = await startHealthStub({ ok: true, memoryDir: MEMORY_DIR });
+  const reasons: string[] = [];
+  try {
+    const resolved = withDaemonEnv(stub.port, () =>
+      resolveBridgeMode("auto", {
+        memoryDir: MEMORY_DIR,
+        timeoutMs: 1,
+        onSkip: (reason) => reasons.push(reason),
+      }),
+    );
+    assert.equal(resolved.mode, "embedded", "a spent budget stays embedded, it does not throw");
+    assert.match(reasons.join("\n"), /budget of 1ms is spent|no healthy daemon/);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("the user unit search path is ordered the way systemd orders it", () => {
+  // Ascending precedence, per systemd.unit's user search path. The data
+  // directory sits BELOW `/run` and `/etc` — an administrator override wins
+  // over whatever a package dropped in `~/.local/share`.
+  const priorData = process.env.XDG_DATA_HOME;
+  const priorConfig = process.env.XDG_CONFIG_HOME;
+  try {
+    delete process.env.XDG_DATA_HOME;
+    delete process.env.XDG_CONFIG_HOME;
+    assert.deepEqual(systemdUserUnitDirs("/home/gw"), [
+      "/usr/lib/systemd/user",
+      "/usr/local/lib/systemd/user",
+      "/home/gw/.local/share/systemd/user",
+      "/run/systemd/user",
+      "/etc/systemd/user",
+      "/home/gw/.config/systemd/user",
+    ]);
+    // XDG overrides replace their defaults in place, not their precedence.
+    process.env.XDG_DATA_HOME = "/xdg/data";
+    process.env.XDG_CONFIG_HOME = "/xdg/config";
+    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(2, 3), ["/xdg/data/systemd/user"]);
+    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(-1), ["/xdg/config/systemd/user"]);
+  } finally {
+    if (priorData === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = priorData;
+    if (priorConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorConfig;
+  }
 });

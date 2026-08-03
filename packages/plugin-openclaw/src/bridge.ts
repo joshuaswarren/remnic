@@ -25,6 +25,7 @@ import {
   readServiceEndpoints,
   readUnitAuthToken,
   SYSTEMD_SYSTEM_UNIT_DIRS,
+  systemdUserUnitDirs,
   type DaemonUnitSource,
 } from "./bridge-unit-discovery.js";
 // Re-exported so `bridge.js` stays the single import surface for consumers of
@@ -34,6 +35,7 @@ export {
   readServiceEndpoints,
   readUnitAuthToken,
   SYSTEMD_SYSTEM_UNIT_DIRS,
+  systemdUserUnitDirs,
   type DaemonUnitSource,
 } from "./bridge-unit-discovery.js";
 
@@ -596,7 +598,12 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
           c.fallbackToken === fallbackToken &&
           // So is the UNIT the credential is re-read from per request: two
           // units can agree today and diverge on the next rotation.
-          c.authTokenUnit?.unitPath === authTokenUnit?.unitPath,
+          c.authTokenUnit?.unitPath === authTokenUnit?.unitPath &&
+          // And so is the CONFIG, for the same reason: `daemonConfigPath` is
+          // re-read per request, so collapsing two configs that agree today
+          // would keep sending the retained one's token after the other
+          // rotates.
+          c.configPath === configPath,
       )
     ) {
       return;
@@ -784,11 +791,22 @@ export function detectDaemonBridgeMode(options: {
     // for a retry would cut short a daemon that is merely still warming up,
     // and a readiness stall is not something a different token fixes.
     const candidateDeadline = Date.now() + Math.min(remainingMs, perCandidateMs);
+    // The clock can cross the deadline between deriving it and spending it —
+    // trivially so at the supported minimum budget of 1ms. The public probe
+    // REJECTS a non-positive budget, and rightly so, but reaching it with one
+    // here would turn an exhausted budget into a thrown configuration error.
+    const firstAttemptMs = candidateDeadline - Date.now();
+    if (firstAttemptMs <= 0) {
+      options.onSkip?.(
+        `preflight budget of ${totalTimeoutMs}ms is spent; ${daemonHost}:${daemonPort} was not probed`,
+      );
+      continue;
+    }
     let usedToken = authTokenOverride;
     let health = readDaemonMemoryDirSync(
       daemonHost,
       daemonPort,
-      candidateDeadline - Date.now(),
+      firstAttemptMs,
       configPath,
       usedToken,
     );

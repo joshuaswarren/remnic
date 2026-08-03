@@ -42,19 +42,23 @@ const SYSTEMD_UNIT_NAMES = ["remnic.service", "engram.service"] as const;
  * like a per-user one, so omitting those directories hid the daemon's endpoint
  * from detection entirely.
  */
-function systemdUserUnitDirs(homeDir: string): string[] {
+export function systemdUserUnitDirs(homeDir: string): string[] {
   const env = (globalThis.process as { env?: Record<string, string | undefined> } | undefined)?.["env"];
   const xdgConfig = env?.["XDG_CONFIG_HOME"];
   const xdgData = env?.["XDG_DATA_HOME"];
   const underHome = (...segments: string[]): string => path.join(homeDir, ...segments);
+  // systemd.unit's user search path, LOWEST precedence first. The data
+  // directory sits BELOW `/run` and `/etc`, not above them: `/etc/systemd/user`
+  // is an administrator override and outranks anything a package dropped in
+  // `~/.local/share`.
   return [
     "/usr/lib/systemd/user",
     "/usr/local/lib/systemd/user",
-    "/etc/systemd/user",
-    "/run/systemd/user",
     xdgData !== undefined && xdgData.trim() !== ""
       ? path.join(expandTildePath(xdgData), "systemd", "user")
       : underHome(".local", "share", "systemd", "user"),
+    "/run/systemd/user",
+    "/etc/systemd/user",
     xdgConfig !== undefined && xdgConfig.trim() !== ""
       ? path.join(expandTildePath(xdgConfig), "systemd", "user")
       : underHome(".config", "systemd", "user"),
