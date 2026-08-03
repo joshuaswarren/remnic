@@ -564,19 +564,23 @@ test("recallInternal aborts while phase-one preamble promises are still pending"
   );
 
   await sharedReadStarted;
-  callerAbortController.abort();
+  try {
+    callerAbortController.abort();
 
-  await assert.rejects(
-    recallPromise,
-    (err: unknown) => err instanceof Error && err.name === "AbortError",
-  );
+    await assert.rejects(
+      recallPromise,
+      (err: unknown) => err instanceof Error && err.name === "AbortError",
+    );
 
-  // The contract, stated directly: the abort surfaced without waiting for the
-  // preamble, which is still pending because only this test can release it.
-  assert.equal(sharedReadCompleted, false, "recall rejected while the preamble read was still pending");
-
-  const release = releaseSharedRead as (() => void) | null;
-  release?.();
+    // The contract, stated directly: the abort surfaced without waiting for the
+    // preamble, which is still pending because only this test can release it.
+    assert.equal(sharedReadCompleted, false, "recall rejected while the preamble read was still pending");
+  } finally {
+    // Always release: a failing assertion must not leave the stubbed read
+    // pending and its promise unsettled for the rest of the run.
+    const release = releaseSharedRead as (() => void) | null;
+    release?.();
+  }
 });
 
 test("recallInternal does not launch phase-one preamble work for an already-aborted signal", async () => {
