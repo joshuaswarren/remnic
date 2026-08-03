@@ -42,6 +42,11 @@ const SYSTEMD_UNIT_NAMES = ["remnic.service", "engram.service"] as const;
  * like a per-user one, so omitting those directories hid the daemon's endpoint
  * from detection entirely.
  */
+/** Preserve order, drop repeats — the XDG default and its override can agree. */
+function dedupe(entries: readonly string[]): string[] {
+  return [...new Set(entries)];
+}
+
 export function systemdUserUnitDirs(homeDir: string): string[] {
   const env = (globalThis.process as { env?: Record<string, string | undefined> } | undefined)?.["env"];
   const xdgConfig = env?.["XDG_CONFIG_HOME"];
@@ -65,9 +70,17 @@ export function systemdUserUnitDirs(homeDir: string): string[] {
     "/usr/lib/systemd/user",
     "/usr/local/share/systemd/user",
     "/usr/local/lib/systemd/user",
-    xdgData !== undefined && xdgData.trim() !== ""
-      ? path.join(expandTildePath(xdgData), "systemd", "user")
-      : underHome(".local", "share", "systemd", "user"),
+    // BOTH the XDG-configured directory and the default, when they differ.
+    // These variables come from the GATEWAY's environment; the daemon's user
+    // manager may have been started with different ones, or none. Scanning only
+    // ours would miss a unit sitting in the other location — the daemon's real
+    // one. Extra directories cost a `statSync` that misses.
+    ...dedupe([
+      underHome(".local", "share", "systemd", "user"),
+      ...(xdgData !== undefined && xdgData.trim() !== ""
+        ? [path.join(expandTildePath(xdgData), "systemd", "user")]
+        : []),
+    ]),
     "/run/systemd/user",
     "/etc/systemd/user",
     // `XDG_CONFIG_DIRS` (default `/etc/xdg`) outranks `/etc/systemd/user` and
@@ -75,9 +88,12 @@ export function systemdUserUnitDirs(homeDir: string): string[] {
     // ASCENDING precedence, so a later entry of the colon list ranks lower —
     // the reverse of how XDG reads it.
     ...systemConfigDirs.reverse(),
-    xdgConfig !== undefined && xdgConfig.trim() !== ""
-      ? path.join(expandTildePath(xdgConfig), "systemd", "user")
-      : underHome(".config", "systemd", "user"),
+    ...dedupe([
+      underHome(".config", "systemd", "user"),
+      ...(xdgConfig !== undefined && xdgConfig.trim() !== ""
+        ? [path.join(expandTildePath(xdgConfig), "systemd", "user")]
+        : []),
+    ]),
   ];
 }
 // A packaged fleet install commonly runs the daemon as a SYSTEM unit rather

@@ -2818,11 +2818,26 @@ test("the user unit search path is ordered the way systemd orders it", () => {
       "/etc/xdg/systemd/user",
       "/home/gw/.config/systemd/user",
     ]);
-    // XDG overrides replace their defaults in place, not their precedence.
+    // An XDG override is scanned ALONGSIDE its default, not instead of it: the
+    // variables come from the gateway's environment, and the daemon's user
+    // manager may have been started with different ones — or none.
     process.env.XDG_DATA_HOME = "/xdg/data";
     process.env.XDG_CONFIG_HOME = "/xdg/config";
-    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(4, 5), ["/xdg/data/systemd/user"]);
-    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(-1), ["/xdg/config/systemd/user"]);
+    const overridden = systemdUserUnitDirs("/home/gw");
+    assert.deepEqual(overridden.slice(4, 6), [
+      "/home/gw/.local/share/systemd/user",
+      "/xdg/data/systemd/user",
+    ]);
+    assert.deepEqual(overridden.slice(-2), [
+      "/home/gw/.config/systemd/user",
+      "/xdg/config/systemd/user",
+    ]);
+    // A variable that merely restates the default adds no duplicate entry.
+    process.env.XDG_CONFIG_HOME = "/home/gw/.config";
+    assert.deepEqual(
+      systemdUserUnitDirs("/home/gw").filter((dir) => dir.endsWith(".config/systemd/user")),
+      ["/home/gw/.config/systemd/user"],
+    );
     // `XDG_CONFIG_DIRS` is read highest-first, so it is reversed into this
     // ascending list: the FIRST entry of the colon list outranks the second.
     process.env.XDG_CONFIG_DIRS = "/first/xdg:/second/xdg";
