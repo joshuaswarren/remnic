@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
@@ -3187,5 +3187,42 @@ test("a rotated UNIT credential reaches delegate routes without a gateway restar
     }
     await rm(home, { recursive: true, force: true });
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("the host's flush-plan notes reach the daemon and the file is cleared", async () => {
+  // The capability advertises a flush plan, so OpenClaw appends durable notes
+  // to the gateway workspace. Embedded mode ingests that file from
+  // `src/index.ts`; delegate mode returns before that wiring, so without this
+  // the notes the host was told to write are read by nobody.
+  const observed: Array<Record<string, unknown>> = [];
+  const stub = await startDaemonStub((pathname, body) => {
+    if (pathname.startsWith("/engram/v1/observe")) observed.push(body);
+    return { flushed: true };
+  });
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flushplan-ws-"));
+  const planPath = path.join(workspaceDir, "state", "plugins", "flush-plan-svc", "flush-plan.md");
+  await mkdir(path.dirname(planPath), { recursive: true });
+  await writeFile(planPath, "- the user prefers terse commit messages\n", "utf8");
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        serviceId: "flush-plan-svc",
+        capability: { ...TEST_CAPABILITY, workspaceDir },
+      }),
+    );
+    await invoke(api, "before_compaction", {}, { sessionKey: "s", workspaceDir });
+
+    assert.equal(observed.length, 1, "the notes were handed to the daemon");
+    assert.match(
+      String((observed[0]?.messages as Array<{ content?: string }>)?.[0]?.content),
+      /terse commit messages/,
+    );
+    assert.equal(await readFile(planPath, "utf8"), "", "and the file was cleared after acceptance");
+  } finally {
+    await stub.close();
+    await rm(workspaceDir, { recursive: true, force: true });
   }
 });

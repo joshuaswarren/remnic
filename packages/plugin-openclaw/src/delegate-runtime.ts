@@ -52,6 +52,7 @@ import {
   withNamespace,
 } from "./delegate-namespaces.js";
 import { daemonTargetFor } from "./delegate-daemon-target.js";
+import { ingestFlushPlanNotes } from "./delegate-flush-plan-ingest.js";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
   type BridgeConfig,
@@ -144,7 +145,7 @@ export interface DelegateHookApi extends DelegateCapabilityApi {
 }
 const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
 
-async function postJson(
+export async function postJson(
   target: DelegateDaemonTarget,
   serviceId: string,
   pathname: string,
@@ -626,6 +627,21 @@ export function registerDelegateRuntime(
         namespace,
         namespaceBindings,
       );
+      // BEFORE the transcript flush, so the host's durable notes and the
+      // transcript reach the daemon in the order they were produced. A failure
+      // here must not abort the flush that follows.
+      try {
+        await ingestFlushPlanNotes({
+          target,
+          serviceId: options.serviceId,
+          workspaceDir: cwdFrom(event, ctx, options.capability.workspaceDir),
+          sessionKey,
+          namespace: namespaces[0],
+          timeoutMs: remainingTimeout(),
+        });
+      } catch (err) {
+        log.warn(`delegate flush-plan ingestion failed: ${String(err)}`);
+      }
       const flushNamespace = async (sessionNamespace: string | undefined) =>
         postJson(
           target,

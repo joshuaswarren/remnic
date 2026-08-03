@@ -144,12 +144,20 @@ const HEALTH_CACHE_TTL_MS = 30_000;
  * limit, NOT a stand-in for corpus exhaustion: only a short page or a
  * satisfied budget ends the loop sooner.
  */
-const SEARCH_CANDIDATE_FLOOR = 1_000;
+const SEARCH_CANDIDATE_CAP = 25_000;
 
-/** Always ABOVE the caller's budget, or one filtered hit could never be
- * replaced on a large request. Mirrors the core search helper. */
+/**
+ * The daemon-safety bound, mirroring the core search helper.
+ *
+ * ABSOLUTE rather than a multiple of the budget: scaling it made "the excluded
+ * hits happen to rank first" indistinguishable from "there is nothing else",
+ * so a request whose first `4 x budget` hits were artifacts returned short
+ * without ever asking for the rank behind them. It still sits above the
+ * caller's own budget, or a single filtered hit could never be replaced on a
+ * large request.
+ */
 function searchCandidateCeiling(budget: number): number {
-  return Math.max(SEARCH_CANDIDATE_FLOOR, budget * 4);
+  return Math.max(SEARCH_CANDIDATE_CAP, budget * 2);
 }
 // A failing probe backs off instead of retrying on every hook, so a daemon
 // that is down or rejecting the token cannot turn each turn into a request.
