@@ -16,6 +16,8 @@ import { lstat, readFile, writeFile } from "node:fs/promises";
  * `maxBodyBytes` (131072) so the JSON envelope around the notes still fits.
  */
 const MAX_OBSERVE_CHUNK_BYTES = 96 * 1024;
+/** The floor the adaptive halving stops at — below this a single note. */
+const MIN_OBSERVE_CHUNK_BYTES = 4 * 1024;
 import path from "node:path";
 
 import { log } from "@remnic/core/logger";
@@ -30,7 +32,8 @@ export async function ingestFlushPlanNotes(options: {
   workspaceDir: string | undefined;
   sessionKey: string;
   namespace: string | undefined;
-  timeoutMs: number;
+  /** What is LEFT of the caller's deadline, re-read for every chunk. */
+  remainingTimeoutMs: () => number;
 }): Promise<void> {
   if (options.workspaceDir === undefined) return;
   const planPath = path.join(
@@ -39,29 +42,33 @@ export async function ingestFlushPlanNotes(options: {
   );
   // The embedded processor refuses a symlinked plan file or parent, and so must
   // this one: following a link would send another file's contents to the daemon
-  // and then truncate that file. `lstat` on every segment under the workspace,
-  // never `realpath`, so a link cannot be resolved away before the check.
+  // and then truncate that file. `lstat` on the ROOT and every segment below
+  // it, never `realpath`, so a link cannot be resolved away before the check.
   if (!(await isLinkFreeUnder(options.workspaceDir, planPath))) {
     log.warn(
-      `[${options.serviceId}] flush-plan ingestion skipped: ${planPath} or a parent is a symlink`,
+      `[${options.serviceId}] flush-plan ingestion skipped: ${planPath}, a parent, or the workspace root is a symlink`,
     );
     return;
   }
-  let notes: string;
-  try {
-    notes = await readFile(planPath, "utf8");
-  } catch {
-    // No plan file yet is the ordinary case, not a failure.
-    return;
-  }
-  if (notes.trim().length === 0) return;
-  // Posted in BOUNDED chunks. The daemon rejects a body over `maxBodyBytes`
-  // with a 413, and keeping the notes on rejection — which is what stops a
-  // credential outage from destroying them — would otherwise deadlock: every
-  // later flush would resend the same oversized body and the file could never
-  // drain, even once the daemon recovered.
-  let sent = "";
-  for (const chunk of chunkOnLineBoundaries(notes, MAX_OBSERVE_CHUNK_BYTES)) {
+  let pending = await readPlan(planPath);
+  if (pending === undefined || pending.trim().length === 0) return;
+
+  // Chunks start large and HALVE on rejection. The daemon's `maxBodyBytes` is
+  // configurable to any positive integer and is not reported anywhere this
+  // client can read, so guessing a fixed ceiling would deadlock every daemon
+  // configured below it — the very failure chunking was added to end. Adapting
+  // needs no new daemon surface and converges in a few requests.
+  let chunkBytes = MAX_OBSERVE_CHUNK_BYTES;
+  while (pending.trim().length > 0) {
+    const timeoutMs = options.remainingTimeoutMs();
+    if (timeoutMs <= 0) {
+      log.warn(
+        `[${options.serviceId}] flush-plan ingestion stopped: the caller's deadline is spent; the remainder drains on the next flush`,
+      );
+      return;
+    }
+    const [chunk] = chunkOnLineBoundaries(pending, chunkBytes);
+    if (chunk === undefined) return;
     const accepted = await postJson(
       options.target,
       options.serviceId,
@@ -71,29 +78,53 @@ export async function ingestFlushPlanNotes(options: {
         messages: [{ role: "user", content: chunk }],
         ...(options.namespace === undefined ? {} : { namespace: options.namespace }),
       },
-      options.timeoutMs,
+      timeoutMs,
     );
-    // `postJson` resolves to null on 401/403 rather than throwing. Stop here
-    // and keep everything not yet accepted, so a rotation or a token without
-    // `observe` costs nothing.
     if (accepted === null) {
+      // Too large, or the credential is not accepted — indistinguishable from
+      // here. Halve and retry until a single line is all that is left; below
+      // that the daemon is refusing the content itself, not its size.
+      if (chunkBytes > MIN_OBSERVE_CHUNK_BYTES && chunkOnLineBoundaries(pending, chunkBytes).length > 1) {
+        chunkBytes = Math.max(MIN_OBSERVE_CHUNK_BYTES, Math.floor(chunkBytes / 2));
+        continue;
+      }
       log.warn(
         `[${options.serviceId}] flush-plan notes were rejected by the daemon; keeping the remainder for the next flush`,
       );
-      break;
+      return;
     }
-    sent += chunk;
+    // Committed IMMEDIATELY, so a later chunk that throws cannot resend what
+    // the daemon already took. Re-reads the file each time, so notes appended
+    // by another session in the meantime survive.
+    pending = (await commitAcceptedPrefix(planPath, chunk)) ?? "";
   }
-  if (sent.length === 0) return;
-  // Remove ONLY what was accepted. Another session may have appended between
-  // the read and now, and blanking the file would discard notes never sent.
-  let current: string;
+}
+
+/** The plan file's contents, or `undefined` when it does not exist. */
+async function readPlan(planPath: string): Promise<string | undefined> {
   try {
-    current = await readFile(planPath, "utf8");
+    return await readFile(planPath, "utf8");
   } catch {
-    return;
+    // No plan file yet is the ordinary case, not a failure.
+    return undefined;
   }
-  await writeFile(planPath, current.startsWith(sent) ? current.slice(sent.length) : current, "utf8");
+}
+
+/**
+ * Remove `accepted` from the front of the plan file and return what is left.
+ *
+ * Only the accepted prefix: another session may have appended between the read
+ * and now, and blanking the file would discard notes that were never sent.
+ */
+async function commitAcceptedPrefix(
+  planPath: string,
+  accepted: string,
+): Promise<string | undefined> {
+  const current = await readPlan(planPath);
+  if (current === undefined) return undefined;
+  const remainder = current.startsWith(accepted) ? current.slice(accepted.length) : current;
+  await writeFile(planPath, remainder, "utf8");
+  return current.startsWith(accepted) ? remainder : undefined;
 }
 
 /**
@@ -129,6 +160,14 @@ async function isLinkFreeUnder(root: string, target: string): Promise<boolean> {
   const relative = path.relative(root, target);
   if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
   let current = root;
+  // The ROOT first: a replaceable workspace symlink would otherwise be walked
+  // straight through, which is the same escape the per-segment check exists to
+  // stop — one level up.
+  try {
+    if ((await lstat(current)).isSymbolicLink()) return false;
+  } catch {
+    return true;
+  }
   for (const segment of relative.split(path.sep)) {
     current = path.join(current, segment);
     try {

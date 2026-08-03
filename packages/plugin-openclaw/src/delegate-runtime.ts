@@ -645,7 +645,9 @@ export function registerDelegateRuntime(
           // ordered history — `namespaces[0]` is where it started, so a
           // rebound session would file new notes under the previous tenant.
           namespace: namespaces.at(-1),
-          timeoutMs: remainingTimeout(),
+          // Re-read per chunk, not captured once: several posts must share
+          // the flush's remaining budget rather than each taking it whole.
+          remainingTimeoutMs: remainingBudget,
         });
       } catch (err) {
         log.warn(`delegate flush-plan ingestion failed: ${String(err)}`);

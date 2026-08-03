@@ -3287,9 +3287,10 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
     workspaceDir,
     sessionKey: "s",
     namespace: undefined,
-    timeoutMs: 5_000,
+    remainingTimeoutMs: () => 5_000,
   };
 
+  let accepting: Awaited<ReturnType<typeof startDaemonStub>> | undefined;
   try {
     // 1. A REJECTED observe (401/403 resolves null) must keep the notes.
     await writeFile(planPath, "- keep me\n", "utf8");
@@ -3299,10 +3300,16 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
     // 2. An append that lands mid-flight must survive the truncation.
     await stub.close();
     let appended = false;
-    const accepting = await startDaemonStub(async (pathname) => {
-      if (appended && pathname.startsWith("/engram/v1/observe")) {
-        appended = false;
-        await writeFile(planPath, "- sent\n- appended later\n", "utf8");
+    const acceptedBodies: string[] = [];
+    accepting = await startDaemonStub(async (pathname, body) => {
+      if (pathname.startsWith("/engram/v1/observe")) {
+        acceptedBodies.push(
+          String((body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? ""),
+        );
+        if (appended) {
+          appended = false;
+          await writeFile(planPath, "- sent\n- appended later\n", "utf8");
+        }
       }
       return { ok: true };
     });
@@ -3312,14 +3319,15 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
     };
     await writeFile(planPath, "- sent\n", "utf8");
     // The stub appends while the observe is in flight, so the write provably
-    // lands between the ingestion's read and its truncate.
+    // lands between the ingestion's read and its commit.
     appended = true;
     await ingestFlushPlanNotes(appending);
-    assert.equal(
-      await readFile(planPath, "utf8"),
-      "- appended later\n",
-      "only the submitted prefix was removed",
+    assert.deepEqual(
+      acceptedBodies,
+      ["- sent\n", "- appended later\n"],
+      "the mid-flight append was delivered rather than truncated away",
     );
+    assert.equal(await readFile(planPath, "utf8"), "", "and the file drained");
 
     // 3. A symlinked plan file is refused outright.
     await rm(planPath, { force: true });
@@ -3332,8 +3340,8 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
       "- someone else's file\n",
       "the symlink target was neither read nor truncated",
     );
-    await accepting.close();
   } finally {
+    await accepting?.close();
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
@@ -3372,7 +3380,7 @@ test("oversized flush-plan notes drain in chunks instead of deadlocking", async 
       workspaceDir,
       sessionKey: "s",
       namespace: undefined,
-      timeoutMs: 10_000,
+      remainingTimeoutMs: () => 10_000,
     });
     assert.ok(bodies.length >= 3, `posted in ${bodies.length} chunks`);
     assert.ok(
