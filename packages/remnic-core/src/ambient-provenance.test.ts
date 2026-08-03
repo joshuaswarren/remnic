@@ -60,6 +60,13 @@ const HIGH_IMPACT_EXTRACTION = {
 
 type ChatMessage = { role: string; content: string };
 
+/**
+ * The mocks below mirror the production signatures exactly — `chatCompletion`
+ * takes an options object, `parseWithSchemaDetailed` takes a schema then
+ * options, and the direct client's `create` takes the full request body. A
+ * narrower mock would let the request contract drift underneath a green test.
+ */
+
 const MODEL_REGISTRY_FIXTURE = {
   calculateContextSizes: () => ({
     maxInputChars: 8_000,
@@ -75,7 +82,7 @@ async function runLocal(turns: BufferTurn[]): Promise<{ prompt: string; result: 
   );
   let prompt = "";
   const localLlm = {
-    async chatCompletion(messages: ChatMessage[]) {
+    async chatCompletion(messages: ChatMessage[], _options: { signal?: AbortSignal } = {}) {
       prompt = messages[1]?.content ?? "";
       return { content: JSON.stringify(HIGH_IMPACT_EXTRACTION) };
     },
@@ -90,7 +97,11 @@ async function runGateway(turns: BufferTurn[]): Promise<{ prompt: string; result
   const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
   let prompt = "";
   const fallbackLlm = {
-    async parseWithSchemaDetailed(messages: ChatMessage[]) {
+    async parseWithSchemaDetailed(
+      messages: ChatMessage[],
+      _schema: { parse: (data: unknown) => unknown },
+      _options: { signal?: AbortSignal } = {},
+    ) {
       prompt = messages[0]?.content ?? "";
       return { modelUsed: "fixture-gateway", result: HIGH_IMPACT_EXTRACTION };
     },
@@ -106,7 +117,10 @@ async function runDirect(turns: BufferTurn[]): Promise<{ prompt: string; result:
   const client = {
     chat: {
       completions: {
-        async create(request: { messages: ChatMessage[] }) {
+        async create(
+          request: { model: string; messages: ChatMessage[] },
+          _requestOptions?: { signal?: AbortSignal },
+        ) {
           prompt = request.messages[0]?.content ?? "";
           return { choices: [{ message: { content: JSON.stringify(HIGH_IMPACT_EXTRACTION) } }] };
         },
@@ -167,7 +181,11 @@ test("ordinary ambient facts keep their confidence — only high-impact classes 
   const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
   const line = "The team uses PostgreSQL for the primary store.";
   const fallbackLlm = {
-    async parseWithSchemaDetailed() {
+    async parseWithSchemaDetailed(
+      _messages: ChatMessage[],
+      _schema: { parse: (data: unknown) => unknown },
+      _options: { signal?: AbortSignal } = {},
+    ) {
       return {
         modelUsed: "fixture-gateway",
         result: {

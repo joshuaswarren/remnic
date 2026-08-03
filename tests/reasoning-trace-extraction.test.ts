@@ -389,8 +389,16 @@ describe("extraction prompt includes reasoning_trace guidance", () => {
       parseConfig({ localLlmEnabled: true, localLlmModel: "fixture-local", localLlmFallback: false }),
     );
     let prompt = "";
+    // Production signature: chatCompletion(messages, options) — the options
+    // object carries operation/priority/signal, so a mock that omits it would
+    // pass while the real client contract drifted.
+    let localOptions: { operation?: string } | undefined;
     const localLlm = {
-      async chatCompletion(messages: Array<{ content: string }>) {
+      async chatCompletion(
+        messages: Array<{ role: string; content: string }>,
+        options: { operation?: string; signal?: AbortSignal } = {},
+      ) {
+        localOptions = options;
         prompt = messages[1]?.content ?? "";
         return { content: EMPTY_RESULT };
       },
@@ -400,6 +408,7 @@ describe("extraction prompt includes reasoning_trace guidance", () => {
 
     await engine.extract([SOURCE_TURN]);
 
+    assert.equal(localOptions?.operation, "extraction", "the engine passes the options argument");
     assert.match(prompt, /reasoning_trace: Stored solution chains/);
     assert.ok(
       prompt.includes('"category": "reasoning_trace"'),
@@ -411,8 +420,15 @@ describe("extraction prompt includes reasoning_trace guidance", () => {
   it("the gateway prompt the model receives describes reasoning_trace", async () => {
     const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
     let prompt = "";
+    // Production signature: parseWithSchemaDetailed(messages, schema, options).
+    let gatewaySchema: unknown;
     const fallbackLlm = {
-      async parseWithSchemaDetailed(messages: Array<{ content: string }>) {
+      async parseWithSchemaDetailed(
+        messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+        schema: { parse: (data: unknown) => unknown },
+        _options: { signal?: AbortSignal } = {},
+      ) {
+        gatewaySchema = schema;
         prompt = messages[0]?.content ?? "";
         return { modelUsed: "fixture-gateway", result: JSON.parse(EMPTY_RESULT) };
       },
@@ -421,6 +437,7 @@ describe("extraction prompt includes reasoning_trace guidance", () => {
 
     await engine.extract([SOURCE_TURN]);
 
+    assert.equal(typeof (gatewaySchema as { parse?: unknown })?.parse, "function", "the engine passes a schema");
     assert.match(prompt, /reasoning_trace: A stored solution chain/);
   });
 
@@ -430,7 +447,13 @@ describe("extraction prompt includes reasoning_trace guidance", () => {
     const client = {
       chat: {
         completions: {
-          async create(request: { messages: Array<{ content: string }> }) {
+          // Production signature: create(body, requestOptions?) where body
+          // carries model + token params alongside messages.
+          async create(
+            request: { model: string; messages: Array<{ role: string; content: string }> },
+            _requestOptions?: { signal?: AbortSignal },
+          ) {
+            assert.equal(typeof request.model, "string", "the engine sends a model");
             prompt = request.messages[0]?.content ?? "";
             return { choices: [{ message: { content: EMPTY_RESULT } }] };
           },
