@@ -643,7 +643,17 @@ export function createDelegateMemoryCapability(
     // omitted mode sends a flat corpus down the legacy direct-QMD path — a
     // different ranking for the same request. Always send one.
     const searchMode = opts?.qmdSearchModeOverride === "vsearch" ? "vector" : "search";
+    // ONE budget for the whole search, pagination included: a fresh timer per
+    // top-up page let a slow daemon stretch a single `search()` across minutes
+    // while each individual request looked well inside its timeout.
+    const searchDeadline = now() + options.searchTimeoutMs;
     const fetchPage = async (limit: number | undefined): Promise<unknown[]> => {
+      const remaining = searchDeadline - now();
+      if (remaining <= 0) {
+        throw new Error(
+          `delegate search unavailable: the search budget of ${options.searchTimeoutMs}ms is spent`,
+        );
+      }
       const response = await fetch(daemonUrl(target, "/engram/v1/memories/search"), {
         method: "POST",
         headers: { ...daemonAuthHeaders(target), "Content-Type": "application/json" },
@@ -655,7 +665,8 @@ export function createDelegateMemoryCapability(
           mode: searchMode,
           ...(namespace === undefined ? {} : { namespace }),
         }),
-        signal: AbortSignal.timeout(options.searchTimeoutMs),
+        // What is LEFT of the shared budget, not a fresh one.
+        signal: AbortSignal.timeout(remaining),
       });
       if (!response.ok) {
         await response.body?.cancel();

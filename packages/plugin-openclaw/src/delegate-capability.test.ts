@@ -22,6 +22,8 @@ type DaemonStub = {
   onHealth?: () => void;
   /** Replaces the health body from the next request on. */
   healthOverride?: unknown;
+  /** Runs when a search request is served, so a test can advance its clock. */
+  onSearch?: () => void;
   close: () => Promise<void>;
 };
 
@@ -47,7 +49,8 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
       const pathname = (req.url ?? "").split("?")[0] ?? "";
       calls.push({ pathname, body: raw ? JSON.parse(raw) : undefined });
       const isSearch = pathname.endsWith("/memories/search");
-      if (!isSearch) stub?.onHealth?.();
+      if (isSearch) stub?.onSearch?.();
+      else stub?.onHealth?.();
       const delayMs = isSearch ? 0 : (routes.healthDelayMs ?? 0);
       if (delayMs > 0) {
         setTimeout(() => respond(), delayMs);
@@ -2412,6 +2415,42 @@ test("a local read fails closed when authorization cannot be confirmed", async (
       /could not be confirmed/,
     );
     assert.deepEqual(await built.listArtifacts(), []);
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("pagination shares one search budget instead of restarting it", async () => {
+  // A fresh timer per top-up page let a slow daemon stretch a single
+  // `search()` across minutes while each request looked well inside its own
+  // timeout. One deadline covers the whole call.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const excluded = Array.from({ length: 12 }, (_, index) => ({
+    path: `artifacts/a-${index}.md`,
+    score: 0.9,
+    snippet: "artifact",
+  }));
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+    search: { query: "q", count: excluded.length, results: excluded },
+  });
+  try {
+    let clock = 1_000_000;
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir, { now: () => clock }),
+      searchTimeoutMs: 1_000,
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    // Each page "takes" 600ms of the shared 1000ms budget.
+    stub.onSearch = () => {
+      clock += 600;
+    };
+    await assert.rejects(
+      () => manager?.search("q", { maxResults: 5 }) ?? Promise.resolve(),
+      /search budget of 1000ms is spent/,
+      "the second page found the budget already spent",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });

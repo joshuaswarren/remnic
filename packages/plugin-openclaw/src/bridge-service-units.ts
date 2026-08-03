@@ -45,8 +45,10 @@ function coercePort(value: unknown): number | undefined {
 export function resolveUnitConfigPath(
   unit: string,
   scope: UnitScope,
+  readFile?: (candidate: string) => string | undefined,
+  listDir?: (directory: string) => string[],
 ): string | undefined {
-  return resolveUnitEndpoint(unit, scope).configPath;
+  return resolveUnitEndpoint(unit, scope, readFile, listDir).configPath;
 }
 
 /**
@@ -442,20 +444,30 @@ function readUnitCliOverrides(
   // as a number. Leaving it literal makes `coercePort` discard it and sends
   // detection to the default endpoint instead of the running one.
   const environment = readUnitEnvironment(unit, scope, readFile, listDir);
-  // Substitution happens AFTER tokenization, per token: systemd expands a
-  // variable into exactly ONE argument, so a value containing whitespace
-  // ("alpha beta") must not split into two. Splitting it truncated a
-  // credential to its first word and 401ed the probe.
-  const substitute = (token: string): string =>
-    token.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (match, braced, bare) =>
-      environment.get(braced ?? bare) ?? match,
+  // Substitution happens AFTER tokenization, and the two syntaxes differ —
+  // systemd's Command Lines contract: `${VAR}` expands to exactly ONE
+  // argument (so a credential containing whitespace stays whole), while a
+  // bare `$VAR` is split on whitespace into separate arguments (so
+  // `ARGS=--port 4813 --auth-token secret` contributes four).
+  const substituteBraced = (token: string): string =>
+    token.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) =>
+      environment.get(name) ?? match,
     );
+  const expandToken = (token: string): string[] => {
+    const braced = substituteBraced(token);
+    const bare = /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(braced);
+    const name = bare?.[1];
+    if (name === undefined) return [braced];
+    const value = environment.get(name);
+    if (value === undefined) return [braced];
+    return value.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  };
   // Every command that survived the resets, in order. A `Type=oneshot` unit
   // may legitimately keep several, and `readFlag` takes the last occurrence
   // across all of them — which is also what a replacement command needs.
   for (const command of readEffectiveDirectives(unit).execStart) {
     for (const token of command.match(/"[^"]*"|'[^']*'|\S+/g) ?? []) {
-      tokens.push(substitute(token));
+      tokens.push(...expandToken(token));
     }
   }
   const programArgs = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(unit);
@@ -581,6 +593,17 @@ function resolveUnitConfigPathInner(
     const resolved = resolveAgainstWorkingDirectory(raw, workingDirectory, scope);
     if (resolved === undefined) continue;
     return { configPath: resolved };
+  }
+  // No explicit config: the server AUTO-DISCOVERS one in its cwd, which the
+  // unit sets. Reporting nothing here would skip a unit whose endpoint lives
+  // in exactly that file (remnic-server `resolveConfigPath`).
+  if (workingDirectory !== undefined) {
+    for (const name of ["remnic.config.json", "engram.config.json"]) {
+      const candidate = resolveAgainstWorkingDirectory(name, workingDirectory, scope);
+      if (candidate !== undefined && readFile(candidate) !== undefined) {
+        return { configPath: candidate };
+      }
+    }
   }
   return {};
 }

@@ -2691,22 +2691,35 @@ test("the delegate config is the one the daemon itself would select", async () =
 });
 
 test("ExecStart substitutes the unit's own environment variables", () => {
-  // systemd substitutes `$VAR` and `${VAR}` from the unit's environment before
-  // launching, so `--port ${PORT}` reaches the daemon as a number. Left
-  // literal, `coercePort` discards it and detection dials the default.
+  // systemd's Command Lines contract distinguishes the two syntaxes: `${VAR}`
+  // expands to exactly ONE argument, while a bare `$VAR` is split on
+  // whitespace into separate arguments.
   const scope = { userScoped: false, homeDir: "/home/gw" };
   assert.deepEqual(
     resolveUnitEndpoint(
       [
         "[Service]",
-        // The token carries WHITESPACE: systemd substitutes it as exactly one
-        // argument, so splitting after substitution would truncate it.
+        // Braced, and the value carries WHITESPACE: it must stay one argument
+        // or the credential is truncated to its first word.
         'Environment=PORT=4813 "TOKEN=alpha beta"',
-        "ExecStart=/opt/remnic-server --port ${PORT} --auth-token $TOKEN",
+        "ExecStart=/opt/remnic-server --port ${PORT} --auth-token ${TOKEN}",
       ].join("\n"),
       scope,
     ),
     { port: 4813, authToken: "alpha beta" },
+  );
+  // Bare, and the value carries SEVERAL arguments: it must split, or neither
+  // flag is discovered.
+  assert.deepEqual(
+    resolveUnitEndpoint(
+      [
+        "[Service]",
+        'Environment="ARGS=--port 4813 --auth-token secret"',
+        "ExecStart=/opt/remnic-server $ARGS",
+      ].join("\n"),
+      scope,
+    ),
+    { port: 4813, authToken: "secret" },
   );
   // An undefined variable stays literal, and is then discarded as a bad port
   // rather than being guessed at.
@@ -2839,5 +2852,30 @@ test("an environment file's wrapped value is joined, not truncated", () => {
       (candidate) => files.get(candidate),
     ),
     { port: 4813, authToken: "first-half second-half" },
+  );
+});
+
+test("a unit's WorkingDirectory config is discovered like the server does", () => {
+  // With no `--config` and no `REMNIC_CONFIG_PATH`, the server auto-selects
+  // `<cwd>/remnic.config.json`, and the unit sets that cwd. Reporting no
+  // config path skipped the unit entirely, hiding its endpoint.
+  const files = new Map([["/srv/remnic/remnic.config.json", "{}"]]);
+  const read = (candidate: string): string | undefined => files.get(candidate);
+  assert.equal(
+    resolveUnitConfigPath(
+      "[Service]\nWorkingDirectory=/srv/remnic\nExecStart=/opt/remnic-server\n",
+      { userScoped: false, homeDir: "/home/gw" },
+      read,
+    ),
+    "/srv/remnic/remnic.config.json",
+  );
+  // An explicit path still wins, and a cwd with no config reports none.
+  assert.equal(
+    resolveUnitConfigPath(
+      "[Service]\nWorkingDirectory=/srv/empty\nExecStart=/opt/remnic-server\n",
+      { userScoped: false, homeDir: "/home/gw" },
+      read,
+    ),
+    undefined,
   );
 });
