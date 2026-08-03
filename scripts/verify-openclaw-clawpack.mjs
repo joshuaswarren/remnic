@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,6 +7,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
 const packageDir = path.resolve(repoRoot, process.argv[2] ?? "packages/plugin-openclaw");
 const packageJsonPath = path.join(packageDir, "package.json");
+const distDir = path.join(packageDir, "dist");
 
 function fail(message) {
   console.error(`OpenClaw ClawPack verification failed: ${message}`);
@@ -82,9 +83,38 @@ for (const requiredFile of requiredFiles) {
   }
 }
 
+// Every emitted dist file must be IN the tarball. This is the invariant that
+// matters: tsup code-splits whenever the entry gains a dynamic import, and a
+// split chunk missing from the packlist breaks the plugin at runtime with a
+// module-not-found the tests never see. It replaces an older `>= 2 dist files`
+// proxy that silently encoded one such chunk (`legacy-hook-compat-*.js`) as a
+// requirement; removing that module in #2279 left the assertion unsatisfiable
+// and blocked every release from 2026-07-31 on.
 const distFiles = [...files].filter((file) => file.startsWith("dist/"));
-if (distFiles.length < 2) {
-  fail(`${packageJson.name}@${packageJson.version} packlist only includes ${distFiles.length} dist file(s)`);
+const builtDistFiles = existsSync(distDir)
+  ? readdirSync(distDir, { recursive: true })
+      .map((relative) => String(relative).split(path.sep).join("/"))
+      .filter((relative) => statSync(path.join(distDir, relative)).isFile())
+      .map((relative) => `dist/${relative}`)
+  : [];
+if (builtDistFiles.length === 0) {
+  fail(`${packageJson.name}@${packageJson.version} has no built dist/ — run the package build before packing`);
+}
+const unpacked = builtDistFiles.filter((file) => !files.has(file));
+if (unpacked.length > 0) {
+  fail(`${packageJson.name}@${packageJson.version} built ${unpacked.join(", ")} but the packlist omits them`);
+}
+
+// Deliberately no byte floor on the entry bundle: this script also verifies
+// the shim package, whose legitimate build is a few hundred bytes, so any
+// size threshold is a number rather than an invariant. "The build ran and
+// everything it emitted is packed" is the property that holds for both.
+const entryBundle = entries.find((entry) => entry.path === "dist/index.js");
+if (!entryBundle || typeof entryBundle.size !== "number") {
+  fail("npm pack output has no size for dist/index.js");
+}
+if (entryBundle.size === 0) {
+  fail(`${packageJson.name}@${packageJson.version} packs an empty dist/index.js`);
 }
 
 // OpenClaw rejects plugin manifests >= 256 KiB (MAX_PLUGIN_MANIFEST_BYTES) with
