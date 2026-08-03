@@ -641,7 +641,10 @@ export function registerDelegateRuntime(
           serviceId: options.serviceId,
           workspaceDir: cwdFrom(event, ctx, options.capability.workspaceDir),
           sessionKey,
-          namespace: namespaces[0],
+          // The session's CURRENT binding, which is the last entry of the
+          // ordered history — `namespaces[0]` is where it started, so a
+          // rebound session would file new notes under the previous tenant.
+          namespace: namespaces.at(-1),
           timeoutMs: remainingTimeout(),
         });
       } catch (err) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
@@ -16,6 +16,7 @@ import {
   type MaybeRegisterDelegateDeps,
 } from "./delegate-runtime.js";
 import { loadDaemonAuth, resolveBridgeMode } from "./bridge.js";
+import { ingestFlushPlanNotes } from "./delegate-flush-plan-ingest.js";
 import {
   SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
   createFileSessionNamespaceBindingStore,
@@ -3269,5 +3270,70 @@ test("a non-string search session key cannot inherit another session's binding",
     );
   } finally {
     await stub.close();
+  }
+});
+
+test("flush-plan notes survive a rejection, a concurrent append, and a symlink", async () => {
+  // Three ways the ingestion could destroy notes the daemon never took.
+  const stub = await startDaemonStub((pathname) =>
+    pathname.startsWith("/engram/v1/observe") ? null : { flushed: true },
+  );
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fp-guard-"));
+  const planPath = path.join(workspaceDir, "state", "plugins", "guard-svc", "flush-plan.md");
+  await mkdir(path.dirname(planPath), { recursive: true });
+  const options = {
+    target: { host: "127.0.0.1", port: stub.port, resolveAuthToken: () => ({ token: "t", source: "daemon configuration" as const }) },
+    serviceId: "guard-svc",
+    workspaceDir,
+    sessionKey: "s",
+    namespace: undefined,
+    timeoutMs: 5_000,
+  };
+
+  try {
+    // 1. A REJECTED observe (401/403 resolves null) must keep the notes.
+    await writeFile(planPath, "- keep me\n", "utf8");
+    await ingestFlushPlanNotes(options);
+    assert.equal(await readFile(planPath, "utf8"), "- keep me\n", "rejected notes were kept");
+
+    // 2. An append that lands mid-flight must survive the truncation.
+    await stub.close();
+    let appended = false;
+    const accepting = await startDaemonStub(async (pathname) => {
+      if (appended && pathname.startsWith("/engram/v1/observe")) {
+        appended = false;
+        await writeFile(planPath, "- sent\n- appended later\n", "utf8");
+      }
+      return { ok: true };
+    });
+    const appending = {
+      ...options,
+      target: { ...options.target, port: accepting.port },
+    };
+    await writeFile(planPath, "- sent\n", "utf8");
+    // The stub appends while the observe is in flight, so the write provably
+    // lands between the ingestion's read and its truncate.
+    appended = true;
+    await ingestFlushPlanNotes(appending);
+    assert.equal(
+      await readFile(planPath, "utf8"),
+      "- appended later\n",
+      "only the submitted prefix was removed",
+    );
+
+    // 3. A symlinked plan file is refused outright.
+    await rm(planPath, { force: true });
+    const target = path.join(workspaceDir, "outside.md");
+    await writeFile(target, "- someone else's file\n", "utf8");
+    await symlink(target, planPath);
+    await ingestFlushPlanNotes(appending);
+    assert.equal(
+      await readFile(target, "utf8"),
+      "- someone else's file\n",
+      "the symlink target was neither read nor truncated",
+    );
+    await accepting.close();
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
   }
 });

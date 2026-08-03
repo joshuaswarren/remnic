@@ -162,6 +162,12 @@ function searchCandidateCeiling(budget: number): number {
 // A failing probe backs off instead of retrying on every hook, so a daemon
 // that is down or rejecting the token cannot turn each turn into a request.
 const HEALTH_FAILURE_BACKOFF_MS = 5_000;
+/**
+ * How long a local-read authorization verdict stands before it is re-proven.
+ * The daemon reloads token entries per request; this bounds the window in
+ * which a permission revoked in place still authorizes a filesystem read.
+ */
+const LOCAL_READ_VERDICT_TTL_MS = 30_000;
 
 /**
  * Narrow an unvalidated JSON value to a readable record. A type guard rather
@@ -280,6 +286,8 @@ export function createDelegateMemoryCapability(
   // and the synchronous `status()` reader would report a daemon posture that
   // was never observed.
   let healthEverResolved = false;
+  /** When each local-read verdict was taken, so a revoked grant can expire. */
+  const localReadVerdictAt = new Map<string, number>();
   let healthInFlight: Promise<void> | undefined;
   let lastHealthFailure: string | undefined;
   // Local reads and artifact listing are only valid while the daemon serves
@@ -338,11 +346,21 @@ export function createDelegateMemoryCapability(
     if (options.verifyNamespaceAuthorization === undefined) return;
     const namespace = health.defaultNamespace ?? "";
     const verdictKey = `${target.resolveAuthToken().token}\u0000${operations.join(",")}\u0000${namespace}`;
+    // The daemon reloads token entries per request, so a grant revoked in place
+    // keeps the SAME token, operations, and namespace — the cache key cannot
+    // see the change. Expiring the verdict bounds how long a withdrawn
+    // permission can still authorize a local read that bypasses the daemon.
+    const cachedAt = localReadVerdictAt.get(verdictKey);
+    if (cachedAt !== undefined && now() - cachedAt >= LOCAL_READ_VERDICT_TTL_MS) {
+      substitutedNamespaceVerdicts.delete(verdictKey);
+      localReadVerdictAt.delete(verdictKey);
+    }
     if (!substitutedNamespaceVerdicts.has(verdictKey)) {
       substitutedNamespaceVerdicts.set(
         verdictKey,
         await options.verifyNamespaceAuthorization(namespace, undefined, operations),
       );
+      localReadVerdictAt.set(verdictKey, now());
     }
     // `undefined` means the probe could not answer — a timeout, or an older
     // daemon with no authorization route. A local read bypasses the daemon
