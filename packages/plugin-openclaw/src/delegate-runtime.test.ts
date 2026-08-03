@@ -3226,3 +3226,48 @@ test("the host's flush-plan notes reach the daemon and the file is cleared", asy
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
+
+test("a non-string search session key cannot inherit another session's binding", async () => {
+  // The binding store's `encodeURIComponent` coerces `123` to `"123"`, so a
+  // numeric key from the untyped host would search the namespace bound to the
+  // distinct string-keyed session "123" — another tenant whenever the delegate
+  // token can read both.
+  const searched: Array<Record<string, unknown>> = [];
+  const stub = await startDaemonStub((pathname, body) => {
+    if (pathname.startsWith("/engram/v1/memories/search")) {
+      searched.push(body);
+      return { query: "q", count: 0, results: [] };
+    }
+    return { ok: true, namespacesEnabled: true, defaultNamespace: "fallback" };
+  });
+  try {
+    let captured: { runtime?: { getMemorySearchManager?: (p: unknown) => Promise<unknown> } } = {};
+    const api = recordingApi() as unknown as Record<string, unknown>;
+    api.registerMemoryCapability = (capability: unknown) => {
+      captured = capability as typeof captured;
+    };
+    // The FILE store is the one that coerces (`encodeURIComponent`), so it is
+    // the one this guard protects. Bind the STRING session "123".
+    const bindingsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-coerced-key-"));
+    const namespaceBindings = createFileSessionNamespaceBindingStore(
+      path.join(bindingsDir, "bindings"),
+    );
+    await namespaceBindings.remember("123", "tenant-a");
+    registerDelegateRuntime(api as never, optionsFor(stub.port, { namespaceBindings }));
+
+    const handout = (await captured.runtime?.getMemorySearchManager?.({
+      cfg: {},
+      agentId: "main",
+    })) as { manager?: { search(q: string, o?: unknown): Promise<unknown> } } | undefined;
+    await handout?.manager?.search("q", { sessionKey: 123 as unknown as string });
+
+    assert.equal(searched.length, 1, "the search reached the daemon");
+    assert.notEqual(
+      searched[0]?.namespace,
+      "tenant-a",
+      "a numeric key did not inherit the string key's binding",
+    );
+  } finally {
+    await stub.close();
+  }
+});

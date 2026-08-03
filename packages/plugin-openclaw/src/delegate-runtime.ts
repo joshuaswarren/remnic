@@ -337,7 +337,12 @@ export function registerDelegateRuntime(
     // namespace from, so the remembered binding — else the registration-wide
     // fallback — is the correct scope.
     resolveSearchNamespace: async (sessionKey) => {
-      if (sessionKey) {
+      // A non-STRING key from the untyped host must not reach the binding
+      // store: its `encodeURIComponent` would coerce `123` to `"123"` and the
+      // search would inherit the binding of a distinct, string-keyed session —
+      // another tenant's namespace whenever the delegate token can read both.
+      // An unusable key falls back to the registration scope, never a guess.
+      if (typeof sessionKey === "string" && sessionKey.trim().length > 0) {
         const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
         if (remembered.length > 0) return remembered.at(-1) || undefined;
       }
