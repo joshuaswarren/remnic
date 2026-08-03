@@ -2812,21 +2812,21 @@ test("the user unit search path is ordered the way systemd orders it", () => {
       "/usr/lib/systemd/user",
       "/usr/local/share/systemd/user",
       "/usr/local/lib/systemd/user",
-      "/etc/xdg/systemd/user",
       "/home/gw/.local/share/systemd/user",
       "/run/systemd/user",
       "/etc/systemd/user",
+      "/etc/xdg/systemd/user",
       "/home/gw/.config/systemd/user",
     ]);
     // XDG overrides replace their defaults in place, not their precedence.
     process.env.XDG_DATA_HOME = "/xdg/data";
     process.env.XDG_CONFIG_HOME = "/xdg/config";
-    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(5, 6), ["/xdg/data/systemd/user"]);
+    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(4, 5), ["/xdg/data/systemd/user"]);
     assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(-1), ["/xdg/config/systemd/user"]);
     // `XDG_CONFIG_DIRS` is read highest-first, so it is reversed into this
     // ascending list: the FIRST entry of the colon list outranks the second.
     process.env.XDG_CONFIG_DIRS = "/first/xdg:/second/xdg";
-    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(4, 6), [
+    assert.deepEqual(systemdUserUnitDirs("/home/gw").slice(-3, -1), [
       "/second/xdg/systemd/user",
       "/first/xdg/systemd/user",
     ]);
@@ -2851,7 +2851,9 @@ test("an environment file's wrapped value is joined, not truncated", () => {
       { userScoped: false, homeDir: "/home/gw" },
       (candidate) => files.get(candidate),
     ),
-    { port: 4813, authToken: "first-half second-half" },
+    // Joined with NO separator: the environment-file grammar removes the
+    // backslash-newline pair without replacement.
+    { port: 4813, authToken: "first-halfsecond-half" },
   );
 });
 

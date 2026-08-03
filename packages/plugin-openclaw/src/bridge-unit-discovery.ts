@@ -65,16 +65,16 @@ export function systemdUserUnitDirs(homeDir: string): string[] {
     "/usr/lib/systemd/user",
     "/usr/local/share/systemd/user",
     "/usr/local/lib/systemd/user",
-    // `XDG_CONFIG_DIRS` (default `/etc/xdg`) sits between the vendor
-    // directories and the machine's own `/run` and `/etc` overrides. Listed
-    // in ASCENDING precedence, so a later entry of the colon list wins — the
-    // reverse of how XDG reads it.
-    ...systemConfigDirs.reverse(),
     xdgData !== undefined && xdgData.trim() !== ""
       ? path.join(expandTildePath(xdgData), "systemd", "user")
       : underHome(".local", "share", "systemd", "user"),
     "/run/systemd/user",
     "/etc/systemd/user",
+    // `XDG_CONFIG_DIRS` (default `/etc/xdg`) outranks `/etc/systemd/user` and
+    // is outranked only by the user's own config directory. Listed in
+    // ASCENDING precedence, so a later entry of the colon list ranks lower —
+    // the reverse of how XDG reads it.
+    ...systemConfigDirs.reverse(),
     xdgConfig !== undefined && xdgConfig.trim() !== ""
       ? path.join(expandTildePath(xdgConfig), "systemd", "user")
       : underHome(".config", "systemd", "user"),

@@ -57,13 +57,14 @@ export function resolveUnitConfigPath(
  * unknowable for a system one.
  */
 /**
- * Physical lines joined into LOGICAL ones, the way systemd.syntax specifies:
- * a trailing backslash continues the directive on the next line, and the
- * backslash-newline is replaced by a space. Parsing physical lines would drop
- * a wrapped `--port`, `--config`, or credential — values the daemon receives
- * but detection would not see.
+ * Physical lines joined into LOGICAL ones.
+ *
+ * systemd.syntax replaces a unit file's backslash-newline with a SPACE, which
+ * is the default. An environment file's grammar removes the pair with NO
+ * replacement, so those callers pass an empty joiner — inserting a space
+ * there would corrupt a wrapped path or credential rather than restore it.
  */
-function foldContinuationLines(unit: string): string[] {
+function foldContinuationLines(unit: string, joiner = " "): string[] {
   const logical: string[] = [];
   let pending: string | undefined;
   for (const raw of unit.split("\n")) {
@@ -73,7 +74,7 @@ function foldContinuationLines(unit: string): string[] {
     const trailing = /(\\*)$/.exec(line)?.[1]?.length ?? 0;
     const continues = trailing % 2 === 1;
     const body = continues ? line.slice(0, -1) : line;
-    pending = pending === undefined ? body : `${pending} ${body.trim()}`;
+    pending = pending === undefined ? body : `${pending}${joiner}${joiner === "" ? body : body.trim()}`;
     if (continues) continue;
     logical.push(pending);
     pending = undefined;
@@ -184,7 +185,7 @@ function parseEnvironmentFile(body: string): Map<string, string> {
   // backslash-newline pair and hands the daemon one joined value, so reading
   // physical lines would record the first fragment WITH its trailing `\` and
   // silently discard the rest of a long path or credential.
-  for (const line of foldContinuationLines(body)) {
+  for (const line of foldContinuationLines(body, "")) {
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith(";")) continue;
     const split = trimmed.indexOf("=");
