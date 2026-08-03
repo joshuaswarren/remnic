@@ -223,6 +223,9 @@ test("isHighImpactPersonalFact flags family, milestone, and medical content", ()
     "She suffered a heart attack in March.",
     "He is in remission after chemotherapy.",
     "Her blood pressure medication was changed.",
+    // Everyday wording an earlier expansion still missed (review round 3).
+    "Dana has COVID-19.",
+    "She caught the flu last week.",
   ]) {
     assert.equal(isHighImpactPersonalFact(claim(content)), true, content);
   }
@@ -231,6 +234,22 @@ test("isHighImpactPersonalFact flags family, milestone, and medical content", ()
 test("isHighImpactPersonalFact flags personal-claim-shaped categories with no matching word", () => {
   assert.equal(isHighImpactPersonalFact(claim("Dana leads the Helsinki office.", [], "relationship")), true);
   assert.equal(isHighImpactPersonalFact(claim("They closed on the new place.", [], "moment")), true);
+});
+
+test("isHighImpactPersonalFact flags bodily harm by sentence shape, not by condition name", () => {
+  // No condition vocabulary can be complete, so the injury/contagion SHAPE is
+  // matched directly — a harm verb pointed at a person's possession.
+  for (const content of [
+    "Dana broke her leg.",
+    "He tore his ACL playing soccer.",
+    "She bruised her wrist on the stairs.",
+    "Their grandfather passed away in March.",
+    "He was rushed to the hospital.",
+  ]) {
+    assert.equal(isHighImpactPersonalFact(claim(content)), true, content);
+  }
+  // Articles are excluded on purpose: a broken build is not a broken bone.
+  assert.equal(isHighImpactPersonalFact(claim("The build broke the deploy pipeline.", ["tools"])), false);
 });
 
 test("isHighImpactPersonalFact flags high-impact tags even when the text is bland", () => {

@@ -94,7 +94,17 @@ const HIGH_IMPACT_CATEGORIES: Record<string, true> = { moment: true, relationshi
  * Word-bounded alternation only — no nesting, no backtracking risk.
  */
 const HIGH_IMPACT_TOPIC_PATTERN =
-  /\b(?:mother|mothers|mom|moms|mum|father|fathers|dad|dads|sister|sisters|brother|brothers|son|sons|daughter|daughters|wife|wives|husband|husbands|spouse|fiance|fiancee|grandmother|grandfather|grandma|grandpa|grandparent|grandparents|grandson|granddaughter|grandchild|grandchildren|aunt|uncle|cousin|niece|nephew|stepmother|stepfather|stepson|stepdaughter|stepchild|godmother|godfather|birthday|birthdays|anniversary|anniversaries|wedding|weddings|honeymoon|married|marriage|divorce|divorced|widow|widowed|funeral|memorial service|engagement party|baby shower|christening|bar mitzvah|pregnant|pregnancy|miscarriage|miscarried|newborn|gave birth|stillbirth|infertility|ivf|menopause|diagnosis|diagnosed|prognosis|tested positive|cancer|carcinoma|leukemia|tumor|tumour|biopsy|chemotherapy|chemo|radiation therapy|remission|hospice|palliative|terminal illness|surgery|surgeon|hospital|hospitalized|hospitalised|icu|emergency room|ambulance|stroke|heart attack|cardiac|arrhythmia|afib|seizure|epilepsy|asthma|allergy|allergic|diabetes|diabetic|insulin|cholesterol|blood pressure|hypertension|dementia|alzheimer|alzheimers|parkinson|parkinsons|hiv|aids diagnosis|medication|medications|prescription|prescribed|dosage|symptom|symptoms|illness|disease|disorder|syndrome|therapy|therapist|psychiatrist|psychologist|antidepressant|depression|anxiety|bipolar|schizophrenia|adhd|autism|ptsd|overdose|relapse|sobriety|rehab|addiction|alcoholism|concussion|transplant|dialysis|immunocompromised|mental health)\b/i;
+  /\b(?:mother|mothers|mom|moms|mum|father|fathers|dad|dads|sister|sisters|brother|brothers|son|sons|daughter|daughters|wife|wives|husband|husbands|spouse|fiance|fiancee|grandmother|grandfather|grandma|grandpa|grandparent|grandparents|grandson|granddaughter|grandchild|grandchildren|aunt|uncle|cousin|niece|nephew|stepmother|stepfather|stepson|stepdaughter|stepchild|godmother|godfather|birthday|birthdays|anniversary|anniversaries|wedding|weddings|honeymoon|married|marriage|divorce|divorced|widow|widowed|funeral|memorial service|engagement party|baby shower|christening|bar mitzvah|pregnant|pregnancy|miscarriage|miscarried|newborn|gave birth|stillbirth|infertility|ivf|menopause|diagnosis|diagnosed|prognosis|tested positive|cancer|carcinoma|leukemia|tumor|tumour|biopsy|chemotherapy|chemo|radiation therapy|remission|hospice|palliative|terminal illness|surgery|surgeon|hospital|hospitalized|hospitalised|icu|emergency room|ambulance|stroke|heart attack|cardiac|arrhythmia|afib|seizure|epilepsy|asthma|allergy|allergic|diabetes|diabetic|insulin|cholesterol|blood pressure|hypertension|dementia|alzheimer|alzheimers|parkinson|parkinsons|hiv|aids diagnosis|medication|medications|prescription|prescribed|dosage|symptom|symptoms|illness|disease|disorder|syndrome|therapy|therapist|psychiatrist|psychologist|antidepressant|depression|anxiety|bipolar|schizophrenia|adhd|autism|ptsd|overdose|relapse|sobriety|rehab|addiction|alcoholism|concussion|transplant|dialysis|immunocompromised|mental health|covid|covid-19|coronavirus|flu|influenza|pneumonia|bronchitis|infection|infected|fever|migraine|ulcer|hernia|appendicitis|sepsis|sick leave|urgent care|broken leg|broken arm|broken wrist|broken hip|broken rib|broken ribs|sprained|dislocated|torn ligament|torn acl|whiplash|burn unit|chronic pain|disability|wheelchair|hearing aid|blind in|vaccinated|vaccination|immunization|blood test|scan results|mri|ct scan|x-ray)\b/i;
+
+/**
+ * Bodily-harm and affliction SHAPES rather than nouns: "broke her leg", "tore
+ * his ACL", "caught something at the office". A vocabulary of conditions can
+ * never be complete, so this matches the sentence form instead — a verb of
+ * injury or contagion pointed at a person's POSSESSION. Articles are excluded
+ * on purpose: "the build broke the deploy pipeline" is not an injury.
+ */
+const AFFLICTION_SHAPE_PATTERN =
+  /\b(?:broke|broken|fractured|sprained|dislocated|tore|torn|bruised|burned|scalded|injured|hurt)\s+(?:his|her|their|my|your|our)\s+\w+|\b(?:caught|contracted|came down with|is recovering from|was rushed to|passed away|died of|died from)\b/i;
 
 /**
  * Words that are personal only when someone possesses them: "child process",
@@ -136,6 +146,7 @@ export function isHighImpactPersonalFact(fact: {
 }): boolean {
   if (HIGH_IMPACT_CATEGORIES[fact.category] === true) return true;
   if (HIGH_IMPACT_TOPIC_PATTERN.test(fact.content)) return true;
+  if (AFFLICTION_SHAPE_PATTERN.test(fact.content)) return true;
   if (POSSESSED_KINSHIP_PATTERN.test(fact.content)) return true;
   for (const tag of fact.tags ?? []) {
     if (HIGH_IMPACT_TAGS[tag.trim().toLowerCase()] === true) return true;
