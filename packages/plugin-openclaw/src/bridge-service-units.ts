@@ -438,15 +438,21 @@ function readUnitCliOverrides(
   // as a number. Leaving it literal makes `coercePort` discard it and sends
   // detection to the default endpoint instead of the running one.
   const environment = readUnitEnvironment(unit, scope, readFile, listDir);
-  const substitute = (command: string): string =>
-    command.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (match, braced, bare) =>
+  // Substitution happens AFTER tokenization, per token: systemd expands a
+  // variable into exactly ONE argument, so a value containing whitespace
+  // ("alpha beta") must not split into two. Splitting it truncated a
+  // credential to its first word and 401ed the probe.
+  const substitute = (token: string): string =>
+    token.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (match, braced, bare) =>
       environment.get(braced ?? bare) ?? match,
     );
   // Every command that survived the resets, in order. A `Type=oneshot` unit
   // may legitimately keep several, and `readFlag` takes the last occurrence
   // across all of them — which is also what a replacement command needs.
   for (const command of readEffectiveDirectives(unit).execStart) {
-    tokens.push(...(substitute(command).match(/"[^"]*"|'[^']*'|\S+/g) ?? []));
+    for (const token of command.match(/"[^"]*"|'[^']*'|\S+/g) ?? []) {
+      tokens.push(substitute(token));
+    }
   }
   const programArgs = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(unit);
   if (programArgs?.[1]) {

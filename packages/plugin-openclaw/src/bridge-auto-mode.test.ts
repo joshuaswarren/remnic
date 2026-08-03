@@ -2647,10 +2647,12 @@ test("the public detector rejects a blank corpus and a hostile probe budget", ()
   }
 });
 
-test("the delegate config binds to the file that named the endpoint", async () => {
-  // An earlier config that parses but declares no endpoint must not capture
-  // the credential binding: requests would then carry no token while the
-  // endpoint came from a later file that has one.
+test("the delegate config is the one the daemon itself would select", async () => {
+  // `remnic-server`'s `resolveConfigPath` takes the FIRST EXISTING candidate
+  // and `parseServerConfig` defaults its missing fields to 127.0.0.1:4318. A
+  // later file that declares an endpoint is not the daemon's config, so
+  // preferring it would dial a server nobody is running — and bind the
+  // credential to the wrong file.
   const home = await mkdtemp(path.join(os.tmpdir(), "remnic-config-bind-"));
   const cwd = await mkdtemp(path.join(os.tmpdir(), "remnic-config-cwd-"));
   const priorHome = process.env.HOME;
@@ -2669,11 +2671,11 @@ test("the delegate config binds to the file that named the endpoint", async () =
       "utf8",
     );
     const bridge = resolveBridgeMode("delegate", { timeoutMs: 1_000 });
-    assert.equal(bridge.daemonPort, 4899, "the endpoint came from the home config");
+    assert.equal(bridge.daemonPort, 4318, "the cwd config wins and defaults its port");
     assert.match(
       String(bridge.daemonConfigPath),
-      /\.config[\\/]remnic[\\/]config\.json$/,
-      "and the credential is bound to that same file",
+      /remnic\.config\.json$/,
+      "and the credential binds to that same file, not the later one",
     );
   } finally {
     process.chdir(priorCwd);
@@ -2697,12 +2699,14 @@ test("ExecStart substitutes the unit's own environment variables", () => {
     resolveUnitEndpoint(
       [
         "[Service]",
-        "Environment=PORT=4813 TOKEN=env-token",
+        // The token carries WHITESPACE: systemd substitutes it as exactly one
+        // argument, so splitting after substitution would truncate it.
+        'Environment=PORT=4813 "TOKEN=alpha beta"',
         "ExecStart=/opt/remnic-server --port ${PORT} --auth-token $TOKEN",
       ].join("\n"),
       scope,
     ),
-    { port: 4813, authToken: "env-token" },
+    { port: 4813, authToken: "alpha beta" },
   );
   // An undefined variable stays literal, and is then discarded as a bad port
   // rather than being guessed at.

@@ -336,9 +336,15 @@ export function createDelegateMemoryCapability(
         await options.verifyNamespaceAuthorization(namespace, undefined, operations),
       );
     }
-    if (substitutedNamespaceVerdicts.get(verdictKey) === false) {
+    // `undefined` means the probe could not answer — a timeout, or an older
+    // daemon with no authorization route. A local read bypasses the daemon
+    // entirely, so an UNCONFIRMED verdict is not permission: fail closed,
+    // exactly as an unconfirmed namespace posture already does.
+    if (substitutedNamespaceVerdicts.get(verdictKey) !== true) {
       throw new Error(
-        `delegate ${surface} unavailable: the delegate token is not authorized for ${operations.join(", ")} on the daemon's corpus`,
+        `delegate ${surface} unavailable: the delegate token's authorization for ${operations.join(", ")} on the daemon's corpus ${
+          substitutedNamespaceVerdicts.get(verdictKey) === false ? "was refused" : "could not be confirmed"
+        }`,
       );
     }
   };

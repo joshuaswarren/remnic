@@ -2383,10 +2383,35 @@ test("a local read is refused when the token cannot read memories", async () => 
     const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     await assert.rejects(
       () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
-      /not authorized for memory_get/,
+      /authorization for memory_get on the daemon's corpus was refused/,
     );
     assert.deepEqual(await built.listArtifacts(), [], "the artifact listing refuses too");
     assert.deepEqual(probed[0], ["memory_get"], "the READ operation is what was probed");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a local read fails closed when authorization cannot be confirmed", async () => {
+  // `undefined` is a probe that could not answer — a timeout, or an older
+  // daemon with no authorization route. A local read bypasses the daemon
+  // entirely, so an UNCONFIRMED verdict is not permission.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+  });
+  try {
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      verifyNamespaceAuthorization: async () => undefined,
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /could not be confirmed/,
+    );
+    assert.deepEqual(await built.listArtifacts(), []);
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });

@@ -497,15 +497,19 @@ function readDaemonHost(): string {
  * the running daemon. A malformed selected file yields no fields, exactly as
  * it yields the daemon nothing.
  */
+/**
+ * The endpoint the daemon's OWN config selection resolves to.
+ *
+ * Mirrors `remnic-server`'s `resolveConfigPath`: the first EXISTING candidate
+ * wins outright, and `parseServerConfig` then defaults its missing fields to
+ * `127.0.0.1:4318`. A later file that declares an endpoint is not the daemon's
+ * config, so skipping past a silent first one would dial a server nobody is
+ * running. Host and port therefore always come from one file — never spliced.
+ */
 function readDaemonServerConfig(): { host?: string; port?: number } {
   for (const candidate of configPathCandidates()) {
     const server = readServerBlock(candidate);
-    // A file that declares NEITHER field names no endpoint — a valid config
-    // with no `server` block, or one whose block sets only a token. Stopping
-    // there would hide a later candidate that does declare the endpoint.
-    // Host and port still come from ONE file: the first that declares either
-    // wins both, so the two are never spliced across configs.
-    if (server?.host !== undefined || server?.port !== undefined) return server;
+    if (server !== undefined) return server;
   }
   return {};
 }
@@ -977,16 +981,9 @@ export function readDaemonConfigAuthToken(configPath: string): string | undefine
 
 /** The one config file explicit resolution took host and port from. */
 function selectedDaemonConfigPath(): string | undefined {
-  // The SAME rule the endpoint search uses: the first candidate that declares
-  // host or port. Selecting merely the first parseable file would bind
-  // requests to a config that named no endpoint — and therefore no token —
-  // while the endpoint came from a later one, 401ing every delegated call.
-  for (const candidate of configPathCandidates()) {
-    const server = readServerBlock(candidate);
-    if (server?.host !== undefined || server?.port !== undefined) return candidate;
-  }
-  // No file names an endpoint: fall back to the first parseable one, which is
-  // still the best source for a token that accompanies the default endpoint.
+  // The SAME file `readDaemonServerConfig` resolves the endpoint from, which
+  // is the one the daemon itself selected — so the credential is always bound
+  // to the config that describes the endpoint being dialed.
   for (const candidate of configPathCandidates()) {
     if (readServerBlock(candidate) !== undefined) return candidate;
   }

@@ -515,8 +515,12 @@ export function registerDelegateRuntime(
       );
     if (turn.length === 0) return;
     try {
-      const observeDeadline =
-        Date.now() + Math.min(options.hookTimeoutMs, options.observeTimeoutMs);
+      // `observeTimeoutMs` alone. `hookTimeoutMs` is the PROMPT hook's budget —
+      // it is passed to that registration only (`{ timeoutMs }` above), and
+      // documented as the cold-start recall timeout. `agent_end` carries no
+      // host timeout, so borrowing the prompt's would abandon a turn capture
+      // the host was still willing to wait for.
+      const observeDeadline = Date.now() + options.observeTimeoutMs;
       const observeRemaining = (): number => observeDeadline - Date.now();
       const cwd = cwdFrom(event, ctx, options.cwd);
       const scopedNamespace = await sessionNamespaceFrom(
