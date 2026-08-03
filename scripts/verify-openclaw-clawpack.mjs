@@ -63,6 +63,29 @@ function parsePackOutput(stdout) {
   throw new Error("could not find npm pack JSON array in stdout");
 }
 
+/**
+ * Walk dist/ one level at a time, `lstat`-ing every entry BEFORE descending.
+ * Node's recursive `readdirSync` follows directory symlinks while building its
+ * result, so a post-hoc filter would already have enumerated whatever the link
+ * pointed at — possibly outside the package, possibly a cycle.
+ */
+function listBuiltDistFiles() {
+  const found = [];
+  const pending = [""];
+  while (pending.length > 0) {
+    const relativeDir = pending.pop();
+    for (const name of readdirSync(path.join(distDir, relativeDir))) {
+      const relative = relativeDir === "" ? name : `${relativeDir}/${name}`;
+      const stats = lstatSync(path.join(distDir, relative), { throwIfNoEntry: false });
+      if (stats === undefined) fail(`dist/${relative} disappeared while scanning`);
+      if (stats.isSymbolicLink()) fail(`dist/${relative} is a symlink; build output must be real files`);
+      if (stats.isDirectory()) pending.push(relative);
+      else if (stats.isFile()) found.push(`dist/${relative}`);
+    }
+  }
+  return found;
+}
+
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
 const pack = spawnSync("npm", ["pack", "--dry-run", "--json"], {
   cwd: packageDir,
@@ -113,17 +136,7 @@ for (const requiredFile of requiredFiles) {
 // requirement; removing that module in #2279 left the assertion unsatisfiable
 // and blocked every release from 2026-07-31 on.
 const distFiles = [...files].filter((file) => file.startsWith("dist/"));
-const builtDistFiles = assertRealDirectory(distDir, "dist directory")
-  ? readdirSync(distDir, { recursive: true })
-      .map((relative) => String(relative).split(path.sep).join("/"))
-      .filter((relative) => {
-        const stats = lstatSync(path.join(distDir, relative), { throwIfNoEntry: false });
-        if (stats === undefined) fail(`dist/${relative} disappeared while scanning`);
-        if (stats.isSymbolicLink()) fail(`dist/${relative} is a symlink; build output must be real files`);
-        return stats.isFile();
-      })
-      .map((relative) => `dist/${relative}`)
-  : [];
+const builtDistFiles = assertRealDirectory(distDir, "dist directory") ? listBuiltDistFiles() : [];
 if (builtDistFiles.length === 0) {
   fail(`${packageJson.name}@${packageJson.version} has no built dist/ — run the package build before packing`);
 }

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -17,9 +17,20 @@ import { fileURLToPath } from "node:url";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "verify-openclaw-clawpack.mjs");
 
+/** Every temp root these fixtures create, removed once at the end. */
+const tempRoots = [];
+function makeTempRoot() {
+  const root = mkdtempSync(path.join(tmpdir(), "clawpack-test-"));
+  tempRoots.push(root);
+  return root;
+}
+after(() => {
+  for (const root of tempRoots) rmSync(root, { recursive: true, force: true });
+});
+
 /** A minimal package that satisfies the gate: manifest, README, one real bundle. */
 function makeFixture(overrides = {}) {
-  const root = mkdtempSync(path.join(tmpdir(), "clawpack-test-"));
+  const root = makeTempRoot();
   const pkgDir = path.join(root, "pkg");
   mkdirSync(path.join(pkgDir, "dist"), { recursive: true });
   writeFileSync(
@@ -73,7 +84,7 @@ test("a code-split chunk left out of the packlist fails", () => {
 });
 
 test("an unbuilt package fails instead of publishing an empty plugin", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "clawpack-test-"));
+  const root = makeTempRoot();
   const pkgDir = path.join(root, "pkg");
   mkdirSync(pkgDir, { recursive: true });
   writeFileSync(
@@ -157,7 +168,7 @@ test("a symlink inside dist pointing at a real file is refused too", () => {
 test("a prepack script that creates dist/ is honored, not pre-judged", () => {
   // Existence is re-read after `npm pack`, so a package whose prepack builds
   // into dist/ is not rejected on the pre-pack snapshot.
-  const root = mkdtempSync(path.join(tmpdir(), "clawpack-test-"));
+  const root = makeTempRoot();
   const pkgDir = path.join(root, "pkg");
   mkdirSync(pkgDir, { recursive: true });
   writeFileSync(
@@ -177,4 +188,21 @@ test("a prepack script that creates dist/ is honored, not pre-judged", () => {
   const result = run(pkgDir);
 
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("a symlinked directory inside dist is refused before it is descended into", () => {
+  // Node's recursive readdirSync follows directory links while building its
+  // result, so the walk must lstat each entry before descending or it will have
+  // already enumerated whatever the link points at.
+  const pkgDir = makeFixture();
+  const outside = path.join(path.dirname(pkgDir), "outside");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(path.join(outside, "leaked.js"), "export const leaked = 1;\n");
+  symlinkSync(outside, path.join(pkgDir, "dist", "nested"), "dir");
+
+  const result = run(pkgDir);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /dist\/nested is a symlink/);
+  assert.doesNotMatch(result.stderr, /leaked\.js/, "the link target was never enumerated");
 });
