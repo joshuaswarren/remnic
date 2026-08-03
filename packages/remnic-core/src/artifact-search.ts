@@ -63,25 +63,32 @@ export interface ArtifactSearchOptions {
 }
 
 /**
- * Rank `artifacts` by how many query tokens they contain, best first.
+ * Rank the artifact tier by how many query tokens each document contains, best
+ * first.
+ *
+ * `loadArtifacts` is a thunk rather than a value so the two cheap early exits —
+ * an already-cancelled caller, and a query with no searchable tokens — happen
+ * BEFORE the tier is read. Reading it can mean a full recursive filesystem scan
+ * on a cold cache, which a stopword-only query must never pay for.
  *
  * Yields to the event loop every `ARTIFACT_SCAN_YIELD_INTERVAL` documents and
  * checks the caller's signal there, so a pending recall section deadline can fire
  * mid-scan and an abandoned recall stops scanning instead of running to the end.
  */
 export async function selectArtifactMatches(
-  artifacts: MemoryFile[],
+  loadArtifacts: () => Promise<MemoryFile[]>,
   query: string,
   maxResults: number,
   options: ArtifactSearchOptions = {},
 ): Promise<MemoryFile[]> {
-  // An already-abandoned recall must not tokenize the tier at all; the in-loop
-  // checkpoint below only lands every ARTIFACT_SCAN_YIELD_INTERVAL documents, so
-  // a small tier would never observe the signal without this.
   throwIfAborted(options.abortSignal, "artifact search aborted");
   const tokens = tokenizeArtifactSearchText(query);
   if (tokens.length === 0) return [];
 
+  const artifacts = await loadArtifacts();
+  // The scan below never awaits real I/O, so this is the last chance to observe a
+  // signal that fired while the tier was being read.
+  throwIfAborted(options.abortSignal, "artifact search aborted");
   const hits: Array<{ score: number; memory: MemoryFile }> = [];
   let scanned = 0;
   for (const memory of artifacts) {

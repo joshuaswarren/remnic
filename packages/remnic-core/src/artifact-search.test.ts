@@ -19,7 +19,7 @@ function artifact(id: string, content: string, tags: string[] = []): MemoryFile 
 
 test("artifact scan ranks by query token overlap and applies the result cap", async () => {
   const matches = await selectArtifactMatches(
-    [
+    async () => [
       artifact("a", "the deploy runbook covers rollback"),
       artifact("b", "unrelated grocery list"),
       artifact("c", "runbook", ["deploy", "rollback"]),
@@ -34,23 +34,51 @@ test("artifact scan ranks by query token overlap and applies the result cap", as
   );
 });
 
-test("artifact scan ignores stopword-only queries", async () => {
-  assert.deepEqual(
-    await selectArtifactMatches([artifact("a", "the and of")], "the and of", 5),
-    [],
+test("a stopword-only query never reads the artifact tier", async () => {
+  // Reading the tier is a full recursive filesystem scan on a cold cache, so a
+  // query that cannot match anything must not pay for it (issue #2291).
+  let loaded = 0;
+  const matches = await selectArtifactMatches(
+    async () => {
+      loaded += 1;
+      return [artifact("a", "the and of")];
+    },
+    "the and of",
+    5,
   );
+
+  assert.deepEqual(matches, []);
+  assert.equal(loaded, 0);
+});
+
+test("an already-aborted caller never reads the artifact tier", async () => {
+  const aborted = new AbortController();
+  aborted.abort();
+  let loaded = 0;
+
+  await assert.rejects(
+    selectArtifactMatches(
+      async () => {
+        loaded += 1;
+        return [artifact("a", "deploy runbook")];
+      },
+      "deploy runbook",
+      5,
+      { abortSignal: aborted.signal },
+    ),
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+  );
+  assert.equal(loaded, 0);
 });
 
 test("artifact scan stops at the caller's signal instead of scanning the tier", async () => {
   // Yield/abort checkpoints land every 256 documents, so the corpus must cross
-  // that boundary for cancellation to be observable at all (issue #2291).
+  // that boundary for cancellation to be observable mid-scan (issue #2291).
   const artifacts = Array.from({ length: 600 }, (_unused, index) =>
     artifact(`doc-${index}`, "deploy runbook rollback"),
   );
   const aborted = new AbortController();
   let scannedBeforeAbort = 0;
-  // Abort from a timer: the scan yields to the event loop, which is precisely
-  // what lets a deadline (or an abort) interrupt a long scan.
   const artifactsWithProbe = artifacts.map((memory) => ({
     get content() {
       scannedBeforeAbort += 1;
@@ -62,7 +90,7 @@ test("artifact scan stops at the caller's signal instead of scanning the tier", 
   })) as unknown as MemoryFile[];
 
   await assert.rejects(
-    selectArtifactMatches(artifactsWithProbe, "deploy runbook", 5, {
+    selectArtifactMatches(async () => artifactsWithProbe, "deploy runbook", 5, {
       abortSignal: aborted.signal,
     }),
     (err: unknown) => err instanceof Error && err.name === "AbortError",

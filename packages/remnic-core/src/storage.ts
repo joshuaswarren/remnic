@@ -4357,7 +4357,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     options: ArtifactSearchOptions = {},
   ): Promise<MemoryFile[]> {
     return selectArtifactMatches(
-      await this.readAllArtifactsCached(),
+      () => this.readAllArtifactsCached(),
       query,
       maxResults,
       options,
