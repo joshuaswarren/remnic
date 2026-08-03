@@ -4481,7 +4481,10 @@ test("HTTP memory search stops at the candidate ceiling", async () => {
     namespaced: async () => [],
   });
   assert.deepEqual(results, []);
-  assert.equal(seen.at(-1), 1_000, "the last request lands exactly on the ceiling");
+  // The cap is ABSOLUTE, not a multiple of the budget: a small request whose
+  // hits are all excluded still walks far enough to prove the corpus holds
+  // nothing for it, then stops on the backend-safety bound.
+  assert.equal(seen.at(-1), 25_000, "the last request lands exactly on the cap");
   assert.ok(seen.length < 20, "and the loop terminates");
 });
 
@@ -4668,4 +4671,32 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
   ]) {
     assert.equal(isSearchExcludedPath(kept, policy, "qmd"), false, kept);
   }
+});
+
+test("search keeps paging while the backend page is full of excluded hits", async () => {
+  // A budget-proportional ceiling made "the excluded paths rank first"
+  // indistinguishable from "there is nothing else": a 1,000-row request whose
+  // first 4,000 hits are artifacts stopped at 4,000 and answered empty while
+  // valid memories sat at rank 4,001.
+  const { searchWithGenericExclusion } = await import("./access-memory-search-fanout.js");
+  const corpus = [
+    ...Array.from({ length: 4_000 }, (_, index) => ({ path: `artifacts/a-${index}.md` })),
+    ...Array.from({ length: 50, }, (_, index) => ({ path: `facts/f-${index}.md` })),
+  ];
+  const limits: Array<number | undefined> = [];
+  const results = await searchWithGenericExclusion({
+    budget: 1_000,
+    sendInitialLimit: true,
+    search: async (limit) => {
+      limits.push(limit);
+      return corpus.slice(0, limit ?? corpus.length);
+    },
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+  });
+  assert.equal(results.length, 50, "the memories behind the excluded block are returned");
+  assert.ok(limits.length > 1, "and it took more than the first page to reach them");
+  assert.ok(
+    limits.every((limit) => (limit ?? 0) <= 25_000),
+    "while still respecting the absolute backend cap",
+  );
 });

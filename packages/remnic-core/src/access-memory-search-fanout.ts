@@ -265,25 +265,19 @@ export async function runFlatCorpusMemorySearch<TResult>(options: {
 }
 
 /**
- * Lower bound on the candidate ceiling for one generic memory search.
+ * How far one generic memory search may page before it stops.
  *
- * The ceiling is a backend-safety bound, NOT a stand-in for corpus exhaustion:
- * the loop keeps doubling while the backend still returns full pages, so a
- * long run of excluded artifacts cannot make it give up early and report a
- * thin page. Only a short page (nothing left) or a satisfied budget ends it
- * sooner.
+ * A backend-safety bound, NOT a stand-in for corpus exhaustion — which is why
+ * it is ABSOLUTE rather than a multiple of the caller's budget. Scaling it to
+ * the budget made "the excluded paths happen to rank first" indistinguishable
+ * from "there is nothing else": a 1,000-row request whose first 4,000 hits are
+ * artifacts stopped at 4,000 and returned an empty page while valid memories
+ * sat at rank 4,001. Pages that come back FULL mean the corpus is not
+ * exhausted, so the loop keeps going until a short page proves it is or this
+ * cap protects the backend.
  */
-const MEMORY_SEARCH_CANDIDATE_FLOOR = 1_000;
+const MEMORY_SEARCH_CANDIDATE_CAP = 25_000;
 
-/**
- * The safety bound for one search, which must always sit ABOVE the caller's
- * budget: a fixed ceiling at or below it would stop the loop before a single
- * excluded hit could be replaced, so a request for 2000 with one artifact in
- * the first page would return 1999.
- */
-function candidateCeiling(budget: number): number {
-  return Math.max(MEMORY_SEARCH_CANDIDATE_FLOOR, budget * 4);
-}
 
 /**
  * Run a ranked memory search and apply the generic-recall path exclusions
@@ -332,9 +326,8 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
     // A short page means the corpus is exhausted - asking for more is wasted
     // work that returns the same rows.
     if (raw.length === 0 || raw.length < served) break;
-    const ceiling = candidateCeiling(target);
-    if (served >= ceiling) break;
-    limit = Math.min(served * 2, ceiling);
+    if (served >= MEMORY_SEARCH_CANDIDATE_CAP) break;
+    limit = Math.min(served * 2, MEMORY_SEARCH_CANDIDATE_CAP);
   }
   return results.slice(0, target);
 }
