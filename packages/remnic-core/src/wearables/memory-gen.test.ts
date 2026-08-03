@@ -370,6 +370,32 @@ test("daily digest writes one deterministic episode memory and dedups", async ()
   assert.equal(writes2.length, 0);
 });
 
+test("review mode queues a clamped personal claim instead of dropping it below the floor (#2294)", async () => {
+  // The extraction clamp pins high-impact ambient facts to 0.39, under the 0.6
+  // default minConfidence — so without an exemption the pre-filter would drop
+  // exactly the candidates review mode promises to queue.
+  const { writer, writes } = makeWriter();
+  const result = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "review" }),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        { category: "fact", content: "Dana's mother has a birthday on June 3rd.", confidence: 0.39, tags: [] },
+        { category: "fact", content: "A low-signal rumor about the vendor.", confidence: 0.39, tags: [] },
+      ]),
+      writer,
+    },
+  );
+
+  assert.equal(writes.length, 1, "only the high-impact claim is exempt from the floor");
+  assert.match(writes[0].content, /birthday/);
+  assert.equal(writes[0].options.status, "pending_review");
+  assert.equal(result.skippedByReason["below-confidence"], 1, "ordinary low-confidence facts still drop");
+});
+
 test("a digest whose provider title is a personal claim is held for review (#2294)", async () => {
   // Providers derive conversation.title from the same captured audio, so a
   // title lifted from a television scene must not ride into recall on the

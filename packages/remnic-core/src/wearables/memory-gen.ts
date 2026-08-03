@@ -396,10 +396,18 @@ export async function generateWearableMemories(
         skip("unsupported-category");
         continue;
       }
+      const highImpact = isHighImpactPersonalFact({ ...fact, content }, personRefs);
       // In smart mode the trust bands subsume the hard confidence
       // floor — a borderline fact belongs in the review band, not on
       // the floor. The pre-filter applies to review/auto modes only.
+      //
+      // High-impact ambient claims are exempt: the extraction clamp just
+      // pinned them to 0.39, which is below the 0.6 default floor, so the
+      // pre-filter would silently drop the very candidates `review` mode
+      // promises to queue and would make the auto-mode cap unreachable
+      // (#2294). They skip the floor and land pending_review via the cap.
       if (
+        highImpact === false &&
         settings.memoryMode !== "smart" &&
         typeof fact.confidence === "number" &&
         fact.confidence < settings.minConfidence
@@ -425,7 +433,7 @@ export async function generateWearableMemories(
         fact: { ...fact, content },
         importance,
         conversation,
-        highImpact: isHighImpactPersonalFact({ ...fact, content }, personRefs),
+        highImpact,
       });
     }
   }

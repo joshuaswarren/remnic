@@ -155,6 +155,15 @@ no LLM summary/fact extraction runs:
    applies. See "Ambient audio never becomes a personal fact" in
    [wearables.md](wearables.md).
 
+   The episode anchor carries two ambient gates of its own. Its title is
+   provider-derived from the same audio, so a title that is itself a personal
+   claim lands `pending_review`. And an `audio` detection is a heuristic over
+   speech with no corroborating app span — fifteen minutes of television with
+   two voices produces an episode asserting a meeting happened, with the show's
+   speakers listed as attendees — so audio-only episodes land `pending_review`
+   too. `app+audio` and `provider` records carry that corroboration and stay
+   active.
+
 ## Configuration
 
 Documented in [config-reference.md](config-reference.md); disabled by default.

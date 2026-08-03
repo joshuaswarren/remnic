@@ -142,6 +142,19 @@ test("an episode whose provider title is a personal claim is held for review (#2
   assert.equal(clean.writes[0]!.extras.status, "active", "an ordinary title is unaffected");
 });
 
+test("an audio-only episode is held for review — detection alone is not corroboration (#2294)", async () => {
+  // `audio` detection is a heuristic over speech with no app span behind it, so
+  // fifteen minutes of television with two voices yields an episode asserting a
+  // meeting happened with the show's speakers as attendees.
+  const writer = new FakeWriter();
+  await writeMeetingEpisodeMemory(record({ app: undefined, detectionSource: "audio" }), writer);
+  assert.equal(writer.writes[0]!.extras.status, "pending_review");
+
+  const corroborated = new FakeWriter();
+  await writeMeetingEpisodeMemory(record({ detectionSource: "app+audio" }), corroborated);
+  assert.equal(corroborated.writes[0]!.extras.status, "active");
+});
+
 test("an audio-only meeting omits the meetingApp attribute and the app suffix", async () => {
   const writer = new FakeWriter();
   const audioOnly = record({ app: undefined, detectionSource: "audio" });

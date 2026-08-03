@@ -96,17 +96,23 @@ export async function writeMeetingEpisodeMemory(
   if (envelope.salvageNotes.length > 0) {
     log.warn(`meeting episode write salvaged invalid fields: ${envelope.salvageNotes.join("; ")}`);
   }
-  // Only the title is provider-derived; the rest of the episode is our own
-  // deterministic rendering (id, clock, attendees, sources), so the classifier
-  // reads the title alone and does not trip on our own wording.
+  // Two reasons an episode is not a trusted anchor. (1) Only the title is
+  // provider-derived, so the classifier reads the TITLE alone — never our own
+  // deterministic rendering of id, clock, attendees, and sources. (2) An
+  // `audio` detection is a heuristic over speech alone with no corroborating
+  // app span, so fifteen minutes of television with two voices produces an
+  // episode asserting a meeting happened, with the show's speakers listed as
+  // attendees. `app+audio` and `provider` records carry that corroboration and
+  // stay active (#2294).
   const titleIsPersonalClaim =
     record.title !== undefined &&
     record.title.length > 0 &&
     isHighImpactPersonalFact({ category: "fact", content: record.title });
+  const uncorroboratedDetection = record.detectionSource === "audio";
   await writer.writeSealedMemory(envelope, {
     importance: scoreImportance(content, "moment", [MEETING_SOURCE_PREFIX]),
     contentHashSource: content,
-    status: titleIsPersonalClaim ? "pending_review" : "active",
+    status: titleIsPersonalClaim || uncorroboratedDetection ? "pending_review" : "active",
     memoryKind: "episode",
   });
   return true;
