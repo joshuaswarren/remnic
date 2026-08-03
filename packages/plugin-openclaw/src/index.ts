@@ -17,12 +17,17 @@
 export * from "../../../src/index.js";
 export { default } from "../../../src/index.js";
 
-// Bridge mode detection and health checks
+// Bridge mode resolution, same-host daemon detection, and health checks
 export {
-  detectBridgeMode,
   checkDaemonHealth,
-  type BridgeMode,
+  // Deprecated; retained so existing importers keep resolving (AGENTS.md §11).
+  detectBridgeMode,
+  detectDaemonBridgeMode,
+  readDaemonMemoryDirSync,
+  resolveBridgeMode,
   type BridgeConfig,
+  type BridgeMode,
+  type BridgeModeRequest,
 } from "./bridge.js";
 
 // Public artifacts for memory-wiki bridge mode

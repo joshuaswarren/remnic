@@ -22,6 +22,8 @@ type DaemonStub = {
   onHealth?: () => void;
   /** Replaces the health body from the next request on. */
   healthOverride?: unknown;
+  /** Runs when a search request is served, so a test can advance its clock. */
+  onSearch?: () => void;
   close: () => Promise<void>;
 };
 
@@ -47,7 +49,8 @@ async function startDaemonStub(routes: StubRoutes): Promise<DaemonStub> {
       const pathname = (req.url ?? "").split("?")[0] ?? "";
       calls.push({ pathname, body: raw ? JSON.parse(raw) : undefined });
       const isSearch = pathname.endsWith("/memories/search");
-      if (!isSearch) stub?.onHealth?.();
+      if (isSearch) stub?.onSearch?.();
+      else stub?.onHealth?.();
       const delayMs = isSearch ? 0 : (routes.healthDelayMs ?? 0);
       if (delayMs > 0) {
         setTimeout(() => respond(), delayMs);
@@ -2356,6 +2359,135 @@ test("only the first manager handout waits on health", async () => {
     await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
     const laterElapsed = Date.now() - laterStarted;
     assert.ok(laterElapsed < 100, `a later handout did not wait (${laterElapsed}ms)`);
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a local read is refused when the token cannot read memories", async () => {
+  // Corpus containment proves co-location and the single-namespace check
+  // proves there is one namespace — neither proves this token may READ. A
+  // token with `memory_search` but not `memory_get` must not open files
+  // straight off disk, which is the gate delegating to the daemon preserves.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+  });
+  try {
+    const probed: Array<readonly string[] | undefined> = [];
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      verifyNamespaceAuthorization: async (_namespace, _timeoutMs, operations) => {
+        probed.push(operations);
+        return false;
+      },
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /authorization for memory_get on the daemon's corpus was refused/,
+    );
+    assert.deepEqual(await built.listArtifacts(), [], "the artifact listing refuses too");
+    assert.deepEqual(probed[0], ["memory_get"], "the READ operation is what was probed");
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a local read fails closed when authorization cannot be confirmed", async () => {
+  // `undefined` is a probe that could not answer — a timeout, or an older
+  // daemon with no authorization route. A local read bypasses the daemon
+  // entirely, so an UNCONFIRMED verdict is not permission.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+  });
+  try {
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir),
+      verifyNamespaceAuthorization: async () => undefined,
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    await assert.rejects(
+      () => manager?.readFile({ relPath: "facts/alice.md" }) ?? Promise.resolve(),
+      /could not be confirmed/,
+    );
+    assert.deepEqual(await built.listArtifacts(), []);
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("pagination shares one search budget instead of restarting it", async () => {
+  // A fresh timer per top-up page let a slow daemon stretch a single
+  // `search()` across minutes while each request looked well inside its own
+  // timeout. One deadline covers the whole call.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const excluded = Array.from({ length: 12 }, (_, index) => ({
+    path: `artifacts/a-${index}.md`,
+    score: 0.9,
+    snippet: "artifact",
+  }));
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+    search: { query: "q", count: excluded.length, results: excluded },
+  });
+  try {
+    let clock = 1_000_000;
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir, { now: () => clock }),
+      searchTimeoutMs: 1_000,
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    // Each page "takes" 600ms of the shared 1000ms budget.
+    stub.onSearch = () => {
+      clock += 600;
+    };
+    await assert.rejects(
+      () => manager?.search("q", { maxResults: 5 }) ?? Promise.resolve(),
+      /search budget of 1000ms is spent/,
+      "the second page found the budget already spent",
+    );
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("the posture probe comes out of the search budget, not before it", async () => {
+  // Opening the deadline after scope resolution let a slow `/health` spend the
+  // whole budget while every later request still started a fresh one — a
+  // 25-second search taking fifty.
+  const { memoryDir, workspaceDir } = await makeCorpus();
+  const stub = await startDaemonStub({
+    health: { ...healthyDaemon(memoryDir), namespacesEnabled: false },
+    search: { query: "q", count: 0, results: [] },
+  });
+  try {
+    let clock = 1_000_000;
+    const built = createDelegateMemoryCapability({
+      ...optionsFor(stub.port, memoryDir, workspaceDir, { now: () => clock }),
+      resolveSearchNamespace: async () => undefined,
+      searchTimeoutMs: 1_000,
+    });
+    const { manager } = await built.runtime.getMemorySearchManager({ cfg: {}, agentId: "main" });
+    // The unscoped posture probe alone consumes the whole budget.
+    stub.onHealth = () => {
+      clock += 1_200;
+    };
+    await assert.rejects(
+      () => manager?.search("q") ?? Promise.resolve(),
+      /search budget of 1000ms is spent|could not be confirmed/,
+      "the search refused rather than starting a fresh timer for the page",
+    );
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.includes("/memories/search")).length,
+      0,
+      "and no page request was issued against an exhausted budget",
+    );
   } finally {
     await stub.close();
     await rm(memoryDir, { recursive: true, force: true });

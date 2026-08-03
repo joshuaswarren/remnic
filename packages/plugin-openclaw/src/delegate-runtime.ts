@@ -25,6 +25,20 @@ import {
   renderMemoryContextPrompt,
 } from "@remnic/core";
 import { log } from "@remnic/core/logger";
+
+import {
+  DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS,
+  probeDelegateAuthorization,
+  reportDaemonAuthorizationFailure,
+  type DelegateAuthorizationOperation,
+  type DelegateAuthorizationPreflight,
+} from "./delegate-authorization.js";
+
+// Re-exported so existing importers of the runtime keep resolving.
+export {
+  probeDelegateAuthorization,
+  type DelegateAuthorizationPreflight,
+} from "./delegate-authorization.js";
 import {
   SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
   SESSION_NAMESPACE_BINDING_MAX_NAMESPACES,
@@ -37,15 +51,18 @@ import {
   sessionNamespaceFrom,
   withNamespace,
 } from "./delegate-namespaces.js";
+import { daemonTargetFor } from "./delegate-daemon-target.js";
+import { ingestFlushPlanNotes } from "./delegate-flush-plan-ingest.js";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
-  type DaemonAuthToken,
+  type BridgeConfig,
   type DelegateDaemonTarget,
   checkDaemonHealthSync,
   daemonUrl,
-  loadDaemonAuth,
   parseOpenClawBridgeConfig,
   resolveBridgeMode,
+  requestedDelegate,
+  resolveRequestedBridgeMode,
 } from "./bridge.js";
 import {
   REMNIC_OPENCLAW_LEGACY_PLUGIN_ID,
@@ -128,75 +145,7 @@ export interface DelegateHookApi extends DelegateCapabilityApi {
 }
 const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
 
-const DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS = [
-  "recall",
-  "observe",
-  "lcm_compaction_flush",
-  // The daemon-backed memory-slot capability searches through
-  // /engram/v1/memories/search, which enforces its own `memory_search`
-  // operation. Omitting it here would let the preflight report a
-  // least-privilege token authorized while every capability search 403s.
-  "memory_search",
-] as const;
-
-type DelegateAuthorizationOperation = (typeof DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS)[number];
-
-export interface DelegateAuthorizationPreflight {
-  readonly state: "authorized" | "unauthorized" | "unavailable";
-  readonly tokenSource: DaemonAuthToken["source"];
-  readonly status?: 401 | 403;
-}
-
-const daemonAuthFailureLogKeys = new Set<string>();
-
-function reportDaemonAuthorizationFailure(
-  serviceId: string,
-  pathname: string,
-  status: 401 | 403,
-  tokenSource: DaemonAuthToken["source"],
-): void {
-  const key = `${serviceId}:${pathname}:${status}:${tokenSource}`;
-  if (daemonAuthFailureLogKeys.has(key)) return;
-  daemonAuthFailureLogKeys.add(key);
-  log.error(
-    `delegate ${pathname} authorization failed (${status}; token source: ${tokenSource})`,
-  );
-}
-
-const AUTHORIZATION_PROBE_TIMEOUT_MS = 2_000;
-
-export async function probeDelegateAuthorization(
-  target: DelegateDaemonTarget,
-  namespace = "",
-  operations: readonly DelegateAuthorizationOperation[] = DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS,
-  /** Cap from a caller's shared deadline; the default is this probe's own. */
-  timeoutMs?: number,
-): Promise<DelegateAuthorizationPreflight> {
-  const auth = target.resolveAuthToken();
-  const headers = auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined;
-  const query = new URLSearchParams();
-  for (const operation of operations) query.append("op", operation);
-  query.set("namespace", namespace);
-  try {
-    const response = await fetch(daemonUrl(target, `/engram/v1/authorization?${query}`), {
-      headers,
-      signal: AbortSignal.timeout(
-        timeoutMs === undefined ? AUTHORIZATION_PROBE_TIMEOUT_MS : Math.min(AUTHORIZATION_PROBE_TIMEOUT_MS, timeoutMs),
-      ),
-    });
-    await response.body?.cancel();
-    if (response.status === 200) {
-      return { state: "authorized", tokenSource: auth.source };
-    }
-    if (response.status === 401 || response.status === 403) {
-      return { state: "unauthorized", status: response.status, tokenSource: auth.source };
-    }
-  } catch {
-    return { state: "unavailable", tokenSource: auth.source };
-  }
-  return { state: "unavailable", tokenSource: auth.source };
-}
-async function postJson(
+export async function postJson(
   target: DelegateDaemonTarget,
   serviceId: string,
   pathname: string,
@@ -388,7 +337,12 @@ export function registerDelegateRuntime(
     // namespace from, so the remembered binding — else the registration-wide
     // fallback — is the correct scope.
     resolveSearchNamespace: async (sessionKey) => {
-      if (sessionKey) {
+      // A non-STRING key from the untyped host must not reach the binding
+      // store: its `encodeURIComponent` would coerce `123` to `"123"` and the
+      // search would inherit the binding of a distinct, string-keyed session —
+      // another tenant's namespace whenever the delegate token can read both.
+      // An unusable key falls back to the registration scope, never a guess.
+      if (typeof sessionKey === "string" && sessionKey.trim().length > 0) {
         const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
         if (remembered.length > 0) return remembered.at(-1) || undefined;
       }
@@ -567,8 +521,12 @@ export function registerDelegateRuntime(
       );
     if (turn.length === 0) return;
     try {
-      const observeDeadline =
-        Date.now() + Math.min(options.hookTimeoutMs, options.observeTimeoutMs);
+      // `observeTimeoutMs` alone. `hookTimeoutMs` is the PROMPT hook's budget —
+      // it is passed to that registration only (`{ timeoutMs }` above), and
+      // documented as the cold-start recall timeout. `agent_end` carries no
+      // host timeout, so borrowing the prompt's would abandon a turn capture
+      // the host was still willing to wait for.
+      const observeDeadline = Date.now() + options.observeTimeoutMs;
       const observeRemaining = (): number => observeDeadline - Date.now();
       const cwd = cwdFrom(event, ctx, options.cwd);
       const scopedNamespace = await sessionNamespaceFrom(
@@ -674,6 +632,26 @@ export function registerDelegateRuntime(
         namespace,
         namespaceBindings,
       );
+      // BEFORE the transcript flush, so the host's durable notes and the
+      // transcript reach the daemon in the order they were produced. A failure
+      // here must not abort the flush that follows.
+      try {
+        await ingestFlushPlanNotes({
+          target,
+          serviceId: options.serviceId,
+          workspaceDir: cwdFrom(event, ctx, options.capability.workspaceDir),
+          sessionKey,
+          // The session's CURRENT binding, which is the last entry of the
+          // ordered history — `namespaces[0]` is where it started, so a
+          // rebound session would file new notes under the previous tenant.
+          namespace: namespaces.at(-1),
+          // Re-read per chunk, not captured once: several posts must share
+          // the flush's remaining budget rather than each taking it whole.
+          remainingTimeoutMs: remainingBudget,
+        });
+      } catch (err) {
+        log.warn(`delegate flush-plan ingestion failed: ${String(err)}`);
+      }
       const flushNamespace = async (sessionNamespace: string | undefined) =>
         postJson(
           target,
@@ -979,6 +957,13 @@ const delegateActiveServiceIds = new Set<string>();
 // hooks from the fallback are still bound (OpenClaw exposes no unregister), so
 // switching would stack both memory paths (double recall/observe/flush).
 const delegateEmbeddedFallbackApis = new WeakSet<object>();
+/**
+ * Apis where SOME service has bound delegate hooks. The canonical and legacy
+ * plugin IDs register separately against one api, and those hooks serve every
+ * session on it — so once delegate is established the sibling must reuse it
+ * rather than bind an embedded runtime alongside.
+ */
+const delegateBoundApis = new WeakSet<object>();
 const delegateAuthorizationPreflightServices = new WeakMap<object, Set<string>>();
 
 /**
@@ -1004,32 +989,11 @@ export function maybeRegisterDelegateRuntime(
   options: MaybeRegisterDelegateOptions,
   deps: MaybeRegisterDelegateDeps = { checkHealth: checkDaemonHealthSync },
 ): boolean {
-  let bridge: ReturnType<typeof resolveBridgeMode>;
-  try {
-    bridge = resolveBridgeMode(options.configBridgeMode);
-  } catch (err) {
-    // An invalid bridgeMode (config typo or bad env override) must not abort
-    // the whole plugin registration — reject LOUDLY, then run embedded so the
-    // deployment keeps its memory loop (AGENTS.md §4: side effects must not
-    // crash the main flow).
-    log.error(`${String(err)} — falling back to the embedded runtime`);
-    delegateEmbeddedFallbackApis.add(api);
-    return false;
-  }
-  if (delegateEmbeddedFallbackApis.has(api)) {
-    log.debug(
-      `delegate register: ${options.serviceId} previously fell back to embedded on this api — staying embedded to avoid stacking memory paths`,
-    );
-    return false;
-  }
-  if (bridge.mode !== "delegate") {
-    // The caller will bind embedded hooks on this api (unless passive, which
-    // binds nothing and must not poison a later delegate registration).
-    // Record active registers so a later reload that flips to delegate on the
-    // SAME api stays embedded instead of stacking both memory paths.
-    if (!options.passive) delegateEmbeddedFallbackApis.add(api);
-    return false;
-  }
+  // BEFORE any health-dependent resolution: if this service already has
+  // delegate hooks on this api, they are still attached (OpenClaw exposes no
+  // unregister). Re-probing could resolve `embedded` on a transient daemon
+  // failure, and returning false would then stack embedded hooks on top of
+  // the live delegate ones — two memory paths over one corpus.
   const boundServices = delegateHookApiServices.get(api);
   if (boundServices?.has(options.serviceId)) {
     log.debug(
@@ -1037,25 +1001,111 @@ export function maybeRegisterDelegateRuntime(
     );
     return true;
   }
+  // BEFORE any health-dependent resolution. The result is already irrevocably
+  // embedded on this api, so running `auto`'s synchronous endpoint walk first
+  // would let a stalling endpoint block every reload and sibling registration
+  // for the full configured timeout to reach a foregone conclusion.
+  if (delegateEmbeddedFallbackApis.has(api)) {
+    log.debug(
+      `delegate register: ${options.serviceId} previously fell back to embedded on this api — staying embedded to avoid stacking memory paths`,
+    );
+    return false;
+  }
+  let bridge: BridgeConfig;
   let bridgeHealthTimeoutMs: number;
   try {
+    // Parsed BEFORE mode resolution: `auto` probes the daemon inside
+    // resolveBridgeMode and must honor the configured timeout.
     bridgeHealthTimeoutMs = parseOpenClawBridgeConfig({
       bridgeHealthTimeoutMs: options.bridgeHealthTimeoutMs,
     }).healthTimeoutMs;
+    bridge = resolveBridgeMode(options.configBridgeMode, {
+      memoryDir: options.memoryDir,
+      timeoutMs: bridgeHealthTimeoutMs,
+      onSkip: (reason) =>
+        log.info(`[${options.serviceId}] bridge mode auto: staying embedded — ${reason}`),
+    });
   } catch (err) {
-    log.error(`${String(err)} — falling back to the embedded runtime`);
-    delegateEmbeddedFallbackApis.add(api);
+    // An invalid bridgeMode or health timeout (config typo or bad env
+    // override) must not abort the whole plugin registration — reject LOUDLY,
+    // then run embedded so the deployment keeps its memory loop (AGENTS.md §4:
+    // side effects must not crash the main flow).
+    //
+    const wantedDelegate = requestedDelegate(options.configBridgeMode);
+    log.error(
+      wantedDelegate
+        ? `${String(err)} — falling back to the embedded runtime`
+        : `${String(err)} — the deployment is embedded, so this only affects delegate mode`,
+    );
+    // Returning `false` has the caller bind the embedded runtime on this api,
+    // and OpenClaw exposes no unregister — so the api is irrevocably embedded
+    // whatever the deployment MEANT. Recording that is what stops a later
+    // register() (value corrected, or bridgeMode flipped to delegate) from
+    // adding delegate hooks beside the ones already attached and running two
+    // memory paths over one corpus. A PASSIVE registration binds nothing, so
+    // it has nothing to record — the same rule the healthy-embedded path
+    // below already follows.
+    if (!options.passive) delegateEmbeddedFallbackApis.add(api);
+    return false;
+  }
+  if (bridge.mode !== "delegate") {
+    // A SIBLING service (canonical + legacy plugin IDs register separately
+    // against one api) may already have delegate hooks bound here, and those
+    // serve every session on it. Reporting embedded now would have the caller
+    // bind an embedded runtime BESIDE them — two memory paths over one corpus,
+    // the exact failure this mode prevents. A transient probe failure for the
+    // second service must not undo the first service's established mode, so
+    // the api is reported handled and nothing new is bound.
+    if (delegateBoundApis.has(api)) {
+      log.warn(
+        `[${options.serviceId}] bridge mode resolved embedded, but a sibling service already bound delegate hooks on this api — reusing them instead of stacking an embedded runtime`,
+      );
+      return true;
+    }
+    // The caller will bind embedded hooks on this api (unless passive, which
+    // binds nothing and must not poison a later delegate registration).
+    // Record active registers so a later reload that flips to delegate on the
+    // SAME api stays embedded instead of stacking both memory paths.
+    //
+    // This is deliberate for `auto` too. Once embedded hooks are bound there is
+    // no way to take them off — OpenClaw exposes no unregister — so adopting
+    // delegate on a later register() of the same api would run BOTH memory
+    // paths over one corpus, which is the exact failure this whole mode exists
+    // to prevent. Picking up a daemon that appeared after startup therefore
+    // needs a gateway restart, and the log says so rather than leaving an
+    // operator wondering why `auto` never switched.
+    if (!options.passive) {
+      delegateEmbeddedFallbackApis.add(api);
+      if (resolveRequestedBridgeMode(options.configBridgeMode) === "auto") {
+        log.info(
+          `[${options.serviceId}] bridge mode auto: embedded hooks are bound on this api — ` +
+            `a daemon that starts later is picked up on the next gateway restart`,
+        );
+      }
+    }
     return false;
   }
   // register() is synchronous, so the preflight uses the bridge's
-  // worker-backed sync health check (the same probe detectBridgeMode uses).
+  // worker-backed sync health check. `auto` already proved the daemon healthy
+  // as part of its corpus-identity probe, so re-checking would let one
+  // registration spend twice `bridgeHealthTimeoutMs` — which the config
+  // documents as the TOTAL preflight budget. Only the explicit `delegate`
+  // path, which has probed nothing yet, pays for the liveness request.
   if (
-    !deps.checkHealth(
-      bridge.daemonHost,
-      bridge.daemonPort,
-      bridgeHealthTimeoutMs,
-    )
+    !bridge.healthVerified &&
+    !deps.checkHealth(bridge.daemonHost, bridge.daemonPort, bridgeHealthTimeoutMs)
   ) {
+    // Same sibling rule as the embedded-resolution branch: when delegate hooks
+    // are already bound on this api by the canonical/legacy counterpart, a
+    // transient probe failure here must not hand the caller an embedded
+    // runtime to stack beside them.
+    if (delegateBoundApis.has(api)) {
+      log.warn(
+        `[${options.serviceId}] no healthy daemon at ${bridge.daemonHost}:${bridge.daemonPort}, ` +
+          `but a sibling service already bound delegate hooks on this api — reusing them instead of stacking an embedded runtime`,
+      );
+      return true;
+    }
     // Record the fallback so a later register() on the same api does not switch
     // to delegate and stack memory paths on top of the embedded hooks just bound.
     delegateEmbeddedFallbackApis.add(api);
@@ -1072,6 +1122,10 @@ export function maybeRegisterDelegateRuntime(
       options.serviceId,
     );
     delegateActiveServiceIds.add(options.serviceId);
+    // Delegate is now the api's established mode, so a sibling service
+    // registering later reuses these hooks instead of binding embedded ones
+    // beside them. Passive registrations bind nothing and must not claim it.
+    delegateBoundApis.add(api);
   }
   // Embedded toggle-store parity: same primary path (per-service plugin state)
   // and optional bundled active-memory secondary read.
@@ -1085,11 +1139,7 @@ export function maybeRegisterDelegateRuntime(
         },
       )
     : null;
-  const target: DelegateDaemonTarget = {
-    host: bridge.daemonHost,
-    port: bridge.daemonPort,
-    resolveAuthToken: loadDaemonAuth,
-  };
+  const target = daemonTargetFor(bridge);
   registerDelegateRuntime(api, {
     serviceId: options.serviceId,
     target,

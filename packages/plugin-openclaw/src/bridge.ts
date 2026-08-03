@@ -10,16 +10,113 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isIPv4 } from "node:net";
+import { isIPv4, isIPv6 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { expandTildePath } from "@remnic/core";
 
+import {
+  HEALTH_WORKER_SOURCE,
+  runHealthWorker,
+  type HealthWorkerData,
+} from "./bridge-health-worker.js";
+import { resolveSystemUnitSources, resolveUnitEndpoint } from "./bridge-service-units.js";
+import {
+  isDaemonServiceConfigured,
+  readServiceEndpoints,
+  readUnitAuthToken,
+  SYSTEMD_SYSTEM_UNIT_DIRS,
+  systemdUserUnitDirs,
+  type DaemonUnitSource,
+} from "./bridge-unit-discovery.js";
+// Re-exported so `bridge.js` stays the single import surface for consumers of
+// daemon endpoint facts, however the discovery is split internally.
+export {
+  isDaemonServiceConfigured,
+  readServiceEndpoints,
+  readUnitAuthToken,
+  SYSTEMD_SYSTEM_UNIT_DIRS,
+  systemdUserUnitDirs,
+  type DaemonUnitSource,
+} from "./bridge-unit-discovery.js";
+
+export { runHealthWorker } from "./bridge-health-worker.js";
+import { daemonServesCorpus } from "./memory-read-scope.js";
+
+export {
+  resolveSystemUnitSources,
+  resolveUnitConfigPath,
+  resolveUnitEndpoint,
+} from "./bridge-service-units.js";
+
 export type BridgeMode = "embedded" | "delegate";
+
+/**
+ * One endpoint `auto` may dial, plus the config file it came from — the
+ * credential tier is bound to that file so a second daemon's token cannot be
+ * sent to the first.
+ */
+interface DaemonEndpointCandidate {
+  host: string;
+  port: number;
+  configPath?: string;
+  /** Resolved once at discovery so dedupe can compare credentials. */
+  token: string;
+  /**
+   * A credential the unit file supplies directly, which outranks anything the
+   * config path resolves to. Carried onto `BridgeConfig` so delegate requests
+   * keep using the token the probe authenticated with.
+   */
+  authTokenOverride?: string;
+  /** The unit that supplied `authTokenOverride`, so it can be re-read. */
+  authTokenUnit?: DaemonUnitSource;
+  /**
+   * The credential written in this candidate's own config file, retried when
+   * the primary (gateway token store) one is rejected.
+   */
+  fallbackToken?: string;
+}
 
 export interface BridgeConfig {
   mode: BridgeMode;
   daemonHost: string;
   daemonPort: number;
+  /**
+   * True when this resolution already proved the daemon healthy. `auto` does,
+   * as part of its corpus-identity probe; explicit `delegate` does not. Lets
+   * the caller skip a second liveness request that would otherwise let a
+   * synchronous registration spend twice the configured preflight budget.
+   */
+  healthVerified?: boolean;
+  /**
+   * The config file the resolved endpoint came from, when discovery found one.
+   * Delegate requests bind their credential tier to it, so a deployment with
+   * two configs sends each daemon its OWN token.
+   */
+  daemonConfigPath?: string;
+  /**
+   * A credential taken from the installed unit's environment, which the
+   * gateway does not inherit and no config file carries. Delegate requests
+   * must use it or they authenticate as a different daemon would.
+   *
+   * Only for values with no other source. A credential that came from a CONFIG
+   * FILE is signalled by {@link daemonAuthPrefersConfig} instead, so a rotated
+   * token is re-read rather than frozen at detection time.
+   */
+  daemonAuthTokenOverride?: string;
+  /**
+   * The unit `daemonAuthTokenOverride` came from. Delegate requests re-read it
+   * per request, so rotating the token in the unit (or its drop-in, or its
+   * `EnvironmentFile=`) and restarting the daemon does not 401 every route
+   * until the gateway restarts too.
+   */
+  daemonAuthUnit?: DaemonUnitSource;
+  /**
+   * The probe authenticated with `daemonConfigPath`'s own `server.authToken`
+   * rather than the gateway token store. Delegate requests must make the same
+   * choice — but by RE-READING that file each time, so rotating the token does
+   * not 401 every route until the gateway restarts.
+   */
+  daemonAuthPrefersConfig?: boolean;
 }
 
 export type DaemonAuthTokenSource =
@@ -63,6 +160,22 @@ const LIVENESS_PATH = "/engram/v1/live";
 const LEGACY_HEALTH_PATH = "/engram/v1/health";
 export const DEFAULT_DAEMON_HEALTH_TIMEOUT_MS = 10_000;
 
+/**
+ * Validate a caller-supplied probe budget, in the same range the config
+ * parser enforces. Shared so the public detector cannot drift from it.
+ */
+function assertProbeBudget(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) return DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_BRIDGE_HEALTH_TIMEOUT_MS) {
+    throw new Error(
+      `timeoutMs must be an integer in [1, ${MAX_BRIDGE_HEALTH_TIMEOUT_MS}]; got ${String(timeoutMs)}`,
+    );
+  }
+  return timeoutMs;
+}
+
+const MAX_BRIDGE_HEALTH_TIMEOUT_MS = 120_000;
+
 function parseBridgeHealthTimeoutMs(value: unknown): number {
   if (value === undefined) return DEFAULT_DAEMON_HEALTH_TIMEOUT_MS;
   const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
@@ -71,10 +184,10 @@ function parseBridgeHealthTimeoutMs(value: unknown): number {
     !Number.isFinite(parsed) ||
     !Number.isInteger(parsed) ||
     parsed < 1 ||
-    parsed > 120_000
+    parsed > MAX_BRIDGE_HEALTH_TIMEOUT_MS
   ) {
     throw new Error(
-      `bridgeHealthTimeoutMs must be an integer in [1, 120000]; got ${String(value)}`,
+      `bridgeHealthTimeoutMs must be an integer in [1, ${MAX_BRIDGE_HEALTH_TIMEOUT_MS}]; got ${String(value)}`,
     );
   }
   return parsed;
@@ -87,114 +200,6 @@ export function parseOpenClawBridgeConfig(
     healthTimeoutMs: parseBridgeHealthTimeoutMs(config.bridgeHealthTimeoutMs),
   };
 }
-
-interface HealthWorkerData {
-  state: SharedArrayBuffer;
-  deadline: number;
-  host: string;
-  port: number;
-  path: string;
-  fallbackPath: string | null;
-  token: string;
-}
-
-interface HealthWorkerResponse {
-  statusCode?: number;
-  resume(): void;
-}
-
-interface HealthWorkerRequest {
-  on(event: "error" | "timeout", handler: () => void): HealthWorkerRequest;
-  destroy(): void;
-  end(): void;
-}
-
-type HealthRequest = (
-  options: {
-    hostname: string;
-    port: number;
-    path: string;
-    method: "GET";
-    timeout: number;
-    headers: Record<string, string>;
-  },
-  onResponse: (response: HealthWorkerResponse) => void,
-) => HealthWorkerRequest;
-
-export function runHealthWorker(request: HealthRequest, data: HealthWorkerData): void {
-  const view = new Int32Array(data.state);
-  let completed = false;
-
-  function finish(ok: boolean): void {
-    if (completed) return;
-    completed = true;
-    Atomics.store(view, 0, ok ? 1 : 2);
-    Atomics.notify(view, 0);
-  }
-
-  function probe(pathname: string, fallbackPath: string | null): void {
-    const remainingMs = data.deadline - Date.now();
-    if (remainingMs <= 0) {
-      finish(false);
-      return;
-    }
-    let responseReceived = false;
-    try {
-      const headers: Record<string, string> = {};
-      if (data.token) headers.Authorization = `Bearer ${data.token}`;
-      const req = request(
-        {
-          hostname: data.host,
-          port: data.port,
-          path: pathname,
-          method: "GET",
-          timeout: remainingMs,
-          headers,
-        },
-        (res) => {
-          responseReceived = true;
-          const statusCode = res.statusCode;
-          res.resume();
-          if (statusCode === 200) {
-            finish(true);
-          } else if (statusCode === 404 && fallbackPath) {
-            probe(fallbackPath, null);
-          } else {
-            finish(false);
-          }
-        },
-      );
-      req.on("error", () => {
-        if (!responseReceived) finish(false);
-      });
-      req.on("timeout", () => {
-        req.destroy();
-        if (!responseReceived) finish(false);
-      });
-      req.end();
-    } catch {
-      finish(false);
-    }
-  }
-
-  probe(data.path, data.fallbackPath);
-}
-
-const HEALTH_WORKER_SOURCE = `
-import { request } from "node:http";
-import { workerData } from "node:worker_threads";
-const __name = (target) => target;
-(${runHealthWorker.toString()})(request, workerData);
-`;
-const LAUNCHD_SERVICE_PATHS = [
-  ["Library", "LaunchAgents", "ai.remnic.daemon.plist"],
-  ["Library", "LaunchAgents", "ai.remnic.server.plist"],
-  ["Library", "LaunchAgents", "ai.engram.daemon.plist"],
-] as const;
-const SYSTEMD_SERVICE_PATHS = [
-  [".config", "systemd", "user", "remnic.service"],
-  [".config", "systemd", "user", "engram.service"],
-] as const;
 
 function readEnv(name: string): string | undefined {
   const env = (globalThis.process as { env?: Record<string, string | undefined> } | undefined)?.["env"];
@@ -209,16 +214,38 @@ function readCompatEnv(primary: string, legacy: string): string | undefined {
   return readEnv(primary) ?? readEnv(legacy);
 }
 
+/**
+ * Config discovery, in the SAME order the standalone server uses
+ * (`resolveConfigPath` in packages/remnic-server/src/index.ts): explicit env
+ * override, then cwd, then home. Probing a different file than the running
+ * daemon booted from would read a different host/port — and under `auto` that
+ * means starting a second orchestrator over the daemon's own corpus.
+ */
 function configPathCandidates(): string[] {
   const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
   return [
     ...(envPath ? [path.resolve(expandTildePath(envPath))] : []),
-    path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
-    path.join(resolveHomeDir(), ".config", "engram", "config.json"),
     path.join(process.cwd(), "remnic.config.json"),
     path.join(process.cwd(), "engram.config.json"),
+    path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
+    path.join(resolveHomeDir(), ".config", "engram", "config.json"),
   ];
 }
+
+
+/**
+ * The config path the INSTALLED daemon service is pinned to.
+ *
+ * The shipped systemd unit and launchd plist both set `REMNIC_CONFIG_PATH`
+ * explicitly, and that variable lives only in the daemon's environment. Two
+ * processes with different cwds can therefore never converge on the same file
+ * by matching candidate order alone: a gateway started in a directory that
+ * happens to hold a `remnic.config.json` would probe that endpoint, stay
+ * embedded, and stack an orchestrator on the daemon's corpus. Reading the unit
+ * asks the daemon which file it actually uses. Ranked below this process's own
+ * `REMNIC_CONFIG_PATH`, which is a deliberate operator instruction.
+ */
+
 
 function fileExists(filePath: string): boolean {
   try {
@@ -250,31 +277,55 @@ function isDaemonRunning(): boolean {
   return false;
 }
 
-function isDaemonServiceConfigured(): boolean {
-  const homeDir = resolveHomeDir();
-  for (const segments of [...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_SERVICE_PATHS]) {
-    if (fileExists(path.join(homeDir, ...segments))) return true;
-  }
-  return false;
-}
-
 /**
  * Whether a daemon endpoint names THIS host.
  *
- * Literal only: a prefix test would accept a DNS name like
- * `127.daemon.example` that resolves anywhere. A wildcard bind
- * (`0.0.0.0` / `::`) names every interface on this host, so it counts as local
- * — `server.host: "0.0.0.0"` is the documented daemon configuration.
+ * IPv6 literals have many valid spellings for the same address, so they are
+ * CANONICALIZED before classifying: `0:0:0:0:0:0:0:1`, `::1`, and
+ * `::ffff:127.0.0.1` are all loopback; `0:0:0:0:0:0:0:0` is the wildcard.
+ * Comparing raw strings would leave `auto` embedded beside a reachable
+ * same-host daemon just because its config spelled the address differently.
+ *
+ * Names stay literal: a prefix test would accept a DNS name like
+ * `127.daemon.example` that resolves anywhere. A wildcard bind names every
+ * interface on this host, so it counts as local — `server.host: "0.0.0.0"` is
+ * the documented daemon configuration.
  */
 export function isLoopbackDaemonHost(host: string): boolean {
   const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
-  if (normalized === "localhost" || normalized === "::1") return true;
+  if (normalized === "localhost") return true;
   if (loopbackForWildcardBind(normalized) !== undefined) return true;
+  const ipv6 = canonicalIPv6(normalized);
+  if (ipv6 !== undefined) {
+    if (ipv6 === "::1") return true;
+    // IPv4-mapped carries an IPv4 address; judge THAT. Canonicalization emits
+    // the hex form (`::ffff:7f00:1`), so read 127 out of the high group.
+    const mappedHex = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/.exec(ipv6);
+    if (mappedHex !== null) return Number.parseInt(mappedHex[1], 16) >> 8 === 0x7f;
+    const mappedDotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ipv6);
+    return (
+      mappedDotted !== null &&
+      isIPv4(mappedDotted[1]) &&
+      mappedDotted[1].split(".")[0] === "127"
+    );
+  }
   return isIPv4(normalized) && normalized.split(".")[0] === "127";
 }
 
-/** Normalize a host for node:http/health use: strip surrounding IPv6 brackets
- * (`[::1]` → `::1`). URL builders re-bracket as needed. */
+/**
+ * Collapse an IPv6 literal to its canonical form, or `undefined` when the
+ * string is not one. Node's `net.isIPv6` validates; `URL` canonicalizes.
+ */
+function canonicalIPv6(value: string): string | undefined {
+  if (!isIPv6(value)) return undefined;
+  try {
+    // The URL parser applies RFC 5952 compression and lowercasing.
+    return new URL(`http://[${value}]`).hostname.replace(/^\[/, "").replace(/\]$/, "");
+  } catch {
+    return value;
+  }
+}
+
 /**
  * A wildcard bind names every interface on THIS host, not a remote one. The
  * documented `server.host: "0.0.0.0"` daemon config would otherwise be
@@ -283,9 +334,9 @@ export function isLoopbackDaemonHost(host: string): boolean {
  * dialed through the matching loopback.
  */
 export function loopbackForWildcardBind(host: string): string | undefined {
-  const normalized = host.trim().toLowerCase();
+  const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
   if (normalized === "0.0.0.0") return DEFAULT_HOST;
-  if (normalized === "::" || normalized === "[::]") return "::1";
+  if (canonicalIPv6(normalized) === "::") return "::1";
   return undefined;
 }
 
@@ -303,29 +354,49 @@ function coerceDaemonPort(value: unknown): number | undefined {
     : undefined;
 }
 
-export function checkDaemonHealthSync(
-  host: string,
-  port: number,
-  timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
-): boolean {
-  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return false;
+const DAEMON_CAPTURE_BYTES = 1_024;
+
+/**
+ * Run one blocking daemon probe on a worker thread. `register()` is
+ * synchronous, so this is the only way to consult the daemon before deciding
+ * how to register. When `captureField` is set, the probe targets the detailed
+ * health route and returns that field's string value from the response body.
+ */
+function probeDaemonSync(options: {
+  host: string;
+  port: number;
+  timeoutMs: number;
+  path: string;
+  fallbackPath: string | null;
+  captureField?: string;
+  /** Bind the credential to the config this endpoint came from. */
+  configPath?: string;
+  /** A unit-supplied credential, which outranks the config's. */
+  authToken?: string;
+}): { ok: boolean; captured?: string; rejectedAuth?: boolean } {
+  const { host, port, timeoutMs } = options;
+  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return { ok: false };
   const deadline = Date.now() + timeoutMs;
 
   let worker: Worker | undefined;
   try {
     const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
     const view = new Int32Array(state);
+    const capture = options.captureField
+      ? new SharedArrayBuffer(DAEMON_CAPTURE_BYTES)
+      : undefined;
     const workerUrl = new URL(`data:text/javascript,${encodeURIComponent(HEALTH_WORKER_SOURCE)}`);
     const workerOptions: WorkerOptions & { type: "module" } = {
       type: "module",
       workerData: {
         host,
         port,
-        path: LIVENESS_PATH,
-        fallbackPath: LEGACY_HEALTH_PATH,
-        token: loadDaemonAuth().token,
+        path: options.path,
+        fallbackPath: options.fallbackPath,
+        token: options.authToken ?? loadDaemonAuth(options.configPath).token,
         deadline,
         state,
+        ...(capture ? { capture, captureField: options.captureField } : {}),
       },
     };
     worker = new Worker(workerUrl, workerOptions);
@@ -333,23 +404,77 @@ export function checkDaemonHealthSync(
     Atomics.wait(view, 0, 0, Math.max(0, deadline - Date.now()));
     const status = Atomics.load(view, 0);
     if (status === 0) void worker.terminate();
-    return status === 1;
+    if (status !== 1) return { ok: false, ...(status === 3 ? { rejectedAuth: true } : {}) };
+    if (!capture) return { ok: true };
+    const length = new DataView(capture).getUint32(0);
+    if (length === 0) return { ok: true };
+    // A value that did not fit is UNKNOWN, never a truncated path: a shortened
+    // memoryDir would read as a different corpus and start a second
+    // orchestrator beside the daemon on the very same files.
+    if (length > capture.byteLength - 4) return { ok: true };
+    return { ok: true, captured: new TextDecoder().decode(new Uint8Array(capture, 4, length)) };
   } catch {
     if (worker) void worker.terminate();
-    return false;
+    return { ok: false };
   }
+}
+
+export function checkDaemonHealthSync(
+  host: string,
+  port: number,
+  timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
+): boolean {
+  // Same hazard as the capture probe: a non-finite budget reaches
+  // `Atomics.wait` as an unbounded wait on the caller's main thread.
+  assertProbeBudget(timeoutMs);
+  return probeDaemonSync({
+    host,
+    port,
+    timeoutMs,
+    path: LIVENESS_PATH,
+    fallbackPath: LEGACY_HEALTH_PATH,
+  }).ok;
+}
+
+/**
+ * Read the memoryDir a healthy daemon is serving. Returns `undefined` for the
+ * directory when the daemon answers but does not report one (an older build,
+ * or a token without health access), which callers must treat as "unknown" —
+ * never as a match.
+ */
+export function readDaemonMemoryDirSync(
+  host: string,
+  port: number,
+  timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
+  configPath?: string,
+  authToken?: string,
+): { healthy: boolean; memoryDir?: string; rejectedAuth?: boolean } {
+  // A non-finite budget survives `Math.max(0, deadline - Date.now())` and
+  // reaches `Atomics.wait` as an UNBOUNDED wait, hanging the caller's main
+  // thread instead of failing the probe.
+  assertProbeBudget(timeoutMs);
+  const probe = probeDaemonSync({
+    host,
+    port,
+    timeoutMs,
+    path: LEGACY_HEALTH_PATH,
+    fallbackPath: null,
+    captureField: "memoryDir",
+    configPath,
+    authToken,
+  });
+  return {
+    healthy: probe.ok,
+    memoryDir: probe.captured,
+    // Present only when true, so the result shape is unchanged for callers
+    // that compare it structurally.
+    ...(probe.rejectedAuth === true ? { rejectedAuth: true } : {}),
+  };
 }
 
 
 function shouldProbeDaemonHealth(host: string): boolean {
-  const normalized = host.trim().toLowerCase();
-  return (
-    normalized === DEFAULT_HOST ||
-    normalized === "localhost" ||
-    normalized === "::1" ||
-    normalized === "[::1]" ||
-    isDaemonServiceConfigured()
-  );
+  return isLoopbackDaemonHost(host) || isDaemonServiceConfigured();
 }
 
 /**
@@ -361,22 +486,191 @@ function readDaemonHost(): string {
   return loopbackForWildcardBind(resolved) ?? resolved;
 }
 
+/**
+ * The `server` block of the ONE config file the daemon would have booted from.
+ *
+ * The standalone server selects a single file (`resolveConfigPath`) and takes
+ * every field from it, defaulting whatever that file omits. Scanning the whole
+ * candidate list per field would synthesize an endpoint that exists in no
+ * file — a cwd config's host with a home config's port — and `auto` would then
+ * probe a port nothing is listening on and start a second orchestrator beside
+ * the running daemon. A malformed selected file yields no fields, exactly as
+ * it yields the daemon nothing.
+ */
+/**
+ * The endpoint the daemon's OWN config selection resolves to.
+ *
+ * Mirrors `remnic-server`'s `resolveConfigPath`: the first EXISTING candidate
+ * wins outright, and `parseServerConfig` then defaults its missing fields to
+ * `127.0.0.1:4318`. A later file that declares an endpoint is not the daemon's
+ * config, so skipping past a silent first one would dial a server nobody is
+ * running. Host and port therefore always come from one file — never spliced.
+ */
+function readDaemonServerConfig(): { host?: string; port?: number } {
+  for (const candidate of configPathCandidates()) {
+    const server = readServerBlock(candidate);
+    if (server !== undefined) return server;
+  }
+  return {};
+}
+
+/**
+ * The `server` block of one config file, or `undefined` when that file is not
+ * one the daemon could have booted from (missing, unparseable, or carrying a
+ * `server` its own loader rejects).
+ */
+function readServerBlock(
+  candidate: string,
+): { host?: string; port?: number; authToken?: string } | undefined {
+  if (!fileExists(candidate)) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(candidate, "utf8"));
+  } catch {
+    // Unparseable: it names no endpoint at all.
+    return undefined;
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const server = (raw as { server?: unknown }).server;
+  // Absent is fine — the daemon defaults every field. A `server` that is not a
+  // plain object is a file the daemon's own loader REJECTS.
+  if (server === undefined) return {};
+  if (typeof server !== "object" || server === null || Array.isArray(server)) return undefined;
+  const { host, port } = server as { host?: unknown; port?: unknown };
+  const parsedPort = coerceDaemonPort(port);
+  const { authToken } = server as { authToken?: unknown };
+  return {
+    ...(typeof host === "string" && host.trim() !== "" ? { host } : {}),
+    ...(parsedPort === undefined ? {} : { port: parsedPort }),
+    ...(typeof authToken === "string" && authToken.length > 0 ? { authToken } : {}),
+  };
+}
+
+/**
+ * Every endpoint a same-host daemon could be listening on, most-likely first.
+ *
+ * `auto` cannot know WHICH config the running daemon booted from: a unit file
+ * can sit installed but inactive while the daemon was launched by hand from a
+ * cwd config, and vice versa. Picking one file and probing it once would leave
+ * `auto` embedded beside a daemon it simply did not dial. So auto probes the
+ * distinct candidates in order and delegates to the first that is healthy AND
+ * serves this corpus — both gates still apply per endpoint, so a stale entry
+ * costs one failed probe rather than a second orchestrator.
+ *
+ * Explicit `delegate` still resolves exactly one endpoint: the operator named
+ * a daemon, so guessing among candidates would be the wrong behavior.
+ */
+function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
+  const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
+  const envPort = coerceDaemonPort(readCompatEnv("REMNIC_PORT", "ENGRAM_PORT"));
+  const candidates: DaemonEndpointCandidate[] = [];
+  const add = (
+    host: string | undefined,
+    port: number | undefined,
+    configPath?: string,
+    authTokenOverride?: string,
+    authTokenUnit?: DaemonUnitSource,
+  ): void => {
+    const resolvedHost = normalizeDaemonHost(
+      envHost !== undefined && envHost.trim() !== "" ? envHost : (host ?? DEFAULT_HOST),
+    );
+    const dialHost = loopbackForWildcardBind(resolvedHost) ?? resolvedHost;
+    const dialPort = envPort ?? port ?? DEFAULT_PORT;
+    // Dedupe on the endpoint AND its credential: an inactive service config
+    // and a manually launched daemon can share host:port while carrying
+    // different `server.authToken` values. Dropping the later one would send
+    // the stale token, take a 401, and never retry with the live credential.
+    const token = authTokenOverride ?? loadDaemonAuth(configPath).token;
+    // The gateway-global token store outranks a config file inside
+    // `loadDaemonAuth`, which is right for a co-installed daemon but wrong for
+    // one running under another account with a static `server.authToken`: the
+    // store's unrelated token 401s and the bound credential is never tried.
+    // Keep it as an explicit alternative so the probe can fall back to it.
+    const configToken = configPath === undefined ? undefined : readServerBlock(configPath)?.authToken;
+    const fallbackToken =
+      configToken !== undefined && configToken !== token ? configToken : undefined;
+    if (
+      candidates.some(
+        (c) =>
+          c.host === dialHost &&
+          c.port === dialPort &&
+          c.token === token &&
+          // The BOUND credential is part of the identity too: when a gateway
+          // token wins for both, two configs on one endpoint resolve the same
+          // primary token but carry different fallbacks, and dropping the
+          // second would leave the daemon's real credential untried.
+          c.fallbackToken === fallbackToken &&
+          // So is the UNIT the credential is re-read from per request: two
+          // units can agree today and diverge on the next rotation.
+          c.authTokenUnit?.unitPath === authTokenUnit?.unitPath &&
+          // And so is the CONFIG, for the same reason: `daemonConfigPath` is
+          // re-read per request, so collapsing two configs that agree today
+          // would keep sending the retained one's token after the other
+          // rotates.
+          c.configPath === configPath,
+      )
+    ) {
+      return;
+    }
+    candidates.push({
+      host: dialHost,
+      port: dialPort,
+      configPath,
+      token,
+      ...(authTokenOverride === undefined ? {} : { authTokenOverride }),
+      ...(authTokenUnit === undefined ? {} : { authTokenUnit }),
+      ...(fallbackToken === undefined ? {} : { fallbackToken }),
+    });
+  };
+  // An env override alone, so a specified environment is dialed first even
+  // when no config file exists. Without one this would inject a bare
+  // default endpoint AHEAD of every config-derived candidate.
+  if ((envHost !== undefined && envHost.trim() !== "") || envPort !== undefined) {
+    add(undefined, undefined);
+  }
+  const configOrder = configPathCandidates();
+  const envConfigPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH")
+    ? configOrder[0]
+    : undefined;
+  const addConfigCandidate = (candidate: string): void => {
+    const server = readServerBlock(candidate);
+    if (server !== undefined) add(server.host, server.port, candidate);
+  };
+  // THIS process's explicit REMNIC_CONFIG_PATH is a deliberate operator
+  // instruction and outranks everything, including an installed unit.
+  if (envConfigPath !== undefined) addConfigCandidate(envConfigPath);
+  // Then installed units: each contributes its config's endpoint with the
+  // unit's own REMNIC_HOST/REMNIC_PORT merged OVER it, exactly as the server
+  // merges its environment over its config file. They rank ahead of cwd/home
+  // because they name what the daemon was actually launched with - and every
+  // candidate is probed, so a stale one costs one failed probe.
+  for (const unit of readServiceEndpoints()) {
+    const server = unit.configPath === undefined ? {} : (readServerBlock(unit.configPath) ?? {});
+    add(
+      unit.host ?? server.host,
+      unit.port ?? server.port,
+      unit.configPath,
+      unit.authToken,
+      unit.authTokenUnit,
+    );
+  }
+  for (const candidate of configOrder) {
+    if (candidate === envConfigPath) continue;
+    addConfigCandidate(candidate);
+  }
+  // The documented default, LAST. A daemon on 127.0.0.1:4318 with no config
+  // file at all is the out-of-the-box shape, and explicit `delegate` dials it;
+  // `auto` must not miss it and stay embedded on the same corpus. `add`
+  // dedupes, so this is a no-op whenever a candidate already named it.
+  add(undefined, undefined);
+  return candidates;
+}
+
 function readConfiguredDaemonHost(): string {
   const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
   if (envHost !== undefined && envHost.trim() !== "") return normalizeDaemonHost(envHost);
-  for (const p of configPathCandidates()) {
-    if (!fs.existsSync(p)) continue;
-    try {
-      const raw = JSON.parse(fs.readFileSync(p, "utf8"));
-      const configHost = raw.server?.host;
-      if (typeof configHost === "string" && configHost.trim() !== "") {
-        return normalizeDaemonHost(configHost);
-      }
-    } catch {
-      // Ignore malformed config files and continue to the next candidate.
-    }
-  }
-  return DEFAULT_HOST;
+  const configHost = readDaemonServerConfig().host;
+  return configHost === undefined ? DEFAULT_HOST : normalizeDaemonHost(configHost);
 }
 
 /**
@@ -385,107 +679,315 @@ function readConfiguredDaemonHost(): string {
 function readDaemonPort(): number {
   const envPort = coerceDaemonPort(readCompatEnv("REMNIC_PORT", "ENGRAM_PORT"));
   if (envPort !== undefined) return envPort;
-
-  for (const p of configPathCandidates()) {
-    if (!fs.existsSync(p)) continue;
-    try {
-      const raw = JSON.parse(fs.readFileSync(p, "utf8"));
-      const configPort = coerceDaemonPort(raw.server?.port);
-      if (configPort !== undefined) return configPort;
-    } catch {
-      // Ignore malformed config files and continue to the next candidate.
-    }
-  }
-  return DEFAULT_PORT;
+  return readDaemonServerConfig().port ?? DEFAULT_PORT;
 }
 
+/** What a caller may ask for; `auto` defers to same-host daemon detection. */
+export type BridgeModeRequest = BridgeMode | "auto";
+
 /**
- * Determine bridge mode:
- * - If REMNIC_BRIDGE_MODE env is set, use that.
- * - If a daemon is already running, use delegate mode.
- * - Otherwise, use embedded mode.
+ * Same-host daemon detection for `bridgeMode: "auto"` (issue #2120).
+ *
+ * Explicit overrides are the CALLER's job — `resolveBridgeMode` consults this
+ * only after env and config both say `auto`. Two gates must pass before an
+ * auto deployment delegates:
+ *
+ *   1. Liveness — a PID file or a local/service-configured endpoint is only a
+ *      hint (PIDs go stale and get reused), so the endpoint must answer.
+ *   2. Corpus identity — the daemon must report the SAME memoryDir the plugin
+ *      is configured for. Delegating to a daemon serving a different corpus
+ *      would silently redirect every recall and write; an unknown memoryDir
+ *      (older daemon, or a token without health access) is not a match.
  */
-export function detectBridgeMode(): BridgeConfig {
-  const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
+export function detectDaemonBridgeMode(options: {
+  /** The plugin's configured memoryDir, used for the corpus-identity gate. */
+  memoryDir: string;
+  timeoutMs?: number;
+  onSkip?: (reason: string) => void;
+}): BridgeConfig {
+  const endpoints = daemonEndpointCandidates();
+  // The first candidate is what an explicit `delegate` would dial, so it is
+  // also what an embedded result reports.
+  const primary =
+    endpoints[0] ?? { host: readDaemonHost(), port: readDaemonPort(), token: "" };
+  const embedded: BridgeConfig = {
+    mode: "embedded",
+    daemonHost: primary.host,
+    daemonPort: primary.port,
+    ...(primary.configPath === undefined ? {} : { daemonConfigPath: primary.configPath }),
+    ...(primary.authTokenOverride === undefined
+      ? {}
+      : { daemonAuthTokenOverride: primary.authTokenOverride }),
+    ...(primary.authTokenUnit === undefined ? {} : { daemonAuthUnit: primary.authTokenUnit }),
+  };
 
-  if (envMode === "delegate") {
-    return {
-      mode: "delegate",
-      daemonHost: readDaemonHost(),
-      daemonPort: readDaemonPort(),
-    };
+  // `bridgeHealthTimeoutMs` is documented as the TOTAL preflight budget, and
+  // registration is synchronous — probing several stale endpoints for the full
+  // budget each would hold gateway startup for a multiple of it. Every probe
+  // shares one deadline.
+  // A library consumer reaches this entry point directly, bypassing the config
+  // parser. An invalid budget must be REJECTED, not reinterpreted: zero or a
+  // negative silently skips every probe and selects embedded beside a running
+  // same-corpus daemon, which is the exact failure this detector exists to
+  // prevent (AGENTS.md §1).
+  // Same reasoning as the budget: a library consumer reaches this entry point
+  // directly. A blank corpus can never match, so the walk would return
+  // `embedded` — an invalid required argument dressed up as a mode decision,
+  // which binds an embedded runtime beside the daemon the caller meant to find.
+  if (options.memoryDir.trim() === "") {
+    throw new Error("detectDaemonBridgeMode requires a non-empty memoryDir to verify the daemon corpus");
   }
-
-  if (envMode === "embedded") {
-    return {
-      mode: "embedded",
-      daemonHost: DEFAULT_HOST,
-      daemonPort: readDaemonPort(),
-    };
+  const totalTimeoutMs = assertProbeBudget(options.timeoutMs);
+  const deadline = Date.now() + totalTimeoutMs;
+  // Partition BEFORE budgeting. A candidate rejected for being non-loopback,
+  // or for having no liveness hint, costs no time at all — leaving it in the
+  // divisor would shrink the share for the real probes behind it, and a
+  // warming daemon could be misread as absent well inside the total budget.
+  const probeable: DaemonEndpointCandidate[] = [];
+  for (const candidate of endpoints) {
+    // Auto is SAME-HOST detection. A matching absolute memoryDir string proves
+    // nothing across machines — an unrelated remote daemon using the same
+    // conventional path would silently capture every recall and write — and the
+    // premise that the plugin may read the corpus locally only holds on one
+    // host. Explicit `delegate` may still target a remote daemon; `auto` may not.
+    if (!isLoopbackDaemonHost(candidate.host)) {
+      options.onSkip?.(
+        `daemon endpoint ${candidate.host}:${candidate.port} is not loopback; auto only delegates to a same-host daemon`,
+      );
+      continue;
+    }
+    if (!isDaemonRunning() && !shouldProbeDaemonHealth(candidate.host)) {
+      options.onSkip?.("no daemon PID, service unit, or local endpoint to probe");
+      continue;
+    }
+    probeable.push(candidate);
   }
-
-  const daemonHost = readDaemonHost();
-  const daemonPort = readDaemonPort();
-
-  const hasDaemonPidHint = isDaemonRunning();
-
-  // Auto-detect: PID files are only hints, because PIDs can be stale or reused.
-  // Delegate only after the configured Remnic endpoint proves it is healthy.
-  if (
-    (hasDaemonPidHint || shouldProbeDaemonHealth(daemonHost)) &&
-    checkDaemonHealthSync(daemonHost, daemonPort)
-  ) {
+  let probed = 0;
+  for (const {
+    host: daemonHost,
+    port: daemonPort,
+    configPath,
+    authTokenOverride,
+    authTokenUnit,
+    fallbackToken,
+  } of probeable) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      options.onSkip?.(
+        `preflight budget of ${totalTimeoutMs}ms is spent; ${daemonHost}:${daemonPort} was not probed`,
+      );
+      break;
+    }
+    // Cap each probe at a SHARE of what is left rather than handing it the
+    // whole budget. Installed-unit candidates deliberately precede cwd/home,
+    // so one stale endpoint that accepts a connection and stalls would
+    // otherwise eat the entire preflight and the live daemon behind it would
+    // never be dialed. The share is over the endpoints still unprobed, so the
+    // last candidate can still use everything that remains.
+    const perCandidateMs = Math.max(
+      1,
+      Math.ceil(remainingMs / Math.max(1, probeable.length - probed)),
+    );
+    probed += 1;
+    // BOTH attempts share this candidate's slice, so one stalling endpoint
+    // with a fallback credential cannot burn two shares and starve the healthy
+    // daemon behind it. The FIRST attempt gets the whole slice: reserving half
+    // for a retry would cut short a daemon that is merely still warming up,
+    // and a readiness stall is not something a different token fixes.
+    const candidateDeadline = Date.now() + Math.min(remainingMs, perCandidateMs);
+    // The clock can cross the deadline between deriving it and spending it —
+    // trivially so at the supported minimum budget of 1ms. The public probe
+    // REJECTS a non-positive budget, and rightly so, but reaching it with one
+    // here would turn an exhausted budget into a thrown configuration error.
+    const firstAttemptMs = candidateDeadline - Date.now();
+    if (firstAttemptMs <= 0) {
+      options.onSkip?.(
+        `preflight budget of ${totalTimeoutMs}ms is spent; ${daemonHost}:${daemonPort} was not probed`,
+      );
+      continue;
+    }
+    let usedToken = authTokenOverride;
+    let health = readDaemonMemoryDirSync(
+      daemonHost,
+      daemonPort,
+      firstAttemptMs,
+      configPath,
+      usedToken,
+    );
+    // Retry ONLY on an actual authentication rejection, and only with a
+    // different credential: the gateway's token store outranks a config file
+    // inside `loadDaemonAuth`, which is wrong for a daemon running under
+    // another account with a static `server.authToken`.
+    if (health.rejectedAuth === true && fallbackToken !== undefined) {
+      const retryMs = candidateDeadline - Date.now();
+      if (retryMs > 0) {
+        usedToken = fallbackToken;
+        health = readDaemonMemoryDirSync(daemonHost, daemonPort, retryMs, configPath, usedToken);
+      }
+    }
+    if (!health.healthy) {
+      options.onSkip?.(`no healthy daemon at ${daemonHost}:${daemonPort}`);
+      continue;
+    }
+    if (health.memoryDir === undefined) {
+      options.onSkip?.(
+        `daemon at ${daemonHost}:${daemonPort} did not report a memoryDir, so its corpus cannot be confirmed`,
+      );
+      continue;
+    }
+    if (!daemonServesCorpus(options.memoryDir, health.memoryDir)) {
+      options.onSkip?.(
+        `daemon at ${daemonHost}:${daemonPort} serves a different memoryDir than this plugin`,
+      );
+      continue;
+    }
     return {
       mode: "delegate",
       daemonHost,
       daemonPort,
+      healthVerified: true,
+      ...(configPath === undefined ? {} : { daemonConfigPath: configPath }),
+      // A unit-supplied credential has no other source, so it is carried by
+      // value; a config-supplied one is re-read from its file per request.
+      ...(usedToken !== undefined && usedToken === authTokenOverride
+        ? {
+            daemonAuthTokenOverride: usedToken,
+            // The unit rides along so the credential can be re-read per
+            // request; the frozen value stays as the fallback for a unit that
+            // later becomes unreadable.
+            ...(authTokenUnit === undefined ? {} : { daemonAuthUnit: authTokenUnit }),
+          }
+        : {}),
+      ...(usedToken !== undefined && usedToken === fallbackToken
+        ? { daemonAuthPrefersConfig: true }
+        : {}),
     };
   }
-
-  return {
-    mode: "embedded",
-    daemonHost: DEFAULT_HOST,
-    daemonPort,
-  };
+  return embedded;
 }
+
+/**
+ * The mode the deployment ASKED for, without probing anything.
+ *
+ * Split out so a caller can tell "delegate was attempted and failed" from
+ * "this deployment is embedded and something unrelated is misconfigured" —
+ * only the former is a fallback worth recording.
+ */
+export function resolveRequestedBridgeMode(configBridgeMode: string): BridgeModeRequest {
+  const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
+  const isRequest = (value: string): value is BridgeModeRequest =>
+    value === "embedded" || value === "delegate" || value === "auto";
+  if (envMode !== undefined && envMode !== "") {
+    if (!isRequest(envMode)) {
+      throw new Error(
+        `Invalid REMNIC_BRIDGE_MODE env override: ${envMode} (expected "embedded", "delegate", or "auto")`,
+      );
+    }
+    return envMode;
+  }
+  if (configBridgeMode === undefined || configBridgeMode === "") return "embedded";
+  if (isRequest(configBridgeMode)) return configBridgeMode;
+  throw new Error(
+    `Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded", "delegate", or "auto")`,
+  );
+}
+
+/**
+ * @deprecated Use {@link resolveBridgeMode} (explicit config/env) or
+ * {@link detectDaemonBridgeMode} (`auto` same-host detection). Kept so an
+ * existing consumer keeps importing after upgrading (AGENTS.md §11).
+ *
+ * Maps onto the current resolution rather than re-implementing the old
+ * heuristics, so a caller cannot get a different answer than the plugin does.
+ * `auto` needs a corpus to verify against; without a `memoryDir` there is
+ * nothing to compare and it stays embedded instead of guessing.
+ */
+export function detectBridgeMode(options: { memoryDir?: string } = {}): BridgeConfig {
+  const requested = resolveRequestedBridgeMode("");
+  if (requested === "auto" && !options.memoryDir?.trim()) {
+    return { mode: "embedded", daemonHost: readDaemonHost(), daemonPort: readDaemonPort() };
+  }
+  return resolveBridgeMode("", options);
+}
+
+/**
+ * Whether this deployment was asking for delegate at all.
+ *
+ * An unparseable bridgeMode is itself the thing the operator got wrong, so it
+ * counts as an attempt: only a deployment that clearly said `embedded` has
+ * nothing to fall back FROM.
+ */
+export function requestedDelegate(configBridgeMode: string): boolean {
+  try {
+    return resolveRequestedBridgeMode(configBridgeMode) !== "embedded";
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Resolve the bridge mode for the plugin runtime (issue #2120).
  *
- * Unlike `detectBridgeMode`, this resolver is EXPLICIT-ONLY: delegate mode
- * activates solely via `REMNIC_BRIDGE_MODE=delegate` (or the legacy env) or
- * the plugin config's `bridgeMode: "delegate"`. The auto-detection branch of
- * `detectBridgeMode` is intentionally not consulted — auto-flipping existing
- * co-located deployments (embedded plugin beside a same-host daemon) to
- * delegate on a restart would be a silent behavior change. Revisit once
- * delegate mode has production mileage.
+ * Precedence is env override > plugin config > `embedded`. `auto` is the only
+ * value that consults detection: it exists so a fleet can ship ONE config that
+ * delegates on hosts running a same-corpus daemon and stays embedded
+ * everywhere else. `embedded` remains the default precisely because
+ * auto-flipping a co-located deployment on restart would be a silent behavior
+ * change; `auto` makes that flip an explicit opt-in.
  */
-export function resolveBridgeMode(configBridgeMode: string): BridgeConfig {
-  const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
-  let mode: BridgeMode;
-  if (envMode === "delegate" || envMode === "embedded") {
-    mode = envMode;
-  } else if (envMode !== undefined && envMode !== "") {
-    throw new Error(
-      `Invalid REMNIC_BRIDGE_MODE env override: ${envMode} (expected "embedded" or "delegate")`,
-    );
-  } else if (
-    configBridgeMode === undefined ||
-    configBridgeMode === "" ||
-    configBridgeMode === "embedded"
-  ) {
-    mode = "embedded";
-  } else if (configBridgeMode === "delegate") {
-    mode = "delegate";
-  } else {
-    throw new Error(
-      `Invalid bridgeMode: ${String(configBridgeMode)} (expected "embedded" or "delegate")`,
-    );
+export function resolveBridgeMode(
+  configBridgeMode: string,
+  options: { memoryDir?: string; timeoutMs?: number; onSkip?: (reason: string) => void } = {},
+): BridgeConfig {
+  const requested = resolveRequestedBridgeMode(configBridgeMode);
+  // Validated for EVERY mode, not just the branch that spends it: an invalid
+  // budget is a caller bug, and accepting it silently on an explicit mode
+  // would make the same value an error only after someone flips to `auto`.
+  assertProbeBudget(options.timeoutMs);
+  if (requested === "auto") {
+    const memoryDir = options.memoryDir ?? "";
+    if (!memoryDir.trim()) {
+      throw new Error('bridgeMode "auto" requires a configured memoryDir to verify the daemon corpus');
+    }
+    return detectDaemonBridgeMode({
+      memoryDir,
+      timeoutMs: options.timeoutMs,
+      onSkip: options.onSkip,
+    });
   }
+  // The config the endpoint came from rides along so delegate requests bind
+  // their credential to the SAME file. Without it `loadDaemonAuth` rescans and
+  // can pair this endpoint with another file's token, which the daemon answers
+  // with a 401 and the plugin reads as "no daemon".
+  const selectedConfig = selectedDaemonConfigPath();
   return {
-    mode,
+    mode: requested,
     daemonHost: readDaemonHost(),
     daemonPort: readDaemonPort(),
+    ...(selectedConfig === undefined ? {} : { daemonConfigPath: selectedConfig }),
   };
+}
+
+/**
+ * The `server.authToken` a specific config file declares, read fresh.
+ *
+ * Delegate requests call this per request rather than reusing the value
+ * detection succeeded with, so rotating the daemon's token does not 401 every
+ * route until the gateway restarts.
+ */
+export function readDaemonConfigAuthToken(configPath: string): string | undefined {
+  return readServerBlock(configPath)?.authToken;
+}
+
+/** The one config file explicit resolution took host and port from. */
+function selectedDaemonConfigPath(): string | undefined {
+  // The SAME file `readDaemonServerConfig` resolves the endpoint from, which
+  // is the one the daemon itself selected — so the credential is always bound
+  // to the config that describes the endpoint being dialed.
+  for (const candidate of configPathCandidates()) {
+    if (readServerBlock(candidate) !== undefined) return candidate;
+  }
+  return undefined;
 }
 
 function isOpenClawTokenEntry(value: unknown): value is { token: string } {
@@ -509,8 +1011,15 @@ function isOpenClawTokenEntry(value: unknown): value is { token: string } {
  * file; if that stale value outranked the `REMNIC_AUTH_TOKEN` the daemon is
  * actually running with, every request would 401 and the reported `source`
  * would point the operator at the wrong variable (issue #2286).
+ *
+ * `configPath` binds the config-file tier to ONE file. Candidate endpoints are
+ * discovered per config, and two configs can carry different
+ * `server.authToken` values — resolving credentials independently would send
+ * the first config's token to a daemon that came from the second, which
+ * answers 401 and leaves `auto` embedded beside it. Env and token stores are
+ * daemon-independent and keep their precedence.
  */
-export function loadDaemonAuth(): DaemonAuthToken {
+export function loadDaemonAuth(configPath?: string): DaemonAuthToken {
   const environmentTokens = [
     ["OPENCLAW_REMNIC_ACCESS_TOKEN", readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN")],
     ["REMNIC_AUTH_TOKEN", readEnv("REMNIC_AUTH_TOKEN")],
@@ -549,17 +1058,24 @@ export function loadDaemonAuth(): DaemonAuthToken {
     }
   }
 
-  try {
-    for (const configPath of configPathCandidates()) {
-      if (!fs.existsSync(configPath)) continue;
-      const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
-      const token = raw.server?.authToken;
+  // Bound to the caller's config when given, else the discovery order.
+  for (const candidate of configPath === undefined ? configPathCandidates() : [configPath]) {
+    if (!fileExists(candidate)) continue;
+    try {
+      const raw: unknown = JSON.parse(fs.readFileSync(candidate, "utf8"));
+      const server = (raw as { server?: { authToken?: unknown } } | null)?.server;
+      const token = server?.authToken;
       if (typeof token === "string" && token.length > 0) {
         return { token, source: "daemon configuration" };
       }
+    } catch {
+      // Unreadable or malformed: it names no credential. Keep looking when we
+      // are scanning; a caller-bound path simply has none.
+      continue;
     }
-  } catch {
-    return { token: "", source: "no configured token" };
+    // A readable config with no token IS the answer for a bound path: the
+    // daemon it describes runs unauthenticated.
+    if (configPath !== undefined) break;
   }
   return { token: "", source: "no configured token" };
 }

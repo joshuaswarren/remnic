@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 import { initLogger, resetLogger } from "@remnic/core/logger";
 
 import {
@@ -15,6 +16,7 @@ import {
   type MaybeRegisterDelegateDeps,
 } from "./delegate-runtime.js";
 import { loadDaemonAuth, resolveBridgeMode } from "./bridge.js";
+import { ingestFlushPlanNotes } from "./delegate-flush-plan-ingest.js";
 import {
   SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
   createFileSessionNamespaceBindingStore,
@@ -1856,7 +1858,7 @@ test("loadDaemonAuth reports the variable it actually used", () => {
     });
   }
 });
-test("resolveBridgeMode is explicit-only: config delegate activates, absence stays embedded", () => {
+test("resolveBridgeMode: explicit values win, absence stays embedded", () => {
   const priorEnv = process.env.REMNIC_BRIDGE_MODE;
   Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
   try {
@@ -2847,5 +2849,548 @@ test("a short query evicts the previous turn's cached recall", async () => {
     );
   } finally {
     await stub.close();
+  }
+});
+
+test("an invalid health timeout still records the embedded bind it causes", async () => {
+  // The timeout is parsed before mode resolution, so a bad value throws even
+  // when the deployment never wanted delegate. Whatever it MEANT, returning
+  // false has the caller bind the embedded runtime on this api, and OpenClaw
+  // exposes no unregister — so a later delegate registration on the same api
+  // would add delegate hooks BESIDE the attached embedded ones and run two
+  // memory paths over one corpus.
+  const stub = await startDaemonStub(() => ({ context: "ctx" }));
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  try {
+    delete process.env.REMNIC_BRIDGE_MODE;
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embedded-timeout-"));
+    const common = {
+      serviceId: "embedded-timeout",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir,
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (text: string) => text,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
+    };
+    const api = recordingApi();
+    const bad = maybeRegisterDelegateRuntime(
+      api,
+      { ...common, configBridgeMode: "embedded", bridgeHealthTimeoutMs: "not-a-number" },
+      { checkHealth: () => true },
+    );
+    assert.equal(bad, false, "registration declines, embedded continues");
+
+    // The SAME api can still take a delegate registration afterwards.
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    process.env.REMNIC_PORT = String(stub.port);
+    const good = maybeRegisterDelegateRuntime(
+      api,
+      { ...common, configBridgeMode: "delegate" },
+      { checkHealth: () => true },
+    );
+    assert.equal(
+      good,
+      false,
+      "the api is irrevocably embedded, so delegate must not stack on top of it",
+    );
+    assert.ok(
+      api.handlers.has("before_prompt_build") === false,
+      "and no delegate hook was bound beside the embedded runtime",
+    );
+
+    // A PASSIVE registration binds nothing, so it records nothing.
+    const passiveApi = recordingApi();
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        passiveApi,
+        {
+          ...common,
+          passive: true,
+          configBridgeMode: "embedded",
+          bridgeHealthTimeoutMs: "not-a-number",
+        },
+        { checkHealth: () => true },
+      ),
+      false,
+    );
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        passiveApi,
+        { ...common, configBridgeMode: "delegate" },
+        { checkHealth: () => true },
+      ),
+      true,
+      "a passive failure left the api free to take delegate later",
+    );
+    await rm(memoryDir, { recursive: true, force: true });
+  } finally {
+    if (priorMode === undefined) delete process.env.REMNIC_BRIDGE_MODE;
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) delete process.env.REMNIC_HOST;
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) delete process.env.REMNIC_PORT;
+    else process.env.REMNIC_PORT = priorPort;
+    await stub.close();
+  }
+});
+
+test("a sibling service keeps the api's delegate mode when its own probe fails", async () => {
+  // Canonical and legacy plugin IDs register separately on ONE api. If the
+  // second service's probe transiently fails, binding its embedded runtime
+  // beside the first's delegate hooks would run two memory paths over one
+  // corpus - the exact failure this mode prevents.
+  const stub = await startDaemonStub(() => ({ context: "ctx" }));
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-sibling-mode-"));
+  try {
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    process.env.REMNIC_PORT = String(stub.port);
+    const common = {
+      configBridgeMode: "delegate",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir,
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (text: string) => text,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
+    };
+    const api = recordingApi();
+    // First service binds delegate.
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        api,
+        { ...common, serviceId: "openclaw-remnic" },
+        { checkHealth: () => true },
+      ),
+      true,
+    );
+    // Second service's own health probe fails.
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        api,
+        { ...common, serviceId: "openclaw-engram" },
+        { checkHealth: () => false },
+      ),
+      true,
+      "reported handled, so the caller binds no embedded runtime beside delegate",
+    );
+  } finally {
+    if (priorMode === undefined) delete process.env.REMNIC_BRIDGE_MODE;
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) delete process.env.REMNIC_HOST;
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) delete process.env.REMNIC_PORT;
+    else process.env.REMNIC_PORT = priorPort;
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an api that already fell back skips the endpoint walk entirely", async () => {
+  // The result is irrevocably embedded, so running `auto`'s synchronous walk
+  // to reach that foregone conclusion lets a stalling endpoint block every
+  // reload for the full configured timeout.
+  const priorMode = process.env.REMNIC_BRIDGE_MODE;
+  const priorHost = process.env.REMNIC_HOST;
+  const priorPort = process.env.REMNIC_PORT;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fallback-skip-"));
+  try {
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_HOST = "127.0.0.1";
+    // Nothing listens here, so the first attempt records the fallback.
+    process.env.REMNIC_PORT = "4870";
+    const common = {
+      serviceId: "fallback-skip",
+      configBridgeMode: "delegate",
+      passive: false,
+      allowPromptInjection: true,
+      gateHeartbeatTurns: false,
+      recallBudgetChars: 8_000,
+      memoryDir,
+      sessionTogglesEnabled: false,
+      respectBundledActiveMemoryToggle: false,
+      cleanUserMessage: (text: string) => text,
+      hookTimeoutMs: 5_000,
+      shouldSkipRecall: () => false,
+      flushOnResetEnabled: true,
+      capability: TEST_CAPABILITY,
+    };
+    const api = recordingApi();
+    assert.equal(
+      maybeRegisterDelegateRuntime(api, common, { checkHealth: () => false }),
+      false,
+      "the first attempt falls back and records it",
+    );
+    // A second registration must not consult health again.
+    let probed = false;
+    assert.equal(
+      maybeRegisterDelegateRuntime(api, common, {
+        checkHealth: () => {
+          probed = true;
+          return true;
+        },
+      }),
+      false,
+    );
+    assert.equal(probed, false, "no health-dependent work on an already-decided api");
+  } finally {
+    if (priorMode === undefined) delete process.env.REMNIC_BRIDGE_MODE;
+    else process.env.REMNIC_BRIDGE_MODE = priorMode;
+    if (priorHost === undefined) delete process.env.REMNIC_HOST;
+    else process.env.REMNIC_HOST = priorHost;
+    if (priorPort === undefined) delete process.env.REMNIC_PORT;
+    else process.env.REMNIC_PORT = priorPort;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+const HEALTH_WORKER_STUB = `
+import http from "node:http";
+import { parentPort, workerData } from "node:worker_threads";
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ ok: true, namespacesEnabled: false, memoryDir: workerData.memoryDir }));
+});
+server.listen(workerData.port ?? 0, "127.0.0.1", () => {
+  parentPort.postMessage({ port: server.address().port });
+});
+parentPort.on("message", () => server.close(() => process.exit(0)));
+`;
+
+test("a rotated UNIT credential reaches delegate routes without a gateway restart", async () => {
+  // End-to-end counterpart to the config-token rotation above: the credential
+  // detection authenticated with must not be frozen just because it came from
+  // the unit rather than a config file.
+  //
+  // Detection is SYNCHRONOUS (`Atomics.wait`), so its health probe cannot be
+  // answered by a server on this thread — a worker serves it, then hands the
+  // port to an in-process server for the async recall routes.
+  const memoryDir = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-unit-rot-mem-")));
+  const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(HEALTH_WORKER_STUB)}`), {
+    type: "module",
+    workerData: { memoryDir },
+  } as ConstructorParameters<typeof Worker>[1] & { type: "module" });
+  const ready = Promise.withResolvers<number>();
+  worker.on("message", (message: { port: number }) => ready.resolve(message.port));
+  worker.on("error", ready.reject);
+  const port = await ready.promise;
+
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-unit-rot-home-"));
+  const unitDir = path.join(home, ".config", "systemd", "user");
+  await mkdir(unitDir, { recursive: true });
+  const unitPath = path.join(unitDir, "remnic.service");
+  const writeUnitToken = async (token: string): Promise<void> => {
+    await writeFile(
+      unitPath,
+      [
+        "[Service]",
+        "Environment=REMNIC_HOST=127.0.0.1",
+        `Environment=REMNIC_PORT=${port}`,
+        `Environment=REMNIC_AUTH_TOKEN=${token}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+  };
+  await writeUnitToken("unit-token-v1");
+
+  const priorHome = process.env.HOME;
+  const priorEnv = new Map(
+    ["REMNIC_BRIDGE_MODE", "REMNIC_HOST", "REMNIC_PORT"].map((key) => [key, process.env[key]]),
+  );
+  let server: http.Server | undefined;
+  try {
+    process.env.HOME = home;
+    for (const key of priorEnv.keys()) Reflect.deleteProperty(process.env, key);
+    const api = recordingApi();
+    assert.equal(
+      maybeRegisterDelegateRuntime(
+        api,
+        {
+          serviceId: "unit-rotation",
+          configBridgeMode: "auto",
+          passive: false,
+          allowPromptInjection: true,
+          gateHeartbeatTurns: false,
+          recallBudgetChars: 8_000,
+          memoryDir,
+          sessionTogglesEnabled: false,
+          respectBundledActiveMemoryToggle: false,
+          cleanUserMessage: (text: string) => text,
+          hookTimeoutMs: 5_000,
+          shouldSkipRecall: () => false,
+          flushOnResetEnabled: true,
+          capability: TEST_CAPABILITY,
+        },
+        { checkHealth: () => true },
+      ),
+      true,
+      "auto delegated to the same-corpus daemon the unit names",
+    );
+
+    // Hand the port to a server on this thread, which the async routes reach.
+    worker.postMessage("close");
+    await new Promise<void>((resolve) => worker.once("exit", () => resolve()));
+    const recallAuthorization: Array<string | undefined> = [];
+    server = http.createServer((req, res) => {
+      const pathname = String(req.url);
+      res.setHeader("content-type", "application/json");
+      if (pathname.startsWith("/engram/v1/recall")) {
+        recallAuthorization.push(req.headers.authorization);
+        res.end(JSON.stringify({ context: "delegated context" }));
+        return;
+      }
+      res.end(JSON.stringify({ ok: true, namespacesEnabled: false, memoryDir }));
+    });
+    const listening = Promise.withResolvers<void>();
+    server.once("error", listening.reject);
+    server.listen(port, "127.0.0.1", listening.resolve);
+    await listening.promise;
+
+    await invoke(api, "before_prompt_build", { prompt: "what did we decide?" }, { sessionKey: "s" });
+    // The administrator rotates the unit's credential and restarts the daemon.
+    await writeUnitToken("unit-token-v2");
+    await invoke(api, "before_prompt_build", { prompt: "what did we decide?" }, { sessionKey: "s" });
+
+    assert.deepEqual(recallAuthorization, ["Bearer unit-token-v1", "Bearer unit-token-v2"]);
+  } finally {
+    if (priorHome === undefined) Reflect.deleteProperty(process.env, "HOME");
+    else process.env.HOME = priorHome;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await worker.terminate();
+    const listener = server;
+    if (listener !== undefined) {
+      await new Promise<void>((resolve, reject) =>
+        listener.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+    await rm(home, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("the host's flush-plan notes reach the daemon and the file is cleared", async () => {
+  // The capability advertises a flush plan, so OpenClaw appends durable notes
+  // to the gateway workspace. Embedded mode ingests that file from
+  // `src/index.ts`; delegate mode returns before that wiring, so without this
+  // the notes the host was told to write are read by nobody.
+  const observed: Array<Record<string, unknown>> = [];
+  const stub = await startDaemonStub((pathname, body) => {
+    if (pathname.startsWith("/engram/v1/observe")) observed.push(body);
+    return { flushed: true };
+  });
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flushplan-ws-"));
+  const planPath = path.join(workspaceDir, "state", "plugins", "flush-plan-svc", "flush-plan.md");
+  await mkdir(path.dirname(planPath), { recursive: true });
+  await writeFile(planPath, "- the user prefers terse commit messages\n", "utf8");
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        serviceId: "flush-plan-svc",
+        capability: { ...TEST_CAPABILITY, workspaceDir },
+      }),
+    );
+    await invoke(api, "before_compaction", {}, { sessionKey: "s", workspaceDir });
+
+    assert.equal(observed.length, 1, "the notes were handed to the daemon");
+    assert.match(
+      String((observed[0]?.messages as Array<{ content?: string }>)?.[0]?.content),
+      /terse commit messages/,
+    );
+    assert.equal(await readFile(planPath, "utf8"), "", "and the file was cleared after acceptance");
+  } finally {
+    await stub.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("a non-string search session key cannot inherit another session's binding", async () => {
+  // The binding store's `encodeURIComponent` coerces `123` to `"123"`, so a
+  // numeric key from the untyped host would search the namespace bound to the
+  // distinct string-keyed session "123" — another tenant whenever the delegate
+  // token can read both.
+  const searched: Array<Record<string, unknown>> = [];
+  const stub = await startDaemonStub((pathname, body) => {
+    if (pathname.startsWith("/engram/v1/memories/search")) {
+      searched.push(body);
+      return { query: "q", count: 0, results: [] };
+    }
+    return { ok: true, namespacesEnabled: true, defaultNamespace: "fallback" };
+  });
+  try {
+    let captured: { runtime?: { getMemorySearchManager?: (p: unknown) => Promise<unknown> } } = {};
+    const api = recordingApi() as unknown as Record<string, unknown>;
+    api.registerMemoryCapability = (capability: unknown) => {
+      captured = capability as typeof captured;
+    };
+    // The FILE store is the one that coerces (`encodeURIComponent`), so it is
+    // the one this guard protects. Bind the STRING session "123".
+    const bindingsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-coerced-key-"));
+    const namespaceBindings = createFileSessionNamespaceBindingStore(
+      path.join(bindingsDir, "bindings"),
+    );
+    await namespaceBindings.remember("123", "tenant-a");
+    registerDelegateRuntime(api as never, optionsFor(stub.port, { namespaceBindings }));
+
+    const handout = (await captured.runtime?.getMemorySearchManager?.({
+      cfg: {},
+      agentId: "main",
+    })) as { manager?: { search(q: string, o?: unknown): Promise<unknown> } } | undefined;
+    await handout?.manager?.search("q", { sessionKey: 123 as unknown as string });
+
+    assert.equal(searched.length, 1, "the search reached the daemon");
+    assert.notEqual(
+      searched[0]?.namespace,
+      "tenant-a",
+      "a numeric key did not inherit the string key's binding",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("flush-plan notes survive a rejection, a concurrent append, and a symlink", async () => {
+  // Three ways the ingestion could destroy notes the daemon never took.
+  const stub = await startDaemonStub((pathname) =>
+    pathname.startsWith("/engram/v1/observe") ? null : { flushed: true },
+  );
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fp-guard-"));
+  const planPath = path.join(workspaceDir, "state", "plugins", "guard-svc", "flush-plan.md");
+  await mkdir(path.dirname(planPath), { recursive: true });
+  const options = {
+    target: { host: "127.0.0.1", port: stub.port, resolveAuthToken: () => ({ token: "t", source: "daemon configuration" as const }) },
+    serviceId: "guard-svc",
+    workspaceDir,
+    sessionKey: "s",
+    namespace: undefined,
+    remainingTimeoutMs: () => 5_000,
+  };
+
+  let accepting: Awaited<ReturnType<typeof startDaemonStub>> | undefined;
+  try {
+    // 1. A REJECTED observe (401/403 resolves null) must keep the notes.
+    await writeFile(planPath, "- keep me\n", "utf8");
+    await ingestFlushPlanNotes(options);
+    assert.equal(await readFile(planPath, "utf8"), "- keep me\n", "rejected notes were kept");
+
+    // 2. An append that lands mid-flight must survive the truncation.
+    await stub.close();
+    let appended = false;
+    const acceptedBodies: string[] = [];
+    accepting = await startDaemonStub(async (pathname, body) => {
+      if (pathname.startsWith("/engram/v1/observe")) {
+        acceptedBodies.push(
+          String((body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? ""),
+        );
+        if (appended) {
+          appended = false;
+          await writeFile(planPath, "- sent\n- appended later\n", "utf8");
+        }
+      }
+      return { ok: true };
+    });
+    const appending = {
+      ...options,
+      target: { ...options.target, port: accepting.port },
+    };
+    await writeFile(planPath, "- sent\n", "utf8");
+    // The stub appends while the observe is in flight, so the write provably
+    // lands between the ingestion's read and its commit.
+    appended = true;
+    await ingestFlushPlanNotes(appending);
+    assert.deepEqual(
+      acceptedBodies,
+      ["- sent\n", "- appended later\n"],
+      "the mid-flight append was delivered rather than truncated away",
+    );
+    assert.equal(await readFile(planPath, "utf8"), "", "and the file drained");
+
+    // 3. A symlinked plan file is refused outright.
+    await rm(planPath, { force: true });
+    const target = path.join(workspaceDir, "outside.md");
+    await writeFile(target, "- someone else's file\n", "utf8");
+    await symlink(target, planPath);
+    await ingestFlushPlanNotes(appending);
+    assert.equal(
+      await readFile(target, "utf8"),
+      "- someone else's file\n",
+      "the symlink target was neither read nor truncated",
+    );
+  } finally {
+    await accepting?.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("oversized flush-plan notes drain in chunks instead of deadlocking", async () => {
+  // Past the daemon's `maxBodyBytes`, a single-message post 413s forever and
+  // the keep-on-rejection rule turns that into a permanent deadlock: every
+  // later flush resends the same oversized body.
+  const bodies: string[] = [];
+  const stub = await startDaemonStub((pathname, body) => {
+    if (pathname.startsWith("/engram/v1/observe")) {
+      const content = String(
+        (body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? "",
+      );
+      // Reject anything a default-configured daemon would.
+      if (Buffer.byteLength(content, "utf8") > 131_072) return null;
+      bodies.push(content);
+    }
+    return { ok: true };
+  });
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fp-chunk-"));
+  const planPath = path.join(workspaceDir, "state", "plugins", "chunk-svc", "flush-plan.md");
+  await mkdir(path.dirname(planPath), { recursive: true });
+  // ~300 KiB of notes: three chunks at the 96 KiB bound.
+  const line = `- ${"note ".repeat(40)}\n`;
+  const notes = line.repeat(Math.ceil((300 * 1024) / line.length));
+  await writeFile(planPath, notes, "utf8");
+  try {
+    await ingestFlushPlanNotes({
+      target: {
+        host: "127.0.0.1",
+        port: stub.port,
+        resolveAuthToken: () => ({ token: "t", source: "daemon configuration" as const }),
+      },
+      serviceId: "chunk-svc",
+      workspaceDir,
+      sessionKey: "s",
+      namespace: undefined,
+      remainingTimeoutMs: () => 10_000,
+    });
+    assert.ok(bodies.length >= 3, `posted in ${bodies.length} chunks`);
+    assert.ok(
+      bodies.every((b) => Buffer.byteLength(b, "utf8") <= 131_072),
+      "every chunk fit the daemon's body limit",
+    );
+    assert.equal(bodies.join(""), notes, "and together they carry every note exactly once");
+    assert.equal(await readFile(planPath, "utf8"), "", "the file drained");
+  } finally {
+    await stub.close();
+    await rm(workspaceDir, { recursive: true, force: true });
   }
 });

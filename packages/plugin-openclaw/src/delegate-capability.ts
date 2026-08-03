@@ -144,16 +144,30 @@ const HEALTH_CACHE_TTL_MS = 30_000;
  * limit, NOT a stand-in for corpus exhaustion: only a short page or a
  * satisfied budget ends the loop sooner.
  */
-const SEARCH_CANDIDATE_FLOOR = 1_000;
+const SEARCH_CANDIDATE_CAP = 25_000;
 
-/** Always ABOVE the caller's budget, or one filtered hit could never be
- * replaced on a large request. Mirrors the core search helper. */
+/**
+ * The daemon-safety bound, mirroring the core search helper.
+ *
+ * ABSOLUTE rather than a multiple of the budget: scaling it made "the excluded
+ * hits happen to rank first" indistinguishable from "there is nothing else",
+ * so a request whose first `4 x budget` hits were artifacts returned short
+ * without ever asking for the rank behind them. It still sits above the
+ * caller's own budget, or a single filtered hit could never be replaced on a
+ * large request.
+ */
 function searchCandidateCeiling(budget: number): number {
-  return Math.max(SEARCH_CANDIDATE_FLOOR, budget * 4);
+  return Math.max(SEARCH_CANDIDATE_CAP, budget * 2);
 }
 // A failing probe backs off instead of retrying on every hook, so a daemon
 // that is down or rejecting the token cannot turn each turn into a request.
 const HEALTH_FAILURE_BACKOFF_MS = 5_000;
+/**
+ * How long a local-read authorization verdict stands before it is re-proven.
+ * The daemon reloads token entries per request; this bounds the window in
+ * which a permission revoked in place still authorizes a filesystem read.
+ */
+const LOCAL_READ_VERDICT_TTL_MS = 30_000;
 
 /**
  * Narrow an unvalidated JSON value to a readable record. A type guard rather
@@ -272,6 +286,8 @@ export function createDelegateMemoryCapability(
   // and the synchronous `status()` reader would report a daemon posture that
   // was never observed.
   let healthEverResolved = false;
+  /** When each local-read verdict was taken, so a revoked grant can expire. */
+  const localReadVerdictAt = new Map<string, number>();
   let healthInFlight: Promise<void> | undefined;
   let lastHealthFailure: string | undefined;
   // Local reads and artifact listing are only valid while the daemon serves
@@ -313,6 +329,52 @@ export function createDelegateMemoryCapability(
    * Unknown namespacing (older build, or a token without health access) fails
    * closed the same way.
    */
+  /**
+   * A local file read must clear the daemon's OPERATION gate too.
+   *
+   * Corpus containment proves physical co-location and
+   * `requireSingleCorpusNamespacing` proves there is only one namespace to
+   * read — neither proves this token may read memories. A token granted
+   * `memory_search` but not `memory_get` would otherwise open any known path
+   * straight off disk, which is exactly the check delegating to the daemon is
+   * supposed to preserve.
+   */
+  const requireLocalReadAuthorized = async (
+    surface: string,
+    operations: readonly string[],
+  ): Promise<void> => {
+    if (options.verifyNamespaceAuthorization === undefined) return;
+    const namespace = health.defaultNamespace ?? "";
+    const verdictKey = `${target.resolveAuthToken().token}\u0000${operations.join(",")}\u0000${namespace}`;
+    // The daemon reloads token entries per request, so a grant revoked in place
+    // keeps the SAME token, operations, and namespace — the cache key cannot
+    // see the change. Expiring the verdict bounds how long a withdrawn
+    // permission can still authorize a local read that bypasses the daemon.
+    const cachedAt = localReadVerdictAt.get(verdictKey);
+    if (cachedAt !== undefined && now() - cachedAt >= LOCAL_READ_VERDICT_TTL_MS) {
+      substitutedNamespaceVerdicts.delete(verdictKey);
+      localReadVerdictAt.delete(verdictKey);
+    }
+    if (!substitutedNamespaceVerdicts.has(verdictKey)) {
+      substitutedNamespaceVerdicts.set(
+        verdictKey,
+        await options.verifyNamespaceAuthorization(namespace, undefined, operations),
+      );
+      localReadVerdictAt.set(verdictKey, now());
+    }
+    // `undefined` means the probe could not answer — a timeout, or an older
+    // daemon with no authorization route. A local read bypasses the daemon
+    // entirely, so an UNCONFIRMED verdict is not permission: fail closed,
+    // exactly as an unconfirmed namespace posture already does.
+    if (substitutedNamespaceVerdicts.get(verdictKey) !== true) {
+      throw new Error(
+        `delegate ${surface} unavailable: the delegate token's authorization for ${operations.join(", ")} on the daemon's corpus ${
+          substitutedNamespaceVerdicts.get(verdictKey) === false ? "was refused" : "could not be confirmed"
+        }`,
+      );
+    }
+  };
+
   const requireSingleCorpusNamespacing = (surface: string): void => {
     if (health.namespacesEnabled === false) return;
     throw new Error(
@@ -576,6 +638,13 @@ export function createDelegateMemoryCapability(
         `delegate search rejected (maxResults must be a non-negative integer): ${String(opts.maxResults)}`,
       );
     }
+    // ONE deadline for the WHOLE call, opened before ANY network work: the
+    // posture probe, the authorization probe, and every search page share it.
+    // Opened after scope resolution instead, a slow `/health` could spend the
+    // entire budget and each later request would still start a fresh one — a
+    // 25-second search taking fifty.
+    const searchDeadline = now() + options.searchTimeoutMs;
+    const searchRemaining = (): number => searchDeadline - now();
     // Cap-after-filter (AGENTS.md retrieval contract): artifact paths and
     // minScore are dropped on this side, so asking the daemon for exactly
     // `maxResults` would let a few excluded hits shrink — or empty — a page
@@ -591,10 +660,14 @@ export function createDelegateMemoryCapability(
     // is decided by the posture, which is an authorization fact and must be
     // current. Resolving the scope first also means a cached manager costs at
     // most ONE probe here, never one eager plus one revalidating.
-    const scopeIsFresh = searchScope === undefined ? await refreshHealth(undefined, true) : true;
-    const namespace = await resolveScopedNamespaceChecked(searchScope, undefined, scopeIsFresh, [
-      "memory_search",
-    ]);
+    const scopeIsFresh =
+      searchScope === undefined ? await refreshHealth(searchRemaining(), true) : true;
+    const namespace = await resolveScopedNamespaceChecked(
+      searchScope,
+      searchRemaining(),
+      scopeIsFresh,
+      ["memory_search"],
+    );
     // Embedded returns an empty set for a zero budget, and forwarding 0 would
     // hit the daemon schema's `maxResults >= 1` — a 400 purely from switching
     // bridge mode. The short circuit lands HERE, after scope and authorization
@@ -608,6 +681,12 @@ export function createDelegateMemoryCapability(
     // different ranking for the same request. Always send one.
     const searchMode = opts?.qmdSearchModeOverride === "vsearch" ? "vector" : "search";
     const fetchPage = async (limit: number | undefined): Promise<unknown[]> => {
+      const remaining = searchRemaining();
+      if (remaining <= 0) {
+        throw new Error(
+          `delegate search unavailable: the search budget of ${options.searchTimeoutMs}ms is spent`,
+        );
+      }
       const response = await fetch(daemonUrl(target, "/engram/v1/memories/search"), {
         method: "POST",
         headers: { ...daemonAuthHeaders(target), "Content-Type": "application/json" },
@@ -619,7 +698,8 @@ export function createDelegateMemoryCapability(
           mode: searchMode,
           ...(namespace === undefined ? {} : { namespace }),
         }),
-        signal: AbortSignal.timeout(options.searchTimeoutMs),
+        // What is LEFT of the shared budget, not a fresh one.
+        signal: AbortSignal.timeout(remaining),
       });
       if (!response.ok) {
         await response.body?.cancel();
@@ -713,6 +793,7 @@ export function createDelegateMemoryCapability(
     await refreshHealth(undefined, true);
     requireSharedCorpus("readFile");
     requireSingleCorpusNamespacing("readFile");
+    await requireLocalReadAuthorized("readFile", ["memory_get"]);
     const requestedPath = sharedScope().normalizeWorkspacePath(params.relPath);
     const absolutePath = await sharedScope().resolveReadablePath(params.relPath);
     const allLines = (await readFile(absolutePath, "utf8")).split(/\r?\n/);
@@ -854,6 +935,7 @@ export function createDelegateMemoryCapability(
         await refreshHealth(undefined, true);
         requireSharedCorpus("publicArtifacts");
         requireSingleCorpusNamespacing("publicArtifacts");
+        await requireLocalReadAuthorized("publicArtifacts", ["memory_get"]);
         return await listRemnicPublicArtifacts({
           memoryDir: health.memoryDir ?? options.memoryDir,
           workspaceDir: options.workspaceDir,

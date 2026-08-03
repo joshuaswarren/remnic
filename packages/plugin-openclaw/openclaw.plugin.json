@@ -6384,10 +6384,11 @@
         "type": "string",
         "enum": [
           "embedded",
-          "delegate"
+          "delegate",
+          "auto"
         ],
         "default": "embedded",
-        "description": "Bridge mode: 'embedded' (default) boots the in-process orchestrator; 'delegate' backs memory injection/observe/flush with a running standalone Remnic daemon over HTTP and skips the embedded orchestrator. Explicit-only; REMNIC_BRIDGE_MODE env overrides."
+        "description": "Bridge mode: 'embedded' (default) boots the in-process orchestrator; 'delegate' backs memory injection/observe/flush with a running standalone Remnic daemon over HTTP and skips the embedded orchestrator; 'auto' delegates only when a healthy same-host daemon reports the SAME memoryDir, and stays embedded otherwise. REMNIC_BRIDGE_MODE env overrides this key."
       },
       "bridgeHealthTimeoutMs": {
         "type": "integer",
