@@ -88,5 +88,11 @@ test("release workflow stages every companion manifest the release scripts rewri
         `release workflow must include ${glob} where it stages package manifests: ${line.trim()}`,
       );
     }
+    if (line.includes("git add")) {
+      assert.ok(
+        line.includes("pnpm-lock.yaml"),
+        `release workflow must stage pnpm-lock.yaml alongside the version bump: ${line.trim()}`,
+      );
+    }
   }
 });
