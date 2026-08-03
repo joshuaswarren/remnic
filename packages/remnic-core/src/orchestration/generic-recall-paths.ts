@@ -177,8 +177,17 @@ function collectionSpellings(
       ? [normalized]
       : [normalized, normalized.slice(slashIndex + 1)];
   }
+  const normalized = path.posix.normalize(
+    normalizeQmdUriPath(filePath, source).replace(/\\/g, "/"),
+  );
   const stripped = stripQmdCollectionPrefix(filePath, policy, source);
   const spellings = [stripped];
+  // If the AUTHORITATIVE strip already fired — the prefix matched a configured
+  // collection — stop. Removing a second segment would take a real directory
+  // with it: `memories/projects/activity/<date>.md` would become
+  // `activity/<date>.md` and an ordinary nested memory would read as a
+  // top-level digest, vanishing from search AND recall.
+  if (stripped !== normalized) return spellings;
   const slashIndex = stripped.indexOf("/");
   if (slashIndex <= 0 || slashIndex >= stripped.length - 1) return spellings;
   const prefix = stripped.slice(0, slashIndex);

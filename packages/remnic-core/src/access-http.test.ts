@@ -4679,6 +4679,11 @@ test("a collection-qualified QMD path still hits the dedicated-surface exclusion
   for (const kept of [
     "qmd://memories/facts/proj/activity/2026-08-02.md",
     "custom/facts/proj/activity/2026-08-02.md",
+    // The configured collection is stripped ONCE. Removing `projects` too
+    // would leave `activity/<date>.md` and hide an ordinary nested memory
+    // from search and recall alike.
+    "memories/projects/activity/2026-08-02.md",
+    "qmd://memories/projects/activity/2026-08-02.md",
     "facts/activity/2026-08-02.md",
     "memories/archive/2026-01/fact-1.md",
   ]) {
