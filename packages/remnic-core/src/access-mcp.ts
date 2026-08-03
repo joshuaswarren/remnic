@@ -1440,6 +1440,7 @@ export class EngramMcpServer {
               description:
                 "QMD collection. With namespaces enabled, omitted, base, and 'global' searches stay scoped to readable namespaces; namespace-derived collections require matching namespace access.",
             },
+            mode: { type: "string", enum: ["search", "hybrid", "bm25", "vector"], description: "Ranking mode; omitted uses the backend default. Not supported with 'collection' on a flat corpus." },
           },
           required: ["query"],
           additionalProperties: false,

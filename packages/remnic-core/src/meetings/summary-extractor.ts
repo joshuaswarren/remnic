@@ -16,6 +16,7 @@
  */
 
 import { getVerdictKind, type JudgeBatchResult, type JudgeCandidate } from "../extraction-judge.js";
+import { AMBIENT_CAPTURE_PROMPT_RULE } from "../ambient-provenance.js";
 import { log } from "../logger.js";
 import type {
   MeetingFactCandidate,
@@ -38,7 +39,7 @@ export interface MeetingSummaryChatClient {
   ): Promise<{ content: string } | null>;
 }
 
-const SUMMARY_SYSTEM_PROMPT = `You are a meeting scribe extracting DURABLE memory from a meeting transcript and its on-screen context.
+export const SUMMARY_SYSTEM_PROMPT = `You are a meeting scribe extracting DURABLE memory from a meeting transcript and its on-screen context.
 
 Return ONLY a single JSON object, no prose, no code fences, in exactly this shape:
 {
@@ -52,7 +53,8 @@ Rules:
 - decisions: concrete choices the group made. Omit hypotheticals and discussion that led nowhere.
 - commitments: owner-bearing action items only. If there is no clear owner, omit it.
 - openQuestions: genuinely unresolved questions, not rhetorical asides.
-- Prefer fewer, higher-quality items. Use [] for any empty list. Never invent content the transcript does not support.`;
+- Prefer fewer, higher-quality items. Use [] for any empty list. Never invent content the transcript does not support.
+${AMBIENT_CAPTURE_PROMPT_RULE}`;
 
 const DECISION_CONFIDENCE = 0.8;
 const COMMITMENT_CONFIDENCE = 0.8;

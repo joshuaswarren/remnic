@@ -1824,3 +1824,149 @@ test("memorySearch does not probe default storage for an explicit namespace or b
     "default-namespace storage must not be probed for an explicit-namespace query",
   );
 });
+
+test("memorySearch authorizes the scope even when the budget is zero", async () => {
+  // A zero budget is a valid empty search, never a way to skip the namespace
+  // gate: returning [] for an unreadable namespace would turn an access error
+  // into a successful result.
+  const { service } = makeService();
+  let searchCalls = 0;
+  (service as unknown as {
+    orchestrator: { searchAcrossNamespaces(params: unknown): Promise<unknown[]> };
+  }).orchestrator.searchAcrossNamespaces = async () => {
+    searchCalls += 1;
+    return [];
+  };
+  await assert.rejects(
+    () =>
+      service.memorySearch({
+        query: "release note",
+        namespace: "team",
+        maxResults: 0,
+        principal: "stranger",
+      }),
+    /namespace is not readable: team/,
+  );
+  assert.equal(searchCalls, 0, "and the backend is never consulted");
+});
+
+test("memorySearch rejects mode+collection on a flat corpus even at a zero budget", async () => {
+  // Changing only the requested result count must never make an invalid
+  // request succeed.
+  const { service } = makeServiceWithConfig({
+    ...makeConfig(),
+    namespacesEnabled: false,
+  } as unknown as PluginConfig);
+  for (const maxResults of [0, 5]) {
+    await assert.rejects(
+      () =>
+        service.memorySearch({
+          query: "q",
+          collection: "some-collection",
+          mode: "vector",
+          maxResults,
+        }),
+      /mode is not supported together with collection on a flat corpus/,
+      `maxResults: ${maxResults} must reject`,
+    );
+  }
+});
+
+test("a configured qmdMaxResults of 0 is preserved, not coerced to a default", async () => {
+  // A zero limit is a runtime compatibility guarantee (AGENTS.md guardrail 4):
+  // it means the same thing as an explicit `maxResults: 0` - an empty result
+  // with no backend call - and must never be silently raised to a default.
+  const { service } = makeServiceWithConfig({
+    ...makeConfig(),
+    qmdMaxResults: 0,
+  } as unknown as PluginConfig);
+  let searchCalls = 0;
+  (service as unknown as {
+    orchestrator: { searchAcrossNamespaces(params: unknown): Promise<unknown[]> };
+  }).orchestrator.searchAcrossNamespaces = async () => {
+    searchCalls += 1;
+    return [{ path: "facts/a.md", score: 0.9, snippet: "a" }];
+  };
+  const result = await service.memorySearch({ query: "anything", principal: "operator-x" });
+  assert.equal(result.count, 0, "the configured zero cap is honored");
+  assert.equal(searchCalls, 0, "and the backend is never consulted");
+  // The scope is still authorized first, so a zero cap cannot bypass the gate.
+  await assert.rejects(
+    () => service.memorySearch({ query: "q", namespace: "team", principal: "stranger" }),
+    /namespace is not readable: team/,
+  );
+});
+
+test("an unrecognized search mode is rejected, not silently reranked", async () => {
+  // Both namespace backends route an unknown mode through their default
+  // ordinary-search branch, so a typo from an untyped in-process caller would
+  // succeed with different ranking instead of reporting bad input.
+  for (const namespacesEnabled of [true, false]) {
+    const label = `namespacesEnabled=${namespacesEnabled}`;
+    const { service } = makeService();
+    (service as unknown as { orchestrator: { config: PluginConfig } }).orchestrator.config = {
+      ...makeConfig(),
+      namespacesEnabled,
+    };
+    let searchCalls = 0;
+    (service as unknown as {
+      orchestrator: { searchAcrossNamespaces(params: unknown): Promise<unknown[]> };
+    }).orchestrator.searchAcrossNamespaces = async () => {
+      searchCalls += 1;
+      return [];
+    };
+
+    await assert.rejects(
+      () => service.memorySearch({ query: "q", mode: "vectors" as never, principal: "reader" }),
+      /mode must be one of search, hybrid, bm25, vector/,
+      label,
+    );
+    // A zero budget must not be a way to slip an invalid mode past the check.
+    await assert.rejects(
+      () =>
+        service.memorySearch({
+          query: "q",
+          mode: "vectors" as never,
+          maxResults: 0,
+          principal: "reader",
+        }),
+      /mode must be one of/,
+      `zero budget, ${label}`,
+    );
+    assert.equal(searchCalls, 0, `no backend call on an invalid mode, ${label}`);
+
+    // Every accepted mode still reaches the backend (AGENTS.md §40).
+    for (const mode of ["search", "hybrid", "bm25", "vector"] as const) {
+      await service.memorySearch({ query: "q", mode, principal: "reader" });
+    }
+    assert.equal(searchCalls, 4, `every valid mode dispatches, ${label}`);
+  }
+});
+
+test("an out-of-range search limit is rejected, not turned into an empty page", async () => {
+  // A negative would hit the `budget <= 0` short-circuit and answer with a
+  // successful EMPTY page; a fraction or non-finite value would flow into the
+  // backend limit and top-up arithmetic.
+  const { service } = makeService();
+  let searchCalls = 0;
+  (service as unknown as {
+    orchestrator: { searchAcrossNamespaces(params: unknown): Promise<unknown[]> };
+  }).orchestrator.searchAcrossNamespaces = async () => {
+    searchCalls += 1;
+    return [];
+  };
+  for (const maxResults of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    await assert.rejects(
+      () => service.memorySearch({ query: "q", maxResults, principal: "reader" }),
+      /maxResults must be a non-negative integer/,
+      String(maxResults),
+    );
+  }
+  assert.equal(searchCalls, 0, "no backend call on an invalid budget");
+  // Zero keeps its documented meaning: an empty result, no backend call.
+  const zero = await service.memorySearch({ query: "q", maxResults: 0, principal: "reader" });
+  assert.equal(zero.count, 0);
+  assert.equal(searchCalls, 0, "a zero budget still short-circuits");
+  await service.memorySearch({ query: "q", maxResults: 3, principal: "reader" });
+  assert.equal(searchCalls, 1, "an ordinary budget dispatches");
+});

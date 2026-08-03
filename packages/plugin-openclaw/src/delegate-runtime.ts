@@ -25,20 +25,44 @@ import {
   renderMemoryContextPrompt,
 } from "@remnic/core";
 import { log } from "@remnic/core/logger";
+
+import {
+  DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS,
+  probeDelegateAuthorization,
+  reportDaemonAuthorizationFailure,
+  type DelegateAuthorizationOperation,
+  type DelegateAuthorizationPreflight,
+} from "./delegate-authorization.js";
+
+// Re-exported so existing importers of the runtime keep resolving.
+export {
+  probeDelegateAuthorization,
+  type DelegateAuthorizationPreflight,
+} from "./delegate-authorization.js";
 import {
   SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
   SESSION_NAMESPACE_BINDING_MAX_NAMESPACES,
-  SESSION_NAMESPACE_BINDING_MAX_NAMESPACE_LENGTH,
   type SessionNamespaceBindingStore,
   createFileSessionNamespaceBindingStore,
 } from "@remnic/core/session-namespace-bindings";
+import {
+  lifecycleSessionNamespacesFrom,
+  rememberedNamespacesFor,
+  sessionNamespaceFrom,
+  withNamespace,
+} from "./delegate-namespaces.js";
+import { daemonTargetFor } from "./delegate-daemon-target.js";
+import { ingestFlushPlanNotes } from "./delegate-flush-plan-ingest.js";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import {
-  type DaemonAuthToken,
+  type BridgeConfig,
+  type DelegateDaemonTarget,
   checkDaemonHealthSync,
-  loadDaemonAuth,
+  daemonUrl,
   parseOpenClawBridgeConfig,
   resolveBridgeMode,
+  requestedDelegate,
+  resolveRequestedBridgeMode,
 } from "./bridge.js";
 import {
   REMNIC_OPENCLAW_LEGACY_PLUGIN_ID,
@@ -48,12 +72,10 @@ import {
   extractLastTurn,
   extractTextContent,
 } from "./transcript-turns.js";
-
-export interface DelegateDaemonTarget {
-  host: string;
-  port: number;
-  resolveAuthToken: () => DaemonAuthToken;
-}
+import {
+  type DelegateCapabilityApi,
+  registerDelegateMemoryCapability,
+} from "./delegate-capability.js";
 
 export interface DelegateRuntimeOptions {
   serviceId: string;
@@ -93,11 +115,25 @@ export interface DelegateRuntimeOptions {
   recallTimeoutMs: number;
   observeTimeoutMs: number;
   flushTimeoutMs: number;
+  /**
+   * Memory-slot capability inputs (issue #2120). The daemon-backed capability
+   * gives delegate mode the same host surface as embedded: prompt builder,
+   * memory runtime, flush plan, and public artifacts.
+   */
+  capability: {
+    memoryDir: string;
+    workspaceDir: string;
+    agentIds: string[];
+    extractionMaxTurnChars?: unknown;
+    flushModel?: string;
+    configuredSearchBackend: "qmd" | "builtin";
+    configuredQmdCommand: string;
+  };
   /** Injectable clock for capability-cache expiry tests and deterministic hosts. */
   now?: () => number;
 }
 
-export interface DelegateHookApi {
+export interface DelegateHookApi extends DelegateCapabilityApi {
   on(
     hook: string,
     handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => unknown,
@@ -107,74 +143,9 @@ export interface DelegateHookApi {
   // builder parameter is a wider SDK union — remains assignable.
   registerMemoryPromptSection?(builder: (params: { sessionKey?: string }) => string[] | null): void;
 }
-const MEMORY_CONTEXT_HEADER = "## Memory Context (Remnic)";
 const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
 
-const DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS = [
-  "recall",
-  "observe",
-  "lcm_compaction_flush",
-] as const;
-
-type DelegateAuthorizationOperation = (typeof DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS)[number];
-
-export interface DelegateAuthorizationPreflight {
-  readonly state: "authorized" | "unauthorized" | "unavailable";
-  readonly tokenSource: DaemonAuthToken["source"];
-  readonly status?: 401 | 403;
-}
-
-function daemonUrl(target: DelegateDaemonTarget, pathname: string): string {
-  const host = target.host.includes(":") && !target.host.startsWith("[")
-    ? `[${target.host}]`
-    : target.host;
-  return `http://${host}:${target.port}${pathname}`;
-}
-
-const daemonAuthFailureLogKeys = new Set<string>();
-
-function reportDaemonAuthorizationFailure(
-  serviceId: string,
-  pathname: string,
-  status: 401 | 403,
-  tokenSource: DaemonAuthToken["source"],
-): void {
-  const key = `${serviceId}:${pathname}:${status}:${tokenSource}`;
-  if (daemonAuthFailureLogKeys.has(key)) return;
-  daemonAuthFailureLogKeys.add(key);
-  log.error(
-    `delegate ${pathname} authorization failed (${status}; token source: ${tokenSource})`,
-  );
-}
-
-export async function probeDelegateAuthorization(
-  target: DelegateDaemonTarget,
-  namespace = "",
-  operations: readonly DelegateAuthorizationOperation[] = DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS,
-): Promise<DelegateAuthorizationPreflight> {
-  const auth = target.resolveAuthToken();
-  const headers = auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined;
-  const query = new URLSearchParams();
-  for (const operation of operations) query.append("op", operation);
-  query.set("namespace", namespace);
-  try {
-    const response = await fetch(daemonUrl(target, `/engram/v1/authorization?${query}`), {
-      headers,
-      signal: AbortSignal.timeout(2_000),
-    });
-    await response.body?.cancel();
-    if (response.status === 200) {
-      return { state: "authorized", tokenSource: auth.source };
-    }
-    if (response.status === 401 || response.status === 403) {
-      return { state: "unauthorized", status: response.status, tokenSource: auth.source };
-    }
-  } catch {
-    return { state: "unavailable", tokenSource: auth.source };
-  }
-  return { state: "unavailable", tokenSource: auth.source };
-}
-async function postJson(
+export async function postJson(
   target: DelegateDaemonTarget,
   serviceId: string,
   pathname: string,
@@ -298,112 +269,6 @@ function cwdFrom(
   return fallback;
 }
 
-function withNamespace(
-  namespace: string | undefined,
-  body: Record<string, unknown>,
-): Record<string, unknown> {
-  return namespace ? { ...body, namespace } : body;
-}
-
-interface ExplicitSessionNamespace {
-  namespace: string | undefined;
-}
-
-function explicitSessionNamespaceFrom(
-  sessionKey: string,
-  event: Record<string, unknown>,
-  ctx: Record<string, unknown>,
-): ExplicitSessionNamespace | undefined {
-  const eventSessionKey = typeof event.sessionKey === "string" ? event.sessionKey : undefined;
-  const ctxSessionKey = typeof ctx.sessionKey === "string" ? ctx.sessionKey : undefined;
-  const sources =
-    eventSessionKey === sessionKey
-      ? [event, ctx]
-      : ctxSessionKey === sessionKey
-        ? [ctx, event]
-        : [ctx, event];
-  for (const source of sources) {
-    const sourceSessionKey = typeof source.sessionKey === "string" ? source.sessionKey : undefined;
-    if (sourceSessionKey !== sessionKey) continue;
-    const runtime = source.runtime;
-    if (typeof runtime !== "object" || runtime === null) continue;
-    const agent = (runtime as Record<string, unknown>).agent;
-    if (typeof agent !== "object" || agent === null) continue;
-    const session = (agent as Record<string, unknown>).session;
-    if (typeof session !== "object" || session === null) continue;
-    const namespace = (session as Record<string, unknown>).namespace;
-    if (namespace !== undefined && typeof namespace !== "string") {
-      throw new Error("delegate session namespace metadata must be a string");
-    }
-    return { namespace: typeof namespace === "string" ? namespace.trim() || undefined : undefined };
-  }
-  return undefined;
-}
-
-async function rememberedNamespacesFor(
-  sessionKey: string,
-  namespaceBindings: SessionNamespaceBindingStore,
-): Promise<string[]> {
-  return namespaceBindings.namespacesFor(sessionKey);
-}
-
-async function rememberNamespace(
-  sessionKey: string,
-  namespace: string,
-  namespaceBindings: SessionNamespaceBindingStore,
-): Promise<void> {
-  if (namespace.length > SESSION_NAMESPACE_BINDING_MAX_NAMESPACE_LENGTH) {
-    throw new Error(
-      `delegate session namespace exceeds the daemon limit of ${SESSION_NAMESPACE_BINDING_MAX_NAMESPACE_LENGTH} characters`,
-    );
-  }
-  try {
-    await namespaceBindings.remember(sessionKey, namespace);
-  } catch (err) {
-    log.warn(`delegate namespace binding persistence failed: ${String(err)}`);
-    throw err;
-  }
-}
-
-async function sessionNamespaceFrom(
-  sessionKey: string,
-  event: Record<string, unknown>,
-  ctx: Record<string, unknown>,
-  fallback: string,
-  namespaceBindings: SessionNamespaceBindingStore,
-): Promise<string | undefined> {
-  const explicit = explicitSessionNamespaceFrom(sessionKey, event, ctx);
-  if (explicit !== undefined) {
-    await rememberNamespace(sessionKey, explicit.namespace ?? "", namespaceBindings);
-    return explicit.namespace;
-  }
-  const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
-  return remembered.length > 0 ? remembered.at(-1) || undefined : fallback.trim() || undefined;
-}
-
-async function lifecycleSessionNamespacesFrom(
-  sessionKey: string,
-  event: Record<string, unknown>,
-  ctx: Record<string, unknown>,
-  fallback: string,
-  namespaceBindings: SessionNamespaceBindingStore,
-): Promise<Array<string | undefined>> {
-  const explicit = explicitSessionNamespaceFrom(sessionKey, event, ctx);
-  if (explicit !== undefined) {
-    await rememberNamespace(sessionKey, explicit.namespace ?? "", namespaceBindings);
-  }
-  const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
-  if (explicit !== undefined) {
-    const explicitNamespace = explicit.namespace ?? "";
-    const namespaces = remembered.includes(explicitNamespace)
-      ? remembered
-      : [...remembered, explicitNamespace];
-    return namespaces.map((namespace) => namespace || undefined);
-  }
-  if (remembered.length > 0) return remembered.map((namespace) => namespace || undefined);
-  return [fallback.trim() || undefined];
-}
-
 function readContextComposition(
   response: Record<string, unknown>,
   fallbackContext: string,
@@ -444,22 +309,98 @@ export function registerDelegateRuntime(
     return;
   }
 
+  // Session-scoped cache of precomputed recall lines, mirroring the embedded
+  // pre-compute-then-consume contract: the recall hook fills it, the
+  // synchronous section builder consumes (and evicts) it, and the capability's
+  // prompt builder only peeks so the two cannot double-consume. Declared
+  // outside the injection gate so the capability can be registered either way.
+  const promptLinesBySession = new Map<string, string[]>();
   // Embedded zero-limit contract: recallBudgetChars === 0 disables injection.
-  if (options.allowPromptInjection && options.recallBudgetChars !== 0) {
-    // Session-scoped cache for the section-builder path, mirroring the
-    // embedded pre-compute-then-consume contract: the hook fills it, the
-    // synchronous builder consumes (and evicts) it.
-    const promptLinesBySession = new Map<string, string[]>();
-    const useSectionBuilder = typeof api.registerMemoryPromptSection === "function";
+  const promptInjectionEnabled = options.allowPromptInjection && options.recallBudgetChars !== 0;
+  const useSectionBuilder = typeof api.registerMemoryPromptSection === "function";
+  // A host with no section builder but a unified memory capability injects
+  // through the capability's promptBuilder, which reads the same cache. Only
+  // when NEITHER exists does the hook return the injection fields itself —
+  // otherwise the capability builder would always see an empty cache while the
+  // hook injected separately (or, worse, both would inject).
+  const useCapabilityBuilder =
+    !useSectionBuilder && typeof api.registerMemoryCapability === "function";
+  const cachePromptLines = useSectionBuilder || useCapabilityBuilder;
+
+  const capability = registerDelegateMemoryCapability(api, {
+    serviceId: options.serviceId,
+    target,
+    namespace,
+    // Capability searches scope through the SAME per-session binding history
+    // the hooks use (the non-explicit branch of sessionNamespaceFrom): the
+    // host hands the runtime a sessionKey but no event/ctx to read an explicit
+    // namespace from, so the remembered binding — else the registration-wide
+    // fallback — is the correct scope.
+    resolveSearchNamespace: async (sessionKey) => {
+      // A non-STRING key from the untyped host must not reach the binding
+      // store: its `encodeURIComponent` would coerce `123` to `"123"` and the
+      // search would inherit the binding of a distinct, string-keyed session —
+      // another tenant's namespace whenever the delegate token can read both.
+      // An unusable key falls back to the registration scope, never a guess.
+      if (typeof sessionKey === "string" && sessionKey.trim().length > 0) {
+        const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
+        if (remembered.length > 0) return remembered.at(-1) || undefined;
+      }
+      return namespace.trim() || undefined;
+    },
+    // The daemon's own namespace-aware probe, so a substituted default is
+    // proven usable before the first search rather than 403-ing on it.
+    verifyNamespaceAuthorization: async (candidate, timeoutMs, operations) => {
+      const probe = await probeDelegateAuthorization(
+        target,
+        candidate,
+        // What the caller is about to do. A token that grants recall/observe/
+        // flush but not memory_search must not have those rejected locally.
+        (operations as readonly DelegateAuthorizationOperation[] | undefined) ??
+          DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS,
+        timeoutMs,
+      );
+      return probe.state === "unavailable" ? undefined : probe.state === "authorized";
+    },
+    memoryDir: options.capability.memoryDir,
+    workspaceDir: options.capability.workspaceDir,
+    agentIds: options.capability.agentIds,
+    allowPromptInjection: promptInjectionEnabled,
+    // The section builder owns the destructive read when it exists; otherwise
+    // the capability builder IS the sole consumer and must evict, or a stale
+    // section would be re-injected on the next turn.
+    readPromptLines: (sessionKey) => {
+      const lines = promptLinesBySession.get(sessionKey) ?? null;
+      if (!useSectionBuilder) promptLinesBySession.delete(sessionKey);
+      return lines;
+    },
+    extractionMaxTurnChars: options.capability.extractionMaxTurnChars,
+    flushModel: options.capability.flushModel,
+    configuredSearchBackend: options.capability.configuredSearchBackend,
+    configuredQmdCommand: options.capability.configuredQmdCommand,
+    searchTimeoutMs: options.recallTimeoutMs,
+    healthTimeoutMs: options.recallTimeoutMs,
+    now: options.now,
+  });
+  if (promptInjectionEnabled) {
 
     const recallHandler = async (
       event: Record<string, unknown>,
       ctx: Record<string, unknown>,
     ): Promise<Record<string, unknown> | undefined> => {
       const query = recallQueryFrom(event);
-      if (query.trim().length < 5) return undefined;
       const sessionKey = sessionKeyFrom(event, ctx);
-      if (useSectionBuilder) promptLinesBySession.delete(sessionKey);
+      // Evict BEFORE the short-query exit. On a capability-only host the
+      // builder is the sole consumer, so a turn whose prompt construction
+      // aborted leaves lines behind; returning early without clearing would
+      // inject the PREVIOUS query's memory into this prompt.
+      if (cachePromptLines) promptLinesBySession.delete(sessionKey);
+      if (query.trim().length < 5) return undefined;
+      // The host abandons this hook at `hookTimeoutMs`, so namespace
+      // resolution and the recall POST share ONE deadline rather than each
+      // taking its own full timeout and together overrunning it.
+      const promptDeadline = Date.now() + Math.min(options.hookTimeoutMs, options.recallTimeoutMs);
+      const promptRemaining = (): number => promptDeadline - Date.now();
       try {
         if (options.shouldSkipRecall(sessionKey)) {
           log.debug(`delegate recall skipped: cron policy excludes ${sessionKey}`);
@@ -487,14 +428,22 @@ export function registerDelegateRuntime(
           target,
           options.serviceId,
           "/engram/v1/recall",
-          withNamespace(scopedNamespace, {
-            query,
-            sessionKey,
-            mode: "auto",
-            ...(cwd ? { cwd } : {}),
-            ...(options.projectTag ? { projectTag: options.projectTag } : {}),
-          }),
-          options.recallTimeoutMs,
+          await withNamespace(
+            scopedNamespace,
+            {
+              query,
+              sessionKey,
+              mode: "auto",
+              ...(cwd ? { cwd } : {}),
+              ...(options.projectTag ? { projectTag: options.projectTag } : {}),
+            },
+            // ONE deadline for the whole hook: health resolution followed by
+            // a full-timeout recall could otherwise run past `hookTimeoutMs`
+            // and have the host abandon it with nothing injected.
+            (explicit) =>
+              capability.resolveScopedNamespace(explicit, promptRemaining(), ["recall"]),
+          ),
+          Math.max(1, promptRemaining()),
         );
         const rawContext = response?.context;
         if (typeof rawContext !== "string" || rawContext.trim().length === 0) {
@@ -506,10 +455,9 @@ export function registerDelegateRuntime(
         });
         if (!rendered) return undefined;
         const prompt = rendered.prompt;
-        if (useSectionBuilder) {
-          // Section-builder hosts inject through the registered builder; the
-          // hook only pre-computes. Returning injection fields here too would
-          // double-inject.
+        if (cachePromptLines) {
+          // A registered builder injects; the hook only pre-computes.
+          // Returning injection fields here too would double-inject.
           promptLinesBySession.set(sessionKey, rendered.lines);
           return undefined;
         }
@@ -573,6 +521,13 @@ export function registerDelegateRuntime(
       );
     if (turn.length === 0) return;
     try {
+      // `observeTimeoutMs` alone. `hookTimeoutMs` is the PROMPT hook's budget —
+      // it is passed to that registration only (`{ timeoutMs }` above), and
+      // documented as the cold-start recall timeout. `agent_end` carries no
+      // host timeout, so borrowing the prompt's would abandon a turn capture
+      // the host was still willing to wait for.
+      const observeDeadline = Date.now() + options.observeTimeoutMs;
+      const observeRemaining = (): number => observeDeadline - Date.now();
       const cwd = cwdFrom(event, ctx, options.cwd);
       const scopedNamespace = await sessionNamespaceFrom(
         sessionKey,
@@ -585,13 +540,18 @@ export function registerDelegateRuntime(
         target,
         options.serviceId,
         "/engram/v1/observe",
-        withNamespace(scopedNamespace, {
-          sessionKey,
-          messages: turn,
-          ...(cwd ? { cwd } : {}),
-          ...(options.projectTag ? { projectTag: options.projectTag } : {}),
-        }),
-        options.observeTimeoutMs,
+        await withNamespace(
+          scopedNamespace,
+          {
+            sessionKey,
+            messages: turn,
+            ...(cwd ? { cwd } : {}),
+            ...(options.projectTag ? { projectTag: options.projectTag } : {}),
+          },
+          (explicit) =>
+            capability.resolveScopedNamespace(explicit, observeRemaining(), ["observe"]),
+        ),
+        Math.max(1, observeRemaining()),
       );
     } catch (err) {
       log.warn(`delegate observe failed: ${String(err)}`);
@@ -655,7 +615,11 @@ export function registerDelegateRuntime(
   ): Promise<boolean> => {
     try {
       const deadline = Date.now() + options.flushTimeoutMs;
+      // The floor of 1 keeps a doomed POST from being sent with a zero timeout
+      // (which some clients read as "no timeout"), but it must not disguise a
+      // spent deadline from callers that can legitimately SKIP work.
       const remainingTimeout = (): number => Math.max(1, deadline - Date.now());
+      const remainingBudget = (): number => deadline - Date.now();
       const sessionKey = lifecycleSessionKeyFrom(event, ctx);
       if (sessionKey === undefined) {
         log.warn("delegate flush skipped: lifecycle event has malformed session key");
@@ -668,12 +632,38 @@ export function registerDelegateRuntime(
         namespace,
         namespaceBindings,
       );
-      const flushNamespace = (sessionNamespace: string | undefined) =>
+      // BEFORE the transcript flush, so the host's durable notes and the
+      // transcript reach the daemon in the order they were produced. A failure
+      // here must not abort the flush that follows.
+      try {
+        await ingestFlushPlanNotes({
+          target,
+          serviceId: options.serviceId,
+          workspaceDir: cwdFrom(event, ctx, options.capability.workspaceDir),
+          sessionKey,
+          // The session's CURRENT binding, which is the last entry of the
+          // ordered history — `namespaces[0]` is where it started, so a
+          // rebound session would file new notes under the previous tenant.
+          namespace: namespaces.at(-1),
+          // Re-read per chunk, not captured once: several posts must share
+          // the flush's remaining budget rather than each taking it whole.
+          remainingTimeoutMs: remainingBudget,
+        });
+      } catch (err) {
+        log.warn(`delegate flush-plan ingestion failed: ${String(err)}`);
+      }
+      const flushNamespace = async (sessionNamespace: string | undefined) =>
         postJson(
           target,
           options.serviceId,
           "/engram/v1/lcm/compaction/flush",
-          withNamespace(sessionNamespace, { sessionKey }),
+          await withNamespace(sessionNamespace, { sessionKey }, (explicit) =>
+            // Inside the flush's SHARED deadline: a health probe started here
+            // with its own full timeout would overrun the hook.
+            capability.resolveScopedNamespace(explicit, remainingBudget(), [
+              "lcm_compaction_flush",
+            ]),
+          ),
           remainingTimeout(),
         );
       const flushIndividually = async (): Promise<boolean> => {
@@ -690,15 +680,23 @@ export function registerDelegateRuntime(
           const response = await flushNamespace(namespaces[0]);
           return response !== null && response.flushed === true;
         }
+        // Each entry goes through the SAME resolver as the singular flush and
+        // every other delegate call, so a batch cannot widen scope where a
+        // one-at-a-time flush would refuse. The RESOLVED list is what the
+        // daemon echoes, so it is also what the response is validated against.
+        const requestNamespaces = await Promise.all(
+          namespaces.map(async (sessionNamespace) =>
+            (await capability.resolveScopedNamespace(sessionNamespace || undefined, remainingBudget(), [
+              "lcm_compaction_flush",
+            ])) ?? "",
+          ),
+        );
         try {
           const response = await postJson(
             target,
             options.serviceId,
             "/engram/v1/lcm/compaction/flush",
-            {
-              sessionKey,
-              namespaces: namespaces.map((sessionNamespace) => sessionNamespace ?? ""),
-            },
+            { sessionKey, namespaces: requestNamespaces },
             remainingTimeout(),
           );
           if (response === null) {
@@ -710,12 +708,11 @@ export function registerDelegateRuntime(
           const isBatchResponse =
             Array.isArray(responseNamespaces) &&
             Array.isArray(responseResults) &&
-            responseNamespaces.length === namespaces.length &&
+            responseNamespaces.length === requestNamespaces.length &&
             responseNamespaces.every(
-              (responseNamespace, index) =>
-                responseNamespace === (namespaces[index] ?? ""),
+              (responseNamespace, index) => responseNamespace === requestNamespaces[index],
             ) &&
-            responseResults.length === namespaces.length;
+            responseResults.length === requestNamespaces.length;
           if (!isBatchResponse) {
             invalidateCachedBatchFlushSupport();
             return flushIndividually();
@@ -747,9 +744,10 @@ export function registerDelegateRuntime(
     api.on("session_end", flushEndedSession);
   }
 
+
   log.info(
     `[${options.serviceId}] bridge mode delegate: memory loop backed by daemon at ` +
-      `${target.host}:${target.port} (embedded orchestrator skipped; tools/CLI/surfaces stay daemon-side)`,
+      `${target.host}:${target.port} (embedded orchestrator skipped; tools/CLI stay daemon-side)`,
   );
 }
 
@@ -783,14 +781,23 @@ export interface MaybeRegisterDelegateOptions {
   projectTag?: string;
   /** Embedded parity: gate buffer flush on reset/session_end. */
   flushOnResetEnabled: boolean;
+  /**
+   * Memory-slot capability inputs (issue #2120) — forwarded verbatim to the
+   * daemon-backed capability so delegate mode keeps the host surface embedded
+   * mode provides.
+   */
+  capability: DelegateRuntimeOptions["capability"];
 }
 
 function activeDelegateAuthorizationOperations(
   options: MaybeRegisterDelegateOptions,
 ): readonly DelegateAuthorizationOperation[] {
+  // `recall` is exercised only when prompt injection is on; observe, flush,
+  // and the capability's memory_search always are. Filter by name rather than
+  // slicing so reordering the list cannot silently drop the wrong operation.
   return options.allowPromptInjection && options.recallBudgetChars !== 0
     ? DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS
-    : DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS.slice(1);
+    : DEFAULT_DELEGATE_AUTHORIZATION_OPERATIONS.filter((operation) => operation !== "recall");
 }
 const delegateNamespaceMigrationChains = new Map<string, Map<string, Promise<void>>>();
 const queueDelegateNamespaceMigration = <T>(
@@ -950,6 +957,13 @@ const delegateActiveServiceIds = new Set<string>();
 // hooks from the fallback are still bound (OpenClaw exposes no unregister), so
 // switching would stack both memory paths (double recall/observe/flush).
 const delegateEmbeddedFallbackApis = new WeakSet<object>();
+/**
+ * Apis where SOME service has bound delegate hooks. The canonical and legacy
+ * plugin IDs register separately against one api, and those hooks serve every
+ * session on it — so once delegate is established the sibling must reuse it
+ * rather than bind an embedded runtime alongside.
+ */
+const delegateBoundApis = new WeakSet<object>();
 const delegateAuthorizationPreflightServices = new WeakMap<object, Set<string>>();
 
 /**
@@ -975,32 +989,11 @@ export function maybeRegisterDelegateRuntime(
   options: MaybeRegisterDelegateOptions,
   deps: MaybeRegisterDelegateDeps = { checkHealth: checkDaemonHealthSync },
 ): boolean {
-  let bridge: ReturnType<typeof resolveBridgeMode>;
-  try {
-    bridge = resolveBridgeMode(options.configBridgeMode);
-  } catch (err) {
-    // An invalid bridgeMode (config typo or bad env override) must not abort
-    // the whole plugin registration — reject LOUDLY, then run embedded so the
-    // deployment keeps its memory loop (AGENTS.md §4: side effects must not
-    // crash the main flow).
-    log.error(`${String(err)} — falling back to the embedded runtime`);
-    delegateEmbeddedFallbackApis.add(api);
-    return false;
-  }
-  if (delegateEmbeddedFallbackApis.has(api)) {
-    log.debug(
-      `delegate register: ${options.serviceId} previously fell back to embedded on this api — staying embedded to avoid stacking memory paths`,
-    );
-    return false;
-  }
-  if (bridge.mode !== "delegate") {
-    // The caller will bind embedded hooks on this api (unless passive, which
-    // binds nothing and must not poison a later delegate registration).
-    // Record active registers so a later reload that flips to delegate on the
-    // SAME api stays embedded instead of stacking both memory paths.
-    if (!options.passive) delegateEmbeddedFallbackApis.add(api);
-    return false;
-  }
+  // BEFORE any health-dependent resolution: if this service already has
+  // delegate hooks on this api, they are still attached (OpenClaw exposes no
+  // unregister). Re-probing could resolve `embedded` on a transient daemon
+  // failure, and returning false would then stack embedded hooks on top of
+  // the live delegate ones — two memory paths over one corpus.
   const boundServices = delegateHookApiServices.get(api);
   if (boundServices?.has(options.serviceId)) {
     log.debug(
@@ -1008,25 +1001,111 @@ export function maybeRegisterDelegateRuntime(
     );
     return true;
   }
+  // BEFORE any health-dependent resolution. The result is already irrevocably
+  // embedded on this api, so running `auto`'s synchronous endpoint walk first
+  // would let a stalling endpoint block every reload and sibling registration
+  // for the full configured timeout to reach a foregone conclusion.
+  if (delegateEmbeddedFallbackApis.has(api)) {
+    log.debug(
+      `delegate register: ${options.serviceId} previously fell back to embedded on this api — staying embedded to avoid stacking memory paths`,
+    );
+    return false;
+  }
+  let bridge: BridgeConfig;
   let bridgeHealthTimeoutMs: number;
   try {
+    // Parsed BEFORE mode resolution: `auto` probes the daemon inside
+    // resolveBridgeMode and must honor the configured timeout.
     bridgeHealthTimeoutMs = parseOpenClawBridgeConfig({
       bridgeHealthTimeoutMs: options.bridgeHealthTimeoutMs,
     }).healthTimeoutMs;
+    bridge = resolveBridgeMode(options.configBridgeMode, {
+      memoryDir: options.memoryDir,
+      timeoutMs: bridgeHealthTimeoutMs,
+      onSkip: (reason) =>
+        log.info(`[${options.serviceId}] bridge mode auto: staying embedded — ${reason}`),
+    });
   } catch (err) {
-    log.error(`${String(err)} — falling back to the embedded runtime`);
-    delegateEmbeddedFallbackApis.add(api);
+    // An invalid bridgeMode or health timeout (config typo or bad env
+    // override) must not abort the whole plugin registration — reject LOUDLY,
+    // then run embedded so the deployment keeps its memory loop (AGENTS.md §4:
+    // side effects must not crash the main flow).
+    //
+    const wantedDelegate = requestedDelegate(options.configBridgeMode);
+    log.error(
+      wantedDelegate
+        ? `${String(err)} — falling back to the embedded runtime`
+        : `${String(err)} — the deployment is embedded, so this only affects delegate mode`,
+    );
+    // Returning `false` has the caller bind the embedded runtime on this api,
+    // and OpenClaw exposes no unregister — so the api is irrevocably embedded
+    // whatever the deployment MEANT. Recording that is what stops a later
+    // register() (value corrected, or bridgeMode flipped to delegate) from
+    // adding delegate hooks beside the ones already attached and running two
+    // memory paths over one corpus. A PASSIVE registration binds nothing, so
+    // it has nothing to record — the same rule the healthy-embedded path
+    // below already follows.
+    if (!options.passive) delegateEmbeddedFallbackApis.add(api);
+    return false;
+  }
+  if (bridge.mode !== "delegate") {
+    // A SIBLING service (canonical + legacy plugin IDs register separately
+    // against one api) may already have delegate hooks bound here, and those
+    // serve every session on it. Reporting embedded now would have the caller
+    // bind an embedded runtime BESIDE them — two memory paths over one corpus,
+    // the exact failure this mode prevents. A transient probe failure for the
+    // second service must not undo the first service's established mode, so
+    // the api is reported handled and nothing new is bound.
+    if (delegateBoundApis.has(api)) {
+      log.warn(
+        `[${options.serviceId}] bridge mode resolved embedded, but a sibling service already bound delegate hooks on this api — reusing them instead of stacking an embedded runtime`,
+      );
+      return true;
+    }
+    // The caller will bind embedded hooks on this api (unless passive, which
+    // binds nothing and must not poison a later delegate registration).
+    // Record active registers so a later reload that flips to delegate on the
+    // SAME api stays embedded instead of stacking both memory paths.
+    //
+    // This is deliberate for `auto` too. Once embedded hooks are bound there is
+    // no way to take them off — OpenClaw exposes no unregister — so adopting
+    // delegate on a later register() of the same api would run BOTH memory
+    // paths over one corpus, which is the exact failure this whole mode exists
+    // to prevent. Picking up a daemon that appeared after startup therefore
+    // needs a gateway restart, and the log says so rather than leaving an
+    // operator wondering why `auto` never switched.
+    if (!options.passive) {
+      delegateEmbeddedFallbackApis.add(api);
+      if (resolveRequestedBridgeMode(options.configBridgeMode) === "auto") {
+        log.info(
+          `[${options.serviceId}] bridge mode auto: embedded hooks are bound on this api — ` +
+            `a daemon that starts later is picked up on the next gateway restart`,
+        );
+      }
+    }
     return false;
   }
   // register() is synchronous, so the preflight uses the bridge's
-  // worker-backed sync health check (the same probe detectBridgeMode uses).
+  // worker-backed sync health check. `auto` already proved the daemon healthy
+  // as part of its corpus-identity probe, so re-checking would let one
+  // registration spend twice `bridgeHealthTimeoutMs` — which the config
+  // documents as the TOTAL preflight budget. Only the explicit `delegate`
+  // path, which has probed nothing yet, pays for the liveness request.
   if (
-    !deps.checkHealth(
-      bridge.daemonHost,
-      bridge.daemonPort,
-      bridgeHealthTimeoutMs,
-    )
+    !bridge.healthVerified &&
+    !deps.checkHealth(bridge.daemonHost, bridge.daemonPort, bridgeHealthTimeoutMs)
   ) {
+    // Same sibling rule as the embedded-resolution branch: when delegate hooks
+    // are already bound on this api by the canonical/legacy counterpart, a
+    // transient probe failure here must not hand the caller an embedded
+    // runtime to stack beside them.
+    if (delegateBoundApis.has(api)) {
+      log.warn(
+        `[${options.serviceId}] no healthy daemon at ${bridge.daemonHost}:${bridge.daemonPort}, ` +
+          `but a sibling service already bound delegate hooks on this api — reusing them instead of stacking an embedded runtime`,
+      );
+      return true;
+    }
     // Record the fallback so a later register() on the same api does not switch
     // to delegate and stack memory paths on top of the embedded hooks just bound.
     delegateEmbeddedFallbackApis.add(api);
@@ -1043,6 +1122,10 @@ export function maybeRegisterDelegateRuntime(
       options.serviceId,
     );
     delegateActiveServiceIds.add(options.serviceId);
+    // Delegate is now the api's established mode, so a sibling service
+    // registering later reuses these hooks instead of binding embedded ones
+    // beside them. Passive registrations bind nothing and must not claim it.
+    delegateBoundApis.add(api);
   }
   // Embedded toggle-store parity: same primary path (per-service plugin state)
   // and optional bundled active-memory secondary read.
@@ -1056,11 +1139,7 @@ export function maybeRegisterDelegateRuntime(
         },
       )
     : null;
-  const target: DelegateDaemonTarget = {
-    host: bridge.daemonHost,
-    port: bridge.daemonPort,
-    resolveAuthToken: loadDaemonAuth,
-  };
+  const target = daemonTargetFor(bridge);
   registerDelegateRuntime(api, {
     serviceId: options.serviceId,
     target,
@@ -1082,6 +1161,7 @@ export function maybeRegisterDelegateRuntime(
     cwd: options.cwd,
     projectTag: options.projectTag,
     flushOnResetEnabled: options.flushOnResetEnabled,
+    capability: options.capability,
     recallTimeoutMs: 25_000,
     observeTimeoutMs: 120_000,
     flushTimeoutMs: 55_000,

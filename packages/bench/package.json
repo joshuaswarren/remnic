@@ -1,6 +1,6 @@
 {
   "name": "@remnic/bench",
-  "version": "9.46.0",
+  "version": "9.46.2",
   "description": "Retrieval latency ladder benchmarks + CI regression gates for @remnic/core",
   "type": "module",
   "main": "./dist/index.js",

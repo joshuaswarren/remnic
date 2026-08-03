@@ -758,15 +758,30 @@ export class EngramAccessHttpServer {
    * routes, otherwise a scoped bearer can scope its call to another tenant
    * by setting `body.namespace` (issue #1850 finding 2). Throws 403 for a
    * scoped token whose allow-list does not cover the effective namespace.
+   *
+   * A `namespace` that is neither a string nor `null` is REJECTED here rather
+   * than coerced to `undefined`: silently reinterpreting it would default the
+   * request to the principal's namespace set and answer 200, hiding the
+   * caller's mistake behind a plausible result (AGENTS.md pattern 39). `null`
+   * and an absent field keep their documented "no explicit namespace" meaning.
    */
   private gatedBodyNamespace(
     req: IncomingMessage,
     body: Record<string, unknown>,
   ): Record<string, unknown> {
-    const namespace = this.resolveNamespace(
-      req,
-      typeof body.namespace === "string" ? body.namespace : undefined,
-    );
+    const requested = body.namespace;
+    if (requested !== undefined && requested !== null && typeof requested !== "string") {
+      throw new EngramAccessInputError(
+        `namespace must be a string or null (got: ${typeof requested})`,
+      );
+    }
+    // Trim BEFORE the allow-list gate: the operation schemas normalize
+    // `namespace` with `.trim()`, so checking the raw value would 403 a
+    // `" team "` that the MCP path accepts as `team` — the same envelope
+    // succeeding or failing on harmless whitespace. The trimmed value is what
+    // gets stamped, so the gate and the operation see one namespace.
+    const trimmed = typeof requested === "string" ? requested.trim() : undefined;
+    const namespace = this.resolveNamespace(req, trimmed || undefined);
     return { ...body, namespace };
   }
 
@@ -969,6 +984,42 @@ export class EngramAccessHttpServer {
       if (!output || typeof output !== "object" || !("result" in output)) {
         throw new Error("external_wiki_search returned an invalid operation result");
       }
+      this.respondJson(res, 200, output.result);
+      return;
+    }
+    if (
+      req.method === "POST" &&
+      (pathname === "/engram/v1/memories/search" ||
+        pathname === "/remnic/v1/memories/search")
+    ) {
+      // Semantic memory search over HTTP. `GET /engram/v1/memories` is a
+      // substring browse; this is the QMD-backed ranked search the MCP
+      // `memory_search` tool already exposes, reachable by HTTP-only clients.
+      this.enforceTokenOp("memory_search"); // boundary dispatch (issue #1525)
+      const operation = getOperation("memory_search");
+      if (!operation) {
+        throw new EngramAccessInputError(
+          "access-boundary: operation not registered: memory_search",
+        );
+      }
+      // The body `namespace` is user-controlled, so it must pass the same
+      // effective-namespace allow-list gate as every other namespace-scoped
+      // route (issue #1850 finding 2); the authenticated principal — never a
+      // client-supplied value — then scopes the readable namespace fan-out.
+      const body = this.gatedBodyNamespace(req, await this.readJsonBody(req));
+      // memory_search is a FAN-OUT: an absent namespace searches everything
+      // the principal can read. A namespace-scoped bearer may read fewer
+      // namespaces than its principal, so leaving it absent would return
+      // results the token was never authorized for. The allow-list gate above
+      // already proved the server default is permitted for such a token, so
+      // binding the effective namespace explicitly is both safe and closed.
+      if (body.namespace === undefined && tokenCapabilityStore.getStore()?.namespaces !== undefined) {
+        body.namespace = this.service.configRef?.defaultNamespace ?? "";
+      }
+      const output = (await operation.run(body, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      })) as { result: unknown };
       this.respondJson(res, 200, output.result);
       return;
     }

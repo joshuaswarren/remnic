@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.46.0",
+  "version": "9.46.2",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -6384,10 +6384,11 @@
         "type": "string",
         "enum": [
           "embedded",
-          "delegate"
+          "delegate",
+          "auto"
         ],
         "default": "embedded",
-        "description": "Bridge mode: 'embedded' (default) boots the in-process orchestrator; 'delegate' backs memory injection/observe/flush with a running standalone Remnic daemon over HTTP and skips the embedded orchestrator. Explicit-only; REMNIC_BRIDGE_MODE env overrides."
+        "description": "Bridge mode: 'embedded' (default) boots the in-process orchestrator; 'delegate' backs memory injection/observe/flush with a running standalone Remnic daemon over HTTP and skips the embedded orchestrator; 'auto' delegates only when a healthy same-host daemon reports the SAME memoryDir, and stays embedded otherwise. REMNIC_BRIDGE_MODE env overrides this key."
       },
       "bridgeHealthTimeoutMs": {
         "type": "integer",

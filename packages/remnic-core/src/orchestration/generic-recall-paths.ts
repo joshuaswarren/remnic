@@ -13,6 +13,12 @@ export interface GenericRecallPathPolicy {
   readonly memoryDir?: string;
   readonly qmdCollection?: string;
   readonly qmdColdCollection?: string;
+  /**
+   * The collection THIS request named, when it named one. A caller may select
+   * a custom collection whose name is also a memory category, which the
+   * configured names alone cannot disambiguate.
+   */
+  readonly requestedCollection?: string;
 }
 
 type GenericRecallPathSource = "filesystem" | "qmd";
@@ -94,17 +100,122 @@ function isExternalWikiQmdPath(
   return isExternalWikiCollectionName(collection);
 }
 
+/**
+ * Paths an EXPLICIT ranked search must not return.
+ *
+ * Narrower than {@link isGenericRecallExcludedPath} on purpose. Recall
+ * injection also drops archived memories because they are cold by definition,
+ * but archive is explicitly reserved for "explicit read or search surfaces"
+ * (docs/architecture/memory-lifecycle.md) — hiding it from `memory_search`
+ * would remove the only way to find it. Everything else stays excluded: those
+ * paths flow through their own dedicated surfaces, never a generic search.
+ */
+export function isSearchExcludedPath(
+  filePath: string,
+  policy: GenericRecallPathPolicy = {},
+  source: GenericRecallPathSource = "filesystem",
+): boolean {
+  if (isExternalWikiQmdPath(filePath, source)) return true;
+  // A QMD transport hands back collection-qualified paths
+  // (`qmd://<collection>/activity/<date>.md`, or `<collection>/activity/…`),
+  // and the collection is not always one this policy knows: a caller may name
+  // a custom one, and global search spans every collection. The activity
+  // predicate is ROOT-AWARE — it matches only the top-level
+  // `activity/<date>.md` so a nested ordinary memory stays recallable — so an
+  // un-stripped prefix reads as a nested path and the digest would be served.
+  //
+  // Both spellings are therefore tested. Widening is safe in this direction
+  // and only here: a leading segment is dropped ONLY to re-test the dedicated
+  // surface shapes, never to decide anything else, and a segment that names a
+  // memory CATEGORY (`facts/proj/activity/…`) is never treated as a
+  // collection, so ordinary nested memories stay searchable.
+  for (const candidate of collectionSpellings(filePath, policy, source)) {
+    if (
+      isArtifactMemoryPath(candidate) ||
+      isNamespacedActivityDigestPath(candidate, policy.memoryDir) ||
+      isMeetingRecordPath(candidate)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The activity check, applied against the NAMESPACE root a hit came from.
+ *
+ * `isActivityDigestPath` is root-aware — the digest must sit directly under
+ * the root it is given — but a namespaced search rewrites hits to absolute
+ * paths beneath `…/namespaces/<ns>/`, and only the global `memoryDir` is
+ * available here. Measured against that root, a real digest at
+ * `<memoryDir>/namespaces/team/activity/<date>.md` reads as nested and is
+ * served. Re-measuring against the namespace's own root closes that.
+ */
+function isNamespacedActivityDigestPath(candidate: string, memoryDir?: string): boolean {
+  if (isActivityDigestPath(candidate, memoryDir)) return true;
+  if (memoryDir === undefined || memoryDir.length === 0) return false;
+  const relative = path.relative(memoryDir, path.resolve(memoryDir, candidate));
+  const namespaced = /^namespaces[\\/]([^\\/]+)[\\/](.*)$/.exec(relative);
+  if (namespaced === null) return false;
+  return isActivityDigestPath(namespaced[2] ?? "", memoryDir);
+}
+
+/** A path as given, plus its form with a leading COLLECTION segment removed. */
+function collectionSpellings(
+  filePath: string,
+  policy: GenericRecallPathPolicy,
+  source: GenericRecallPathSource,
+): string[] {
+  if (path.isAbsolute(filePath)) return [filePath];
+  // A `qmd://<collection>/<path>` URI states its collection UNAMBIGUOUSLY in
+  // the authority, so the leading segment of its normalized form is never a
+  // memory category — strip it outright rather than guessing.
+  if (source === "qmd" && filePath.startsWith("qmd://")) {
+    const normalized = path.posix.normalize(normalizeQmdUriPath(filePath, source).replace(/\\/g, "/"));
+    const slashIndex = normalized.indexOf("/");
+    return slashIndex <= 0 || slashIndex >= normalized.length - 1
+      ? [normalized]
+      : [normalized, normalized.slice(slashIndex + 1)];
+  }
+  const normalized = path.posix.normalize(
+    normalizeQmdUriPath(filePath, source).replace(/\\/g, "/"),
+  );
+  const stripped = stripQmdCollectionPrefix(filePath, policy, source);
+  const spellings = [stripped];
+  // If the AUTHORITATIVE strip already fired — the prefix matched a configured
+  // collection — stop. Removing a second segment would take a real directory
+  // with it: `memories/projects/activity/<date>.md` would become
+  // `activity/<date>.md` and an ordinary nested memory would read as a
+  // top-level digest, vanishing from search AND recall.
+  if (stripped !== normalized) return spellings;
+  const slashIndex = stripped.indexOf("/");
+  if (slashIndex <= 0 || slashIndex >= stripped.length - 1) return spellings;
+  const prefix = stripped.slice(0, slashIndex);
+  // The CALLER's own collection is authoritative: a request for
+  // `collection: "facts"` means that segment is the collection, whatever it is
+  // also the name of. Otherwise a category-shaped prefix stays part of the
+  // path, so an ordinary `facts/proj/activity/<date>.md` memory is searchable.
+  const requested = policy.requestedCollection;
+  if (
+    prefix !== requested &&
+    (Object.hasOwn(CATEGORY_MEMORY_ROOTS, prefix) || Object.hasOwn(RESERVED_ARCHIVE_ROOTS, prefix))
+  ) {
+    return spellings;
+  }
+  spellings.push(stripped.slice(slashIndex + 1));
+  return spellings;
+}
+
 export function isGenericRecallExcludedPath(
   filePath: string,
   policy: GenericRecallPathPolicy = {},
   source: GenericRecallPathSource = "filesystem",
 ): boolean {
   return (
-    isExternalWikiQmdPath(filePath, source) ||
-    isArtifactMemoryPath(filePath) ||
-    isActivityDigestPath(filePath, policy.memoryDir) ||
-    isTopLevelArchivePath(filePath, policy, source) ||
-    isMeetingRecordPath(filePath)
+    isSearchExcludedPath(filePath, policy, source) ||
+    // Recall-only: archived memories are cold, but an explicit search is one
+    // of the surfaces they remain reachable through.
+    isTopLevelArchivePath(filePath, policy, source)
   );
 }
 

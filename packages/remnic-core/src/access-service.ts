@@ -107,8 +107,9 @@ import {
   defaultNamespaceAtFlatRoot,
   mergeMemorySearchDefaultFallback,
   resolveMemorySearchDefaultFallback,
-  runMemorySearchFanout,
+  memorySearchThroughScope,
 } from "./access-memory-search-fanout.js";
+import { isSearchExcludedPath } from "./orchestration/generic-recall-paths.js";
 import {
   buildQualityScore,
   buildProposedActions,
@@ -4711,47 +4712,45 @@ export class EngramAccessService {
     namespace?: string;
     maxResults?: number;
     collection?: string;
+    mode?: "search" | "hybrid" | "bm25" | "vector";
     principal?: string;
   }): Promise<{ query: string; results: Array<{ path: string; score: number; snippet: string }>; count: number }> {
-    const { query, namespace, maxResults, principal } = request;
-    const collection = request.collection?.trim();
-    if (request.collection !== undefined && !collection) {
-      throw new EngramAccessInputError("collection must be a non-empty string");
-    }
-
-    let results: Array<{ path: string; score: number; snippet?: string }>;
-    if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces) {
-      this.resolveReadableNamespace(namespace, principal);
-      results = collection === "global"
-        ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
-        : await this.orchestrator.qmd.search(query, collection, maxResults);
-    } else {
-      const readableNamespaces = await this.resolveReadableNamespacesForSearch(namespace, principal);
-      const namespaces = this.resolveMemorySearchNamespacesForCollection(
-        collection,
-        readableNamespaces,
-        namespace?.trim() ? undefined : principal,
-      );
-      results = await runMemorySearchFanout({
-        query,
-        namespaces,
-        maxResults,
-        principal,
-        requestedNamespace: namespace,
-        collection,
-        search: (params) => this.orchestrator.searchAcrossNamespaces(params),
-      });
-    }
-
-    return {
-      query,
-      results: results.map((r) => ({
-        path: r.path,
-        score: r.score,
-        snippet: (r.snippet ?? "").slice(0, 800),
-      })),
-      count: results.length,
-    };
+    const { qmd, config } = this.orchestrator;
+    return memorySearchThroughScope(
+      {
+        namespacesEnabled: resolveNamespaceCapabilities(config).namespaces,
+        // `0` is preserved, never coerced: a zero limit is a runtime
+        // compatibility guarantee (AGENTS.md guardrail 4), and it means the
+        // same thing here as an explicit `maxResults: 0` from the caller - an
+        // empty result with no backend call. Anything non-numeric falls back
+        // to the documented default.
+        defaultBudget: typeof config.qmdMaxResults === "number" ? config.qmdMaxResults : 10,
+        // Search-specific: artifacts and the other dedicated surfaces stay
+        // out, but ARCHIVED memories remain findable - explicit search is one
+        // of the surfaces the lifecycle reserves them for.
+        isExcluded: (memoryPath) =>
+          isSearchExcludedPath(
+            memoryPath,
+            // The caller's own collection disambiguates a prefix that is also
+            // a memory category name (`collection: "facts"`).
+            { ...config, requestedCollection: request.collection?.trim() || undefined },
+            "qmd",
+          ),
+        authorizeFlatCorpus: (namespace, principal) => {
+          this.resolveReadableNamespace(namespace, principal);
+        },
+        authorizeNamespaces: async (namespace, principal, collection) =>
+          this.resolveMemorySearchNamespacesForCollection(
+            collection,
+            await this.resolveReadableNamespacesForSearch(namespace, principal),
+            namespace?.trim() ? undefined : principal,
+          ),
+        searchAcrossNamespaces: (params) => this.orchestrator.searchAcrossNamespaces(params),
+        searchGlobal: (query, maxResults) => qmd.searchGlobal(query, maxResults),
+        search: (query, collection, maxResults) => qmd.search(query, collection, maxResults),
+      },
+      request,
+    );
   }
 
   async memoryProfile(namespace?: string, principal?: string): Promise<Record<string, unknown>> {

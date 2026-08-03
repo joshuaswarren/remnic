@@ -147,6 +147,23 @@ no LLM summary/fact extraction runs:
      corroborate (trust boost). A throwing/absent judge degrades gracefully
      (no verdict; routed via the deterministic path).
 
+   A meeting transcript is the same always-on capture audio a wearable records,
+   so it can carry television, podcast, or passing-conversation speech nobody in
+   the meeting authored. The scribe prompt says so, and — because a prompt is
+   advice — a high-impact personal claim (family, milestone, medical) tops out
+   at `pending_review` however the trust adds up, the same cap the wearable pass
+   applies. See "Ambient audio never becomes a personal fact" in
+   [wearables.md](wearables.md).
+
+   The episode anchor carries two ambient gates of its own. Its title is
+   provider-derived from the same audio, so a title that is itself a personal
+   claim lands `pending_review`. And an `audio` detection is a heuristic over
+   speech with no corroborating app span — fifteen minutes of television with
+   two voices produces an episode asserting a meeting happened, with the show's
+   speakers listed as attendees — so audio-only episodes land `pending_review`
+   too. `app+audio` and `provider` records carry that corroboration and stay
+   active.
+
 ## Configuration
 
 Documented in [config-reference.md](config-reference.md); disabled by default.

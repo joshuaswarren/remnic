@@ -177,6 +177,7 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "GET", pathname: "/engram/v1/adapters", operation: "adapters_status" },
   { method: "POST", pathname: "/engram/v1/recall", operation: "recall" },
   { method: "POST", pathname: "/engram/v1/external-wikis/search", operation: "external_wiki_search" },
+  { method: "POST", pathname: "/engram/v1/memories/search", operation: "memory_search" },
   { method: "POST", pathname: "/engram/v1/coding-context", operation: "set_coding_context" },
   { method: "POST", pathname: "/engram/v1/capsules/export", operation: "capsule_export" },
   { method: "POST", pathname: "/engram/v1/capsules/import", operation: "capsule_import" },

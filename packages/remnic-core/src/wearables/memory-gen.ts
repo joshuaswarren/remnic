@@ -28,6 +28,7 @@
  */
 
 import { scoreImportance } from "../importance.js";
+import { collectPersonEntityRefs, isHighImpactPersonalFact } from "../ambient-provenance.js";
 import type { MemoryWriteResult } from "../storage.js";
 import {
   composeMemoryEnvelope,
@@ -241,6 +242,9 @@ export function buildExtractionTurns(
       timestamp,
       sourceValidAt: timestamp,
       sessionKey,
+      // Always-on capture: this transcript may carry TV, podcast, or
+      // overheard speech the wearer never authored (issue #2294).
+      ambientCapture: true,
     });
     chunkLines = [];
     chunkChars = 0;
@@ -258,6 +262,12 @@ interface GatedCandidate {
   fact: ExtractedFact;
   importance: ImportanceScore;
   conversation: WearableConversation;
+  /**
+   * Ambient high-impact verdict, decided where the extraction's entity list is
+   * still in scope so personhood comes from the extractor's own `type:
+   * "person"` metadata rather than the spelling of `entityRef` (#2294).
+   */
+  highImpact: boolean;
 }
 
 interface ScoredCandidate {
@@ -375,6 +385,7 @@ export async function generateWearableMemories(
       result.completed = false;
       break;
     }
+    const personRefs = collectPersonEntityRefs(extraction);
     for (const fact of extraction.facts) {
       const content = fact.content?.trim();
       if (!content) {
@@ -385,10 +396,18 @@ export async function generateWearableMemories(
         skip("unsupported-category");
         continue;
       }
+      const highImpact = isHighImpactPersonalFact({ ...fact, content }, personRefs);
       // In smart mode the trust bands subsume the hard confidence
       // floor — a borderline fact belongs in the review band, not on
       // the floor. The pre-filter applies to review/auto modes only.
+      //
+      // High-impact ambient claims are exempt: the extraction clamp just
+      // pinned them to 0.39, which is below the 0.6 default floor, so the
+      // pre-filter would silently drop the very candidates `review` mode
+      // promises to queue and would make the auto-mode cap unreachable
+      // (#2294). They skip the floor and land pending_review via the cap.
       if (
+        highImpact === false &&
         settings.memoryMode !== "smart" &&
         typeof fact.confidence === "number" &&
         fact.confidence < settings.minConfidence
@@ -410,7 +429,12 @@ export async function generateWearableMemories(
         continue;
       }
       seenContent.add(dedupKey);
-      candidates.push({ fact: { ...fact, content }, importance, conversation });
+      candidates.push({
+        fact: { ...fact, content },
+        importance,
+        conversation,
+        highImpact,
+      });
     }
   }
 
@@ -446,8 +470,13 @@ export async function generateWearableMemories(
     const promoteScores = await scoreCandidates(promotable, settings, deps, result);
     for (const [index, candidate] of promotable.entries()) {
       const scored = promoteScores.get(index);
+      // Every wearable candidate is ambient by construction, so a high-impact
+      // personal claim can only ever reach the review queue — late-arriving
+      // corroboration must not promote a clamped TV line to active (#2294).
       const decision = scored
-        ? decideSmart(scored.trust, scored.verdict, settings)
+        ? decideSmart(scored.trust, scored.verdict, settings, {
+            capAtReview: candidate.highImpact,
+          })
         : undefined;
       if (!scored || !decision) {
         skip("duplicate-existing");
@@ -536,13 +565,24 @@ export async function generateWearableMemories(
   const modeStatus = memoryStatusForMode(settings.memoryMode);
   const writable: Writable[] = [];
   novel.forEach((candidate, index) => {
+    // Every wearable candidate is ambient, so a high-impact personal claim can
+    // never be written active — on ANY mode. `auto` has no trust scoring and an
+    // operator may set minConfidence at or below the speculative ceiling, which
+    // would otherwise let a clamped TV line straight into recall (#2294).
+    const capAtReview = candidate.highImpact;
     if (settings.memoryMode !== "smart") {
-      writable.push({ candidate, index, status: modeStatus, trustAttributes: {} });
+      const status = capAtReview ? "pending_review" : modeStatus;
+      writable.push({
+        candidate,
+        index,
+        status,
+        trustAttributes: capAtReview ? { trustDecision: "ambient-high-impact" } : {},
+      });
       return;
     }
     const scored = trustById.get(index);
     if (!scored) return;
-    const decision = decideSmart(scored.trust, scored.verdict, settings);
+    const decision = decideSmart(scored.trust, scored.verdict, settings, { capAtReview });
     if (decision.outcome === "drop") {
       skip(decision.reason);
       return;
@@ -680,10 +720,19 @@ export async function writeDailyDigestMemory(
     },
     { source: wearableSourceLabel(sourceId) },
   );
+  // A provider derives conversation.title from the same captured audio, so a
+  // title lifted from a television scene ("Dana's cancer diagnosis") would
+  // otherwise ride into recall on the digest, bypassing the extraction prompt
+  // and its clamp entirely. Digest content is `moment`, which the classifier
+  // already treats as personal-claim-shaped, so this reads the titles alone
+  // and holds only a contaminated digest for review (#2294).
+  const titleIsHighImpact = lines.some((line) =>
+    isHighImpactPersonalFact({ category: "fact", content: line }),
+  );
   await writer.writeSealedMemory(digestEnvelope, {
     importance: scoreImportance(content, "moment", ["daily-digest"]),
     contentHashSource: content,
-    status: memoryStatusForMode(settings.memoryMode),
+    status: titleIsHighImpact ? "pending_review" : memoryStatusForMode(settings.memoryMode),
     memoryKind: "episode",
   });
   return true;

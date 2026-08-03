@@ -28,6 +28,9 @@ export function respondAccessCapabilitiesHttp(response: ServerResponse): void {
   response.end(JSON.stringify({
     lcmCompactionFlushBatch: true,
     offlineSyncConvergenceComplete: true,
+    // POST /engram|remnic/v1/memories/search — HTTP clients probe this before
+    // using the route so they can degrade against an older daemon.
+    memoriesSearch: true,
   }, null, 2));
 }
 

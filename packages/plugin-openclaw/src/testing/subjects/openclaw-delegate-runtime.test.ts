@@ -68,6 +68,9 @@ async function startDaemonStub(): Promise<DaemonStub> {
       const response =
         req.url === "/engram/v1/recall"
           ? { context: "remembered" }
+          // A real daemon always reports its namespace posture on health.
+          : req.url === "/engram/v1/health"
+            ? { ok: true, namespacesEnabled: false }
           : req.url === "/engram/v1/capabilities"
             ? { lcmCompactionFlushBatch: true }
             : requestedNamespaces !== undefined
@@ -136,6 +139,13 @@ function optionsFor(port: number, namespaceBindings: SessionNamespaceBindingStor
     recallTimeoutMs: 5_000,
     observeTimeoutMs: 5_000,
     flushTimeoutMs: 5_000,
+    capability: {
+      memoryDir: path.join(os.tmpdir(), "remnic-delegate-matrix-memory"),
+      workspaceDir: path.join(os.tmpdir(), "remnic-delegate-matrix-workspace"),
+      agentIds: ["generalist"],
+      configuredSearchBackend: "qmd",
+      configuredQmdCommand: "qmd",
+    },
   };
 }
 
