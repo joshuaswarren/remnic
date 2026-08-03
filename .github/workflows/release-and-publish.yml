@@ -197,7 +197,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
             node scripts/set-release-version.mjs "${OVERRIDE}"
             pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
-            git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
+            git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json packages/*/.codex-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "::notice title=Release commit skipped::Version already matches v${OVERRIDE}; no package files changed."
             else
@@ -269,7 +269,7 @@ jobs:
             echo "::notice title=Bootstrap release::${BOOTSTRAP_PACKAGE} is not published yet; using package.json version ${PKG_VERSION}."
             node scripts/set-release-version.mjs "${PKG_VERSION}"
             pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
-            git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
+            git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json packages/*/.codex-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "::notice title=Release commit skipped::Version already matches v${PKG_VERSION}; no package files changed."
             else
@@ -317,7 +317,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           node scripts/set-release-version.mjs "${NEXT_VERSION}"
           pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
-          git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
+          git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json packages/*/.codex-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "::notice title=Release commit skipped::Version already matches v${NEXT_VERSION}; no package files changed."
           else
@@ -349,13 +349,13 @@ jobs:
             --head "${SOURCE_MAIN_SHA}" \
             --bump "${PACKAGE_BUMP}"
 
-          if git diff --quiet -- packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json openclaw.plugin.json; then
+          if git diff --quiet -- packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json packages/*/.codex-plugin/plugin.json openclaw.plugin.json; then
             echo "::notice title=Package version bump skipped::No public workspace package versions changed."
             exit 0
           fi
 
           pnpm install --lockfile-only --no-frozen-lockfile
-          git add packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml
+          git add packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json packages/*/.codex-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml
           git commit -m "chore(release): bump changed workspace packages [skip ci]"
 
       - name: Resolve final release metadata

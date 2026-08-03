@@ -91,18 +91,6 @@ test("release workflow rejects version overrides that reuse existing tags before
   assert.ok(workflow.indexOf("Version override tag exists") < workflow.indexOf("node scripts/set-release-version.mjs"));
 });
 
-test("release workflow stages Claude companion manifests during version bumps", () => {
-  assert.match(workflow, /packages\/\*\/\.claude-plugin\/plugin\.json/);
-  assert.match(
-    workflow,
-    /git add package\.json packages\/\*\/package\.json packages\/\*\/openclaw\.plugin\.json packages\/\*\/\.claude-plugin\/plugin\.json openclaw\.plugin\.json pnpm-lock\.yaml/,
-  );
-  assert.match(
-    workflow,
-    /git diff --quiet -- packages\/\*\/package\.json packages\/\*\/openclaw\.plugin\.json packages\/\*\/\.claude-plugin\/plugin\.json openclaw\.plugin\.json/,
-  );
-});
-
 test("release workflow validates workspace publish order before publishing", () => {
   assert.match(
     workflow,

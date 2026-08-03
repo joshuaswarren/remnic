@@ -1,7 +1,7 @@
 ---
 name: remnic-remember
 description: Store a durable memory in Remnic so every connected agent can recall it. Trigger phrases include "remember this", "save this for later", "add a note that".
-disable-model-invocation: true
+disable-model-invocation: false
 allowed-tools:
   - remnic_memory_store
 ---

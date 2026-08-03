@@ -229,6 +229,20 @@ test("every authored SKILL.md has valid frontmatter", () => {
   }
 });
 
+test("BUILTIN_SKILLS disableModelInvocation mirrors the authored frontmatter", () => {
+  for (const skill of BUILTIN_SKILLS) {
+    if (!skill.staticPath) continue;
+    const parsed = parseSkillFile(skill.staticPath);
+    // An absent key means the host may invoke the skill, i.e. false.
+    const authored = parsed.frontmatter["disable-model-invocation"] ?? "false";
+    assert.equal(
+      authored,
+      String(skill.disableModelInvocation),
+      `${skill.slug} registry flag must mirror its disable-model-invocation frontmatter`,
+    );
+  }
+});
+
 test("every authored SKILL.md contains the six required H2 sections in order", () => {
   for (const file of ALL_SKILL_FILES) {
     const parsed = parseSkillFile(file);

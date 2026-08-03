@@ -77,7 +77,31 @@ test("plugin-codex has required plugin manifest", () => {
   const manifest = path.join(PACKAGES, "plugin-codex", ".codex-plugin", "plugin.json");
   assert.ok(fs.existsSync(manifest), ".codex-plugin/plugin.json must exist");
   const pkg = JSON.parse(fs.readFileSync(manifest, "utf-8"));
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(PACKAGES, "plugin-codex", "package.json"), "utf-8"),
+  );
   assert.equal(pkg.name, "remnic");
+  assert.equal(pkg.version, packageJson.version, "Codex manifest version must match the package");
+  assert.equal(pkg.author?.name, "Joshua Warren");
+  assert.equal(pkg.license, "MIT");
+  assert.ok(Array.isArray(pkg.keywords) && pkg.keywords.includes("memory"));
+  assert.equal(pkg.interface?.displayName, "Remnic");
+  assert.equal(pkg.interface?.category, "Productivity");
+  const prompts = pkg.interface?.defaultPrompt;
+  assert.ok(Array.isArray(prompts), "Codex manifest defaultPrompt must be an array");
+  assert.ok(prompts.length > 0 && prompts.length <= 3, "Codex manifest must provide one to three prompts");
+  assert.ok(
+    prompts.every((prompt) => typeof prompt === "string" && prompt.length > 0 && prompt.length <= 128),
+    "Codex manifest prompts must be non-empty strings of at most 128 characters",
+  );
+});
+
+test("plugin-codex memory write workflows are model-invocable", () => {
+  for (const skill of ["remnic-memory-workflow", "remnic-remember"]) {
+    const content = fs.readFileSync(path.join(PACKAGES, "plugin-codex", "skills", skill, "SKILL.md"), "utf-8");
+    const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/u)?.[1] ?? "";
+    assert.match(frontmatter, /^disable-model-invocation: false$/m, `${skill} must be available to the model`);
+  }
 });
 
 test("plugin-codex has Stop hook (unique to Codex)", () => {

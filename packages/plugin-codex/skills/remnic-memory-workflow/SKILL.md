@@ -1,7 +1,7 @@
 ---
 name: remnic-memory-workflow
 description: Shared memory workflow for Remnic-connected agents — recall before acting, observe during work, remember at the end. Trigger phrases include "what do you remember about", "save this for later", "any context from last time".
-disable-model-invocation: true
+disable-model-invocation: false
 allowed-tools:
   - remnic_recall
   - remnic_memory_store

@@ -90,7 +90,7 @@ export const BUILTIN_SKILLS: RemnicSkillSource[] = [
   {
     slug: "remnic-memory-workflow",
     staticPath: codexSkillPath("remnic-memory-workflow"),
-    disableModelInvocation: true,
+    disableModelInvocation: false,
   },
   {
     slug: "remnic-recall",
@@ -100,7 +100,7 @@ export const BUILTIN_SKILLS: RemnicSkillSource[] = [
   {
     slug: "remnic-remember",
     staticPath: codexSkillPath("remnic-remember"),
-    disableModelInvocation: true,
+    disableModelInvocation: false,
   },
   {
     slug: "remnic-search",

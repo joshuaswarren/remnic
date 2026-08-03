@@ -77,6 +77,7 @@ test("set-release-version syncs companion plugin manifests", async () => {
   try {
     await mkdir(path.join(repo, "packages", "plugin-openclaw"), { recursive: true });
     await mkdir(path.join(repo, "packages", "plugin-claude-code", ".claude-plugin"), { recursive: true });
+    await mkdir(path.join(repo, "packages", "plugin-codex", ".codex-plugin"), { recursive: true });
     await mkdir(path.join(repo, "packages", "shim-openclaw-engram"), { recursive: true });
     await writeJson(path.join(repo, "package.json"), {
       private: true,
@@ -100,6 +101,14 @@ test("set-release-version syncs companion plugin manifests", async () => {
     });
     await writeJson(path.join(repo, "packages", "plugin-claude-code", ".claude-plugin", "plugin.json"), {
       name: "Remnic",
+      version: "1.0.0",
+    });
+    await writeJson(path.join(repo, "packages", "plugin-codex", "package.json"), {
+      name: "@remnic/plugin-codex",
+      version: "1.0.0",
+    });
+    await writeJson(path.join(repo, "packages", "plugin-codex", ".codex-plugin", "plugin.json"), {
+      name: "remnic",
       version: "1.0.0",
     });
     await writeJson(path.join(repo, "packages", "shim-openclaw-engram", "package.json"), {
@@ -136,6 +145,10 @@ test("set-release-version syncs companion plugin manifests", async () => {
     );
     assert.equal(
       (await readJson(path.join(repo, "packages", "plugin-claude-code", ".claude-plugin", "plugin.json"))).version,
+      "1.2.3",
+    );
+    assert.equal(
+      (await readJson(path.join(repo, "packages", "plugin-codex", ".codex-plugin", "plugin.json"))).version,
       "1.2.3",
     );
     assert.equal(
