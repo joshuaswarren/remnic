@@ -33,10 +33,33 @@ const LAUNCHD_SERVICE_PATHS = [
   ["Library", "LaunchAgents", "ai.remnic.server.plist"],
   ["Library", "LaunchAgents", "ai.engram.daemon.plist"],
 ] as const;
-const SYSTEMD_USER_SERVICE_PATHS = [
-  [".config", "systemd", "user", "remnic.service"],
-  [".config", "systemd", "user", "engram.service"],
-] as const;
+const SYSTEMD_UNIT_NAMES = ["remnic.service", "engram.service"] as const;
+
+/**
+ * The USER unit search path (systemd.unit(5), `systemd-analyze unit-paths
+ * --user`), in ASCENDING precedence. A unit installed system-wide for user
+ * managers — `/usr/lib/systemd/user` and friends — is run by systemd exactly
+ * like a per-user one, so omitting those directories hid the daemon's endpoint
+ * from detection entirely.
+ */
+function systemdUserUnitDirs(homeDir: string): string[] {
+  const env = (globalThis.process as { env?: Record<string, string | undefined> } | undefined)?.["env"];
+  const xdgConfig = env?.["XDG_CONFIG_HOME"];
+  const xdgData = env?.["XDG_DATA_HOME"];
+  const underHome = (...segments: string[]): string => path.join(homeDir, ...segments);
+  return [
+    "/usr/lib/systemd/user",
+    "/usr/local/lib/systemd/user",
+    "/etc/systemd/user",
+    "/run/systemd/user",
+    xdgData !== undefined && xdgData.trim() !== ""
+      ? path.join(expandTildePath(xdgData), "systemd", "user")
+      : underHome(".local", "share", "systemd", "user"),
+    xdgConfig !== undefined && xdgConfig.trim() !== ""
+      ? path.join(expandTildePath(xdgConfig), "systemd", "user")
+      : underHome(".config", "systemd", "user"),
+  ];
+}
 // A packaged fleet install commonly runs the daemon as a SYSTEM unit rather
 // than a per-user one, so a home-relative scan alone misses it and auto mode
 // would never probe (issue #2120).
@@ -57,7 +80,7 @@ export const SYSTEMD_SYSTEM_UNIT_DIRS = [
   "/run/systemd/system",
   "/etc/systemd/system",
 ] as const;
-const SYSTEMD_SYSTEM_UNIT_NAMES = ["remnic.service", "engram.service"] as const;
+const SYSTEMD_SYSTEM_UNIT_NAMES = SYSTEMD_UNIT_NAMES;
 
 /**
  * Drop-in fragments for a unit, in systemd's own lexical order.
@@ -156,10 +179,17 @@ export function readServiceEndpoints(): Array<{
     dropInDirs: readonly string[];
     userScoped: boolean;
   }> = [
-    ...[...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS].map((segments) => {
+    ...LAUNCHD_SERVICE_PATHS.map((segments) => {
       const unitPath = path.join(homeDir, ...segments);
       return { unitPath, dropInDirs: [`${unitPath}.d`], userScoped: true };
     }),
+    // User units follow the same load-path rules as system ones: highest
+    // precedence file wins, drop-ins collected from every directory.
+    ...resolveSystemUnitSources(
+      systemdUserUnitDirs(homeDir),
+      SYSTEMD_UNIT_NAMES,
+      fileExists,
+    ).map((source) => ({ ...source, userScoped: true })),
     // For a SYSTEM unit the base file and its overrides can live in different
     // load-path directories: a packaged unit under `/usr/lib` customized by
     // `systemctl edit`, which writes `/etc/systemd/system/<unit>.d/*.conf`.
@@ -219,11 +249,11 @@ export function readServiceEndpoints(): Array<{
 /** Whether ANY daemon service unit is installed for this account or host. */
 export function isDaemonServiceConfigured(): boolean {
   const homeDir = resolveHomeDir();
-  for (const segments of [...LAUNCHD_SERVICE_PATHS, ...SYSTEMD_USER_SERVICE_PATHS]) {
+  for (const segments of LAUNCHD_SERVICE_PATHS) {
     if (fileExists(path.join(homeDir, ...segments))) return true;
   }
-  return SYSTEMD_SYSTEM_UNIT_DIRS.some((dir) =>
-    SYSTEMD_SYSTEM_UNIT_NAMES.some((name) => fileExists(path.join(dir, name))),
+  return [...systemdUserUnitDirs(homeDir), ...SYSTEMD_SYSTEM_UNIT_DIRS].some((dir) =>
+    SYSTEMD_UNIT_NAMES.some((name) => fileExists(path.join(dir, name))),
   );
 }
 

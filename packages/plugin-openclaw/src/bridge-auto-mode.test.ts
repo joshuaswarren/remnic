@@ -2549,3 +2549,67 @@ test("a removed unit token falls through instead of replaying a dead credential"
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test("resolvable unit specifiers expand, unknowable ones still refuse", () => {
+  // `EnvironmentFile=` permits specifier expansion. The DIRECTORY specifiers
+  // are account-independent for a system unit, so they resolve there too —
+  // only `%h` and `~` name the account `User=` selects, which is unknowable.
+  const files = new Map([
+    ["/etc/remnic.env", "REMNIC_PORT=4813\n"],
+    ["/var/lib/remnic.env", "REMNIC_HOST=127.0.0.1\n"],
+  ]);
+  const read = (candidate: string): string | undefined => files.get(candidate);
+  const system = { userScoped: false, homeDir: "/home/gw" };
+
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nEnvironmentFile=%E/remnic.env\n", system, read).port,
+    4813,
+    "%E is /etc for a system unit",
+  );
+  assert.equal(
+    resolveUnitEndpoint("[Service]\nEnvironmentFile=%S/remnic.env\n", system, read).host,
+    "127.0.0.1",
+    "%S is /var/lib for a system unit",
+  );
+  // `%h` stays unknowable, and `%%` is an escaped percent, not a specifier.
+  assert.deepEqual(
+    resolveUnitEndpoint("[Service]\nEnvironment=REMNIC_CONFIG_PATH=%h/c.json\n", system, read),
+    {},
+  );
+  assert.equal(
+    resolveUnitEndpoint(
+      "[Service]\nEnvironment=REMNIC_AUTH_TOKEN=100%%sure\n",
+      system,
+      read,
+    ).authToken,
+    "100%sure",
+  );
+});
+
+test("a user unit installed system-wide is discovered", async () => {
+  // `systemd-analyze unit-paths --user` lists `/usr/lib/systemd/user` and
+  // friends: systemd runs a unit installed there exactly like a per-user one,
+  // so omitting those directories hid the daemon's endpoint entirely.
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-userpath-"));
+  const vendor = path.join(root, "usr", "lib", "systemd", "user");
+  const perUser = path.join(root, ".config", "systemd", "user");
+  const dirs = [vendor, path.join(root, "etc", "systemd", "user"), perUser];
+  try {
+    await mkdir(vendor, { recursive: true });
+    await writeFile(path.join(vendor, "remnic.service"), "[Service]\n", "utf8");
+    assert.equal(
+      resolveSystemUnitSources(dirs, ["remnic.service"])[0]?.unitPath,
+      path.join(vendor, "remnic.service"),
+      "a system-wide user unit is a source",
+    );
+    // The per-user directory still outranks it.
+    await mkdir(perUser, { recursive: true });
+    await writeFile(path.join(perUser, "remnic.service"), "[Service]\n", "utf8");
+    assert.equal(
+      resolveSystemUnitSources(dirs, ["remnic.service"])[0]?.unitPath,
+      path.join(perUser, "remnic.service"),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

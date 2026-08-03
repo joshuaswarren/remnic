@@ -211,8 +211,9 @@ function readUnitEnvironment(
   const merged = new Map(directives.env);
   for (const candidate of directives.envFiles) {
     // Same account-scope rule as every other unit-supplied path.
-    if (!scope.userScoped && (candidate.includes("%") || candidate.startsWith("~"))) continue;
-    const resolved = expandAccountRelative(candidate, scope);
+    const expandedFile = expandAccountRelative(candidate, scope);
+    if (!scope.userScoped && (expandedFile.includes("%") || expandedFile.startsWith("~"))) continue;
+    const resolved = settleUnitValue(expandedFile);
     // systemd requires an absolute path here; anything else cannot be read in
     // the daemon's frame with any confidence.
     if (!path.isAbsolute(resolved)) continue;
@@ -307,8 +308,12 @@ function readUnitEnv(
   // account is ours; for a SYSTEM unit it is whatever `User=` names, which
   // this process cannot resolve — expanding either against the gateway's home
   // would read a different account's file than the daemon did.
-  if (!scope.userScoped && (raw.includes("%") || raw.startsWith("~"))) return undefined;
-  return expandAccountRelative(raw, scope);
+  const expanded = expandAccountRelative(raw, scope);
+  // Only what is STILL unresolved is refused: `%h` and `~` name the account a
+  // system unit's `User=` selects, which this process cannot know. The
+  // directory specifiers resolve for either manager.
+  if (!scope.userScoped && (expanded.includes("%") || expanded.startsWith("~"))) return undefined;
+  return settleUnitValue(expanded);
 }
 
 /**
@@ -337,10 +342,57 @@ function readUnitEnv(
  * that account is unknowable from this process.
  */
 function expandAccountRelative(value: string, scope: UnitScope): string {
-  const withSpecifier = value.replace(/%h/g, scope.homeDir);
+  const withSpecifier = expandUnitSpecifiers(value, scope);
+  // `~` is expanded ONLY for a user unit, exactly like `%h`. Leaving it
+  // literal for a system unit is what lets the callers' guard refuse it: that
+  // account is whatever `User=` names, which this process cannot resolve.
+  if (!scope.userScoped) return withSpecifier;
   if (withSpecifier === "~") return scope.homeDir;
   if (withSpecifier.startsWith("~/")) return path.join(scope.homeDir, withSpecifier.slice(2));
   return withSpecifier;
+}
+
+/**
+ * systemd path specifiers, resolved for the unit's own manager.
+ *
+ * The DIRECTORY specifiers are account-independent for a system unit
+ * (`%E` is `/etc`, `%S` is `/var/lib`, …) and account-relative for a user one,
+ * so a system unit can resolve them even though `%h` remains unknowable there.
+ * Only `%%` needs escaping, and it is handled last so an escaped percent never
+ * introduces a specifier.
+ */
+const ESCAPED_PERCENT = "\u0000remnic-escaped-percent\u0000";
+
+/** Restore literal percents, once the unresolved-specifier guard has run. */
+function settleUnitValue(value: string): string {
+  return value.replaceAll(ESCAPED_PERCENT, "%");
+}
+
+function expandUnitSpecifiers(value: string, scope: UnitScope): string {
+  const home = scope.homeDir;
+  const env = (globalThis.process as { env?: Record<string, string | undefined> } | undefined)?.["env"];
+  const xdg = (name: string, fallback: string): string => {
+    const configured = scope.userScoped ? env?.[name] : undefined;
+    return configured !== undefined && configured.trim() !== "" ? configured : fallback;
+  };
+  const directories: Record<string, string> = scope.userScoped
+    ? {
+        E: xdg("XDG_CONFIG_HOME", path.join(home, ".config")),
+        S: xdg("XDG_STATE_HOME", path.join(home, ".local", "state")),
+        C: xdg("XDG_CACHE_HOME", path.join(home, ".cache")),
+        L: path.join(xdg("XDG_STATE_HOME", path.join(home, ".local", "state")), "log"),
+        t: xdg("XDG_RUNTIME_DIR", "/run/user"),
+      }
+    : { E: "/etc", S: "/var/lib", C: "/var/cache", L: "/var/log", t: "/run" };
+  // An escaped `%%` becomes a placeholder rather than a literal `%`, so the
+  // callers' "anything still unresolved?" guard cannot mistake it for a
+  // specifier this process failed to expand. `settleUnitValue` restores it
+  // once that check has passed.
+  return value.replace(/%(.)/g, (match, specifier: string) => {
+    if (specifier === "%") return ESCAPED_PERCENT;
+    if (specifier === "h") return scope.userScoped ? home : match;
+    return directories[specifier] ?? match;
+  });
 }
 
 function decodePlistString(value: string): string {
@@ -403,8 +455,9 @@ function readUnitCliOverrides(
   const expand = (value: string | undefined): string | undefined => {
     if (value === undefined) return undefined;
     // Same account-scope rule as the environment reader, `~` included.
-    if (!scope.userScoped && (value.includes("%") || value.startsWith("~"))) return undefined;
-    return expandAccountRelative(value, scope);
+    const expanded = expandAccountRelative(value, scope);
+    if (!scope.userScoped && (expanded.includes("%") || expanded.startsWith("~"))) return undefined;
+    return settleUnitValue(expanded);
   };
   const configPath = expand(readFlag("--config"));
   // The server resolves a relative `--config` against its own cwd, which the
@@ -514,7 +567,7 @@ function resolveAgainstWorkingDirectory(
   if (!scope.userScoped && (workingDirectory.includes("%") || workingDirectory.startsWith("~"))) {
     return undefined;
   }
-  const expanded = expandAccountRelative(workingDirectory, scope);
+  const expanded = settleUnitValue(expandAccountRelative(workingDirectory, scope));
   if (!path.isAbsolute(expanded)) return undefined;
   return path.resolve(expanded, candidate);
 }
