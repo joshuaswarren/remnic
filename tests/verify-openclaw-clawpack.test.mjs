@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -109,4 +109,37 @@ test("an oversized manifest fails the OpenClaw 256 KiB host cap", () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /OpenClaw rejects manifests/);
+});
+
+test("a symlinked package root is refused rather than scanned", () => {
+  const real = makeFixture();
+  const link = path.join(path.dirname(real), "linked-pkg");
+  symlinkSync(real, link, "dir");
+
+  const result = run(link);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /package directory is a symlink/);
+});
+
+test("a symlinked dist root is refused rather than scanned", () => {
+  const pkgDir = makeFixture();
+  const elsewhere = path.join(path.dirname(pkgDir), "elsewhere");
+  renameSync(path.join(pkgDir, "dist"), elsewhere);
+  symlinkSync(elsewhere, path.join(pkgDir, "dist"), "dir");
+
+  const result = run(pkgDir);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /dist directory is a symlink/);
+});
+
+test("a symlink inside dist is refused, dangling or not", () => {
+  const pkgDir = makeFixture();
+  symlinkSync("/nonexistent/target.js", path.join(pkgDir, "dist", "linked.js"));
+
+  const result = run(pkgDir);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /dist\/linked\.js is a symlink/);
 });

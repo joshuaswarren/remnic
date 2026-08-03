@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +13,25 @@ function fail(message) {
   console.error(`OpenClaw ClawPack verification failed: ${message}`);
   process.exit(1);
 }
+
+/**
+ * A symlinked scan root or entry would let the release gate inspect artifacts
+ * outside the package it was asked about, and a dangling one would abort the
+ * verifier with an uncaught filesystem error. Everything under `dist/` must be
+ * a real file or directory (AGENTS.md: reject symlink traversal in directory
+ * scans). Runs before `npm pack` so a redirected root is reported as such
+ * rather than as whatever downstream assertion happens to notice first.
+ */
+function assertRealDirectory(dir, label) {
+  const stats = lstatSync(dir, { throwIfNoEntry: false });
+  if (stats === undefined) return false;
+  if (stats.isSymbolicLink()) fail(`${label} is a symlink (${dir}); refusing to scan outside the package`);
+  if (!stats.isDirectory()) fail(`${label} is not a directory (${dir})`);
+  return true;
+}
+
+assertRealDirectory(packageDir, "package directory");
+const distDirExists = assertRealDirectory(distDir, "dist directory");
 
 function parsePackOutput(stdout) {
   const candidates = [0];
@@ -91,10 +110,15 @@ for (const requiredFile of requiredFiles) {
 // requirement; removing that module in #2279 left the assertion unsatisfiable
 // and blocked every release from 2026-07-31 on.
 const distFiles = [...files].filter((file) => file.startsWith("dist/"));
-const builtDistFiles = existsSync(distDir)
+const builtDistFiles = distDirExists
   ? readdirSync(distDir, { recursive: true })
       .map((relative) => String(relative).split(path.sep).join("/"))
-      .filter((relative) => statSync(path.join(distDir, relative)).isFile())
+      .filter((relative) => {
+        const stats = lstatSync(path.join(distDir, relative), { throwIfNoEntry: false });
+        if (stats === undefined) fail(`dist/${relative} disappeared while scanning`);
+        if (stats.isSymbolicLink()) fail(`dist/${relative} is a symlink; build output must be real files`);
+        return stats.isFile();
+      })
       .map((relative) => `dist/${relative}`)
   : [];
 if (builtDistFiles.length === 0) {
