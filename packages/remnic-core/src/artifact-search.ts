@@ -75,6 +75,10 @@ export async function selectArtifactMatches(
   maxResults: number,
   options: ArtifactSearchOptions = {},
 ): Promise<MemoryFile[]> {
+  // An already-abandoned recall must not tokenize the tier at all; the in-loop
+  // checkpoint below only lands every ARTIFACT_SCAN_YIELD_INTERVAL documents, so
+  // a small tier would never observe the signal without this.
+  throwIfAborted(options.abortSignal, "artifact search aborted");
   const tokens = tokenizeArtifactSearchText(query);
   if (tokens.length === 0) return [];
 

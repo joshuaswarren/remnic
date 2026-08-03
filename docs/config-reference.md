@@ -260,16 +260,19 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 **Effective core section deadline.** A section budget only helps if it expires
 *before* the request ceiling that cancels everything, and sections start after
 planning and namespace resolution — so the budget is resolved when each section
-starts, against the request budget still left at that moment:
+starts, against the request budget still left at that moment. When
+`recallCoreDeadlineMs > 0` and the request is bounded, the effective value is
 `min(recallCoreDeadlineMs, floor(remaining * 0.8))`, where `remaining` is
 `recallOuterTimeoutMs` minus the time the request has already spent. With both
 defaults at `75000` a section starting immediately gets **60000**; one starting 20
 seconds in gets **44000**. Raising `recallCoreDeadlineMs` past that share has no
 effect — raise `recallOuterTimeoutMs` too. The effective value is what appears as
 `deadlineMs` in the recall section metric log, so the number in force is always
-observable. `recallOuterTimeoutMs: 0` (unbounded request) leaves
-`recallCoreDeadlineMs` alone; a request already over budget degrades its optional
-sections immediately.
+observable. Either bound set to `0` is left alone: `recallCoreDeadlineMs: 0`
+leaves the sections unbounded, and `recallOuterTimeoutMs: 0` (unbounded request)
+means there is no remainder to reserve headroom against, so the configured
+`recallCoreDeadlineMs` applies verbatim. A request already over budget degrades
+its optional sections immediately.
 
 ### `recallPipeline` entries
 

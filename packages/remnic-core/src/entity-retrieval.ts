@@ -1137,6 +1137,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   throwIfAborted(options.abortSignal, "entity recall aborted");
   const explicitCandidates = resolveExplicitCandidates(index, options.query);
   await yieldToEventLoop();
+  throwIfAborted(options.abortSignal, "entity recall aborted");
   const queryCandidates = prefixedMode
     ? explicitCandidates
     : resolveLanguageIndependentExplicitCandidates(index, options.query);

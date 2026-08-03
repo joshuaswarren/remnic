@@ -78,7 +78,7 @@ import { searchTrustZoneRecords } from "../trust-zones.js";
 import type { IdentityInjectionMode, MemoryFile, QmdSearchResult, RecallPlanMode } from "../types.js";
 import { type VerifiedEpisodeResult, compareVerifiedEpisodeResults, searchVerifiedEpisodes } from "../verified-recall.js";
 import { type WorkProductLedgerSearchResult, searchWorkProductLedgerEntries } from "../work-product-ledger.js";
-import { abortError, isAbortError } from "../abort-error.js";
+import { abortError, isAbortError, raceAbort } from "../abort-error.js";
 import {
   applyQueryAwareCandidateFilter,
   filterRecallCandidates,
@@ -1009,13 +1009,20 @@ export class RecallInternalCoordinator {
         "entityRetrieval",
         null as string | null,
         async (sectionSignal) => {
+          // The transcript store is shared and takes no signal of its own, so the
+          // section stops WAITING on a stalled read rather than pretending to
+          // interrupt it — otherwise a cancelled section sits in this await.
           const transcriptEntries = sessionKey
-            ? await readRecentEntityTranscriptEntries(
-                this.deps.transcript.readRecent(
-                  entityRecentTranscriptLookbackHours,
-                  sessionKey,
+            ? await raceAbort(
+                readRecentEntityTranscriptEntries(
+                  this.deps.transcript.readRecent(
+                    entityRecentTranscriptLookbackHours,
+                    sessionKey,
+                  ),
+                  recentTurns,
                 ),
-                recentTurns,
+                sectionSignal,
+                "entity recall aborted",
               )
             : [];
           return await buildEntityRecallSection({
