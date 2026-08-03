@@ -224,6 +224,33 @@ test("auto mode writes active status", async () => {
   assert.equal(writes[0].options.status, "active");
 });
 
+test("auto mode still refuses to write a high-impact personal claim active (#2294)", async () => {
+  // `auto` has no trust scoring, and an operator may lower minConfidence to or
+  // below the speculative ceiling the ambient clamp writes — which would let a
+  // clamped TV line straight into recall without this guard.
+  const { writer, writes } = makeWriter();
+  await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "auto", minConfidence: 0.3 }),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        { category: "fact", content: "Dana's mother has a birthday on June 3rd.", confidence: 0.39, tags: [] },
+        { category: "fact", content: "Vendor call happens tomorrow morning.", confidence: 0.8, tags: [] },
+      ]),
+      writer,
+    },
+  );
+  const personal = writes.find((w) => w.content.includes("birthday"));
+  assert.ok(personal, "the personal claim was written");
+  assert.equal(personal!.options.status, "pending_review");
+  const ordinary = writes.find((w) => w.content.includes("Vendor call"));
+  assert.ok(ordinary, "the ordinary fact was written");
+  assert.equal(ordinary!.options.status, "active");
+});
+
 test("gates: confidence floor, importance floor, dedup, and unsupported categories", async () => {
   const { writer, writes } = makeWriter(["Already stored fact about the vendor."]);
   const result = await generateWearableMemories(

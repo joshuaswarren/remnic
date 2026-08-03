@@ -28,6 +28,7 @@ import {
   type MeetingsDayFactGenResult,
 } from "./memory-generator.js";
 import { computeTrustScore, decideSmart, type TrustEvidence } from "../wearables/trust.js";
+import { isHighImpactPersonalFact } from "../ambient-provenance.js";
 import { describeErrorForOperator } from "../wearables/errors.js";
 import type { MeetingRecord, MeetingsConfig } from "./types.js";
 
@@ -241,14 +242,22 @@ function resolveMeetingFactOutcome(
   config: MeetingsConfig,
   trust: number,
   judgeVerdict: "accept" | "reject" | "defer" | undefined,
+  claim: { category: string; content: string },
 ): "active" | "review" | "drop" {
   if (config.summaryMode === "review") {
     return judgeVerdict === "reject" ? "drop" : "review";
   }
-  return decideSmart(trust, judgeVerdict, {
-    autoApproveTrust: config.autoApproveTrust,
-    reviewTrust: config.reviewTrust,
-  }).outcome;
+  // A meeting transcript is the same always-on capture audio a wearable
+  // records, so it carries the same contamination risk — and the extractor
+  // hands decisions and commitments a fixed 0.8 confidence, which clears the
+  // default band on a judge accept alone. A high-impact personal claim tops
+  // out in the review queue here too (#2294).
+  return decideSmart(
+    trust,
+    judgeVerdict,
+    { autoApproveTrust: config.autoApproveTrust, reviewTrust: config.reviewTrust },
+    { capAtReview: isHighImpactPersonalFact(claim) },
+  ).outcome;
 }
 
 /**
@@ -321,7 +330,7 @@ export async function generateMeetingSummaryFacts(
       judgeVerdict,
       evidence,
     });
-    const outcome = resolveMeetingFactOutcome(config, trust, judgeVerdict);
+    const outcome = resolveMeetingFactOutcome(config, trust, judgeVerdict, candidate);
     if (outcome === "drop") {
       result.dropped++;
       continue;
@@ -353,7 +362,10 @@ export async function generateMeetingSummaryFacts(
         sourceTrust: config.sourceTrust,
         evidence,
       });
-      const outcome = resolveMeetingFactOutcome(config, summaryTrust, undefined);
+      const outcome = resolveMeetingFactOutcome(config, summaryTrust, undefined, {
+        category: "fact",
+        content: summaryText,
+      });
       if (outcome === "drop") {
         result.dropped++;
       } else {

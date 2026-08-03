@@ -545,15 +545,24 @@ export async function generateWearableMemories(
   const modeStatus = memoryStatusForMode(settings.memoryMode);
   const writable: Writable[] = [];
   novel.forEach((candidate, index) => {
+    // Every wearable candidate is ambient, so a high-impact personal claim can
+    // never be written active — on ANY mode. `auto` has no trust scoring and an
+    // operator may set minConfidence at or below the speculative ceiling, which
+    // would otherwise let a clamped TV line straight into recall (#2294).
+    const capAtReview = isHighImpactPersonalFact(candidate.fact);
     if (settings.memoryMode !== "smart") {
-      writable.push({ candidate, index, status: modeStatus, trustAttributes: {} });
+      const status = capAtReview ? "pending_review" : modeStatus;
+      writable.push({
+        candidate,
+        index,
+        status,
+        trustAttributes: capAtReview ? { trustDecision: "ambient-high-impact" } : {},
+      });
       return;
     }
     const scored = trustById.get(index);
     if (!scored) return;
-    const decision = decideSmart(scored.trust, scored.verdict, settings, {
-      capAtReview: isHighImpactPersonalFact(candidate.fact),
-    });
+    const decision = decideSmart(scored.trust, scored.verdict, settings, { capAtReview });
     if (decision.outcome === "drop") {
       skip(decision.reason);
       return;

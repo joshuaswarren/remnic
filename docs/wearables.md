@@ -107,15 +107,19 @@ Three guards run before a candidate can reach active recall:
    kinship, milestone, or health vocabulary, or when it is tagged into
    one of those classes. Ordinary wearable facts are untouched —
    clamping everything would defeat the point of the integration.
-3. **A trust-band cap.** Confidence alone is not enough: 0.39 against
+3. **A write-status cap.** Confidence alone is not enough: 0.39 against
    the default `sourceTrust` of 0.8 is 0.312, and a judge accept
    (+0.15) plus cross-source (+0.15) and existing-memory (+0.10)
    corroboration reaches 0.712 — past the 0.7 auto-approve line. Two
    devices in one room record the same television program and
-   corroborate each other perfectly, so a high-impact ambient candidate
+   corroborate each other perfectly. So a high-impact ambient candidate
    tops out in the review queue (`trustDecision:
-   ambient-high-impact`) no matter what it scores. Late-arriving
-   evidence cannot promote one either.
+   ambient-high-impact`) no matter what it scores, late-arriving
+   evidence cannot promote one, and the cap applies in `auto` mode too
+   — that mode has no trust scoring, and an operator may set
+   `minConfidence` at or below the speculative ceiling. Meeting records
+   run the same audio through their own extractor, so the meeting
+   summary path applies the identical cap (see docs/meetings.md).
 
 The vocabulary in guard 2 cannot be exhaustive, which is why guard 1 is
 the real defense and guard 3 is keyed off the same classifier: a missed

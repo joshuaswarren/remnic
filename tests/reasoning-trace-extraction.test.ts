@@ -21,6 +21,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import { ExtractedFactSchema } from "../packages/remnic-core/src/schemas.js";
+import { parseConfig } from "../packages/remnic-core/src/config.js";
+import { ExtractionEngine } from "../packages/remnic-core/src/extraction.js";
+import type { BufferTurn } from "../packages/remnic-core/src/types.js";
 import {
   buildReasoningTraceMarkdownBody,
   buildReasoningTracePersistBody,
@@ -364,37 +367,84 @@ describe("looksLikeReasoningTrace heuristic", () => {
 });
 
 describe("extraction prompt includes reasoning_trace guidance", () => {
-  it("gateway and local prompts mention reasoning_trace with schema hints", async () => {
-    // The local prompt is built inline by the engine; the shared cloud prompt
-    // and the JSON response shape live in the sibling prompt module (#2294).
-    const engineSrc = await readFile(
-      new URL("../packages/remnic-core/src/extraction.ts", import.meta.url),
-      "utf-8",
+  // Drive the real extraction paths and assert on the prompt each one actually
+  // sends. Grepping the source would pass on text no request ever carries.
+  const SOURCE_TURN: BufferTurn = {
+    role: "user",
+    content: "Here is how I debugged the latency spike, step by step.",
+    timestamp: "2026-08-02T12:00:00.000Z",
+  };
+  const EMPTY_RESULT = JSON.stringify({
+    facts: [],
+    profileUpdates: [],
+    entities: [],
+    questions: [],
+  });
+  const CONTEXT_SIZES = {
+    calculateContextSizes: () => ({ maxInputChars: 8_000, maxOutputTokens: 1_000, description: "fixture" }),
+  };
+
+  it("the local prompt the model receives describes reasoning_trace", async () => {
+    const engine = new ExtractionEngine(
+      parseConfig({ localLlmEnabled: true, localLlmModel: "fixture-local", localLlmFallback: false }),
     );
-    const promptSrc = await readFile(
-      new URL("../packages/remnic-core/src/extraction-prompt.ts", import.meta.url),
-      "utf-8",
-    );
-    // Local prompt branch
+    let prompt = "";
+    const localLlm = {
+      async chatCompletion(messages: Array<{ content: string }>) {
+        prompt = messages[1]?.content ?? "";
+        return { content: EMPTY_RESULT };
+      },
+    };
+    assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
+    assert.equal(Reflect.set(engine, "modelRegistry", CONTEXT_SIZES), true);
+
+    await engine.extract([SOURCE_TURN]);
+
+    assert.match(prompt, /reasoning_trace: Stored solution chains/);
     assert.ok(
-      /reasoning_trace: Stored solution chains/.test(engineSrc),
-      "local LLM prompt should describe reasoning_trace",
+      prompt.includes('"category": "reasoning_trace"'),
+      "local prompt should show a reasoning_trace fact example",
     );
-    // Gateway prompt branch
+    assert.ok(prompt.includes('"reasoningTrace"'), "local prompt should carry the reasoningTrace field");
+  });
+
+  it("the gateway prompt the model receives describes reasoning_trace", async () => {
+    const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
+    let prompt = "";
+    const fallbackLlm = {
+      async parseWithSchemaDetailed(messages: Array<{ content: string }>) {
+        prompt = messages[0]?.content ?? "";
+        return { modelUsed: "fixture-gateway", result: JSON.parse(EMPTY_RESULT) };
+      },
+    };
+    assert.equal(Reflect.set(engine, "fallbackLlm", fallbackLlm), true);
+
+    await engine.extract([SOURCE_TURN]);
+
+    assert.match(prompt, /reasoning_trace: A stored solution chain/);
+  });
+
+  it("the direct-client request carries the guidance and the reasoningTrace response shape", async () => {
+    const engine = new ExtractionEngine(parseConfig({ openaiApiKey: "fixture-key" }));
+    let prompt = "";
+    const client = {
+      chat: {
+        completions: {
+          async create(request: { messages: Array<{ content: string }> }) {
+            prompt = request.messages[0]?.content ?? "";
+            return { choices: [{ message: { content: EMPTY_RESULT } }] };
+          },
+        },
+      },
+    };
+    assert.equal(Reflect.set(engine, "client", client), true);
+
+    await engine.extract([SOURCE_TURN]);
+
+    assert.match(prompt, /reasoning_trace: A stored solution chain/);
     assert.ok(
-      /reasoning_trace: A stored solution chain/.test(promptSrc),
-      "gateway prompt should describe reasoning_trace",
-    );
-    // Both prompt JSON examples must reference reasoningTrace. The examples are
-    // split across the two prompt-owning modules, so assert on their union.
-    const bothPrompts = engineSrc + promptSrc;
-    assert.ok(
-      bothPrompts.includes('"category": "reasoning_trace"'),
-      "prompt JSON example should include a reasoning_trace fact",
-    );
-    assert.ok(
-      bothPrompts.includes('"reasoningTrace"'),
-      "prompt JSON example should include a reasoningTrace field",
+      prompt.includes('"reasoningTrace"'),
+      "direct-client prompt should carry the reasoningTrace response shape",
     );
   });
 

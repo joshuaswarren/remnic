@@ -206,6 +206,31 @@ test("summaryMode smart routes a high-trust decision to active with meeting prov
   assert.ok(writer.writes.some((w) => w.envelope.category === "commitment"), "a commitment fact was written");
 });
 
+test("a high-impact personal claim never goes active, however the trust adds up (#2294)", async () => {
+  // A meeting transcript is the same always-on capture audio a wearable
+  // records, so a fabricated medical line can arrive in it. At the extractor's
+  // fixed 0.9 confidence, 0.9 * 0.85 = 0.765 clears the 0.7 auto-approve line;
+  // the ambient cap must hold it in the review queue anyway.
+  const writer = new FakeWriter();
+  const extractor = spyExtractor("Meeting summary.", [
+    { content: "Dana was diagnosed with cancer last month", category: "decision", confidence: 0.9 },
+    { content: "Team decided to ship v2 on Friday", category: "decision", confidence: 0.9 },
+  ]);
+
+  const res = await generateMeetingSummaryFacts(TRANSCRIPT_RECORD(), meetingConfig({ summaryMode: "smart" }), {
+    extractor,
+    writer,
+  });
+
+  assert.equal(res.dropped, 0, "the cap downgrades rather than drops");
+  const medical = writer.writes.find((w) => w.envelope.content.includes("diagnosed"));
+  assert.ok(medical, "the medical claim was written");
+  assert.equal(medical!.extras.status, "pending_review");
+  const ordinary = writer.writes.find((w) => w.envelope.content.includes("ship v2"));
+  assert.ok(ordinary, "the ordinary decision was written");
+  assert.equal(ordinary!.extras.status, "active", "ordinary meeting facts are unaffected");
+});
+
 test("summaryMode smart drops a low-trust candidate but corroboration promotes it to review", async () => {
   // conf 0.5 * sourceTrust 0.85 = 0.425 < reviewTrust 0.45 -> drop.
   const lowConf: MeetingFactCandidate[] = [{ content: "maybe we will refactor later", category: "fact", confidence: 0.5 }];

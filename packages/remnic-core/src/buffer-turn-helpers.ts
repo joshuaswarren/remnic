@@ -58,8 +58,8 @@ export function copyBufferTurn(turn: BufferTurn): BufferTurn {
   if (typeof turn.sourceConnector === "string") {
     copy.sourceConnector = turn.sourceConnector;
   }
-  if (turn.ambientCapture === true) {
-    copy.ambientCapture = true;
+  if (typeof turn.ambientCapture === "boolean") {
+    copy.ambientCapture = turn.ambientCapture;
   }
   return copy;
 }

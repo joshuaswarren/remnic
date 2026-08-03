@@ -147,6 +147,14 @@ no LLM summary/fact extraction runs:
      corroborate (trust boost). A throwing/absent judge degrades gracefully
      (no verdict; routed via the deterministic path).
 
+   A meeting transcript is the same always-on capture audio a wearable records,
+   so it can carry television, podcast, or passing-conversation speech nobody in
+   the meeting authored. The scribe prompt says so, and — because a prompt is
+   advice — a high-impact personal claim (family, milestone, medical) tops out
+   at `pending_review` however the trust adds up, the same cap the wearable pass
+   applies. See "Ambient audio never becomes a personal fact" in
+   [wearables.md](wearables.md).
+
 ## Configuration
 
 Documented in [config-reference.md](config-reference.md); disabled by default.

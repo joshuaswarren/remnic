@@ -8,6 +8,7 @@ import {
   isHighImpactPersonalFact,
 } from "./ambient-provenance.js";
 import { parseConfig } from "./config.js";
+import { bufferTurnsEqual, copyBufferTurn } from "./buffer-turn-helpers.js";
 import { ExtractionEngine } from "./extraction.js";
 import { SUMMARY_SYSTEM_PROMPT } from "./meetings/summary-extractor.js";
 import { emptySpeakerRegistry } from "./wearables/speakers.js";
@@ -302,12 +303,18 @@ test("a fully-boosted high-impact ambient candidate stops at review, never activ
 
   assert.equal(capped.outcome, "review");
   assert.equal(capped.reason, "ambient-high-impact");
+  // The auto-approve comparison is inclusive, so the threshold itself must cap.
+  assert.equal(
+    decideSmart(DEFAULT_THRESHOLDS.autoApproveTrust, "accept", DEFAULT_THRESHOLDS, { capAtReview: true }).reason,
+    "ambient-high-impact",
+  );
 });
 
 test("the cap changes nothing for ordinary candidates or for drop/defer verdicts", () => {
   assert.equal(decideSmart(0.9, "accept", DEFAULT_THRESHOLDS).outcome, "active");
   assert.equal(decideSmart(0.5, undefined, DEFAULT_THRESHOLDS, { capAtReview: true }).reason, "queued-for-review");
   assert.equal(decideSmart(0.9, "reject", DEFAULT_THRESHOLDS, { capAtReview: true }).outcome, "drop");
+  assert.equal(decideSmart(0.9, "defer", DEFAULT_THRESHOLDS, { capAtReview: true }).reason, "judge-deferred");
   assert.equal(decideSmart(0.2, undefined, DEFAULT_THRESHOLDS, { capAtReview: true }).outcome, "drop");
 });
 
@@ -332,6 +339,28 @@ test("wearable extraction turns carry the ambient-capture flag", () => {
   assert.ok(turns.length > 0, "the conversation is long enough to extract");
   for (const turn of turns) {
     assert.equal(turn.ambientCapture, true);
+  }
+});
+
+/**
+ * `BufferManager` validates a live turn against its `copyBufferTurn` snapshot
+ * before extracting. If the copy dropped an explicit `ambientCapture: false`
+ * while the comparison stayed strict, the two would never match and extraction
+ * would be skipped for as long as that turn stayed buffered.
+ */
+test("copyBufferTurn round-trips both ambient-flag values and equality agrees", () => {
+  for (const ambientCapture of [true, false, undefined]) {
+    const turn: BufferTurn = {
+      role: "user",
+      content: "a buffered turn",
+      timestamp: "2026-08-02T12:00:00.000Z",
+      ...(ambientCapture === undefined ? {} : { ambientCapture }),
+    };
+
+    const copy = copyBufferTurn(turn);
+
+    assert.equal(copy.ambientCapture, ambientCapture, `copy preserves ${String(ambientCapture)}`);
+    assert.equal(bufferTurnsEqual(copy, turn), true, `snapshot matches for ${String(ambientCapture)}`);
   }
 });
 

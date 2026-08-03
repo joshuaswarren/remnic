@@ -28,7 +28,7 @@
  * ingesting subsystem (the wearable memory pass), never by tool arguments.
  */
 
-import type { ExtractedFact, ExtractionResult } from "./types.js";
+import type { ExtractionResult } from "./types.js";
 
 /**
  * Upper bound of the speculative confidence tier, matching the tier table in
@@ -119,16 +119,21 @@ const HIGH_IMPACT_TAGS: Record<string, true> = {
 };
 
 /**
- * True when this fact makes a personal claim whose fabrication causes real
+ * True when this claim is personal in a way whose fabrication causes real
  * harm — a family relationship, a personal milestone, or a medical detail.
  *
- * Read by BOTH ambient guards: the post-extraction confidence clamp below and
- * the wearable trust-band cap, so a fact this flags can never auto-approve on
- * corroboration boosts either.
+ * Read by every ambient guard: the post-extraction confidence clamp below, the
+ * wearable trust-band cap, and the meeting trust-band cap. A fact this flags
+ * can never auto-approve, on any path, however the boosts add up.
+ *
+ * Takes the shape rather than `ExtractedFact` so meeting candidates — which
+ * carry no tags — pass without a synthetic empty array.
  */
-export function isHighImpactPersonalFact(
-  fact: Pick<ExtractedFact, "category" | "content" | "tags">,
-): boolean {
+export function isHighImpactPersonalFact(fact: {
+  category: string;
+  content: string;
+  tags?: readonly string[];
+}): boolean {
   if (HIGH_IMPACT_CATEGORIES[fact.category] === true) return true;
   if (HIGH_IMPACT_TOPIC_PATTERN.test(fact.content)) return true;
   if (POSSESSED_KINSHIP_PATTERN.test(fact.content)) return true;
