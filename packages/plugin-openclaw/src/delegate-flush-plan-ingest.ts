@@ -10,6 +10,12 @@
  */
 
 import { lstat, readFile, writeFile } from "node:fs/promises";
+
+/**
+ * Bytes per observe request. Comfortably under the daemon's default
+ * `maxBodyBytes` (131072) so the JSON envelope around the notes still fits.
+ */
+const MAX_OBSERVE_CHUNK_BYTES = 96 * 1024;
 import path from "node:path";
 
 import { log } from "@remnic/core/logger";
@@ -49,36 +55,67 @@ export async function ingestFlushPlanNotes(options: {
     return;
   }
   if (notes.trim().length === 0) return;
-  const accepted = await postJson(
-    options.target,
-    options.serviceId,
-    "/engram/v1/observe",
-    {
-      sessionKey: options.sessionKey,
-      messages: [{ role: "user", content: notes }],
-      ...(options.namespace === undefined ? {} : { namespace: options.namespace }),
-    },
-    options.timeoutMs,
-  );
-  // `postJson` resolves to null on 401/403 rather than throwing. Truncating on
-  // that would delete notes the daemon never took — exactly what happens during
-  // a credential rotation, or when the token lacks `observe`.
-  if (accepted === null) {
-    log.warn(
-      `[${options.serviceId}] flush-plan notes were rejected by the daemon; keeping them for the next flush`,
+  // Posted in BOUNDED chunks. The daemon rejects a body over `maxBodyBytes`
+  // with a 413, and keeping the notes on rejection — which is what stops a
+  // credential outage from destroying them — would otherwise deadlock: every
+  // later flush would resend the same oversized body and the file could never
+  // drain, even once the daemon recovered.
+  let sent = "";
+  for (const chunk of chunkOnLineBoundaries(notes, MAX_OBSERVE_CHUNK_BYTES)) {
+    const accepted = await postJson(
+      options.target,
+      options.serviceId,
+      "/engram/v1/observe",
+      {
+        sessionKey: options.sessionKey,
+        messages: [{ role: "user", content: chunk }],
+        ...(options.namespace === undefined ? {} : { namespace: options.namespace }),
+      },
+      options.timeoutMs,
     );
-    return;
+    // `postJson` resolves to null on 401/403 rather than throwing. Stop here
+    // and keep everything not yet accepted, so a rotation or a token without
+    // `observe` costs nothing.
+    if (accepted === null) {
+      log.warn(
+        `[${options.serviceId}] flush-plan notes were rejected by the daemon; keeping the remainder for the next flush`,
+      );
+      break;
+    }
+    sent += chunk;
   }
-  // Remove ONLY what was sent. Another session may have appended between the
-  // read and now, and blanking the file would discard notes that were never
-  // submitted.
+  if (sent.length === 0) return;
+  // Remove ONLY what was accepted. Another session may have appended between
+  // the read and now, and blanking the file would discard notes never sent.
   let current: string;
   try {
     current = await readFile(planPath, "utf8");
   } catch {
     return;
   }
-  await writeFile(planPath, current.startsWith(notes) ? current.slice(notes.length) : current, "utf8");
+  await writeFile(planPath, current.startsWith(sent) ? current.slice(sent.length) : current, "utf8");
+}
+
+/**
+ * Split on line boundaries, each piece under `limit` BYTES.
+ *
+ * Line-aligned so a note is never cut mid-sentence. A single line longer than
+ * the limit is emitted whole rather than mangled — it would be rejected, and
+ * the caller keeps it, which is the honest outcome for a note that cannot fit.
+ */
+function chunkOnLineBoundaries(text: string, limit: number): string[] {
+  if (Buffer.byteLength(text, "utf8") <= limit) return [text];
+  const chunks: string[] = [];
+  let current = "";
+  for (const line of text.split(/(?<=\n)/)) {
+    if (current !== "" && Buffer.byteLength(current + line, "utf8") > limit) {
+      chunks.push(current);
+      current = "";
+    }
+    current += line;
+  }
+  if (current !== "") chunks.push(current);
+  return chunks;
 }
 
 /**

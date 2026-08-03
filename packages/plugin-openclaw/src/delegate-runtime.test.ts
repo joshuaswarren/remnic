@@ -3337,3 +3337,52 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
+
+test("oversized flush-plan notes drain in chunks instead of deadlocking", async () => {
+  // Past the daemon's `maxBodyBytes`, a single-message post 413s forever and
+  // the keep-on-rejection rule turns that into a permanent deadlock: every
+  // later flush resends the same oversized body.
+  const bodies: string[] = [];
+  const stub = await startDaemonStub((pathname, body) => {
+    if (pathname.startsWith("/engram/v1/observe")) {
+      const content = String(
+        (body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? "",
+      );
+      // Reject anything a default-configured daemon would.
+      if (Buffer.byteLength(content, "utf8") > 131_072) return null;
+      bodies.push(content);
+    }
+    return { ok: true };
+  });
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fp-chunk-"));
+  const planPath = path.join(workspaceDir, "state", "plugins", "chunk-svc", "flush-plan.md");
+  await mkdir(path.dirname(planPath), { recursive: true });
+  // ~300 KiB of notes: three chunks at the 96 KiB bound.
+  const line = `- ${"note ".repeat(40)}\n`;
+  const notes = line.repeat(Math.ceil((300 * 1024) / line.length));
+  await writeFile(planPath, notes, "utf8");
+  try {
+    await ingestFlushPlanNotes({
+      target: {
+        host: "127.0.0.1",
+        port: stub.port,
+        resolveAuthToken: () => ({ token: "t", source: "daemon configuration" as const }),
+      },
+      serviceId: "chunk-svc",
+      workspaceDir,
+      sessionKey: "s",
+      namespace: undefined,
+      timeoutMs: 10_000,
+    });
+    assert.ok(bodies.length >= 3, `posted in ${bodies.length} chunks`);
+    assert.ok(
+      bodies.every((b) => Buffer.byteLength(b, "utf8") <= 131_072),
+      "every chunk fit the daemon's body limit",
+    );
+    assert.equal(bodies.join(""), notes, "and together they carry every note exactly once");
+    assert.equal(await readFile(planPath, "utf8"), "", "the file drained");
+  } finally {
+    await stub.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
