@@ -129,6 +129,22 @@ export function beginCoalescedScan(
 }
 
 /**
+ * Register a scan promise directly, with no cancellation attached.
+ *
+ * For callers that own a promise rather than a scan they can abort — tests that
+ * seed a stale in-flight read, and any future producer outside `beginCoalescedScan`.
+ * The entry has no `cancel`, so waiters leaving is a no-op: an externally-owned
+ * promise is not this module's to abort.
+ */
+export function setInFlightRead(
+  baseDir: string,
+  keyId: string,
+  read: Promise<MemoryFile[]>,
+): void {
+  inFlightReadsByKey.set(composeKey(baseDir, keyId), { read, waiters: 1 });
+}
+
+/**
  * Delete the in-flight slot for one (baseDir, keyId). When `expected` is given,
  * only deletes if the slot still holds that exact promise (owner-only clear).
  */
