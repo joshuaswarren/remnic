@@ -4528,7 +4528,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     })();
     scan.arm(readPromise);
     try {
-      return this.rememberMemorySnapshots(await readPromise);
+      // The starter races its own signal too. Refcounting means a sole waiter's
+      // abort rejects the scan itself, but while another reader keeps the scan
+      // alive the starter would otherwise sit here and be handed the full corpus
+      // after cancelling — the joiner path's contract, applied symmetrically
+      // (issue #2307 review). The scan is NOT aborted here: it belongs to the
+      // readers still waiting, and a completed scan is still worth caching for
+      // them.
+      return this.rememberMemorySnapshots(
+        await raceAbort(readPromise, options?.abortSignal, "corpus read aborted"),
+      );
     } finally {
       scan.leave();
       deleteInFlightRead(this.baseDir, keyId, readPromise);

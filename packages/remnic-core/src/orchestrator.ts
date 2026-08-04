@@ -3971,9 +3971,8 @@ export class Orchestrator {
 
   private async readAllMemoriesForNamespaces(
     namespaces: string[],
+    options?: CorpusReadOptions,
   ): Promise<MemoryFile[]> {
-    return this.namespaceReadFanoutCoordinator.readAllMemoriesForNamespaces(
-      namespaces,
-    );
+    return this.namespaceReadFanoutCoordinator.readAllMemoriesForNamespaces(namespaces, options);
   }
 }

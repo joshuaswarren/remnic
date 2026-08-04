@@ -274,6 +274,10 @@ export class NamespaceReadFanoutCoordinator {
         checkCorpusReadAbort(options);
         const versionBefore = storage.getMemoryStatusVersion();
         const allMemories = await storage.readAllMemories(options);
+        // An abort landing between the read and the publish below would otherwise
+        // cache and return a snapshot to a caller that had already cancelled
+        // (issue #2307 review).
+        checkCorpusReadAbort(options);
         const versionAfter = storage.getMemoryStatusVersion();
         latestVersionAfter = versionAfter;
         latestStatuses = new Map(
@@ -473,12 +477,13 @@ export class NamespaceReadFanoutCoordinator {
 
   async readAllMemoriesForNamespaces(
     namespaces: string[],
+    options?: CorpusReadOptions,
   ): Promise<MemoryFile[]> {
     const uniq = Array.from(new Set(namespaces.filter(Boolean)));
     const lists = await Promise.all(
       uniq.map(async (ns) => {
         const sm = await this.deps.storageRouter.storageFor(ns);
-        return sm.readAllMemories();
+        return sm.readAllMemories(options);
       }),
     );
     return lists.flat();

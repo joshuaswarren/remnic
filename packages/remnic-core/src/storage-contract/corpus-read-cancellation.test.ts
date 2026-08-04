@@ -48,6 +48,41 @@ function installScanSpy(sm: StorageManager): { scans: () => number } {
   return { scans: () => count };
 }
 
+/**
+ * Hold the first disk scan open so a joiner provably attaches while it is in
+ * flight, and guarantee teardown: a failing assertion must not leave the patched
+ * method installed or a scan blocked for the rest of the run.
+ */
+function holdFirstScan(sm: StorageManager): {
+  reached: Promise<void>;
+  release: () => void;
+  restore: () => void;
+} {
+  const scanReached = Promise.withResolvers<void>();
+  const releaseScan = Promise.withResolvers<void>();
+  const inner = sm as unknown as {
+    collectActiveMemoryPaths: (...args: unknown[]) => Promise<string[]>;
+  };
+  const orig = inner.collectActiveMemoryPaths.bind(sm);
+  let held = false;
+  inner.collectActiveMemoryPaths = async (...args: unknown[]) => {
+    if (!held) {
+      held = true;
+      scanReached.resolve();
+      await releaseScan.promise;
+    }
+    return orig(...args);
+  };
+  return {
+    reached: scanReached.promise,
+    release: () => releaseScan.resolve(),
+    restore: () => {
+      releaseScan.resolve();
+      inner.collectActiveMemoryPaths = orig;
+    },
+  };
+}
+
 test("readAllMemories: an unfired signal changes nothing", async () => {
   await withStorage("remnic-2307-memories-inert-", async (sm) => {
     await sm.writeMemory("fact", "inert signal memory");
@@ -104,43 +139,39 @@ test("readAllMemories: a second reader protects the coalesced scan from the star
     await sm.writeMemory("fact", "joined memory");
     sm.invalidateAllMemoriesCacheForDir();
 
-    // Hold the scan open so the joiner provably attaches while it is in flight.
-    const scanReached = Promise.withResolvers<void>();
-    const releaseScan = Promise.withResolvers<void>();
-    const inner = sm as unknown as {
-      collectActiveMemoryPaths: (...args: unknown[]) => Promise<string[]>;
-    };
-    const origCollect = inner.collectActiveMemoryPaths.bind(sm);
-    let held = false;
-    inner.collectActiveMemoryPaths = async (...args: unknown[]) => {
-      if (!held) {
-        held = true;
-        scanReached.resolve();
-        await releaseScan.promise;
-      }
-      return origCollect(...args);
-    };
-
+    const hold = holdFirstScan(sm);
     const spy = installScanSpy(sm);
     const starterAbort = new AbortController();
     const starter = sm.readAllMemories({ abortSignal: starterAbort.signal });
-    await scanReached.promise;
-    const joiner = sm.readAllMemories();
-
-    starterAbort.abort();
-    releaseScan.resolve();
-
-    const joined = await joiner;
-    assert.ok(
-      joined.some((m) => m.content === "joined memory"),
-      "a joiner must never be handed a cancelled or truncated read",
+    // Observe the starter now: its rejection lands the instant it aborts, and this
+    // test awaits the joiner in between, so an unobserved promise would surface as
+    // an unhandled rejection rather than the assertion below.
+    const starterOutcome = starter.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
     );
-    // The starter shares that same settled scan, so it succeeds too.
-    assert.deepEqual(
-      (await starter).map((m) => m.content),
-      joined.map((m) => m.content),
-    );
-    assert.equal(spy.scans(), 1, "the joiner reused the in-flight scan rather than starting its own");
+    try {
+      await hold.reached;
+      const joiner = sm.readAllMemories();
+
+      starterAbort.abort();
+      hold.release();
+
+      const joined = await joiner;
+      assert.ok(
+        joined.some((m) => m.content === "joined memory"),
+        "a joiner must never be handed a cancelled or truncated read",
+      );
+      // The joiner keeps the scan alive, so it completes — but the starter still
+      // gets its own AbortError, because it asked to be cancelled.
+      const outcome = await starterOutcome;
+      assert.equal(outcome.ok, false, "the starter must not be handed data it cancelled");
+      assert.ok(!outcome.ok && isAbort(outcome.error));
+      assert.equal(spy.scans(), 1, "the joiner reused the in-flight scan rather than starting its own");
+    } finally {
+      hold.restore();
+      await starterOutcome;
+    }
   });
 });
 
@@ -149,40 +180,30 @@ test("readAllMemories: a joiner arriving after the starter aborted starts a fres
     await sm.writeMemory("fact", "late joiner memory");
     sm.invalidateAllMemoriesCacheForDir();
 
-    // The starter's scan is doomed the instant its signal fires. Withdrawing it
-    // from the registry first is what stops a late joiner inheriting that
-    // AbortError for a request it never cancelled (issue #2307 review).
-    const scanReached = Promise.withResolvers<void>();
-    const releaseScan = Promise.withResolvers<void>();
-    const inner = sm as unknown as {
-      collectActiveMemoryPaths: (...args: unknown[]) => Promise<string[]>;
-    };
-    const origCollect = inner.collectActiveMemoryPaths.bind(sm);
-    let held = false;
-    inner.collectActiveMemoryPaths = async (...args: unknown[]) => {
-      if (!held) {
-        held = true;
-        scanReached.resolve();
-        await releaseScan.promise;
-      }
-      return origCollect(...args);
-    };
-
+    // The starter's scan is doomed the instant its signal fires while it is the
+    // sole waiter. Withdrawing it from the registry first is what stops a late
+    // joiner inheriting that AbortError for a request it never cancelled.
+    const hold = holdFirstScan(sm);
     const starterAbort = new AbortController();
     const starter = sm.readAllMemories({ abortSignal: starterAbort.signal });
-    await scanReached.promise;
-    starterAbort.abort();
+    try {
+      await hold.reached;
+      starterAbort.abort();
 
-    // Joins only AFTER the abort — must not attach to the doomed scan.
-    const lateJoiner = sm.readAllMemories();
-    releaseScan.resolve();
+      // Joins only AFTER the abort — must not attach to the doomed scan.
+      const lateJoiner = sm.readAllMemories();
+      hold.release();
 
-    await assert.rejects(starter, isAbort);
-    const joined = await lateJoiner;
-    assert.ok(
-      joined.some((m) => m.content === "late joiner memory"),
-      "a late joiner must get its own scan, not the starter's AbortError",
-    );
+      await assert.rejects(starter, isAbort);
+      const joined = await lateJoiner;
+      assert.ok(
+        joined.some((m) => m.content === "late joiner memory"),
+        "a late joiner must get its own scan, not the starter's AbortError",
+      );
+    } finally {
+      hold.restore();
+      await starter.catch(() => {});
+    }
   });
 });
 
@@ -191,37 +212,27 @@ test("readAllMemories: a joiner honours its own signal without cancelling the sh
     await sm.writeMemory("fact", "shared scan memory");
     sm.invalidateAllMemoriesCacheForDir();
 
-    const scanReached = Promise.withResolvers<void>();
-    const releaseScan = Promise.withResolvers<void>();
-    const inner = sm as unknown as {
-      collectActiveMemoryPaths: (...args: unknown[]) => Promise<string[]>;
-    };
-    const origCollect = inner.collectActiveMemoryPaths.bind(sm);
-    let held = false;
-    inner.collectActiveMemoryPaths = async (...args: unknown[]) => {
-      if (!held) {
-        held = true;
-        scanReached.resolve();
-        await releaseScan.promise;
-      }
-      return origCollect(...args);
-    };
-
+    const hold = holdFirstScan(sm);
     const starter = sm.readAllMemories();
-    await scanReached.promise;
-    const joinerAbort = new AbortController();
-    const joiner = sm.readAllMemories({ abortSignal: joinerAbort.signal });
-    joinerAbort.abort();
+    try {
+      await hold.reached;
+      const joinerAbort = new AbortController();
+      const joiner = sm.readAllMemories({ abortSignal: joinerAbort.signal });
+      joinerAbort.abort();
 
-    // The joiner stops waiting immediately, before the scan is even released.
-    await assert.rejects(joiner, isAbort);
+      // The joiner stops waiting immediately, before the scan is even released.
+      await assert.rejects(joiner, isAbort);
 
-    releaseScan.resolve();
-    const starterResult = await starter;
-    assert.ok(
-      starterResult.some((m) => m.content === "shared scan memory"),
-      "a joiner's cancellation must never reach the shared scan",
-    );
+      hold.release();
+      const starterResult = await starter;
+      assert.ok(
+        starterResult.some((m) => m.content === "shared scan memory"),
+        "a joiner's cancellation must never reach the shared scan",
+      );
+    } finally {
+      hold.restore();
+      await starter.catch(() => {});
+    }
   });
 });
 
@@ -232,44 +243,34 @@ test("readAllMemories: the scan is cancelled once its LAST waiter leaves", async
 
     // Two cancellable readers overlap and both give up. Neither may cancel alone,
     // but with nobody left the scan must not run on for no one — that is the
-    // abandoned I/O this whole change removes (issue #2307 review).
-    const scanReached = Promise.withResolvers<void>();
-    const releaseScan = Promise.withResolvers<void>();
-    const inner = sm as unknown as {
-      collectActiveMemoryPaths: (...args: unknown[]) => Promise<string[]>;
-    };
-    const origCollect = inner.collectActiveMemoryPaths.bind(sm);
-    let held = false;
-    inner.collectActiveMemoryPaths = async (...args: unknown[]) => {
-      if (!held) {
-        held = true;
-        scanReached.resolve();
-        await releaseScan.promise;
-      }
-      return origCollect(...args);
-    };
-
+    // abandoned I/O this whole change removes.
+    const hold = holdFirstScan(sm);
     const starterAbort = new AbortController();
     const joinerAbort = new AbortController();
     const starter = sm.readAllMemories({ abortSignal: starterAbort.signal });
-    await scanReached.promise;
-    const joiner = sm.readAllMemories({ abortSignal: joinerAbort.signal });
+    try {
+      await hold.reached;
+      const joiner = sm.readAllMemories({ abortSignal: joinerAbort.signal });
 
-    // First to leave must NOT cancel: the other reader still wants the result.
-    joinerAbort.abort();
-    await assert.rejects(joiner, isAbort);
-    starterAbort.abort();
-    releaseScan.resolve();
+      // First to leave must NOT cancel: the other reader still wants the result.
+      joinerAbort.abort();
+      await assert.rejects(joiner, isAbort);
+      starterAbort.abort();
+      hold.release();
 
-    await assert.rejects(starter, isAbort);
+      await assert.rejects(starter, isAbort);
 
-    // With the scan cancelled rather than completed, nothing was published: a
-    // fresh read has to scan again.
-    inner.collectActiveMemoryPaths = origCollect;
-    const spy = installScanSpy(sm);
-    const after = await sm.readAllMemories();
-    assert.equal(spy.scans(), 1, "the abandoned scan must not have published a cache entry");
-    assert.ok(after.some((m) => m.content === "last waiter memory"));
+      // With the scan cancelled rather than completed, nothing was published: a
+      // fresh read has to scan again.
+      hold.restore();
+      const spy = installScanSpy(sm);
+      const after = await sm.readAllMemories();
+      assert.equal(spy.scans(), 1, "the abandoned scan must not have published a cache entry");
+      assert.ok(after.some((m) => m.content === "last waiter memory"));
+    } finally {
+      hold.restore();
+      await starter.catch(() => {});
+    }
   });
 });
 
@@ -278,25 +279,18 @@ test("readAllMemories: a sole waiter's abort does stop the scan", async () => {
     await sm.writeMemory("fact", "sole waiter memory");
     sm.invalidateAllMemoriesCacheForDir();
 
-    const scanReached = Promise.withResolvers<void>();
-    const releaseScan = Promise.withResolvers<void>();
-    const inner = sm as unknown as {
-      collectActiveMemoryPaths: (...args: unknown[]) => Promise<string[]>;
-    };
-    const origCollect = inner.collectActiveMemoryPaths.bind(sm);
-    inner.collectActiveMemoryPaths = async (...args: unknown[]) => {
-      scanReached.resolve();
-      await releaseScan.promise;
-      return origCollect(...args);
-    };
-
+    const hold = holdFirstScan(sm);
     const aborted = new AbortController();
     const pending = sm.readAllMemories({ abortSignal: aborted.signal });
-    await scanReached.promise;
-    aborted.abort();
-    releaseScan.resolve();
-
-    await assert.rejects(pending, isAbort);
+    try {
+      await hold.reached;
+      aborted.abort();
+      hold.release();
+      await assert.rejects(pending, isAbort);
+    } finally {
+      hold.restore();
+      await pending.catch(() => {});
+    }
   });
 });
 
