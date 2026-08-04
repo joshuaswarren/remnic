@@ -121,6 +121,7 @@ import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
 import type { ArtifactRecallOptions } from "./orchestration/recall-search-prefilter.js";
+import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
 import { RecallIntrospectionCoordinator } from "./orchestration/recall-introspection.js";
 import { OrchestratorInitCoordinator } from "./orchestration/orchestrator-init.js";
@@ -1872,10 +1873,10 @@ export class Orchestrator {
   private async resolveArtifactSourceStatuses(
     storage: StorageManager,
     sourceIds: string[],
+    options?: CorpusReadOptions,
   ): Promise<Map<string, "active" | "superseded" | "archived" | "missing">> {
     return this.namespaceReadFanoutCoordinator.resolveArtifactSourceStatuses(
-      storage,
-      sourceIds,
+      storage, sourceIds, options,
     );
   }
 
@@ -3970,9 +3971,8 @@ export class Orchestrator {
 
   private async readAllMemoriesForNamespaces(
     namespaces: string[],
+    options?: CorpusReadOptions,
   ): Promise<MemoryFile[]> {
-    return this.namespaceReadFanoutCoordinator.readAllMemoriesForNamespaces(
-      namespaces,
-    );
+    return this.namespaceReadFanoutCoordinator.readAllMemoriesForNamespaces(namespaces, options);
   }
 }

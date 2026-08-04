@@ -27,6 +27,7 @@ import { mergeArtifactRecallCandidates, tokenizeRecallQuery } from "./orchestrat
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import { qmdCollectionNamespaceFromPrefix as computeQmdCollectionNamespaceFromPrefix } from "./orchestrator-namespace-scope.js";
 import { resolveNamespaceFromStorageDir } from "../scopes/scope-plan.js";
+import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
 import type { ArtifactRecallOptions } from "./recall-search-prefilter.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
 import type { MemoryFile, PluginConfig, QmdSearchResult } from "../types.js";
@@ -247,7 +248,9 @@ export class NamespaceReadFanoutCoordinator {
   async resolveArtifactSourceStatuses(
     storage: StorageManager,
     sourceIds: string[],
+    options?: CorpusReadOptions,
   ): Promise<Map<string, "active" | "superseded" | "archived" | "missing">> {
+    checkCorpusReadAbort(options);
     const currentStatusVersion = storage.getMemoryStatusVersion();
     const cached = this.deps.artifactSourceStatusCache.get(storage);
     let snapshot = cached;
@@ -266,8 +269,15 @@ export class NamespaceReadFanoutCoordinator {
       let latestVersionAfter = storage.getMemoryStatusVersion();
 
       for (let attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt += 1) {
+        // Each attempt is a full corpus read; an abandoned caller must not buy a
+        // second or third one (issue #2307).
+        checkCorpusReadAbort(options);
         const versionBefore = storage.getMemoryStatusVersion();
-        const allMemories = await storage.readAllMemories();
+        const allMemories = await storage.readAllMemories(options);
+        // An abort landing between the read and the publish below would otherwise
+        // cache and return a snapshot to a caller that had already cancelled
+        // (issue #2307 review).
+        checkCorpusReadAbort(options);
         const versionAfter = storage.getMemoryStatusVersion();
         latestVersionAfter = versionAfter;
         latestStatuses = new Map(
@@ -467,12 +477,13 @@ export class NamespaceReadFanoutCoordinator {
 
   async readAllMemoriesForNamespaces(
     namespaces: string[],
+    options?: CorpusReadOptions,
   ): Promise<MemoryFile[]> {
     const uniq = Array.from(new Set(namespaces.filter(Boolean)));
     const lists = await Promise.all(
       uniq.map(async (ns) => {
         const sm = await this.deps.storageRouter.storageFor(ns);
-        return sm.readAllMemories();
+        return sm.readAllMemories(options);
       }),
     );
     return lists.flat();

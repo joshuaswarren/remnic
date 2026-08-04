@@ -17,6 +17,7 @@ import type { NamespaceCatalog } from "../namespaces/catalog.js";
 import type { NamespaceStorageRouter } from "../namespaces/storage.js";
 import type { ObjectiveStateSearchResult } from "../objective-state.js";
 import type { IntentDebugSnapshot, QmdRecallSnapshot, QueryAwarePrefilter } from "../orchestrator.js";
+import type { CorpusReadOptions } from "../corpus-read-cancellation.js";
 import type { ProfilingCollector } from "../profiling.js";
 import type { GraphRecallExpandedEntry, LastRecallBudgetSummary, LastRecallStore, RecallHandleHistoryStore } from "../recall-state.js";
 import type { RecallXraySnapshot } from "../recall-xray.js";
@@ -335,6 +336,7 @@ export interface RecallInternalDeps {
   ): void;
   readAllMemoriesForNamespaces(
     namespaces: string[],
+    options?: CorpusReadOptions,
   ): Promise<MemoryFile[]>;
   recallArtifactsAcrossNamespaces(
     prompt: string,

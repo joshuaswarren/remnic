@@ -1,6 +1,7 @@
 import path from "node:path";
 import { resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities } from "../capabilities.js";
 import type { EmbeddingFallback } from "../embedding-fallback.js";
+import type { CorpusReadOptions } from "../corpus-read-cancellation.js";
 import type { StorageManager } from "../index.js";
 import type { NamespaceStorageRouter } from "../namespaces/storage.js";
 import {
@@ -27,6 +28,7 @@ export interface PrefilterAndArtifactDeps {
   resolveArtifactSourceStatuses(
     storage: StorageManager,
     sourceIds: string[],
+    options?: CorpusReadOptions,
   ): Promise<Map<string, "active" | "superseded" | "archived" | "missing">>;
   scopeQueryAwarePaths(
     paths: Set<string> | null,
@@ -84,7 +86,9 @@ export async function fetchActiveArtifactsForNamespace(
     throwIfRecallAborted(options.abortSignal);
     const sourceStatus =
       sourceIds.length > 0
-        ? await deps.resolveArtifactSourceStatuses(storage, sourceIds)
+        ? await deps.resolveArtifactSourceStatuses(storage, sourceIds, {
+            abortSignal: options.abortSignal,
+          })
         : new Map<string, "active" | "superseded" | "archived" | "missing">();
 
     const filtered: MemoryFile[] = [];

@@ -550,12 +550,12 @@ async function buildEntityMentionIndex(
   const entityStatusVersionBefore = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
   const [previousIndex, entityFileSets, memorySets, nativeChunks] = await Promise.all([
     shouldPersistIndex ? readEntityIndexState(storage) : Promise.resolve(null),
-    Promise.all(storages.map((scopedStorage) => scopedStorage.readAllEntityFiles())),
-    Promise.all(storages.map((scopedStorage) => scopedStorage.readAllMemories())),
+    Promise.all(storages.map((scopedStorage) => scopedStorage.readAllEntityFiles({ abortSignal }))),
+    Promise.all(storages.map((scopedStorage) => scopedStorage.readAllMemories({ abortSignal }))),
     nativeChunksOverride ? Promise.resolve(nativeChunksOverride) : readNativeChunks(config, recallNamespaces),
   ]);
-  // The bulk reads above cannot be interrupted mid-flight; stop before spending
-  // the (larger) indexing pass over their results.
+  // The bulk reads now stop at their own scan boundaries (issue #2307); this
+  // checkpoint still guards the (larger) indexing pass over their results.
   checkEntityRecallAbort(abortSignal);
   // Pair each entity with the storage that owns it (#1534): canonical ids must
   // reflect that store's aliases and historical migration mappings, never another

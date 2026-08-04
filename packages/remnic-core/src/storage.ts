@@ -16,6 +16,8 @@ import {
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
+import { raceAbort } from "./abort-error.js";
+import { checkCorpusReadAbort, type CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-search.js";
 import path from "node:path";
 import { log } from "./logger.js";
@@ -71,8 +73,8 @@ import {
   updateCacheOnWrite,
 } from "./memory-cache.js";
 import {
-  getInFlightRead,
-  setInFlightRead,
+  attachInFlightReader,
+  beginCoalescedScan,
   deleteInFlightRead,
   deleteInFlightReadsForDir,
   clearInFlightReads,
@@ -4347,8 +4349,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return id;
   }
 
-  private async readAllArtifactsCached(): Promise<MemoryFile[]> {
-    return this.memoryReadStore.readAllArtifactsCached();
+  private async readAllArtifactsCached(options?: CorpusReadOptions): Promise<MemoryFile[]> {
+    return this.memoryReadStore.readAllArtifactsCached(options);
   }
 
   async searchArtifacts(
@@ -4357,7 +4359,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     options: ArtifactSearchOptions = {},
   ): Promise<MemoryFile[]> {
     return selectArtifactMatches(
-      () => this.readAllArtifactsCached(),
+      () => this.readAllArtifactsCached({ abortSignal: options.abortSignal }),
       query,
       maxResults,
       options,
@@ -4474,7 +4476,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return memories;
   }
 
-  async readAllMemories(): Promise<MemoryFile[]> {
+  async readAllMemories(options?: CorpusReadOptions): Promise<MemoryFile[]> {
+    checkCorpusReadAbort(options);
     if (this.hotMemoriesCacheEnabled) {
       const cached = getCachedMemories(
         this.baseDir,
@@ -4492,25 +4495,51 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // The in-flight slot get/set/delete also key on this snapshot so a mid-scan
     // key change can't orphan the slot registered under the old identity.
     const keyId = this.hotCacheKeyId();
-    const inFlight = getInFlightRead(this.baseDir, keyId);
-    if (inFlight) return this.rememberMemorySnapshots(await inFlight);
+    const inFlight = attachInFlightReader(this.baseDir, keyId, options?.abortSignal);
+    if (inFlight) {
+      // A joiner never cancels the shared scan on its own, but it does stop waiting
+      // on it, and its departure counts: if it was the last waiter the scan is
+      // cancelled (issue #2307 review).
+      try {
+        return this.rememberMemorySnapshots(
+          await raceAbort(inFlight.read, options?.abortSignal, "corpus read aborted"),
+        );
+      } finally {
+        inFlight.waiter.leave();
+      }
+    }
 
+    // Sole-waiter cancellation lives with the registry that decides whether this
+    // scan is still cancellable at all — see `beginCoalescedScan` (issue #2307).
+    const scan = beginCoalescedScan(this.baseDir, keyId, options?.abortSignal);
     const readPromise = (async (): Promise<MemoryFile[]> => {
       const version = this.getMemoryCorpusVersion();
-      const memories = await this._readAllMemoriesFromDisk();
+      const memories = await this._readAllMemoriesFromDisk({ abortSignal: scan.scanSignal });
       // Publish only if neither the corpus version NOR the key identity changed
       // during the scan. The version guard prevents clobbering a newer patched +
       // re-keyed entry; the keyId guard prevents publishing this key's decrypted
-      // corpus under a since-changed identity (Codex Medium, #1902).
+      // corpus under a since-changed identity (Codex Medium, #1902). A cancelled
+      // scan never arrives here — the checkpoints throw — so a partial corpus is
+      // never published.
       if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === version && this.hotCacheKeyId() === keyId) {
         setCachedMemories(this.baseDir, memories, version, keyId, this.hotCacheTtlMs());
       }
       return memories;
     })();
-    setInFlightRead(this.baseDir, keyId, readPromise);
+    scan.arm(readPromise);
     try {
-      return this.rememberMemorySnapshots(await readPromise);
+      // The starter races its own signal too. Refcounting means a sole waiter's
+      // abort rejects the scan itself, but while another reader keeps the scan
+      // alive the starter would otherwise sit here and be handed the full corpus
+      // after cancelling — the joiner path's contract, applied symmetrically
+      // (issue #2307 review). The scan is NOT aborted here: it belongs to the
+      // readers still waiting, and a completed scan is still worth caching for
+      // them.
+      return this.rememberMemorySnapshots(
+        await raceAbort(readPromise, options?.abortSignal, "corpus read aborted"),
+      );
     } finally {
+      scan.leave();
       deleteInFlightRead(this.baseDir, keyId, readPromise);
     }
   }
@@ -4769,7 +4798,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * active memory file paths without parsing frontmatter — safe on a 100k+
    * corpus, unlike readAllMemories().
    */
-  async collectActiveMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
+  async collectActiveMemoryPaths(
+    options?: { propagateReadErrors?: boolean } & CorpusReadOptions,
+  ): Promise<string[]> {
     return this.memoryReadStore.collectActiveMemoryPaths(options);
   }
 
@@ -4793,12 +4824,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return `${this.getMemoryCorpusVersion()}:${this.readColdWriteVersion()}`;
   }
 
-  private async readParsedMemoriesFromPaths(filePaths: string[], batchSize?: number): Promise<MemoryFile[]> {
+  private async readParsedMemoriesFromPaths(
+    filePaths: string[],
+    batchSize?: number,
+    options?: CorpusReadOptions,
+  ): Promise<MemoryFile[]> {
     if (filePaths.length === 0) return [];
 
     const normalizedBatchSize = this.normalizeMemoryReadBatchSize(batchSize);
     const memories: MemoryFile[] = [];
     for (let i = 0; i < filePaths.length; i += normalizedBatchSize) {
+      // Per batch: the parse phase is as long as the walk on a large corpus, and
+      // an abandoned caller must not keep paying for it (issue #2307).
+      checkCorpusReadAbort(options);
       const batch = filePaths.slice(i, i + normalizedBatchSize);
       const results = await Promise.all(
         batch.map(async (fullPath) => {
@@ -4831,6 +4869,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         if (memory !== null) memories.push(memory);
       }
     }
+    // Once more after the loop: a signal that fired during the LAST batch's await
+    // would otherwise let this return successfully, publishing to the cache and
+    // handing results to a caller that had already given up (issue #2307 review).
+    checkCorpusReadAbort(options);
     return memories;
   }
 
@@ -4939,9 +4981,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.memoryReadStore.readMemoriesWindow(options);
   }
 
-  private async _readAllMemoriesFromDisk(): Promise<MemoryFile[]> {
-    const filePaths = await this.collectActiveMemoryPaths();
-    return this.readParsedMemoriesFromPaths(filePaths, 50);
+  private async _readAllMemoriesFromDisk(options?: CorpusReadOptions): Promise<MemoryFile[]> {
+    const filePaths = await this.collectActiveMemoryPaths(options);
+    return this.readParsedMemoriesFromPaths(filePaths, 50, options);
   }
 
   async readAllColdMemories(): Promise<MemoryFile[]> {
@@ -6430,8 +6472,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   // Scoring + Knowledge Index (Knowledge Graph v7.0)
   // ---------------------------------------------------------------------------
 
-  async readAllEntityFiles(): Promise<EntityFile[]> {
-    return this.entityStore.readAllEntityFiles();
+  async readAllEntityFiles(options?: CorpusReadOptions): Promise<EntityFile[]> {
+    return this.entityStore.readAllEntityFiles(options);
   }
 
   /**

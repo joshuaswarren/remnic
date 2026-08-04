@@ -4414,7 +4414,10 @@ export class RecallInternalCoordinator {
       } else {
         const memories = await awaitAssemblyStep(
           "recent-memory-read",
-          () => this.deps.readAllMemoriesForNamespaces(recallNamespaces),
+          (stepSignal) =>
+            this.deps.readAllMemoriesForNamespaces(recallNamespaces, {
+              abortSignal: stepSignal,
+            }),
           [] as MemoryFile[],
         );
         if (memories.length > 0) {

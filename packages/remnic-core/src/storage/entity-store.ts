@@ -12,6 +12,7 @@
 
 import { readdir, unlink } from "node:fs/promises";
 import path from "node:path";
+import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
 import { log } from "../logger.js";
@@ -482,7 +483,8 @@ export class EntityStore {
    * Read all entity files and return lightweight EntityFile objects.
    * Parsing is fast (~50-100ms for ~1,800 files) since entity files are small.
    */
-  async readAllEntityFiles(): Promise<EntityFile[]> {
+  async readAllEntityFiles(options?: CorpusReadOptions): Promise<EntityFile[]> {
+    checkCorpusReadAbort(options);
     const currentVersion = this.deps.getMemoryStatusVersion();
     const cacheKey = [
       this.deps.getEntityCacheSecureStoreKey(),
@@ -503,6 +505,9 @@ export class EntityStore {
       const BATCH_SIZE = 100;
       const entities: EntityFile[] = [];
       for (let i = 0; i < mdFiles.length; i += BATCH_SIZE) {
+        // Per batch, so an abandoned caller stops within one batch of I/O instead
+        // of reading every entity file for a result nobody awaits (issue #2307).
+        checkCorpusReadAbort(options);
         const batch = mdFiles.slice(i, i + BATCH_SIZE);
         const results = await Promise.all(
           batch.map(async (entry) => {
@@ -519,7 +524,9 @@ export class EntityStore {
           if (content !== null) entities.push(parseEntityFile(content, this.deps.entitySchemas));
         }
       }
-
+      // A signal that fired during the last batch's await would otherwise publish
+      // and return as if uncancelled (issue #2307 review).
+      checkCorpusReadAbort(options);
       setCachedEntities(this.deps.baseDir, entities, currentVersion, cacheKey);
       return entities;
     } catch (err) {
