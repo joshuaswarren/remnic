@@ -10572,10 +10572,7 @@ async function cmdLegacyBenchmark(action: string, rest: string[], json: boolean)
 }
 
 async function cmdBench(rest: string[]): Promise<void> {
-  if (rest[0] === "coding") {
-    await cmdBenchCoding(rest.slice(1));
-    return;
-  }
+  if (rest[0] === "coding") return cmdBenchCoding(rest.slice(1));
   // Procedural ablation subcommand (issue #567 PR 1/5). Routed before the
   // standard bench dispatcher because `procedural-ablation` is an ad-hoc
   // harness, not a registered benchmark catalogue entry.
@@ -13460,7 +13457,6 @@ Usage:
   remnic space <list|switch|create|delete|push|pull|share|promote|audit>  Manage spaces
     create accepts --parent <id> to set parent-child relationship
   remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|attribute|drift-gen|coding> [benchmark...] [--quick] [--all] [--dataset-dir <path>] [--results-dir <path>] [--baselines-dir <path>] [--threshold <value>] [--detail] [--format <json|csv|html>] [--output <path>] [--target remnic-ai] [--json]
-    Run 'remnic bench coding --help' for H6 repo generation and repeated-failure commands.
     benchmark is kept as a compatibility alias. check/report remain under that alias.
   remnic benchmark <list|run|datasets|runs|compare|results|baseline|export|publish|ui|providers|check|report|attribute|drift-gen|coding> [queries...] [--explain] [--baseline=<path>] [--report=<path>]
   remnic briefing [--since <window>] [--focus <filter>] [--save] [--format markdown|json]
