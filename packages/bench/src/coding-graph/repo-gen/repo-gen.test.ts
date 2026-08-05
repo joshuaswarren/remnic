@@ -19,6 +19,7 @@ import {
   generateH6BenchmarkDataset,
   materializeTaskRepo,
   validateH6Dataset,
+  validateH6FixtureBundle,
   validateH6StateDefiningIndependence,
   calculateJaccardSimilarity,
   tokenizeContent,
@@ -771,6 +772,23 @@ test("corrupted patch paths are rejected", async () => {
 
   assert.equal(report.valid, false);
   assert.ok(report.issues.some((issue) => issue.code === "PATH_CONTAINMENT_FAIL"));
+});
+
+test("fixture validation never reads bundle artifacts for an invalid dataset", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "h6-invalid-fixture-"));
+  const dataset = await loadCommittedH6BenchmarkDataset();
+  const corrupted = JSON.parse(JSON.stringify(dataset));
+  corrupted.tasks[0].canonicalBaseFiles[0].path = "../../../../outside.ts";
+  await writeFile(join(directory, "dataset.json"), JSON.stringify(corrupted), "utf8");
+
+  try {
+    const report = await validateH6FixtureBundle(directory);
+    assert.equal(report.valid, false);
+    assert.ok(report.issues.some((issue) => issue.code === "PATH_CONTAINMENT_FAIL"));
+    assert.ok(!report.issues.some((issue) => issue.code === "FIXTURE_BUNDLE_MISMATCH"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("network use and counterfactual import lint check", async () => {

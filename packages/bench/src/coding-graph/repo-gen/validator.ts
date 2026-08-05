@@ -905,7 +905,7 @@ export async function validateH6FixtureBundle(directory: string): Promise<Valida
   }
   const parsed = H6BenchmarkDatasetSchema.safeParse(raw);
   const report = await validateH6Dataset(raw as H6BenchmarkDataset);
-  if (!parsed.success) return report;
+  if (!parsed.success || !report.valid) return report;
 
   const bundleIssues: ValidationIssue[] = [];
   for (const artifact of fixtureArtifacts(parsed.data)) {
