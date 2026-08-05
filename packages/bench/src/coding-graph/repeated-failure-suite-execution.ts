@@ -560,7 +560,10 @@ export function normalizeRunOptions(
       throw new Error("registered H6 execution requires the frozen dataset inventory");
     }
     if (options.mode !== "full") throw new Error("registered H6 execution requires full mode");
-    if (drivers.length < 1 || drivers.length > 2) throw new Error("registered H6 execution requires one or two immutable model profiles");
+    const requiredProfileCount = bundle.decisionRule.analysisPopulation.modelProfileCount;
+    if (drivers.length !== requiredProfileCount) {
+      throw new Error(`registered H6 execution requires exactly ${requiredProfileCount} immutable model profile(s)`);
+    }
     if (new Set(drivers.map((driver) => driver.modelDigest)).size !== drivers.length) {
       throw new Error("registered H6 execution requires distinct served model digests");
     }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -794,6 +794,26 @@ test("compiled JSONL is deterministic across commit and directory order", async 
   } finally {
     await rm(first.dir, { recursive: true, force: true });
     await rm(second.dir, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint reads reject symlinked files", async () => {
+  const { dir, store } = await tempStore();
+  try {
+    await commitClaimedTry(store, IDENTITY, taskTry(1));
+    const checkpointPath = store.checkpointPath(IDENTITY);
+    const outsidePath = path.join(dir, "outside-checkpoint.json");
+    await writeFile(outsidePath, await readFile(checkpointPath));
+    await rm(checkpointPath);
+    await symlink(outsidePath, checkpointPath);
+
+    assert.equal((await store.load(IDENTITY)).kind, "MALFORMED");
+    await assert.rejects(
+      () => store.compileRows(),
+      /Malformed repeated-failure checkpoint/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

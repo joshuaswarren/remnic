@@ -1646,7 +1646,6 @@ test("main phase rejects reduced frozen inputs and cannot start without verified
   const root = await mkdtemp(path.join(tmpdir(), "h6-suite-main-gates-"));
   const drivers = [
     new DeterministicDriver("main-profile-a", "a".repeat(64)),
-    new DeterministicDriver("main-profile-b", "b".repeat(64)),
   ];
   const base = {
     drivers,
@@ -1664,30 +1663,16 @@ test("main phase rejects reduced frozen inputs and cannot start without verified
       runRepeatedFailureSuite({ ...base, outputDir: path.join(root, "reduced-seeds"), seeds: [1, 2, 3, 4] }),
       /exact frozen seeds/,
     );
-    // Three DISTINCT profiles: reusing one instance trips the earlier
-    // duplicate-identity guard and never reaches the count rule.
     await assert.rejects(
       runRepeatedFailureSuite({
         ...base,
-        outputDir: path.join(root, "excess-profiles"),
+        outputDir: path.join(root, "wrong-profile-count"),
         drivers: [
           new DeterministicDriver("excess-profile-a", "a".repeat(64)),
           new DeterministicDriver("excess-profile-b", "b".repeat(64)),
-          new DeterministicDriver("excess-profile-c", "c".repeat(64)),
         ],
       }),
-      /one or two immutable model profiles/,
-    );
-    await assert.rejects(
-      runRepeatedFailureSuite({
-        ...base,
-        outputDir: path.join(root, "duplicate-model-digests"),
-        drivers: [
-          new DeterministicDriver("main-profile-a", "a".repeat(64), 0, false, "c".repeat(64)),
-          new DeterministicDriver("main-profile-b", "b".repeat(64), 0, false, "c".repeat(64)),
-        ],
-      }),
-      /distinct served model digests/,
+      /exactly 1 immutable model profile/,
     );
     await assert.rejects(
       runRepeatedFailureSuite({ ...base, outputDir: path.join(root, "reduced-draws"), statisticsDraws: 9_999 }),

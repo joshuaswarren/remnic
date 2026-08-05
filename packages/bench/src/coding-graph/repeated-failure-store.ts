@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, readlinkSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, rmdir, stat, utimes, writeFile } from "node:fs/promises";
+import { constants, readFileSync, readlinkSync } from "node:fs";
+import { mkdir, open, readFile, readdir, rename, rm, rmdir, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -149,6 +149,16 @@ const ReclaimJournalSchema = z.object({
 
 type ClaimLockSnapshot = z.infer<typeof ClaimLockSnapshotSchema>;
 
+async function readRegularFileNoFollow(filePath: string): Promise<Buffer> {
+  const handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    if (!(await handle.stat()).isFile()) throw new Error("benchmark artifact is not a regular file");
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
 export class RepeatedFailureRowStore {
   readonly outputDir: string;
   readonly checkpointsDir: string;
@@ -186,7 +196,7 @@ export class RepeatedFailureRowStore {
     const rowKey = buildRepeatedFailureRowKey(identity);
     let raw: string;
     try {
-      raw = await readFile(this.checkpointPath(identity), "utf8");
+      raw = (await readRegularFileNoFollow(this.checkpointPath(identity))).toString("utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "MISSING" };
       return { kind: "MALFORMED", error: error instanceof Error ? error : new Error(String(error)) };
@@ -212,7 +222,7 @@ export class RepeatedFailureRowStore {
     for (const entry of checkpoint.tries) {
       if (entry.outcome.kind !== "HOST_API_FAULT") continue;
       try {
-        const traceBytes = await readFile(
+        const traceBytes = await readRegularFileNoFollow(
           resolveContainedPath(this.outputDir, entry.outcome.traceArtifactPath),
         );
         const traceHash = createHash("sha256").update(traceBytes).digest("hex");
@@ -879,7 +889,8 @@ export class RepeatedFailureRowStore {
       const rowKey = name.slice(0, -".json".length);
       let checkpoint: RepeatedFailureRowCheckpoint;
       try {
-        checkpoint = parseCheckpoint(JSON.parse(await readFile(resolveContainedPath(this.checkpointsDir, name), "utf8")), rowKey);
+        const bytes = await readRegularFileNoFollow(resolveContainedPath(this.checkpointsDir, name));
+        checkpoint = parseCheckpoint(JSON.parse(bytes.toString("utf8")), rowKey);
       } catch (error) {
         throw new Error(`Malformed repeated-failure checkpoint ${name}`, { cause: error });
       }
