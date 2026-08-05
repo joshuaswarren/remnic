@@ -27,7 +27,7 @@ This loads the hooks, skills, and the `memory-review` agent through Claude Code'
 
 What the marketplace install does **not** do: it does not fill in the MCP server credential. The plugin bundles a root `.mcp.json`, and Claude Code auto-discovers it on install — so immediately after `claude plugin install` you have a registered `remnic` MCP server whose header is the literal `Authorization: Bearer {{REMNIC_TOKEN}}` placeholder pointed at `http://localhost:4318/mcp`. **That MCP server will fail to authenticate (401) until you replace the placeholder** — the hooks/skills still work (they resolve the token from the token store / env), but the MCP tools do not until you do one of:
 
-- **Fill it in:** edit the installed plugin's `.mcp.json` and replace `{{REMNIC_TOKEN}}` with a token from `remnic token generate` (and, for a remote daemon, set the `url`) — per the package README's "MCP setup". Note a plugin reinstall/update overwrites this edited copy.
+- **Fill it in:** edit the installed plugin's `.mcp.json` and replace `{{REMNIC_TOKEN}}` with a token from `remnic token generate claude-code` (the `<connector-id>` argument is required; run `remnic connectors install claude-code` first if that connector has not been registered), and, for a remote daemon, set the `url` — per the package README's "MCP setup". Note a plugin reinstall/update overwrites this edited copy.
 - **Or register the MCP server yourself and ignore the bundled one:** `claude mcp add remnic --transport http <url> --header "Authorization: Bearer <token>"`, using your own daemon URL + token.
 
 In other words, the marketplace replaces the *plugin load* step; the token/MCP-config step is still manual, and the bundled placeholder means the `remnic` MCP server is inert until you complete it. (A cleaner long-term fix — injecting the token via Claude Code plugin `userConfig` instead of a committed placeholder — is tracked as a follow-up.)
@@ -47,7 +47,12 @@ Follow the package README. The legacy `docs/guides/claude-code-integration.md` a
 
 ## Troubleshooting
 
-The `remnic connectors install claude-code` step only writes Remnic-side state; the actual plugin has to be loaded through Claude Code's plugin system and the `.mcp.json` block has to be pasted by hand. If a step appears to have no effect, walk through the three steps in the package README in order and verify each one — install (Remnic-side token + connector state), MCP config (`.mcp.json` block with the bearer token), plugin load (`npm install -g @remnic/plugin-claude-code` and Claude Code's plugin loader picks it up). The package README's `Troubleshooting` section lists the specific failure modes for each step.
+The `remnic connectors install claude-code` step only writes Remnic-side state; the plugin still has to be loaded, and the MCP credential still has to be supplied. How those two happen depends on the install path:
+
+- **Marketplace path** (see "Install from the Claude Code marketplace" above): `claude plugin install remnic@remnic` loads the plugin, and Claude Code auto-discovers the plugin's bundled `.mcp.json` — you do **not** paste an MCP block, you fill the `{{REMNIC_TOKEN}}` placeholder in the installed copy (or register your own server with `claude mcp add`).
+- **Manual / npm path** (package README): you `npm install -g @remnic/plugin-claude-code`, load it through Claude Code's plugin loader, **and** paste the README's `.mcp.json` block into your MCP config by hand with the bearer token.
+
+Either way the three things to verify are: Remnic-side token + connector state, the MCP config (token present, URL correct), and that the plugin is actually loaded. The package README's `Troubleshooting` section lists the specific failure modes for each step.
 
 If `remnic connectors doctor claude-code` reports green but auto-recall/auto-observe do not fire in a Claude Code session, the most common cause is step 3 (plugin load) being skipped — the Remnic-side state is fine, but Claude Code has no hook/skill/agent tree to invoke until the plugin is loaded through Claude Code's own loader.
 ## Related
