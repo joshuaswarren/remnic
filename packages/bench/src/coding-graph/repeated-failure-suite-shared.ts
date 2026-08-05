@@ -645,7 +645,7 @@ export async function runOfflineCheck(repoDir: string, task: BaseTask): Promise<
       "--map-root-user",
       "--net",
       process.execPath,
-      "--permission",
+      "--experimental-permission",
       `--allow-fs-read=${repoDir}`,
       "test/check.js",
     ],

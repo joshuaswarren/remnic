@@ -817,6 +817,23 @@ test("checkpoint reads reject symlinked files", async () => {
   }
 });
 
+test("checkpoint reads reject a symlinked checkpoint directory", async () => {
+  const { dir, store } = await tempStore();
+  try {
+    const outsideDirectory = path.join(dir, "outside-checkpoints");
+    await mkdir(outsideDirectory);
+    await symlink(outsideDirectory, store.checkpointsDir, "dir");
+
+    assert.equal((await store.load(IDENTITY)).kind, "MALFORMED");
+    await assert.rejects(
+      () => store.compileRows(),
+      /checkpoint directory must be a real directory/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("public JSONL hashes unsafe values, sorts sets, and rejects non-finite numbers", async () => {
   const { dir, store } = await tempStore();
   try {

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, readFileSync, readlinkSync } from "node:fs";
-import { mkdir, open, readFile, readdir, rename, rm, rmdir, stat, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -188,6 +188,16 @@ export class RepeatedFailureRowStore {
     }
   }
 
+  private async assertCheckpointsDirectorySafe(): Promise<void> {
+    const details = await lstat(this.checkpointsDir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (details && (!details.isDirectory() || details.isSymbolicLink())) {
+      throw new Error("checkpoint directory must be a real directory");
+    }
+  }
+
   checkpointPath(identity: RepeatedFailureRowIdentity): string {
     return resolveContainedPath(this.checkpointsDir, `${buildRepeatedFailureRowKey(identity)}.json`);
   }
@@ -196,6 +206,7 @@ export class RepeatedFailureRowStore {
     const rowKey = buildRepeatedFailureRowKey(identity);
     let raw: string;
     try {
+      await this.assertCheckpointsDirectorySafe();
       raw = (await readRegularFileNoFollow(this.checkpointPath(identity))).toString("utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "MISSING" };
@@ -869,13 +880,16 @@ export class RepeatedFailureRowStore {
       tries,
       ...(episode ? { terminal: projectTerminalRow(rowKey, identity, tries, episode) } : {}),
     };
+    await this.assertCheckpointsDirectorySafe();
     await mkdir(this.checkpointsDir, { recursive: true });
+    await this.assertCheckpointsDirectorySafe();
     await this.refreshClaim(claim);
     await writeFileAtomically(this.checkpointPath(identity), serializeCheckpoint(checkpoint));
     return checkpoint;
   }
 
   async compileRows(): Promise<RepeatedFailureEpisodeRow[]> {
+    await this.assertCheckpointsDirectorySafe();
     let names: string[];
     try {
       names = await readdir(this.checkpointsDir);
