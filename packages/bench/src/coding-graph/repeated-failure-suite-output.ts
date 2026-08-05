@@ -599,7 +599,10 @@ export async function writeTrace(
   const relative = `traces/${rowKey}/attempt-${attempt}.json`;
   const filePath = containedPath(outputDir, relative);
   const serialized = `${JSON.stringify(value, null, 2)}\n`;
-  await mkdir(path.dirname(filePath), { recursive: true });
+  const parentDir = path.dirname(filePath);
+  await assertNoSymlinkComponents(outputDir, parentDir);
+  await mkdir(parentDir, { recursive: true });
+  await assertNoSymlinkComponents(outputDir, parentDir);
   await writeFileAtomically(filePath, serialized);
   return { path: relative, hash: sha256(serialized) };
 }

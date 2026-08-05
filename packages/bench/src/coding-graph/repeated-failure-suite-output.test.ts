@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import type { RepeatedFailureEpisodeRow, RepeatedFailureArm } from "./repeated-failure-types.js";
 import type { FactPairAuditPair } from "./repeated-failure-suite-shared.js";
 import type { TimingPayload } from "./repeated-failure-suite-execution.js";
 import {
   buildTimingEvidenceAudit,
+  writeTrace,
   type TimingEvidenceSourceRow,
 } from "./repeated-failure-suite-output.js";
 
@@ -170,4 +174,20 @@ test("timing audit rejects same-history rows from a different paired identity", 
   assert.equal(audit.rows[0]?.turnStartRowKey, null);
   assert.equal(audit.rows[0]?.preActionRowKey, null);
   assert.equal(audit.allMatched, false);
+});
+
+test("trace writes reject symlinked parent directories", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h6-trace-output-"));
+  const outsideDir = await mkdtemp(path.join(tmpdir(), "h6-trace-outside-"));
+  try {
+    await mkdir(outsideDir, { recursive: true });
+    await symlink(outsideDir, path.join(outputDir, "traces"), "dir");
+    await assert.rejects(
+      () => writeTrace(outputDir, "row-1", 1, { status: "test" }),
+      /symbolic link path is not allowed/,
+    );
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
 });
