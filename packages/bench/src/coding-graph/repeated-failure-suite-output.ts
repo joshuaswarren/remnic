@@ -62,7 +62,7 @@ import {
   type RepeatedFailureLocalToolHost,
   type RepeatedFailureToolExecutionResult,
 } from "./repeated-failure-responses-driver.js";
-import { firstRetryableHostFault } from "./repeated-failure-driver-utils.js";
+import { firstRetryableHostFault, trimTrailingSlashes } from "./repeated-failure-driver-utils.js";
 import {
   createRepeatedFailureOllamaChatDriver,
   validateOllamaChatEndpoint,
@@ -800,5 +800,5 @@ export function validateEndpoint(value: string): string {
   if (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) {
     throw new Error("profile endpoint must use HTTPS or loopback HTTP");
   }
-  return endpoint.toString().replace(/\/+$/, "");
+  return trimTrailingSlashes(endpoint.toString());
 }

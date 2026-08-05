@@ -33,6 +33,7 @@ import {
   failedToolExecutionResult,
   normalizeFinalEvidence,
   serializeBoundedToolOutput,
+  trimTrailingSlashes,
 } from "./repeated-failure-driver-utils.js";
 
 const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
@@ -42,7 +43,7 @@ const TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function validateOllamaChatEndpoint(endpoint: string | undefined): string {
   const rawUrl = (endpoint ?? DEFAULT_OLLAMA_BASE_URL).trim();
-  const trimmed = rawUrl.replace(/\/+$/, "");
+  const trimmed = trimTrailingSlashes(rawUrl);
   const lower = trimmed.toLowerCase();
 
   if (
@@ -57,7 +58,7 @@ export function validateOllamaChatEndpoint(endpoint: string | undefined): string
   }
 
   if (lower.endsWith("/api/chat")) {
-    return trimmed.slice(0, -9).replace(/\/+$/, "");
+    return trimTrailingSlashes(trimmed.slice(0, -9));
   }
 
   return trimmed;

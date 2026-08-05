@@ -103,7 +103,7 @@ test("one-profile registered phases require fact-pair and trap-audit evidence", 
   assert.equal(requiresRegisteredEvidence(true, "main", 1, 1), true);
   assert.equal(requiresRegisteredEvidence(true, "main", 2, 1), false);
   assert.equal(requiresRegisteredEvidence(false, "main", 1, 1), false);
-  assert.equal(requiresRegisteredEvidence(true, "quick", 1, 1), false);
+  assert.equal(requiresRegisteredEvidence(true, "unspecified", 1, 1), false);
 });
 
 test("registered fact token counts preserve repeated normalized token occurrences", () => {

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import {
   readCausalTrajectoryRecordsStrict,
   recordCausalTrajectory,
@@ -163,6 +163,32 @@ test("strict loader distinguishes absent, empty, and unreadable stores", async (
     () => readCausalTrajectoryRecordsStrict({ memoryDir, causalTrajectoryStoreDir: badStore }),
     /not a directory|Unreadable|Failed to read/,
   );
+});
+
+test("strict loader rejects symlinked trajectory entries", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-strict-symlink-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-strict-outside-"));
+  const trajectoriesDir = path.join(memoryDir, "state", "causal-trajectories", "trajectories");
+  try {
+    await mkdir(trajectoriesDir, { recursive: true });
+    await writeFile(path.join(outsideDir, "record.json"), "{}");
+
+    await symlink(outsideDir, path.join(trajectoriesDir, "linked-day"));
+    await assert.rejects(
+      () => readCausalTrajectoryRecordsStrict({ memoryDir }),
+      /symbolic link/,
+    );
+
+    await rm(path.join(trajectoriesDir, "linked-day"));
+    await symlink(path.join(outsideDir, "record.json"), path.join(trajectoriesDir, "linked.json"));
+    await assert.rejects(
+      () => readCausalTrajectoryRecordsStrict({ memoryDir }),
+      /symbolic link/,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
 });
 
 test("matches only complete typed failure identity for the exact project", async () => {

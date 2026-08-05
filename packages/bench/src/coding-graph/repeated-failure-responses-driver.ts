@@ -13,6 +13,7 @@ import {
   failedToolExecutionResult,
   normalizeFinalEvidence,
   serializeBoundedToolOutput,
+  trimTrailingSlashes,
 } from "./repeated-failure-driver-utils.js";
 import {
   ResponsesApiResponseSchema,
@@ -497,7 +498,7 @@ export class ControlledResponsesDriver {
     try {
       const response = await raceAbort(
         this.transport(
-          `${(this.config.baseUrl ?? DEFAULT_RESPONSES_BASE_URL).replace(/\/+$/, "")}/responses`,
+          `${trimTrailingSlashes(this.config.baseUrl ?? DEFAULT_RESPONSES_BASE_URL)}/responses`,
           {
             method: "POST",
             headers: {
@@ -689,7 +690,7 @@ function validateSeedCapabilityConfiguration(
   }
   if (
     config.baseUrl === undefined ||
-    config.baseUrl.replace(/\/+$/, "") === DEFAULT_RESPONSES_BASE_URL
+    trimTrailingSlashes(config.baseUrl) === DEFAULT_RESPONSES_BASE_URL
   ) {
     throw new Error("official Responses endpoint does not support registered seed control");
   }

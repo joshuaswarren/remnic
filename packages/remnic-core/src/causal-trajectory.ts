@@ -388,6 +388,9 @@ export async function readCausalTrajectoryRecordsStrict(options: {
         throw new Error("Read aborted");
       }
       const fullPath = path.join(dirPath, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Causal trajectory entry must not be a symbolic link: ${fullPath}`);
+      }
       if (entry.isDirectory()) {
         await scanDir(fullPath);
       } else if (entry.isFile() && entry.name.endsWith(".json") && !entry.name.startsWith(".")) {

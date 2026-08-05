@@ -73,7 +73,14 @@ test("validateOllamaChatEndpoint accepts native Ollama endpoints and rejects Ope
   assert.equal(validateOllamaChatEndpoint("http://127.0.0.1:11434"), "http://127.0.0.1:11434");
   assert.equal(validateOllamaChatEndpoint("http://127.0.0.1:11434/api/chat"), "http://127.0.0.1:11434");
   assert.equal(validateOllamaChatEndpoint("https://ollama.internal.net/api/chat/"), "https://ollama.internal.net");
-
+  assert.equal(
+    validateOllamaChatEndpoint(`http://127.0.0.1:11434${"/".repeat(100_000)}`),
+    "http://127.0.0.1:11434",
+  );
+  assert.equal(
+    validateOllamaChatEndpoint("https://ollama.internal.net////api/chat"),
+    "https://ollama.internal.net",
+  );
   assert.throws(
     () => validateOllamaChatEndpoint("http://127.0.0.1:11434/v1"),
     /Provider 'ollama-chat' requires a native Ollama endpoint.*rejects OpenAI compatibility paths/,

@@ -23,6 +23,7 @@ import {
   calculateJaccardSimilarity,
   tokenizeContent,
   writeH6FixtureBundle,
+  unresolvedHelperImports,
 } from "./index.js";
 
 function applyPatch(files: SyntheticFile[], patch: StrategyPatch): SyntheticFile[] {
@@ -813,4 +814,39 @@ test("validator rejects unresolved generated utility imports", async () => {
 
   assert.equal(report.valid, false);
   assert.ok(report.issues.some((issue) => issue.code === "UNRESOLVED_LOCAL_IMPORT"));
+});
+test("validator keeps unresolved helper results stable for adversarial import text", async () => {
+  const dataset = await loadCommittedH6BenchmarkDataset();
+  const unresolvedNames = (
+    prefix: string,
+    transform: (content: string) => string,
+  ): string[] => {
+    const task = dataset.tasks[0];
+    const variant = task?.variants[0];
+    assert.ok(variant);
+    const files = structuredClone(variant.files);
+    const helper = files.find((file) => file.path === "src/helper.ts");
+    assert.ok(helper);
+    helper.content = prefix + transform(helper.content);
+    return unresolvedHelperImports(files);
+  };
+
+  const malformedPrefix = [
+    "import{{|".repeat(10_000),
+    "} from './other.js'\n",
+  ].join("");
+  const malformedNames = unresolvedNames(malformedPrefix, (content) => content);
+  const aliasNames = unresolvedNames("", (content) => content.replace(
+    "formatDomainName_quillboard_inventory_sync",
+    `formatDomainName_quillboard_inventory_sync${" ".repeat(10_000)}as alias_quillboard_inventory_sync`,
+  ));
+  const noAliasNames = unresolvedNames("", (content) => content.replace(
+    "formatDomainName_quillboard_inventory_sync",
+    `formatDomainName_quillboard_inventory_sync${" ".repeat(10_000)}generateTraceId_quillboard_inventory_sync`,
+  ));
+
+  assert.deepEqual(malformedNames, []);
+  assert.deepEqual(aliasNames, []);
+  assert.equal(noAliasNames.length, 1);
+  assert.match(noAliasNames[0] ?? "", /formatDomainName_quillboard_inventory_sync/);
 });

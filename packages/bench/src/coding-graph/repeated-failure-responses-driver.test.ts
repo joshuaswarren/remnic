@@ -224,6 +224,22 @@ test("NO_MATCH executes the pending action and records normalized evidence", asy
   assert.equal(setup.fake.authorizations[0], "Bearer test-secret-never-recorded");
 });
 
+test("request URL normalization removes a long trailing slash run", async () => {
+  const fake = fakeTransport([response("resp-1", [message("done")])]);
+  const driver = new ControlledResponsesDriver({
+    model: MODEL,
+    baseUrl: `http://localhost:11434/v1${"/".repeat(4096)}`,
+    transport: fake.transport,
+    toolHost: host([]),
+    evaluator: { evaluate: async () => ({ status: "NO_MATCH", fingerprintHash: "x" }) },
+  });
+
+  const result = await driver.runEpisode(BASE_RUN);
+
+  assert.equal(result.status, "COMPLETED");
+  assert.deepEqual(fake.urls, ["http://localhost:11434/v1/responses"]);
+});
+
 test("gate checks each eligible proposal until warning and records that call as original", async () => {
   const fake = fakeTransport([
     response("resp-1", [call("first-action", { command: "npm test", timeoutMs: 1000 })]),
@@ -428,6 +444,22 @@ test("official Responses endpoint cannot claim unsupported seed control", () => 
       transport: fakeTransport([]).transport,
     }),
     /official Responses endpoint does not support registered seed control/i,
+  );
+});
+
+test("custom Responses endpoint with long trailing slash run accepts seed capability", () => {
+  const baseUrl = `http://localhost:11434/v1${"/".repeat(4096)}`;
+
+  assert.doesNotThrow(() =>
+    createControlledResponsesAgentDriver({
+      model: MODEL,
+      modelProfileId: "custom-profile",
+      modelProfileHash: "d".repeat(64),
+      modelDigest: MODEL_DIGEST,
+      seedCapability: { kind: "request_parameter", requestField: "seed" },
+      baseUrl,
+      transport: fakeTransport([]).transport,
+    }),
   );
 });
 
