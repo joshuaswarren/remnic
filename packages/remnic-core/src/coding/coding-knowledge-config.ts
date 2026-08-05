@@ -30,7 +30,6 @@ export const CODING_KNOWLEDGE_DEFAULTS = Object.freeze({
   decisionRecords: true,
   architectureCard: true,
   sessionDelta: true,
-  preActionGate: false,
   architectureCardLlmSummary: false,
   structuralProvider: "none",
   structuralProviderCommand: "",
@@ -64,7 +63,6 @@ export function parseCodingKnowledgeConfig(raw: unknown): CodingKnowledgeConfig 
     decisionRecords: readStrictBool(record.decisionRecords, "decisionRecords", /* default */ true),
     architectureCard: readStrictBool(record.architectureCard, "architectureCard", /* default */ true),
     sessionDelta: readStrictBool(record.sessionDelta, "sessionDelta", /* default */ true),
-    preActionGate: readStrictBool(record.preActionGate, "preActionGate", /* default */ false),
     architectureCardLlmSummary: readStrictBool(record.architectureCardLlmSummary, "architectureCardLlmSummary", /* default */ false),
     structuralProvider,
     structuralProviderCommand:

@@ -945,11 +945,6 @@
             "default": true,
             "description": "Last-seen-head persistence + delta briefing line. Effective only under the master gate."
           },
-          "preActionGate": {
-            "type": "boolean",
-            "default": false,
-            "description": "Pre-action failure gate check. Effective only under the master gate."
-          },
           "architectureCardLlmSummary": {
             "type": "boolean",
             "default": false,

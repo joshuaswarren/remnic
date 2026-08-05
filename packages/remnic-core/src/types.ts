@@ -462,7 +462,6 @@ export interface CodingKnowledgeConfig {
   architectureCard: boolean;
   /** Last-seen-head persistence + delta briefing line. */
   sessionDelta: boolean;
-  preActionGate: boolean;
   /** Opt-in LLM summary pass (costs tokens — default off, per rule 48). */
   architectureCardLlmSummary: boolean;
   /**

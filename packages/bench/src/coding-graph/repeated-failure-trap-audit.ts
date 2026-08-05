@@ -15,7 +15,9 @@ import type {
   RepeatedFailureFinalState,
   RepeatedFailureInvalidReason,
   RepeatedFailureEpisodeRow,
+  RepeatedFailureRowCheckpoint,
   RepeatedFailureRowIdentity,
+  RepeatedFailureTry,
   RepeatedFailureTokenUsage,
 } from "./repeated-failure-types.js";
 import type { ControlledResponsesCaps } from "./repeated-failure-responses-driver.js";
@@ -334,13 +336,67 @@ function resumeTraceUsage(trace: ResumeTrace): RepeatedFailureTokenUsage | undef
   return parsed.success ? parsed.data : undefined;
 }
 
-async function cumulativeTraceUsage(
+interface ResumeTraceAttempt {
+  committedTry: RepeatedFailureTry;
+  trace: ResumeTrace;
+  usage: RepeatedFailureTokenUsage | undefined;
+}
+
+function committedTraceReference(
+  entry: RepeatedFailureTry,
+): { path: string; hash: string } | undefined {
+  if (entry.outcome.kind === "HOST_API_FAULT") {
+    return {
+      path: entry.outcome.traceArtifactPath,
+      hash: entry.outcome.traceArtifactHash,
+    };
+  }
+  const evidence = entry.outcome.episode.evidence;
+  return evidence
+    ? { path: evidence.traceArtifactPath, hash: evidence.traceArtifactHash }
+    : undefined;
+}
+
+async function loadCheckpointTraceAttempts(
   outputRoot: string,
   identity: RepeatedFailureRowIdentity,
   rowKey: string,
-  tryCount: number,
-  terminalTrace: ResumeTrace,
-): Promise<RepeatedFailureTokenUsage | undefined> {
+  checkpoint: RepeatedFailureRowCheckpoint,
+): Promise<readonly ResumeTraceAttempt[] | undefined> {
+  const terminal = checkpoint.terminal;
+  if (!terminal || checkpoint.tries.length !== terminal.tryCount) return undefined;
+
+  const attempts: ResumeTraceAttempt[] = [];
+  for (const [index, committedTry] of checkpoint.tries.entries()) {
+    const reference = committedTraceReference(committedTry);
+    if (!reference || reference.path !== `traces/${rowKey}/attempt-${index + 1}.json`) {
+      return undefined;
+    }
+
+    const tracePath = await containedRegularFile(outputRoot, reference.path);
+    const traceBytes = await readFile(tracePath);
+    if (createHash("sha256").update(traceBytes).digest("hex") !== reference.hash) {
+      return undefined;
+    }
+
+    const parsed = ResumeTraceSchema.safeParse(JSON.parse(traceBytes.toString("utf8")));
+    if (!parsed.success || canonicalJson(parsed.data.identity) !== canonicalJson(identity)) {
+      return undefined;
+    }
+    const usage = resumeTraceUsage(parsed.data);
+    if (usage
+      ? canonicalJson(usage) !== canonicalJson(committedTry.tokens)
+      : Object.values(committedTry.tokens).some((value) => value !== 0)) {
+      return undefined;
+    }
+    attempts.push({ committedTry, trace: parsed.data, usage });
+  }
+  return attempts;
+}
+
+function cumulativeAttemptUsage(
+  attempts: readonly ResumeTraceAttempt[],
+): RepeatedFailureTokenUsage | undefined {
   const total: RepeatedFailureTokenUsage = {
     input: 0,
     output: 0,
@@ -349,63 +405,46 @@ async function cumulativeTraceUsage(
     cacheWriteInput: 0,
     reasoningOutput: 0,
   };
-  for (let attempt = 1; attempt <= tryCount; attempt++) {
-    let trace = terminalTrace;
-    if (attempt !== tryCount) {
-      const tracePath = await containedRegularFile(
-        outputRoot,
-        `traces/${rowKey}/attempt-${attempt}.json`,
-      );
-      const parsed = ResumeTraceSchema.safeParse(JSON.parse(await readFile(tracePath, "utf8")));
-      if (!parsed.success) return undefined;
-      trace = parsed.data;
-    }
-    if (canonicalJson(trace.identity) !== canonicalJson(identity)) return undefined;
-    const usage = resumeTraceUsage(trace);
-    if (!usage) return undefined;
-    total.input += usage.input;
-    total.output += usage.output;
-    total.total += usage.total;
-    total.cachedInput += usage.cachedInput;
-    total.cacheWriteInput += usage.cacheWriteInput;
-    total.reasoningOutput += usage.reasoningOutput;
+  for (const attempt of attempts) {
+    if (!attempt.usage) return undefined;
+    total.input += attempt.usage.input;
+    total.output += attempt.usage.output;
+    total.total += attempt.usage.total;
+    total.cachedInput += attempt.usage.cachedInput;
+    total.cacheWriteInput += attempt.usage.cacheWriteInput;
+    total.reasoningOutput += attempt.usage.reasoningOutput;
   }
   return total;
 }
-
 
 async function resumedTraceMatches(
   outputRoot: string,
   identity: RepeatedFailureRowIdentity,
   rowKey: string,
-  row: RepeatedFailureEpisodeRow,
+  checkpoint: RepeatedFailureRowCheckpoint,
 ): Promise<boolean> {
-  if (!row.evidence) return false;
-  const expectedTracePath = `traces/${rowKey}/attempt-${row.tryCount}.json`;
-  if (row.evidence.traceArtifactPath !== expectedTracePath) return false;
+  const row = checkpoint.terminal;
+  if (!row || !row.evidence) return false;
   try {
-    const tracePath = await containedRegularFile(outputRoot, expectedTracePath);
-    const traceBytes = await readFile(tracePath);
-    if (createHash("sha256").update(traceBytes).digest("hex") !== row.evidence.traceArtifactHash) {
+    const attempts = await loadCheckpointTraceAttempts(outputRoot, identity, rowKey, checkpoint);
+    if (!attempts || attempts.length === 0) return false;
+    const terminalAttempt = attempts.at(-1);
+    if (!terminalAttempt) return false;
+    const terminalReference = committedTraceReference(terminalAttempt.committedTry);
+    if (!terminalReference ||
+      row.evidence.traceArtifactPath !== terminalReference.path ||
+      row.evidence.traceArtifactHash !== terminalReference.hash) {
       return false;
     }
-    const parsed = ResumeTraceSchema.safeParse(JSON.parse(traceBytes.toString("utf8")));
-    if (!parsed.success || canonicalJson(parsed.data.identity) !== canonicalJson(identity)) {
-      return false;
-    }
-    const trace = parsed.data;
+
+    const trace = terminalAttempt.trace;
     if ("preflightInvalidReason" in trace) {
       return row.status === "INVALID" &&
         row.finalState === "INVALID" &&
         row.invalidReason === trace.preflightInvalidReason;
     }
-    const cumulativeUsage = await cumulativeTraceUsage(
-      outputRoot,
-      identity,
-      rowKey,
-      row.tryCount,
-      trace,
-    );
+
+    const cumulativeUsage = cumulativeAttemptUsage(attempts);
     if (!cumulativeUsage) return false;
     const traceCheckResult = trace.finalRepoEvidence.checkResult === "FIXED" ||
       trace.finalRepoEvidence.checkResult === "NO_TRAP"
@@ -675,8 +714,11 @@ export async function runTrapAudit(
 
     const rowKey = buildRepeatedFailureRowKey(identity);
 
-    const resumedRow = await store.loadTerminalForResume(identity);
-    if (resumedRow && !(await resumedTraceMatches(outputRoot, identity, rowKey, resumedRow))) {
+    const loaded = await store.load(identity);
+    if (loaded.kind === "MALFORMED") throw loaded.error;
+    const checkpoint = loaded.kind === "VALID" ? loaded.checkpoint : undefined;
+    const resumedRow = checkpoint?.terminal;
+    if (checkpoint?.terminal && !(await resumedTraceMatches(outputRoot, identity, rowKey, checkpoint))) {
       throw new Error(`trap-audit checkpoint ${rowKey} has invalid trace evidence`);
     }
     const episodeRow = resumedRow ?? await runEpisodeForAudit({

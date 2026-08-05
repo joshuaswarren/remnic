@@ -558,7 +558,6 @@ test("handleCodingDecision: sourceConnector='chatgpt' reaches stored frontmatter
         decisionRecords: true,
         architectureCard: false,
         sessionDelta: false,
-        preActionGate: false,
         architectureCardLlmSummary: false,
         structuralProvider: "none",
         structuralProviderCommand: "",

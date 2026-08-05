@@ -635,6 +635,30 @@ test("runTrapAudit reuses terminal checkpoints without driver calls or checkpoin
   }
 });
 
+test("runTrapAudit rejects a tampered prior retry trace with unchanged usage", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h6-audit-retry-trace-"));
+  const driver = noCallDriver(TEST_PROFILE_ID);
+  try {
+    await seedTerminalAuditRows(outputDir, driver, undefined, true);
+    const [traceDir] = await readdir(path.join(outputDir, "traces"));
+    assert.ok(traceDir);
+    const retryTracePath = path.join(outputDir, "traces", traceDir, "attempt-1.json");
+    const retryTrace = JSON.parse(await readFile(retryTracePath, "utf8")) as {
+      usage?: { input: number; output: number; total: number };
+    };
+    assert.deepEqual(retryTrace.usage, { input: 2, output: 1, total: 3 });
+    await writeFile(retryTracePath, `${JSON.stringify({ ...retryTrace, tampered: true })}\n`);
+
+    await assert.rejects(
+      () => runTrapAudit({ driver, outputDir }),
+      /invalid trace evidence/,
+    );
+    assert.equal(driver.calls, 0);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
 test("runTrapAudit rejects a terminal checkpoint with missing trace evidence", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h6-audit-trace-"));
   const driver = noCallDriver(TEST_PROFILE_ID);

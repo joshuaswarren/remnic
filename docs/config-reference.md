@@ -318,7 +318,6 @@ See [Coding agent mode](coding-agent.md) for full details on project detection, 
 | `codingKnowledge.decisionRecords` | `true` | Decision-record surfaces and standing decision briefing titles. Effective only under the master gate. |
 | `codingKnowledge.architectureCard` | `true` | Architecture-card build/refresh and briefing injection. Effective only under the master gate. |
 | `codingKnowledge.sessionDelta` | `true` | Last-seen-head persistence and delta briefing line. Effective only under the master gate. |
-| `codingKnowledge.preActionGate` | `false` | Pre-action failure gate check. Effective only under the master gate. |
 | `codingKnowledge.architectureCardLlmSummary` | `false` | Opt-in LLM summary pass on the architecture card. Effective only under the master and card gates. |
 | `codingKnowledge.structuralProvider` | `"none"` | Structural-context provider selection (`"none"`, `"subprocess"`, `"native"`). |
 | `codingKnowledge.structuralProviderCommand` | `""` | Subprocess binary path for `"subprocess"` provider. |

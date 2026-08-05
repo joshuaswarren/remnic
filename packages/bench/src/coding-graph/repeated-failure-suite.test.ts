@@ -411,7 +411,7 @@ test("immutable profile hash binds prompts, tools, tokenizer, decoding, and nati
   );
 });
 
-test("profile request timeout overrides the frozen transport cap", async () => {
+test("caller request timeout cap overrides the profile timeout", async () => {
   let observedTimeoutMs = 0;
   let preflightCalls = 0;
   const source: RepeatedFailureEpisodeDriver = {
@@ -462,7 +462,7 @@ test("profile request timeout overrides the frozen transport cap", async () => {
       evaluate: async () => ({ status: "NO_MATCH", fingerprintHash: "unused" }),
     },
   });
-  assert.equal(observedTimeoutMs, 300_000);
+  assert.equal(observedTimeoutMs, 60_000);
   assert.equal(preflightCalls, 1);
 });
 

@@ -47,7 +47,6 @@ const GATE_OFF_CONFIG: CodingKnowledgeConfig = {
   decisionRecords: true,
   architectureCard: true,
   sessionDelta: true,
-  preActionGate: false,
   architectureCardLlmSummary: false,
   structuralProvider: "none",
   structuralProviderCommand: "",

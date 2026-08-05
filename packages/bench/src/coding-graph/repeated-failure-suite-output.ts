@@ -693,7 +693,10 @@ export function bindProfileRequestTimeout(
     ...(driver.preflight ? { preflight: () => driver.preflight!() } : {}),
     runEpisode: (request: Parameters<RepeatedFailureEpisodeDriver["runEpisode"]>[0]) => driver.runEpisode({
       ...request,
-      caps: { ...request.caps, requestTimeoutMs },
+      caps: {
+        ...request.caps,
+        requestTimeoutMs: request.caps.requestTimeoutMs ?? requestTimeoutMs,
+      },
     }),
   });
 }
