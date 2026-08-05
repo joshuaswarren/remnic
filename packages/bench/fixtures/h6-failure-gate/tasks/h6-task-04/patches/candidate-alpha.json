@@ -1,0 +1,10 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const stores = new WeakMap();\nconst view = (owner) => stores.get(owner);\nexport class EventQueue_nebula_cache_matrix {\n  constructor() { stores.set(this, { rows: [] }); }\n  async push(item) { view(this).rows.push(item.trim().length); }\n  getItemCount() { return view(this).rows.length; }\n  snapshot() { return structuredClone(view(this).rows); }\n}\nexport const repositoryIdentityfbfa7153 = Object.freeze({\n  v2500680d: true, v2c1c4ec6: true, vd538c9c5: true, v71914d0c: true, v4e3f25f8: true, vb2084c1d: true,\n  v8fac61df: true, v256d098f: true, v8fbe7fb9: true, v578e0bb2: true, v38bf9df7: true, v5af5660a: true,\n  v7eb693b1: true, v5c47dd72: true, v3596be92: true, v9936349d: true, vcb6a886a: true,\n});\n"
+    }
+  ]
+}

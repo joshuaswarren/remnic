@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
   BENCHMARK_REPRO_MANIFEST_FILENAME,
   buildBenchmarkReproManifest,
+  computeBenchmarkReproManifestArtifactHash,
+  parseBenchmarkReproManifest,
   writeBenchmarkReproManifest,
 } from "./repro-manifest.ts";
 import type { BenchmarkResult } from "./types.js";
@@ -391,6 +393,10 @@ test("buildBenchmarkReproManifest hashes datasets/results and redacts secret arg
     },
     qmd: { configDir: "/tmp/qmd" },
   });
+  const parsedManifest = parseBenchmarkReproManifest(
+    JSON.parse(JSON.stringify(manifest)),
+  );
+  assert.deepEqual(parsedManifest, manifest);
 
   assert.equal(manifest.run.mode, "full");
   assert.match(manifest.run.id, /^20[0-9]{2}-/);
@@ -1435,4 +1441,190 @@ test("buildBenchmarkReproManifest preserves uneven benchmark/profile work pairin
     { benchmark: "longmemeval", runtimeProfile: "real" },
     { benchmark: "locomo", runtimeProfile: "baseline" },
   ]);
+});
+
+test("supplemental inventory is contained, deduplicated, sorted, hashed, and covered by artifactHash", async () => {
+  const root = await createTempRoot("remnic-repro-supplemental-");
+  const resultsDir = path.join(root, "results");
+  const checkpointsDir = path.join(resultsDir, "checkpoints");
+  await mkdir(checkpointsDir, { recursive: true });
+  const resultPath = path.join(resultsDir, "result.json");
+  const episodesPath = path.join(resultsDir, "episodes.jsonl");
+  const statisticsPath = path.join(resultsDir, "statistics.json");
+  const checkpointPath = path.join(checkpointsDir, "row.json");
+  await writeFile(resultPath, `${JSON.stringify(buildResult())}\n`, "utf8");
+  await writeFile(episodesPath, "{\"row\":1}\n", "utf8");
+  await writeFile(statisticsPath, "{\"draws\":10000}\n", "utf8");
+  await writeFile(checkpointPath, "{\"terminal\":true}\n", "utf8");
+
+  const options = {
+    resultPaths: [resultPath],
+    selectedBenchmarks: ["longmemeval"],
+    command: { cwd: root, argv: [] },
+    supplementalArtifactPaths: [
+      statisticsPath,
+      checkpointPath,
+      episodesPath,
+      statisticsPath,
+    ],
+  };
+  const first = await buildBenchmarkReproManifest(resultsDir, options);
+  assert.deepEqual(
+    first.supplementalArtifacts?.map((entry) => entry.path),
+    ["checkpoints/row.json", "episodes.jsonl", "statistics.json"]
+  );
+  assert.deepEqual(
+    first.supplementalArtifacts?.map((entry) => entry.sizeBytes),
+    [18, 10, 16]
+  );
+  assert.deepEqual(
+    first.supplementalArtifacts?.map((entry) => entry.sha256),
+    [checkpointPath, episodesPath, statisticsPath].map((filePath) =>
+      createHash("sha256").update(
+        filePath === checkpointPath
+          ? "{\"terminal\":true}\n"
+          : filePath === episodesPath
+            ? "{\"row\":1}\n"
+            : "{\"draws\":10000}\n"
+      ).digest("hex")
+    )
+  );
+
+  await writeFile(statisticsPath, "{\"draws\":9999}\n", "utf8");
+  const changed = await buildBenchmarkReproManifest(resultsDir, options);
+  assert.notEqual(changed.artifactHash, first.artifactHash);
+  assert.equal(
+    changed.artifactHash,
+    computeBenchmarkReproManifestArtifactHash(
+      (({ artifactHash: _artifactHash, ...withoutHash }) => withoutHash)(changed)
+    )
+  );
+});
+
+test("new manifests always emit an explicit supplemental artifact array", async () => {
+  const root = await createTempRoot("remnic-repro-supplemental-empty-");
+  const resultsDir = path.join(root, "results");
+  await mkdir(resultsDir, { recursive: true });
+  const resultPath = path.join(resultsDir, "result.json");
+  await writeFile(resultPath, `${JSON.stringify(buildResult())}\n`, "utf8");
+  const manifest = await buildBenchmarkReproManifest(resultsDir, {
+    resultPaths: [resultPath],
+    selectedBenchmarks: ["longmemeval"],
+    command: { cwd: root, argv: [] },
+    supplementalArtifactPaths: [],
+  });
+  assert.deepEqual(manifest.supplementalArtifacts, []);
+});
+
+test("supplemental artifacts reject outside paths, directories, symlinks, collisions, and self-reference", async () => {
+  const root = await createTempRoot("remnic-repro-supplemental-reject-");
+  const resultsDir = path.join(root, "results");
+  await mkdir(path.join(resultsDir, "real-dir"), { recursive: true });
+  const resultPath = path.join(resultsDir, "result.json");
+  const regularPath = path.join(resultsDir, "real-dir", "artifact.json");
+  const outsidePath = path.join(root, "outside.json");
+  await writeFile(resultPath, `${JSON.stringify(buildResult())}\n`, "utf8");
+  await writeFile(regularPath, "{}\n", "utf8");
+  await writeFile(outsidePath, "{}\n", "utf8");
+  await symlink(regularPath, path.join(resultsDir, "leaf-link.json"));
+  await symlink(path.join(resultsDir, "real-dir"), path.join(resultsDir, "ancestor-link"));
+  await writeFile(path.join(resultsDir, BENCHMARK_REPRO_MANIFEST_FILENAME), "{}\n", "utf8");
+  const base = {
+    resultPaths: [resultPath],
+    selectedBenchmarks: ["longmemeval"],
+    command: { cwd: root, argv: [] },
+  };
+  await assert.rejects(
+    () => buildBenchmarkReproManifest(resultsDir, { ...base, supplementalArtifactPaths: [outsidePath] }),
+    /outside/
+  );
+  await assert.rejects(
+    () => buildBenchmarkReproManifest(resultsDir, { ...base, supplementalArtifactPaths: [path.join(resultsDir, "real-dir")] }),
+    /regular file/
+  );
+  await assert.rejects(
+    () => buildBenchmarkReproManifest(resultsDir, { ...base, supplementalArtifactPaths: [path.join(resultsDir, "leaf-link.json")] }),
+    /symlink/
+  );
+  await assert.rejects(
+    () => buildBenchmarkReproManifest(resultsDir, { ...base, supplementalArtifactPaths: [path.join(resultsDir, "ancestor-link", "artifact.json")] }),
+    /symlink/
+  );
+  await assert.rejects(
+    () => buildBenchmarkReproManifest(resultsDir, { ...base, supplementalArtifactPaths: [resultPath] }),
+    /already listed under results/
+  );
+  await assert.rejects(
+    () => buildBenchmarkReproManifest(resultsDir, {
+      ...base,
+      supplementalArtifactPaths: [path.join(resultsDir, BENCHMARK_REPRO_MANIFEST_FILENAME)],
+    }),
+    /cannot be MANIFEST.json/
+  );
+});
+
+test("v1 artifact hashes remain compatible when supplementalArtifacts is absent", async () => {
+  const root = await createTempRoot("remnic-repro-v1-compatible-");
+  const resultsDir = path.join(root, "results");
+  await mkdir(resultsDir, { recursive: true });
+  const resultPath = path.join(resultsDir, "result.json");
+  await writeFile(resultPath, `${JSON.stringify(buildResult())}\n`, "utf8");
+  const current = await buildBenchmarkReproManifest(resultsDir, {
+    resultPaths: [resultPath],
+    selectedBenchmarks: ["longmemeval"],
+    command: { cwd: root, argv: [] },
+  });
+  const { artifactHash: _artifactHash, supplementalArtifacts: _supplemental, ...withoutVolatile } = current;
+  const v1 = { ...withoutVolatile, schemaVersion: 1 };
+  const oldIdentity = {
+    schemaVersion: v1.schemaVersion,
+    run: v1.run,
+    git: { commit: v1.git.commit, shortCommit: v1.git.shortCommit },
+    command: { argv: v1.command.argv, envKeys: v1.command.envKeys },
+    environment: {
+      platform: v1.environment.platform,
+      arch: v1.environment.arch,
+      nodeVersion: v1.environment.nodeVersion,
+      ...(v1.environment.packageManager ? { packageManager: v1.environment.packageManager } : {}),
+    },
+    ...(v1.qmd ? { qmd: v1.qmd } : {}),
+    configFiles: v1.configFiles,
+    datasets: v1.datasets,
+    results: v1.results,
+    ...(v1.codexCredit ? { codexCredit: v1.codexCredit } : {}),
+  };
+  const stable = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+    if (value && typeof value === "object") {
+      return `{${Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => `${JSON.stringify(key)}:${stable(entry)}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(value) ?? "null";
+  };
+  const legacyHash = createHash("sha256").update(stable(oldIdentity)).digest("hex");
+  assert.equal(
+    computeBenchmarkReproManifestArtifactHash(v1),
+    legacyHash
+  );
+});
+
+test("schema-v2 manifest writer publishes atomically without leaving temp files", async () => {
+  const root = await createTempRoot("remnic-repro-v2-atomic-");
+  const resultsDir = path.join(root, "results");
+  await mkdir(resultsDir, { recursive: true });
+  const resultPath = path.join(resultsDir, "result.json");
+  await writeFile(resultPath, `${JSON.stringify(buildResult())}\n`, "utf8");
+  await writeFile(path.join(resultsDir, BENCHMARK_REPRO_MANIFEST_FILENAME), "{\"schemaVersion\":1}\n", "utf8");
+  const manifestPath = await writeBenchmarkReproManifest(resultsDir, {
+    resultPaths: [resultPath],
+    selectedBenchmarks: ["longmemeval"],
+    command: { cwd: root, argv: [] },
+    supplementalArtifactPaths: [],
+  });
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  assert.equal(manifest.schemaVersion, 2);
+  assert.deepEqual(manifest.supplementalArtifacts, []);
+  assert.deepEqual((await readdir(resultsDir)).filter((name) => name.endsWith(".tmp")), []);
 });

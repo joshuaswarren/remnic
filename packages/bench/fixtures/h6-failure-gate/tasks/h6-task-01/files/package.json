@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/quillboard-inventory-sync",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for quillboard-inventory-sync",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

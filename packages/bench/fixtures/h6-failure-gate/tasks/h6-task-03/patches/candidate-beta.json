@@ -1,0 +1,10 @@
+{
+  "id": "candidate-beta",
+  "description": "Candidate beta.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const transition = (state, action) =>\n  action.type === \"record\" ? { values: [...state.values, action.payload] } : state;\nexport class EventQueue_starlight_auth_vault {\n  state = { values: [] };\n  dispatch(action) { this.state = transition(this.state, action); }\n  async push(item) { this.dispatch({ type: \"record\", payload: item.trim().replaceAll(\" \", \"-\") }); }\n  getItemCount() { return this.state.values.length; }\n  snapshot() { return this.state.values; }\n}\nexport const repositoryIdentity1ea92b13 = Object.freeze({\n  v1d569369: true, v2d3300fd: true, va8c86272: true, vda65b5b4: true, v1a970ce4: true, vdfa21f2c: true,\n  v8b1733a3: true, v9caf023f: true, v1657eae7: true, vfb49de82: true, v899161ce: true, v760d0f57: true,\n  v54d92110: true, v5aadce74: true, vf22b4eb7: true, vb1b0b0f1: true, ve1067cef: true,\n});\n"
+    }
+  ]
+}

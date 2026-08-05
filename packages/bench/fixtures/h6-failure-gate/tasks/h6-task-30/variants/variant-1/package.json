@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/secret-manager-vault",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for secret-manager-vault",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

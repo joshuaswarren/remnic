@@ -3,7 +3,8 @@
  */
 
 import { execSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { LegacyBenchmarkResult } from "./adapters/types.js";
 import { resolveContainedPath, sanitizeFilenameSegment } from "./filename-safety.js";
@@ -303,7 +304,7 @@ export async function writeBenchmarkResult(result: BenchmarkResult, outputDir: s
   };
 
   const publicResult = sanitizeBenchmarkResultForJson(redactBenchmarkResultSecrets(resultWithArtifacts));
-  await writeFile(filePath, `${JSON.stringify(publicResult, null, 2)}\n`);
+  await writeFileAtomically(filePath, `${JSON.stringify(publicResult, null, 2)}\n`);
   return filePath;
 }
 

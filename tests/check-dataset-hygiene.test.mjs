@@ -44,6 +44,22 @@ test("detects email address rule class in temp dir", () => {
   }
 });
 
+test("scans JavaScript fixture files for leaks", () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), "hygiene-javascript-"));
+  try {
+    writeFileSync(path.join(tempDir, "fixture.js"), `export const contact = "alice@realcompany.com";\n`);
+    writeFileSync(path.join(tempDir, "runner.mjs"), `export const contact = "bob@realcompany.com";\n`);
+
+    const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
+
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /^fixture\.js:1: \[email\]/m);
+    assert.match(res.stderr, /^runner\.mjs:1: \[email\]/m);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("synthetic emails (.example, .synthetic) pass without findings", () => {
   const tempDir = mkdtempSync(path.join(tmpdir(), "hygiene-synthetic-email-"));
   try {
@@ -133,6 +149,28 @@ test("detects IPv4 rule class outside loopback and TEST-NET-1", () => {
   }
 });
 
+test("detects Unix, macOS, and Windows home-directory paths without echoing them", () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), "hygiene-home-path-"));
+  const pathFragments = [
+    ["/", "home", "operator-name", "project"].join("/"),
+    ["/", "Users", "operator-name", "project"].join("/"),
+    ["C:", "Users", "operator-name", "project"].join("\\"),
+  ];
+  try {
+    writeFileSync(
+      path.join(tempDir, "paths.txt"),
+      `${pathFragments.join("\n")}\n`,
+    );
+    const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
+    assert.equal(res.status, 1);
+    assert.equal((res.stderr.match(/\[home-path\]/g) || []).length, 3);
+    assert.match(res.stderr, /Absolute home-directory path detected \(redacted\)/);
+    for (const homePath of pathFragments) assert.ok(!res.stderr.includes(homePath));
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("detects URL rule class for hosts outside allowlist in data files", () => {
   const tempDir = mkdtempSync(path.join(tmpdir(), "hygiene-url-"));
   try {
@@ -143,6 +181,7 @@ test("detects URL rule class for hosts outside allowlist in data files", () => {
         good2: "https://sub.example.com/path",
         good3: "https://arxiv.org/abs/2301.00001",
         good4: "https://github.com/joshuaswarren/remnic/issues/1954",
+        good5: "https://json-schema.org/draft/2020-12/schema",
         bad1: "https://unauthorized-domain.com/data",
         bad2: "https://github.com/otheruser/otherrepo",
       })
@@ -151,6 +190,7 @@ test("detects URL rule class for hosts outside allowlist in data files", () => {
     assert.equal(res.status, 1);
     assert.match(res.stderr, /\[url-allowlist\]/);
     assert.match(res.stderr, /URL host outside allowlist \(redacted\)/);
+    assert.equal((res.stderr.match(/\[url-allowlist\]/g) || []).length, 2);
     assert.doesNotMatch(res.stderr, /unauthorized-domain\.com/);
     assert.doesNotMatch(res.stderr, /otheruser\/otherrepo/);
   } finally {

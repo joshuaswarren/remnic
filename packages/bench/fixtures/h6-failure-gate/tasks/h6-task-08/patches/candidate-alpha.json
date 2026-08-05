@@ -1,0 +1,10 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "class SchemaInspector {\n  constructor(record) { this.record = record; }\n  requireText() {\n    if (typeof this.record?.region?.zone !== \"string\") {\n      throw Object.assign(new SyntaxError(\"text member absent\"), {\n        code: \"SCHEMA_ZONE_MISSING\",\n        path: \"region.zone\",\n      });\n    }\n    return this;\n  }\n  requireRange() {\n    const candidate = this.record.region.quota;\n    if (!Number.isInteger(candidate) || candidate < 5) {\n      throw Object.assign(new RangeError(\"numeric member invalid\"), {\n        code: \"SCHEMA_QUOTA_RANGE\",\n        path: \"region.quota\",\n      });\n    }\n    return this;\n  }\n  value() { return this.record; }\n}\nfunction inspect(record) {\n  return new SchemaInspector(record).requireText().requireRange().value();\n}\n\nexport function loadRecord_quantum_order_pipeline(record) {\n  const inspectorResult = inspect(record);\n  return inspectorResult;\n}\nexport const repositoryIdentity75504ff5 = Object.freeze({\n  vbfab7e57: true, v3bc6a66b: true, ve11f8fdb: true, v77da3b99: true, v07286496: true, v1d738685: true,\n  v4beab106: true, v67eb6dc3: true, v597b2282: true, vdf62b241: true, vd7a24f02: true, v642d10cf: true,\n  vb82f0490: true, v75a8f1e8: true, vbe511ddd: true, v058bb25d: true, vbc3c5e00: true,\n});\n"
+    }
+  ]
+}

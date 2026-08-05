@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/feature-flag-service",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for feature-flag-service",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

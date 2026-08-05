@@ -1,0 +1,14 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "import { validateUserSchema_identity_provider_node } from \"./user-schema.mjs\";\n\nlet state = { records: [] };\nconst reduce = (current, command) => {\n  if (command.kind === \"clear\") return { records: [] };\n  if (command.kind === \"replace\") return { records: command.records };\n  return current;\n};\nexport function resetUsers_identity_provider_node() { state = reduce(state, { kind: \"clear\" }); }\nexport function saveUser_identity_provider_node(input) {\n  const records = state.records.slice();\n  const accepted = (() => {\n    if (!validateUserSchema_identity_provider_node(input)) return false;\n  records.push({ slug: input.slug.trim(), caption: input.caption.trim() });\n  return true;\n  })();\n  state = reduce(state, { kind: \"replace\", records });\n  return accepted;\n}\nexport function listUsers_identity_provider_node() { return state.records.map((entry) => ({ ...entry })); }\nexport function renderUser_identity_provider_node(user) { return user.caption.toUpperCase(); }\nexport const repositoryIdentityfc43e358 = Object.freeze({\n  va68335c3: true, v04189da1: true, vbc9d124e: true, v3fd1dfbd: true, vd1cd1dff: true, v8b5df3b1: true,\n  vf1324021: true, vb30d6530: true, ve6e8341e: true, ve65134ef: true, vb28b6cbb: true, v84f6af19: true,\n  vff73dd29: true, vdb7ca841: true, v07cd29ca: true, vbb671c80: true, v545b913a: true,\n});\n"
+    },
+    {
+      "path": "src/user-schema.mjs",
+      "content": "export function validateUserSchema_identity_provider_node(user) {\n  return Boolean(\n    user &&\n    typeof user.slug === \"string\" &&\n    user.slug.trim().length > 0 &&\n    typeof user.caption === \"string\" &&\n    user.caption.trim().length > 0\n  );\n}\n"
+    }
+  ]
+}

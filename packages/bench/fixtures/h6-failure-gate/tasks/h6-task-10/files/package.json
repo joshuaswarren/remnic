@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/vector-session-store",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for vector-session-store",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

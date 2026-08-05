@@ -1,0 +1,166 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "dataset.schema.json",
+  "title": "H6BenchmarkDataset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "seed",
+    "createdAt",
+    "inventoryHash",
+    "supportArtifactHashes",
+    "taxonomy",
+    "tasks",
+    "splits"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "inventoryHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "supportArtifactHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trap-taxonomy.json",
+        "arms/arms.json",
+        "schema/action-intent.schema.json",
+        "schema/dataset.schema.json",
+        "schema/task.schema.json",
+        "schema/trap-fingerprint.schema.json"
+      ],
+      "properties": {
+        "trap-taxonomy.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "arms/arms.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schema/action-intent.schema.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schema/dataset.schema.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schema/task.schema.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schema/trap-fingerprint.schema.json": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "taxonomy": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "trapId",
+          "name",
+          "description",
+          "trapMechanism",
+          "correctFix",
+          "inspiredBy"
+        ],
+        "properties": {
+          "trapId": {
+            "type": "string",
+            "enum": [
+              "flaky-looking-test",
+              "misleading-error-message",
+              "wrong-layer-fix",
+              "hidden-invariant",
+              "stale-cache-illusion",
+              "config-shadowing"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string"
+          },
+          "trapMechanism": {
+            "type": "string",
+            "minLength": 1
+          },
+          "correctFix": {
+            "type": "string",
+            "minLength": 1
+          },
+          "inspiredBy": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 30,
+      "maxItems": 30,
+      "items": {
+        "$ref": "./task.schema.json"
+      }
+    },
+    "splits": {
+      "type": "object",
+      "required": [
+        "dev",
+        "pilot",
+        "main"
+      ],
+      "properties": {
+        "dev": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 0,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "pilot": {
+          "type": "array",
+          "minItems": 12,
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "main": {
+          "type": "array",
+          "minItems": 18,
+          "maxItems": 18,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

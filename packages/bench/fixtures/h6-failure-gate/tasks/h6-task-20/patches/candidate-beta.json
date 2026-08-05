@@ -1,0 +1,10 @@
+{
+  "id": "candidate-beta",
+  "description": "Candidate beta.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const stages = [\n  (context) => ({ ...context, output: Object.assign({}, context.state) }),\n  (context) => ({ ...context, value: context.state.quota.remaining - context.delta }),\n  (context) => {\n    context.output.quota.remaining = context.value;\n    return context.output;\n  },\n];\nexport function updateState_rate_limiter_filter(state, delta) {\n  return stages.reduce((context, stage) => stage(context), { state, delta });\n}\nexport const repositoryIdentity8827f15b = Object.freeze({\n  v8505d816: true, v95161823: true, v315b99e7: true, vb577c495: true, veb77d91f: true, v93cc5a46: true,\n  vaaf69c78: true, vac8eda1e: true, vf8ad61de: true, v6d90341c: true, vcb72f9d7: true, v3e99e9d8: true,\n  vf53dff6c: true, v8220f166: true, v084a68ea: true, va3992f22: true, vafb59ceb: true,\n});\n"
+    }
+  ]
+}

@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, readFile, readdir, readlink, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, readlink, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { compareCodePoints } from "./codepoint-order.js";
 import {
   type CodexCreditReceipt,
   buildCodexCreditReceipt,
@@ -13,99 +15,29 @@ import { listBenchmarkResults, loadBenchmarkResult } from "./results-store.js";
 import { resolveBenchmarkRunId } from "./run-identity.js";
 import { redactUrlSecrets as redactUrlSecretMaterial } from "./security/url-secrets.js";
 import type { BenchmarkMode, BenchmarkResult } from "./types.js";
+import { BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION } from "./repro-manifest-schema.js";
+import type {
+  BenchmarkReproManifest,
+  BenchmarkReproManifestDataset,
+  BenchmarkReproManifestFile,
+  BenchmarkReproManifestResult,
+  BenchmarkReproManifestSupplementalArtifact,
+} from "./repro-manifest-schema.js";
+
+export {
+  BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION,
+  BenchmarkReproManifestSchema,
+  parseBenchmarkReproManifest,
+} from "./repro-manifest-schema.js";
+export type {
+  BenchmarkReproManifest,
+  BenchmarkReproManifestDataset,
+  BenchmarkReproManifestFile,
+  BenchmarkReproManifestResult,
+  BenchmarkReproManifestSupplementalArtifact,
+} from "./repro-manifest-schema.js";
 
 export const BENCHMARK_REPRO_MANIFEST_FILENAME = "MANIFEST.json";
-export const BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION = 1;
-
-export interface BenchmarkReproManifestFile {
-  path: string;
-  kind: "file" | "symlink";
-  sizeBytes: number;
-  sha256: string;
-  target?: string;
-}
-
-export interface BenchmarkReproManifestDataset {
-  benchmark: string;
-  status: "not-provided" | "missing" | "hashed";
-  path?: string;
-  realpath?: string;
-  fileCount: number;
-  totalBytes: number;
-  sha256?: string;
-  files: BenchmarkReproManifestFile[];
-}
-
-export interface BenchmarkReproManifestResult {
-  path: string;
-  sha256: string;
-  sizeBytes: number;
-  resultId: string;
-  benchmark: string;
-  mode: BenchmarkMode;
-  gitSha: string;
-  runCount: number;
-  seeds: number[];
-  taskCount: number;
-  configHash: string;
-  judge: {
-    provider: string;
-    model: string;
-    rubricVersion: string | null;
-  } | null;
-}
-
-export interface BenchmarkReproManifest {
-  schemaVersion: number;
-  generatedAt: string;
-  run: {
-    id: string;
-    mode?: BenchmarkMode;
-    selectedBenchmarks: string[];
-    runtimeProfiles: string[];
-    selectedWorkItems: Array<{
-      benchmark: string;
-      runtimeProfile: string;
-    }>;
-    limit?: number;
-    seed?: number;
-  };
-  git: {
-    commit: string;
-    shortCommit: string;
-    dirty: boolean;
-    dirtyEntryCount: number;
-  };
-  command: {
-    cwd: string;
-    argv: string[];
-    envKeys: string[];
-  };
-  environment: {
-    platform: NodeJS.Platform;
-    arch: string;
-    nodeVersion: string;
-    hostname: string;
-    packageManager?: string;
-  };
-  qmd?: {
-    configDir?: string;
-    cacheDir?: string;
-    collections: string[];
-  };
-  configFiles: Array<{
-    label: string;
-    path: string;
-    sha256?: string;
-    sizeBytes?: number;
-    missing?: boolean;
-    redacted?: boolean;
-  }>;
-  datasets: BenchmarkReproManifestDataset[];
-  results: BenchmarkReproManifestResult[];
-  codexCredit?: CodexCreditReceipt;
-  artifactHash: string;
-}
 
 export interface BuildBenchmarkReproManifestOptions {
   resultPaths?: string[];
@@ -132,6 +64,9 @@ export interface BuildBenchmarkReproManifestOptions {
     cacheDir?: string;
     collections?: string[];
   };
+  supplementalArtifactPaths?: string[];
+  publicSafe?: boolean;
+  generatedAt?: string;
 }
 
 const SECRET_ARG_FLAGS = new Set([
@@ -275,7 +210,7 @@ function stableStringify(value: unknown): string {
   }
   if (value && typeof value === "object") {
     return `{${Object.keys(value as Record<string, unknown>)
-      .sort()
+      .sort(compareCodePoints)
       .map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`)
       .join(",")}}`;
   }
@@ -870,7 +805,7 @@ function sanitizeEnvKeys(env: NodeJS.ProcessEnv | undefined, explicitKeys: strin
   ];
   return [...new Set(sourceKeys)]
     .filter((key) => typeof key === "string" && key.length > 0)
-    .sort((left, right) => left.localeCompare(right));
+    .sort(compareCodePoints);
 }
 
 function gitOutput(args: string[], cwd: string): string {
@@ -929,6 +864,7 @@ function buildArtifactHashIdentity(manifest: Omit<BenchmarkReproManifest, "artif
     configFiles: manifest.configFiles,
     datasets: manifest.datasets,
     results: manifest.results,
+    ...(manifest.supplementalArtifacts !== undefined ? { supplementalArtifacts: manifest.supplementalArtifacts } : {}),
     ...(manifest.codexCredit ? { codexCredit: manifest.codexCredit } : {}),
   };
 }
@@ -952,7 +888,7 @@ async function scanDatasetFiles(root: string): Promise<BenchmarkReproManifestFil
 
   const walk = async (directory: string): Promise<void> => {
     const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
+    entries.sort((left, right) => compareCodePoints(left.name, right.name));
 
     for (const entry of entries) {
       const entryPath = path.join(directory, entry.name);
@@ -997,7 +933,7 @@ async function scanDatasetFiles(root: string): Promise<BenchmarkReproManifestFil
   };
 
   await walk(root);
-  return files.sort((left, right) => left.path.localeCompare(right.path));
+  return files.sort((left, right) => compareCodePoints(left.path, right.path));
 }
 
 async function lstatPathWithoutSymlinkComponents(
@@ -1121,10 +1057,44 @@ async function resolveResultPaths(resultsDir: string, explicitPaths: string[] | 
         return resultPath;
       })
     );
-    return [...new Set(resolvedPaths)].sort((left, right) => left.localeCompare(right));
+    return [...new Set(resolvedPaths)].sort(compareCodePoints);
   }
   const summaries = await listBenchmarkResults(resultsDir);
   return summaries.map((summary) => path.resolve(summary.path));
+}
+
+async function resolveSupplementalArtifactPaths(
+  resultsDir: string,
+  explicitPaths: string[] | undefined,
+  resultEntries: BenchmarkReproManifestResult[]
+): Promise<BenchmarkReproManifestSupplementalArtifact[]> {
+  if (!explicitPaths || explicitPaths.length === 0) return [];
+  const resolvedResultsDir = path.resolve(resultsDir);
+  const resultPathSet = new Set(resultEntries.map((entry) => entry.path));
+  const entriesByRelPath = new Map<string, BenchmarkReproManifestSupplementalArtifact>();
+  for (const rawPath of explicitPaths) {
+    const absolutePath = path.resolve(resolvedResultsDir, rawPath);
+    assertPathInsideRoot(resolvedResultsDir, absolutePath, "supplemental artifact");
+    await assertRegularFileWithoutSymlinkComponents(absolutePath, "supplemental artifact");
+    const relPath = path.relative(resolvedResultsDir, absolutePath).split(path.sep).join("/");
+    if (relPath === BENCHMARK_REPRO_MANIFEST_FILENAME) {
+      throw new Error(`Supplemental artifact path cannot be ${BENCHMARK_REPRO_MANIFEST_FILENAME}`);
+    }
+    if (resultPathSet.has(relPath)) {
+      throw new Error(`Supplemental artifact path already listed under results: ${relPath}`);
+    }
+    if (!entriesByRelPath.has(relPath)) {
+      const fileStats = await stat(absolutePath);
+      entriesByRelPath.set(relPath, {
+        path: relPath,
+        sha256: await sha256File(absolutePath),
+        sizeBytes: fileStats.size,
+      });
+    }
+  }
+  return Array.from(entriesByRelPath.values()).sort((left, right) =>
+    compareCodePoints(left.path, right.path)
+  );
 }
 
 function assertPathInsideRoot(root: string, targetPath: string, label: string): void {
@@ -1261,7 +1231,7 @@ function collectQmdCollections(explicitCollections: string[] | undefined, result
       }
     }
   }
-  return [...collections].sort((left, right) => left.localeCompare(right));
+  return [...collections].sort(compareCodePoints);
 }
 
 function resolvePackageManager(cwd: string): string | undefined {
@@ -1287,8 +1257,14 @@ export async function buildBenchmarkReproManifest(
   const resultEntries = await Promise.all(
     resultPaths.map((resultPath, index) => buildResultManifest(resolvedResultsDir, resultPath, loadedResults[index]!))
   );
+  const supplementalArtifacts = await resolveSupplementalArtifactPaths(
+    resolvedResultsDir,
+    options.supplementalArtifactPaths,
+    resultEntries
+  );
   const selectedBenchmarks =
-    options.selectedBenchmarks ?? [...new Set(loadedResults.map((result) => result.meta.benchmark))].sort();
+    options.selectedBenchmarks
+    ?? [...new Set(loadedResults.map((result) => result.meta.benchmark))].sort(compareCodePoints);
   const selectedWorkItems =
     options.selectedWorkItems ??
     loadedResults.map((result) => ({
@@ -1315,7 +1291,7 @@ export async function buildBenchmarkReproManifest(
   }
   const manifestWithoutHash = {
     schemaVersion: BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION,
-    generatedAt: new Date().toISOString(),
+    generatedAt: options.generatedAt ?? new Date().toISOString(),
     run: {
       id: runId,
       ...(options.mode ? { mode: options.mode } : {}),
@@ -1327,7 +1303,7 @@ export async function buildBenchmarkReproManifest(
     },
     git: buildGitInfo(cwd),
     command: {
-      cwd,
+      cwd: options.publicSafe ? "." : cwd,
       argv: sanitizeArgv(options.command?.argv ?? process.argv.slice(2)),
       envKeys: sanitizeEnvKeys(commandEnv, options.command?.envKeys),
     },
@@ -1335,7 +1311,7 @@ export async function buildBenchmarkReproManifest(
       platform: process.platform,
       arch: process.arch,
       nodeVersion: process.version,
-      hostname: os.hostname(),
+      ...(!options.publicSafe ? { hostname: os.hostname() } : {}),
       ...(pnpmVersion ? { packageManager: `pnpm@${pnpmVersion}` } : {}),
     },
     ...(options.qmd || qmdCollections.length > 0
@@ -1349,7 +1325,8 @@ export async function buildBenchmarkReproManifest(
       : {}),
     configFiles: await buildConfigFileEntries(options.configFiles),
     datasets,
-    results: resultEntries.sort((left, right) => left.path.localeCompare(right.path)),
+    results: resultEntries.sort((left, right) => compareCodePoints(left.path, right.path)),
+    supplementalArtifacts,
     ...(codexCredit ? { codexCredit } : {}),
   };
 
@@ -1366,6 +1343,6 @@ export async function writeBenchmarkReproManifest(
   await mkdir(resultsDir, { recursive: true });
   const manifest = await buildBenchmarkReproManifest(resultsDir, options);
   const manifestPath = path.join(resultsDir, BENCHMARK_REPRO_MANIFEST_FILENAME);
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFileAtomically(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   return manifestPath;
 }

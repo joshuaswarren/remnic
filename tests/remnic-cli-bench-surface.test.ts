@@ -15,6 +15,18 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import * as benchPackage from "../packages/bench/src/index.js";
+
+test("bench root exports every H6 CLI entrypoint", async () => {
+
+  for (const symbol of [
+    "runRepeatedFailureCliCommand",
+    "replayRepeatedFailureStatistics",
+    "runTrapAuditCliCommand",
+  ] as const) {
+    assert.equal(typeof benchPackage[symbol], "function");
+  }
+});
 
 test("remnic CLI source wires the new bench command and keeps benchmark as an alias", async () => {
   const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
@@ -25,7 +37,7 @@ test("remnic CLI source wires the new bench command and keeps benchmark as an al
   assert.match(source, /await cmdBench\(rest\);/);
   assert.match(
     source,
-    /remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen>/
+    /remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen\|coding>/
   );
   assert.match(source, /benchmark is kept as a compatibility alias/i);
 });
@@ -377,7 +389,7 @@ test("bench providers discovery is exposed as a package-backed CLI surface", asy
   assert.match(source, /\bdiscoverAllProviders\b/);
   assert.match(
     usageSource,
-    /Usage: remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen>/
+    /Usage: remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen\|coding>/,
   );
   assert.match(usageSource, /remnic bench providers discover/);
   assert.match(source, /async function discoverBenchProviders\(parsed: ParsedBenchArgs\): Promise<void>/);

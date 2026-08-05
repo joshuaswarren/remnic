@@ -70,3 +70,19 @@ model-lab/.venv/
 *.gguf
 
 graphify-out/
+
+# H6 repeated-failure experiment run artifacts (checkpoints, traces, audits).
+# Raw run output is develop-time scratch, mirroring docs/benchmarks/results/.
+# Only the fixture bundle, preregistration, and final report are committed.
+docs/research/data/
+
+# Operator run handoff notes: deployment-specific paths, hosts, and
+# endpoints. The shareable research artifacts are preregistration.md
+# and report.md.
+docs/research/failure-gate/RESUME-HANDOFF.md
+
+# Operator-specific H6 model profiles. A profile pins a concrete endpoint, so
+# these are per-deployment config, not shareable templates. Copy
+# packages/bench/profiles/h6-example.json and edit it locally.
+packages/bench/profiles/h6-*.json
+!packages/bench/profiles/h6-example.json

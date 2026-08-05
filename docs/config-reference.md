@@ -362,6 +362,19 @@ Note: `recallPipeline` controls ordering and can explicitly disable sections via
 | `extractionScopeClassificationEnabled` | `true` | Classify extracted facts as `"global"` or `"project"` scope. Global facts are promoted to the shared root namespace so they are visible across all projects. |
 
 See [Coding agent mode](coding-agent.md) for full details on project detection, `cwd` auto-resolution, `projectTag` for non-git sessions, and cross-project knowledge sharing.
+## Coding Knowledge
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `codingKnowledge.enabled` | `false` | Master gate for Track A coding-knowledge surfaces. Off (default) means no Track A surface fires. |
+| `codingKnowledge.decisionRecords` | `true` | Decision-record surfaces and standing decision briefing titles. Effective only under the master gate. |
+| `codingKnowledge.architectureCard` | `true` | Architecture-card build/refresh and briefing injection. Effective only under the master gate. |
+| `codingKnowledge.sessionDelta` | `true` | Last-seen-head persistence and delta briefing line. Effective only under the master gate. |
+| `codingKnowledge.architectureCardLlmSummary` | `false` | Opt-in LLM summary pass on the architecture card. Effective only under the master and card gates. |
+| `codingKnowledge.structuralProvider` | `"none"` | Structural-context provider selection (`"none"`, `"subprocess"`, `"native"`). |
+| `codingKnowledge.structuralProviderCommand` | `""` | Subprocess binary path for `"subprocess"` provider. |
+| `codingKnowledge.codegraphTools` | `false` | Enable codegraph tools. Effective only under the master gate. |
+| `codingKnowledge.codegraphDbDir` | `""` | Storage directory override for codegraph database. |
 
 ## Native Knowledge
 

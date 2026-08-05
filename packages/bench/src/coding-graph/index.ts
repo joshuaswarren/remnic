@@ -50,3 +50,38 @@ export {
   DEFAULT_TOLERANCE_PERCENT,
   CODING_GRAPH_BENCH_SCHEMA_VERSION,
 } from "./types.js";
+export * from "./repo-gen/index.js";
+
+export {
+  ControlledResponsesDriver,
+  createControlledResponsesAgentDriver,
+} from "./repeated-failure-responses-driver.js";
+export type {
+  ResponsesApiOutputItem,
+  ResponsesApiUsage,
+  ResponsesApiResponse,
+  ResponsesApiRequest,
+  ControlledResponsesTransport,
+  RepeatedFailureToolExecutionResult,
+  RepeatedFailureFinalRepoEvidence,
+  ControlledResponsesToolDefinition,
+  RepeatedFailureLocalToolHost,
+  ControlledGateDecision,
+  RepeatedFailureActionEvaluator,
+  ControlledResponsesDriverConfig,
+  ControlledResponsesAgentDriverConfig,
+  ControlledResponsesCaps,
+  ControlledResponsesEpisodeInput,
+  ControlledResponsesResponseEvent,
+  ControlledResponsesToolEvent,
+  ControlledResponsesFault,
+  ControlledResponsesDisposition,
+  ControlledResponsesEpisodeResult,
+} from "./repeated-failure-responses-driver.js";
+export * from "./repeated-failure-ollama-chat-driver.js";
+export * from "./repeated-failure-types.js";
+export * from "./repeated-failure-store.js";
+export * from "./repeated-failure-stats.js";
+export * from "./repeated-failure-suite.js";
+export * from "./repeated-failure-trap-audit.js";
+export * from "./repeated-failure-report.js";

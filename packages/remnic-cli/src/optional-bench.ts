@@ -11,13 +11,21 @@
 // same pattern). Mirrors CLAUDE.md invariant: "CLI and plugins MUST load
 // optional workspace packages via computed-specifier dynamic imports."
 
+import type * as BenchPackage from "@remnic/bench";
+import type {
+  RepeatedFailureCliCommandResult,
+  RunRepeatedFailureCliCommandInput,
+} from "@remnic/bench";
 import { isSpecifierNotFoundError } from "./optional-module-loader.js";
 import { assertLocalBenchBuildFreshForDevelopment } from "./bench-build-freshness.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-type BenchModule = typeof import("@remnic/bench");
+export type OptionalBenchCommandResult = RepeatedFailureCliCommandResult;
+export type OptionalRepeatedFailureCliInput = RunRepeatedFailureCliCommandInput;
+
+export type BenchModule = typeof BenchPackage;
 
 const SPECIFIER = "@remnic/" + "bench";
 const TSX_ESM_API_SPECIFIER = "tsx/esm/" + "api";

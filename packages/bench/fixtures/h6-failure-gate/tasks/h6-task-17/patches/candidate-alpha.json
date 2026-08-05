@@ -1,0 +1,10 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const lens = {\n  read(source) { return source.scores.total; },\n  replace(source, value) { source.scores.total = value; return source; },\n};\nexport function updateState_workflow_runner_engine(state, delta) {\n  const shell = { ...state };\n  const value = lens.read(state) - delta;\n  return lens.replace(shell, value);\n}\nexport const repositoryIdentityeaaeaaa7 = Object.freeze({\n  ved4e539b: true, v11c2fdc0: true, v137f63e3: true, v1a071d6f: true, vd0f4dff3: true, v8c1539d7: true,\n  ve2738099: true, vd1f38b93: true, va8d9ef99: true, v468c48bf: true, v8222f810: true, v451a8bc6: true,\n  va108c178: true, v520ca548: true, vdb9f303f: true, v65908b4d: true, v4ff4ca50: true,\n});\n"
+    }
+  ]
+}

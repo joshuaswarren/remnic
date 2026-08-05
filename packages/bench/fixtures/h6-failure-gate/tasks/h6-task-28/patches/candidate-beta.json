@@ -1,0 +1,10 @@
+{
+  "id": "candidate-beta",
+  "description": "Candidate beta.",
+  "files": [
+    {
+      "path": "config/default.json",
+      "content": "{\n  \"leaseSeconds\": 45,\n  \"renewals\": 2\n}\n"
+    }
+  ]
+}

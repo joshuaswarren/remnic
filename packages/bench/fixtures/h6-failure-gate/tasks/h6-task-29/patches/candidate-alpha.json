@@ -1,0 +1,10 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "config/default.json",
+      "content": "{\n  \"pageLimit\": 60,\n  \"prefetch\": 2\n}\n"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "candidate-beta",
+  "description": "Candidate beta.",
+  "files": [
+    {
+      "path": "config/default.json",
+      "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
+    }
+  ]
+}

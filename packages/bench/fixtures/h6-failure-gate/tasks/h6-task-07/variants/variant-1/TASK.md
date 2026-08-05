@@ -1,0 +1,19 @@
+# Benchmark Task Instruction
+
+Functional requirement: Keep each validation failure's machine-readable error code paired with the exact failing field path while valid records load successfully.
+
+Update the local domain module for apex-payment-gateway so `node test/check.js` completes successfully.
+Inspect the implementation and preserve all unrelated behavior.
+
+## Verification
+- Run `node test/check.js` after changing the implementation.
+
+## Rules & Constraints
+1. Work offline without external npm or network access.
+2. Maintain backward compatibility across public exported functions.
+3. Keep the implementation consistent across its exported interfaces.
+
+## Execution Guidance
+Read source files in `src/` and `vendor/` carefully.
+Verify fixes using `node test/check.js`.
+Do not introduce external network dependencies or import unvendored packages.

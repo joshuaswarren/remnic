@@ -210,7 +210,7 @@ test("every recognised command dispatches to its own handler, not the banner", a
   }
 });
 
-test("bench attribute and bench drift-gen dispatch to handlers without falling through to banner", async () => {
+test("bench research and coding command families dispatch without falling through to banner", async () => {
   const attrResult = await runCli(["bench", "attribute", "--help"]);
   assert.equal(attrResult.stdout.includes(BANNER_MARKER), false);
   assert.match(attrResult.stdout, /Usage: remnic bench/);
@@ -218,6 +218,17 @@ test("bench attribute and bench drift-gen dispatch to handlers without falling t
   const driftResult = await runCli(["bench", "drift-gen", "--help"]);
   assert.equal(driftResult.stdout.includes(BANNER_MARKER), false);
   assert.match(driftResult.stdout, /Usage: remnic bench/);
+
+  const codingHelp = await runCli(["bench", "coding", "--help"]);
+  assert.equal(codingHelp.exitCode, 0);
+  assert.equal(codingHelp.stdout.includes(BANNER_MARKER), false);
+  assert.match(codingHelp.stdout, /Usage: remnic bench coding repo-gen/);
+  assert.match(codingHelp.stdout, /repeated-failure stats --run DIR/);
+
+  const codingInvalid = await runCli(["bench", "coding", "repo-gen", "--count", "29"]);
+  assert.equal(codingInvalid.exitCode, 1);
+  assert.match(codingInvalid.stderr, /--count must be exactly 30/);
+  assert.match(codingInvalid.stderr, /Usage: remnic bench coding/);
 });
 
 test("bench attribute dispatch forwards paired QMD fallback arguments", async () => {

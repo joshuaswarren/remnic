@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import {
   getCausalTrajectoryStoreStatus,
+  readCausalTrajectoryRecordsStrict,
+  readCausalTrajectoryRevisionToken,
   recordCausalTrajectory,
   resolveCausalTrajectoryStoreDir,
   validateCausalTrajectoryRecord,
@@ -104,6 +106,10 @@ test("recordCausalTrajectory rejects unsafe ids and malformed timestamps", async
       }),
     /recordedAt must be an ISO timestamp/i,
   );
+
+  const strict = await readCausalTrajectoryRecordsStrict({ memoryDir });
+  assert.equal(strict.status, "absent");
+  assert.deepEqual(strict.files, []);
 });
 
 test("causal-trajectory status reports valid and invalid records", async () => {
@@ -172,4 +178,167 @@ test("causal-trajectory-status CLI command returns the store summary", async () 
   assert.equal(status.trajectories.total, 1);
   assert.equal(status.latestTrajectory?.trajectoryId, "traj-4");
   assert.equal(status.trajectories.byOutcome.partial, 1);
+});
+test("validateCausalTrajectoryRecord accepts optional typed identity and preserves schema-v1 legacy reads", () => {
+  const legacyRecord = validateCausalTrajectoryRecord({
+    schemaVersion: 1,
+    trajectoryId: "legacy-traj-1",
+    recordedAt: "2026-03-07T10:00:00.000Z",
+    sessionKey: "session-1",
+    goal: "Legacy goal",
+    actionSummary: "Legacy action",
+    observationSummary: "Legacy observation",
+    outcomeKind: "failure",
+    outcomeSummary: "Legacy failure",
+  });
+  assert.equal(legacyRecord.trajectoryId, "legacy-traj-1");
+  assert.equal(legacyRecord.codingContext, undefined);
+  assert.equal(legacyRecord.actionIdentity, undefined);
+
+  const typedRecord = validateCausalTrajectoryRecord({
+    schemaVersion: 1,
+    trajectoryId: "typed-traj-1",
+    recordedAt: "2026-03-07T10:05:00.000Z",
+    sessionKey: "session-2",
+    goal: "Typed goal",
+    actionSummary: "npm test",
+    observationSummary: "Command failed",
+    outcomeKind: "failure",
+    outcomeSummary: "Exit code 1",
+    codingContext: {
+      projectId: "proj-alpha",
+      branch: "main",
+    },
+    actionIdentity: {
+      fingerprintVersion: 1,
+      strategyId: "RUN_CHECK",
+      fingerprint: `v1:sha256:${"a".repeat(64)}`,
+    },
+  });
+  assert.equal(typedRecord.codingContext?.projectId, "proj-alpha");
+  assert.equal(typedRecord.actionIdentity?.fingerprintVersion, 1);
+  assert.equal(typedRecord.actionIdentity?.strategyId, "RUN_CHECK");
+  assert.equal(typedRecord.actionSummary, "npm test");
+});
+
+test("recordCausalTrajectory performs atomic write and advances causal trajectory revision", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-causal-atomic-"));
+
+  const filePath = await recordCausalTrajectory({
+    memoryDir,
+    record: {
+      schemaVersion: 1,
+      trajectoryId: "atomic-traj-1",
+      recordedAt: "2026-03-07T10:10:00.000Z",
+      sessionKey: "session-3",
+      goal: "Test atomic write",
+      actionSummary: "Write file atomically",
+      observationSummary: "File persisted",
+      outcomeKind: "success",
+      outcomeSummary: "Success",
+    },
+  });
+
+  assert.ok(filePath.endsWith("atomic-traj-1.json"));
+  // 1. Assert readback
+  const readback = JSON.parse(await readFile(filePath, "utf8"));
+  assert.equal(readback.trajectoryId, "atomic-traj-1");
+
+  // 2. Assert no .tmp file residue
+  const dir = path.dirname(filePath);
+  const files = await readdir(dir);
+  const tmpFiles = files.filter((f) => f.endsWith(".tmp"));
+  assert.equal(tmpFiles.length, 0);
+});
+
+test("recordCausalTrajectory rolls back publication and temp files when revision publication fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-causal-revision-failure-"));
+  const storeRoot = path.join(memoryDir, "state", "causal-trajectories");
+  await mkdir(path.join(storeRoot, "revision.json"), { recursive: true });
+
+  await assert.rejects(() => recordCausalTrajectory({
+    memoryDir,
+    record: {
+      schemaVersion: 1,
+      trajectoryId: "revision-failure",
+      recordedAt: "2026-03-07T10:10:00.000Z",
+      sessionKey: "session",
+      goal: "Exercise rollback",
+      actionSummary: "Publish trajectory",
+      observationSummary: "Revision write fails",
+      outcomeKind: "failure",
+      outcomeSummary: "Revision failure",
+    },
+  }));
+
+  const dayDir = path.join(storeRoot, "trajectories", "2026-03-07");
+  assert.deepEqual(await readdir(dayDir), []);
+  assert.deepEqual((await readdir(storeRoot)).filter((name) => name.endsWith(".tmp")), []);
+});
+
+test("recordCausalTrajectory keeps trajectory IDs immutable", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-causal-immutable-"));
+  const record = {
+    schemaVersion: 1 as const,
+    trajectoryId: "immutable-id",
+    recordedAt: "2026-03-07T10:10:00.000Z",
+    sessionKey: "session",
+    goal: "Preserve identity",
+    actionSummary: "First publication",
+    observationSummary: "Published",
+    outcomeKind: "success" as const,
+    outcomeSummary: "First content",
+  };
+  const filePath = await recordCausalTrajectory({ memoryDir, record });
+  await assert.rejects(
+    () => recordCausalTrajectory({
+      memoryDir,
+      record: { ...record, actionSummary: "Replacement content" },
+    }),
+    /already exists/,
+  );
+  assert.equal(JSON.parse(await readFile(filePath, "utf8")).actionSummary, "First publication");
+});
+
+test("readCausalTrajectoryRevisionToken rejects malformed present revision files", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-causal-bad-revision-"));
+  const storeRoot = path.join(memoryDir, "state", "causal-trajectories");
+  await mkdir(storeRoot, { recursive: true });
+  await writeFile(path.join(storeRoot, "revision.json"), JSON.stringify({ updatedAt: "missing-token" }));
+  await assert.rejects(
+    () => readCausalTrajectoryRevisionToken({ memoryDir }),
+    /revision\.json must contain a non-empty revisionToken/,
+  );
+});
+
+test("readCausalTrajectoryRecordsStrict distinguishes empty from success and throws on store failure", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-causal-strict-"));
+
+  const absent = await readCausalTrajectoryRecordsStrict({ memoryDir });
+  assert.equal(absent.status, "absent");
+  assert.equal(absent.trajectories.length, 0);
+
+  await mkdir(path.join(memoryDir, "state", "causal-trajectories", "trajectories"), { recursive: true });
+  const empty = await readCausalTrajectoryRecordsStrict({ memoryDir });
+  assert.equal(empty.status, "empty");
+
+  await recordCausalTrajectory({
+    memoryDir,
+    record: {
+      schemaVersion: 1,
+      trajectoryId: "strict-traj-1",
+      recordedAt: "2026-03-07T10:15:00.000Z",
+      sessionKey: "session-4",
+      goal: "Strict goal",
+      actionSummary: "Strict action",
+      observationSummary: "Strict obs",
+      outcomeKind: "failure",
+      outcomeSummary: "Strict failure",
+    },
+  });
+
+  const okRes = await readCausalTrajectoryRecordsStrict({ memoryDir });
+  assert.equal(okRes.status, "ok");
+  assert.equal(okRes.trajectories.length, 1);
+  assert.equal(okRes.trajectories[0].trajectoryId, "strict-traj-1");
 });

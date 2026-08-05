@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/pulse-notification-bus",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for pulse-notification-bus",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

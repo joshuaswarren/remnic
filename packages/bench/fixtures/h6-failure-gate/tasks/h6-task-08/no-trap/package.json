@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/quantum-order-pipeline",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for quantum-order-pipeline",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

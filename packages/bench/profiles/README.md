@@ -111,3 +111,36 @@ const profile = resolveLocalLabProfile(manifest);
 // profile.responder.providerConfig.temperature === 0
 // profile.responder.providerConfig.seed === 1573
 ```
+
+## H6 repeated-failure profiles
+
+The H6 repeated-failure experiment (`remnic bench coding repeated-failure`)
+uses a different, flatter profile shape than the `local-lab` manifests above:
+a single model plus the exact decoding and transport settings the run is
+pinned to. `h6-example.json` is the template.
+
+These profiles are **immutable run inputs**. The bench derives a canonical
+SHA-256 profile hash over every field — including `endpoint` — and records it
+on every episode row, so two runs are only comparable when their profile
+hashes match. Editing any field mid-experiment produces a different hash and
+requires a fresh trap-effectiveness audit.
+
+Because `endpoint` participates in that hash, a working profile is
+deployment-specific rather than shareable. Concrete `h6-*.json` profiles are
+therefore gitignored; copy the template and edit it locally:
+
+```bash
+cp packages/bench/profiles/h6-example.json packages/bench/profiles/h6-local.json
+# then set: endpoint, model, modelDigest, tokenizer.identity
+```
+
+`modelDigest` must match the digest the endpoint actually serves for that
+model — the run verifies it and refuses to start on a mismatch, so a silent
+model swap cannot contaminate a multi-day run. For Ollama:
+
+```bash
+curl -s "$ENDPOINT/api/tags" | jq -r '.models[] | select(.name == "MODEL") | .digest'
+```
+
+Credentials never belong in a profile file: they are read from the
+environment and never enter the profile hash.

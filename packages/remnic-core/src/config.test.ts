@@ -1474,6 +1474,7 @@ test("parseConfig codingKnowledge: accepts CLI-style boolean strings (CLAUDE.md 
   assert.equal(result.codingKnowledge.architectureCardLlmSummary, true);
 });
 
+
 test("parseConfig codingKnowledge: rejects unknown structuralProvider value (rule 51)", () => {
   assert.throws(
     () =>
